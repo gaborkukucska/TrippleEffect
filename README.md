@@ -1,10 +1,10 @@
-# TrippleEffect
+# TrippleEffect 🧑‍🚒🧑‍🏫👩‍🔧
 
-**TrippleEffect** is an asynchronous, collaborative multi-agent framework designed with a browser-based user interface, optimized for environments like Termux. It allows multiple Language Model (LLM) agents to work together on complex tasks, coordinated through a central backend and managed via a web UI.
+**TrippleEffect** is an asynchronous, collaborative multi-agent framework designed with a browser-based user interface, optimized for environments like Termux. It allows multiple Language Model (LLM) agents to work together on complex tasks, coordinated through a central backend and managed via a web UI powered by multiple external API providers like Ollama, LiteLLM, Openrouter, Google, Anthropic and DeepSeek.
 
 ## Core Concept
 
-The system orchestrates a configurable number of LLM agents (defaulting to three, hence the name "TrippleEffect"). Users interact with the system through a web interface to submit tasks via text, voice (planned), or file uploads. Agents can collaborate, delegate sub-tasks, utilize tools within sandboxed environments, and stream their responses back to the user interface in real-time.
+The system orchestrates a configurable number of LLM agents (defaulting to three, hence the name "TrippleEffect"). Users interact with the system through a web interface to submit tasks via text, voice, camera, or file uploads. The agents are fully customisable (provider, model, system prompt, persona, temperature, top-p, etc., can collaborate, delegate sub-tasks, utilize tools within sandboxed environments, and stream their responses back to the user interface in real-time.
 
 ## Key Features
 
@@ -14,7 +14,7 @@ The system orchestrates a configurable number of LLM agents (defaulting to three
 *   **Real-time Communication:** Uses WebSockets for instant updates between the backend and the UI.
 *   **Configurable Agents:** Easily configure agent parameters (model, system prompt, tools) via settings.
 *   **Sandboxed Environments:** Each agent operates within its own directory (`sandboxes/agent_<id>`) for file-based tasks, enhancing security and organization (implementation in progress).
-*   **Tool Usage:** Agents can be equipped with tools (e.g., file system access, web search) to extend their capabilities (implementation in progress).
+*   **Tool Usage:** Agents can be equipped with tools (e.g., file system access, web search, database) to extend their capabilities (implementation in progress).
 *   **Extensible Framework:** Designed to be modular for adding new agents, tools, or UI components.
 *   **Termux Friendly:** Aims for compatibility and reasonable performance on resource-constrained environments like Termux.
 
@@ -43,10 +43,10 @@ The system orchestrates a configurable number of LLM agents (defaulting to three
 *   **FastAPI Backend:** Serves the UI, handles HTTP requests, manages WebSocket connections, and orchestrates agent actions.
 *   **WebSocket Manager:** Handles real-time communication between UI and backend.
 *   **Agent Coordinator:** Manages the lifecycle and interaction logic between agents.
-*   **Agent Instances:** Individual agent objects, each potentially interacting with an LLM API.
-*   **Tools:** Modules providing specific capabilities to agents.
-*   **Sandboxes:** Isolated directories for agent file operations.
-*   **LLM APIs:** External services like OpenAI.
+*   **Agent Instances:** Individual agent objects, each potentially interacting with a separate LLM API.
+*   **Tools:** Modules providing specific capabilities to agents, agents can be tasked to create more tools that user can then set up and activate.
+*   **Sandboxes:** Isolated directories and conda environments for agent file operations and command executions.
+*   **LLM APIs:** External providers.
 
 ## Technology Stack
 
@@ -94,7 +94,7 @@ TrippleEffect/
 └── requirements.txt
 ```
 
-## Installation
+## Installation ( To Be Updated )
 
 1.  **Prerequisites:**
     *   Python 3.8+
@@ -128,7 +128,7 @@ TrippleEffect/
         OPENAI_API_KEY=your_api_key_here
         ```
 
-## Running the Application
+## Running the Application ( To Be Updated )
 
 ```bash
 python src/main.py
@@ -136,21 +136,21 @@ python src/main.py
 
 Access the UI in your web browser at `http://<your-ip-address>:8000` (or `http://localhost:8000` if running locally on a desktop). In Termux, find your IP using the `ifconfig` command.
 
-## Usage
+## Usage ( To Be Updated )
 
 1.  Open the web UI.
 2.  (Planned) Navigate to the Settings page to configure agents (models, prompts, tools).
 3.  Use the main interface to submit tasks to the agent system.
 4.  Observe the agents' collaboration and results in the output area.
 
-## Development
+## Development ( To Be Updated )
 
 *   **Code Style:** Follow PEP 8 guidelines. Use a formatter like Black (optional but recommended).
 *   **Linting:** Use Flake8 or Pylint (optional but recommended).
 *   **Helper Files:** Keep `helperfiles/PROJECT_PLAN.md` and `helperfiles/FUNCTIONS_INDEX.md` updated during development.
 *   **Branching:** Use feature branches for new development (e.g., `feat/agent-communication`, `fix/ui-bug`).
 
-## Contributing
+## Contributing ( To Be Updated )
 
 Contributions are welcome! Please follow the development guidelines and open a Pull Request. (Further details can be added later).
 
