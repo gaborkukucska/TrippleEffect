@@ -1,4 +1,5 @@
-# TrippleEffect - Collaborative LLM Agent Framework
+# TrippleEffect 🧑‍🚒🧑‍🏫👩‍🔧 ( To Be Updated )
+*Collaborative LLM Agent Framework*
 
 ![TrippleEffect Architecture Diagram](docs/assets/architecture-overview.png)
 
