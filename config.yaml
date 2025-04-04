@@ -1,0 +1,36 @@
+# START OF FILE config.yaml
+# Configuration for TrippleEffect Agents
+
+# Global settings (optional, can complement or be overridden by environment variables)
+# Example: default_model: "gpt-3.5-turbo"
+
+# List of agent configurations
+agents:
+  - agent_id: "coder" # Unique ID for the agent
+    config:
+      model: "gpt-4-turbo-preview" # Specific model for this agent
+      system_prompt: "You are an expert Python programmer. Analyze the user's request and provide clean, efficient Python code. Explain your code clearly with comments."
+      temperature: 0.2 # Lower temperature for precise coding
+      persona: "Python Expert Coder" # Descriptive persona name
+
+  - agent_id: "analyst"
+    config:
+      model: "gpt-3.5-turbo" # Can use a different model
+      system_prompt: "You are a data analyst. You receive input, analyze it for key information, structure, or implications, and provide a concise summary or analysis."
+      temperature: 0.7 # Standard temperature for analysis
+      persona: "Data Analyst"
+
+  - agent_id: "creative"
+    config:
+      model: "gpt-3.5-turbo"
+      system_prompt: "You are a creative writer and brainstormer. Expand on the user's ideas, suggest alternatives, and generate imaginative text."
+      temperature: 0.9 # Higher temperature for creativity
+      persona: "Creative Assistant"
+
+# Add more agents here as needed following the same structure:
+# - agent_id: "new_agent_id"
+#   config:
+#     model: "some_model"
+#     system_prompt: "..."
+#     temperature: 0.x
+#     persona: "..." # Optional
