@@ -1,364 +1,476 @@
 // START OF FILE static/js/app.js
 
-// --- State Variables ---
-let socket;
-const conversationHistory = []; // Array to store conversation messages ({ type: 'user'/'agent_response', ...data })
-const systemLogHistory = []; // Array to store system log messages ({ type: 'status'/'error', ...data })
-const agentStatusElements = {}; // { agent_id: element } - For status UI
-let selectedFile = null; // To store the selected file object
-let selectedFileContent = null; // To store read file content before sending
-
-// --- DOM Elements ---
-const messageInput = document.getElementById('message-input');
-const sendButton = document.getElementById('send-button');
+let websocket;
+// Cache DOM elements
 const conversationArea = document.getElementById('conversation-area');
 const systemLogArea = document.getElementById('system-log-area');
-const agentStatusContent = document.getElementById('agent-status-content');
-// File input elements
+const messageInput = document.getElementById('message-input');
+const sendButton = document.getElementById('send-button');
 const fileInput = document.getElementById('file-input');
 const attachFileButton = document.getElementById('attach-file-button');
 const fileInfoArea = document.getElementById('file-info-area');
+const configContentArea = document.getElementById('config-content'); // Added for config display
+const agentStatusContent = document.getElementById('agent-status-content'); // Added for agent status
 
+// Cache for agent response elements to append chunks
+let agentResponseElements = {}; // { "agent_id": { element: <div_element>, timeoutId: null } }
+// Cache for agent status elements
+let agentStatusElements = {}; // { "agent_id": <div_element> }
 
-// --- Helper: Scroll Area to Bottom ---
+// Client-side history (simple array for demonstration)
+let conversationHistory = [];
+let selectedFile = null; // To store the selected file object
+
+// --- Helper Functions ---
+
+// Function to scroll to the bottom of an element if user is near the bottom
 function scrollToBottom(element) {
-    if (element) {
-        const scrollThreshold = 50; // Pixels from bottom
-        if (element.scrollHeight - element.scrollTop <= element.clientHeight + scrollThreshold) {
+    const threshold = 50; // Pixels from bottom
+    const isNearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < threshold;
+    // console.log(`Scroll Info: ScrollHeight=${element.scrollHeight}, ScrollTop=${element.scrollTop}, ClientHeight=${element.clientHeight}, NearBottom=${isNearBottom}`);
+    if (isNearBottom) {
+        // Use setTimeout to allow the DOM to update before scrolling
+        setTimeout(() => {
             element.scrollTop = element.scrollHeight;
-        }
+            // console.log(`Scrolled ${element.id} to bottom.`);
+        }, 0);
     }
 }
 
-// --- WebSocket Connection ---
+// --- WebSocket Handling ---
+
 function connectWebSocket() {
+    // Determine WebSocket protocol (ws or wss)
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
-    socket = new WebSocket(wsUrl);
+    websocket = new WebSocket(wsUrl);
 
-    socket.onopen = function(event) {
-        console.log("WebSocket connection opened:", event);
-        const connectMsg = { type: "status", content: "WebSocket connected!" };
-        systemLogHistory.push(connectMsg);
-        addMessage(connectMsg, systemLogArea);
-        sendButton.disabled = false;
+    websocket.onopen = (event) => {
+        console.log("WebSocket connection opened");
+        // Clear initial connecting message and show connected status
+        const connectingMsg = systemLogArea.querySelector('.initial-connecting');
+        if (connectingMsg) connectingMsg.remove();
+        addMessage({ type: "status", message: "WebSocket Connected!" }, systemLogArea);
+        // Enable input/send button
         messageInput.disabled = false;
-        attachFileButton.disabled = false; // Enable attach button
-        clearAgentStatusUI();
+        sendButton.disabled = false;
+        attachFileButton.disabled = false;
+        // Fetch config and initial agent status on connect
+        fetchAndDisplayConfig();
+        // Request initial status (optional, as backend might push on connect)
+        // You might need a specific message type for this if implemented
     };
 
-    socket.onmessage = function(event) {
-        console.log("WebSocket message received:", event.data);
+    websocket.onmessage = (event) => {
+        // console.log("WebSocket message received:", event.data);
         try {
             const data = JSON.parse(event.data);
-            if (data.type === 'agent_status_update') {
-                 updateAgentStatusUI(data);
-            } else {
-                let targetArea = systemLogArea;
-                let targetHistory = systemLogHistory;
-                if (data.type === 'user' || data.type === 'agent_response') {
-                    targetArea = conversationArea;
-                    targetHistory = conversationHistory;
-                }
-                targetHistory.push(data);
-                addMessage(data, targetArea);
+
+            // Route message based on type
+            switch (data.type) {
+                case 'agent_response':
+                case 'user': // Shouldn't receive user messages back, but handle just in case
+                    addMessage(data, conversationArea); // Add to conversation area
+                    break;
+                case 'status':
+                case 'error':
+                     // Add errors/status to system log area
+                    addMessage(data, systemLogArea);
+                    // Also display errors prominently in conversation area if they are agent-specific
+                    if (data.type === 'error' && data.agent_id && data.agent_id !== 'manager') {
+                         addMessage({ ...data, is_error_duplicate: true }, conversationArea); // Mark as duplicate
+                    }
+                    break;
+                 case 'agent_status_update':
+                      updateAgentStatusUI(data.status); // Pass the nested status object
+                      break;
+                // Handle other potential message types if needed
+                default:
+                    console.warn("Received unknown message type:", data.type, data);
+                    // Add to system log as generic message
+                    addMessage({ type: "status", agent_id: "system", message: `Received unhandled type '${data.type}': ${JSON.stringify(data)}` }, systemLogArea);
             }
         } catch (e) {
-            console.error("Failed to parse incoming message or add message to UI:", e);
-            const rawMsg = { type: "raw", content: `Raw: ${event.data}` };
-            const errorMsg = { type: "error", content: `Error processing message: ${e.message}` };
-            systemLogHistory.push(rawMsg);
-            systemLogHistory.push(errorMsg);
-            addMessage(rawMsg, systemLogArea);
-            addMessage(errorMsg, systemLogArea);
+            console.error("Failed to parse WebSocket message or handle UI update:", e);
+             addMessage({ type: "error", agent_id: "system", content: `System Error: Failed to process message from backend. ${e}` }, systemLogArea);
         }
     };
 
-    socket.onerror = function(event) {
-        console.error("WebSocket error observed:", event);
-        const errorMsg = { type: "error", content: "WebSocket connection error. Check console." };
-        systemLogHistory.push(errorMsg);
-        addMessage(errorMsg, systemLogArea);
-        sendButton.disabled = true;
+    websocket.onerror = (event) => {
+        console.error("WebSocket error:", event);
+        addMessage({ type: "error", agent_id: "system", content: "WebSocket connection error. Check the backend server and browser console." }, systemLogArea);
+        // Disable input
         messageInput.disabled = true;
-        attachFileButton.disabled = true; // Disable attach on error
+        sendButton.disabled = true;
+        attachFileButton.disabled = true;
     };
 
-    socket.onclose = function(event) {
-        console.log("WebSocket connection closed:", event);
+    websocket.onclose = (event) => {
+        console.log("WebSocket connection closed:", event.reason, `Code: ${event.code}`);
         const reason = event.reason || `Code ${event.code}`;
-        const closeMsg = { type: "status", content: `WebSocket disconnected. ${reason}. Attempting to reconnect...` };
-        systemLogHistory.push(closeMsg);
-        addMessage(closeMsg, systemLogArea);
-        sendButton.disabled = true;
+        addMessage({ type: "status", message: `WebSocket Disconnected (${reason}). Attempting to reconnect...` }, systemLogArea);
+        // Disable input
         messageInput.disabled = true;
-        attachFileButton.disabled = true; // Disable attach on close
-        clearAgentStatusUI("Disconnected - Status unavailable");
-        clearSelectedFile(); // Clear file selection on disconnect
-        setTimeout(connectWebSocket, 5000);
+        sendButton.disabled = true;
+        attachFileButton.disabled = true;
+        // Reset agent status UI
+        clearAgentStatusUI("Connection closed. Status unknown.");
+        // Attempt to reconnect after a delay
+        setTimeout(connectWebSocket, 5000); // Reconnect every 5 seconds
     };
 }
 
 // --- Sending Messages ---
+
 function sendMessage() {
-    if (socket && socket.readyState === WebSocket.OPEN) {
-        const messageText = messageInput.value.trim();
+    const messageText = messageInput.value.trim();
 
-        // If no message text AND no file, do nothing
-        if (!messageText && !selectedFile) {
-            console.log("No message text or file selected. Nothing to send.");
-            return;
-        }
+    // Handle file content if a file is selected
+    if (selectedFile) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const fileContent = e.target.result;
+            let combinedMessage;
+            // Add clear markers for the LLM
+            combinedMessage = `--- START OF FILE: ${selectedFile.name} ---\n${fileContent}\n--- END OF FILE: ${selectedFile.name} ---\n\nUser Task:\n${messageText}`;
 
-        // Disable inputs while processing/sending
-        messageInput.disabled = true;
-        sendButton.disabled = true;
-        attachFileButton.disabled = true;
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                 console.log("Sending message with file context:", combinedMessage.substring(0, 100) + "...");
+                 // Add user message to local history and UI immediately
+                 const userMessage = { type: "user", content: combinedMessage }; // Show combined in UI? Or just user text? Let's show combined for clarity.
+                 conversationHistory.push(userMessage);
+                 addMessage(userMessage, conversationArea);
 
-        // Function to actually send the final combined message
-        const sendFinalMessage = (finalText) => {
-            // 1. Create user message object (using the final text) and add to history
-            const userMessage = { type: "user", content: finalText };
-            conversationHistory.push(userMessage);
-
-            // 2. Render the user message
-            addMessage(userMessage, conversationArea);
-
-            // 3. Send the final text over WebSocket
-            socket.send(finalText);
-
-            // 4. Clear input, file selection, and re-enable inputs
-            messageInput.value = '';
-            clearSelectedFile(); // Clear file state and UI
-            messageInput.disabled = false;
-            sendButton.disabled = false;
-            attachFileButton.disabled = false;
+                websocket.send(combinedMessage); // Send combined message over WebSocket
+                messageInput.value = ''; // Clear input field
+                clearSelectedFile(); // Clear the selected file state and UI
+            } else {
+                console.error("WebSocket is not connected.");
+                addMessage({ type: "error", content: "Cannot send message: WebSocket not connected." }, systemLogArea);
+            }
         };
-
-        // Check if a file is selected
-        if (selectedFile) {
-            const reader = new FileReader();
-
-            reader.onload = function(e) {
-                const fileContent = e.target.result;
-                // Combine file content and message text
-                const combinedText = `Attached File: ${selectedFile.name}\n\`\`\`\n${fileContent}\n\`\`\`\n\n${messageText}`;
-                console.log(`Sending message with attached file ${selectedFile.name}`);
-                sendFinalMessage(combinedText);
-            };
-
-            reader.onerror = function(e) {
-                console.error("Error reading file:", e);
-                const errorMsg = { type: "error", content: `Error reading file ${selectedFile.name}: ${e.target.error}` };
-                systemLogHistory.push(errorMsg);
-                addMessage(errorMsg, systemLogArea);
-                // Re-enable inputs on error
-                messageInput.disabled = false;
-                sendButton.disabled = false;
-                attachFileButton.disabled = false;
-                clearSelectedFile(); // Clear file state on error
-            };
-
-            // Read the file as text
-            reader.readAsText(selectedFile);
-
-        } else {
-            // No file selected, just send the message text
-            console.log("Sending message without attached file.");
-            sendFinalMessage(messageText);
-        }
-
+        reader.onerror = (e) => {
+             console.error("Error reading file:", e);
+             addMessage({ type: "error", content: `Error reading file ${selectedFile.name}.` }, systemLogArea);
+             clearSelectedFile(); // Clear file state on error
+        };
+        reader.readAsText(selectedFile); // Read the file as text
     } else {
-        console.error("WebSocket is not connected.");
-        const errorMsg = { type: "error", content: "Cannot send message: WebSocket not connected." };
-        systemLogHistory.push(errorMsg);
-        addMessage(errorMsg, systemLogArea);
+        // No file selected, send only the text message
+        if (messageText && websocket && websocket.readyState === WebSocket.OPEN) {
+             console.log("Sending message:", messageText);
+             // Add user message to local history and UI immediately
+             const userMessage = { type: "user", content: messageText };
+             conversationHistory.push(userMessage);
+             addMessage(userMessage, conversationArea);
+
+            websocket.send(messageText); // Send plain text message over WebSocket
+            messageInput.value = ''; // Clear input field
+        } else if (!messageText) {
+             console.warn("Attempted to send empty message.");
+        } else {
+            console.error("WebSocket is not connected.");
+             addMessage({ type: "error", content: "Cannot send message: WebSocket not connected." }, systemLogArea);
+        }
     }
+    messageInput.focus(); // Keep focus on input
 }
 
-// --- Adding Messages to UI (Rendering Function - unchanged from previous step) ---
+
+// --- UI Updates ---
+
 function addMessage(data, targetArea) {
-    if (!targetArea) {
-        console.error("Target message area not provided for message:", data);
-        return;
-    }
+    // Remove initial placeholders if they exist in the target area
+    const initialPlaceholders = targetArea.querySelectorAll('.initial-placeholder');
+    initialPlaceholders.forEach(p => p.remove());
+
     const messageElement = document.createElement('div');
     messageElement.classList.add('message');
-    let messageContent = data.content || data.message || '';
-    const contentElement = document.createElement('span');
-    contentElement.textContent = messageContent;
+    messageElement.dataset.timestamp = new Date().toISOString(); // Add timestamp data attribute
+
+    let messageContent = '';
+    let agentId = data.agent_id || 'unknown'; // Default agent ID
 
     switch (data.type) {
         case 'user':
             messageElement.classList.add('user');
-            contentElement.textContent = `You: ${messageContent}`;
-            messageElement.appendChild(contentElement);
+            // Simple text display, escaping HTML special chars
+            messageContent = document.createElement('span');
+            messageContent.textContent = data.content;
+            messageElement.appendChild(messageContent);
             break;
+
         case 'agent_response':
             messageElement.classList.add('agent_response');
-            const agentId = data.agent_id || 'unknown_agent';
-            messageElement.dataset.agentId = agentId;
-            const existingBlock = targetArea.querySelector(`.agent-message-block[data-agent-id="${agentId}"]`);
-            if (existingBlock) {
-                 const blockContentSpan = existingBlock.querySelector('.agent-content');
-                 if (blockContentSpan) {
-                     blockContentSpan.textContent += messageContent;
-                     scrollToBottom(targetArea); return;
-                 } else { existingBlock.appendChild(contentElement); }
+            messageElement.dataset.agentId = agentId; // Associate with agent ID for styling/grouping
+
+            const agentKey = agentId;
+            let existingAgentElementInfo = agentResponseElements[agentKey];
+
+            // Check if we should append to an existing element for this agent
+            if (existingAgentElementInfo && existingAgentElementInfo.element.parentNode === targetArea) {
+                // Append content, reset timeout
+                const span = document.createElement('span'); // Wrap chunk in span
+                span.textContent = data.content;
+                existingAgentElementInfo.element.appendChild(span);
+                messageElement = existingAgentElementInfo.element; // Use existing element
+
+                // Reset removal timeout
+                if (existingAgentElementInfo.timeoutId) {
+                    clearTimeout(existingAgentElementInfo.timeoutId);
+                }
+                 existingAgentElementInfo.timeoutId = setTimeout(() => {
+                      console.log(`Timeout expired for agent ${agentKey}, finalizing element.`);
+                      delete agentResponseElements[agentKey]; // Remove from cache after timeout
+                 }, 3000); // 3 seconds of inactivity
+
             } else {
-                messageElement.classList.add('agent-message-block');
-                const agentPrefix = document.createElement('strong');
-                agentPrefix.textContent = `${agentId}: `;
-                contentElement.classList.add('agent-content');
-                messageElement.appendChild(agentPrefix);
-                messageElement.appendChild(contentElement);
+                // Create a new element for this agent's response stream
+                const span = document.createElement('span'); // Wrap first chunk
+                span.textContent = data.content;
+                messageElement.appendChild(span);
+                targetArea.appendChild(messageElement); // Add to DOM first
+
+                // Store the new element and set timeout
+                agentResponseElements[agentKey] = {
+                     element: messageElement,
+                     timeoutId: setTimeout(() => {
+                         console.log(`Timeout expired for agent ${agentKey}, finalizing element.`);
+                         delete agentResponseElements[agentKey]; // Remove from cache after timeout
+                     }, 3000) // 3 seconds of inactivity
+                };
             }
-            break;
+            break; // agent_response handling ends here
+
         case 'status':
             messageElement.classList.add('status');
-            if (messageContent.toLowerCase().includes("executing tool:")) {
-                 messageElement.classList.add('tool-execution');
-            }
-            if (data.agent_id && !messageContent.toLowerCase().includes("websocket")) {
-                 contentElement.textContent = `[${data.agent_id}] ${messageContent}`;
-            }
-            messageElement.appendChild(contentElement);
-            break;
-        case 'error':
-            messageElement.classList.add('error');
-            if (data.agent_id) {
-                 contentElement.textContent = `[${data.agent_id}] Error: ${messageContent}`;
+             // Add agent ID if present (e.g., for tool execution status)
+            if (agentId && agentId !== 'system' && agentId !== 'unknown') {
+                messageElement.dataset.agentId = agentId;
+                 // Check for tool execution hints
+                 if (data.message && (data.message.toLowerCase().includes('executing tool') || data.message.toLowerCase().includes('awaiting tool'))) {
+                    messageElement.classList.add('tool-execution');
+                }
+                messageContent = `[${agentId}] ${data.message || data.content || 'Status update'}`;
             } else {
-                 contentElement.textContent = `Error: ${messageContent}`;
+                 messageContent = data.message || data.content || 'Status update'; // Use message or content field
             }
-            messageElement.appendChild(contentElement);
+             const statusSpan = document.createElement('span');
+             statusSpan.textContent = messageContent;
+             messageElement.appendChild(statusSpan);
             break;
-        case 'echo': case 'raw': default:
-            messageElement.classList.add('server');
-            messageElement.appendChild(contentElement);
+
+        case 'error':
+             messageElement.classList.add('error');
+             messageElement.dataset.agentId = agentId; // Associate error with agent/manager
+             // Prefix error with agent ID if available and not a duplicate conversation msg
+             const errorPrefix = (agentId !== 'system' && agentId !== 'unknown' && !data.is_error_duplicate) ? `[${agentId} ERROR] ` : '[ERROR] ';
+             messageContent = errorPrefix + (data.content || data.message || 'Unknown error');
+
+             const errorSpan = document.createElement('span');
+             errorSpan.textContent = messageContent;
+             messageElement.appendChild(errorSpan);
             break;
+
+        default:
+            console.warn("Unknown message type in addMessage:", data.type);
+            messageElement.classList.add('status'); // Treat as status
+            messageContent = `[System] Unknown msg type '${data.type}': ${JSON.stringify(data.content || data.message || data)}`;
+            const defaultSpan = document.createElement('span');
+            defaultSpan.textContent = messageContent;
+            messageElement.appendChild(defaultSpan);
     }
 
-    if (!document.body.dataset.placeholdersRemoved) {
-         const placeholders = document.querySelectorAll('.initial-placeholder');
-         placeholders.forEach(p => p.remove());
-         document.body.dataset.placeholdersRemoved = true;
+    // Append only if it's not an existing agent response element being updated
+    if (data.type !== 'agent_response' || !agentResponseElements[agentId] || agentResponseElements[agentId].element !== messageElement) {
+         if (messageElement.innerHTML.trim() !== '') { // Avoid adding empty messages
+              targetArea.appendChild(messageElement);
+         }
     }
 
-    targetArea.appendChild(messageElement);
+    // Scroll the target area down
     scrollToBottom(targetArea);
 }
 
-
-// --- Agent Status UI (Remains the same) ---
-function clearAgentStatusUI(message = "Waiting for status...") {
-    if (agentStatusContent) {
-        agentStatusContent.innerHTML = `<span class="status-placeholder">${message}</span>`;
-    }
-    Object.keys(agentStatusElements).forEach(key => delete agentStatusElements[key]);
-}
-function updateAgentStatusUI(data) {
+function clearAgentStatusUI(message = "Status area cleared.") {
     if (!agentStatusContent) return;
-    const agentId = data.agent_id;
-    const statusData = data.status;
-    if (!agentId || !statusData) { console.warn("Incomplete status update:", data); return; }
+    agentStatusContent.innerHTML = ''; // Clear existing content
+    agentStatusElements = {}; // Clear the cache
+
+    // Add a placeholder message
+    const placeholder = document.createElement('span');
+    placeholder.classList.add('status-placeholder');
+    placeholder.textContent = message;
+    agentStatusContent.appendChild(placeholder);
+}
+
+function updateAgentStatusUI(statusData) {
+    if (!agentStatusContent) {
+        console.error("Agent status content area not found.");
+        return;
+    }
+    // console.log("Updating Agent Status UI with data:", statusData); // Debug log
+
+    // Clear placeholder if it exists
     const placeholder = agentStatusContent.querySelector('.status-placeholder');
     if (placeholder) placeholder.remove();
+
+    const agentId = statusData.agent_id;
+    if (!agentId) {
+        console.warn("Received agent status update without agent_id:", statusData);
+        return;
+    }
+
     let agentElement = agentStatusElements[agentId];
+
+    // Create element if it doesn't exist
     if (!agentElement) {
         agentElement = document.createElement('div');
         agentElement.classList.add('agent-status-item');
         agentElement.dataset.agentId = agentId;
         agentStatusContent.appendChild(agentElement);
-        agentStatusElements[agentId] = agentElement;
+        agentStatusElements[agentId] = agentElement; // Cache it
     }
-    let statusText = statusData.status || 'unknown';
+
+    // Determine status class
+    const statusClass = `status-${(statusData.status || 'unknown').replace(/[\s:]+/g, '_').toLowerCase()}`; // Normalize status string for class name
+    // Remove previous status classes and add the new one
+    agentElement.className = 'agent-status-item'; // Reset classes
+    agentElement.classList.add(statusClass); // Add the specific status class
+
+    // Build inner HTML for the status item
+    let toolInfo = '';
     if (statusData.status === 'executing_tool' && statusData.current_tool) {
-        statusText = `Executing Tool: ${statusData.current_tool.name}`;
+        toolInfo = ` (Tool: ${statusData.current_tool.name} [${statusData.current_tool.call_id}])`;
     } else if (statusData.status === 'awaiting_tool_result') {
-        statusText = 'Waiting for Tool Result';
+         toolInfo = ` (Awaiting Tool Result)`;
     }
+
     agentElement.innerHTML = `
-        <strong>${agentId}</strong>
-        <span class="agent-model">(${statusData.model || 'N/A'})</span>:
-        <span class="agent-status agent-status-${statusData.status || 'unknown'}">${statusText}</span>
+        <strong>${statusData.persona || agentId}</strong>
+        <span class="agent-model">(${statusData.provider}/${statusData.model})</span>:
+        <span class="agent-status">${statusData.status || 'unknown'}</span>
+        <span class="agent-tool-info">${toolInfo}</span>
     `;
-    agentElement.className = 'agent-status-item';
-    agentElement.classList.add(`status-${statusData.status || 'unknown'}`);
 }
 
+
+// --- Configuration Display ---
+
+async function fetchAndDisplayConfig() {
+    if (!configContentArea) {
+        console.error("Configuration content area not found in the DOM.");
+        return;
+    }
+    configContentArea.innerHTML = '<span class="status-placeholder">Loading config...</span>'; // Show loading state
+
+    try {
+        const response = await fetch('/api/config/agents');
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const agentConfigs = await response.json();
+
+        configContentArea.innerHTML = ''; // Clear loading state
+
+        if (agentConfigs.length === 0) {
+            configContentArea.innerHTML = '<span class="status-placeholder">No agents configured.</span>';
+            return;
+        }
+
+        const list = document.createElement('ul');
+        list.style.listStyle = 'none'; // Basic styling
+        list.style.padding = '0';
+        list.style.margin = '0';
+
+        agentConfigs.forEach(agent => {
+            const listItem = document.createElement('li');
+            listItem.style.marginBottom = '5px';
+             listItem.style.fontSize = '0.9em';
+            listItem.innerHTML = `
+                <strong>${agent.agent_id}</strong> (${agent.persona || 'N/A'}):
+                <span style="color: #555;">[${agent.provider} / ${agent.model}]</span>
+            `;
+            list.appendChild(listItem);
+        });
+        configContentArea.appendChild(list);
+
+    } catch (error) {
+        console.error("Error fetching or displaying agent configurations:", error);
+        configContentArea.innerHTML = `<span class="error">Error loading configuration: ${error.message}</span>`;
+    }
+}
+
+
 // --- File Handling ---
+
 function handleFileSelect(event) {
     const files = event.target.files;
     if (files.length > 0) {
-        selectedFile = files[0];
-        console.log("File selected:", selectedFile.name);
-        displayFileInfo();
-        // Clear the input value so the same file can be selected again after clearing
-        fileInput.value = null;
+        const file = files[0];
+        // Basic validation (optional: add more checks like size, specific types)
+        if (file.type.startsWith('text/') || /\.(py|js|html|css|md|json|yaml|csv)$/i.test(file.name)) {
+             selectedFile = file;
+             displayFileInfo();
+        } else {
+             alert(`File type "${file.type}" may not be suitable. Please select a text-based file (.txt, .py, .js, .html, .css, .md, .json, .yaml, .csv).`);
+             fileInput.value = ''; // Clear the selection
+             selectedFile = null;
+             displayFileInfo();
+        }
     } else {
-         clearSelectedFile();
+        selectedFile = null;
+         displayFileInfo();
     }
 }
 
 function displayFileInfo() {
-    if (fileInfoArea && selectedFile) {
+    if (!fileInfoArea) return;
+    if (selectedFile) {
         fileInfoArea.innerHTML = `
-            <span>📎 ${selectedFile.name}</span>
-            <button id="clear-file-button" title="Clear selected file">✖</button>
+            <span>Attached: ${selectedFile.name} (${(selectedFile.size / 1024).toFixed(1)} KB)</span>
+            <button onclick="clearSelectedFile()" title="Clear attached file">❌</button>
         `;
-        // Add event listener to the new clear button
-        document.getElementById('clear-file-button').addEventListener('click', clearSelectedFile);
-    } else if (fileInfoArea) {
-        fileInfoArea.innerHTML = ''; // Clear the area if no file
+    } else {
+        fileInfoArea.innerHTML = ''; // Clear the area
     }
 }
 
 function clearSelectedFile() {
     selectedFile = null;
-    fileInput.value = null; // Clear the file input element itself
-    displayFileInfo(); // Update UI to show no file selected
-    console.log("Selected file cleared.");
+    fileInput.value = ''; // Reset the file input element
+    displayFileInfo(); // Update the UI
 }
 
 
 // --- Event Listeners ---
+
+// Send message on button click
 sendButton.addEventListener('click', sendMessage);
-messageInput.addEventListener('keypress', function(event) {
+
+// Send message on Enter key press in textarea (Shift+Enter for newline)
+messageInput.addEventListener('keypress', (event) => {
     if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
+        event.preventDefault(); // Prevent default newline behavior
         sendMessage();
     }
 });
+
 // Trigger hidden file input when attach button is clicked
 attachFileButton.addEventListener('click', () => {
     fileInput.click();
 });
-// Handle file selection
+
+// Handle file selection change
 fileInput.addEventListener('change', handleFileSelect);
 
 
 // --- Initial Setup ---
-sendButton.disabled = true;
-messageInput.disabled = true;
-attachFileButton.disabled = true; // Disable initially
 
-// Add initial placeholders with specific classes
-function addInitialPlaceholder(area, text, className) {
-    if (area) {
-        if (!area.querySelector(`.${className}`)) {
-            const placeholder = document.createElement('div');
-            placeholder.classList.add('message', 'status', className, 'initial-placeholder');
-            placeholder.innerHTML = `<span>${text}</span>`;
-            area.appendChild(placeholder);
-        }
-    } else { console.error("Target area not found:", text); }
-}
-if(conversationArea) conversationArea.innerHTML = '';
-if(systemLogArea) systemLogArea.innerHTML = '';
-addInitialPlaceholder(systemLogArea, "System Logs & Status", "initial-system-log");
-addInitialPlaceholder(conversationArea, "Conversation Area", "initial-conversation");
-addInitialPlaceholder(systemLogArea, "Connecting to backend...", "initial-connecting");
-clearAgentStatusUI(); // Initialize status area
-displayFileInfo(); // Ensure file info area is initially empty
+// Disable input until WebSocket connects
+messageInput.disabled = true;
+sendButton.disabled = true;
+attachFileButton.disabled = true;
+
+// Initialize WebSocket connection on load
 connectWebSocket();
