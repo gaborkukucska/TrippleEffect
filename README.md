@@ -30,51 +30,51 @@ The agents, loaded based on the configuration, can:
 ```mermaid
 graph LR
     subgraph Frontend
-        UI[🌐 Browser UI <br>(HTML/CSS/JS)]
+        UI["🌐 Browser UI <br>(HTML/CSS/JS)"]
     end
 
     subgraph Backend
-        FASTAPI[🚀 FastAPI Backend <br>(main.py, api/)]
-        WS_MANAGER[🔌 WebSocket Manager <br>(api/websocket_manager.py)]
-        AGENT_MANAGER[🧑‍💼 Agent Manager <br>(agents/manager.py)]
+        FASTAPI["🚀 FastAPI Backend <br>(main.py, api/)"]
+        WS_MANAGER["🔌 WebSocket Manager <br>(api/websocket_manager.py)"]
+        AGENT_MANAGER["🧑‍💼 Agent Manager <br>(agents/manager.py)"]
         subgraph Agents
             direction LR
-            AGENT_INST_1[🤖 Agent Instance 1 <br>(agents/core.py)]
-            AGENT_INST_2[🤖 Agent Instance 2]
-            AGENT_INST_N[🤖 Agent Instance N]
+            AGENT_INST_1["🤖 Agent Instance 1 <br>(agents/core.py)"]
+            AGENT_INST_2["🤖 Agent Instance 2"]
+            AGENT_INST_N["🤖 Agent Instance N"]
         end
         subgraph Tools
             direction TB
-            TOOL_EXECUTOR[🛠️ Tool Executor <br>(tools/executor.py)]
-            TOOL_FS[📄 FileSystem Tool <br>(tools/file_system.py)]
-            TOOL_WEB[🔍 Web Search Tool]
+            TOOL_EXECUTOR["🛠️ Tool Executor <br>(tools/executor.py)"]
+            TOOL_FS["📄 FileSystem Tool <br>(tools/file_system.py)"]
+            TOOL_WEB["🔍 Web Search Tool"]
         end
-        SANDBOXES[📁 Sandboxes <br>(sandboxes/agent_id/)]
+        SANDBOXES["📁 Sandboxes <br>(sandboxes/agent_id/)"]
     end
 
     subgraph External
-        LLM_API[☁️ LLM APIs <br>(OpenAI, etc.)]
-        CONFIG[⚙️ config.yaml]
+        LLM_API["☁️ LLM APIs <br>(OpenAI, etc.)"]
+        CONFIG["⚙️ config.yaml"]
     end
 
     UI -- HTTP --> FASTAPI;
-    UI -- WebSocket /ws <--> WS_MANAGER;
+    UI -- "WebSocket /ws" <--> WS_MANAGER;
     FASTAPI -- Manages --> AGENT_MANAGER;
-    WS_MANAGER -- Forwards/Receives --> AGENT_MANAGER;
-    AGENT_MANAGER -- Controls/Coordinates --> AGENT_INST_1;
-    AGENT_MANAGER -- Controls/Coordinates --> AGENT_INST_2;
-    AGENT_MANAGER -- Controls/Coordinates --> AGENT_INST_N;
-    AGENT_MANAGER -- Reads Config --> CONFIG;
+    WS_MANAGER -- "Forwards/Receives" --> AGENT_MANAGER;
+    AGENT_MANAGER -- "Controls/Coordinates" --> AGENT_INST_1;
+    AGENT_MANAGER -- "Controls/Coordinates" --> AGENT_INST_2;
+    AGENT_MANAGER -- "Controls/Coordinates" --> AGENT_INST_N;
+    AGENT_MANAGER -- "Reads Config" --> CONFIG;
     AGENT_INST_1 -- Interacts --> LLM_API;
     AGENT_INST_2 -- Interacts --> LLM_API;
     AGENT_INST_N -- Interacts --> LLM_API;
-    AGENT_MANAGER -- Routes Tool Request --> TOOL_EXECUTOR;
+    AGENT_MANAGER -- "Routes Tool Request" --> TOOL_EXECUTOR;
     TOOL_EXECUTOR -- Executes --> TOOL_FS;
     TOOL_EXECUTOR -- Executes --> TOOL_WEB;
-    AGENT_INST_1 -- File I/O --> SANDBOXES;
-    AGENT_INST_2 -- File I/O --> SANDBOXES;
-    AGENT_INST_N -- File I/O --> SANDBOXES;
-    TOOL_FS -- Operates Within --> SANDBOXES;
+    AGENT_INST_1 -- "File I/O" --> SANDBOXES;
+    AGENT_INST_2 -- "File I/O" --> SANDBOXES;
+    AGENT_INST_N -- "File I/O" --> SANDBOXES;
+    TOOL_FS -- "Operates Within" --> SANDBOXES;
 
 ```
 
