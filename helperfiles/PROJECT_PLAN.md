@@ -110,16 +110,18 @@
 
 ## 5. Development Phases & Milestones
 
-**Phase 1: Core Backend Setup & Basic UI**
+**Phase 1: Core Backend Setup & Basic UI (In Progress)**
 
-*   [ ] Set up project structure with refined directories.
+*   [X] Update `requirements.txt`.
+*   [ ] Set up project structure with refined directories. *(Structure already exists)*
 *   [ ] Implement basic FastAPI app (`main.py`).
 *   [ ] Create `templates/index.html` served by an HTTP route (`api/http_routes.py`).
 *   [ ] Create basic `static/css/style.css` and `static/js/app.js`.
 *   [ ] Implement basic WebSocket manager (`api/websocket_manager.py`) capable of connecting/disconnecting clients.
 *   [ ] Implement basic bidirectional communication (UI sends message, backend echoes back via WebSocket).
-*   [ ] Update `requirements.txt`.
 *   [ ] Initialize `helperfiles/FUNCTIONS_INDEX.md`.
+*   [ ] Update `src/main.py` to include the HTTP router.
+*   [ ] Update `src/main.py` to include the WebSocket router.
 
 **Phase 2: Agent Core & Single Agent Interaction**
 
