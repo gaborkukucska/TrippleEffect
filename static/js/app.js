@@ -4,48 +4,60 @@
 let socket;
 const messageInput = document.getElementById('message-input');
 const sendButton = document.getElementById('send-button');
-// Get references to the new message areas
 const conversationArea = document.getElementById('conversation-area');
 const systemLogArea = document.getElementById('system-log-area');
-// Keep the old messageArea reference maybe for fallback? Or remove if not needed.
-// const messageArea = document.getElementById('message-area'); // Keep original ID reference? No, let's use the specific ones.
+// Get reference to the agent status display area
+const agentStatusContent = document.getElementById('agent-status-content');
+
+// Store agent status elements for easy update
+const agentStatusElements = {}; // { agent_id: element }
 
 // --- Helper: Scroll Area to Bottom ---
 function scrollToBottom(element) {
     if (element) {
-        element.scrollTop = element.scrollHeight;
+        // Only scroll if user isn't scrolled up significantly
+        const scrollThreshold = 50; // Pixels from bottom
+        if (element.scrollHeight - element.scrollTop <= element.clientHeight + scrollThreshold) {
+            element.scrollTop = element.scrollHeight;
+        }
     }
 }
 
 // --- WebSocket Connection ---
 function connectWebSocket() {
-    // Determine WebSocket protocol based on window location protocol
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
     socket = new WebSocket(wsUrl);
 
     socket.onopen = function(event) {
         console.log("WebSocket connection opened:", event);
-        // Add connection status message to the SYSTEM LOG area
         addMessage({ type: "status", content: "WebSocket connected!" }, systemLogArea);
-        sendButton.disabled = false; // Enable send button
+        sendButton.disabled = false;
         messageInput.disabled = false;
+        // Clear previous statuses on reconnect
+        clearAgentStatusUI();
+        // Optionally request initial status after connection (backend needs to handle this)
+        // socket.send(JSON.stringify({ type: "request_all_statuses" }));
     };
 
     socket.onmessage = function(event) {
         console.log("WebSocket message received:", event.data);
         try {
             const data = JSON.parse(event.data);
-            // Pass the appropriate message area to addMessage
-            // Default to system log area if type doesn't match conversation types
-            let targetArea = systemLogArea;
-            if (data.type === 'user' || data.type === 'agent_response') {
-                targetArea = conversationArea;
+
+            // Route message based on type
+            if (data.type === 'agent_status_update') {
+                 updateAgentStatusUI(data); // Handle status updates separately
+            } else {
+                // Determine target area for conversation/log messages
+                let targetArea = systemLogArea;
+                if (data.type === 'user' || data.type === 'agent_response') {
+                    targetArea = conversationArea;
+                }
+                addMessage(data, targetArea);
             }
-            addMessage(data, targetArea);
         } catch (e) {
             console.error("Failed to parse incoming message or add message to UI:", e);
-            // Display raw message in system log on error
             addMessage({ type: "raw", content: `Raw: ${event.data}` }, systemLogArea);
             addMessage({ type: "error", content: `Error processing message: ${e.message}` }, systemLogArea);
         }
@@ -53,21 +65,20 @@ function connectWebSocket() {
 
     socket.onerror = function(event) {
         console.error("WebSocket error observed:", event);
-        // Add error message to the SYSTEM LOG area
         addMessage({ type: "error", content: "WebSocket connection error. Check console." }, systemLogArea);
-        sendButton.disabled = true; // Disable send on error
+        sendButton.disabled = true;
         messageInput.disabled = true;
     };
 
     socket.onclose = function(event) {
         console.log("WebSocket connection closed:", event);
         const reason = event.reason || `Code ${event.code}`;
-        // Add close message to the SYSTEM LOG area
         addMessage({ type: "status", content: `WebSocket disconnected. ${reason}. Attempting to reconnect...` }, systemLogArea);
-        sendButton.disabled = true; // Disable send on close
+        sendButton.disabled = true;
         messageInput.disabled = true;
-        // Attempt to reconnect after a delay
-        setTimeout(connectWebSocket, 5000); // Reconnect after 5 seconds
+        // Clear statuses on disconnect
+        clearAgentStatusUI("Disconnected - Status unavailable");
+        setTimeout(connectWebSocket, 5000);
     };
 }
 
@@ -76,13 +87,8 @@ function sendMessage() {
     if (socket && socket.readyState === WebSocket.OPEN) {
         const messageText = messageInput.value.trim();
         if (messageText) {
-            // 1. Add user message to the CONVERSATION area
             addMessage({ type: "user", content: messageText }, conversationArea);
-
-            // 2. Send the message text over WebSocket
             socket.send(messageText);
-
-            // 3. Clear the input field
             messageInput.value = '';
         }
     } else {
@@ -91,153 +97,183 @@ function sendMessage() {
     }
 }
 
-// --- Adding Messages to UI ---
+// --- Adding Messages to UI (Conversation/Log Areas) ---
 function addMessage(data, targetArea) {
     if (!targetArea) {
         console.error("Target message area not provided for message:", data);
-        return; // Cannot add message without a target
+        return;
     }
 
     const messageElement = document.createElement('div');
     messageElement.classList.add('message');
 
-    let messageContent = data.content || data.message || ''; // Handle different possible keys
-
-    // Sanitize content before setting innerHTML? For now, just textContent.
-    // If rendering HTML from agents becomes necessary, SANITIZE CAREFULLY!
-    const contentElement = document.createElement('span'); // Use span for content
+    let messageContent = data.content || data.message || '';
+    const contentElement = document.createElement('span');
     contentElement.textContent = messageContent;
 
-
-    // Determine message type and apply appropriate class / target area
     switch (data.type) {
         case 'user':
             messageElement.classList.add('user');
-            // Ensure target is conversationArea
             targetArea = conversationArea;
-            contentElement.textContent = `You: ${messageContent}`; // Add prefix
+            contentElement.textContent = `You: ${messageContent}`;
             break;
         case 'agent_response':
             messageElement.classList.add('agent_response');
-            // Ensure target is conversationArea
             targetArea = conversationArea;
             const agentId = data.agent_id || 'unknown_agent';
-            messageElement.dataset.agentId = agentId; // Store agent_id for styling
+            messageElement.dataset.agentId = agentId;
 
-            // Check if this is a chunk for an existing message block
             const existingBlock = targetArea.querySelector(`.agent-message-block[data-agent-id="${agentId}"]`);
             if (existingBlock) {
-                 // Append chunk to existing block's content span
-                 // Find the content span within the block
                  const blockContentSpan = existingBlock.querySelector('.agent-content');
                  if (blockContentSpan) {
-                     blockContentSpan.textContent += messageContent; // Append text directly
-                     scrollToBottom(targetArea); // Scroll on chunk append
-                     return; // Stop here, don't create a new div
+                     blockContentSpan.textContent += messageContent;
+                     scrollToBottom(targetArea);
+                     return;
                  } else {
-                     // Fallback if span structure missing (shouldn't happen)
                      existingBlock.appendChild(contentElement);
                  }
-
             } else {
-                // Create a new message block for this agent
-                messageElement.classList.add('agent-message-block'); // Mark as a block start
+                messageElement.classList.add('agent-message-block');
                 const agentPrefix = document.createElement('strong');
                 agentPrefix.textContent = `${agentId}: `;
-                contentElement.classList.add('agent-content'); // Mark the content part
+                contentElement.classList.add('agent-content');
                 messageElement.appendChild(agentPrefix);
                 messageElement.appendChild(contentElement);
-                // Fallthrough to append this new block
             }
-            break; // agent_response handled, break switch
+            break;
 
         case 'status':
             messageElement.classList.add('status');
-            // Ensure target is systemLogArea
             targetArea = systemLogArea;
-            // Check for tool execution status
             if (messageContent.toLowerCase().includes("executing tool:")) {
                  messageElement.classList.add('tool-execution');
             }
-             // Add agent ID prefix if available and not connection status
             if (data.agent_id && !messageContent.toLowerCase().includes("websocket")) {
                  contentElement.textContent = `[${data.agent_id}] ${messageContent}`;
             }
             break;
         case 'error':
             messageElement.classList.add('error');
-            // Ensure target is systemLogArea
             targetArea = systemLogArea;
-             // Add agent ID prefix if available
             if (data.agent_id) {
                  contentElement.textContent = `[${data.agent_id}] Error: ${messageContent}`;
             } else {
                  contentElement.textContent = `Error: ${messageContent}`;
             }
             break;
-        case 'echo': // Keep for potential debug
-        case 'raw':  // Keep for potential debug
-        default:
-            messageElement.classList.add('server'); // Generic server message style
-            // Ensure target is systemLogArea
+        case 'echo': case 'raw': default:
+            messageElement.classList.add('server');
             targetArea = systemLogArea;
             break;
     }
 
-     // Only append contentElement if not handled by agent_response block logic
      if (data.type !== 'agent_response' || !targetArea.querySelector(`.agent-message-block[data-agent-id="${data.agent_id}"]`)) {
          messageElement.appendChild(contentElement);
      }
 
-
-    // Remove the "Connecting..." placeholder if it exists
-    const connectingPlaceholder = systemLogArea.querySelector('.initial-connecting');
-    if (connectingPlaceholder) {
-        connectingPlaceholder.remove();
+    // Remove placeholders only once needed
+    if (!document.body.dataset.placeholdersRemoved) {
+         const placeholders = document.querySelectorAll('.initial-connecting, .initial-placeholder');
+         placeholders.forEach(p => p.remove());
+         document.body.dataset.placeholdersRemoved = true; // Mark as removed
     }
-    // Remove other placeholders if needed
-    const conversationPlaceholder = conversationArea.querySelector('.message.status span:only-child');
-     if (conversationPlaceholder && conversationPlaceholder.textContent === "Conversation Area") {
-         conversationPlaceholder.parentElement.remove();
-     }
-      const systemLogPlaceholder = systemLogArea.querySelector('.message.status span:only-child');
-      if (systemLogPlaceholder && systemLogPlaceholder.textContent === "System Logs & Status") {
-          systemLogPlaceholder.parentElement.remove();
-      }
 
-
-    // Append the new message element to the correct area
     targetArea.appendChild(messageElement);
-
-    // Scroll the target area to the bottom
     scrollToBottom(targetArea);
+}
+
+// --- Agent Status UI ---
+
+function clearAgentStatusUI(message = "Waiting for status...") {
+    if (agentStatusContent) {
+        agentStatusContent.innerHTML = `<span class="status-placeholder">${message}</span>`;
+    }
+    // Clear the storage object
+    Object.keys(agentStatusElements).forEach(key => delete agentStatusElements[key]);
+}
+
+function updateAgentStatusUI(data) {
+    if (!agentStatusContent) return;
+
+    const agentId = data.agent_id;
+    const statusData = data.status; // Expecting the full state dict here
+
+    if (!agentId || !statusData) {
+        console.warn("Received incomplete agent status update:", data);
+        return;
+    }
+
+    // Remove placeholder if it exists
+    const placeholder = agentStatusContent.querySelector('.status-placeholder');
+    if (placeholder) placeholder.remove();
+
+    let agentElement = agentStatusElements[agentId];
+
+    // Create element for this agent if it doesn't exist
+    if (!agentElement) {
+        agentElement = document.createElement('div');
+        agentElement.classList.add('agent-status-item');
+        agentElement.dataset.agentId = agentId;
+        agentStatusContent.appendChild(agentElement);
+        agentStatusElements[agentId] = agentElement; // Store reference
+    }
+
+    // Format the status string
+    let statusText = statusData.status || 'unknown';
+    if (statusData.status === 'executing_tool' && statusData.current_tool) {
+        statusText = `Executing Tool: ${statusData.current_tool.name}`; // Display tool name
+        if (statusData.current_tool.call_id) {
+            // statusText += ` (ID: ${statusData.current_tool.call_id})`; // Maybe too verbose
+        }
+    } else if (statusData.status === 'awaiting_tool_result') {
+        statusText = 'Waiting for Tool Result';
+    }
+
+    // Update the content of the agent's status element
+    // Example: "coder (gpt-4-turbo): Idle"
+    agentElement.innerHTML = `
+        <strong>${agentId}</strong>
+        <span class="agent-model">(${statusData.model || 'N/A'})</span>:
+        <span class="agent-status agent-status-${statusData.status || 'unknown'}">${statusText}</span>
+    `;
+
+    // Optionally add/remove CSS classes based on status
+    agentElement.className = 'agent-status-item'; // Reset classes
+    agentElement.classList.add(`status-${statusData.status || 'unknown'}`); // Add status-specific class e.g., status-idle
 }
 
 
 // --- Event Listeners ---
 sendButton.addEventListener('click', sendMessage);
 messageInput.addEventListener('keypress', function(event) {
-    // Send message on Enter key press (Shift+Enter for newline)
     if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault(); // Prevent default newline behavior
+        event.preventDefault();
         sendMessage();
     }
 });
 
 // --- Initial Setup ---
-sendButton.disabled = true; // Disable send button initially
-messageInput.disabled = true; // Disable input initially
-// Add initial connecting message placeholder with a class
-const initialConnecting = document.createElement('div');
-initialConnecting.classList.add('message', 'status', 'initial-connecting');
-initialConnecting.innerHTML = '<span>Connecting to backend...</span>'; // Use innerHTML to include span easily
-if(systemLogArea){ // Check if area exists before appending
-    systemLogArea.appendChild(initialConnecting);
-} else {
-    console.error("System log area not found on initial load!");
+sendButton.disabled = true;
+messageInput.disabled = true;
+
+// Add initial placeholders with specific classes
+function addInitialPlaceholder(area, text, className) {
+    if (area) {
+        const placeholder = document.createElement('div');
+        placeholder.classList.add('message', 'status', className, 'initial-placeholder');
+        placeholder.innerHTML = `<span>${text}</span>`;
+        area.appendChild(placeholder);
+    } else {
+        console.error("Target area not found for initial placeholder:", text);
+    }
 }
 
-connectWebSocket(); // Start WebSocket connection
+addInitialPlaceholder(systemLogArea, "System Logs & Status", "initial-system-log");
+addInitialPlaceholder(conversationArea, "Conversation Area", "initial-conversation");
+addInitialPlaceholder(systemLogArea, "Connecting to backend...", "initial-connecting"); // Keep connecting separate
 
-// Placeholder for later: Fetch initial agent status?
-// fetchAgentStatus();
+// Initialize agent status area
+clearAgentStatusUI();
+
+connectWebSocket();
