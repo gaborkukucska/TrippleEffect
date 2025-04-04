@@ -124,6 +124,11 @@ h1 {
     border-color: #dddddd;
     border-left: 4px solid #aaaaaa;
 }
+.message[data-agent-id="unknown_agent"] { /* Style for unknown */
+     background-color: #e0e0e0;
+    border-color: #bdbdbd;
+    border-left: 4px solid #757575;
+}
 
 
 /* Status messages style (applied in BOTH areas) */
@@ -141,6 +146,11 @@ h1 {
     padding: 4px 10px;
     border-radius: 4px; /* Less rounded */
 }
+/* Initial placeholder specific style */
+.message.status.initial-placeholder span {
+    color: #999;
+}
+
 
 /* Tool execution status style */
 .message.status.tool-execution {
@@ -243,4 +253,67 @@ h2 {
 #agent-status-content {
     font-size: 0.9em;
     line-height: 1.4;
+}
+
+/* --- Agent Status Display Styles --- */
+.agent-status-item {
+    margin-bottom: 5px;
+    padding: 3px 5px;
+    border-radius: 4px;
+    border: 1px solid transparent; /* Base border */
+    transition: background-color 0.3s ease; /* Smooth transition */
+}
+
+.agent-status-item strong {
+    /* Style for agent ID */
+    color: #333;
+}
+
+.agent-status-item .agent-model {
+    /* Style for model name */
+    font-size: 0.9em;
+    color: #777;
+    margin-left: 2px;
+    margin-right: 5px;
+}
+
+.agent-status-item .agent-status {
+    /* Style for the status text itself */
+    font-weight: bold;
+    padding: 1px 4px;
+    border-radius: 3px;
+    color: white; /* Default text color, overridden below */
+}
+
+/* Status-specific styles */
+.agent-status-item.status-idle .agent-status {
+    background-color: #6c757d; /* Grey */
+}
+.agent-status-item.status-processing .agent-status {
+    background-color: #007bff; /* Blue */
+}
+.agent-status-item.status-awaiting_tool_result .agent-status {
+    background-color: #fd7e14; /* Orange */
+}
+.agent-status-item.status-executing_tool .agent-status {
+    background-color: #ffc107; /* Yellow */
+    color: #333; /* Darker text on yellow */
+}
+.agent-status-item.status-error .agent-status {
+    background-color: #dc3545; /* Red */
+}
+.agent-status-item.status-unknown .agent-status {
+    background-color: #adb5bd; /* Lighter grey */
+}
+
+/* Optional: Highlight the whole item based on status */
+.agent-status-item.status-processing { border-left: 3px solid #007bff; background-color: #e7f3ff; }
+.agent-status-item.status-executing_tool { border-left: 3px solid #ffc107; background-color: #fff9e7; }
+.agent-status-item.status-awaiting_tool_result { border-left: 3px solid #fd7e14; background-color: #fff3e0; }
+.agent-status-item.status-error { border-left: 3px solid #dc3545; background-color: #fbe7e9; }
+
+/* Placeholder style */
+#agent-status-content .status-placeholder {
+    color: #999;
+    font-style: italic;
 }
