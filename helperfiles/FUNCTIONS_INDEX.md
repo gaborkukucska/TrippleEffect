@@ -25,12 +25,13 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 ## **API Routes (`src/api/`)**
 
 *   `src/api/http_routes.py::get_index_page(request: Request)` - Serves the main `index.html` page using Jinja2 templates.
+*   `src/api/http_routes.py::get_agent_configurations()` -> `List[AgentInfo]` (Async) - API endpoint (`GET /api/config/agents`) to retrieve basic info for all configured agents from `settings`.
 
 ## **WebSocket Management (`src/api/`)**
 
 *   `src/api/websocket_manager.py::set_agent_manager(manager: 'AgentManager')` - Module-level function to inject the `AgentManager` instance.
-*   `src/api/websocket_manager.py::broadcast(message: str)` - Asynchronously sends a message string to all active WebSocket connections. Handles disconnects.
-*   `src/api/websocket_manager.py::websocket_endpoint(websocket: WebSocket)` - Async handler for the `/ws` endpoint. Manages connection lifecycle, receives messages, and asynchronously calls `agent_manager_instance.handle_user_message()`.
+*   `src/api/websocket_manager.py::broadcast(message: str)` (Async) - Sends a message string to all active WebSocket connections. Handles disconnects.
+*   `src/api/websocket_manager.py::websocket_endpoint(websocket: WebSocket)` (Async) - Handler for the `/ws` endpoint. Manages connection lifecycle, receives messages, and asynchronously calls `agent_manager_instance.handle_user_message()`.
 
 ## **Agent Core (`src/agents/`)**
 
@@ -49,14 +50,14 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 *   `src/agents/manager.py::AgentManager` (Class) - Central coordinator for agents.
 *   `src/agents/manager.py::AgentManager.__init__(websocket_manager: Optional[Any] = None)` - Initializes the manager, instantiates `ToolExecutor`, calls `_initialize_agents`.
 *   `src/agents/manager.py::AgentManager._initialize_agents()` - Reads agent configurations, selects provider class, gathers final config (env + overrides), instantiates provider, instantiates agent with dependencies (provider, executor, manager), ensures sandbox, adds agent to `self.agents`.
-*   `src/agents/manager.py::AgentManager::handle_user_message(message: str, client_id: Optional[str] = None)` - Entry point for user messages. Dispatches the task concurrently to all agents with status `AGENT_STATUS_IDLE` using `asyncio.create_task` and `_handle_agent_generator`. Pushes status updates for busy agents.
-*   `src/agents/manager.py::AgentManager::_handle_agent_generator(agent: Agent, message: str)` - Async method. Manages the agent's `process_message` generator loop, handles yielded events, calls `_execute_single_tool` for `tool_requests`, sends results back to agent generator via `asend()`, and pushes final agent status.
-*   `src/agents/manager.py::AgentManager::_execute_single_tool(agent: Agent, call_id: str, tool_name: str, tool_args: Dict[str, Any])` -> `Optional[ToolResultDict]` - Sets agent status to `EXECUTING_TOOL` (via `agent.set_status`), executes a single tool via `ToolExecutor`, formats the result/error, and reverts agent status to `AWAITING_TOOL_RESULT` (via `agent.set_status`) upon completion/error before returning.
-*   `src/agents/manager.py::AgentManager::_failed_tool_result(call_id: Optional[str], tool_name: Optional[str])` -> `Optional[ToolResultDict]` - Helper to return a formatted error result for tools that failed dispatch.
-*   `src/agents/manager.py::AgentManager::push_agent_status_update(agent_id: str)` - Async helper. Retrieves the full state of a specific agent via `agent.get_state()` and sends it to the UI via `_send_to_ui()` using the `agent_status_update` message type.
-*   `src/agents/manager.py::AgentManager::_send_to_ui(message_data: Dict[str, Any])` - Async helper. Sends JSON-serialized data to the UI using the injected broadcast function. Includes fallback error handling for serialization issues.
+*   `src/agents/manager.py::AgentManager::handle_user_message(message: str, client_id: Optional[str] = None)` (Async) - Entry point for user messages. Dispatches the task concurrently to all agents with status `AGENT_STATUS_IDLE` using `asyncio.create_task` and `_handle_agent_generator`. Pushes status updates for busy agents.
+*   `src/agents/manager.py::AgentManager::_handle_agent_generator(agent: Agent, message: str)` (Async) - Manages the agent's `process_message` generator loop, handles yielded events, calls `_execute_single_tool` for `tool_requests`, sends results back to agent generator via `asend()`, and pushes final agent status.
+*   `src/agents/manager.py::AgentManager::_execute_single_tool(agent: Agent, call_id: str, tool_name: str, tool_args: Dict[str, Any])` -> `Optional[ToolResultDict]` (Async) - Sets agent status to `EXECUTING_TOOL` (via `agent.set_status`), executes a single tool via `ToolExecutor`, formats the result/error, and reverts agent status to `AWAITING_TOOL_RESULT` (via `agent.set_status`) upon completion/error before returning.
+*   `src/agents/manager.py::AgentManager::_failed_tool_result(call_id: Optional[str], tool_name: Optional[str])` -> `Optional[ToolResultDict]` (Async Helper) - Returns a formatted error result for tools that failed dispatch.
+*   `src/agents/manager.py::AgentManager::push_agent_status_update(agent_id: str)` (Async Helper) - Retrieves the full state of a specific agent via `agent.get_state()` and sends it to the UI via `_send_to_ui()` using the `agent_status_update` message type.
+*   `src/agents/manager.py::AgentManager::_send_to_ui(message_data: Dict[str, Any])` (Async Helper) - Sends JSON-serialized data to the UI using the injected broadcast function. Includes fallback error handling for serialization issues.
 *   `src/agents/manager.py::AgentManager::get_agent_status()` -> `Dict[str, Dict[str, Any]]` - Returns status dictionaries for all managed agents (less critical with proactive updates).
-*   `src/agents/manager.py::AgentManager::cleanup_providers()` - Async method. Iterates through agents and calls cleanup methods (like `close_session`) on their providers.
+*   `src/agents/manager.py::AgentManager::cleanup_providers()` (Async) - Iterates through agents and calls cleanup methods (like `close_session`) on their providers.
 
 ## **LLM Providers Base (`src/llm_providers/`)**
 
@@ -68,15 +69,15 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 
 *   `src/llm_providers/openai_provider.py::OpenAIProvider` (Class inherits `BaseLLMProvider`) - Implementation for OpenAI API.
 *   `src/llm_providers/openai_provider.py::OpenAIProvider.__init__(...)` - Initializes `openai.AsyncOpenAI` client.
-*   `src/llm_providers/openai_provider.py::OpenAIProvider.stream_completion(...)` - Implements the abstract method using `openai` library, handling streaming and the tool call loop.
+*   `src/llm_providers/openai_provider.py::OpenAIProvider.stream_completion(...)` (Async Generator) - Implements the abstract method using `openai` library, handling streaming and the tool call loop.
 *   `src/llm_providers/ollama_provider.py::OllamaProvider` (Class inherits `BaseLLMProvider`) - Implementation for Ollama API.
 *   `src/llm_providers/ollama_provider.py::OllamaProvider.__init__(...)` - Initializes provider, stores base URL.
-*   `src/llm_providers/ollama_provider.py::OllamaProvider._get_session()` -> `aiohttp.ClientSession` - Manages `aiohttp` session.
-*   `src/llm_providers/ollama_provider.py::OllamaProvider.close_session()` - Closes `aiohttp` session.
-*   `src/llm_providers/ollama_provider.py::OllamaProvider.stream_completion(...)` - Implements the abstract method using `aiohttp` to call Ollama's `/api/chat`, handling streaming and attempting tool calls based on model response.
+*   `src/llm_providers/ollama_provider.py::OllamaProvider._get_session()` -> `aiohttp.ClientSession` (Async) - Manages `aiohttp` session.
+*   `src/llm_providers/ollama_provider.py::OllamaProvider.close_session()` (Async) - Closes `aiohttp` session.
+*   `src/llm_providers/ollama_provider.py::OllamaProvider.stream_completion(...)` (Async Generator) - Implements the abstract method using `aiohttp` to call Ollama's `/api/chat`, handling streaming and attempting tool calls based on model response.
 *   `src/llm_providers/openrouter_provider.py::OpenRouterProvider` (Class inherits `BaseLLMProvider`) - Implementation for OpenRouter API.
 *   `src/llm_providers/openrouter_provider.py::OpenRouterProvider.__init__(...)` - Initializes `openai.AsyncOpenAI` client configured for OpenRouter (URL, key, headers).
-*   `src/llm_providers/openrouter_provider.py::OpenRouterProvider.stream_completion(...)` - Implements the abstract method using the configured `openai` client, handling streaming and tool calls via the compatible API.
+*   `src/llm_providers/openrouter_provider.py::OpenRouterProvider.stream_completion(...)` (Async Generator) - Implements the abstract method using the configured `openai` client, handling streaming and tool calls via the compatible API.
 
 ## **Tools Base (`src/tools/`)**
 
@@ -97,7 +98,7 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 ## **Tool Implementations (`src/tools/`)**
 
 *   `src/tools/file_system.py::FileSystemTool` (Class inherits `BaseTool`) - Tool for file system operations within an agent's sandbox.
-*   `src/tools/file_system.py::FileSystemTool.execute(...)` (Overrides `BaseTool.execute`) - Dispatches actions ('read', 'write', 'list') to helper methods.
+*   `src/tools/file_system.py::FileSystemTool.execute(...)` (Async) - (Overrides `BaseTool.execute`) Dispatches actions ('read', 'write', 'list') to helper methods.
 *   `src/tools/file_system.py::FileSystemTool._resolve_and_validate_path(sandbox_path: Path, relative_file_path: str)` -> `Path | None` (Async Helper) - Securely resolves and validates a path within the agent's sandbox. **Crucial for security.**
 *   `src/tools/file_system.py::FileSystemTool._read_file(sandbox_path: Path, filename: str)` -> `str` (Async Helper) - Reads file content from the sandbox.
 *   `src/tools/file_system.py::FileSystemTool._write_file(sandbox_path: Path, filename: str, content: str)` -> `str` (Async Helper) - Writes file content to the sandbox.
@@ -106,12 +107,16 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 ## **Frontend Logic (`static/js/app.js`)**
 
 *   `static/js/app.js::scrollToBottom(element)` - Helper function to scroll an HTML element to its bottom if user is near the bottom.
-*   `static/js/app.js::connectWebSocket()` - Establishes the WebSocket connection to `/ws`, sets up event handlers (`onopen`, `onmessage`, `onerror`, `onclose`). Handles storing/rendering connection status messages.
+*   `static/js/app.js::connectWebSocket()` - Establishes the WebSocket connection to `/ws`, sets up event handlers (`onopen`, `onmessage`, `onerror`, `onclose`). Handles storing/rendering connection status messages. Calls `fetchAgentConfigurations` on successful connection.
 *   `static/js/app.js::sendMessage()` - Reads message from input, prepends content from `selectedFile` if present (using `FileReader`), adds message object to `conversationHistory`, renders message to UI, sends text over WebSocket, clears input/file state.
-*   `static/js/app.js::addMessage(data, targetArea)` - Renders a message object (passed as `data`) to the specified DOM `targetArea`. Handles different message types (`user`, `agent_response`, `status`, `error`), agent response chunk aggregation, and placeholder removal.
+*   `static/js/app.js::addMessage(data, targetArea)` - Renders a message object (passed as `data`) to the specified DOM `targetArea`. Handles different message types (`user`, `agent_response`, `status`, `error`), agent response chunk aggregation (via `agentResponsePlaceholders`), and placeholder removal.
+*   `static/js/app.js::clearAgentResponsePlaceholder(agentId)` - Removes tracking for an agent's streaming response placeholder.
+*   `static/js/app.js::clearAllAgentResponsePlaceholders()` - Clears tracking for all agent response placeholders.
 *   `static/js/app.js::clearAgentStatusUI(message)` - Clears the agent status display area in the UI and resets the `agentStatusElements` cache.
-*   `static/js/app.js::updateAgentStatusUI(data)` - Handles incoming `agent_status_update` messages. Finds/creates a status display element for the agent, formats the status text (including tool info), and updates the element's content and CSS class.
-*   `static/js/app.js::handleFileSelect(event)` - Event handler for the file input `change` event. Stores the selected file and updates the UI via `displayFileInfo`.
+*   `static/js/app.js::updateAgentStatusUI(statusData)` - Handles incoming `agent_status_update` messages. Finds/creates a status display element for the agent, formats the status text (including tool info), updates the element's content/CSS class, and calls `clearAgentResponsePlaceholder` if agent becomes idle/error.
+*   `static/js/app.js::fetchAgentConfigurations()` (Async) - Fetches agent configuration list from `/api/config/agents` and calls `displayAgentConfigurations`. **(New)**
+*   `static/js/app.js::displayAgentConfigurations(configs)` - Renders the list of agent configurations into the `#config-content` div. **(New)**
+*   `static/js/app.js::handleFileSelect(event)` - Event handler for the file input `change` event. Stores the selected file, performs basic validation, reads content using `FileReader`, and updates the UI via `displayFileInfo`.
 *   `static/js/app.js::displayFileInfo()` - Updates the file info display area to show the selected filename and a clear button, or clears it if no file is selected.
 *   `static/js/app.js::clearSelectedFile()` - Resets the `selectedFile` state and updates the UI via `displayFileInfo`.
 
