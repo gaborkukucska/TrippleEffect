@@ -20,11 +20,18 @@ if TYPE_CHECKING:
 # Constants
 MAX_TOOL_CALLS_PER_TURN = 5 # Safety limit remains relevant for the agent's loop logic
 
+# Define possible agent statuses
+AGENT_STATUS_IDLE = "idle"
+AGENT_STATUS_PROCESSING = "processing" # General thinking/interacting with LLM
+AGENT_STATUS_AWAITING_TOOL = "awaiting_tool_result"
+AGENT_STATUS_EXECUTING_TOOL = "executing_tool"
+AGENT_STATUS_ERROR = "error" # Added error state
+
 class Agent:
     """
     Represents an individual LLM agent capable of processing tasks,
     communicating via an injected LLM provider, managing its sandbox,
-    and orchestrating tool use based on provider responses.
+    and orchestrating tool use based on provider responses. Tracks its own status.
     """
     def __init__(
         self,
@@ -61,8 +68,9 @@ class Agent:
         self.tool_executor: Optional['ToolExecutor'] = tool_executor
         self.manager: Optional['AgentManager'] = manager
 
-        # Basic state management
-        self.is_busy: bool = False
+        # State management
+        self.status: str = AGENT_STATUS_IDLE # Current detailed status
+        self.current_tool_info: Optional[Dict[str, str]] = None # e.g., {'name': 'file_system', 'call_id': '...'}
         self.message_history: MessageHistory = []
         if self.original_system_prompt:
              self.message_history.append({"role": "system", "content": self.original_system_prompt})
@@ -71,9 +79,23 @@ class Agent:
         self.sandbox_path: Path = BASE_DIR / "sandboxes" / f"agent_{self.agent_id}"
         # Note: Directory creation is handled by AgentManager before agent processing starts
 
-        print(f"Agent {self.agent_id} ({self.persona}) initialized. Provider: {self.provider_name}, Model: {self.model}. Sandbox: {self.sandbox_path}. LLM Provider Instance: {self.llm_provider}")
+        print(f"Agent {self.agent_id} ({self.persona}) initialized. Status: {self.status}. Provider: {self.provider_name}, Model: {self.model}. Sandbox: {self.sandbox_path}. LLM Provider Instance: {self.llm_provider}")
 
-    # --- Dependency Setters (Can be used if not injected at init) ---
+    # --- Status Management ---
+    def set_status(self, new_status: str, tool_info: Optional[Dict[str, str]] = None):
+        """Updates the agent's status and optionally tool info."""
+        self.status = new_status
+        self.current_tool_info = tool_info if new_status == AGENT_STATUS_EXECUTING_TOOL else None
+        # print(f"Agent {self.agent_id} status changed to: {self.status}" + (f" (Tool: {self.current_tool_info})" if self.current_tool_info else ""))
+        # Trigger notification through manager
+        if self.manager:
+            # Schedule the status update instead of awaiting it here
+            asyncio.create_task(self.manager.push_agent_status_update(self.agent_id))
+        else:
+             print(f"Agent {self.agent_id}: Warning - Manager not set, cannot push status update.")
+
+
+    # --- Dependency Setters (Remain the same) ---
     def set_manager(self, manager: 'AgentManager'):
         """Sets a reference to the AgentManager."""
         self.manager = manager
@@ -82,9 +104,6 @@ class Agent:
         """Sets a reference to the ToolExecutor."""
         self.tool_executor = tool_executor
         print(f"Agent {self.agent_id}: ToolExecutor reference set post-init.")
-
-    # Removed initialize_openai_client - provider is injected already initialized
-    # Removed update_system_prompt_with_tools - relying on tools parameter now
 
     def ensure_sandbox_exists(self) -> bool:
         """Creates the agent's sandbox directory if it doesn't exist."""
@@ -102,8 +121,8 @@ class Agent:
     async def process_message(self, message_content: str) -> AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]:
         """
         Processes an incoming message using the injected LLM provider,
-        handles the tool call loop based on provider events, and yields
-        standardized events back to the AgentManager.
+        handles the tool call loop based on provider events, updates agent status,
+        and yields standardized events back to the AgentManager.
 
         Args:
             message_content (str): The user's message content.
@@ -115,34 +134,30 @@ class Agent:
         Receives:
             Optional[List[ToolResultDict]]: Results from executed tool calls sent via `asend()`.
         """
-        if self.is_busy:
-            print(f"Agent {self.agent_id} is busy. Ignoring message: {message_content[:50]}...")
-            yield {"type": "error", "content": "[Agent Busy]"}
+        if self.status != AGENT_STATUS_IDLE:
+            print(f"Agent {self.agent_id} is not idle (Status: {self.status}). Ignoring message: {message_content[:50]}...")
+            yield {"type": "error", "content": f"[Agent Busy - Status: {self.status}]"}
             return
 
         if not self.llm_provider:
             print(f"Agent {self.agent_id}: LLM Provider not set.")
+            self.set_status(AGENT_STATUS_ERROR) # Set error status
             yield {"type": "error", "content": "[Agent Error: LLM Provider not configured]"}
             return
 
-        self.is_busy = True
-        print(f"Agent {self.agent_id} processing message via {self.provider_name}: {message_content[:100]}...")
-        # Ensure manager reference exists before sending UI update
-        if self.manager:
-            await self.manager._send_to_ui({"type": "status", "agent_id": self.agent_id, "content": f"Agent '{self.agent_id}' processing..."})
-        else:
-            print(f"Agent {self.agent_id}: Warning - Manager not set, cannot send status updates to UI.")
-
+        self.set_status(AGENT_STATUS_PROCESSING)
+        print(f"Agent {self.agent_id} starting processing via {self.provider_name}: {message_content[:100]}...")
+        # Initial status sent via set_status call above
+        # Manager no longer needs to send initial processing message
 
         try:
             # 1. Ensure sandbox exists (important pre-check for file system tool)
             if not self.ensure_sandbox_exists():
+                 self.set_status(AGENT_STATUS_ERROR)
                  yield {"type": "error", "content": f"[Agent Error: Could not ensure sandbox directory {self.sandbox_path}]"}
-                 self.is_busy = False
                  return
 
             # 2. Add user message to *local* history copy for this request cycle
-            # The provider manages its own internal history if needed for multi-turn tool calls
             current_history = list(self.message_history)
             current_history.append({"role": "user", "content": message_content})
 
@@ -170,6 +185,9 @@ class Agent:
 
                 # --- Pass through simple events ---
                 if event_type == "response_chunk":
+                    # If status was something else (like awaiting tool), change back to processing
+                    if self.status != AGENT_STATUS_PROCESSING:
+                        self.set_status(AGENT_STATUS_PROCESSING)
                     yield event # Forward chunk directly
                 elif event_type == "status":
                     # Add agent_id to status messages from provider
@@ -179,6 +197,7 @@ class Agent:
                      # Add agent_id and potentially provider info to errors
                     event["agent_id"] = self.agent_id
                     event["content"] = f"[{self.provider_name} Error] {event.get('content', 'Unknown provider error')}"
+                    self.set_status(AGENT_STATUS_ERROR) # Set error status
                     yield event
                     # Assume provider handles its internal state on error, but agent should stop processing
                     print(f"Agent {self.agent_id}: Received error event from provider, stopping.")
@@ -186,35 +205,36 @@ class Agent:
 
                 # --- Handle Tool Requests ---
                 elif event_type == "tool_requests":
+                    # Change status before yielding/awaiting results
+                    self.set_status(AGENT_STATUS_AWAITING_TOOL)
                     tool_calls_requested = event.get("calls") # Expect list of {'id':.., 'name':.., 'arguments':{}}
                     if not tool_calls_requested or not isinstance(tool_calls_requested, list):
                         print(f"Agent {self.agent_id}: Received invalid 'tool_requests' event: {event}")
+                        self.set_status(AGENT_STATUS_ERROR)
                         yield {"type": "error", "agent_id": self.agent_id, "content": "[Agent Error: Invalid tool request format from provider]"}
                         break
 
                     # Yield the requests to the AgentManager for execution
-                    # The agent doesn't need to know *how* they are executed, just gets results back
-                    print(f"Agent {self.agent_id}: Forwarding {len(tool_calls_requested)} tool requests to manager.")
+                    print(f"Agent {self.agent_id}: Forwarding {len(tool_calls_requested)} tool requests to manager. Status: {self.status}")
                     try:
                         # Yield the requests and wait for the manager to send results
                         tool_results: Optional[List[ToolResultDict]] = await provider_stream.asend(tool_calls_requested)
 
-                        # Provider's stream_completion should handle receiving these results
-                        # and continuing its interaction with the LLM API.
-                        # Agent doesn't need to explicitly manage history append for tool results here,
-                        # as the provider handles the interaction loop that requires it.
+                        # Once results are received back, status goes back to processing
+                        # (The manager will update status to 'executing_tool' while executing)
+                        self.set_status(AGENT_STATUS_PROCESSING)
 
                         if tool_results is None:
-                             # This indicates the Manager failed to get results. Provider might have already yielded an error.
                              print(f"Agent {self.agent_id}: Manager sent back None for tool results. Provider should handle or error out.")
-                             # We might not need to do anything here, rely on provider's error reporting.
+                             self.set_status(AGENT_STATUS_ERROR)
+                             # Provider should yield an error if it cannot proceed
 
                     except StopAsyncIteration:
-                        # This means the provider's generator finished *after* we sent results.
                         print(f"Agent {self.agent_id}: Provider generator finished after receiving tool results.")
                         break # Exit the loop
                     except Exception as e:
                         print(f"Agent {self.agent_id}: Error sending tool results back to provider stream: {e}")
+                        self.set_status(AGENT_STATUS_ERROR)
                         yield {"type": "error", "agent_id": self.agent_id, "content": f"[Agent Error: Failed sending results to provider: {e}]"}
                         break # Stop processing on send error
 
@@ -224,16 +244,9 @@ class Agent:
                     # Optionally yield a warning or ignore
 
             # --- After the provider stream finishes ---
-            # Update the main message history with the final state from this interaction?
-            # This is tricky because the provider manages the intermediate steps.
-            # For now, let's NOT update self.message_history here to avoid inconsistencies.
-            # History management might need refinement. Let's assume history is contained within a single call cycle for now.
-            # If multi-turn conversations need more robust history, the Agent might need to
-            # reconstruct it based on yielded events, or the provider needs to return the final history state.
-            # Simpler approach: AgentManager clears history or Agent clears history before next user message.
+            # History management remains complex, clear history for now.
             print(f"Agent {self.agent_id}: Provider stream finished.")
-            # Yield a final marker? Let manager handle final status.
-            # yield {"type": "final_response", "content": ""} # Or maybe the last accumulated chunk?
+
 
         except Exception as e:
             # Catch unexpected errors in the agent's own logic
@@ -241,26 +254,35 @@ class Agent:
             traceback.print_exc()
             error_msg = f"Unexpected Error processing message in Agent {self.agent_id}: {type(e).__name__} - {e}"
             print(error_msg)
+            self.set_status(AGENT_STATUS_ERROR) # Set error status
             yield {"type": "error", "agent_id": self.agent_id, "content": f"[Agent Error: {error_msg}]"}
         finally:
-            self.is_busy = False
-            print(f"Agent {self.agent_id}: Finished processing cycle.")
-            # Let manager send final UI status based on generator completion
+            # Set status to Idle unless it's already Error
+            if self.status != AGENT_STATUS_ERROR:
+                self.set_status(AGENT_STATUS_IDLE)
+            print(f"Agent {self.agent_id}: Finished processing cycle. Final Status: {self.status}")
+
 
     def get_state(self) -> Dict[str, Any]:
-        """Returns the current state of the agent."""
-        return {
+        """Returns the current state of the agent, including detailed status."""
+        state = {
             "agent_id": self.agent_id,
             "persona": self.persona,
-            "is_busy": self.is_busy,
+            "status": self.status, # Use the new status field
+            # "is_busy": self.status != AGENT_STATUS_IDLE, # Derive 'busy' from status
             "provider": self.provider_name,
             "model": self.model,
             "temperature": self.temperature,
-            "message_history_length": len(self.message_history), # Reflects initial history, not necessarily intermediate states
-            "llm_provider_info": repr(self.llm_provider), # Get representation from provider
+            "message_history_length": len(self.message_history),
+            "llm_provider_info": repr(self.llm_provider),
             "sandbox_path": str(self.sandbox_path),
             "tool_executor_set": self.tool_executor is not None,
         }
+        # Add tool info if currently executing a tool
+        if self.status == AGENT_STATUS_EXECUTING_TOOL and self.current_tool_info:
+            state["current_tool"] = self.current_tool_info # e.g., {'name': 'file_system', 'call_id': 'call_123'}
+
+        return state
 
     def clear_history(self):
         """Clears the agent's message history, keeping the system prompt."""
@@ -268,3 +290,4 @@ class Agent:
         self.message_history = []
         if self.original_system_prompt:
              self.message_history.append({"role": "system", "content": self.original_system_prompt})
+---
