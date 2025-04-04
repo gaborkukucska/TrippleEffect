@@ -12,11 +12,24 @@
     <div class="container">
         <h1>TrippleEffect Interface</h1>
 
-        <!-- Area for displaying messages, logs, agent outputs -->
-        <div id="message-area" class="message-area">
-            <p>Welcome! Connecting to backend...</p>
-            <!-- Messages will be dynamically added here -->
-        </div>
+        <!-- Main content area -->
+        <div class="main-content">
+
+            <!-- Area for displaying conversation messages (User and Agent) -->
+            <div id="conversation-area" class="message-area conversation-area">
+                <!-- Conversation messages will be dynamically added here -->
+                <div class="message status"><span>Conversation Area</span></div>
+            </div>
+
+            <!-- Area for displaying system/status/error messages -->
+            <div id="system-log-area" class="message-area system-log-area">
+                <!-- System/status messages will be dynamically added here -->
+                 <div class="message status"><span>System Logs & Status</span></div>
+                 <div class="message status"><span>Connecting to backend...</span></div>
+            </div>
+
+        </div> <!-- /main-content -->
+
 
         <!-- Input area for sending tasks/messages -->
         <div class="input-area">
@@ -34,7 +47,10 @@
          <!-- Placeholder for agent status section -->
          <div class="agent-status-area">
             <h2>Agent Status (Placeholder)</h2>
-            <!-- Agent status indicators will go here later -->
+             <div id="agent-status-content">
+                <!-- Agent status indicators will go here later -->
+                Loading agent status...
+             </div>
          </div>
 
     </div> <!-- /container -->
