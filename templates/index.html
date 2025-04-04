@@ -18,14 +18,14 @@
             <!-- Area for displaying conversation messages (User and Agent) -->
             <div id="conversation-area" class="message-area conversation-area">
                 <!-- Conversation messages will be dynamically added here -->
-                <div class="message status"><span>Conversation Area</span></div>
+                <div class="message status initial-placeholder"><span>Conversation Area</span></div>
             </div>
 
             <!-- Area for displaying system/status/error messages -->
             <div id="system-log-area" class="message-area system-log-area">
                 <!-- System/status messages will be dynamically added here -->
-                 <div class="message status"><span>System Logs & Status</span></div>
-                 <div class="message status"><span>Connecting to backend...</span></div>
+                 <div class="message status initial-placeholder"><span>System Logs & Status</span></div>
+                 <div class="message status initial-connecting initial-placeholder"><span>Connecting to backend...</span></div>
             </div>
 
         </div> <!-- /main-content -->
@@ -34,8 +34,14 @@
         <!-- Input area for sending tasks/messages -->
         <div class="input-area">
             <textarea id="message-input" placeholder="Enter your task here..."></textarea>
-            <button id="send-button">Send</button>
-            <!-- Placeholders for future inputs like file upload, voice, etc. -->
+            <div class="input-controls">
+                <input type="file" id="file-input" accept=".txt,.py,.js,.html,.css,.md,.json,.yaml,.csv" style="display: none;"> <!-- Hidden file input -->
+                <button id="attach-file-button" title="Attach text file">📎</button> <!-- Button to trigger file input -->
+                <button id="send-button">Send</button>
+            </div>
+        </div>
+        <div id="file-info-area" class="file-info-area">
+             <!-- Selected file info will be shown here -->
         </div>
 
         <!-- Placeholder for configuration section -->
@@ -46,10 +52,10 @@
 
          <!-- Placeholder for agent status section -->
          <div class="agent-status-area">
-            <h2>Agent Status (Placeholder)</h2>
+            <h2>Agent Status</h2>
              <div id="agent-status-content">
                 <!-- Agent status indicators will go here later -->
-                Loading agent status...
+                <span class="status-placeholder">Waiting for status...</span>
              </div>
          </div>
 
