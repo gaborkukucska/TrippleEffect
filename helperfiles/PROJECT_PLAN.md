@@ -51,7 +51,7 @@
 *   **LLM Interaction:** `openai` library initially, `aiohttp` for other potential HTTP-based APIs.
 *   **Frontend:** HTML5, CSS3, Vanilla JavaScript
 *   **Asynchronous Operations:** `asyncio`
-*   **Configuration:** YAML (using `PyYAML`) or JSON.
+*   **Configuration:** YAML (using `PyYAML`) or JSON, `.env` files.
 *   **Data Handling:** Pydantic (via FastAPI)
 
 ## 4. Proposed Architecture Refinement
@@ -63,21 +63,21 @@
 | Browser UI |<---->| FastAPI Backend (main.py) |<---->| LLM APIs (OpenAI, etc)|
 | (static/, templates/)| | - HTTP Routes (api/http) | +-----------------------+
 | (HTML/CSS/JS) | | - WS Manager (api/ws) |
-+---------------------+ +----------------------------+
-▲ | ▲ | WebSocket Msgs
-| (WebSocket /ws) | | | Agent Actions/Updates
-▼ ▼ | ▼
-+---------------------+ +----------------------------+ +-----------------------+
-| WebSocket Manager |<---->| Agent Manager (agents/mgr) |<---->| Agent Instances |
++---------------------+ | - AgentManager Instance    |
+▲ | +----------------------------+
+| (WebSocket /ws) | ▲ | ▲ | WebSocket Msgs
+▼ ▼ | | | Agent Actions/Updates
++---------------------+ +----------------------------+ ▼ +-----------------------+
+| WebSocket Manager |<----->| Agent Manager (agents/mgr) |<---->| Agent Instances |
 | (api/websocket_mgr.py)| | - Task Handling | | (agents/core.py) |
-+---------------------+ | - Agent Lifecycle | | - LLM Interaction |
-| - Inter-Agent Comms | | - State |
-+-------------+--------------+ | - Tool Requesting |
-| +----------+----------+
-▼ (Tool Execution) ▼ (File I/O)
-+-----------------+ +----------------------+
-| Tool Executor | | Sandboxes (sandboxes/)|
-| (tools/executor)| +----------------------+
+| - Forwards msgs to Mgr| | - Agent Lifecycle | | - LLM Interaction |
+| - Receives msgs fm Mgr| | - Inter-Agent Comms | | - State |
++---------------------+ +-------------+--------------+ | - Tool Requesting |
+| | +----------+----------+
+| | ▼ (Tool Execution) ▼ (File I/O)
+| +-----------------+ +----------------------+
+| | Tool Executor | | Sandboxes (sandboxes/)|
++------------------------->| (tools/executor)| +----------------------+
 | - Tool Registry |
 | - Tool Runner |
 +--------+--------+
@@ -90,22 +90,24 @@
 | - ... |
 +-----------------+
 
-*   **`main.py`**: Entry point, FastAPI app setup, mounting routers.
+*   **`main.py`**: Entry point, FastAPI app setup, **instantiates AgentManager**, mounts routers, **injects AgentManager into WebSocketManager**.
 *   **`src/api/`**: Contains API logic.
     *   `http_routes.py`: Handles standard HTTP requests (e.g., serving UI, config endpoints).
-    *   `websocket_manager.py`: Handles WebSocket connections, message routing between UI and Agent Manager.
+    *   `websocket_manager.py`: Handles WebSocket connections, **receives AgentManager instance**, routes incoming messages to AgentManager using `asyncio.create_task`, provides `broadcast` function for AgentManager to send messages to UI.
 *   **`src/agents/`**: Agent-related logic.
-    *   `manager.py`: The central coordinator (`AgentManager` class). Manages agent lifecycles, receives tasks, orchestrates agent collaboration, interacts with WebSocket Manager and Tool Executor.
-    *   `core.py`: Defines the `Agent` class, responsible for interacting with LLMs, managing its own state, memory (simple), and formatting tool requests.
+    *   `manager.py`: The central coordinator (`AgentManager` class). Manages agent lifecycles, receives tasks via `handle_user_message`, orchestrates agent processing, **uses injected broadcast function** to send results/status to UI.
+    *   `core.py`: Defines the `Agent` class, responsible for interacting with LLMs (async streaming via `process_message`), managing its own state, memory (simple), **initializes OpenAI client using settings**.
     *   `prompts.py` (New): Store default system prompts, persona templates.
 *   **`src/tools/`**: Tool implementations and management.
     *   `executor.py`: Handles parsing agent tool requests, finding the correct tool, executing it securely (within sandbox context), and returning results.
     *   `base.py`: Base class or definition for tools.
     *   `file_system.py`, `web_search.py`, etc.: Individual tool implementations.
-*   **`src/config/`**: Configuration loading and validation (e.g., `settings.py`).
+*   **`src/config/`**: Configuration loading and validation.
+    *   `settings.py`: Loads config (e.g., API keys, defaults) from `.env` / environment variables.
 *   **`src/utils/`**: Common utility functions.
 *   **`sandboxes/`**: Dynamically created agent working directories.
 *   **`static/` & `templates/`**: Frontend files.
+    *   `app.js`: Handles WebSocket connection, sending messages, **receiving structured messages (status, error, agent_response), groups streamed agent responses**.
 *   **`helperfiles/`**: Project plan, function index.
 
 ## 5. Development Phases & Milestones
@@ -123,29 +125,29 @@
 *   [X] Update `src/main.py` to include the HTTP router.
 *   [X] Update `src/main.py` to include the WebSocket router.
 
-**Phase 2: Agent Core & Single Agent Interaction (Next)**
+**Phase 2: Agent Core & Single Agent Interaction (Completed)**
 
-*   [ ] Define `Agent` class (`agents/core.py`) with basic state (ID, config placeholder).
-*   [ ] Implement basic LLM interaction within `Agent` (using OpenAI library and `asyncio`).
-*   [ ] Create `AgentManager` (`agents/manager.py`) capable of creating a single `Agent` instance.
-*   [ ] Connect WebSocket Manager to `AgentManager`: UI message -> WS Manager -> Agent Manager -> Agent -> LLM.
-*   [ ] Stream LLM response back: LLM -> Agent -> Agent Manager -> WS Manager -> UI.
-*   [ ] Display streamed LLM response in the UI (`app.js`).
-*   [ ] Implement basic configuration loading (`src/config/settings.py`) for API keys and default agent settings (e.g., model).
-*   [ ] Update `FUNCTIONS_INDEX.md` with new functions.
+*   [X] Define `Agent` class (`agents/core.py`) with basic state (ID, config placeholder).
+*   [X] Implement basic LLM interaction within `Agent` (using OpenAI library and `asyncio`, streaming).
+*   [X] Create `AgentManager` (`agents/manager.py`) capable of creating a single `Agent` instance.
+*   [X] Connect WebSocket Manager to `AgentManager`: UI message -> WS Manager -> (asyncio task) Agent Manager -> Agent -> LLM.
+*   [X] Stream LLM response back: LLM -> Agent -> Agent Manager -> WS Manager (via broadcast) -> UI.
+*   [X] Display streamed LLM response in the UI (`app.js`, handling structured messages and grouping chunks).
+*   [X] Implement basic configuration loading (`src/config/settings.py`) for API keys and default agent settings (from `.env`).
+*   [X] Update `FUNCTIONS_INDEX.md` with new functions.
 
-**Phase 3: Multi-Agent Setup & Basic Coordination**
+**Phase 3: Multi-Agent Setup & Basic Coordination (Next)**
 
-*   [ ] Enhance `AgentManager` to create and manage multiple `Agent` instances (e.g., based on config).
-*   [ ] Refine WebSocket communication to handle messages from/to specific agents or the manager.
-*   [ ] Update UI to potentially show outputs from multiple agents (simple initial display).
-*   [ ] Implement a basic task distribution mechanism in `AgentManager` (e.g., broadcast task to all agents or assign to the first one).
-*   [ ] Define basic inter-agent communication placeholder logic within `AgentManager`.
+*   [ ] Enhance `AgentManager` to create and manage multiple `Agent` instances (e.g., based on config file - Phase 4 dependency). Start by hardcoding 2-3 agents.
+*   [ ] Refine WebSocket communication to handle messages from/to specific agents or the manager (UI needs updating).
+*   [ ] Update UI to potentially show outputs from multiple agents (simple initial display - maybe different sections or clear prefixes).
+*   [ ] Implement a basic task distribution mechanism in `AgentManager` (e.g., broadcast task to all agents or assign based on simple logic/user input).
+*   [ ] Define basic inter-agent communication placeholder logic within `AgentManager` (e.g., one agent sending a message to another via the manager).
 *   [ ] Update `FUNCTIONS_INDEX.md` with new functions.
 
 **Phase 4: Configuration & Sandboxing**
 
-*   [ ] Implement loading detailed agent configurations (model, system prompt, temperature, persona) from a file (e.g., `config.yaml`).
+*   [ ] Implement loading detailed agent configurations (model, system prompt, temperature, persona) from a file (e.g., `config.yaml`). Link this to Phase 3 agent creation.
 *   [ ] Update `Agent` and `AgentManager` to use loaded configurations.
 *   [ ] Implement UI elements (potentially on a separate settings page/modal later) to *view* current configurations. (Editing via UI can be a later phase).
 *   [ ] Implement dynamic creation of sandbox directories (`sandboxes/agent_<id>/`) when agents are initialized.
