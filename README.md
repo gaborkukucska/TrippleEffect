@@ -66,6 +66,7 @@ graph LR
         DOT_ENV[".env File <br>(API Keys, URLs)"]
     end
 
+    %% --- Connections ---
     UI -- HTTP --> FASTAPI;
     UI -- "WebSocket /ws" <--> WS_MANAGER;
     FASTAPI -- Manages --> AGENT_MANAGER;
@@ -85,7 +86,7 @@ graph LR
     AGENT_MANAGER -- "Routes Tool Request" --> TOOL_EXECUTOR;
     TOOL_EXECUTOR -- Executes --> TOOL_FS;
     TOOL_EXECUTOR -- Executes --> TOOL_WEB;
-    AGENT_INST_1 -- "Requests Tools Via Provider" --> LLM_Providers; # Indirectly
+    AGENT_INST_1 -- "Requests Tools Via Provider" --> LLM_Providers; %% Tool requests flow through provider
     AGENT_INST_1 -- "File I/O Via Tool" --> SANDBOXES;
     TOOL_FS -- "Operates Within" --> SANDBOXES;
 
