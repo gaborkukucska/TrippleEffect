@@ -1,14 +1,14 @@
 <!-- # START OF FILE README.md -->
 # TrippleEffect 🧑‍🚒🧑‍🏫👩‍🔧
 
-**TrippleEffect** is an asynchronous, collaborative multi-agent framework designed with a browser-based user interface 🌐, optimized for environments like Termux 📱. It allows multiple Language Model (LLM) agents 🤖🤖🤖 to work together on complex tasks, coordinated through a central backend and managed via a web UI. It aims for extensibility and supports various LLM API providers, including **OpenAI**, **Ollama**, and **OpenRouter** (and can be extended to others like LiteLLM, Google, Anthropic, etc.).
+**TrippleEffect** is an asynchronous, collaborative multi-agent framework designed with a browser-based user interface 🌐, optimized for environments like Termux 📱. It allows multiple Language Model (LLM) agents 🤖🤖🤖 to work together on complex tasks, coordinated through a central backend and managed via a web UI. It aims for extensibility and supports various LLM API providers, including **OpenRouter**, **Ollama**, and **OpenAI** (and can be extended to others like LiteLLM, Google, Anthropic, etc.).
 
 ## 🎯 Core Concept
 
 The system orchestrates multiple LLM agents, whose number and specific configurations (**provider**, model, persona, system prompt, etc.) are defined in a central `config.yaml` file ⚙️. Users interact with the system through a web interface to submit tasks via text 📝 (voice 🎤, camera 📸, file uploads 📁 are planned future features).
 
 The agents, loaded based on the configuration:
-*   Interact with their configured LLM provider (**OpenAI**, **Ollama**, **OpenRouter**, etc.).
+*   Interact with their configured LLM provider (**OpenRouter**, **Ollama**, **OpenAI**, etc.).
 *   Can work concurrently on the same task.
 *   Collaborate and delegate sub-tasks (future phase 🤝).
 *   Utilize tools within sandboxed environments 🛠️ (supported across providers where models allow).
@@ -20,14 +20,14 @@ The agents, loaded based on the configuration:
 *   **Asynchronous Backend:** Built with FastAPI and `asyncio` for efficient handling of concurrent operations.
 *   **Browser-Based UI:** Simple web interface for task submission, agent monitoring, viewing configurations, and results.
 *   **Real-time Updates:** Uses WebSockets (`/ws`) for instant communication.
-*   **Multi-Provider LLM Support:** Connect agents to different LLM backends (**OpenAI**, local **Ollama**, **OpenRouter**, easily extensible).
-*   **YAML Configuration:** Easily define agents (ID, **provider**, model, system prompt, persona, temperature, provider-specific args) via `config.yaml`. Defaults and API keys set via `.env`.
+*   **Multi-Provider LLM Support:** Connect agents to different LLM backends (**OpenRouter**, local **Ollama**, **OpenAI**, easily extensible).
+*   **YAML Configuration:** Easily define agents (ID, **provider**, model, system prompt, persona, temperature, provider-specific args) via `config.yaml`. Defaults and API keys/URLs set via `.env`.
 *   **Sandboxed Workspaces:** Each agent operates within its own directory (`sandboxes/agent_<id>/`) for file-based tasks 📁.
 *   **Tool Usage:** Framework allows agents to use tools (e.g., file system access 📄, web search 🔍 planned). Tool support relies on the capabilities of the chosen LLM model and provider implementation.
 *   **Extensible Design:** Modular structure (`src/llm_providers`, `src/tools`) for adding new LLM providers, agents, or tools.
 *   **Termux Friendly:** Aims for compatibility and reasonable performance on resource-constrained environments. Requires specific build tools.
 
-## 🏗️ Architecture Overview (Conceptual - Updated for Provider Abstraction)
+## 🏗️ Architecture Overview (Conceptual - Corrected Mermaid)
 
 ```mermaid
 graph LR
@@ -70,13 +70,13 @@ graph LR
     UI -- HTTP --> FASTAPI;
     UI -- "WebSocket /ws" <--> WS_MANAGER;
     FASTAPI -- Manages --> AGENT_MANAGER;
-    FASTAPI -- "Config Read API /api/config/agents" --> CONFIG_YAML; # Reads config via settings
+    FASTAPI -- "Config Read API /api/config/agents" --> CONFIG_YAML; %% Reads config via settings
     WS_MANAGER -- "Forwards/Receives" --> AGENT_MANAGER;
     AGENT_MANAGER -- "Controls/Coordinates" --> AGENT_INST_1;
     AGENT_MANAGER -- "Controls/Coordinates" --> AGENT_INST_2;
     AGENT_MANAGER -- "Controls/Coordinates" --> AGENT_INST_N;
-    AGENT_MANAGER -- "Reads Config" --> CONFIG_YAML; # Via settings
-    AGENT_MANAGER -- "Reads Defaults/Secrets" --> DOT_ENV; # Via settings
+    AGENT_MANAGER -- "Reads Config" --> CONFIG_YAML; %% Via settings
+    AGENT_MANAGER -- "Reads Defaults/Secrets" --> DOT_ENV; %% Via settings
     AGENT_MANAGER -- "Instantiates & Injects" --> LLM_Providers;
     AGENT_INST_1 -- Uses --> PROVIDER_A;
     AGENT_INST_2 -- Uses --> PROVIDER_B;
@@ -167,13 +167,12 @@ graph LR
 1.  **Prerequisites:**
     *   Python 3.9+ 🐍
     *   Git
-    *   (Optional) Local Ollama instance running if using Ollama provider.
+    *   (Required for Ollama) Local Ollama instance running. Download and install from [ollama.com](https://ollama.com/). Ensure it's running before starting TrippleEffect if you plan to use Ollama agents. Pull desired models (e.g., `ollama pull llama3`).
     *   **Termux specific:** Some Python packages require compilation. Install necessary build tools using `pkg`:
         ```bash
         pkg update && pkg upgrade
         pkg install binutils build-essential -y
         ```
-        *(Note: `python-dev` seems included in the main `python` package now).*
 
 2.  **Clone Repository:**
     ```bash
@@ -201,33 +200,74 @@ graph LR
         ```bash
         cp .env.example .env
         ```
-    *   **Edit the `.env` file:** Add your API keys and configure URLs as needed for the providers you intend to use (OpenAI, OpenRouter, Ollama). Pay attention to `OPENROUTER_REFERER`.
+    *   **Edit the `.env` file:** This is crucial for connecting to LLM providers. Prioritize setting up OpenRouter and Ollama if you plan to use them.
         ```dotenv
-        # .env (Example - Fill with your actual values)
-        OPENAI_API_KEY=sk-your-openai-key...
-        # OPENAI_BASE_URL=
+        # .env (Fill with your actual values)
 
+        # --- OpenRouter (Recommended for various models) ---
+        # Get your key from https://openrouter.ai/keys
         OPENROUTER_API_KEY=sk-or-v1-your-openrouter-key...
-        # OPENROUTER_BASE_URL=
-        OPENROUTER_REFERER=http://localhost:8000/ # Or your app name
+        # Optional: Define a site URL or app name for OpenRouter stats
+        # See https://openrouter.ai/docs#headers
+        OPENROUTER_REFERER=http://localhost:8000/ # Or your app name/URL
+        # OPENROUTER_BASE_URL= # Usually not needed unless using a proxy
 
-        OLLAMA_BASE_URL=http://localhost:11434 # Adjust if Ollama runs elsewhere
+        # --- Ollama (For local models) ---
+        # Default assumes Ollama runs locally on port 11434. Adjust if needed.
+        OLLAMA_BASE_URL=http://localhost:11434
 
-        # Default agent params (if needed)
-        DEFAULT_AGENT_PROVIDER="openai"
-        DEFAULT_AGENT_MODEL="gpt-3.5-turbo"
-        # ... other defaults
+        # --- OpenAI (Optional) ---
+        # Only needed if you specifically configure an agent to use 'openai' provider
+        OPENAI_API_KEY=sk-your-openai-key...
+        # OPENAI_BASE_URL= # e.g., for Azure endpoints
+
+        # --- Default agent params (Optional fallbacks) ---
+        # If an agent in config.yaml doesn't specify these, these values are used.
+        # DEFAULT_AGENT_PROVIDER="openrouter" # Example: Make OpenRouter the default
+        # DEFAULT_AGENT_MODEL="mistralai/mistral-7b-instruct" # Example model
+        # DEFAULT_SYSTEM_PROMPT="You are a helpful assistant."
+        # DEFAULT_TEMPERATURE=0.7
+        # DEFAULT_PERSONA="General Assistant"
         ```
-    *   **Important:** Ensure `.env` is listed in your `.gitignore` file!
+    *   **Important:** Ensure `.env` is listed in your `.gitignore` file (it should be by default). **Never commit your API keys!**
 
 6.  **Configure Agents:** 🧑‍🔧🧑‍🏫🧑‍🚒
-    *   Edit the `config.yaml` file in the project root.
+    *   Edit the `config.yaml` file in the project root. This defines *which* agents run and *how* they behave.
     *   For each agent, define:
-        *   `agent_id`: Unique identifier.
-        *   `provider`: `"openai"`, `"ollama"`, or `"openrouter"`.
-        *   `model`: The model name specific to the chosen provider (e.g., `"gpt-4-turbo"`, `"llama3"`, `"mistralai/mistral-7b-instruct"`).
-        *   `system_prompt`, `temperature`, `persona`.
-        *   Optionally add provider-specific parameters (like `base_url`, `referer`) to override `.env` defaults for specific agents.
+        *   `agent_id`: Unique identifier (e.g., "coder", "researcher").
+        *   `provider`: **Crucial.** Must be `"openrouter"`, `"ollama"`, or `"openai"`. Ensure the corresponding API key/URL is set in `.env`.
+        *   `model`: The model name specific to the chosen provider (e.g., `"mistralai/mistral-7b-instruct"` for OpenRouter, `"llama3"` for Ollama, `"gpt-4-turbo"` for OpenAI). Make sure the model is available on the provider (or pulled in Ollama).
+        *   `system_prompt`: Instructions for the agent's persona and task focus.
+        *   `temperature`: Controls creativity vs. determinism (0.0 to ~1.0+).
+        *   `persona`: A name for the agent displayed in the UI.
+        *   *(Optional)*: You can override provider settings per-agent (e.g., `base_url`), but API keys should stay in `.env`.
+    *   **Example `config.yaml` snippet:**
+        ```yaml
+        agents:
+          - agent_id: "analyst_or"
+            config:
+              provider: "openrouter" # Using OpenRouter
+              model: "mistralai/mistral-7b-instruct" # Check OpenRouter for available models
+              system_prompt: "You analyze text and data. Use tools if needed to read files."
+              temperature: 0.6
+              persona: "Data Analyst (OpenRouter)"
+
+          - agent_id: "creative_local"
+            config:
+              provider: "ollama" # Using local Ollama
+              model: "llama3" # Ensure 'llama3' is pulled in Ollama
+              system_prompt: "You are a creative writer."
+              temperature: 0.9
+              persona: "Creative Writer (Ollama)"
+
+          - agent_id: "coder_openai" # Optional OpenAI example
+            config:
+              provider: "openai"
+              model: "gpt-4-turbo-preview"
+              system_prompt: "You are an expert Python programmer."
+              temperature: 0.2
+              persona: "Python Expert (OpenAI)"
+        ```
 
 ## ▶️ Running the Application
 
@@ -235,9 +275,9 @@ graph LR
 python src/main.py
 ```
 
-*   The server will start (usually on port 8000).
-*   It loads agents based on `config.yaml` and initializes their respective LLM providers. Check console output for details and potential configuration warnings.
-*   Access the UI in your web browser: `http://localhost:8000`.
+*   The server will start (usually on `http://0.0.0.0:8000`).
+*   It loads agents based on `config.yaml` and uses API keys/URLs from `.env` to initialize providers. Check console output for details and potential configuration warnings (e.g., missing keys for configured providers).
+*   Access the UI in your web browser: `http://localhost:8000` (or your machine's IP if accessing from another device).
 
 ## 🖱️ Usage
 
