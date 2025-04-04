@@ -1,6 +1,6 @@
 # START OF FILE requirements.txt
 fastapi
-uvicorn[standard]
+uvicorn # Changed from uvicorn[standard] to avoid uvloop compilation issues
 websockets
 jinja2
 python-dotenv
