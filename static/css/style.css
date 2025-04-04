@@ -1,1 +1,115 @@
-# START OF FILE static/css/style.css
+/* START OF FILE static/css/style.css */
+
+/* Basic styling will be added here later */
+
+body {
+    font-family: sans-serif;
+    margin: 0;
+    padding: 20px;
+    background-color: #f4f4f4;
+}
+
+.container {
+    max-width: 800px;
+    margin: auto;
+    background: #fff;
+    padding: 20px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+}
+
+h1 {
+    text-align: center;
+    color: #333;
+}
+
+.message-area {
+    height: 400px;
+    overflow-y: auto;
+    border: 1px solid #ccc;
+    margin-bottom: 10px;
+    padding: 10px;
+    background-color: #e9e9e9;
+}
+
+.message {
+    margin-bottom: 8px;
+    padding: 5px 8px;
+    border-radius: 4px;
+    word-wrap: break-word; /* Wrap long words */
+}
+
+.message.user {
+    text-align: right;
+    background-color: #dcf8c6; /* Light green background for user messages */
+    margin-left: 40px; /* Indent user messages */
+}
+
+.message.server,
+.message.echo,
+.message.raw {
+    background-color: #ffffff; /* White background for server messages */
+    margin-right: 40px; /* Indent server messages */
+}
+
+.message.status {
+    font-style: italic;
+    color: #666;
+    background-color: #f0f0f0; /* Light grey background for status messages */
+    text-align: center;
+}
+
+.message.error {
+    color: #D8000C; /* Red text for errors */
+    background-color: #FFD2D2; /* Light red background for errors */
+    font-weight: bold;
+}
+
+
+.input-area {
+    display: flex;
+    margin-bottom: 20px;
+}
+
+.input-area textarea {
+    flex-grow: 1;
+    padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    resize: vertical; /* Allow vertical resize, disable horizontal */
+    margin-right: 10px;
+    height: 50px; /* Initial height */
+}
+
+.input-area button {
+    padding: 10px 20px;
+    border: none;
+    background-color: #5cb85c;
+    color: white;
+    border-radius: 4px;
+    cursor: pointer;
+    height: fit-content; /* Match height to content */
+    align-self: flex-end; /* Align button to bottom if textarea resizes */
+}
+
+.input-area button:hover {
+    background-color: #4cae4c;
+}
+
+.input-area button:disabled {
+    background-color: #cccccc;
+    cursor: not-allowed;
+}
+
+.config-area, .agent-status-area {
+    margin-top: 20px;
+    padding: 15px;
+    border: 1px solid #eee;
+    background-color: #fafafa;
+}
+
+h2 {
+    margin-top: 0;
+    color: #555;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 5px;
+}
