@@ -8,29 +8,47 @@
 agents:
   - agent_id: "coder" # Unique ID for the agent
     config:
-      model: "gpt-4-turbo-preview" # Specific model for this agent
+      provider: "openai" # Specify the provider ('openai', 'ollama', 'openrouter')
+      model: "gpt-4-turbo-preview" # Model name specific to the provider
       system_prompt: "You are an expert Python programmer. Analyze the user's request and provide clean, efficient Python code. Explain your code clearly with comments."
-      temperature: 0.2 # Lower temperature for precise coding
-      persona: "Python Expert Coder" # Descriptive persona name
+      temperature: 0.2
+      persona: "Python Expert Coder"
+      # Provider-specific overrides (optional, defaults usually come from .env/settings)
+      # api_key: null # Can override OPENAI_API_KEY from .env if needed (NOT RECOMMENDED for secrets)
+      # base_url: null # e.g., for Azure OpenAI endpoint
 
   - agent_id: "analyst"
     config:
-      model: "gpt-3.5-turbo" # Can use a different model
-      system_prompt: "You are a data analyst. You receive input, analyze it for key information, structure, or implications, and provide a concise summary or analysis."
-      temperature: 0.7 # Standard temperature for analysis
-      persona: "Data Analyst"
+      provider: "openrouter" # Example using OpenRouter
+      # Find appropriate models on OpenRouter, e.g., mistralai/mistral-7b-instruct, google/gemini-pro
+      model: "mistralai/mistral-7b-instruct"
+      system_prompt: "You are a data analyst. You receive input, analyze it for key information, structure, or implications, and provide a concise summary or analysis. Use your tools to read files if needed."
+      temperature: 0.7
+      persona: "Data Analyst (OpenRouter)"
+      # Provider-specific overrides
+      # api_key: null # Can override OPENROUTER_API_KEY from .env (NOT RECOMMENDED)
+      # base_url: null # Can override OpenRouter default API URL
+      # referer: "My Custom App" # Can override OPENROUTER_REFERER from .env
 
   - agent_id: "creative"
     config:
-      model: "gpt-3.5-turbo"
-      system_prompt: "You are a creative writer and brainstormer. Expand on the user's ideas, suggest alternatives, and generate imaginative text."
-      temperature: 0.9 # Higher temperature for creativity
-      persona: "Creative Assistant"
+      provider: "ollama" # Example using Ollama
+      # Ensure this model is available in your local Ollama instance
+      model: "llama3"
+      system_prompt: "You are a creative writer and brainstormer. Expand on the user's ideas, suggest alternatives, and generate imaginative text. You can use tools to save your work."
+      temperature: 0.9
+      persona: "Creative Assistant (Ollama)"
+      # Provider-specific overrides
+      # base_url: "http://192.168.1.100:11434" # Can override OLLAMA_BASE_URL from .env
 
 # Add more agents here as needed following the same structure:
-# - agent_id: "new_agent_id"
+# - agent_id: "another_agent"
 #   config:
+#     provider: "provider_name" # e.g., openai
 #     model: "some_model"
 #     system_prompt: "..."
 #     temperature: 0.x
-#     persona: "..." # Optional
+#     persona: "..."
+#     api_key: ... # Optional override
+#     base_url: ... # Optional override
+#     # Other provider-specific kwargs...
