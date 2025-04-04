@@ -1,7 +1,5 @@
 /* START OF FILE static/css/style.css */
 
-/* Basic styling will be added here later */
-
 body {
     font-family: sans-serif;
     margin: 0;
@@ -23,45 +21,99 @@ h1 {
 }
 
 .message-area {
-    height: 400px;
+    height: 500px; /* Increased height */
     overflow-y: auto;
     border: 1px solid #ccc;
     margin-bottom: 10px;
     padding: 10px;
     background-color: #e9e9e9;
+    display: flex; /* Use flexbox for vertical stacking */
+    flex-direction: column; /* Stack messages vertically */
 }
 
 .message {
     margin-bottom: 8px;
-    padding: 5px 8px;
-    border-radius: 4px;
+    padding: 8px 12px; /* Slightly increased padding */
+    border-radius: 8px; /* More rounded corners */
     word-wrap: break-word; /* Wrap long words */
+    max-width: 85%; /* Limit message width */
+    border: 1px solid transparent; /* Base border */
 }
 
+.message p { /* Target potential inner <p> if structure changes later */
+    margin: 0;
+}
+
+/* User messages align right */
 .message.user {
-    text-align: right;
-    background-color: #dcf8c6; /* Light green background for user messages */
-    margin-left: 40px; /* Indent user messages */
+    text-align: left; /* Text inside aligns left */
+    background-color: #dcf8c6; /* Light green background */
+    border-color: #baddaf;
+    margin-left: auto; /* Push to the right */
+    align-self: flex-end; /* Align item itself to the end */
 }
 
+/* Default server/system messages align left */
 .message.server,
-.message.echo,
+.message.echo, /* Keep echo for possible future use */
 .message.raw {
-    background-color: #ffffff; /* White background for server messages */
-    margin-right: 40px; /* Indent server messages */
+    background-color: #ffffff; /* White background */
+    border-color: #e0e0e0;
+    margin-right: auto; /* Push to the left */
+    align-self: flex-start; /* Align item itself to the start */
 }
 
+/* Agent-specific styling */
+.message.agent_response {
+    margin-right: auto; /* Default align left */
+    align-self: flex-start; /* Align item itself to the start */
+    font-family: monospace; /* Use monospace for agent responses, esp. code */
+}
+
+/* Style based on agent_id stored in data attribute (or class if we add it later) */
+/* Using attribute selector for now as JS adds data-agent-id */
+.message[data-agent-id="agent_0"] {
+    background-color: #e1f5fe; /* Light blue */
+    border-color: #b3e5fc;
+    border-left: 4px solid #03a9f4; /* Accent border */
+}
+
+.message[data-agent-id="agent_1"] {
+    background-color: #fff3e0; /* Light orange */
+    border-color: #ffe0b2;
+    border-left: 4px solid #ff9800; /* Accent border */
+}
+
+.message[data-agent-id="agent_2"] {
+    background-color: #f1f8e9; /* Light green-grey */
+    border-color: #dcedc8;
+    border-left: 4px solid #8bc34a; /* Accent border */
+}
+
+
+/* Status messages span full width */
 .message.status {
     font-style: italic;
     color: #666;
-    background-color: #f0f0f0; /* Light grey background for status messages */
+    background-color: #f0f0f0;
+    border-color: #e0e0e0;
     text-align: center;
+    align-self: center; /* Center item */
+    width: fit-content; /* Don't span full width unless needed */
+    max-width: 90%;
+    margin-left: auto;
+    margin-right: auto;
+    padding: 4px 10px; /* Smaller padding */
 }
 
+/* Error messages */
 .message.error {
-    color: #D8000C; /* Red text for errors */
-    background-color: #FFD2D2; /* Light red background for errors */
+    color: #D8000C; /* Red text */
+    background-color: #FFD2D2; /* Light red background */
+    border-color: #ffbaba;
     font-weight: bold;
+    align-self: stretch; /* Span full width */
+    text-align: center;
 }
 
 
@@ -75,9 +127,9 @@ h1 {
     padding: 10px;
     border: 1px solid #ccc;
     border-radius: 4px;
-    resize: vertical; /* Allow vertical resize, disable horizontal */
+    resize: vertical;
     margin-right: 10px;
-    height: 50px; /* Initial height */
+    height: 50px;
 }
 
 .input-area button {
@@ -87,8 +139,8 @@ h1 {
     color: white;
     border-radius: 4px;
     cursor: pointer;
-    height: fit-content; /* Match height to content */
-    align-self: flex-end; /* Align button to bottom if textarea resizes */
+    height: fit-content;
+    align-self: flex-end;
 }
 
 .input-area button:hover {
