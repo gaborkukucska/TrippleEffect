@@ -1,4 +1,4 @@
-# START OF FILE README.md
+<!-- START OF FILE README.md -->
 # TrippleEffect 🧑‍🚒🧑‍🏫👩‍🔧
 
 **TrippleEffect** is an asynchronous, collaborative multi-agent framework designed with a browser-based user interface, optimized for environments like Termux. It allows multiple Language Model (LLM) agents to work together on complex tasks, coordinated through a central backend and managed via a web UI powered by multiple external API providers like Ollama, LiteLLM, Openrouter, Google, Anthropic and DeepSeek.
