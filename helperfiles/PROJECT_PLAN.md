@@ -178,17 +178,6 @@
 *   [ ] Add more details to `FUNCTIONS_INDEX.md`.
 *   [ ] Code cleanup and final review.
 
-## 6. Development Workflow
-
-*   Phased implementation as outlined above.
-*   Use feature branches in Git (if applicable).
-*   Maintain `helperfiles/PROJECT_PLAN.md` (update status) and `helperfiles/FUNCTIONS_INDEX.md`.
-*   Follow the user's specified interaction model:
-    *   Analyze context fully before suggesting changes.
-    *   Provide complete file contents for modification.
-    *   Wait for confirmation before proceeding to the next file.
-    *   Maintain code consistency.
-
-## 7. MCP Integration Note
+## 6. MCP Integration Note
 
 While a full MCP server is out of scope initially, the internal Tool Executor design (Phase 5) will be inspired by MCP's core idea: structured, discoverable tools that agents can request. We will focus on a simplified internal protocol first (e.g., agents outputting a specific JSON or XML structure requesting a tool call). This provides a foundation that *could* be adapted to interface with a proper MCP server later if desired.
