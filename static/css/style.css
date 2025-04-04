@@ -189,11 +189,12 @@ h1 {
     margin-right: 0;
 }
 
-/* Input Area */
+/* --- Input Area --- */
 .input-area {
     display: flex;
-    /* margin-bottom: 20px; No margin-bottom, handled by container flex gap */
     flex-shrink: 0; /* Prevent input area from shrinking */
+    gap: 10px; /* Space between textarea and controls */
+    align-items: flex-end; /* Align items to the bottom */
 }
 
 .input-area textarea {
@@ -202,33 +203,89 @@ h1 {
     border: 1px solid #ccc;
     border-radius: 4px;
     resize: vertical;
-    margin-right: 10px;
     min-height: 50px; /* Min height */
     height: 60px; /* Default height */
     max-height: 150px; /* Max height before scroll */
     box-sizing: border-box;
 }
 
-.input-area button {
-    padding: 10px 20px;
+.input-controls {
+    display: flex;
+    align-items: flex-end; /* Align buttons to bottom */
+    gap: 5px; /* Space between buttons */
+}
+
+.input-controls button {
+    padding: 10px; /* Adjust padding for icon/text buttons */
     border: none;
-    background-color: #5cb85c;
+    background-color: #5cb85c; /* Default green for send */
     color: white;
     border-radius: 4px;
     cursor: pointer;
-    height: fit-content;
-    align-self: flex-end; /* Align button to bottom */
-    margin-bottom: 0; /* Align with textarea bottom */
+    height: 40px; /* Match approximate height */
+    line-height: 1; /* Ensure text/icon is centered vertically */
+}
+/* Specific style for attach button */
+#attach-file-button {
+    background-color: #6c757d; /* Grey */
+    width: 40px; /* Make it square-ish */
+    font-size: 1.2em; /* Make icon slightly larger */
+}
+#attach-file-button:hover {
+    background-color: #5a6268;
 }
 
-.input-area button:hover {
+#send-button {
+    padding-left: 20px; /* More padding for text */
+    padding-right: 20px;
+}
+#send-button:hover {
     background-color: #4cae4c;
 }
 
-.input-area button:disabled {
+.input-controls button:disabled {
     background-color: #cccccc;
     cursor: not-allowed;
 }
+
+/* --- File Info Area --- */
+.file-info-area {
+    flex-shrink: 0;
+    padding: 5px 10px;
+    margin-top: 5px; /* Space below input area */
+    font-size: 0.85em;
+    color: #555;
+    background-color: #f9f9f9;
+    border: 1px solid #eee;
+    border-radius: 4px;
+    min-height: 28px; /* Ensure it has some height even when empty */
+    box-sizing: border-box;
+    display: flex; /* Use flexbox */
+    justify-content: space-between; /* Space out filename and clear button */
+    align-items: center; /* Vertically center items */
+}
+
+.file-info-area span {
+     /* Style for filename text if needed */
+     overflow: hidden; /* Prevent long names from breaking layout */
+     white-space: nowrap;
+     text-overflow: ellipsis;
+     max-width: 80%; /* Limit width of filename span */
+}
+
+.file-info-area button {
+    /* Style for the clear button */
+    background: none;
+    border: none;
+    color: #dc3545; /* Red */
+    cursor: pointer;
+    font-size: 1.1em;
+    padding: 0 5px;
+}
+.file-info-area button:hover {
+    color: #a0212e;
+}
+
 
 /* Config and Agent Status Area */
 .config-area, .agent-status-area {
@@ -265,12 +322,10 @@ h2 {
 }
 
 .agent-status-item strong {
-    /* Style for agent ID */
     color: #333;
 }
 
 .agent-status-item .agent-model {
-    /* Style for model name */
     font-size: 0.9em;
     color: #777;
     margin-left: 2px;
@@ -278,7 +333,6 @@ h2 {
 }
 
 .agent-status-item .agent-status {
-    /* Style for the status text itself */
     font-weight: bold;
     padding: 1px 4px;
     border-radius: 3px;
@@ -286,25 +340,12 @@ h2 {
 }
 
 /* Status-specific styles */
-.agent-status-item.status-idle .agent-status {
-    background-color: #6c757d; /* Grey */
-}
-.agent-status-item.status-processing .agent-status {
-    background-color: #007bff; /* Blue */
-}
-.agent-status-item.status-awaiting_tool_result .agent-status {
-    background-color: #fd7e14; /* Orange */
-}
-.agent-status-item.status-executing_tool .agent-status {
-    background-color: #ffc107; /* Yellow */
-    color: #333; /* Darker text on yellow */
-}
-.agent-status-item.status-error .agent-status {
-    background-color: #dc3545; /* Red */
-}
-.agent-status-item.status-unknown .agent-status {
-    background-color: #adb5bd; /* Lighter grey */
-}
+.agent-status-item.status-idle .agent-status { background-color: #6c757d; }
+.agent-status-item.status-processing .agent-status { background-color: #007bff; }
+.agent-status-item.status-awaiting_tool_result .agent-status { background-color: #fd7e14; }
+.agent-status-item.status-executing_tool .agent-status { background-color: #ffc107; color: #333; }
+.agent-status-item.status-error .agent-status { background-color: #dc3545; }
+.agent-status-item.status-unknown .agent-status { background-color: #adb5bd; }
 
 /* Optional: Highlight the whole item based on status */
 .agent-status-item.status-processing { border-left: 3px solid #007bff; background-color: #e7f3ff; }
