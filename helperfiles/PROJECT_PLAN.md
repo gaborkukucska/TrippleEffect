@@ -2,7 +2,7 @@
 # Project Plan: TrippleEffect
 
 **Version:** 1.0
-**Date:** 2025-04-04
+**Date:** 2025-04-04 (Note: Should be updated with actual dev dates)
 
 ## 1. Project Goals
 
@@ -97,7 +97,7 @@
 *   **`src/agents/`**: Agent-related logic.
     *   `manager.py`: The central coordinator (`AgentManager` class). Manages agent lifecycles, receives tasks via `handle_user_message`, orchestrates agent processing, **uses injected broadcast function** to send results/status to UI.
     *   `core.py`: Defines the `Agent` class, responsible for interacting with LLMs (async streaming via `process_message`), managing its own state, memory (simple), **initializes OpenAI client using settings**.
-    *   `prompts.py` (New): Store default system prompts, persona templates.
+    *   `prompts.py` (New - *Not Implemented Yet*): Store default system prompts, persona templates.
 *   **`src/tools/`**: Tool implementations and management.
     *   `executor.py`: Handles parsing agent tool requests, finding the correct tool, executing it securely (within sandbox context), and returning results.
     *   `base.py`: Base class or definition for tools.
@@ -118,7 +118,7 @@
 *   [X] Set up project structure with refined directories. *(Structure already exists)*
 *   [X] Implement basic FastAPI app (`main.py`).
 *   [X] Create `templates/index.html` served by an HTTP route (`api/http_routes.py`).
-*   [X] Create basic `static/css/style.css` and `static/js/app.js`.
+*   [X] Create basic `static/css/style.css`.
 *   [X] Implement basic WebSocket manager (`api/websocket_manager.py`) capable of connecting/disconnecting clients.
 *   [X] Implement basic bidirectional communication (UI sends message, backend echoes back via WebSocket).
 *   [X] Initialize `helperfiles/FUNCTIONS_INDEX.md`.
@@ -136,18 +136,18 @@
 *   [X] Implement basic configuration loading (`src/config/settings.py`) for API keys and default agent settings (from `.env`).
 *   [X] Update `FUNCTIONS_INDEX.md` with new functions.
 
-**Phase 3: Multi-Agent Setup & Basic Coordination (Next)**
+**Phase 3: Multi-Agent Setup & Basic Coordination (Completed)**
 
-*   [ ] Enhance `AgentManager` to create and manage multiple `Agent` instances (e.g., based on config file - Phase 4 dependency). Start by hardcoding 2-3 agents.
-*   [ ] Refine WebSocket communication to handle messages from/to specific agents or the manager (UI needs updating).
-*   [ ] Update UI to potentially show outputs from multiple agents (simple initial display - maybe different sections or clear prefixes).
-*   [ ] Implement a basic task distribution mechanism in `AgentManager` (e.g., broadcast task to all agents or assign based on simple logic/user input).
-*   [ ] Define basic inter-agent communication placeholder logic within `AgentManager` (e.g., one agent sending a message to another via the manager).
-*   [ ] Update `FUNCTIONS_INDEX.md` with new functions.
+*   [X] Enhance `AgentManager` to create and manage multiple `Agent` instances (e.g., based on config file - Phase 4 dependency). Started by hardcoding 3 agents.
+*   [X] Refine WebSocket communication to handle messages from/to specific agents or the manager (UI needs updating). *(Backend sends structured JSON including `agent_id`, `type`)*
+*   [X] Update UI (`app.js`) to show outputs from multiple agents, handling structured messages and grouping streamed chunks. Uses CSS for styling.
+*   [X] Implement a basic task distribution mechanism in `AgentManager` (broadcast task to all *available* agents concurrently).
+*   [ ] Define basic inter-agent communication placeholder logic within `AgentManager` (e.g., one agent sending a message to another via the manager). *(Deferred to later phase/refinement)*
+*   [X] Update `FUNCTIONS_INDEX.md` with new functions.
 
-**Phase 4: Configuration & Sandboxing**
+**Phase 4: Configuration & Sandboxing (Next)**
 
-*   [ ] Implement loading detailed agent configurations (model, system prompt, temperature, persona) from a file (e.g., `config.yaml`). Link this to Phase 3 agent creation.
+*   [ ] Implement loading detailed agent configurations (model, system prompt, temperature, persona) from a file (e.g., `config.yaml`). Link this to Phase 3 agent creation (replace hardcoding).
 *   [ ] Update `Agent` and `AgentManager` to use loaded configurations.
 *   [ ] Implement UI elements (potentially on a separate settings page/modal later) to *view* current configurations. (Editing via UI can be a later phase).
 *   [ ] Implement dynamic creation of sandbox directories (`sandboxes/agent_<id>/`) when agents are initialized.
