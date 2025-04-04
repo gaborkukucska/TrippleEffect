@@ -1,11 +1,12 @@
 # START OF FILE src/agents/manager.py
 import asyncio
-from typing import Dict, Any, Optional, List # Added List
+from typing import Dict, Any, Optional, List
 import json
+import os # Import os
 
 # Import the Agent class and settings
 from src.agents.core import Agent
-from src.config.settings import settings
+from src.config.settings import settings # Import the settings instance
 # Import the WebSocket broadcast function (or manager instance)
 from src.api.websocket_manager import broadcast
 
@@ -14,6 +15,8 @@ class AgentManager:
     """
     Manages the lifecycle and task distribution for multiple agents.
     Coordinates communication between agents and the user interface.
+    Initializes agents based on configurations found in settings.
+    Ensures agent sandboxes are created.
     """
     def __init__(self, websocket_manager: Optional[Any] = None):
         """
@@ -28,61 +31,81 @@ class AgentManager:
         # Store the broadcast function passed (or imported)
         self.send_to_ui_func = broadcast
         self._initialize_agents() # Call initialization
-        print(f"AgentManager initialized. Agents: {list(self.agents.keys())}")
+        print(f"AgentManager initialized. Managed agents: {list(self.agents.keys())}")
+        if not self.agents:
+             print("Warning: AgentManager initialized with zero active agents. Check configuration and API keys.")
 
 
     def _initialize_agents(self):
         """
-        Creates and initializes the agent instances based on configuration.
-        (For Phase 3, creates 3 hardcoded agents).
+        Creates and initializes agent instances based on configurations loaded
+        from `settings.AGENT_CONFIGURATIONS`. Ensures sandbox creation for each agent.
         """
-        # TODO: Load multiple agent configurations from file in Phase 4
+        print("Initializing agents from configuration...")
 
-        # --- Phase 3: Create multiple hardcoded agents ---
-        default_model = settings.DEFAULT_AGENT_MODEL
-        default_temp = settings.DEFAULT_TEMPERATURE
+        agent_configs = settings.AGENT_CONFIGURATIONS
+        if not agent_configs:
+            print("No agent configurations found in settings. No agents will be created.")
+            return
 
-        hardcoded_agents_config = {
-            "agent_0": {
-                "model": default_model,
-                "system_prompt": "You are Agent 0, a concise and factual assistant.",
-                "temperature": default_temp,
-            },
-            "agent_1": {
-                "model": default_model,
-                "system_prompt": "You are Agent 1, a creative and slightly verbose assistant.",
-                "temperature": default_temp + 0.1, # Slightly higher temp
-            },
-            "agent_2": {
-                 "model": default_model, # Could use a different model if configured
-                 "system_prompt": "You are Agent 2, an expert in code generation. Respond only with code.",
-                 "temperature": default_temp - 0.2, # Slightly lower temp
-            }
-        }
+        print(f"Found {len(agent_configs)} agent configuration(s). Attempting to initialize...")
 
-        print("Initializing multiple agents...")
-        for agent_id, agent_config in hardcoded_agents_config.items():
-            print(f"Initializing agent '{agent_id}' with config: {agent_config}")
+        # Ensure the main 'sandboxes' directory exists
+        main_sandbox_dir = settings.BASE_DIR / "sandboxes"
+        try:
+            main_sandbox_dir.mkdir(parents=True, exist_ok=True)
+            print(f"Ensured main sandbox directory exists at: {main_sandbox_dir}")
+        except Exception as e:
+            print(f"Error creating main sandbox directory at {main_sandbox_dir}: {e}. Agent sandbox creation might fail.")
+            # Decide if this is a fatal error? For now, continue and let individual agent sandboxes try.
+
+
+        successful_initializations = 0
+        for agent_conf in agent_configs:
+            agent_id = agent_conf.get("agent_id")
+            if not agent_id:
+                print("Skipping agent configuration due to missing 'agent_id'.")
+                continue
+
+            print(f"--- Initializing agent '{agent_id}' ---")
             try:
-                agent = Agent(agent_id=agent_id, config=agent_config)
-                agent.set_manager(self) # Give agent a reference back to the manager
+                # 1. Create Agent instance
+                agent = Agent(agent_config=agent_conf)
+                print(f"  Instance created for agent '{agent_id}'.")
 
-                # Attempt to initialize the OpenAI client for the agent
-                if agent.initialize_openai_client():
-                    self.agents[agent_id] = agent
-                    print(f"Agent '{agent_id}' added to manager.")
+                # 2. Set manager reference
+                agent.set_manager(self)
+
+                # 3. Ensure sandbox directory exists
+                if agent.ensure_sandbox_exists():
+                    print(f"  Sandbox ensured for agent '{agent_id}'.")
                 else:
-                    print(f"Failed to initialize OpenAI client for agent '{agent_id}'. Agent not added.")
-            except Exception as e:
-                 print(f"Error creating or initializing agent '{agent_id}': {e}")
+                    # Log error but potentially continue depending on requirements
+                    print(f"  Warning: Failed to ensure sandbox for agent '{agent_id}'. File operations might fail.")
 
-        # --- End Phase 3 ---
+                # 4. Initialize OpenAI client (requires API key from settings)
+                if agent.initialize_openai_client():
+                    print(f"  OpenAI client initialized for agent '{agent_id}'.")
+                    # 5. Add successfully initialized agent to the manager
+                    self.agents[agent_id] = agent
+                    successful_initializations += 1
+                    print(f"--- Agent '{agent_id}' successfully initialized and added. ---")
+                else:
+                    print(f"  Failed to initialize OpenAI client for agent '{agent_id}'. Agent will not be added.")
+                    # Clean up? (e.g., remove sandbox?) - For now, leave sandbox as is.
+                    print(f"--- Agent '{agent_id}' initialization failed. ---")
+
+            except Exception as e:
+                 print(f"Error creating or initializing agent from config '{agent_id}': {e}")
+                 print(f"--- Agent '{agent_id}' initialization failed due to exception. ---")
+
+        print(f"Finished agent initialization. Successfully initialized {successful_initializations}/{len(agent_configs)} agents.")
 
 
     async def handle_user_message(self, message: str, client_id: Optional[str] = None):
         """
         Receives a message from a user (via WebSocket) and delegates it to agents.
-        Phase 3: Sends to ALL available agents concurrently.
+        Sends to ALL available agents concurrently.
         Streams the agents' responses back to the UI.
 
         Args:
@@ -91,25 +114,29 @@ class AgentManager:
         """
         print(f"AgentManager received message: '{message[:100]}...' from client: {client_id}")
 
-        # --- Phase 3: Delegate to ALL available agents ---
         active_tasks: List[asyncio.Task] = []
         agents_to_process = []
+
+        # Check which managed agents are ready
+        if not self.agents:
+             print("No agents available in the manager.")
+             await self._send_to_ui({"type": "error", "content": "No agents configured or initialized."})
+             return
 
         for agent_id, agent in self.agents.items():
             if not agent.is_busy and agent._openai_client: # Check if client is initialized too
                 agents_to_process.append(agent)
             elif not agent._openai_client:
                  print(f"Skipping Agent '{agent_id}': OpenAI client not initialized.")
-                 # Optionally notify UI
-                 # await self._send_to_ui({"type": "status", "agent_id": agent_id, "content": "Agent skipped (client not initialized)."})
+                 await self._send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Agent '{agent_id}' skipped (OpenAI client unavailable)." , "detail": "Check API key or configuration."})
             else: # Agent is busy
                  print(f"Skipping Agent '{agent_id}': Busy.")
-                 await self._send_to_ui({"type": "status", "agent_id": agent_id, "content": "Agent busy, skipping task."})
+                 await self._send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Agent '{agent_id}' is busy."})
 
 
         if not agents_to_process:
-            print("No available agents to handle the message.")
-            await self._send_to_ui({"type": "error", "content": "All agents are busy or unavailable."})
+            print("No available agents to handle the message at this time.")
+            await self._send_to_ui({"type": "error", "content": "All active agents are currently busy."})
             return
 
         # Create a processing task for each available agent
@@ -123,21 +150,36 @@ class AgentManager:
             await asyncio.gather(*active_tasks) # Wait for all agent processing to finish
             print("All agent processing tasks complete.")
         else:
-             print("No tasks were created.")
+             print("No tasks were created (this shouldn't normally happen if agents_to_process was not empty).")
 
 
     async def _process_message_for_agent(self, agent: Agent, message: str):
         """Helper coroutine to process message for a single agent and stream results."""
-        await self._send_to_ui({"type": "status", "agent_id": agent.agent_id, "content": f"Agent {agent.agent_id} processing..."})
+        await self._send_to_ui({"type": "status", "agent_id": agent.agent_id, "content": f"Agent '{agent.agent_id}' ({agent.persona}) processing..."})
         try:
             async for chunk in agent.process_message(message):
-                # Send each chunk to the UI as it arrives
-                await self._send_to_ui({"type": "agent_response", "agent_id": agent.agent_id, "content": chunk})
-            await self._send_to_ui({"type": "status", "agent_id": agent.agent_id, "content": f"Agent {agent.agent_id} finished."})
+                # Check for internal error messages from the agent itself
+                if isinstance(chunk, str) and chunk.startswith("[Agent Error:"):
+                     await self._send_to_ui({"type": "error", "agent_id": agent.agent_id, "content": chunk})
+                elif isinstance(chunk, str) and chunk == "[Agent Busy]":
+                     # This case should ideally be caught before calling process_message,
+                     # but handle it defensively here too.
+                     await self._send_to_ui({"type": "status", "agent_id": agent.agent_id, "content": f"Agent '{agent.agent_id}' reported busy."})
+                else:
+                     # Send normal content chunk to the UI
+                     await self._send_to_ui({"type": "agent_response", "agent_id": agent.agent_id, "content": chunk})
+
+            # Send a final status update once the stream is finished (unless an error occurred)
+            await self._send_to_ui({"type": "status", "agent_id": agent.agent_id, "content": f"Agent '{agent.agent_id}' finished."})
+
         except Exception as e:
-            error_msg = f"Error during processing for agent {agent.agent_id}: {e}"
+            # Catch errors that might occur within this wrapper coroutine itself
+            error_msg = f"Error during task execution for agent {agent.agent_id}: {type(e).__name__} - {e}"
             print(error_msg)
             await self._send_to_ui({"type": "error", "agent_id": agent.agent_id, "content": error_msg})
+            # Ensure agent is marked not busy if an unexpected error stopped processing prematurely
+            if agent.is_busy:
+                agent.is_busy = False
 
 
     async def _send_to_ui(self, message_data: Dict[str, Any]):
@@ -152,8 +194,15 @@ class AgentManager:
             return
 
         try:
+            # Ensure agent_id is present if possible, helps UI attribute messages
+            if "agent_id" not in message_data:
+                 message_data["agent_id"] = "system" # Or None, depending on UI handling
+
             message_json = json.dumps(message_data) # Ensure it's JSON string
             await self.send_to_ui_func(message_json)
+        except TypeError as e:
+             print(f"Error serializing message data to JSON before sending to UI: {e}")
+             print(f"Data was: {message_data}")
         except Exception as e:
             print(f"Error sending message to UI via broadcast function: {e}")
 
