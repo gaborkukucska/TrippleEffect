@@ -1,1 +1,9 @@
-<!-- # START OF FILE requirements.txt -->
+# START OF FILE requirements.txt
+fastapi
+uvicorn[standard]
+websockets
+jinja2
+python-dotenv
+aiohttp
+openai
+PyYAML
