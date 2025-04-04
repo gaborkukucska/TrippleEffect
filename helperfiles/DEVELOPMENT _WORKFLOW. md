@@ -1,0 +1,10 @@
+# Development Workflow
+During development pease follow this workflow.
+
+*   Follow a phased implementation as outlined in the `helperfiles/PROJECT_PLAN.md` file.
+*   Maintain `helperfiles/PROJECT_PLAN.md` (update status) and `helperfiles/FUNCTIONS_INDEX.md`, updating them at every milestone.
+*   Follow the user's specified interaction model:
+    *   Analyze context fully before suggesting changes.
+    *   Provide complete file contents for modification.
+    *   Wait for confirmation before proceeding to the next file.
+    *   Maintain code consistency.
