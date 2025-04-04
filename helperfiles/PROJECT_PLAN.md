@@ -155,7 +155,7 @@
 *   [X] Ensure agents know their sandbox path (`agents/core.py`).
 *   [X] Update `FUNCTIONS_INDEX.md` with new functions.
 
-**Phase 5: Basic Tool Implementation (Internal MCP-Inspired) (Next)**
+**Phase 5: Basic Tool Implementation (Internal MCP-Inspired) (~ In Progress ~)**
 
 *   [ ] Define a structure/base class for tools (`tools/base.py`).
 *   [ ] Implement `ToolRegistry` and `ToolExecutor` (`tools/executor.py`).
