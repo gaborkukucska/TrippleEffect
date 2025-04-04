@@ -9,7 +9,8 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 
 ## **Application Entry Point (`src/main.py`)**
 
-*   `src/main.py` (Script execution block) - Initializes FastAPI app, loads .env, instantiates `AgentManager`, injects it into `WebSocketManager`, mounts static files, includes routers, runs Uvicorn server.
+*   `src/main.py::lifespan(app: FastAPI)` (async context manager) - Manages application startup and shutdown events. Calls `agent_manager.cleanup_providers()` on shutdown.
+*   `src/main.py` (Script execution block) - Initializes FastAPI app with lifespan, loads .env, instantiates `AgentManager`, injects it into `WebSocketManager`, mounts static files, includes routers, runs Uvicorn server.
 
 ## **Configuration (`src/config/`)**
 
@@ -34,26 +35,28 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 ## **Agent Core (`src/agents/`)**
 
 *   `src/agents/core.py::Agent` (Class) - Represents an individual LLM agent.
-*   `src/agents/core.py::Agent.__init__(agent_config: Dict, llm_provider: BaseLLMProvider, tool_executor: Optional['ToolExecutor'], manager: Optional['AgentManager'])` - Initializes agent with config and injected dependencies (provider, executor, manager). Sets up state, sandbox path.
-*   `src/agents/core.py::Agent.set_manager(manager: 'AgentManager')` - Sets the `AgentManager` reference.
-*   `src/agents/core.py::Agent.set_tool_executor(tool_executor: 'ToolExecutor')` - Sets the `ToolExecutor` reference.
-*   `src/agents/core.py::Agent.ensure_sandbox_exists()` -> `bool` - Creates the agent's sandbox directory if needed.
-*   `src/agents/core.py::Agent.process_message(message_content: str)` -> `AsyncGenerator[Dict, Optional[List[ToolResultDict]]]` - Core agent logic. Calls the injected provider's `stream_completion`, yields standardized events (`response_chunk`, `tool_requests`, `error`, `status`), and interacts with the provider generator via `asend()` to facilitate tool calls.
-*   `src/agents/core.py::Agent.get_state()` -> `Dict[str, Any]` - Returns a dictionary with the agent's current status (ID, persona, busy status, provider info, etc.).
-*   `src/agents/core.py::Agent.clear_history()` - Clears the agent's message history, keeping only the system prompt.
+*   `src/agents/core.py::Agent.__init__(agent_config: Dict, llm_provider: BaseLLMProvider, tool_executor: Optional['ToolExecutor'], manager: Optional['AgentManager'])` - Initializes agent with config, injected dependencies, status, history, and sandbox path.
+*   `src/agents/core.py::Agent::set_status(new_status: str, tool_info: Optional[Dict[str, str]] = None)` - Updates the agent's status (`self.status`), optionally stores tool info (`self.current_tool_info`), and asynchronously notifies the manager via `manager.push_agent_status_update()`.
+*   `src/agents/core.py::Agent::set_manager(manager: 'AgentManager')` - Sets the `AgentManager` reference.
+*   `src/agents/core.py::Agent::set_tool_executor(tool_executor: 'ToolExecutor')` - Sets the `ToolExecutor` reference.
+*   `src/agents/core.py::Agent::ensure_sandbox_exists()` -> `bool` - Creates the agent's sandbox directory if needed.
+*   `src/agents/core.py::Agent::process_message(message_content: str)` -> `AsyncGenerator[Dict, Optional[List[ToolResultDict]]]` - Core agent logic. Updates status via `set_status()`, calls provider's `stream_completion`, yields standardized events (`response_chunk`, `tool_requests`, `error`, `status`), interacts with provider generator via `asend()` for tool results, updates status upon completion or error.
+*   `src/agents/core.py::Agent::get_state()` -> `Dict[str, Any]` - Returns a dictionary with the agent's current state, including detailed status (`self.status`) and current tool info if applicable.
+*   `src/agents/core.py::Agent::clear_history()` - Clears the agent's message history, keeping only the system prompt.
 
 ## **Agent Manager (`src/agents/`)**
 
 *   `src/agents/manager.py::AgentManager` (Class) - Central coordinator for agents.
 *   `src/agents/manager.py::AgentManager.__init__(websocket_manager: Optional[Any] = None)` - Initializes the manager, instantiates `ToolExecutor`, calls `_initialize_agents`.
 *   `src/agents/manager.py::AgentManager._initialize_agents()` - Reads agent configurations, selects provider class, gathers final config (env + overrides), instantiates provider, instantiates agent with dependencies (provider, executor, manager), ensures sandbox, adds agent to `self.agents`.
-*   `src/agents/manager.py::AgentManager.handle_user_message(message: str, client_id: Optional[str] = None)` - Entry point for user messages. Dispatches the task concurrently to all *available* agents using `asyncio.create_task` and `_handle_agent_generator`.
-*   `src/agents/manager.py::AgentManager._handle_agent_generator(agent: Agent, message: str)` - Async method. Manages the agent's `process_message` generator loop, handles yielded events, calls `_execute_single_tool` for `tool_requests`, and sends results back to the agent's generator via `asend()`.
-*   `src/agents/manager.py::AgentManager._execute_single_tool(agent: Agent, call_id: str, tool_name: str, tool_args: Dict[str, Any])` -> `Optional[ToolResultDict]` - Executes a single tool via `ToolExecutor`, formats the result/error dictionary for the agent generator.
-*   `src/agents/manager.py::AgentManager._failed_tool_result(call_id: Optional[str], tool_name: Optional[str])` -> `Optional[ToolResultDict]` - Helper to return a formatted error result for tools that failed dispatch.
-*   `src/agents/manager.py::AgentManager._send_to_ui(message_data: Dict[str, Any])` - Async helper. Sends JSON-serialized data to the UI using the injected broadcast function.
-*   `src/agents/manager.py::AgentManager.get_agent_status()` -> `Dict[str, Dict[str, Any]]` - Returns status dictionaries for all managed agents.
-*   `src/agents/manager.py::AgentManager.cleanup_providers()` - Async method. Iterates through agents and calls cleanup methods (like `close_session`) on their providers.
+*   `src/agents/manager.py::AgentManager::handle_user_message(message: str, client_id: Optional[str] = None)` - Entry point for user messages. Dispatches the task concurrently to all agents with status `AGENT_STATUS_IDLE` using `asyncio.create_task` and `_handle_agent_generator`. Pushes status updates for busy agents.
+*   `src/agents/manager.py::AgentManager::_handle_agent_generator(agent: Agent, message: str)` - Async method. Manages the agent's `process_message` generator loop, handles yielded events, calls `_execute_single_tool` for `tool_requests`, sends results back to agent generator via `asend()`, and pushes final agent status.
+*   `src/agents/manager.py::AgentManager::_execute_single_tool(agent: Agent, call_id: str, tool_name: str, tool_args: Dict[str, Any])` -> `Optional[ToolResultDict]` - Sets agent status to `EXECUTING_TOOL` (via `agent.set_status`), executes a single tool via `ToolExecutor`, formats the result/error, and reverts agent status to `AWAITING_TOOL_RESULT` (via `agent.set_status`) upon completion/error before returning.
+*   `src/agents/manager.py::AgentManager::_failed_tool_result(call_id: Optional[str], tool_name: Optional[str])` -> `Optional[ToolResultDict]` - Helper to return a formatted error result for tools that failed dispatch.
+*   `src/agents/manager.py::AgentManager::push_agent_status_update(agent_id: str)` - Async helper. Retrieves the full state of a specific agent via `agent.get_state()` and sends it to the UI via `_send_to_ui()` using the `agent_status_update` message type.
+*   `src/agents/manager.py::AgentManager::_send_to_ui(message_data: Dict[str, Any])` - Async helper. Sends JSON-serialized data to the UI using the injected broadcast function. Includes fallback error handling for serialization issues.
+*   `src/agents/manager.py::AgentManager::get_agent_status()` -> `Dict[str, Dict[str, Any]]` - Returns status dictionaries for all managed agents (less critical with proactive updates).
+*   `src/agents/manager.py::AgentManager::cleanup_providers()` - Async method. Iterates through agents and calls cleanup methods (like `close_session`) on their providers.
 
 ## **LLM Providers Base (`src/llm_providers/`)**
 
@@ -102,20 +105,25 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 
 ## **Frontend Logic (`static/js/app.js`)**
 
-*   `static/js/app.js::connectWebSocket()` - Establishes the WebSocket connection to `/ws`, sets up event handlers (`onopen`, `onmessage`, `onerror`, `onclose`).
-*   `static/js/app.js::sendMessage()` - Reads message from input textarea, displays it locally as a user message, sends the message text over the WebSocket, clears the input.
-*   `static/js/app.js::addMessage(data)` - Parses incoming WebSocket message data (JSON), determines message type (`status`, `error`, `user`, `agent_response`), creates/updates HTML elements in the message area, applies appropriate CSS classes (including agent-specific via `data-agent-id`), handles grouping of streamed agent responses.
-*   `static/js/app.js::handleAgentResponseChunk(newChunkElement, agentId, chunkContent)` - Helper function (likely called by `addMessage`) to manage appending streamed text chunks to the correct agent's message block in the UI.
+*   `static/js/app.js::scrollToBottom(element)` - Helper function to scroll an HTML element to its bottom if user is near the bottom.
+*   `static/js/app.js::connectWebSocket()` - Establishes the WebSocket connection to `/ws`, sets up event handlers (`onopen`, `onmessage`, `onerror`, `onclose`). Handles storing/rendering connection status messages.
+*   `static/js/app.js::sendMessage()` - Reads message from input, prepends content from `selectedFile` if present (using `FileReader`), adds message object to `conversationHistory`, renders message to UI, sends text over WebSocket, clears input/file state.
+*   `static/js/app.js::addMessage(data, targetArea)` - Renders a message object (passed as `data`) to the specified DOM `targetArea`. Handles different message types (`user`, `agent_response`, `status`, `error`), agent response chunk aggregation, and placeholder removal.
+*   `static/js/app.js::clearAgentStatusUI(message)` - Clears the agent status display area in the UI and resets the `agentStatusElements` cache.
+*   `static/js/app.js::updateAgentStatusUI(data)` - Handles incoming `agent_status_update` messages. Finds/creates a status display element for the agent, formats the status text (including tool info), and updates the element's content and CSS class.
+*   `static/js/app.js::handleFileSelect(event)` - Event handler for the file input `change` event. Stores the selected file and updates the UI via `displayFileInfo`.
+*   `static/js/app.js::displayFileInfo()` - Updates the file info display area to show the selected filename and a clear button, or clears it if no file is selected.
+*   `static/js/app.js::clearSelectedFile()` - Resets the `selectedFile` state and updates the UI via `displayFileInfo`.
 
 ---
 
 ## **Discontinued Functions/Methods**
 
-*   `src/main.py::read_root()` - Removed in Phase 1 (simple GET endpoint at `/`).
-*   `src/agents/core.py::Agent.initialize_openai_client(api_key: Optional[str] = None)` - Removed in Phase 5.5 (provider handles client initialization).
-*   `src/agents/core.py::Agent.update_system_prompt_with_tools()` - Removed in Phase 5.5 (relying on `tools` parameter passed to providers).
-*   `src/agents/manager.py::AgentManager._process_message_for_agent(agent: Agent, message: str)` - Removed in Phase 5 (replaced by generator handling).
-*   `src/tools/executor.py::ToolExecutor.get_formatted_tool_descriptions()` -> `str` - Potentially Obsolete in Phase 5.5 (Manual formatting for prompts less needed with structured `tools` parameter, though might be useful for non-OpenAI standard models).
-*   `src/tools/executor.py::ToolExecutor.parse_tool_call(...)` -> `Optional[Tuple[str, Dict]]` - Obsolete in Phase 5 (Manual JSON parsing replaced by provider handling of native tool/function calls).
+*   `src/main.py::read_root()` - Removed in Phase 1.
+*   `src/agents/core.py::Agent.initialize_openai_client(api_key: Optional[str] = None)` - Removed in Phase 5.5.
+*   `src/agents/core.py::Agent.update_system_prompt_with_tools()` - Removed in Phase 5.5.
+*   `src/agents/manager.py::AgentManager._process_message_for_agent(agent: Agent, message: str)` - Removed in Phase 5.
+*   `src/tools/executor.py::ToolExecutor.get_formatted_tool_descriptions()` -> `str` - Obsolete in Phase 5.5 (Provider handles tool formatting).
+*   `src/tools/executor.py::ToolExecutor.parse_tool_call(...)` -> `Optional[Tuple[str, Dict]]` - Obsolete in Phase 5 (Provider handles tool call parsing).
 
 ---
