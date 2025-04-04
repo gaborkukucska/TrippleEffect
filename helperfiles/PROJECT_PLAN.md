@@ -1,4 +1,4 @@
-# START OF FILE helperfiles/PROJECT_PLAN.md
+<!-- START OF FILE helperfiles/PROJECT_PLAN.md -->
 # Project Plan: TrippleEffect
 
 **Version:** 1.0
