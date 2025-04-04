@@ -6,6 +6,10 @@ from pathlib import Path
 import os # Import os for environment variables later if needed
 from dotenv import load_dotenv # Import load_dotenv
 
+# Import the routers
+from src.api import http_routes # Import http_routes
+# Placeholder for websocket_manager import
+
 # Load environment variables from .env file
 # Useful for API keys later. Make sure .env is in .gitignore
 load_dotenv()
@@ -29,20 +33,13 @@ else:
     # print(f"Created static files directory at {static_files_path}")
     # app.mount("/static", StaticFiles(directory=static_files_path), name="static")
 
-
-# Placeholder for API routers (will be added soon)
-# from src.api import http_routes, websocket_manager
-# app.include_router(http_routes.router)
-# app.include_router(websocket_manager.router)
+# Include the API routers
+app.include_router(http_routes.router) # Include the HTTP router
+# Placeholder for including websocket_manager router
 
 
-# Basic root endpoint for checking if the server is running
-@app.get("/")
-async def read_root():
-    """
-    Root endpoint. Provides a simple response to indicate the server is running.
-    """
-    return {"message": "Welcome to TrippleEffect Backend!"}
+# Basic root endpoint removed, as it's now handled by http_routes.router
+
 
 # Configuration for running the app with uvicorn directly
 if __name__ == "__main__":
