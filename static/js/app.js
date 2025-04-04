@@ -1,149 +1,164 @@
 // START OF FILE static/js/app.js
 
-document.addEventListener("DOMContentLoaded", () => {
-    const messageArea = document.getElementById("message-area");
-    const messageInput = document.getElementById("message-input");
-    const sendButton = document.getElementById("send-button");
-    // Placeholder for agent status area (can be used later)
-    // const agentStatusArea = document.getElementById("agent-status-area");
+// --- WebSocket Connection ---
+const messageArea = document.getElementById('message-area');
+const messageInput = document.getElementById('message-input');
+const sendButton = document.getElementById('send-button');
+let websocket = null;
 
-    let websocket = null;
-    const agentMessageBuffers = {}; // To group streamed messages per agent { agent_id: { element: null, content: "" } }
+// Use ws:// or wss:// depending on the server protocol
+// const wsUri = "ws://localhost:8000/ws";
+// Dynamically determine WebSocket protocol based on window location protocol
+const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+const wsUri = `${wsProtocol}//${window.location.host}/ws`;
 
-    function addMessage(data) {
-        if (!messageArea) return;
 
-        let messageElement = document.createElement("div");
-        messageElement.classList.add("message"); // Base class
+function connectWebSocket() {
+    websocket = new WebSocket(wsUri);
 
-        const messageType = data.type || "raw"; // Default to 'raw' if type is missing
-        const content = data.content || data.message || JSON.stringify(data); // Handle different content fields
-        const agentId = data.agent_id || null; // Get agent ID if present
+    websocket.onopen = function(event) {
+        console.log("WebSocket connection opened:", event);
+        addMessage({ type: "status", message: "Connection established." });
+        sendButton.disabled = false; // Enable send button on connect
+        messageInput.disabled = false;
+        messageInput.focus();
+    };
 
-        messageElement.classList.add(messageType); // Add type-specific class (e.g., 'status', 'error', 'agent_response', 'user')
-
-        if (agentId) {
-            messageElement.dataset.agentId = agentId; // Add data attribute for CSS styling
+    websocket.onmessage = function(event) {
+        console.log("WebSocket message received:", event.data);
+        try {
+            const data = JSON.parse(event.data);
+            addMessage(data); // Process and display the message
+        } catch (e) {
+            console.error("Failed to parse JSON message:", e);
+            addMessage({ type: "raw", content: `Received non-JSON: ${event.data}` });
         }
+    };
 
-        // --- Streaming Logic for Agent Responses ---
-        if (messageType === "agent_response" && agentId) {
-            // Check if there's an existing buffer/element for this agent's current response stream
-            if (!agentMessageBuffers[agentId] || !agentMessageBuffers[agentId].element) {
-                 // Create a new message element for this agent's stream
-                 messageElement.textContent = content;
-                 messageArea.appendChild(messageElement);
-                 // Store the element and initial content in the buffer
-                 agentMessageBuffers[agentId] = { element: messageElement, content: content };
+    websocket.onerror = function(event) {
+        console.error("WebSocket error observed:", event);
+        addMessage({ type: "error", content: "WebSocket connection error. Check backend." });
+        sendButton.disabled = true; // Disable on error
+        messageInput.disabled = true;
+    };
+
+    websocket.onclose = function(event) {
+        console.log("WebSocket connection closed:", event);
+        addMessage({ type: "status", message: `Connection closed (Code: ${event.code}). Trying to reconnect...` });
+        sendButton.disabled = true; // Disable while closed
+        messageInput.disabled = true;
+        // Attempt to reconnect after a delay
+        setTimeout(connectWebSocket, 5000); // Reconnect every 5 seconds
+    };
+}
+
+// --- Message Handling ---
+
+function addMessage(data) {
+    const messageElement = document.createElement('div');
+    messageElement.classList.add('message');
+
+    let messageContent = '';
+    let messageType = data.type || 'unknown'; // Default type
+    let agentId = data.agent_id || 'system'; // Default agent ID
+
+    messageElement.dataset.agentId = agentId; // Store agent ID for potential styling/grouping
+
+    // --- Determine Message Type and Content ---
+    switch (messageType) {
+        case 'status':
+            messageElement.classList.add('status');
+            // Check for tool execution status
+            if (data.content && data.content.startsWith("Executing tool:")) {
+                messageContent = `⚙️ ${data.content}`; // Add an icon or indicator
+                messageElement.classList.add('tool-execution'); // Add specific class
+            } else if (data.message) { // Handle initial connect message format
+                messageContent = data.message;
             } else {
-                 // Append content to the existing element and buffer
-                 agentMessageBuffers[agentId].content += content;
-                 agentMessageBuffers[agentId].element.textContent = agentMessageBuffers[agentId].content;
-                 // We don't need to append a new div, just update the existing one
-                 messageElement = null; // Prevent appending a duplicate div later
+                 messageContent = data.content || 'Status update.';
             }
-        } else {
-             // For non-streamed messages or non-agent messages, just display directly
-             messageElement.textContent = content;
-             messageArea.appendChild(messageElement);
-
-             // If this message is NOT an agent_response, clear the buffers for all agents
-             // This assumes a non-agent message (like status 'finished') signifies the end of streaming for that interaction.
-             // This might need refinement depending on backend message flow.
-              if (messageType !== "agent_response") {
-                  Object.keys(agentMessageBuffers).forEach(id => {
-                      agentMessageBuffers[id] = { element: null, content: "" };
-                  });
-              }
-              // If it *is* an agent response but *not* streamed (e.g., a full response at once)
-              // clear the buffer specifically for *that* agent, assuming the stream is done.
-              else if (agentId && agentMessageBuffers[agentId]) {
-                  agentMessageBuffers[agentId] = { element: null, content: "" };
-              }
-        }
-
-
-        // Scroll to the bottom of the message area
-        messageArea.scrollTop = messageArea.scrollHeight;
+            break;
+        case 'error':
+            messageElement.classList.add('error');
+            messageContent = `❗ Error: ${data.content || 'An unknown error occurred.'}`;
+            break;
+        case 'user': // Local echo of user message
+            messageElement.classList.add('user');
+            messageContent = data.content;
+            break;
+        case 'agent_response':
+            messageElement.classList.add('agent_response');
+            messageContent = data.content; // Raw chunk from agent
+            handleAgentResponseChunk(messageElement, agentId, messageContent);
+            return; // Return early as grouping is handled separately
+        case 'raw': // For non-JSON or debug messages
+        default:
+            messageElement.classList.add('raw');
+            messageContent = `Raw: ${data.content || JSON.stringify(data)}`;
+            break;
     }
 
-    function connectWebSocket() {
-        // Determine WebSocket protocol (ws or wss)
-        const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+    // For non-agent-response types, just set the content directly
+    messageElement.textContent = messageContent;
+    messageArea.appendChild(messageElement);
+    scrollToBottom(); // Scroll down after adding message
+}
 
-        websocket = new WebSocket(wsUrl);
+// --- Agent Response Streaming/Grouping ---
+let agentMessageBuffers = {}; // { agent_id: { element: div, content: string } }
 
-        websocket.onopen = (event) => {
-            console.log("WebSocket connection opened");
-            addMessage({ type: "status", content: "Connection established." });
-            sendButton.disabled = false; // Enable send button on connect
-        };
+function handleAgentResponseChunk(newChunkElement, agentId, chunkContent) {
+    // Find the last message in the area
+    const lastMessage = messageArea.lastElementChild;
 
-        websocket.onmessage = (event) => {
-            console.log("Message from server:", event.data);
-            try {
-                const data = JSON.parse(event.data);
-                addMessage(data); // Use the structured message handler
-            } catch (e) {
-                console.error("Failed to parse JSON message or handle message:", e);
-                // Display raw message as fallback
-                addMessage({ type: "raw", content: `Raw: ${event.data}` });
-            }
-        };
-
-        websocket.onerror = (event) => {
-            console.error("WebSocket error:", event);
-            addMessage({ type: "error", content: "WebSocket connection error." });
-            sendButton.disabled = true; // Disable send on error
-        };
-
-        websocket.onclose = (event) => {
-            console.log("WebSocket connection closed:", event);
-            addMessage({ type: "status", content: `Connection closed: ${event.code} ${event.reason}` });
-            sendButton.disabled = true; // Disable send button on close
-            websocket = null;
-            // Optional: Attempt to reconnect after a delay
-            // setTimeout(connectWebSocket, 5000); // Reconnect every 5 seconds
-        };
+    // Check if the last message was from the *same agent* and was an agent_response
+    if (lastMessage && lastMessage.dataset.agentId === agentId && lastMessage.classList.contains('agent_response')) {
+        // Append the chunk to the existing message element
+        // Use textContent to avoid potential HTML injection issues if content isn't sanitized
+        lastMessage.textContent += chunkContent;
+    } else {
+        // It's a new agent response block or follows a different message type
+        // Set the content of the newly created element and append it
+        newChunkElement.textContent = chunkContent; // Set content for the first chunk
+        messageArea.appendChild(newChunkElement);
     }
+    scrollToBottom(); // Scroll down after adding/appending chunk
+}
 
-    function sendMessage() {
-        if (!websocket || websocket.readyState !== WebSocket.OPEN) {
-            addMessage({ type: "error", content: "WebSocket is not connected." });
-            return;
-        }
 
-        const messageText = messageInput.value.trim();
-        if (messageText) {
-            // Display user message immediately
-            addMessage({ type: "user", content: messageText });
+function sendMessage() {
+    const message = messageInput.value.trim();
+    if (message && websocket && websocket.readyState === WebSocket.OPEN) {
+        // Display user message locally immediately
+        addMessage({ type: "user", content: message });
 
-            // Send message to backend
-            websocket.send(messageText); // Send raw text, backend expects this based on current implementation
+        // Send the message via WebSocket
+        websocket.send(message);
 
-            // Clear input field
-            messageInput.value = "";
-
-            // Optional: Disable button while waiting for response (though multiple agents run concurrently)
-            // sendButton.disabled = true;
-            // Re-enable logic would need to track if *any* agent is still processing.
-            // For now, allow sending new messages even if others are processing.
-        }
+        // Clear input field
+        messageInput.value = '';
+    } else if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+         addMessage({ type: "error", content: "WebSocket is not connected. Cannot send message." });
     }
+}
 
-    // --- Event Listeners ---
-    sendButton.addEventListener("click", sendMessage);
+// --- Utility Functions ---
+function scrollToBottom() {
+    messageArea.scrollTop = messageArea.scrollHeight;
+}
 
-    messageInput.addEventListener("keypress", (event) => {
-        // Send message on Enter key press (Shift+Enter for new line is standard textarea behavior)
-        if (event.key === "Enter" && !event.shiftKey) {
-            event.preventDefault(); // Prevent default Enter behavior (new line)
-            sendMessage();
-        }
-    });
+// --- Event Listeners ---
+sendButton.addEventListener('click', sendMessage);
 
-    // --- Initial Connection ---
-    connectWebSocket();
-
+messageInput.addEventListener('keypress', function(event) {
+    // Send message on Enter key press (Shift+Enter for newline)
+    if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault(); // Prevent default Enter behavior (newline)
+        sendMessage();
+    }
 });
+
+// --- Initial Connection ---
+messageInput.disabled = true; // Disable input until connected
+sendButton.disabled = true;
+connectWebSocket();
