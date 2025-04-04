@@ -1,7 +1,7 @@
 <!-- # START OF FILE helperfiles/PROJECT_PLAN.md -->
 # Project Plan: TrippleEffect
 
-**Version:** 1.3 (Completed first part of Phase 6)
+**Version:** 1.4 (Completed second part of Phase 6)
 **Date:** 2025-04-04 (Note: Should be updated with actual dev dates)
 
 ## 1. Project Goals
@@ -23,7 +23,7 @@
 *   **Core Backend:** FastAPI application, WebSocket management, asynchronous task handling.
 *   **Agent Core:** Agent class definition, state management, interaction logic via abstracted LLM providers (including tool use).
 *   **Agent Manager:** Coordination logic for multiple agents (task assignment, message routing, tool execution orchestration).
-*   **Basic UI:** HTML/CSS/Vanilla JS frontend for submitting tasks, displaying agent outputs, basic configuration, basic tool usage indication, basic file context upload.
+*   **Basic UI:** HTML/CSS/Vanilla JS frontend for submitting tasks, displaying agent outputs, basic configuration viewing, basic tool usage indication, basic file context upload.
 *   **Configuration:** Loading agent settings (LLM provider, model, system prompt, temperature, etc.) from `config.yaml`. API keys/URLs via `.env`.
 *   **WebSocket Communication:** Real-time streaming of agent thoughts/responses/status to the UI.
 *   **Basic Sandboxing:** Creation of dedicated directories for agent file operations (`sandboxes/agent_<id>/`).
@@ -150,7 +150,7 @@ graph LR
 *   [X] Display detailed agent status indicators (e.g., idle, processing, using tool `[tool_name]`).
 *   [X] Implement message history display (currently only live stream - client-side history implemented for session).
 *   [X] Add basic file upload capability in UI to send context/files to agents (client-side reading/prepending implemented).
-*   [ ] Implement UI for *viewing* agent configurations (from `config.yaml`).
+*   [X] Implement UI for *viewing* agent configurations (from `config.yaml`). <!-- Updated Status -->
 *   [ ] Test and refine multi-provider support, especially tool usage with Ollama/OpenRouter models.
 
 **Phase 7: Refinement, Optimization & Documentation**
