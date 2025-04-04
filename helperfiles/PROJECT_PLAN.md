@@ -1,7 +1,7 @@
 <!-- # START OF FILE helperfiles/PROJECT_PLAN.md -->
 # Project Plan: TrippleEffect
 
-**Version:** 1.5 (Planning for Config UI Management)
+**Version:** 1.6 (Completed Config Viewing UI)
 **Date:** 2025-04-04 (Note: Should be updated with actual dev dates)
 
 ## 1. Project Goals
@@ -155,8 +155,8 @@ graph LR
 *   [X] Display detailed agent status indicators (e.g., idle, processing, using tool `[tool_name]`).
 *   [X] Implement message history display (client-side history implemented for session).
 *   [X] Add basic file upload capability in UI to send context/files to agents (client-side reading/prepending implemented).
-*   [ ] Implement UI for *viewing* agent configurations (from `config.yaml`). <!-- NEXT STEP -->
-*   [ ] Test and refine multi-provider support, especially tool usage with Ollama/OpenRouter models.
+*   [X] Implement UI for *viewing* agent configurations (from `config.yaml`). <!-- Status Updated -->
+*   [ ] Test and refine multi-provider support, especially tool usage with Ollama/OpenRouter models. <!-- NEXT STEP -->
 
 **Phase 7: Refinement, Optimization & Documentation**
 *   [ ] Improve error handling and reporting (backend and UI).
