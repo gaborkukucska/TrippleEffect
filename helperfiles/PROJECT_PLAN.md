@@ -62,7 +62,8 @@
 (Diagram updated to reflect planned Admin AI and UI structure changes)
 
 ```mermaid
-graph TD %% Changed to Top-Down for better layer visualization
+graph TD
+    %% Changed to Top-Down for better layer visualization
     USER[👨‍💻 Human User]
 
     subgraph Frontend [Human UI Layer - Phase 10+]
