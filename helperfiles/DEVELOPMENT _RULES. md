@@ -1,6 +1,6 @@
 <!-- # START OF FILE helperfiles/DEVELOPMENT_RULES.md -->
 # Development Rules
-During development pease follow these rules.
+During development please follow these rules.
 
 *   Follow a phased implementation as outlined in the `helperfiles/PROJECT_PLAN.md` file.
 *   Maintain `helperfiles/PROJECT_PLAN.md` (update status) and `helperfiles/FUNCTIONS_INDEX.md`, updating them at every milestone.
@@ -10,3 +10,4 @@ During development pease follow these rules.
     *   Provide complete file contents for modification.
     *   Wait for confirmation before proceeding to the next file.
     *   Maintain code consistency.
+*   **Mermaid Syntax:** Remember that Mermaid diagrams used in Markdown (like in `README.md` or `PROJECT_PLAN.md`) are sensitive to inline comments. Use `%% Comment Text` on a **separate line** for comments within diagram definitions, not after a statement on the same line (e.g., `NodeA --> NodeB; %% This might break`).
