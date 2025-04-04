@@ -70,13 +70,16 @@ graph LR
     UI -- HTTP --> FASTAPI;
     UI -- "WebSocket /ws" <--> WS_MANAGER;
     FASTAPI -- Manages --> AGENT_MANAGER;
-    FASTAPI -- "Config Read API /api/config/agents" --> CONFIG_YAML; %% Reads config via settings
+    FASTAPI -- "Config Read API /api/config/agents" --> CONFIG_YAML;
+        %% FastAPI reads config via settings module on demand for API
     WS_MANAGER -- "Forwards/Receives" --> AGENT_MANAGER;
     AGENT_MANAGER -- "Controls/Coordinates" --> AGENT_INST_1;
     AGENT_MANAGER -- "Controls/Coordinates" --> AGENT_INST_2;
     AGENT_MANAGER -- "Controls/Coordinates" --> AGENT_INST_N;
-    AGENT_MANAGER -- "Reads Config" --> CONFIG_YAML; %% Via settings
-    AGENT_MANAGER -- "Reads Defaults/Secrets" --> DOT_ENV; %% Via settings
+    AGENT_MANAGER -- "Reads Config" --> CONFIG_YAML;
+        %% AgentManager reads config via settings on init
+    AGENT_MANAGER -- "Reads Defaults/Secrets" --> DOT_ENV;
+        %% AgentManager reads .env via settings on init
     AGENT_MANAGER -- "Instantiates & Injects" --> LLM_Providers;
     AGENT_INST_1 -- Uses --> PROVIDER_A;
     AGENT_INST_2 -- Uses --> PROVIDER_B;
@@ -87,7 +90,7 @@ graph LR
     AGENT_MANAGER -- "Routes Tool Request" --> TOOL_EXECUTOR;
     TOOL_EXECUTOR -- Executes --> TOOL_FS;
     TOOL_EXECUTOR -- Executes --> TOOL_WEB;
-    %% Tool requests flow through provider
+    %% Tool requests flow through provider logic
     AGENT_INST_1 -- "Requests Tools Via Provider" --> LLM_Providers;
     AGENT_INST_1 -- "File I/O Via Tool" --> SANDBOXES;
     TOOL_FS -- "Operates Within" --> SANDBOXES;
