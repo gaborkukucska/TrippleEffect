@@ -1,1 +1,46 @@
-# START OF FILE templates/index.html
+<!-- # START OF FILE templates/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TrippleEffect</title>
+    <!-- Link to the CSS file -->
+    <link href="/static/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <h1>TrippleEffect Interface</h1>
+
+        <!-- Area for displaying messages, logs, agent outputs -->
+        <div id="message-area" class="message-area">
+            <p>Welcome! Connecting to backend...</p>
+            <!-- Messages will be dynamically added here -->
+        </div>
+
+        <!-- Input area for sending tasks/messages -->
+        <div class="input-area">
+            <textarea id="message-input" placeholder="Enter your task here..."></textarea>
+            <button id="send-button">Send</button>
+            <!-- Placeholders for future inputs like file upload, voice, etc. -->
+        </div>
+
+        <!-- Placeholder for configuration section -->
+        <div class="config-area">
+            <h2>Configuration (Placeholder)</h2>
+            <!-- Configuration options will go here later -->
+        </div>
+
+         <!-- Placeholder for agent status section -->
+         <div class="agent-status-area">
+            <h2>Agent Status (Placeholder)</h2>
+            <!-- Agent status indicators will go here later -->
+         </div>
+
+    </div> <!-- /container -->
+
+    <!-- Link to the JavaScript file -->
+    <!-- Placed at the end of body for better performance -->
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
