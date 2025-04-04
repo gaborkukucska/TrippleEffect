@@ -7,8 +7,7 @@ import os # Import os for environment variables later if needed
 from dotenv import load_dotenv # Import load_dotenv
 
 # Import the routers
-from src.api import http_routes # Import http_routes
-# Placeholder for websocket_manager import
+from src.api import http_routes, websocket_manager # Import websocket_manager
 
 # Load environment variables from .env file
 # Useful for API keys later. Make sure .env is in .gitignore
@@ -35,10 +34,7 @@ else:
 
 # Include the API routers
 app.include_router(http_routes.router) # Include the HTTP router
-# Placeholder for including websocket_manager router
-
-
-# Basic root endpoint removed, as it's now handled by http_routes.router
+app.include_router(websocket_manager.router) # Include the WebSocket router
 
 
 # Configuration for running the app with uvicorn directly
