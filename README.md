@@ -1,31 +1,33 @@
 <!-- # START OF FILE README.md -->
 # TrippleEffect 🧑‍🚒🧑‍🏫👩‍🔧
 
-**TrippleEffect** is an asynchronous, collaborative multi-agent framework designed with a browser-based user interface 🌐, optimized for environments like Termux 📱. It allows multiple Language Model (LLM) agents 🤖🤖🤖 to work together on complex tasks, coordinated through a central backend and managed via a web UI. It aims for extensibility to support various LLM API providers (like Ollama, LiteLLM, OpenRouter, Google, Anthropic, DeepSeek, etc.).
+**TrippleEffect** is an asynchronous, collaborative multi-agent framework designed with a browser-based user interface 🌐, optimized for environments like Termux 📱. It allows multiple Language Model (LLM) agents 🤖🤖🤖 to work together on complex tasks, coordinated through a central backend and managed via a web UI. It aims for extensibility and supports various LLM API providers, including **OpenAI**, **Ollama**, and **OpenRouter** (and can be extended to others like LiteLLM, Google, Anthropic, etc.).
 
 ## 🎯 Core Concept
 
-The system orchestrates multiple LLM agents, whose number and specific configurations (model, persona, system prompt, etc.) are defined in a central `config.yaml` file ⚙️. Users interact with the system through a web interface to submit tasks via text 📝 (voice 🎤, camera 📸, file uploads 📁 are planned future features).
+The system orchestrates multiple LLM agents, whose number and specific configurations (**provider**, model, persona, system prompt, etc.) are defined in a central `config.yaml` file ⚙️. Users interact with the system through a web interface to submit tasks via text 📝 (voice 🎤, camera 📸, file uploads 📁 are planned future features).
 
-The agents, loaded based on the configuration, can:
-*   Work concurrently on the same task.
+The agents, loaded based on the configuration:
+*   Interact with their configured LLM provider (**OpenAI**, **Ollama**, **OpenRouter**, etc.).
+*   Can work concurrently on the same task.
 *   Collaborate and delegate sub-tasks (future phase 🤝).
-*   Utilize tools within sandboxed environments 🛠️.
+*   Utilize tools within sandboxed environments 🛠️ (supported across providers where models allow).
 *   Stream their responses back to the user interface in real-time ⚡.
 
 ## ✨ Key Features
 
 *   **Multi-Agent Architecture:** Supports multiple LLM agents working concurrently.
-*   **Asynchronous Backend:** Built with FastAPI and `asyncio` for efficient handling of concurrent operations (LLM requests, WebSocket communication).
-*   **Browser-Based UI:** Simple web interface for task submission, agent monitoring, and viewing results. Configuration viewing/editing planned.
-*   **Real-time Updates:** Uses WebSockets (`/ws`) for instant communication between the backend and the UI.
-*   **YAML Configuration:** Easily define and configure agents (ID, model, system prompt, persona, temperature) via `config.yaml`. Defaults can be set via `.env` file.
-*   **Sandboxed Workspaces:** Each agent operates within its own dynamically created directory (`sandboxes/agent_<id>/`) for file-based tasks, enhancing security and organization 📁.
-*   **Tool Usage (WIP):** Framework planned for agents to use tools (e.g., file system access 📄, web search 🔍) to extend their capabilities.
-*   **Extensible Design:** Modular structure for adding new agents (via config), tools, or UI components.
+*   **Asynchronous Backend:** Built with FastAPI and `asyncio` for efficient handling of concurrent operations.
+*   **Browser-Based UI:** Simple web interface for task submission, agent monitoring, and viewing results.
+*   **Real-time Updates:** Uses WebSockets (`/ws`) for instant communication.
+*   **Multi-Provider LLM Support:** Connect agents to different LLM backends (**OpenAI**, local **Ollama**, **OpenRouter**, easily extensible).
+*   **YAML Configuration:** Easily define agents (ID, **provider**, model, system prompt, persona, temperature, provider-specific args) via `config.yaml`. Defaults and API keys set via `.env`.
+*   **Sandboxed Workspaces:** Each agent operates within its own directory (`sandboxes/agent_<id>/`) for file-based tasks 📁.
+*   **Tool Usage:** Framework allows agents to use tools (e.g., file system access 📄, web search 🔍 planned). Tool support relies on the capabilities of the chosen LLM model and provider implementation.
+*   **Extensible Design:** Modular structure (`src/llm_providers`, `src/tools`) for adding new LLM providers, agents, or tools.
 *   **Termux Friendly:** Aims for compatibility and reasonable performance on resource-constrained environments.
 
-## 🏗️ Architecture Overview (Conceptual)
+## 🏗️ Architecture Overview (Conceptual - Updated for Provider Abstraction)
 
 ```mermaid
 graph LR
@@ -39,22 +41,29 @@ graph LR
         AGENT_MANAGER["🧑‍💼 Agent Manager <br>(agents/manager.py)"]
         subgraph Agents
             direction LR
-            AGENT_INST_1["🤖 Agent Instance 1 <br>(agents/core.py)"]
-            AGENT_INST_2["🤖 Agent Instance 2"]
-            AGENT_INST_N["🤖 Agent Instance N"]
+            AGENT_INST_1["🤖 Agent Instance 1 <br>(agents/core.py)<br>Uses Provider A"]
+            AGENT_INST_2["🤖 Agent Instance 2 <br>Uses Provider B"]
+            AGENT_INST_N["🤖 Agent Instance N <br>Uses Provider C"]
+        end
+        subgraph LLM_Providers ["☁️ LLM Providers <br>(src/llm_providers/)"]
+            PROVIDER_A["🔌 Provider A <br>(e.g., OpenAI)"]
+            PROVIDER_B["🔌 Provider B <br>(e.g., Ollama)"]
+            PROVIDER_C["🔌 Provider C <br>(e.g., OpenRouter)"]
         end
         subgraph Tools
             direction TB
             TOOL_EXECUTOR["🛠️ Tool Executor <br>(tools/executor.py)"]
             TOOL_FS["📄 FileSystem Tool <br>(tools/file_system.py)"]
-            TOOL_WEB["🔍 Web Search Tool"]
+            TOOL_WEB["🔍 Web Search Tool (Planned)"]
         end
         SANDBOXES["📁 Sandboxes <br>(sandboxes/agent_id/)"]
     end
 
     subgraph External
-        LLM_API["☁️ LLM APIs <br>(OpenAI, etc.)"]
-        CONFIG["⚙️ config.yaml"]
+        LLM_API_SVC["☁️ External LLM APIs <br>(OpenAI, OpenRouter)"]
+        OLLAMA_SVC["⚙️ Local Ollama Service"]
+        CONFIG_YAML["⚙️ config.yaml"]
+        DOT_ENV[".env File <br>(API Keys, URLs)"]
     end
 
     UI -- HTTP --> FASTAPI;
@@ -64,46 +73,43 @@ graph LR
     AGENT_MANAGER -- "Controls/Coordinates" --> AGENT_INST_1;
     AGENT_MANAGER -- "Controls/Coordinates" --> AGENT_INST_2;
     AGENT_MANAGER -- "Controls/Coordinates" --> AGENT_INST_N;
-    AGENT_MANAGER -- "Reads Config" --> CONFIG;
-    AGENT_INST_1 -- Interacts --> LLM_API;
-    AGENT_INST_2 -- Interacts --> LLM_API;
-    AGENT_INST_N -- Interacts --> LLM_API;
+    AGENT_MANAGER -- "Reads Config" --> CONFIG_YAML;
+    AGENT_MANAGER -- "Reads Defaults/Secrets" --> DOT_ENV;
+    AGENT_MANAGER -- "Instantiates & Injects" --> LLM_Providers;
+    AGENT_INST_1 -- Uses --> PROVIDER_A;
+    AGENT_INST_2 -- Uses --> PROVIDER_B;
+    AGENT_INST_N -- Uses --> PROVIDER_C;
+    PROVIDER_A -- Interacts --> LLM_API_SVC;
+    PROVIDER_B -- Interacts --> OLLAMA_SVC;
+    PROVIDER_C -- Interacts --> LLM_API_SVC;
     AGENT_MANAGER -- "Routes Tool Request" --> TOOL_EXECUTOR;
     TOOL_EXECUTOR -- Executes --> TOOL_FS;
     TOOL_EXECUTOR -- Executes --> TOOL_WEB;
-    AGENT_INST_1 -- "File I/O" --> SANDBOXES;
-    AGENT_INST_2 -- "File I/O" --> SANDBOXES;
-    AGENT_INST_N -- "File I/O" --> SANDBOXES;
+    AGENT_INST_1 -- "Requests Tools Via Provider" --> LLM_Providers; # Indirectly
+    AGENT_INST_1 -- "File I/O Via Tool" --> SANDBOXES;
     TOOL_FS -- "Operates Within" --> SANDBOXES;
 
 ```
 
-*   **Browser UI:** Frontend interface (`static/`, `templates/`).
-*   **FastAPI Backend:** Serves UI, handles HTTP/WebSocket, orchestrates via `AgentManager`.
-*   **WebSocket Manager:** Manages real-time UI communication.
-*   **Agent Manager:** Central coordinator; loads config, initializes agents & sandboxes, dispatches tasks.
-*   **Agent Instances:** Individual agent objects; interact with LLMs, manage state, use sandbox.
-*   **Tools:** Modules providing capabilities (filesystem, web search, etc.).
-*   **Sandboxes:** Isolated agent directories (`sandboxes/agent_<id>/`).
-*   **LLM APIs:** External services (e.g., OpenAI).
-*   **`config.yaml`:** Defines agents and their settings.
+*   **LLM Providers (`src/llm_providers/`):** New layer abstracting interaction with different LLM APIs (OpenAI, Ollama, OpenRouter).
+*   **Agent Instances:** Use an injected LLM provider instance.
+*   **`.env`:** Crucial for storing API keys and provider base URLs.
 
 ## 💻 Technology Stack
 
 *   **Backend:** Python 3.9+, FastAPI, Uvicorn
 *   **WebSockets:** `websockets` library integrated with FastAPI
-*   **LLM Interaction:** `openai` library (initially), `aiohttp` (for potential future HTTP APIs)
+*   **LLM Interaction:** `openai` library (used by OpenAI & OpenRouter providers), `aiohttp` (used by Ollama provider)
 *   **Frontend:** HTML5, CSS3, Vanilla JavaScript
 *   **Asynchronous:** `asyncio`
-*   **Configuration:** YAML (`PyYAML`), `.env` files (for secrets/defaults)
+*   **Configuration:** YAML (`PyYAML`), `.env` files (`python-dotenv`)
 *   **Data Handling:** Pydantic (via FastAPI)
 
 ## 📁 Directory Structure
 
-```
-TrippleEffect/
-├── .venv/                  # Virtual environment (Recommended)
-├── config.yaml             # Agent configurations <--- ✨ NEW
+```TrippleEffect/
+├── .venv/
+├── config.yaml             # Agent configurations (provider, model, etc.) ✨ UPDATED
 ├── helperfiles/            # Project planning & tracking 📝
 │   ├── PROJECT_PLAN.md
 │   ├── DEVELOPMENT_RULES.md
@@ -113,21 +119,26 @@ TrippleEffect/
 ├── src/                    # Source code 🐍
 │   ├── agents/             # Agent core logic & manager
 │   │   ├── __init__.py
-│   │   ├── core.py         # Agent class definition 🤖
-│   │   ├── manager.py      # AgentManager class 🧑‍💼
-│   │   └── prompts.py      # (Planned) For prompt templates
+│   │   ├── core.py         # Agent class (uses injected provider) 🤖
+│   │   └── manager.py      # AgentManager (instantiates providers) 🧑‍💼
 │   ├── api/                # FastAPI routes & WebSocket logic 🔌
 │   │   ├── __init__.py
-│   │   ├── http_routes.py  # HTTP endpoints (serving UI)
-│   │   └── websocket_manager.py # WebSocket endpoint & broadcast
+│   │   ├── http_routes.py
+│   │   └── websocket_manager.py
 │   ├── config/             # Configuration loading ⚙️
 │   │   ├── __init__.py
-│   │   └── settings.py     # Loads .env and config.yaml
-│   ├── tools/              # Agent tools implementations 🛠️ (Phase 5+)
+│   │   └── settings.py     # Loads .env and config.yaml (provider keys/URLs) ✨ UPDATED
+│   ├── llm_providers/      # LLM provider implementations <--- ✨ NEW
 │   │   ├── __init__.py
-│   │   ├── base.py         # (Planned) Base tool definition
-│   │   ├── executor.py     # (Planned) Tool execution logic
-│   │   └── file_system.py  # (Planned) File system tool 📄
+│   │   ├── base.py         # BaseLLMProvider ABC
+│   │   ├── ollama_provider.py
+│   │   ├── openai_provider.py
+│   │   └── openrouter_provider.py
+│   ├── tools/              # Agent tools implementations 🛠️
+│   │   ├── __init__.py
+│   │   ├── base.py
+│   │   ├── executor.py
+│   │   └── file_system.py
 │   ├── ui/                 # UI backend helpers (if needed)
 │   │   └── __init__.py
 │   ├── utils/              # Utility functions
@@ -136,13 +147,13 @@ TrippleEffect/
 │   └── main.py             # Application entry point 🚀
 ├── static/                 # Frontend static files 🌐
 │   ├── css/
-│   │   └── style.css       # Stylesheets 🎨
+│   │   └── style.css
 │   └── js/
-│       └── app.js          # Main frontend JavaScript 💡
+│       └── app.js
 ├── templates/              # HTML templates (Jinja2)
-│   └── index.html          # Main HTML page 📄
-├── .env.example            # Example environment variables file <--- NEW
-├── .gitignore              # Git ignore file
+│   └── index.html
+├── .env.example            # Example environment variables ✨ UPDATED
+├── .gitignore
 ├── LICENSE                 # Project License (Specify one!) 📜
 ├── README.md               # This file! 📖
 └── requirements.txt        # Python dependencies 📦
@@ -153,7 +164,8 @@ TrippleEffect/
 1.  **Prerequisites:**
     *   Python 3.9+ 🐍
     *   Git
-    *   (Termux specific) `pkg install python git openssl-tool libjpeg-turbo libwebp` (potentially more later)
+    *   (Optional) Local Ollama instance running if using Ollama provider.
+    *   (Termux specific) `pkg install python git openssl-tool libjpeg-turbo libwebp`
 
 2.  **Clone Repository:**
     ```bash
@@ -164,11 +176,8 @@ TrippleEffect/
 3.  **Set up Virtual Environment:** (Recommended)
     ```bash
     python -m venv .venv
-    # Activate it:
-    # Linux/macOS:
-    source .venv/bin/activate
-    # Windows:
-    # .venv\Scripts\activate
+    source .venv/bin/activate # Linux/macOS
+    # .venv\Scripts\activate # Windows
     ```
 
 4.  **Install Dependencies:** 📦
@@ -181,22 +190,33 @@ TrippleEffect/
         ```bash
         cp .env.example .env
         ```
-    *   Edit the `.env` file and add your OpenAI API key:
+    *   **Edit the `.env` file:** Add your API keys and configure URLs as needed for the providers you intend to use (OpenAI, OpenRouter, Ollama). Pay attention to `OPENROUTER_REFERER`.
         ```dotenv
-        # .env
-        OPENAI_API_KEY=your_secret_openai_api_key_here
+        # .env (Example - Fill with your actual values)
+        OPENAI_API_KEY=sk-your-openai-key...
+        # OPENAI_BASE_URL=
 
-        # Optional: Set default agent parameters if config.yaml is missing/incomplete
-        # DEFAULT_AGENT_MODEL=gpt-3.5-turbo
-        # DEFAULT_SYSTEM_PROMPT="You are a helpful assistant."
-        # DEFAULT_TEMPERATURE=0.7
-        # DEFAULT_PERSONA="General Assistant"
+        OPENROUTER_API_KEY=sk-or-v1-your-openrouter-key...
+        # OPENROUTER_BASE_URL=
+        OPENROUTER_REFERER=http://localhost:8000/ # Or your app name
+
+        OLLAMA_BASE_URL=http://localhost:11434 # Adjust if Ollama runs elsewhere
+
+        # Default agent params (if needed)
+        DEFAULT_AGENT_PROVIDER="openai"
+        DEFAULT_AGENT_MODEL="gpt-3.5-turbo"
+        # ... other defaults
         ```
-    *   **Important:** Ensure `.env` is listed in your `.gitignore` file to avoid committing secrets!
+    *   **Important:** Ensure `.env` is listed in your `.gitignore` file!
 
 6.  **Configure Agents:** 🧑‍🔧🧑‍🏫🧑‍🚒
     *   Edit the `config.yaml` file in the project root.
-    *   Define the `agent_id`, `model`, `system_prompt`, `temperature`, and `persona` for each agent you want to run. Refer to the example structure provided.
+    *   For each agent, define:
+        *   `agent_id`: Unique identifier.
+        *   `provider`: `"openai"`, `"ollama"`, or `"openrouter"`.
+        *   `model`: The model name specific to the chosen provider (e.g., `"gpt-4-turbo"`, `"llama3"`, `"mistralai/mistral-7b-instruct"`).
+        *   `system_prompt`, `temperature`, `persona`.
+        *   Optionally add provider-specific parameters (like `base_url`, `referer`) to override `.env` defaults for specific agents.
 
 ## ▶️ Running the Application
 
@@ -205,30 +225,30 @@ python src/main.py
 ```
 
 *   The server will start (usually on port 8000).
-*   It will load agents based on `config.yaml` during startup. Check the console output for details.
-*   Access the UI in your web browser: `http://localhost:8000` (or `http://<your-termux-ip>:8000` if on Termux).
+*   It loads agents based on `config.yaml` and initializes their respective LLM providers. Check console output for details and potential configuration warnings.
+*   Access the UI in your web browser: `http://localhost:8000`.
 
 ## 🖱️ Usage
 
-1.  Open the web UI in your browser.
-2.  The backend automatically loads the agents defined in `config.yaml`. You should see a "Connected" status message.
-3.  Type your task or question into the input box ⌨️ and press Enter or click "Send".
-4.  The task will be sent concurrently to all initialized and *available* agents.
-5.  Observe the agents' responses streaming back into the message area, identified by their `agent_id` and styled differently based on the CSS 🎨.
-6.  Agents operate within their respective `sandboxes/agent_<id>/` directories (this becomes relevant when file-system tools are used).
+1.  Open the web UI.
+2.  The backend loads agents. You should see a "Connected" status.
+3.  Type your task into the input box ⌨️ and send.
+4.  The task goes concurrently to all initialized and *available* agents.
+5.  Observe responses streaming back, identified by `agent_id`. Agent behavior (including tool use) depends on the configured provider and model.
+6.  Agents operate within `sandboxes/agent_<id>/` for file system tool operations.
 
 ## 🛠️ Development
 
-*   **Code Style:** Follow PEP 8. Consider using formatters like Black.
-*   **Linting:** Use Flake8 or Pylint to catch errors.
+*   **Code Style:** Follow PEP 8. Use formatters like Black.
+*   **Linting:** Use Flake8 or Pylint.
 *   **Helper Files:** Keep `helperfiles/PROJECT_PLAN.md` and `helperfiles/FUNCTIONS_INDEX.md` updated! ✍️
-*   **Configuration:** Modify `config.yaml` to add/change agents. Set API keys and defaults in `.env`.
-*   **Branching:** Use feature branches (e.g., `feat/filesystem-tool`, `fix/ui-streaming`).
+*   **Configuration:** Modify `config.yaml` to add/change agents/providers. Set API keys/URLs/defaults in `.env`.
+*   **Branching:** Use feature branches.
 
 ## 🙌 Contributing
 
-Contributions are welcome! Please follow the development guidelines and open a Pull Request on GitHub.
+Contributions welcome! Follow guidelines, open Pull Requests.
 
 ## 📜 License
 
-(Please specify a license here, e.g., MIT License)
+(Specify MIT License, Apache 2.0, etc.)
