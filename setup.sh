@@ -53,9 +53,9 @@ update_env_var() {
     local new_value="$2"
     local env_file_path="$ENV_FILE" # Use global ENV_FILE definition
 
-    # Escape backslashes, forward slashes, and ampersands in the value for sed
+    # Escape backslashes, forward slashes, ampersands, AND the '#' delimiter for sed
     local escaped_value
-    escaped_value=$(echo "$new_value" | sed -e 's/\\/\\\\/g' -e 's/\//\\\//g' -e 's/\&/\\\&/g')
+    escaped_value=$(echo "$new_value" | sed -e 's/\\/\\\\/g' -e 's/\//\\\//g' -e 's/\&/\\\&/g' -e 's/#/\\#/g') # Added '#' escape
 
     # Check if the .env file exists
     if [ ! -f "$env_file_path" ]; then
@@ -75,7 +75,17 @@ update_env_var() {
         # Use a different delimiter for sed (#) in case value contains /
         # This sed command replaces the line starting with optional whitespace/comment,
         # the variable name, and equals sign, with the new uncommented line.
-        sed -i.bak "s#^\s*#?\s*${var_name}=.*#${var_name}=${escaped_value}#" "$env_file_path"
+        # Using placeholder MARKER avoids issues if var_name has special chars for sed pattern
+        local temp_marker="__TEMP_SED_MARKER__"
+        # Step 1: Replace the value part of the target line with the marker
+        # Capture the part before the value (\1) to preserve it (comment/whitespace/varname=)
+        sed -i.bak -e "s#^\(\s*#?\s*${var_name}=\).*#${temp_marker}#" "$env_file_path"
+        # Step 2: Replace the marker with the captured prefix (\1) and the new escaped value
+        sed -i.bak -e "s#${temp_marker}#\1${escaped_value}#" "$env_file_path"
+
+        # Original approach (potentially problematic if var_name has regex chars or value contains '#'):
+        # sed -i.bak "s#^\s*#?\s*${var_name}=.*#${var_name}=${escaped_value}#" "$env_file_path"
+
         info "Updated ${var_name} in ${env_file_path}."
     else
         # Variable doesn't exist, append it
