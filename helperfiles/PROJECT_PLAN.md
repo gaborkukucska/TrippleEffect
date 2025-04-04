@@ -117,8 +117,10 @@ graph TD
     Frontend -- WebSocket --> WS_MANAGER;
 
     FASTAPI -- Manages --> AGENT_MANAGER;
-    FASTAPI -- Triggers --> CONFIG_WRITER; %% Via API calls handled by ConfigTool
-    FASTAPI -- Notifies --> AGENT_MANAGER; %% On config change
+    FASTAPI -- Triggers --> CONFIG_WRITER;
+        %% Via API calls handled by ConfigTool
+    FASTAPI -- Notifies --> AGENT_MANAGER;
+        %% On config change
     WS_MANAGER -- Forwards Msgs / Sends Logs --> Frontend;
     WS_MANAGER -- Forwards User Msgs --> AGENT_MANAGER;
 
@@ -134,7 +136,7 @@ graph TD
 
     ADMIN_AI -- Uses --> PROVIDER_GOOGLE;
     ADMIN_AI -- Requests Tool --> TOOL_EXECUTOR;
-    %% Other agents use their providers
+        %% Other agents use their providers
 
     TOOL_EXECUTOR -- Executes --> TOOL_CONFIG;
     TOOL_EXECUTOR -- Executes --> TOOL_FS;
