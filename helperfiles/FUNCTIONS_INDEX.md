@@ -1,1 +1,1 @@
-# START OF FILE helperfiles/FUNCTIONS_INDEX.md
+<!-- # START OF FILE helperfiles/FUNCTIONS_INDEX.md -->
