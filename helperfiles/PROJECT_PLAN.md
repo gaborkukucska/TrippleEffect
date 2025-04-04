@@ -24,9 +24,9 @@
 *   **Agent Core:** Agent class definition, state management, interaction logic with LLM APIs.
 *   **Agent Manager:** Coordination logic for multiple agents (task assignment, message routing).
 *   **Basic UI:** HTML/CSS/Vanilla JS frontend for submitting tasks, displaying agent outputs, basic configuration.
-*   **Configuration:** Loading agent settings (LLM provider, model, system prompt, temperature, etc.) from a configuration source (e.g., YAML/JSON file or UI).
+*   **Configuration:** Loading agent settings (LLM provider, model, system prompt, temperature, etc.) from a configuration source (`config.yaml`).
 *   **WebSocket Communication:** Real-time streaming of agent thoughts/responses to the UI.
-*   **Basic Sandboxing:** Creation of dedicated directories for agent file operations.
+*   **Basic Sandboxing:** Creation of dedicated directories for agent file operations (`sandboxes/agent_<id>/`).
 *   **Initial Tooling:**
     *   Framework for defining and registering tools.
     *   Simple file system tool (read/write within sandbox).
@@ -51,7 +51,7 @@
 *   **LLM Interaction:** `openai` library initially, `aiohttp` for other potential HTTP-based APIs.
 *   **Frontend:** HTML5, CSS3, Vanilla JavaScript
 *   **Asynchronous Operations:** `asyncio`
-*   **Configuration:** YAML (using `PyYAML`) or JSON, `.env` files.
+*   **Configuration:** YAML (using `PyYAML`), `.env` files.
 *   **Data Handling:** Pydantic (via FastAPI)
 
 ## 4. Proposed Architecture Refinement
@@ -71,7 +71,7 @@
 | WebSocket Manager |<----->| Agent Manager (agents/mgr) |<---->| Agent Instances |
 | (api/websocket_mgr.py)| | - Task Handling | | (agents/core.py) |
 | - Forwards msgs to Mgr| | - Agent Lifecycle | | - LLM Interaction |
-| - Receives msgs fm Mgr| | - Inter-Agent Comms | | - State |
+| - Receives msgs fm Mgr| | - Inter-Agent Comms | | - State / Sandbox |
 +---------------------+ +-------------+--------------+ | - Tool Requesting |
 | | +----------+----------+
 | | ▼ (Tool Execution) ▼ (File I/O)
@@ -95,20 +95,21 @@
     *   `http_routes.py`: Handles standard HTTP requests (e.g., serving UI, config endpoints).
     *   `websocket_manager.py`: Handles WebSocket connections, **receives AgentManager instance**, routes incoming messages to AgentManager using `asyncio.create_task`, provides `broadcast` function for AgentManager to send messages to UI.
 *   **`src/agents/`**: Agent-related logic.
-    *   `manager.py`: The central coordinator (`AgentManager` class). Manages agent lifecycles, receives tasks via `handle_user_message`, orchestrates agent processing, **uses injected broadcast function** to send results/status to UI.
-    *   `core.py`: Defines the `Agent` class, responsible for interacting with LLMs (async streaming via `process_message`), managing its own state, memory (simple), **initializes OpenAI client using settings**.
+    *   `manager.py`: The central coordinator (`AgentManager` class). Manages agent lifecycles, receives tasks via `handle_user_message`, orchestrates agent processing, **uses injected broadcast function** to send results/status to UI. **Initializes agents from `config.yaml` via `settings` and ensures sandboxes exist.**
+    *   `core.py`: Defines the `Agent` class, responsible for interacting with LLMs (async streaming via `process_message`), managing its own state, memory (simple), **initializes OpenAI client using settings**, **manages its sandbox path**, **loads config from manager**.
     *   `prompts.py` (New - *Not Implemented Yet*): Store default system prompts, persona templates.
 *   **`src/tools/`**: Tool implementations and management.
     *   `executor.py`: Handles parsing agent tool requests, finding the correct tool, executing it securely (within sandbox context), and returning results.
     *   `base.py`: Base class or definition for tools.
     *   `file_system.py`, `web_search.py`, etc.: Individual tool implementations.
 *   **`src/config/`**: Configuration loading and validation.
-    *   `settings.py`: Loads config (e.g., API keys, defaults) from `.env` / environment variables.
+    *   `settings.py`: Loads config (e.g., API keys, defaults) from `.env` / environment variables **and agent configurations from `config.yaml`**.
 *   **`src/utils/`**: Common utility functions.
 *   **`sandboxes/`**: Dynamically created agent working directories.
 *   **`static/` & `templates/`**: Frontend files.
     *   `app.js`: Handles WebSocket connection, sending messages, **receiving structured messages (status, error, agent_response), groups streamed agent responses**.
 *   **`helperfiles/`**: Project plan, function index.
+*   **`config.yaml`**: New file defining agent configurations.
 
 ## 5. Development Phases & Milestones
 
@@ -145,16 +146,16 @@
 *   [ ] Define basic inter-agent communication placeholder logic within `AgentManager` (e.g., one agent sending a message to another via the manager). *(Deferred to later phase/refinement)*
 *   [X] Update `FUNCTIONS_INDEX.md` with new functions.
 
-**Phase 4: Configuration & Sandboxing (Next)**
+**Phase 4: Configuration & Sandboxing (Completed)**
 
-*   [ ] Implement loading detailed agent configurations (model, system prompt, temperature, persona) from a file (e.g., `config.yaml`). Link this to Phase 3 agent creation (replace hardcoding).
-*   [ ] Update `Agent` and `AgentManager` to use loaded configurations.
-*   [ ] Implement UI elements (potentially on a separate settings page/modal later) to *view* current configurations. (Editing via UI can be a later phase).
-*   [ ] Implement dynamic creation of sandbox directories (`sandboxes/agent_<id>/`) when agents are initialized.
-*   [ ] Ensure agents know their sandbox path.
-*   [ ] Update `FUNCTIONS_INDEX.md` with new functions.
+*   [X] Implement loading detailed agent configurations (model, system prompt, temperature, persona) from a file (`config.yaml`). Linked this to Phase 3 agent creation (replaced hardcoding).
+*   [X] Update `Agent` and `AgentManager` to use loaded configurations (`settings.py`, `agents/core.py`, `agents/manager.py`).
+*   [ ] Implement UI elements (potentially on a separate settings page/modal later) to *view* current configurations. (Editing via UI can be a later phase). *(Deferred)*
+*   [X] Implement dynamic creation of sandbox directories (`sandboxes/agent_<id>/`) when agents are initialized (`agents/manager.py`, `agents/core.py`).
+*   [X] Ensure agents know their sandbox path (`agents/core.py`).
+*   [X] Update `FUNCTIONS_INDEX.md` with new functions.
 
-**Phase 5: Basic Tool Implementation (Internal MCP-Inspired)**
+**Phase 5: Basic Tool Implementation (Internal MCP-Inspired) (Next)**
 
 *   [ ] Define a structure/base class for tools (`tools/base.py`).
 *   [ ] Implement `ToolRegistry` and `ToolExecutor` (`tools/executor.py`).
