@@ -110,20 +110,20 @@
 
 ## 5. Development Phases & Milestones
 
-**Phase 1: Core Backend Setup & Basic UI (In Progress)**
+**Phase 1: Core Backend Setup & Basic UI (Completed)**
 
 *   [X] Update `requirements.txt`.
-*   [ ] Set up project structure with refined directories. *(Structure already exists)*
-*   [ ] Implement basic FastAPI app (`main.py`).
-*   [ ] Create `templates/index.html` served by an HTTP route (`api/http_routes.py`).
-*   [ ] Create basic `static/css/style.css` and `static/js/app.js`.
-*   [ ] Implement basic WebSocket manager (`api/websocket_manager.py`) capable of connecting/disconnecting clients.
-*   [ ] Implement basic bidirectional communication (UI sends message, backend echoes back via WebSocket).
-*   [ ] Initialize `helperfiles/FUNCTIONS_INDEX.md`.
-*   [ ] Update `src/main.py` to include the HTTP router.
-*   [ ] Update `src/main.py` to include the WebSocket router.
+*   [X] Set up project structure with refined directories. *(Structure already exists)*
+*   [X] Implement basic FastAPI app (`main.py`).
+*   [X] Create `templates/index.html` served by an HTTP route (`api/http_routes.py`).
+*   [X] Create basic `static/css/style.css` and `static/js/app.js`.
+*   [X] Implement basic WebSocket manager (`api/websocket_manager.py`) capable of connecting/disconnecting clients.
+*   [X] Implement basic bidirectional communication (UI sends message, backend echoes back via WebSocket).
+*   [X] Initialize `helperfiles/FUNCTIONS_INDEX.md`.
+*   [X] Update `src/main.py` to include the HTTP router.
+*   [X] Update `src/main.py` to include the WebSocket router.
 
-**Phase 2: Agent Core & Single Agent Interaction**
+**Phase 2: Agent Core & Single Agent Interaction (Next)**
 
 *   [ ] Define `Agent` class (`agents/core.py`) with basic state (ID, config placeholder).
 *   [ ] Implement basic LLM interaction within `Agent` (using OpenAI library and `asyncio`).
@@ -132,6 +132,7 @@
 *   [ ] Stream LLM response back: LLM -> Agent -> Agent Manager -> WS Manager -> UI.
 *   [ ] Display streamed LLM response in the UI (`app.js`).
 *   [ ] Implement basic configuration loading (`src/config/settings.py`) for API keys and default agent settings (e.g., model).
+*   [ ] Update `FUNCTIONS_INDEX.md` with new functions.
 
 **Phase 3: Multi-Agent Setup & Basic Coordination**
 
@@ -140,6 +141,7 @@
 *   [ ] Update UI to potentially show outputs from multiple agents (simple initial display).
 *   [ ] Implement a basic task distribution mechanism in `AgentManager` (e.g., broadcast task to all agents or assign to the first one).
 *   [ ] Define basic inter-agent communication placeholder logic within `AgentManager`.
+*   [ ] Update `FUNCTIONS_INDEX.md` with new functions.
 
 **Phase 4: Configuration & Sandboxing**
 
@@ -148,6 +150,7 @@
 *   [ ] Implement UI elements (potentially on a separate settings page/modal later) to *view* current configurations. (Editing via UI can be a later phase).
 *   [ ] Implement dynamic creation of sandbox directories (`sandboxes/agent_<id>/`) when agents are initialized.
 *   [ ] Ensure agents know their sandbox path.
+*   [ ] Update `FUNCTIONS_INDEX.md` with new functions.
 
 **Phase 5: Basic Tool Implementation (Internal MCP-Inspired)**
 
@@ -160,6 +163,7 @@
     *   Process results from the `ToolExecutor` and potentially feed them back to the LLM.
 *   [ ] Modify `AgentManager` to route tool requests from Agents to the `ToolExecutor`.
 *   [ ] Update UI to show tool usage indication.
+*   [ ] Update `FUNCTIONS_INDEX.md` with new functions.
 
 **Phase 6: UI Enhancements & Advanced Features**
 
