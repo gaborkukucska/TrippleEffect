@@ -18,25 +18,25 @@ The agents, loaded based on the configuration:
 
 *   **Multi-Agent Architecture:** Supports multiple LLM agents working concurrently.
 *   **Asynchronous Backend:** Built with FastAPI and `asyncio` for efficient handling of concurrent operations.
-*   **Browser-Based UI:** Simple web interface for task submission, agent monitoring, and viewing results.
+*   **Browser-Based UI:** Simple web interface for task submission, agent monitoring, viewing configurations, and results.
 *   **Real-time Updates:** Uses WebSockets (`/ws`) for instant communication.
 *   **Multi-Provider LLM Support:** Connect agents to different LLM backends (**OpenAI**, local **Ollama**, **OpenRouter**, easily extensible).
 *   **YAML Configuration:** Easily define agents (ID, **provider**, model, system prompt, persona, temperature, provider-specific args) via `config.yaml`. Defaults and API keys set via `.env`.
 *   **Sandboxed Workspaces:** Each agent operates within its own directory (`sandboxes/agent_<id>/`) for file-based tasks 📁.
 *   **Tool Usage:** Framework allows agents to use tools (e.g., file system access 📄, web search 🔍 planned). Tool support relies on the capabilities of the chosen LLM model and provider implementation.
 *   **Extensible Design:** Modular structure (`src/llm_providers`, `src/tools`) for adding new LLM providers, agents, or tools.
-*   **Termux Friendly:** Aims for compatibility and reasonable performance on resource-constrained environments.
+*   **Termux Friendly:** Aims for compatibility and reasonable performance on resource-constrained environments. Requires specific build tools.
 
 ## 🏗️ Architecture Overview (Conceptual - Updated for Provider Abstraction)
 
 ```mermaid
 graph LR
     subgraph Frontend
-        UI["🌐 Browser UI <br>(HTML/CSS/JS)"]
+        UI["🌐 Browser UI <br>(HTML/CSS/JS)<br>Includes Config View"]
     end
 
     subgraph Backend
-        FASTAPI["🚀 FastAPI Backend <br>(main.py, api/)"]
+        FASTAPI["🚀 FastAPI Backend <br>(main.py, api/)<br>+ Config Read Route"]
         WS_MANAGER["🔌 WebSocket Manager <br>(api/websocket_manager.py)"]
         AGENT_MANAGER["🧑‍💼 Agent Manager <br>(agents/manager.py)"]
         subgraph Agents
@@ -62,20 +62,21 @@ graph LR
     subgraph External
         LLM_API_SVC["☁️ External LLM APIs <br>(OpenAI, OpenRouter)"]
         OLLAMA_SVC["⚙️ Local Ollama Service"]
-        CONFIG_YAML["⚙️ config.yaml"]
-        DOT_ENV[".env File <br>(API Keys, URLs)"]
+        CONFIG_YAML["⚙️ config.yaml <br>(Read Only by App)"]
+        DOT_ENV[".env File <br>(API Keys, URLs - Read Only by App)"]
     end
 
     %% --- Connections ---
     UI -- HTTP --> FASTAPI;
     UI -- "WebSocket /ws" <--> WS_MANAGER;
     FASTAPI -- Manages --> AGENT_MANAGER;
+    FASTAPI -- "Config Read API /api/config/agents" --> CONFIG_YAML; # Reads config via settings
     WS_MANAGER -- "Forwards/Receives" --> AGENT_MANAGER;
     AGENT_MANAGER -- "Controls/Coordinates" --> AGENT_INST_1;
     AGENT_MANAGER -- "Controls/Coordinates" --> AGENT_INST_2;
     AGENT_MANAGER -- "Controls/Coordinates" --> AGENT_INST_N;
-    AGENT_MANAGER -- "Reads Config" --> CONFIG_YAML;
-    AGENT_MANAGER -- "Reads Defaults/Secrets" --> DOT_ENV;
+    AGENT_MANAGER -- "Reads Config" --> CONFIG_YAML; # Via settings
+    AGENT_MANAGER -- "Reads Defaults/Secrets" --> DOT_ENV; # Via settings
     AGENT_MANAGER -- "Instantiates & Injects" --> LLM_Providers;
     AGENT_INST_1 -- Uses --> PROVIDER_A;
     AGENT_INST_2 -- Uses --> PROVIDER_B;
@@ -151,14 +152,14 @@ graph LR
 │   ├── css/
 │   │   └── style.css
 │   └── js/
-│       └── app.js
+│       └── app.js          # ✨ UPDATED for Config View
 ├── templates/              # HTML templates (Jinja2)
 │   └── index.html
 ├── .env.example            # Example environment variables ✨ UPDATED
 ├── .gitignore
 ├── LICENSE                 # Project License (Specify one!) 📜
 ├── README.md               # This file! 📖
-└── requirements.txt        # Python dependencies 📦
+└── requirements.txt        # Python dependencies 📦 ✨ UPDATED (uvicorn)
 ```
 
 ## ⚙️ Installation
@@ -167,7 +168,12 @@ graph LR
     *   Python 3.9+ 🐍
     *   Git
     *   (Optional) Local Ollama instance running if using Ollama provider.
-    *   (Termux specific) `pkg install python git openssl-tool libjpeg-turbo libwebp`
+    *   **Termux specific:** Some Python packages require compilation. Install necessary build tools using `pkg`:
+        ```bash
+        pkg update && pkg upgrade
+        pkg install binutils build-essential -y
+        ```
+        *(Note: `python-dev` seems included in the main `python` package now).*
 
 2.  **Clone Repository:**
     ```bash
@@ -178,12 +184,15 @@ graph LR
 3.  **Set up Virtual Environment:** (Recommended)
     ```bash
     python -m venv .venv
-    source .venv/bin/activate # Linux/macOS
+    source .venv/bin/activate # Linux/macOS/Termux
     # .venv\Scripts\activate # Windows
     ```
 
 4.  **Install Dependencies:** 📦
     ```bash
+    # Optional: Upgrade pip
+    pip install --upgrade pip
+    # Install project requirements
     pip install -r requirements.txt
     ```
 
@@ -233,18 +242,19 @@ python src/main.py
 ## 🖱️ Usage
 
 1.  Open the web UI.
-2.  The backend loads agents. You should see a "Connected" status.
-3.  Type your task into the input box ⌨️ and send.
-4.  The task goes concurrently to all initialized and *available* agents.
-5.  Observe responses streaming back, identified by `agent_id`. Agent behavior (including tool use) depends on the configured provider and model.
-6.  Agents operate within `sandboxes/agent_<id>/` for file system tool operations.
+2.  The backend loads agents. You should see a "Connected" status and agent configurations/statuses loaded in their respective UI sections.
+3.  Type your task into the input box ⌨️ (optionally attach a text file using the 📎 button).
+4.  Send the message. The task goes concurrently to all initialized and *available* (idle) agents.
+5.  Observe responses streaming back in the "Conversation Area", identified by `agent_id`. System messages and errors appear in the "System Logs & Status" area.
+6.  Agent behavior (including tool use) depends on the configured provider and model. Check agent status updates in the "Agent Status" section.
+7.  Agents operate within `sandboxes/agent_<id>/` for file system tool operations.
 
 ## 🛠️ Development
 
 *   **Code Style:** Follow PEP 8. Use formatters like Black.
 *   **Linting:** Use Flake8 or Pylint.
 *   **Helper Files:** Keep `helperfiles/PROJECT_PLAN.md` and `helperfiles/FUNCTIONS_INDEX.md` updated! ✍️
-*   **Configuration:** Modify `config.yaml` to add/change agents/providers. Set API keys/URLs/defaults in `.env`.
+*   **Configuration:** Modify `config.yaml` to add/change agents/providers. Set API keys/URLs/defaults in `.env`. (UI config editing planned for Phase 8).
 *   **Branching:** Use feature branches.
 
 ## 🙌 Contributing
