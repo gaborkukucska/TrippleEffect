@@ -1,9 +1,10 @@
-<!-- # START OF FILE helperfiles/DEVELOPMENT_WORKFLOW.md -->
-# Development Workflow
-During development pease follow this workflow.
+<!-- # START OF FILE helperfiles/DEVELOPMENT_RULES.md -->
+# Development Rules
+During development pease follow these rules.
 
 *   Follow a phased implementation as outlined in the `helperfiles/PROJECT_PLAN.md` file.
 *   Maintain `helperfiles/PROJECT_PLAN.md` (update status) and `helperfiles/FUNCTIONS_INDEX.md`, updating them at every milestone.
+*   Write the location and name of every file in its first line like `<!-- # START OF FILE subfolder/file_name.extension -->`.
 *   Follow the user's specified interaction model:
     *   Analyze context fully before suggesting changes.
     *   Provide complete file contents for modification.
