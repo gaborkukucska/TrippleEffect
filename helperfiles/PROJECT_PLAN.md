@@ -1,7 +1,7 @@
 <!-- # START OF FILE helperfiles/PROJECT_PLAN.md -->
 # Project Plan: TrippleEffect
 
-**Version:** 1.2 (Completed Phase 5.5)
+**Version:** 1.3 (Completed first part of Phase 6)
 **Date:** 2025-04-04 (Note: Should be updated with actual dev dates)
 
 ## 1. Project Goals
@@ -23,7 +23,7 @@
 *   **Core Backend:** FastAPI application, WebSocket management, asynchronous task handling.
 *   **Agent Core:** Agent class definition, state management, interaction logic via abstracted LLM providers (including tool use).
 *   **Agent Manager:** Coordination logic for multiple agents (task assignment, message routing, tool execution orchestration).
-*   **Basic UI:** HTML/CSS/Vanilla JS frontend for submitting tasks, displaying agent outputs, basic configuration, basic tool usage indication.
+*   **Basic UI:** HTML/CSS/Vanilla JS frontend for submitting tasks, displaying agent outputs, basic configuration, basic tool usage indication, basic file context upload.
 *   **Configuration:** Loading agent settings (LLM provider, model, system prompt, temperature, etc.) from `config.yaml`. API keys/URLs via `.env`.
 *   **WebSocket Communication:** Real-time streaming of agent thoughts/responses/status to the UI.
 *   **Basic Sandboxing:** Creation of dedicated directories for agent file operations (`sandboxes/agent_<id>/`).
@@ -41,6 +41,7 @@
 *   Complex agent-to-agent delegation protocols.
 *   Voice/Camera input processing.
 *   Support for *all* possible LLM providers beyond the initial set.
+*   Server-side file storage/management beyond agent sandboxes.
 
 ## 3. Technology Stack
 
@@ -142,26 +143,13 @@ graph LR
 *   [X] Items completed.
 
 **Phase 5.5: LLM Provider Abstraction (Completed)**
-*   [X] **Goal:** Refactor LLM interaction to support multiple providers (OpenAI, Ollama, OpenRouter initially).
-*   [X] Create `src/llm_providers/` directory.
-*   [X] Define `BaseLLMProvider` interface (`src/llm_providers/base.py`).
-*   [X] Implement `OpenAIProvider` (`src/llm_providers/openai_provider.py`).
-*   [X] Implement `OllamaProvider` (`src/llm_providers/ollama_provider.py`) using `aiohttp`, with tool support.
-*   [X] Implement `OpenRouterProvider` (`src/llm_providers/openrouter_provider.py`) using `openai` library.
-*   [X] Update `config.yaml` structure and `.env.example` for provider config.
-*   [X] Update `src/config/settings.py` to load provider configuration and check keys.
-*   [X] Refactor `src/agents/core.py` (`Agent` class) to use injected provider and handle standardized events.
-*   [X] Refactor `src/agents/manager.py` (`AgentManager`) to instantiate and inject providers.
-*   [X] Update `requirements.txt` (no changes needed).
-*   [X] Update `FUNCTIONS_INDEX.md` with new provider structure.
-*   [X] Update `README.md` to reflect multi-provider support.
-*   [X] Update `src/main.py` to include provider cleanup via `lifespan`.
+*   [X] Items completed.
 
-**Phase 6: UI Enhancements & Advanced Features (Next Phase)**
-*   [ ] Improve UI layout for clarity (separate areas for input, system messages, agent outputs).
-*   [ ] Display detailed agent status indicators (e.g., idle, thinking, using tool `[tool_name]`).
-*   [ ] Implement message history display (currently only live stream).
-*   [ ] Add basic file upload capability in UI to send context/files to agents.
+**Phase 6: UI Enhancements & Advanced Features (In Progress)**
+*   [X] Improve UI layout for clarity (separate areas for input, system messages, agent outputs).
+*   [X] Display detailed agent status indicators (e.g., idle, processing, using tool `[tool_name]`).
+*   [X] Implement message history display (currently only live stream - client-side history implemented for session).
+*   [X] Add basic file upload capability in UI to send context/files to agents (client-side reading/prepending implemented).
 *   [ ] Implement UI for *viewing* agent configurations (from `config.yaml`).
 *   [ ] Test and refine multi-provider support, especially tool usage with Ollama/OpenRouter models.
 
