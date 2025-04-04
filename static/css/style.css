@@ -165,3 +165,11 @@ h2 {
     border-bottom: 1px solid #eee;
     padding-bottom: 5px;
 }
+
+.message.status.tool-execution {
+    background-color: #fffde7; /* Light yellow background */
+    border-color: #fff59d;
+    border-left: 3px solid #ffeb3b; /* Yellow accent */
+    color: #555; /* Darker text */
+    font-style: normal; /* Override default italic for status */
+}
