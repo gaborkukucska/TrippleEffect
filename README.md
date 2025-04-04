@@ -61,8 +61,9 @@ The system orchestrates a configurable number of LLM agents (defaulting to three
 ```
 TrippleEffect/
 ├── .venv/                  # Virtual environment (Recommended)
-├── helperfiles/            # Project planning, function index, etc.
+├── helperfiles/            # Project rules, planning, function index, etc.
 │   ├── PROJECT_PLAN.md
+│   ├── DEVELOPMENT_RULES.md
 │   └── FUNCTIONS_INDEX.md
 ├── sandboxes/              # Agent-specific work directories (created at runtime)
 │   └── agent_X/
