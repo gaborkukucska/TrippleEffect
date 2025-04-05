@@ -290,4 +290,3 @@ class Agent:
         self.message_history = []
         if self.original_system_prompt:
              self.message_history.append({"role": "system", "content": self.original_system_prompt})
----
