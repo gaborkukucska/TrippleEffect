@@ -4,6 +4,7 @@ from typing import Dict, Any, Optional, List, AsyncGenerator
 import json
 import os
 import traceback # Import traceback
+import time # Import time for generating unique call IDs
 
 # Import the Agent class and settings
 # Import AGENT_STATUS constants
@@ -18,7 +19,7 @@ from src.api.websocket_manager import broadcast
 from src.tools.executor import ToolExecutor
 
 # Import Provider classes and Base class
-from src.llm_providers.base import BaseLLMProvider, ToolResultDict
+from src.llm_providers.base import BaseLLMProvider, ToolResultDict, MessageDict # Added MessageDict
 from src.llm_providers.openai_provider import OpenAIProvider
 from src.llm_providers.ollama_provider import OllamaProvider
 from src.llm_providers.openrouter_provider import OpenRouterProvider
@@ -37,6 +38,7 @@ class AgentManager:
     Manages the lifecycle and task distribution for multiple agents.
     Instantiates appropriate LLM providers and agents based on configuration.
     Coordinates communication between agents and the UI, including tool usage and status updates.
+    Injects tool descriptions and manages history for XML-based tool calls.
     """
     def __init__(self, websocket_manager: Optional[Any] = None):
         """
@@ -49,7 +51,12 @@ class AgentManager:
         self.tool_executor = ToolExecutor()
         print("ToolExecutor instantiated.")
 
-        # Initialize agents (this will now also handle provider instantiation)
+        # Get formatted XML tool descriptions once
+        self.tool_descriptions_xml = self.tool_executor.get_formatted_tool_descriptions_xml()
+        print("Generated XML tool descriptions for prompts.")
+        # print(f"Tool Descriptions:\n{self.tool_descriptions_xml[:500]}...") # Debug print if needed
+
+        # Initialize agents (this will now also handle provider instantiation and prompt injection)
         self._initialize_agents()
         print(f"AgentManager initialized. Managed agents: {list(self.agents.keys())}")
         if not self.agents:
@@ -60,7 +67,8 @@ class AgentManager:
         """
         Creates and initializes agent instances based on configurations loaded
         from `settings.AGENT_CONFIGURATIONS`. Instantiates the correct LLM provider
-        for each agent, ensures sandbox creation, and injects dependencies.
+        for each agent, ensures sandbox creation, injects dependencies including
+        the XML tool descriptions.
         """
         print("Initializing agents from configuration...")
 
@@ -107,7 +115,7 @@ class AgentManager:
                      k: v for k, v in agent_config_dict.items()
                      if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'api_key', 'base_url']
                 }
-                if agent_config_dict.get("referer"):
+                if agent_config_dict.get("referer"): # Specific handling for referer
                     agent_provider_kwargs["referer"] = agent_config_dict["referer"]
 
 
@@ -115,9 +123,13 @@ class AgentManager:
                 final_provider_args = {
                     **base_provider_config,
                     **agent_provider_kwargs,
+                    # Use agent-specific config first, then env var, then None implicitly
                     "api_key": agent_api_key if agent_api_key is not None else base_provider_config.get('api_key'),
                     "base_url": agent_base_url if agent_base_url is not None else base_provider_config.get('base_url'),
+                    # Add referer back if it was in base_provider_config or agent_provider_kwargs
+                    "referer": agent_provider_kwargs.get('referer') or base_provider_config.get('referer')
                 }
+                # Clean None values before passing to provider constructor
                 final_provider_args = {k: v for k, v in final_provider_args.items() if v is not None}
 
                 print(f"  Instantiating provider {ProviderClass.__name__} with args: { {k: (v[:5]+'...' if k=='api_key' and isinstance(v,str) else v) for k, v in final_provider_args.items()} }") # Mask API key
@@ -126,14 +138,15 @@ class AgentManager:
                 llm_provider_instance = ProviderClass(**final_provider_args)
                 print(f"  Provider instance created: {llm_provider_instance}")
 
-                # 6. Instantiate Agent, injecting provider and other dependencies
+                # 6. Instantiate Agent, injecting provider, dependencies, and XML tool descriptions
                 agent = Agent(
                     agent_config=agent_conf_entry,
                     llm_provider=llm_provider_instance,
-                    tool_executor=self.tool_executor,
-                    manager=self
+                    tool_executor=self.tool_executor, # Pass executor for validation maybe? No, parsing is in Agent now.
+                    manager=self,
+                    tool_descriptions_xml=self.tool_descriptions_xml # Inject XML descriptions
                 )
-                print(f"  Agent instance created for '{agent_id}'.")
+                print(f"  Agent instance created for '{agent_id}' with tool descriptions injected.")
 
                 # 7. Ensure sandbox directory exists
                 if agent.ensure_sandbox_exists():
@@ -148,10 +161,11 @@ class AgentManager:
 
             except ValueError as ve:
                  print(f"  Configuration Error initializing provider for agent '{agent_id}': {ve}")
+                 traceback.print_exc() # Added traceback
                  print(f"--- Agent '{agent_id}' initialization failed. ---")
             except Exception as e:
                  print(f"  Unexpected Error creating or initializing agent '{agent_id}': {e}")
-                 traceback.print_exc()
+                 traceback.print_exc() # Added traceback
                  print(f"--- Agent '{agent_id}' initialization failed due to exception. ---")
 
         print(f"Finished agent initialization. Successfully initialized {successful_initializations}/{len(agent_configs_list)} agents.")
@@ -176,6 +190,10 @@ class AgentManager:
              await self._send_to_ui({"type": "error", "agent_id": "manager", "content": "No agents configured or initialized."})
              return
 
+        # Append user message to history for *all* agents (or maybe only idle ones?)
+        # Let's add it only to the agents that will process it to avoid history bloat on busy agents.
+        # User message addition is now handled within the agent's process_message
+
         # Check agent status instead of just 'is_busy'
         for agent_id, agent in self.agents.items():
             if agent.status == AGENT_STATUS_IDLE:
@@ -184,7 +202,6 @@ class AgentManager:
                  print(f"Skipping Agent '{agent_id}': Status is '{agent.status}'")
                  # Send current status to UI in case it missed an update
                  await self.push_agent_status_update(agent_id)
-                 # Don't send a generic busy message, let the actual status reflect
 
         if not agents_to_process:
             print("No IDLE agents available to handle the message at this time.")
@@ -198,8 +215,6 @@ class AgentManager:
 
         if active_tasks:
             print(f"Delegated message to {len(active_tasks)} agents: {[a.agent_id for a in agents_to_process]}")
-            # No need to await asyncio.gather here, tasks run independently.
-            # await asyncio.gather(*active_tasks) # This would wait for *all* agents to finish before handling new messages
             print(f"{len(active_tasks)} agent processing tasks started.")
         else:
              print("No tasks were created.")
@@ -210,21 +225,30 @@ class AgentManager:
         Handles the async generator interaction for a single agent's processing cycle.
         Listens for events yielded by agent.process_message(), executes tools when
         'tool_requests' are yielded (updating agent status during execution),
-        and sends results back to the agent's generator.
+        appends tool results to the agent's history, and sends results back to
+        the agent's generator via asend().
         """
         agent_id = agent.agent_id
         print(f"Starting generator handling for Agent '{agent_id}'...")
         agent_generator: Optional[AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]] = None
-        results_to_send_back: Optional[List[ToolResultDict]] = None
+        results_to_send_back: Optional[List[ToolResultDict]] = None # Results sent back to agent's generator
 
         try:
-            agent_generator = agent.process_message(message)
+            # --- Add user message to agent's history *before* starting processing ---
+            # This ensures history is consistent even if processing fails early.
+            agent.message_history.append({"role": "user", "content": message})
+            print(f"Manager: Appended user message to history for Agent '{agent_id}'.")
+
+            # --- Start the agent's processing generator ---
+            agent_generator = agent.process_message(message) # Message content might be redundant now? Agent can read its own history. Let's keep it for now.
 
             while True:
                 try:
                     # Send results from previous tool execution (if any) and get next event
+                    # print(f"Manager: Sending {results_to_send_back} to Agent '{agent_id}' generator...") # Debug
                     event = await agent_generator.asend(results_to_send_back)
                     results_to_send_back = None # Reset after sending
+                    # print(f"Manager: Received event from Agent '{agent_id}': {event.get('type')}") # Debug
                 except StopAsyncIteration:
                     print(f"Agent '{agent_id}' generator finished normally.")
                     break
@@ -239,16 +263,27 @@ class AgentManager:
                 event_type = event.get("type")
 
                 # Pass through simple events directly to UI
-                if event_type in ["response_chunk", "status", "error"]:
+                if event_type in ["response_chunk", "status", "error", "final_response"]: # Added final_response
                     if "agent_id" not in event: event["agent_id"] = agent_id
                     await self._send_to_ui(event)
                     if event_type == "error":
-                        # Agent should have already set its status to error via set_status
                         print(f"Agent '{agent_id}' reported an error, stopping handling for this agent.")
                         break
+                    if event_type == "final_response":
+                        # Agent signals completion, might append its final response to history here
+                        final_content = event.get("content")
+                        if final_content:
+                             # Check if the last message is already this assistant message to avoid duplicates
+                             if not agent.message_history or agent.message_history[-1].get("content") != final_content or agent.message_history[-1].get("role") != "assistant":
+                                 agent.message_history.append({"role": "assistant", "content": final_content})
+                                 print(f"Manager: Appended final assistant response to history for Agent '{agent_id}'.")
+                             else:
+                                 print(f"Manager: Final assistant response for Agent '{agent_id}' seems to be duplicate, not appending.")
+                        # No 'break' here, let the generator finish naturally with StopAsyncIteration
 
-                # Handle tool requests yielded by the agent
+                # --- Handle tool requests yielded by the agent ---
                 elif event_type == "tool_requests":
+                    # Agent has parsed XML and yielded requests
                     tool_calls_requested = event.get("calls")
                     if not tool_calls_requested or not isinstance(tool_calls_requested, list):
                         print(f"Manager: Invalid 'tool_requests' format from Agent '{agent_id}': {event}")
@@ -256,17 +291,28 @@ class AgentManager:
                         await self._send_to_ui({"type": "error", "agent_id": agent_id, "content": "[Manager Error: Invalid tool request format received from agent]"})
                         break
 
+                    # --- Append Assistant message (containing XML) to history ---
+                    # The agent's process_message should yield its text chunk(s) including the raw XML *before* yielding tool_requests.
+                    # We assume the agent's textual response (including the XML) is now complete.
+                    agent_last_response = event.get("raw_assistant_response") # Agent needs to yield this
+                    if agent_last_response:
+                         # Check for duplicates before appending
+                         if not agent.message_history or agent.message_history[-1].get("content") != agent_last_response or agent.message_history[-1].get("role") != "assistant":
+                            agent.message_history.append({"role": "assistant", "content": agent_last_response})
+                            print(f"Manager: Appended assistant response (with XML) to history for Agent '{agent_id}'.")
+                         else:
+                             print(f"Manager: Assistant response (with XML) for Agent '{agent_id}' seems to be duplicate, not appending.")
+
                     # Agent status should be AGENT_STATUS_AWAITING_TOOL (set by agent before yield)
                     # Now, execute the tools
                     tool_tasks = []
                     valid_requests_count = 0
                     for call in tool_calls_requested:
-                         call_id = call.get("id")
+                         call_id = call.get("id") # ID generated by Agent Core now
                          tool_name = call.get("name")
-                         tool_args = call.get("arguments", {})
-                         if call_id and tool_name and isinstance(tool_args, dict):
+                         tool_args = call.get("arguments", {}) # Arguments parsed by Agent Core
+                         if call_id and tool_name is not None and isinstance(tool_args, dict):
                               print(f"  Manager: Creating task for Tool: {tool_name}, Call ID: {call_id}")
-                              # Pass agent, call_id, tool_name, tool_args to executor function
                               task = asyncio.create_task(
                                    self._execute_single_tool(agent, call_id, tool_name, tool_args)
                               )
@@ -277,21 +323,35 @@ class AgentManager:
                               tool_tasks.append(asyncio.create_task(self._failed_tool_result(call_id, tool_name)))
 
                     if valid_requests_count > 0:
-                         # Update UI status to show aggregate tool execution state
                          await self._send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Executing {valid_requests_count} tool(s)..."})
-                         # Note: Individual tool status is handled within _execute_single_tool
 
                     # Wait for all tool executions for this batch
+                    tool_results_raw: List[Optional[ToolResultDict]] = []
                     if tool_tasks:
-                         results_from_gather = await asyncio.gather(*tool_tasks)
-                         results_to_send_back = [res for res in results_from_gather if res is not None]
+                         tool_results_raw = await asyncio.gather(*tool_tasks)
+                         results_to_send_back = [res for res in tool_results_raw if res is not None] # Filter out None results
                          print(f"  Manager: Gathered {len(results_to_send_back)} tool result(s) for agent '{agent_id}'.")
                     else:
                          print(f"  Manager: No valid tool tasks created for agent '{agent_id}'. Sending empty results back.")
                          results_to_send_back = []
 
-                    # Loop continues, will send results via asend()
-                    # Agent's set_status will be called when it receives results
+
+                    # --- Append Tool Results to Agent History ---
+                    if results_to_send_back:
+                        append_count = 0
+                        for result in results_to_send_back:
+                            tool_message: MessageDict = {
+                                "role": "tool",
+                                "tool_call_id": result["call_id"],
+                                "content": result["content"]
+                            }
+                            # Check for duplicates? Maybe less critical for tool results.
+                            agent.message_history.append(tool_message)
+                            append_count += 1
+                        print(f"Manager: Appended {append_count} tool result(s) to history for Agent '{agent_id}'.")
+
+
+                    # Loop continues, will send results_to_send_back via asend()
 
                 else:
                     print(f"Manager: Received unknown event type '{event_type}' from agent '{agent_id}'.")
@@ -303,15 +363,13 @@ class AgentManager:
             agent.set_status(AGENT_STATUS_ERROR) # Ensure error status is set
             await self._send_to_ui({"type": "error", "agent_id": agent_id, "content": f"[Manager Error: {error_msg}]"})
         finally:
-             # Agent should set its own final status in its finally block
-             # Manager just needs to ensure the generator is closed
              if agent_generator:
                  try:
                      await agent_generator.aclose()
                      print(f"Closed generator for agent '{agent_id}'.")
                  except Exception as close_err:
                      print(f"Error closing generator for agent '{agent_id}': {close_err}")
-             # Send one final status update from the manager's perspective
+             # Agent should set its final status in its finally block. Push one last update.
              await self.push_agent_status_update(agent_id)
              print(f"Manager finished handling generator for Agent '{agent_id}'. Final agent status: {agent.status}")
 
@@ -319,67 +377,47 @@ class AgentManager:
     async def _execute_single_tool(self, agent: Agent, call_id: str, tool_name: str, tool_args: Dict[str, Any]) -> Optional[ToolResultDict]:
         """
         Executes a single tool call via ToolExecutor, updating agent status during execution.
+        Args are pre-parsed by the Agent.
         """
         if not self.tool_executor:
              print(f"Manager Error: ToolExecutor not available for agent '{agent.agent_id}'. Cannot execute tool '{tool_name}'.")
-             # Don't change agent status here, return error result
              return {"call_id": call_id, "content": f"[Tool Execution Error: ToolExecutor not available]"}
 
-        # Set agent status to EXECUTING_TOOL *before* execution
         tool_info = {"name": tool_name, "call_id": call_id}
         agent.set_status(AGENT_STATUS_EXECUTING_TOOL, tool_info=tool_info)
-        # UI update happens via set_status -> push_agent_status_update
-        # Optional: Send a specific message via _send_to_ui as well? Maybe redundant.
-        # await self._send_to_ui({
-        #     "type": "status", "agent_id": agent.agent_id, "content": f"Executing tool: `{tool_name}` (Call ID: {call_id})..."
-        # })
 
-        result_content = "[Tool Execution Error: Unknown error]" # Default error content
+        result_content = "[Tool Execution Error: Unknown error]"
         try:
             print(f"Manager: Executing tool '{tool_name}' (Call ID: {call_id}) for agent '{agent.agent_id}'")
+            # ToolExecutor now handles argument validation internally
             result = await self.tool_executor.execute_tool(
                 agent_id=agent.agent_id,
                 agent_sandbox_path=agent.sandbox_path,
                 tool_name=tool_name,
-                tool_args=tool_args
+                tool_args=tool_args # Pass parsed args directly
             )
-            # Result processing remains the same
-            if not isinstance(result, str):
-                 try:
-                     result_content = json.dumps(result, indent=2)
-                 except Exception:
-                     result_content = str(result)
-            else:
-                 result_content = result
-
+            result_content = result # execute_tool ensures result is string
             print(f"Tool '{tool_name}' (Call ID: {call_id}) execution successful for agent '{agent.agent_id}'.")
-            # Status change after successful execution happens when agent receives result
 
         except Exception as e:
             error_msg = f"Manager error executing tool '{tool_name}' (Call ID: {call_id}) for agent '{agent.agent_id}': {type(e).__name__} - {e}"
             print(error_msg)
             traceback.print_exc()
             result_content = f"[Tool Execution Error: {error_msg}]"
-            # If tool execution fails, should we set agent status back?
-            # Let's set it back to Awaiting Tool Result, as it needs to send the error back
-            # agent.set_status(AGENT_STATUS_AWAITING_TOOL) # Or should it be ERROR? Let's try AWAITING.
-            # The agent itself will likely go to PROCESSING or ERROR upon receiving the error result.
         finally:
-            # Important: If the agent's status is still EXECUTING_TOOL after the try/except,
-            # it means the tool finished (success or error) but the agent hasn't processed the result yet.
-            # Let's revert the status here to AWAITING_TOOL_RESULT, as the manager's execution part is done.
-            # The agent will then change it to PROCESSING or ERROR when the result is passed back via asend.
+            # Revert status to AWAITING_TOOL_RESULT after execution attempt (success or failure)
             if agent.status == AGENT_STATUS_EXECUTING_TOOL:
                 agent.set_status(AGENT_STATUS_AWAITING_TOOL)
 
-            # Return the result dict (either success content or error content)
             return {"call_id": call_id, "content": result_content}
 
 
     async def _failed_tool_result(self, call_id: Optional[str], tool_name: Optional[str]) -> Optional[ToolResultDict]:
          """Returns a generic error result for a tool call that couldn't be dispatched."""
          error_content = f"[Tool Execution Error: Failed to dispatch tool '{tool_name or 'unknown'}'. Invalid format.]"
-         return {"call_id": call_id or f"invalid_call_{os.urandom(4).hex()}", "content": error_content}
+         # Generate a unique ID if one wasn't provided or was invalid
+         final_call_id = call_id or f"invalid_xml_call_{int(time.time())}_{os.urandom(2).hex()}"
+         return {"call_id": final_call_id, "content": error_content}
 
 
     async def push_agent_status_update(self, agent_id: str):
@@ -387,7 +425,6 @@ class AgentManager:
         agent = self.agents.get(agent_id)
         if agent:
             status_data = agent.get_state() # Get the full state dict
-            # Send a specific message type for status updates
             await self._send_to_ui({
                 "type": "agent_status_update",
                 "agent_id": agent_id,
@@ -398,36 +435,29 @@ class AgentManager:
 
 
     async def _send_to_ui(self, message_data: Dict[str, Any]):
-        """
-        Sends a structured message back to the UI via the broadcast function.
-        """
+        """Sends a structured message back to the UI via the broadcast function."""
         if not self.send_to_ui_func:
             print("Warning: UI broadcast function not configured in AgentManager. Cannot send message to UI.")
             return
         try:
-            # Add agent_id if it's missing but should be there (e.g., for manager errors)
             if 'agent_id' not in message_data and message_data.get('type') == 'error':
                  message_data['agent_id'] = 'manager'
-
             message_json = json.dumps(message_data)
             await self.send_to_ui_func(message_json)
         except TypeError as e:
              print(f"Error serializing message data to JSON before sending to UI: {e}")
              print(f"Data was: {message_data}")
-             # Try sending a fallback error message
              try:
                  fallback_msg = json.dumps({"type": "error", "agent_id": message_data.get("agent_id", "manager"), "content": f"[Internal Error: Could not serialize message - {e}]"})
                  await self.send_to_ui_func(fallback_msg)
              except Exception as fallback_e:
                  print(f"Failed to send fallback error message to UI: {fallback_e}")
-
         except Exception as e:
             print(f"Error sending message to UI via broadcast function: {e}")
 
 
     def get_agent_status(self) -> Dict[str, Dict[str, Any]]:
         """Returns the status of all managed agents."""
-        # This might become less important if status is pushed proactively
         return {agent_id: agent.get_state() for agent_id, agent in self.agents.items()}
 
     async def cleanup_providers(self):
