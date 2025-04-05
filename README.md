@@ -275,7 +275,7 @@ graph LR
 ## ▶️ Running the Application
 
 ```bash
-python src/main.py
+python -m src.main
 ```
 
 *   The server will start (usually on `http://0.0.0.0:8000`).
