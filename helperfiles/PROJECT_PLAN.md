@@ -191,14 +191,14 @@ graph TD
     *   [X] **Configuration (`config.yaml`):** Reviewed prompts (they are suitable).
 *   [X] **Testing:** Successfully tested tool calling with OpenRouter/Gemini via XML using `file_system` tool. Basic functionality confirmed.
 *   [X] **Code cleanup and review:** Minor fixes applied (e.g., `TypeError` fix).
-*   [ ] *(Deferred from Phase 7)* Improve general error handling and reporting.
-*   [ ] *(Deferred from Phase 7)* Optimize performance.
-*   [ ] *(Deferred from Phase 7)* Refine sandboxing security.
-*   [ ] *(Deferred from Phase 7)* Add more tools (e.g., web search).
 *   [X] Updated `README.md` and `FUNCTIONS_INDEX.md` (pending confirmation).
 
 **Phase 8: Agent Configuration UI Management (Current / Next)**
 *   **Goal:** Allow users to create, edit, and delete agent configurations via the web UI (foundation for Admin page).
+*   [ ] *(Deferred from Phase 7)* Improve general error handling and reporting.
+*   [ ] *(Deferred from Phase 7)* Optimize performance.
+*   [ ] *(Deferred from Phase 7)* Refine sandboxing security.
+*   [ ] *(Deferred from Phase 7)* Add more tools (e.g., web search).
 *   [ ] **Backend API:** CRUD endpoints (`POST`, `PUT`, `DELETE`) for `/api/config/agents`. Pydantic models for validation.
 *   [ ] **Backend Config Handling:** Safe read/modify/write functions for `config.yaml`. Error handling. **Strictly no secrets (API keys) managed here.**
 *   [ ] **Agent Reloading:** Decide on strategy (manual restart vs. dynamic reload). Implement chosen strategy in `AgentManager`.
