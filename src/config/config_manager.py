@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 import logging
 import tempfile # Use tempfile for safer writing
+import copy # <--- ADDED MISSING IMPORT HERE
 
 # Import settings to get BASE_DIR and AGENT_CONFIG_PATH
 # Note: This creates a slight circular dependency potential during startup,
@@ -90,7 +91,7 @@ class ConfigManager:
                 if config_data and isinstance(config_data.get('agents'), list):
                     self._agents_data = config_data['agents']
                     logger.info(f"Successfully loaded {len(self._agents_data)} agent configurations.")
-                    return self._agents_data[:] # Return a copy
+                    return [copy.deepcopy(agent) for agent in self._agents_data] # Return deep copy
                 else:
                     logger.warning(f"'agents' list not found or is not a list in {self.config_path}. Returning empty list.")
                     self._agents_data = []
@@ -175,20 +176,19 @@ class ConfigManager:
                       logger.error(f"Error removing temporary config file {temp_file_path}: {rm_err}")
 
     async def get_config(self) -> List[Dict[str, Any]]:
-        """Returns a copy of the currently loaded agent configuration list. Async-safe."""
+        """Returns a deep copy of the currently loaded agent configuration list. Async-safe."""
         async with self._lock:
-            # Return a copy to prevent external modification of the internal list
-            return [copy.deepcopy(agent) for agent in self._agents_data] # Use deepcopy for safety
+            # Return a deep copy to prevent external modification of the internal list
+            return [copy.deepcopy(agent) for agent in self._agents_data] # Use deepcopy
 
     def get_config_sync(self) -> List[Dict[str, Any]]:
         """
-        Synchronously returns a copy of the agent configuration list loaded during initialization.
+        Synchronously returns a deep copy of the agent configuration list loaded during initialization.
         Intended for use during synchronous startup phases (like Settings init).
         Does NOT acquire the async lock. Relies on initial load being complete.
         """
-        # Return a copy to prevent external modification of the internal list
-        import copy
-        return [copy.deepcopy(agent) for agent in self._agents_data] # Use deepcopy for safety
+        # Return a deep copy to prevent external modification of the internal list
+        return [copy.deepcopy(agent) for agent in self._agents_data] # Use deepcopy
 
 
     def _find_agent_index_unsafe(self, agent_id: str) -> Optional[int]:
@@ -211,7 +211,6 @@ class ConfigManager:
             bool: True if added and saved successfully, False otherwise.
         """
         async with self._lock:
-            import copy # Import here if not globally available
             agent_id = agent_config_entry.get("agent_id")
             if not agent_id:
                 logger.error("Cannot add agent: 'agent_id' is missing.")
@@ -251,7 +250,6 @@ class ConfigManager:
             bool: True if updated and saved successfully, False otherwise.
         """
         async with self._lock:
-            import copy # Import here if not globally available
             index = self._find_agent_index_unsafe(agent_id)
             if index is None:
                 logger.error(f"Cannot update agent: Agent with ID '{agent_id}' not found.")
