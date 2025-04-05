@@ -321,8 +321,12 @@ h2 {
     border: none; /* Remove border from H2 inside flex */
     padding: 0; /* Remove padding from H2 inside flex */
 }
+.config-header div { /* Wrapper for buttons */
+    display: flex;
+    gap: 5px;
+}
 
-/* Phase 8: General styles for Add/Edit/Delete buttons */
+/* Phase 8: General styles for Add/Edit/Delete/Refresh buttons */
 .config-action-button {
     border: none;
     border-radius: 4px;
@@ -332,13 +336,16 @@ h2 {
     margin-left: 5px; /* Space between buttons */
     color: white;
     font-weight: bold;
+    min-width: 28px; /* Ensure minimum width */
     line-height: 1.2;
 }
 .add-button { background-color: #28a745; } /* Green */
+.refresh-button { background-color: #17a2b8; } /* Teal */
 .edit-button { background-color: #ffc107; color: #333; } /* Yellow */
 .delete-button { background-color: #dc3545; } /* Red */
 
 .add-button:hover { background-color: #218838; }
+.refresh-button:hover { background-color: #138496; }
 .edit-button:hover { background-color: #e0a800; }
 .delete-button:hover { background-color: #c82333; }
 
@@ -363,6 +370,9 @@ h2 {
 }
 .config-item .agent-details {
     color: #666;
+}
+.config-item .config-item-actions { /* Container for edit/delete buttons */
+    flex-shrink: 0; /* Prevent buttons from shrinking */
 }
 
 
