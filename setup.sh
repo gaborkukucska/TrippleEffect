@@ -46,59 +46,68 @@ check_command() {
   fi
 }
 
-# Function to update or add a variable in the .env file
+# Function to update or add a variable in the .env file (using line-by-line processing)
 # Usage: update_env_var "VAR_NAME" "new_value"
 update_env_var() {
     local var_name="$1"
     local new_value="$2"
-    local env_file_path="$ENV_FILE" # Use global ENV_FILE definition
+    local env_file_path="$ENV_FILE"
+    local temp_env_file="${env_file_path}.tmp"
+    local updated=false # Flag to track if we updated an existing var
 
-    # Escape backslashes, forward slashes, ampersands, AND the '#' delimiter for sed
-    local escaped_value
-    escaped_value=$(echo "$new_value" | sed -e 's/\\/\\\\/g' -e 's/\//\\\//g' -e 's/\&/\\\&/g' -e 's/#/\\#/g') # Added '#' escape
+    # --- Debug: Print original value ---
+    # echo "Debug: Original value for $var_name: '$new_value'" # Keep commented out unless needed
 
-    # Check if the .env file exists
+    # Check if the .env file exists, create if necessary
     if [ ! -f "$env_file_path" ]; then
         info "$env_file_path not found. Creating from $ENV_EXAMPLE_FILE."
         if [ -f "$ENV_EXAMPLE_FILE" ]; then
-            cp "$ENV_EXAMPLE_FILE" "$env_file_path"
+            cp "$ENV_EXAMPLE_FILE" "$env_file_path" || error "Failed to copy $ENV_EXAMPLE_FILE"
         else
             warning "$ENV_EXAMPLE_FILE not found. Creating empty $env_file_path."
-            touch "$env_file_path"
+            touch "$env_file_path" || error "Failed to create $env_file_path"
         fi
     fi
 
-    # Check if the variable exists (commented or uncommented)
-    # Use grep -q to check quietly
-    if grep -q -E "^\s*#?\s*${var_name}=" "$env_file_path"; then
-        # Variable exists (commented or uncommented), replace the line
-        # Use a different delimiter for sed (#) in case value contains /
-        # This sed command replaces the line starting with optional whitespace/comment,
-        # the variable name, and equals sign, with the new uncommented line.
-        # Using placeholder MARKER avoids issues if var_name has special chars for sed pattern
-        local temp_marker="__TEMP_SED_MARKER__"
-        # Step 1: Replace the value part of the target line with the marker
-        # Capture the part before the value (\1) to preserve it (comment/whitespace/varname=)
-        sed -i.bak -e "s#^\(\s*#?\s*${var_name}=\).*#${temp_marker}#" "$env_file_path"
-        # Step 2: Replace the marker with the captured prefix (\1) and the new escaped value
-        sed -i.bak -e "s#${temp_marker}#\1${escaped_value}#" "$env_file_path"
+    # Ensure temp file is clean before starting
+    rm -f "$temp_env_file"
 
-        # Original approach (potentially problematic if var_name has regex chars or value contains '#'):
-        # sed -i.bak "s#^\s*#?\s*${var_name}=.*#${var_name}=${escaped_value}#" "$env_file_path"
-
-        info "Updated ${var_name} in ${env_file_path}."
-    else
-        # Variable doesn't exist, append it
-        info "Adding ${var_name} to ${env_file_path}."
-        # Add a newline before adding the var if file not empty
-        if [ -s "$env_file_path" ]; then
-           echo "" >> "$env_file_path"
+    # Process the file line by line
+    # Use standard, safe read loop
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Match lines starting with optional whitespace, optional #, optional whitespace, var_name=
+        # Using Bash regex matching
+        if [[ "$line" =~ ^[[:space:]]*#?[[:space:]]*${var_name}= ]]; then
+            # Found the line, print the new value (uncommented) to the temp file
+            printf '%s=%s\n' "$var_name" "$new_value" >> "$temp_env_file"
+            # info "Updating ${var_name} line in temporary file." # Can be verbose, keep commented
+            updated=true
+        else
+            # Keep the original line, print to the temp file
+            printf '%s\n' "$line" >> "$temp_env_file"
         fi
-        echo "${var_name}=${escaped_value}" >> "$env_file_path"
+    done < "$env_file_path"
+
+    # If the variable was not found and updated during the loop, append it
+    if [ "$updated" = false ]; then
+        info "Adding ${var_name} to temporary file."
+        # Add a newline before adding the var if temp file not empty
+        if [ -s "$temp_env_file" ]; then
+           # Check if temp file already ends with newline before adding another
+           # This avoids double newlines if the original file ended cleanly
+           if [ "$(tail -c1 "$temp_env_file" | wc -l)" -eq 0 ]; then
+               printf '\n' >> "$temp_env_file"
+           fi
+        fi
+         # Append the new variable line using printf for safety
+        printf '%s=%s\n' "$var_name" "$new_value" >> "$temp_env_file"
     fi
 
-    # Clean up backup file potentially created by sed -i
-    rm -f "${env_file_path}.bak"
+    # Replace original file with the temporary file
+    mv "$temp_env_file" "$env_file_path" || error "Failed to update $env_file_path from temporary file."
+    info "Successfully updated ${env_file_path} for ${var_name}."
+
+    # No .bak file cleanup needed with this method
 }
 
 
@@ -162,6 +171,7 @@ success "Python requirements installed."
 info "Configuring $ENV_FILE..."
 
 # Ensure .env file exists, copy from example if needed
+# update_env_var function handles creation now if needed, this check is slightly redundant but harmless
 if [ ! -f "$ENV_FILE" ]; then
     if [ -f "$ENV_EXAMPLE_FILE" ]; then
         info "Creating $ENV_FILE from $ENV_EXAMPLE_FILE."
@@ -189,11 +199,9 @@ while [ -z "$OPENROUTER_KEY" ]; do
       # Set a default Referer
       DEFAULT_REFERER="http://localhost:8000/TrippleEffect"
       read -p "Enter OpenRouter Referer [default: $DEFAULT_REFERER]: " REFERER_INPUT
-      if [ -z "$REFERER_INPUT" ]; then
-          update_env_var "OPENROUTER_REFERER" "$DEFAULT_REFERER"
-      else
-          update_env_var "OPENROUTER_REFERER" "$REFERER_INPUT"
-      fi
+      REFERER_VALUE=${REFERER_INPUT:-$DEFAULT_REFERER} # Use default if empty
+      update_env_var "OPENROUTER_REFERER" "$REFERER_VALUE"
+
       success "OpenRouter basic configuration updated."
 
       # Ask about defaults
@@ -239,8 +247,8 @@ else
     info "Skipping OpenAI configuration."
 fi
 
-# Final cleanup of sed backups just in case
-rm -f "${ENV_FILE}.bak"
+# Final cleanup of sed backups - not needed with new function
+# rm -f "${ENV_FILE}.bak"
 
 success "$ENV_FILE configuration complete."
 
