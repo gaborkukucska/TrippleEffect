@@ -11,6 +11,7 @@ const fileInfoArea = document.getElementById('file-info-area');
 const configContent = document.getElementById('config-content');
 const agentStatusContent = document.getElementById('agent-status-content');
 const addAgentButton = document.getElementById('add-agent-button'); // Phase 8
+const refreshConfigButton = document.getElementById('refresh-config-button'); // Phase 8 Refresh
 const agentModal = document.getElementById('agent-modal'); // Phase 8
 const agentForm = document.getElementById('agent-form'); // Phase 8
 const modalTitle = document.getElementById('modal-title'); // Phase 8
@@ -100,6 +101,7 @@ function connectWebSocket() {
             const messageType = messageData.type;
             const messageContent = messageData.content;
             const agentId = messageData.agent_id || 'unknown_agent'; // Default if not provided
+            const agentPersona = messageData.persona || agentId; // Use persona if available
 
             switch (messageType) {
                 case 'response_chunk':
@@ -110,8 +112,8 @@ function connectWebSocket() {
                         agentResponsePlaceholder = document.createElement('div');
                         agentResponsePlaceholder.classList.add('message', 'agent_response', 'current-turn');
                         agentResponsePlaceholder.dataset.agentId = agentId;
-                        // Add agent identifier visually if needed
-                         agentResponsePlaceholder.innerHTML = `<strong class="agent-name">[${messageData.persona || agentId}]:</strong> `;
+                        // Add agent identifier visually using persona
+                         agentResponsePlaceholder.innerHTML = `<strong class="agent-name">[${agentPersona}]:</strong> `;
                         conversationArea.appendChild(agentResponsePlaceholder);
                     }
                      // Append text content safely
@@ -134,24 +136,24 @@ function connectWebSocket() {
                 case 'status':
                 case 'info': // Treat 'info' like 'status'
                     // Display status messages in the system log area
-                    addMessage(systemLogArea, `[${agentId}]: ${messageContent}`, "status", agentId);
+                    addMessage(systemLogArea, `[${agentPersona}]: ${messageContent}`, "status", agentId);
                     break;
                 case 'error':
                     // Display error messages prominently in the system log area
-                    addMessage(systemLogArea, `[${agentId} ERROR]: ${messageContent}`, "error", agentId);
+                    addMessage(systemLogArea, `[${agentPersona} ERROR]: ${messageContent}`, "error", agentId);
                      // Optionally also show a brief error indicator in the conversation area if needed
-                     // addMessage(conversationArea, `[${agentId} Error Occurred]`, "error", agentId);
+                     // addMessage(conversationArea, `[${agentPersona} Error Occurred]`, "error", agentId);
                     break;
                 case 'agent_status_update':
                     // Handle detailed status updates for a specific agent
                     updateAgentStatusUI(messageData.agent_id, messageData.status);
                     break;
                  case 'tool_requests': // Manager handles execution, Agent yields this
-                     addMessage(systemLogArea, `[${agentId}]: Requesting tool execution... (${messageData.calls?.length || 0} calls)`, "status tool-request", agentId);
+                     addMessage(systemLogArea, `[${agentPersona}]: Requesting tool execution... (${messageData.calls?.length || 0} calls)`, "status tool-request", agentId);
                      // UI might show tool details based on messageData.calls if desired
                      break;
                  case 'tool_result': // Result being sent back to agent (maybe log?)
-                     addMessage(systemLogArea, `[${agentId}]: Received tool result for call ${messageData.call_id}`, "status", agentId);
+                     addMessage(systemLogArea, `[${agentPersona}]: Received tool result for call ${messageData.call_id}`, "status", agentId);
                      break;
                 default:
                     // Handle unknown message types
@@ -382,29 +384,41 @@ async function openEditAgentModal(agentId) {
 
     // Fetch the current config for this agent to pre-fill the form
     // This requires an endpoint like GET /api/config/agents/{agent_id} or filtering the main list
-    // For simplicity, let's filter the main list fetched earlier (less robust if list is stale)
+    // Filtering the main list is simpler for now.
     console.log(`Attempting to edit agent: ${agentId}`);
     try {
         // Re-fetch the full list to ensure we have the latest data before editing
-        const response = await fetch('/api/config/agents');
+        // NOTE: This still relies on get_config in ConfigManager providing full detail.
+        // If get_config was changed to only return basic info, this needs adjustment.
+        const response = await fetch('/api/config/agents'); // Fetch basic list first
         if (!response.ok) throw new Error('Could not fetch agent list for editing.');
-        const allConfigs = await response.json();
-        const agentConfigEntry = allConfigs.find(c => c.agent_id === agentId); // Find the specific agent config
+        const allConfigsBasic = await response.json();
+        const agentBasicInfo = allConfigsBasic.find(c => c.agent_id === agentId);
 
-        // Need the full config, not just AgentInfo. Modify API or load differently?
-        // WORKAROUND: For now, we only have basic info from GET /api/config/agents.
-        // We can only prefill basic fields. A dedicated GET /api/config/agents/{agent_id}/full might be better.
-        // Or ConfigManager could provide the full config. Let's assume we fetch again or need a dedicated endpoint.
-        // TEMPORARY: We'll just prefill what we can from AgentInfo.
-         if (agentConfigEntry) {
-            console.log("Prefilling form for:", agentConfigEntry);
-             document.getElementById('agent-id').value = agentConfigEntry.agent_id; // Although disabled, set for clarity
-             document.getElementById('persona').value = agentConfigEntry.persona || '';
-             document.getElementById('provider').value = agentConfigEntry.provider || 'openrouter';
-             document.getElementById('model').value = agentConfigEntry.model || '';
-             // Cannot prefill temp or prompt without full config access here. Leave as default.
-             // document.getElementById('temperature').value = agentConfigEntry.config?.temperature ?? settings.DEFAULT_TEMPERATURE;
-             // document.getElementById('system_prompt').value = agentConfigEntry.config?.system_prompt ?? settings.DEFAULT_SYSTEM_PROMPT;
+        // Now, assume ConfigManager holds the full, current data internally.
+        // Fetching again via API might be cleaner if ConfigManager state could diverge.
+        // For now, rely on ConfigManager's internal state via a dedicated endpoint (if we had one)
+        // or assume the basic info is enough + defaults.
+        // Let's *assume* we need the full config, requiring a better way.
+        // WORKAROUND: Ask config_manager (via settings) - This won't work directly from JS.
+        // We MUST rely on an API endpoint that returns the FULL config for the agent ID.
+        // Since we don't have one, we'll prefill only based on the basic info and defaults.
+        // This means System Prompt and Temperature won't be prefilled correctly on edit.
+
+        if (agentBasicInfo) {
+            console.log("Prefilling form for:", agentBasicInfo);
+             document.getElementById('agent-id').value = agentBasicInfo.agent_id; // Although disabled, set for clarity
+             document.getElementById('persona').value = agentBasicInfo.persona || '';
+             document.getElementById('provider').value = agentBasicInfo.provider || 'openrouter';
+             document.getElementById('model').value = agentBasicInfo.model || '';
+             // Cannot reliably prefill temp or prompt without full config access. Use defaults.
+             document.getElementById('temperature').value = settings?.DEFAULT_TEMPERATURE || 0.7;
+             document.getElementById('system_prompt').value = settings?.DEFAULT_SYSTEM_PROMPT || 'You are a helpful assistant.';
+             // Log a warning about incomplete prefill
+             console.warn("Edit modal prefill is incomplete due to missing full config API endpoint. Temperature and System Prompt reset to defaults.");
+             addMessage(systemLogArea, `Warning: Editing agent ${agentId}. Temperature and System Prompt shown are defaults, not current values.`, "status");
+
+
          } else {
              throw new Error(`Agent config for ${agentId} not found in fetched list.`);
          }
@@ -425,7 +439,8 @@ function closeModal(modalId) {
 
 async function handleSaveAgent(event) {
     event.preventDefault(); // Prevent default form submission
-    const agentId = document.getElementById('agent-id').value.trim();
+    const agentIdInput = document.getElementById('agent-id');
+    const agentId = agentIdInput.value.trim();
     const editAgentId = editAgentIdField.value; // Get ID from hidden field for PUT requests
     const isEditing = !!editAgentId; // Check if we are editing
 
@@ -438,14 +453,32 @@ async function handleSaveAgent(event) {
         if (key === 'edit-agent-id' || key === 'agent_id') continue;
         // Handle numerical fields
         if (key === 'temperature') {
-             agentConfigData[key] = parseFloat(value) || 0.7; // Default if parsing fails
+             const tempValue = parseFloat(value);
+             // Add validation for temperature range
+             if (isNaN(tempValue) || tempValue < 0 || tempValue > 2.0) {
+                  addMessage(systemLogArea, "Invalid temperature value. Must be between 0.0 and 2.0.", "error");
+                  return; // Stop submission
+             }
+             agentConfigData[key] = tempValue;
         } else if (value !== '' && value !== null) { // Only include non-empty values
             agentConfigData[key] = value;
         }
         // Add handling for 'extra_args' JSON parsing if that field exists
     }
 
-    const apiEndpoint = isEditing ? `/api/config/agents/${editAgentId}` : '/api/config/agents';
+    const finalAgentId = isEditing ? editAgentId : agentId;
+    if (!finalAgentId) {
+         addMessage(systemLogArea, "Agent ID is missing.", "error");
+         return;
+    }
+     // Validate Agent ID format using the input's pattern attribute
+     if (!isEditing && !agentIdInput.checkValidity()) {
+          addMessage(systemLogArea, `Invalid Agent ID format: "${agentId}". ${agentIdInput.title}`, "error");
+          return;
+     }
+
+
+    const apiEndpoint = isEditing ? `/api/config/agents/${finalAgentId}` : '/api/config/agents';
     const apiMethod = isEditing ? 'PUT' : 'POST';
 
     let requestBody;
@@ -454,12 +487,8 @@ async function handleSaveAgent(event) {
         requestBody = agentConfigData;
     } else {
         // POST expects {'agent_id': '...', 'config': {...}}
-        if (!agentId) {
-             addMessage(systemLogArea, "Agent ID is required.", "error");
-             return; // Stop if agent_id is missing for creation
-         }
         requestBody = {
-            agent_id: agentId,
+            agent_id: finalAgentId,
             config: agentConfigData
         };
     }
@@ -549,6 +578,14 @@ fileInput.addEventListener('change', handleFileSelect);
 
 // Phase 8: Add Agent button listener
 addAgentButton.addEventListener('click', openAddAgentModal);
+
+// Phase 8: Refresh button listener
+refreshConfigButton.addEventListener('click', () => {
+    addMessage(systemLogArea, 'Reloading page... Backend restart may be needed for config changes.', 'status');
+    // Short delay allows message to render before reload potentially interrupts things
+    setTimeout(() => window.location.reload(), 300);
+});
+
 
 // Phase 8: Form submission listener
 agentForm.addEventListener('submit', handleSaveAgent);
