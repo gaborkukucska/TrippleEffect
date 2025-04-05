@@ -142,7 +142,7 @@ class AgentManager:
                 agent = Agent(
                     agent_config=agent_conf_entry,
                     llm_provider=llm_provider_instance,
-                    tool_executor=self.tool_executor, # Pass executor for validation maybe? No, parsing is in Agent now.
+                    # tool_executor=self.tool_executor, # <-- REMOVED THIS LINE
                     manager=self,
                     tool_descriptions_xml=self.tool_descriptions_xml # Inject XML descriptions
                 )
@@ -190,10 +190,6 @@ class AgentManager:
              await self._send_to_ui({"type": "error", "agent_id": "manager", "content": "No agents configured or initialized."})
              return
 
-        # Append user message to history for *all* agents (or maybe only idle ones?)
-        # Let's add it only to the agents that will process it to avoid history bloat on busy agents.
-        # User message addition is now handled within the agent's process_message
-
         # Check agent status instead of just 'is_busy'
         for agent_id, agent in self.agents.items():
             if agent.status == AGENT_STATUS_IDLE:
@@ -210,8 +206,9 @@ class AgentManager:
 
         # Create a processing task for each available agent using the generator handler
         for agent in agents_to_process:
-            task = asyncio.create_task(self._handle_agent_generator(agent, message))
-            active_tasks.append(task)
+             # No longer passing the message directly here, agent reads history
+             task = asyncio.create_task(self._handle_agent_generator(agent, message))
+             active_tasks.append(task)
 
         if active_tasks:
             print(f"Delegated message to {len(active_tasks)} agents: {[a.agent_id for a in agents_to_process]}")
@@ -240,14 +237,17 @@ class AgentManager:
             print(f"Manager: Appended user message to history for Agent '{agent_id}'.")
 
             # --- Start the agent's processing generator ---
-            agent_generator = agent.process_message(message) # Message content might be redundant now? Agent can read its own history. Let's keep it for now.
+            # Agent process_message no longer takes message as argument
+            agent_generator = agent.process_message()
 
             while True:
                 try:
                     # Send results from previous tool execution (if any) and get next event
-                    # print(f"Manager: Sending {results_to_send_back} to Agent '{agent_id}' generator...") # Debug
-                    event = await agent_generator.asend(results_to_send_back)
-                    results_to_send_back = None # Reset after sending
+                    # The value sent via asend() is ignored by the agent generator now,
+                    # but we still need to call it to advance the generator.
+                    # Sending None is appropriate.
+                    event = await agent_generator.asend(None) # Send None, as results are no longer needed by agent gen
+                    results_to_send_back = None # This variable is no longer used for sending
                     # print(f"Manager: Received event from Agent '{agent_id}': {event.get('type')}") # Debug
                 except StopAsyncIteration:
                     print(f"Agent '{agent_id}' generator finished normally.")
@@ -270,7 +270,7 @@ class AgentManager:
                         print(f"Agent '{agent_id}' reported an error, stopping handling for this agent.")
                         break
                     if event_type == "final_response":
-                        # Agent signals completion, might append its final response to history here
+                        # Agent signals completion, append its final response to history
                         final_content = event.get("content")
                         if final_content:
                              # Check if the last message is already this assistant message to avoid duplicates
@@ -292,9 +292,8 @@ class AgentManager:
                         break
 
                     # --- Append Assistant message (containing XML) to history ---
-                    # The agent's process_message should yield its text chunk(s) including the raw XML *before* yielding tool_requests.
-                    # We assume the agent's textual response (including the XML) is now complete.
-                    agent_last_response = event.get("raw_assistant_response") # Agent needs to yield this
+                    # Agent needs to yield the full assistant text (including XML) along with tool requests
+                    agent_last_response = event.get("raw_assistant_response")
                     if agent_last_response:
                          # Check for duplicates before appending
                          if not agent.message_history or agent.message_history[-1].get("content") != agent_last_response or agent.message_history[-1].get("role") != "assistant":
@@ -302,6 +301,9 @@ class AgentManager:
                             print(f"Manager: Appended assistant response (with XML) to history for Agent '{agent_id}'.")
                          else:
                              print(f"Manager: Assistant response (with XML) for Agent '{agent_id}' seems to be duplicate, not appending.")
+                    else:
+                         print(f"Manager: Warning - Received 'tool_requests' from Agent '{agent_id}' but no 'raw_assistant_response' was included.")
+
 
                     # Agent status should be AGENT_STATUS_AWAITING_TOOL (set by agent before yield)
                     # Now, execute the tools
@@ -327,31 +329,33 @@ class AgentManager:
 
                     # Wait for all tool executions for this batch
                     tool_results_raw: List[Optional[ToolResultDict]] = []
+                    executed_tool_results: Optional[List[ToolResultDict]] = None # Define here for clarity
                     if tool_tasks:
                          tool_results_raw = await asyncio.gather(*tool_tasks)
-                         results_to_send_back = [res for res in tool_results_raw if res is not None] # Filter out None results
-                         print(f"  Manager: Gathered {len(results_to_send_back)} tool result(s) for agent '{agent_id}'.")
+                         executed_tool_results = [res for res in tool_results_raw if res is not None] # Filter out None results
+                         print(f"  Manager: Gathered {len(executed_tool_results)} tool result(s) for agent '{agent_id}'.")
                     else:
-                         print(f"  Manager: No valid tool tasks created for agent '{agent_id}'. Sending empty results back.")
-                         results_to_send_back = []
+                         print(f"  Manager: No valid tool tasks created for agent '{agent_id}'.")
+                         executed_tool_results = []
 
 
                     # --- Append Tool Results to Agent History ---
-                    if results_to_send_back:
+                    if executed_tool_results: # Check if list is not empty
                         append_count = 0
-                        for result in results_to_send_back:
+                        for result in executed_tool_results:
                             tool_message: MessageDict = {
                                 "role": "tool",
                                 "tool_call_id": result["call_id"],
                                 "content": result["content"]
                             }
-                            # Check for duplicates? Maybe less critical for tool results.
                             agent.message_history.append(tool_message)
                             append_count += 1
                         print(f"Manager: Appended {append_count} tool result(s) to history for Agent '{agent_id}'.")
 
 
-                    # Loop continues, will send results_to_send_back via asend()
+                    # Loop continues, will call asend(None) to resume the agent generator
+                    # The agent generator will then continue processing the LLM stream (if any remains)
+                    # or finish its execution.
 
                 else:
                     print(f"Manager: Received unknown event type '{event_type}' from agent '{agent_id}'.")
@@ -406,8 +410,10 @@ class AgentManager:
             result_content = f"[Tool Execution Error: {error_msg}]"
         finally:
             # Revert status to AWAITING_TOOL_RESULT after execution attempt (success or failure)
+            # Agent needs to know tool execution is done to continue processing
             if agent.status == AGENT_STATUS_EXECUTING_TOOL:
-                agent.set_status(AGENT_STATUS_AWAITING_TOOL)
+                 # Let's set back to PROCESSING instead, indicating manager is done and agent can continue
+                 agent.set_status(AGENT_STATUS_PROCESSING)
 
             return {"call_id": call_id, "content": result_content}
 
