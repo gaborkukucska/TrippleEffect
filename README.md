@@ -1,105 +1,136 @@
 <!-- # START OF FILE README.md -->
 # TrippleEffect 🧑‍🚒🧑‍🏫👩‍🔧
 
+**Version:** 2.2 (Phase 8 Completed) <!-- Updated Version -->
+
 **TrippleEffect** is an asynchronous, collaborative multi-agent framework designed with a browser-based user interface 🌐, optimized for environments like Termux 📱. It allows multiple Language Model (LLM) agents 🤖🤖🤖 to work together on complex tasks, coordinated through a central backend and managed via a web UI. It aims for extensibility and supports various LLM API providers, including **OpenRouter**, **Ollama**, and **OpenAI** (and can be extended to others like LiteLLM, Google, Anthropic, etc.).
 
 ## 🎯 Core Concept
 
-The system orchestrates multiple LLM agents, whose number and specific configurations (**provider**, model, persona, system prompt, etc.) are defined in a central `config.yaml` file ⚙️. Users interact with the system through a web interface to submit tasks via text 📝 (voice 🎤, camera 📸, file uploads 📁 are planned future features).
+The system orchestrates multiple LLM agents, whose number and specific configurations (**provider**, model, persona, system prompt, etc.) are defined in a central `config.yaml` file ⚙️. Users interact with the system through a web interface to submit tasks via text 📝 (voice 🎤, camera 📸, file uploads 📁 are planned future features). Agents can also be added, edited, or deleted via the web UI, although a **backend restart is currently required** for these changes to take effect.
 
 The agents, loaded based on the configuration:
 *   Interact with their configured LLM provider (**OpenRouter**, **Ollama**, **OpenAI**, etc.).
 *   Can work concurrently on the same task.
 *   Collaborate and delegate sub-tasks (future phase 🤝).
-*   Utilize tools within sandboxed environments 🛠️ (supported across providers where models allow).
+*   Utilize tools within sandboxed environments 🛠️ using an **XML-based tool calling format** for broad compatibility.
 *   Stream their responses back to the user interface in real-time ⚡.
 
 ## ✨ Key Features
 
 *   **Multi-Agent Architecture:** Supports multiple LLM agents working concurrently.
 *   **Asynchronous Backend:** Built with FastAPI and `asyncio` for efficient handling of concurrent operations.
-*   **Browser-Based UI:** Simple web interface for task submission, agent monitoring, viewing configurations, and results.
+*   **Browser-Based UI:** Simple web interface for task submission, agent monitoring, viewing configurations, basic agent config CRUD (Create/Read/Update/Delete - requires restart), and results. <!-- Updated -->
 *   **Real-time Updates:** Uses WebSockets (`/ws`) for instant communication.
 *   **Multi-Provider LLM Support:** Connect agents to different LLM backends (**OpenRouter**, local **Ollama**, **OpenAI**, easily extensible).
 *   **YAML Configuration:** Easily define agents (ID, **provider**, model, system prompt, persona, temperature, provider-specific args) via `config.yaml`. Defaults and API keys/URLs set via `.env`.
+*   **Config Management UI:** Add, Edit, Delete agent configurations directly from the web UI (requires backend restart). <!-- New -->
+*   **Safe Config Handling:** Uses a `ConfigManager` for atomic writes to `config.yaml` with backups. <!-- New -->
 *   **Sandboxed Workspaces:** Each agent operates within its own directory (`sandboxes/agent_<id>/`) for file-based tasks 📁.
-*   **Tool Usage:** Framework allows agents to use tools (e.g., file system access 📄, web search 🔍 planned). Tool support relies on the capabilities of the chosen LLM model and provider implementation.
-*   **Extensible Design:** Modular structure (`src/llm_providers`, `src/tools`) for adding new LLM providers, agents, or tools.
+*   **XML Tool Usage:** Agents request tools using an XML format within their text responses. The framework parses and executes these requests (e.g., file system access 📄, web search 🔍 planned).
+*   **Extensible Design:** Modular structure (`src/llm_providers`, `src/tools`, `src/config`) for adding new LLM providers, agents, tools, or configuration management logic.
 *   **Termux Friendly:** Aims for compatibility and reasonable performance on resource-constrained environments. Requires specific build tools.
 
-## 🏗️ Architecture Overview (Conceptual - Corrected Mermaid)
+## 🏗️ Architecture Overview (Conceptual - Phase 8)
 
 ```mermaid
-graph LR
-    subgraph Frontend
-        UI["🌐 Browser UI <br>(HTML/CSS/JS)<br>Includes Config View"]
+graph TD
+    %% Changed to Top-Down for better layer visualization
+    USER[👨‍💻 Human User]
+
+    subgraph Frontend [Human UI Layer]
+        direction LR
+        UI_COMS["Coms Page <br>(Log Stream Filter - P10)<br>Adv I/O: P11+"]
+        UI_ADMIN["Admin Page <br>(Config CRUD UI - P8 ✅)<br>Settings View<br>Auth UI: P10<br>Refresh Button ✅"]
     end
 
     subgraph Backend
-        FASTAPI["🚀 FastAPI Backend <br>(main.py, api/)<br>+ Config Read Route"]
-        WS_MANAGER["🔌 WebSocket Manager <br>(api/websocket_manager.py)"]
-        AGENT_MANAGER["🧑‍💼 Agent Manager <br>(agents/manager.py)"]
+        FASTAPI["🚀 FastAPI Backend <br>+ Config CRUD API (P8 ✅)<br>+ Auth API (P10)<br>+ Log Endpoints (P10?)"]
+        WS_MANAGER["🔌 WebSocket Manager <br>+ Log Categories (P10)"]
+        AGENT_MANAGER["🧑‍💼 Agent Manager <br>+ Reload Signal (Future)<br>+ Tool History Handling ✅<br>Controls All Agents"]
+        CONFIG_MANAGER["📝 Config Manager <br>(Safe R/W config.yaml) P8 ✅"] %% Added P8 Config Manager
+
         subgraph Agents
-            direction LR
-            AGENT_INST_1["🤖 Agent Instance 1 <br>(agents/core.py)<br>Uses Provider A"]
-            AGENT_INST_2["🤖 Agent Instance 2 <br>Uses Provider B"]
-            AGENT_INST_N["🤖 Agent Instance N <br>Uses Provider C"]
+            ADMIN_AI["🤖 Admin AI Agent <br>(Google Provider - P9)<br>Uses ConfigTool"]
+            AGENT_INST_1["🤖 Worker Agent 1 <br>+ XML Tool Parsing ✅"]
+            AGENT_INST_N["🤖 Worker Agent N <br>+ XML Tool Parsing ✅"]
+            GEUI_AGENT["🤖 GeUI Agent(s) (P11+)"]
         end
+
         subgraph LLM_Providers ["☁️ LLM Providers <br>(src/llm_providers/)"]
-            PROVIDER_A["🔌 Provider A <br>(e.g., OpenAI)"]
-            PROVIDER_B["🔌 Provider B <br>(e.g., Ollama)"]
-            PROVIDER_C["🔌 Provider C <br>(e.g., OpenRouter)"]
-        end
-        subgraph Tools
-            direction TB
-            TOOL_EXECUTOR["🛠️ Tool Executor <br>(tools/executor.py)"]
-            TOOL_FS["📄 FileSystem Tool <br>(tools/file_system.py)"]
-            TOOL_WEB["🔍 Web Search Tool (Planned)"]
-        end
-        SANDBOXES["📁 Sandboxes <br>(sandboxes/agent_id/)"]
+             PROVIDER_GOOGLE["🔌 Google Provider (P9)"]
+             PROVIDER_OR["🔌 OpenRouter Provider ✅"]
+             PROVIDER_OLLAMA["🔌 Ollama Provider ✅"]
+             PROVIDER_OPENAI["🔌 OpenAI Provider ✅"]
+         end
+
+         subgraph Tools
+             TOOL_EXECUTOR["🛠️ Tool Executor<br>+ XML Desc Gen ✅"]
+             TOOL_CONFIG["📝 ConfigTool (P9)<br>Uses Config Manager"]
+             TOOL_FS["📄 FileSystem Tool ✅"]
+             %% Other tools...
+         end
+
+         SANDBOXES["📁 Sandboxes ✅"]
     end
 
     subgraph External
-        LLM_API_SVC["☁️ External LLM APIs <br>(OpenAI, OpenRouter)"]
+        GOOGLE_API["☁️ Google AI APIs"]
+        LLM_API_SVC["☁️ Ext. LLM APIs (OR, OpenAI)"]
         OLLAMA_SVC["⚙️ Local Ollama Service"]
-        CONFIG_YAML["⚙️ config.yaml <br>(Read Only by App)"]
-        DOT_ENV[".env File <br>(API Keys, URLs - Read Only by App)"]
+        CONFIG_YAML["⚙️ config.yaml <br>(Read/Write via Config Manager) ✅"]
+        DOT_ENV[".env File <br>(Secrets - Read Only) ✅"]
     end
 
     %% --- Connections ---
-    UI -- HTTP --> FASTAPI;
-    UI -- "WebSocket /ws" <--> WS_MANAGER;
+    USER -- Interacts via Browser --> Frontend;
+    Frontend -- HTTP (Config CRUD API - P8) --> FASTAPI; %% Updated label
+    Frontend -- WebSocket --> WS_MANAGER;
+
+    FASTAPI -- Calls CRUD Ops --> CONFIG_MANAGER;
     FASTAPI -- Manages --> AGENT_MANAGER;
-    FASTAPI -- "Config Read API /api/config/agents" --> CONFIG_YAML;
-        %% FastAPI reads config via settings module on demand for API
-    WS_MANAGER -- "Forwards/Receives" --> AGENT_MANAGER;
-    AGENT_MANAGER -- "Controls/Coordinates" --> AGENT_INST_1;
-    AGENT_MANAGER -- "Controls/Coordinates" --> AGENT_INST_2;
-    AGENT_MANAGER -- "Controls/Coordinates" --> AGENT_INST_N;
-    AGENT_MANAGER -- "Reads Config" --> CONFIG_YAML;
-        %% AgentManager reads config via settings on init
-    AGENT_MANAGER -- "Reads Defaults/Secrets" --> DOT_ENV;
-        %% AgentManager reads .env via settings on init
-    AGENT_MANAGER -- "Instantiates & Injects" --> LLM_Providers;
-    AGENT_INST_1 -- Uses --> PROVIDER_A;
-    AGENT_INST_2 -- Uses --> PROVIDER_B;
-    AGENT_INST_N -- Uses --> PROVIDER_C;
-    PROVIDER_A -- Interacts --> LLM_API_SVC;
-    PROVIDER_B -- Interacts --> OLLAMA_SVC;
-    PROVIDER_C -- Interacts --> LLM_API_SVC;
-    AGENT_MANAGER -- "Routes Tool Request" --> TOOL_EXECUTOR;
+    WS_MANAGER -- Forwards Msgs / Sends Logs --> Frontend;
+    WS_MANAGER -- Forwards User Msgs --> AGENT_MANAGER;
+
+    AGENT_MANAGER -- Controls --> ADMIN_AI;
+    AGENT_MANAGER -- Controls --> AGENT_INST_1;
+    AGENT_MANAGER -- Controls --> AGENT_INST_N;
+    AGENT_MANAGER -- Controls --> GEUI_AGENT;
+    AGENT_MANAGER -- "Reads Initial Config Via Settings Module" --> CONFIG_YAML;
+    AGENT_MANAGER -- "Reads Config/Secrets" --> DOT_ENV;
+    AGENT_MANAGER -- Injects --> LLM_Providers;
+    AGENT_MANAGER -- Routes Tool Calls --> TOOL_EXECUTOR;
+    AGENT_MANAGER -- "Generates & Injects XML Prompts ✅" --> Agents;
+    AGENT_MANAGER -- "Appends Tool Results to Agent History ✅" --> Agents;
+
+    ADMIN_AI -- Uses --> PROVIDER_GOOGLE;
+    ADMIN_AI -- "Streams Text" --> AGENT_MANAGER;
+    ADMIN_AI -- "Parses Own XML" --> ADMIN_AI;
+    ADMIN_AI -- "Yields Tool Request (ConfigTool)" --> AGENT_MANAGER;
+
+    AGENT_INST_1 -- Uses --> LLM_Providers;
+    AGENT_INST_1 -- "Streams Text ✅" --> AGENT_MANAGER;
+    AGENT_INST_1 -- "Parses Own XML ✅" --> AGENT_INST_1;
+    AGENT_INST_1 -- "Yields Tool Request (e.g., FileSystemTool)" --> AGENT_MANAGER;
+
+    AGENT_INST_N -- Uses --> LLM_Providers;
+    AGENT_INST_N -- "Streams Text ✅" --> AGENT_MANAGER;
+    AGENT_INST_N -- "Parses Own XML ✅" --> AGENT_INST_N;
+    AGENT_INST_N -- "Yields Tool Request" --> AGENT_MANAGER;
+
+
+    TOOL_EXECUTOR -- Executes --> TOOL_CONFIG;
     TOOL_EXECUTOR -- Executes --> TOOL_FS;
-    TOOL_EXECUTOR -- Executes --> TOOL_WEB;
-    %% Tool requests flow through provider logic
-    AGENT_INST_1 -- "Requests Tools Via Provider" --> LLM_Providers;
-    AGENT_INST_1 -- "File I/O Via Tool" --> SANDBOXES;
-    TOOL_FS -- "Operates Within" --> SANDBOXES;
+
+    TOOL_CONFIG -- Uses --> CONFIG_MANAGER;
+    CONFIG_MANAGER -- Reads/Writes --> CONFIG_YAML;
+
+    PROVIDER_GOOGLE -- Interacts --> GOOGLE_API;
+    PROVIDER_OR -- Interacts --> LLM_API_SVC;
+    PROVIDER_OLLAMA -- Interacts --> OLLAMA_SVC;
+    PROVIDER_OPENAI -- Interacts --> LLM_API_SVC;
 
 ```
-
-*   **LLM Providers (`src/llm_providers/`):** New layer abstracting interaction with different LLM APIs (OpenAI, Ollama, OpenRouter).
-*   **Agent Instances:** Use an injected LLM provider instance.
-*   **`.env`:** Crucial for storing API keys and provider base URLs.
 
 ## 💻 Technology Stack
 
@@ -108,14 +139,14 @@ graph LR
 *   **LLM Interaction:** `openai` library (used by OpenAI & OpenRouter providers), `aiohttp` (used by Ollama provider)
 *   **Frontend:** HTML5, CSS3, Vanilla JavaScript
 *   **Asynchronous:** `asyncio`
-*   **Configuration:** YAML (`PyYAML`), `.env` files (`python-dotenv`)
+*   **Configuration:** YAML (`PyYAML`), `.env` files (`python-dotenv`). **Safe read/write via `ConfigManager`**. <!-- Updated -->
 *   **Data Handling:** Pydantic (via FastAPI)
 
 ## 📁 Directory Structure
 
 ```TrippleEffect/
 ├── .venv/
-├── config.yaml             # Agent configurations (provider, model, etc.) ✨ UPDATED
+├── config.yaml             # Agent configurations (editable via UI + restart) ✨ UPDATED
 ├── helperfiles/            # Project planning & tracking 📝
 │   ├── PROJECT_PLAN.md
 │   ├── DEVELOPMENT_RULES.md
@@ -125,16 +156,17 @@ graph LR
 ├── src/                    # Source code 🐍
 │   ├── agents/             # Agent core logic & manager
 │   │   ├── __init__.py
-│   │   ├── core.py         # Agent class (uses injected provider) 🤖
-│   │   └── manager.py      # AgentManager (instantiates providers) 🧑‍💼
+│   │   ├── core.py         # Agent class (uses provider, parses XML tools) 🤖 ✨ UPDATED
+│   │   └── manager.py      # AgentManager (instantiates providers, handles tool exec) 🧑‍💼 ✨ UPDATED
 │   ├── api/                # FastAPI routes & WebSocket logic 🔌
 │   │   ├── __init__.py
-│   │   ├── http_routes.py
+│   │   ├── http_routes.py  # Includes Agent Config CRUD endpoints ✨ UPDATED
 │   │   └── websocket_manager.py
-│   ├── config/             # Configuration loading ⚙️
+│   ├── config/             # Configuration loading & management ⚙️
 │   │   ├── __init__.py
-│   │   └── settings.py     # Loads .env and config.yaml (provider keys/URLs) ✨ UPDATED
-│   ├── llm_providers/      # LLM provider implementations <--- ✨ NEW
+│   │   ├── config_manager.py # Handles safe R/W to config.yaml <--- ✨ NEW (Phase 8)
+│   │   └── settings.py     # Loads .env and uses ConfigManager ✨ UPDATED
+│   ├── llm_providers/      # LLM provider implementations
 │   │   ├── __init__.py
 │   │   ├── base.py         # BaseLLMProvider ABC
 │   │   ├── ollama_provider.py
@@ -143,7 +175,7 @@ graph LR
 │   ├── tools/              # Agent tools implementations 🛠️
 │   │   ├── __init__.py
 │   │   ├── base.py
-│   │   ├── executor.py
+│   │   ├── executor.py     # Executes tools, generates XML descriptions ✨ UPDATED
 │   │   └── file_system.py
 │   ├── ui/                 # UI backend helpers (if needed)
 │   │   └── __init__.py
@@ -153,16 +185,16 @@ graph LR
 │   └── main.py             # Application entry point 🚀
 ├── static/                 # Frontend static files 🌐
 │   ├── css/
-│   │   └── style.css
+│   │   └── style.css       # ✨ UPDATED (Config UI styles)
 │   └── js/
-│       └── app.js          # ✨ UPDATED for Config View
+│       └── app.js          # ✨ UPDATED (Config CRUD logic, Refresh Button)
 ├── templates/              # HTML templates (Jinja2)
-│   └── index.html
-├── .env.example            # Example environment variables ✨ UPDATED
+│   └── index.html          # ✨ UPDATED (Config UI elements, Modals)
+├── .env.example            # Example environment variables
 ├── .gitignore
-├── LICENSE                 # Project License (Specify one!) 📜
+├── LICENSE                 # Project License (MIT) 📜
 ├── README.md               # This file! 📖
-└── requirements.txt        # Python dependencies 📦 ✨ UPDATED (uvicorn)
+└── requirements.txt        # Python dependencies
 ```
 
 ## ⚙️ Installation
@@ -203,49 +235,24 @@ graph LR
         ```bash
         cp .env.example .env
         ```
-    *   **Edit the `.env` file:** This is crucial for connecting to LLM providers. Prioritize setting up OpenRouter and Ollama if you plan to use them.
-        ```dotenv
-        # .env (Fill with your actual values)
-
-        # --- OpenRouter (Recommended for various models) ---
-        # Get your key from https://openrouter.ai/keys
-        OPENROUTER_API_KEY=sk-or-v1-your-openrouter-key...
-        # Optional: Define a site URL or app name for OpenRouter stats
-        # See https://openrouter.ai/docs#headers
-        OPENROUTER_REFERER=http://localhost:8000/ # Or your app name/URL
-        # OPENROUTER_BASE_URL= # Usually not needed unless using a proxy
-
-        # --- Ollama (For local models) ---
-        # Default assumes Ollama runs locally on port 11434. Adjust if needed.
-        OLLAMA_BASE_URL=http://localhost:11434
-
-        # --- OpenAI (Optional) ---
-        # Only needed if you specifically configure an agent to use 'openai' provider
-        OPENAI_API_KEY=sk-your-openai-key...
-        # OPENAI_BASE_URL= # e.g., for Azure endpoints
-
-        # --- Default agent params (Optional fallbacks) ---
-        # If an agent in config.yaml doesn't specify these, these values are used.
-        # DEFAULT_AGENT_PROVIDER="openrouter" # Example: Make OpenRouter the default
-        # DEFAULT_AGENT_MODEL="mistralai/mistral-7b-instruct" # Example model
-        # DEFAULT_SYSTEM_PROMPT="You are a helpful assistant."
-        # DEFAULT_TEMPERATURE=0.7
-        # DEFAULT_PERSONA="General Assistant"
-        ```
+    *   **Edit the `.env` file:** This is crucial for connecting to LLM providers. Prioritize setting up OpenRouter and Ollama if you plan to use them. See `.env.example` for details on keys (`OPENROUTER_API_KEY`, `OLLAMA_BASE_URL`, `OPENAI_API_KEY`) and optional defaults (`DEFAULT_AGENT_PROVIDER`, `DEFAULT_AGENT_MODEL`, etc.).
     *   **Important:** Ensure `.env` is listed in your `.gitignore` file (it should be by default). **Never commit your API keys!**
 
 6.  **Configure Agents:** 🧑‍🔧🧑‍🏫🧑‍🚒
-    *   Edit the `config.yaml` file in the project root. This defines *which* agents run and *how* they behave.
+    *   You can **initially** edit the `config.yaml` file in the project root to define your starting agents.
     *   For each agent, define:
-        *   `agent_id`: Unique identifier (e.g., "coder", "researcher").
-        *   `provider`: **Crucial.** Must be `"openrouter"`, `"ollama"`, or `"openai"`. Ensure the corresponding API key/URL is set in `.env`.
-        *   `model`: The model name specific to the chosen provider (e.g., `"mistralai/mistral-7b-instruct"` for OpenRouter, `"llama3"` for Ollama, `"gpt-4-turbo"` for OpenAI). Make sure the model is available on the provider (or pulled in Ollama).
-        *   `system_prompt`: Instructions for the agent's persona and task focus.
-        *   `temperature`: Controls creativity vs. determinism (0.0 to ~1.0+).
-        *   `persona`: A name for the agent displayed in the UI.
-        *   *(Optional)*: You can override provider settings per-agent (e.g., `base_url`), but API keys should stay in `.env`.
+        *   `agent_id`: Unique identifier (e.g., "coder", "researcher"). Use alphanumeric, underscores, hyphens only.
+        *   `config`: A nested dictionary containing:
+            *   `provider`: **Crucial.** Must be `"openrouter"`, `"ollama"`, or `"openai"`. Ensure the corresponding API key/URL is set in `.env`.
+            *   `model`: The model name specific to the chosen provider.
+            *   `system_prompt`: Instructions for the agent's persona and task focus.
+            *   `temperature`: Controls creativity vs. determinism (0.0 to ~1.0+).
+            *   `persona`: A name for the agent displayed in the UI.
+            *   *(Optional)*: You can add other provider-specific arguments here (e.g., `top_p`). Overriding `base_url` per-agent is possible but API keys should stay in `.env`.
+    *   **Alternatively, use the Web UI:** After starting the application, you can Add, Edit, and Delete agent configurations directly via the UI in the "Configuration" section. **Note:** A backend restart (or page refresh if using `reload=True`) is required for these UI-driven changes to take effect.
     *   **Example `config.yaml` snippet:**
         ```yaml
+        # config.yaml
         agents:
           - agent_id: "analyst_or"
             config:
@@ -253,7 +260,7 @@ graph LR
               model: "mistralai/mistral-7b-instruct" # Check OpenRouter for available models
               system_prompt: "You analyze text and data. Use tools if needed to read files."
               temperature: 0.6
-              persona: "Data Analyst (OpenRouter)"
+              persona: "Data Analyst (OR)"
 
           - agent_id: "creative_local"
             config:
@@ -262,14 +269,6 @@ graph LR
               system_prompt: "You are a creative writer."
               temperature: 0.9
               persona: "Creative Writer (Ollama)"
-
-          - agent_id: "coder_openai" # Optional OpenAI example
-            config:
-              provider: "openai"
-              model: "gpt-4-turbo-preview"
-              system_prompt: "You are an expert Python programmer."
-              temperature: 0.2
-              persona: "Python Expert (OpenAI)"
         ```
 
 ## ▶️ Running the Application
@@ -279,25 +278,26 @@ python -m src.main
 ```
 
 *   The server will start (usually on `http://0.0.0.0:8000`).
-*   It loads agents based on `config.yaml` and uses API keys/URLs from `.env` to initialize providers. Check console output for details and potential configuration warnings (e.g., missing keys for configured providers).
+*   It reads `.env` for secrets/defaults and loads the current `config.yaml` to initialize agents. Check console output for details.
 *   Access the UI in your web browser: `http://localhost:8000` (or your machine's IP if accessing from another device).
 
 ## 🖱️ Usage
 
 1.  Open the web UI.
-2.  The backend loads agents. You should see a "Connected" status and agent configurations/statuses loaded in their respective UI sections.
-3.  Type your task into the input box ⌨️ (optionally attach a text file using the 📎 button).
-4.  Send the message. The task goes concurrently to all initialized and *available* (idle) agents.
-5.  Observe responses streaming back in the "Conversation Area", identified by `agent_id`. System messages and errors appear in the "System Logs & Status" area.
-6.  Agent behavior (including tool use) depends on the configured provider and model. Check agent status updates in the "Agent Status" section.
-7.  Agents operate within `sandboxes/agent_<id>/` for file system tool operations.
+2.  The backend loads agents based on `config.yaml`. You should see a "Connected" status and agent configurations/statuses loaded in their respective UI sections.
+3.  **Manage Agents (Optional):** Use the "+", "Edit", "Delete" buttons in the "Configuration" section to modify agent setups. Click the Refresh button (🔄) and restart the backend (`Ctrl+C` and run `python -m src.main` again) to apply changes.
+4.  Type your task into the input box ⌨️ (optionally attach a text file using the 📎 button).
+5.  Send the message. The task goes concurrently to all initialized and *available* (idle) agents.
+6.  Observe responses streaming back in the "Conversation Area", identified by agent persona/ID. System messages and errors appear in the "System Logs & Status" area.
+7.  Agent behavior (including XML tool use like file access) depends on the configured provider and model. Check agent status updates in the "Agent Status" section.
+8.  Agents operate within `sandboxes/agent_<id>/` for file system tool operations.
 
 ## 🛠️ Development
 
 *   **Code Style:** Follow PEP 8. Use formatters like Black.
 *   **Linting:** Use Flake8 or Pylint.
 *   **Helper Files:** Keep `helperfiles/PROJECT_PLAN.md` and `helperfiles/FUNCTIONS_INDEX.md` updated! ✍️
-*   **Configuration:** Modify `config.yaml` to add/change agents/providers. Set API keys/URLs/defaults in `.env`. (UI config editing planned for Phase 8).
+*   **Configuration:** Modify `config.yaml` manually OR use the UI (requires restart). Set API keys/URLs/defaults in `.env`.
 *   **Branching:** Use feature branches.
 
 ## 🙌 Contributing
@@ -306,4 +306,4 @@ Contributions welcome! Follow guidelines, open Pull Requests.
 
 ## 📜 License
 
-(Specify MIT License, Apache 2.0, etc.)
+MIT License - See `LICENSE` file for details.
