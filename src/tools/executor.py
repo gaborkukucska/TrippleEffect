@@ -1,9 +1,10 @@
 # START OF FILE src/tools/executor.py
 import json
-import re # Import re for XML parsing
+import re # Keep re for the initial block detection
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Type
-import xml.etree.ElementTree as ET # Import ElementTree for XML parsing
+import xml.etree.ElementTree as ET # Use ElementTree for robust parsing
+import html # For unescaping potentially escaped values in XML
 
 # Import BaseTool and specific tools
 from src.tools.base import BaseTool
@@ -15,9 +16,8 @@ class ToolExecutor:
     """
     Manages and executes available tools for agents.
     - Registers tools.
-    - Provides schemas/descriptions of available tools in XML format.
-    - Parses XML tool call requests from LLM responses.
-    - Executes the requested tool within the agent's context (sandbox).
+    - Provides schemas/descriptions of available tools in XML format for prompts.
+    - Executes the requested tool based on parsed name and arguments.
     """
 
     # --- Tool Registration ---
@@ -57,139 +57,93 @@ class ToolExecutor:
 
     # --- Tool Schema/Discovery ---
 
-    def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        """Returns a list of schemas for all registered tools (still potentially useful internally)."""
-        # Kept for potential internal use or future native tool support, but not used for the XML prompt.
-        return [tool.get_schema() for tool in self.tools.values()]
-
     def get_formatted_tool_descriptions_xml(self) -> str:
         """Formats tool schemas into an XML string suitable for LLM prompts (Cline style)."""
         if not self.tools:
-            return "No tools available."
+            return "<!-- No tools available -->" # Use XML comment for clarity
 
-        description = "# Tools\n\n" # Using Markdown heading for clarity in the prompt
+        # Using a more structured XML approach for the description itself
+        root = ET.Element("tools")
+        root.text = "\nYou have access to the following tools. Use the specified XML format to call them. Only one tool call per message.\n"
+
         for tool in self.tools.values():
             schema = tool.get_schema()
-            description += f"## {schema['name']}\n"
-            description += f"Description: {schema['description']}\n"
-            description += "Parameters:\n"
+            tool_element = ET.SubElement(root, "tool")
+
+            name_el = ET.SubElement(tool_element, "name")
+            name_el.text = schema['name']
+
+            desc_el = ET.SubElement(tool_element, "description")
+            desc_el.text = schema['description'].strip() # Ensure no leading/trailing whitespace
+
+            params_el = ET.SubElement(tool_element, "parameters")
             if schema['parameters']:
                  for param in schema['parameters']:
-                     req = "required" if param['required'] else "optional"
-                     # Description format change for XML clarity
-                     description += f"- {param['name']}: ({param['type']}, {req}) {param['description']}\n"
+                     param_el = ET.SubElement(params_el, "parameter")
+                     param_name = ET.SubElement(param_el, "name")
+                     param_name.text = param['name']
+                     param_type = ET.SubElement(param_el, "type")
+                     param_type.text = param['type']
+                     param_req = ET.SubElement(param_el, "required")
+                     param_req.text = str(param['required']).lower() # 'true' or 'false'
+                     param_desc = ET.SubElement(param_el, "description")
+                     param_desc.text = param['description'].strip()
             else:
-                 description += "- None\n"
-            # XML Usage Example
-            description += "Usage:\n"
-            description += f"<{schema['name']}>\n"
+                 params_el.text = "<!-- No parameters -->"
+
+            # Add XML Usage Example within the description block using CDATA
+            usage_el = ET.SubElement(tool_element, "usage_example")
+            usage_str = f"\n<{schema['name']}>\n"
             if schema['parameters']:
                 for param in schema['parameters']:
-                    description += f"<{param['name']}>{param['name']} value here</{param['name']}>\n"
+                    # Simple placeholder like <param>value</param>
+                    usage_str += f"  <{param['name']}>...</{param['name']}>\n"
             else:
-                 description += f"<!-- No parameters for this tool -->\n"
-            description += f"</{schema['name']}>\n\n"
+                 usage_str += f"  <!-- No parameters -->\n"
+            usage_str += f"</{schema['name']}>\n"
+            # Using CDATA helps prevent confusion if example includes XML-like chars
+            usage_el.text = f"<![CDATA[{usage_str}]]>"
 
-        # Add general XML tool use instructions
-        description += (
-            "# Tool Use Formatting\n\n"
-            "Tool use is formatted using XML-style tags. The tool name is enclosed in opening and closing tags, "
-            "and each parameter is similarly enclosed within its own set of tags. Here's the structure:\n\n"
-            "<tool_name>\n"
-            "<parameter1_name>value1</parameter1_name>\n"
-            "<parameter2_name>value2</parameter2_name>\n"
-            "...\n"
-            "</tool_name>\n\n"
-            "For example:\n\n"
-            "<file_system>\n"
-            "<action>write</action>\n"
-            "<filename>output.txt</filename>\n"
-            "<content>This is the content to write.</content>\n"
-            "</file_system>\n\n"
-            "Always adhere to this format for the tool use to ensure proper parsing and execution. "
-            "Only one tool call can be made per response message. Place the tool call XML block at the end of your response."
+
+        # Add general XML tool use instructions outside the loop
+        instructions_el = ET.SubElement(root, "general_instructions")
+        instructions_el.text = (
+            "\nTool Call Format:\n"
+            "Enclose tool calls in XML tags matching the tool name. Place parameters inside their own tags within the tool call block.\n"
+            "Example:\n"
+            "<{tool_name}>\n"
+            "  <{parameter1_name}>value1</{parameter1_name}>\n"
+            "  <{parameter2_name}>value2</{parameter2_name}>\n"
+            "</{tool_name}>\n"
+            "Place the **entire** XML block for the single tool call at the **very end** of your message."
         )
-        return description
+
+        # Pretty print the XML for readability in the prompt
+        ET.indent(root, space="  ")
+        xml_string = ET.tostring(root, encoding='unicode', method='xml')
+
+        # Combine with Markdown heading
+        final_description = "# Tools Description (XML Format)\n\n" + xml_string
+        return final_description
 
 
-    # --- Tool Call Parsing & Execution ---
+    # --- Tool Execution (no XML parsing needed here anymore) ---
 
-    def parse_xml_tool_call(self, response_content: str) -> Optional[List[Tuple[str, Dict[str, Any]]]]:
-        """
-        Parses the LLM response content to find XML structures indicating tool calls.
-        Looks for <tool_name>...</tool_name> blocks. Returns a list as providers might
-        handle multiple calls differently, though the manager will likely process one.
-
-        Args:
-            response_content (str): The raw text response from the LLM.
-
-        Returns:
-            A list of tuples [(tool_name, tool_args), ...] if valid tool calls are found,
-            otherwise None. Returns an empty list if XML is found but doesn't match known tools.
-        """
-        tool_calls = []
-        # Basic regex to find potential XML blocks for known tools
-        tool_pattern = rf"<({'|'.join(re.escape(name) for name in self.tools.keys())})>([\s\S]*?)</\1>"
-        matches = re.findall(tool_pattern, response_content, re.IGNORECASE | re.DOTALL)
-
-        if not matches:
-            return None # No potential tool calls found
-
-        for tool_name_match, inner_content in matches:
-            # Find the tool case-insensitively, but use the registered case
-            matched_tool_name_registered_case = next(
-                (name for name in self.tools if name.lower() == tool_name_match.lower()),
-                None
-            )
-            if not matched_tool_name_registered_case:
-                print(f"Warning: Found XML tag <{tool_name_match}> but no matching tool is registered.")
-                continue # Skip this potential call
-
-            tool_args = {}
-            # Regex to extract parameters within the tool block
-            param_pattern = r"<(\w+)>([\s\S]*?)</\1>"
-            param_matches = re.findall(param_pattern, inner_content, re.DOTALL)
-
-            for param_name, param_value in param_matches:
-                 # Basic unescaping (might need more robust XML unescaping if values can be complex)
-                tool_args[param_name] = param_value.strip().replace('<', '<').replace('>', '>').replace('&', '&')
-
-            # Basic validation (check if required params are present)
-            tool_schema = self.tools[matched_tool_name_registered_case].get_schema()
-            missing_required = []
-            if tool_schema and tool_schema.get('parameters'):
-                for param_info in tool_schema['parameters']:
-                    if param_info.get('required') and param_info['name'] not in tool_args:
-                        missing_required.append(param_info['name'])
-
-            if missing_required:
-                print(f"Warning: Skipping tool call for '{matched_tool_name_registered_case}'. Missing required parameters: {', '.join(missing_required)}")
-                continue # Skip this call due to missing required args
-
-            print(f"Parsed XML tool call: Name='{matched_tool_name_registered_case}', Args={tool_args}")
-            tool_calls.append((matched_tool_name_registered_case, tool_args))
-
-        # Return the list of parsed calls (could be empty if validation failed)
-        # Return None only if no initial tool pattern was found at all.
-        return tool_calls
-
-
-    # execute_tool remains largely the same
     async def execute_tool(
         self,
         agent_id: str,
         agent_sandbox_path: Path,
         tool_name: str,
-        tool_args: Dict[str, Any]
+        tool_args: Dict[str, Any] # Arguments are now parsed by the Agent Core
     ) -> str:
         """
-        Executes the specified tool with the given arguments.
+        Executes the specified tool with the given arguments. Arguments are pre-parsed.
 
         Args:
             agent_id: The ID of the agent initiating the call.
             agent_sandbox_path: The sandbox path for the agent.
             tool_name: The name of the tool to execute.
-            tool_args: The arguments for the tool.
+            tool_args: The pre-parsed arguments dictionary for the tool.
 
         Returns:
             str: The result of the tool execution (should be a string or serializable).
@@ -199,30 +153,55 @@ class ToolExecutor:
         if not tool:
             return f"Error: Tool '{tool_name}' not found."
 
-        print(f"Executing tool '{tool_name}' for agent '{agent_id}' with args: {tool_args}")
+        print(f"Executor: Executing tool '{tool_name}' for agent '{agent_id}' with args: {tool_args}")
         try:
+            # --- Argument Validation (moved from parsing step) ---
+            schema = tool.get_schema()
+            validated_args = {}
+            missing_required = []
+            if schema.get('parameters'):
+                param_map = {p['name']: p for p in schema['parameters']}
+                for param_info in schema['parameters']:
+                    param_name = param_info['name']
+                    is_required = param_info.get('required', False)
+                    if param_name in tool_args:
+                        # Basic type check could be added here if needed, but Pydantic in BaseTool might handle it
+                        validated_args[param_name] = tool_args[param_name]
+                    elif is_required:
+                        missing_required.append(param_name)
+
+                # Check for unexpected arguments (optional)
+                # for arg_name in tool_args:
+                #     if arg_name not in param_map:
+                #         print(f"Warning: Unexpected argument '{arg_name}' provided for tool '{tool_name}'")
+
+            if missing_required:
+                return f"Error: Tool '{tool_name}' execution failed. Missing required parameters: {', '.join(missing_required)}"
+            # --- End Argument Validation ---
+
+
+            # Execute with validated arguments
             result = await tool.execute(
                 agent_id=agent_id,
                 agent_sandbox_path=agent_sandbox_path,
-                **tool_args
+                **validated_args # Use validated args
             )
+
             # Ensure result is string
             if not isinstance(result, str):
                  try:
-                     # Attempt JSON serialization for complex types, fallback to str()
                      result_str = json.dumps(result, indent=2)
                  except TypeError:
                      result_str = str(result)
             else:
                  result_str = result
 
-            print(f"Tool '{tool_name}' execution result (first 100 chars): {result_str[:100]}...")
+            print(f"Executor: Tool '{tool_name}' execution result (first 100 chars): {result_str[:100]}...")
             return result_str
 
         except Exception as e:
-            error_msg = f"Error executing tool '{tool_name}': {type(e).__name__} - {e}"
+            error_msg = f"Executor: Error executing tool '{tool_name}': {type(e).__name__} - {e}"
             print(error_msg)
-            # Consider logging the full traceback here for debugging
-            # import traceback
-            # traceback.print_exc()
+            # import traceback # Uncomment for detailed debug logs
+            # traceback.print_exc() # Uncomment for detailed debug logs
             return error_msg
