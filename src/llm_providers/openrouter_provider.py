@@ -226,37 +226,43 @@ class OpenRouterProvider(BaseLLMProvider):
 
                 # Loop continues...
 
-            # --- Error Handling (Leverages OpenAI library's exceptions) ---
-            except openai.APIAuthenticationError as e:
-                error_msg = f"OpenRouter Authentication Error: Check API key. (Status: {e.status_code}, Message: {e.message})"
+            # --- Error Handling (Using updated openai v1.x exception names) ---
+            except openai.AuthenticationError as e: # UPDATED
+                error_msg = f"OpenRouter Authentication Error: Check API key. (Status: {e.status_code}, Message: {e.body.get('message', 'N/A') if e.body else 'N/A'})" # Adjusted message access
                 print(f"OpenRouterProvider: {error_msg}")
                 yield {"type": "error", "content": f"[OpenRouterProvider Error: {error_msg}]"}
                 break
-            except openai.APIRateLimitError as e:
-                error_msg = f"OpenRouter Rate Limit Error: (Status: {e.status_code}, Message: {e.message})"
+            except openai.RateLimitError as e: # UPDATED
+                error_msg = f"OpenRouter Rate Limit Error: (Status: {e.status_code}, Message: {e.body.get('message', 'N/A') if e.body else 'N/A'})" # Adjusted message access
                 print(f"OpenRouterProvider: {error_msg}")
                 yield {"type": "error", "content": f"[OpenRouterProvider Error: {error_msg}]"}
                 break
-            except openai.APIConnectionError as e:
+            except openai.APIConnectionError as e: # Stays the same
                 error_msg = f"OpenRouter Connection Error: {e}"
                 print(f"OpenRouterProvider: {error_msg}")
                 yield {"type": "error", "content": f"[OpenRouterProvider Error: {error_msg}]"}
                 break
             except openai.BadRequestError as e: # Catch 400 errors (e.g., invalid model, bad input)
-                 error_msg = f"OpenRouter Bad Request Error: Status={e.status_code}, Response={e.response}, Message={e.message}"
+                 error_msg = f"OpenRouter Bad Request Error: Status={e.status_code}, Response={e.response}, Message={e.body.get('message', 'N/A') if e.body else 'N/A'}" # Adjusted message access
                  print(f"OpenRouterProvider: {error_msg}")
                  # Check if it's a model not found error specifically
-                 if "model_not_found" in str(e.message).lower():
+                 err_body_msg = str(e.body.get('message', '') if e.body else '').lower()
+                 if "model_not_found" in err_body_msg or "context_length" in err_body_msg:
                      yield {"type": "error", "content": f"[OpenRouterProvider Error: Model '{model}' not found or context length exceeded.]"}
                  else:
-                     yield {"type": "error", "content": f"[OpenRouterProvider Error: Bad Request (400) - {e.message}]"}
+                     yield {"type": "error", "content": f"[OpenRouterProvider Error: Bad Request (400) - {e.body.get('message', 'N/A') if e.body else 'N/A'}]"}
                  break
-            except openai.APIStatusError as e: # Catch other non-2xx errors
-                 error_msg = f"OpenRouter API Status Error: Status={e.status_code}, Response={e.response}, Message={e.message}"
+            except openai.APIStatusError as e: # Catch other non-2xx errors (like the 500 Internal Server Error)
+                 error_msg = f"OpenRouter API Status Error: Status={e.status_code}, Response={e.response}, Message={e.body.get('message', 'N/A') if e.body else 'N/A'}" # Adjusted message access
                  print(f"OpenRouterProvider: {error_msg}")
-                 yield {"type": "error", "content": f"[OpenRouterProvider Error: API Status {e.status_code} - {e.message}]"}
+                 yield {"type": "error", "content": f"[OpenRouterProvider Error: API Status {e.status_code} - {e.body.get('message', 'Server error occurred') if e.body else 'Server error occurred'}]"} # Provide default for 500
                  break
-            except Exception as e:
+            except openai.APITimeoutError as e: # Add timeout handling
+                 error_msg = f"OpenRouter Request Timeout Error: {e}"
+                 print(f"OpenRouterProvider: {error_msg}")
+                 yield {"type": "error", "content": f"[OpenRouterProvider Error: Request timed out]"}
+                 break
+            except Exception as e: # General catch-all remains
                 import traceback
                 traceback.print_exc()
                 error_msg = f"Unexpected Error during OpenRouter completion: {type(e).__name__} - {e}"
