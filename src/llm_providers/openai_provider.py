@@ -102,11 +102,7 @@ class OpenAIProvider(BaseLLMProvider):
                     # --- Tool Call Chunks ---
                     if delta.tool_calls:
                         for tool_call_chunk in delta.tool_calls:
-                            # Check if index is needed, usually not for streaming deltas
-                            # index = tool_call_chunk.index # Not always present?
-
                             # Need call_id to aggregate argument chunks
-                            # The first chunk for a call should have the ID
                             call_id = tool_call_chunk.id
                             if call_id:
                                 if call_id not in current_tool_call_chunks:
@@ -127,9 +123,6 @@ class OpenAIProvider(BaseLLMProvider):
                                     if tool_call_chunk.function and tool_call_chunk.function.arguments:
                                         current_tool_call_chunks[call_id]["arguments"] += tool_call_chunk.function.arguments
                             else:
-                                # Sometimes chunks might lack ID if they only contain args for the last started call
-                                # This requires careful state management or assumptions.
-                                # Let's assume ID is present on start and handle based on that for now.
                                 print(f"OpenAIProvider: Warning - received tool call chunk without ID: {tool_call_chunk}")
 
 
@@ -164,7 +157,6 @@ class OpenAIProvider(BaseLLMProvider):
                         except json.JSONDecodeError as e:
                             print(f"OpenAIProvider: Failed to decode JSON arguments for tool call {call_id}: {e}. Args received: '{call_info['arguments']}'")
                             yield {"type": "error", "content": f"[OpenAIProvider Error: Failed to parse arguments for tool {call_info['name']} (ID: {call_id})]. Arguments: '{call_info['arguments']}'"}
-                            # How to proceed? We could skip this call or halt. Let's halt this turn.
                             return # Stop the generator
 
                 # --- Post-Stream Processing ---
@@ -183,10 +175,7 @@ class OpenAIProvider(BaseLLMProvider):
                 # Check if Tool Calls Were Made in this turn
                 if not requests_to_yield:
                     # No tool calls, this turn is finished.
-                    # Final content was already streamed via chunks.
                     print(f"OpenAIProvider: Finished turn with final response. Content length: {len(assistant_response_content)}")
-                    # Optionally yield a final marker if needed by consumer
-                    # yield {"type": "final_marker"}
                     break # Exit the while loop
 
                 # --- Tools were called ---
@@ -194,7 +183,6 @@ class OpenAIProvider(BaseLLMProvider):
                 print(f"OpenAIProvider: Requesting execution for {len(requests_to_yield)} tool call(s). Attempt {tool_call_attempts}/{MAX_TOOL_CALLS_PER_TURN}.")
 
                 # Yield Tool Requests and Receive Results via asend()
-                # The `yield` expression itself *receives* the sent value
                 try:
                     tool_results: Optional[List[ToolResultDict]] = yield {"type": "tool_requests", "calls": requests_to_yield}
                 except GeneratorExit:
@@ -203,7 +191,6 @@ class OpenAIProvider(BaseLLMProvider):
 
                 # Process Tool Results
                 if tool_results is None:
-                    # Manager might send None if something went wrong upstream
                     print(f"OpenAIProvider: Did not receive tool results back. Aborting tool loop.")
                     yield {"type": "error", "content": "[OpenAIProvider Error: Failed to get tool results]"}
                     break
@@ -230,29 +217,39 @@ class OpenAIProvider(BaseLLMProvider):
 
                 # Loop continues for the next LLM call...
 
-            # --- Error Handling for API Calls ---
-            except openai.APIAuthenticationError as e:
-                error_msg = f"OpenAI Authentication Error: Check API key ({e})"
+            # --- Error Handling for API Calls (Using updated openai v1.x exception names) ---
+            except openai.AuthenticationError as e: # UPDATED
+                error_msg = f"OpenAI Authentication Error: Check API key (Status: {e.status_code}, Message: {e.body.get('message', 'N/A') if e.body else 'N/A'})" # Adjusted message access
                 print(f"OpenAIProvider: {error_msg}")
                 yield {"type": "error", "content": f"[OpenAIProvider Error: {error_msg}]"}
                 break # Stop on auth errors
-            except openai.APIRateLimitError as e:
-                error_msg = f"OpenAI Rate Limit Error: {e}"
+            except openai.RateLimitError as e: # UPDATED
+                error_msg = f"OpenAI Rate Limit Error: (Status: {e.status_code}, Message: {e.body.get('message', 'N/A') if e.body else 'N/A'})" # Adjusted message access
                 print(f"OpenAIProvider: {error_msg}")
                 yield {"type": "error", "content": f"[OpenAIProvider Error: {error_msg}]"}
                 # Could implement backoff/retry here, but for now, just break
                 break
-            except openai.APIConnectionError as e:
+            except openai.APIConnectionError as e: # Stays the same
                 error_msg = f"OpenAI Connection Error: {e}"
                 print(f"OpenAIProvider: {error_msg}")
                 yield {"type": "error", "content": f"[OpenAIProvider Error: {error_msg}]"}
                 break # Stop on connection errors
-            except openai.APIStatusError as e: # Catch other API errors (e.g., 4xx, 5xx)
-                 error_msg = f"OpenAI API Status Error: Status={e.status_code}, Response={e.response}"
+            except openai.BadRequestError as e: # Stays the same
+                 error_msg = f"OpenAI Bad Request Error: Status={e.status_code}, Response={e.response}, Message={e.body.get('message', 'N/A') if e.body else 'N/A'}" # Adjusted message access
                  print(f"OpenAIProvider: {error_msg}")
-                 yield {"type": "error", "content": f"[OpenAIProvider Error: API Status {e.status_code} - {e.message}]"}
+                 yield {"type": "error", "content": f"[OpenAIProvider Error: Bad Request (400) - {e.body.get('message', 'N/A') if e.body else 'N/A'}]"}
                  break
-            except Exception as e:
+            except openai.APIStatusError as e: # Catch other API errors (e.g., 4xx, 5xx) - Stays the same
+                 error_msg = f"OpenAI API Status Error: Status={e.status_code}, Response={e.response}, Message={e.body.get('message', 'N/A') if e.body else 'N/A'}" # Adjusted message access
+                 print(f"OpenAIProvider: {error_msg}")
+                 yield {"type": "error", "content": f"[OpenAIProvider Error: API Status {e.status_code} - {e.body.get('message', 'Server error occurred') if e.body else 'Server error occurred'}]"} # Provide default for 500
+                 break
+            except openai.APITimeoutError as e: # Add timeout handling
+                 error_msg = f"OpenAI Request Timeout Error: {e}"
+                 print(f"OpenAIProvider: {error_msg}")
+                 yield {"type": "error", "content": f"[OpenAIProvider Error: Request timed out]"}
+                 break
+            except Exception as e: # General catch-all remains
                 import traceback
                 traceback.print_exc() # Print full traceback for unexpected errors
                 error_msg = f"Unexpected Error during OpenAI completion: {type(e).__name__} - {e}"
