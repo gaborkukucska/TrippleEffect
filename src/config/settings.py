@@ -23,6 +23,8 @@ AGENT_CONFIG_PATH = BASE_DIR / 'config.yaml'
 # --- Import the ConfigManager singleton instance ---
 # This assumes config_manager.py is executed and the instance is created
 try:
+    # Use the path defined in config_manager itself if needed:
+    # from src.config.config_manager import config_manager, AGENT_CONFIG_PATH_CM
     from src.config.config_manager import config_manager
     print("Successfully imported config_manager instance.")
 except ImportError as e:
@@ -30,8 +32,13 @@ except ImportError as e:
      # Provide a fallback or raise an error depending on desired behavior
      # Fallback: define a dummy config_manager or load statically
      class DummyConfigManager:
-         def load_config(self): return []
-         def get_config(self): return []
+         def _load_config_sync(self): self._agents_data = []
+         def get_config_sync(self): return []
+         # Add dummy async methods if needed elsewhere during testing
+         async def get_config(self): return []
+         async def load_config(self): return []
+
+     # Use the actual AGENT_CONFIG_PATH for the dummy if needed
      config_manager = DummyConfigManager()
 
 
@@ -42,7 +49,7 @@ class Settings:
     """
     Holds application settings, loaded from environment variables and config.yaml.
     Manages API keys and base URLs for different LLM providers.
-    Uses ConfigManager to load agent configurations.
+    Uses ConfigManager to load agent configurations synchronously at startup.
     """
     def __init__(self):
         # --- Provider Configuration (from .env) ---
@@ -66,11 +73,9 @@ class Settings:
         self.DEFAULT_TEMPERATURE: float = float(os.getenv("DEFAULT_TEMPERATURE", 0.7))
         self.DEFAULT_PERSONA: str = os.getenv("DEFAULT_PERSONA", "General Assistant")
 
-        # --- Load Agent Configurations using ConfigManager ---
-        # This list contains dictionaries like: {'agent_id': '...', 'config': {'provider': ..., 'model': ...}}
-        # The config_manager instance loads the config in its __init__
-        # We retrieve the loaded config here.
-        self.AGENT_CONFIGURATIONS: List[Dict[str, Any]] = config_manager.get_config()
+        # --- Load Agent Configurations using ConfigManager (Synchronously) ---
+        # Use the new synchronous getter for initialization.
+        self.AGENT_CONFIGURATIONS: List[Dict[str, Any]] = config_manager.get_config_sync()
         if not self.AGENT_CONFIGURATIONS:
              print("Warning: No agent configurations loaded via ConfigManager.")
 
@@ -93,15 +98,20 @@ class Settings:
         if self.DEFAULT_AGENT_PROVIDER == "ollama": required_ollama = True
 
         # Check specific agent configs
-        for agent_conf_entry in self.AGENT_CONFIGURATIONS:
-            agent_conf = agent_conf_entry.get("config", {})
-            provider = agent_conf.get("provider")
-            if provider == "openai": required_openai = True
-            if provider == "openrouter": required_openrouter = True
-            if provider == "ollama": required_ollama = True
-            # Allow override via config.yaml's api_key/base_url - if they are set, we don't strictly need the .env var
-            if provider == "openai" and agent_conf.get("api_key"): required_openai = False
-            if provider == "openrouter" and agent_conf.get("api_key"): required_openrouter = False
+        # Ensure AGENT_CONFIGURATIONS is iterable before looping
+        if isinstance(self.AGENT_CONFIGURATIONS, list):
+             for agent_conf_entry in self.AGENT_CONFIGURATIONS:
+                 agent_conf = agent_conf_entry.get("config", {})
+                 provider = agent_conf.get("provider")
+                 if provider == "openai": required_openai = True
+                 if provider == "openrouter": required_openrouter = True
+                 if provider == "ollama": required_ollama = True
+                 # Allow override via config.yaml's api_key/base_url - if they are set, we don't strictly need the .env var
+                 if provider == "openai" and agent_conf.get("api_key"): required_openai = False
+                 if provider == "openrouter" and agent_conf.get("api_key"): required_openrouter = False
+        else:
+             logger.error("AGENT_CONFIGURATIONS is not a list during _check_required_keys. Check loading.")
+
 
         print("-" * 30)
         print("Configuration Check:")
@@ -162,10 +172,11 @@ class Settings:
     def get_agent_config_by_id(self, agent_id: str) -> Optional[Dict[str, Any]]:
         """Retrieves a specific agent's configuration dictionary by its ID from the loaded configuration."""
         # Access the already loaded list
-        for agent_conf_entry in self.AGENT_CONFIGURATIONS:
-            if agent_conf_entry.get('agent_id') == agent_id:
-                # Return the nested 'config' dictionary
-                return agent_conf_entry.get('config', {})
+        if isinstance(self.AGENT_CONFIGURATIONS, list):
+             for agent_conf_entry in self.AGENT_CONFIGURATIONS:
+                 if agent_conf_entry.get('agent_id') == agent_id:
+                     # Return the nested 'config' dictionary
+                     return agent_conf_entry.get('config', {})
         return None
 
 # Create a singleton instance of the Settings class
