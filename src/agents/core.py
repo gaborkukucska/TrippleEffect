@@ -38,8 +38,7 @@ XML_TOOL_CALL_PATTERN = None # Will be set in __init__
 
 # --- Regex to potentially find XML within markdown code fences ---
 # Looks for ```[optional language specifier]\n<tool_name>...</tool_name>\n```
-# It's non-greedy and captures the tool name and the inner content *of the XML part*.
-# Assumes the XML block is the primary content within the fence.
+# It's non-greedy and captures the *full XML block* inside (group 1) and the *tool name* itself (group 2).
 MARKDOWN_FENCE_XML_PATTERN = r"```(?:[a-zA-Z]*\n)?\s*(<({tool_names})>[\s\S]*?</\2>)\s*\n?```"
 
 
@@ -107,11 +106,11 @@ class Agent:
                 safe_tool_names = [re.escape(name) for name in tool_names]
                 tool_names_pattern_group = '|'.join(safe_tool_names)
 
-                # Pattern for raw XML block: <tool_name>...</tool_name>
+                # Pattern for raw XML block: captures tool name in group 1, inner content in group 2
                 raw_pattern_str = rf"<({tool_names_pattern_group})>([\s\S]*?)</\1>"
                 self.raw_xml_tool_call_pattern = re.compile(raw_pattern_str, re.IGNORECASE | re.DOTALL)
 
-                # Pattern for XML within markdown fence
+                # Pattern for XML within markdown fence: captures full XML block in group 1, tool name in group 2
                 md_pattern_str = MARKDOWN_FENCE_XML_PATTERN.format(tool_names=tool_names_pattern_group)
                 self.markdown_xml_tool_call_pattern = re.compile(md_pattern_str, re.IGNORECASE | re.DOTALL | re.MULTILINE)
 
@@ -126,7 +125,7 @@ class Agent:
 
         logger.info(f"Agent {self.agent_id} ({self.persona}) initialized. Status: {self.status}. Provider: {self.provider_name}, Model: {self.model}. Sandbox: {self.sandbox_path}. LLM Provider Instance: {self.llm_provider}")
 
-    # --- Status Management (remains the same) ---
+    # --- Status Management ---
     def set_status(self, new_status: str, tool_info: Optional[Dict[str, str]] = None):
         """Updates the agent's status and optionally tool info."""
         if self.status != new_status: # Only log if status changes
@@ -162,106 +161,114 @@ class Agent:
             return False
 
     # --- XML Parsing Helper ---
-    def _parse_and_yield_xml_tool_call(self) -> Optional[Tuple[str, Dict[str, Any], int]]:
+    def _find_and_parse_last_tool_call(self) -> Optional[Tuple[str, Dict[str, Any], Tuple[int, int]]]:
         """
-        Checks the text_buffer for a complete XML tool call at the end,
-        potentially wrapped in markdown fences.
-        If found, parses it, validates against known tools, and returns info.
+        Finds the *last* occurrence of a valid tool call (raw or fenced) in the text_buffer.
+        Parses it and returns validated info.
 
         Returns:
-            Optional[Tuple[str, Dict[str, Any], int]]: (tool_name, tool_args, block_length)
-            where block_length is the length of the entire matched block (including fences).
+            Optional[Tuple[str, Dict[str, Any], Tuple[int, int]]]:
+                (tool_name, tool_args, (match_start_index, match_end_index))
             Returns None if no valid call is found.
         """
-        buffer_trimmed = self.text_buffer.rstrip() # Work with trimmed buffer for checks
-        if not buffer_trimmed:
+        if not self.text_buffer:
             return None
 
-        logger.debug(f"Agent {self.agent_id}: Checking buffer for tool call (last 150 chars): '{buffer_trimmed[-150:]}'")
+        buffer_content = self.text_buffer # Work with the full buffer content
+        logger.debug(f"Agent {self.agent_id}: Checking buffer for tool call (Length: {len(buffer_content)}): '{buffer_content[-250:]}'") # Log more chars
 
-        match = None
-        matched_xml_block = None
-        block_length = 0
-        is_markdown_match = False
+        last_match_info = None # Store (match_object, is_markdown_match)
 
-        # 1. Check for XML within markdown fences first
+        # 1. Find the last markdown fence match
         if self.markdown_xml_tool_call_pattern:
-             # Search backwards from the end for the pattern
-             iterator = self.markdown_xml_tool_call_pattern.finditer(self.text_buffer)
-             last_match = None
-             for m in iterator:
-                 last_match = m
-             match = last_match
+             last_md_match = None
+             for m in self.markdown_xml_tool_call_pattern.finditer(buffer_content):
+                 last_md_match = m
+             if last_md_match:
+                 last_match_info = (last_md_match, True)
+                 logger.debug(f"Agent {self.agent_id}: Found last markdown fence match ending at {last_md_match.end()}.")
 
-             if match and match.end() >= len(buffer_trimmed) - 5: # Allow slight tolerance from the end
-                 # Matched the fenced pattern near the end
-                 matched_xml_block = match.group(1) # Group 1 captured the inner <tool>...</tool>
-                 block_length = len(match.group(0)) # Length of the whole ```...``` block
-                 is_markdown_match = True
-                 logger.debug(f"Agent {self.agent_id}: Found potential tool call within markdown fence near end.")
-             else:
-                 match = None # Reset match if not near the end
+        # 2. Find the last raw XML match
+        if self.raw_xml_tool_call_pattern:
+             last_raw_match = None
+             for m in self.raw_xml_tool_call_pattern.finditer(buffer_content):
+                 last_raw_match = m
+             if last_raw_match:
+                 logger.debug(f"Agent {self.agent_id}: Found last raw XML match ending at {last_raw_match.end()}.")
+                 # Only consider the raw match if no markdown match was found,
+                 # OR if the raw match ends *later* than the markdown match
+                 if last_match_info is None or last_raw_match.end() > last_match_info[0].end():
+                     # Check if raw match is inside the markdown match - if so, ignore raw
+                     if last_match_info and last_raw_match.start() >= last_match_info[0].start() and last_raw_match.end() <= last_match_info[0].end():
+                         logger.debug("Raw match is inside markdown match, ignoring raw.")
+                     else:
+                         last_match_info = (last_raw_match, False)
+                         logger.debug(f"Agent {self.agent_id}: Selecting raw XML match as the final candidate.")
 
-        # 2. If no markdown match, check for raw XML block near the end
-        if not match and self.raw_xml_tool_call_pattern:
-             # Search backwards from the end
-             iterator = self.raw_xml_tool_call_pattern.finditer(self.text_buffer)
-             last_match = None
-             for m in iterator:
-                 last_match = m
-             match = last_match
-
-             if match and match.end() >= len(buffer_trimmed) - 5: # Allow slight tolerance
-                 matched_xml_block = match.group(0) # Group 0 is the whole <tool>...</tool> block
-                 block_length = len(matched_xml_block)
-                 is_markdown_match = False
-                 logger.debug(f"Agent {self.agent_id}: Found potential raw tool call near end.")
-             else:
-                  match = None # Reset match if not near the end
-
-
-        # 3. If no match found near the end
-        if not match or not matched_xml_block:
-            # logger.debug(f"Agent {self.agent_id}: No complete tool call pattern found near end of buffer.")
+        # 3. If no match found
+        if not last_match_info:
+            logger.debug(f"Agent {self.agent_id}: No valid tool call pattern found in buffer.")
             return None
 
-        # 4. Parse the identified XML block (which is `matched_xml_block`)
+        match, is_markdown = last_match_info
+        match_start, match_end = match.span() # Get start/end indices of the full match
+
+        # 4. Extract the core XML block and parse it
+        xml_block_to_parse = ""
+        tool_name_from_outer_match = "" # Tool name captured by the outer regex
+        if is_markdown:
+            # Group 1 contains the full XML block, Group 2 contains the tool name
+            xml_block_to_parse = match.group(1).strip()
+            tool_name_from_outer_match = match.group(2)
+            logger.debug(f"Agent {self.agent_id}: Extracted XML from fence: '{xml_block_to_parse[:150]}...'")
+        else:
+            # For raw match, group(1) is tool name, group(0) is the full match block
+            xml_block_to_parse = match.group(0).strip()
+            tool_name_from_outer_match = match.group(1)
+            logger.debug(f"Agent {self.agent_id}: Using raw XML block: '{xml_block_to_parse[:150]}...'")
+
+
+        # 5. Validate tool name and parse parameters from the extracted block
         try:
-            # Use regex again on the *extracted* XML block to get tool name and inner content
-            inner_match = self.raw_xml_tool_call_pattern.match(matched_xml_block.strip())
-            if not inner_match:
-                 logger.warning(f"Agent {self.agent_id}: Could not re-match tool name pattern within extracted block: '{matched_xml_block}'")
-                 return None
-
-            tool_name_match, inner_content = inner_match.groups()
-
-            # Find the registered tool name (case-insensitive)
+            # Find the registered tool name (case-insensitive) using the name captured by the outer regex
             tool_name = next(
-                (name for name in self.manager.tool_executor.tools if name.lower() == tool_name_match.lower()),
+                (name for name in self.manager.tool_executor.tools if name.lower() == tool_name_from_outer_match.lower()),
                 None
             )
 
             if not tool_name:
-                logger.warning(f"Agent {self.agent_id}: Found XML tag <{tool_name_match}> but no matching tool is registered.")
+                logger.warning(f"Agent {self.agent_id}: Found XML tag <{tool_name_from_outer_match}> but no matching tool is registered.")
                 return None
 
-            logger.info(f"Agent {self.agent_id}: Detected call for tool '{tool_name}' (Markdown fence: {is_markdown_match})")
+            # Now parse parameters from xml_block_to_parse
+            # We need the inner content. Use the raw pattern again *on this block*
+            # Use re.search here as .match only matches from the beginning
+            inner_match = self.raw_xml_tool_call_pattern.search(xml_block_to_parse)
+            if not inner_match:
+                 logger.warning(f"Agent {self.agent_id}: Could not parse inner content of extracted block: '{xml_block_to_parse}'")
+                 return None
+            # Ensure the matched tool name inside the block is the same one we expected
+            inner_tool_name, inner_content = inner_match.groups()
+            if inner_tool_name.lower() != tool_name.lower():
+                logger.warning(f"Agent {self.agent_id}: Tool name mismatch between outer match ({tool_name}) and inner block ({inner_tool_name}).")
+                return None
+
+
+            logger.info(f"Agent {self.agent_id}: Detected call for tool '{tool_name}' (Markdown fence: {is_markdown})")
             tool_args = {}
             # Parse parameters using regex on the inner content
-            # Pattern: <param_name>param_value</param_name> (non-greedy value)
-            param_pattern = r"<(\w+?)\s*>([\s\S]*?)</\1>" # Allow optional attributes in tag if needed: <(\w+?)(?:\s+.*?)?>
+            param_pattern = r"<(\w+?)\s*>([\s\S]*?)</\1>"
             param_matches = re.findall(param_pattern, inner_content, re.DOTALL | re.IGNORECASE)
             for param_name, param_value_escaped in param_matches:
-                 # Unescape HTML entities like <, >, & just in case
                  param_value = html.unescape(param_value_escaped.strip())
                  tool_args[param_name] = param_value
 
             logger.info(f"Agent {self.agent_id}: Parsed args for '{tool_name}': {tool_args}")
-            # Return tool_name, args, and the length of the *original* block found (incl. fences)
-            return tool_name, tool_args, block_length
+            # Return tool_name, args, and the start/end indices of the *original full block* found
+            return tool_name, tool_args, (match_start, match_end)
 
         except Exception as parse_err:
-            logger.error(f"Agent {self.agent_id}: Error parsing parameters for tool call '{matched_xml_block[:100]}...': {parse_err}", exc_info=True)
+            logger.error(f"Agent {self.agent_id}: Error parsing parameters for tool call '{xml_block_to_parse[:100]}...': {parse_err}", exc_info=True)
             return None
 
 
@@ -326,52 +333,8 @@ class Agent:
                         # Append to buffer for XML parsing
                         self.text_buffer += content
                         complete_assistant_response += content # Add to full response tracker
-
-                        # Attempt to parse XML tool call from the updated buffer
-                        parsed_tool_info = self._parse_and_yield_xml_tool_call()
-
-                        if parsed_tool_info:
-                             tool_name, tool_args, block_len = parsed_tool_info
-
-                             # Yield text preceding the tool call block
-                             preceding_text = self.text_buffer[:-block_len]
-                             if preceding_text:
-                                 logger.debug(f"Agent {self.agent_id}: Yielding preceding text: '{preceding_text[:50]}...'")
-                                 yield {"type": "response_chunk", "content": preceding_text}
-                                 # Clear buffer up to the tool call
-                                 self.text_buffer = self.text_buffer[-block_len:]
-                             else:
-                                 # If the buffer *only* contained the tool call block
-                                 self.text_buffer = "" # Clear buffer completely
-
-
-                             # Generate a unique call ID
-                             call_id = f"xml_call_{self.agent_id}_{int(time.time() * 1000)}_{os.urandom(2).hex()}"
-
-                             # Yield the tool request to the manager
-                             self.set_status(AGENT_STATUS_AWAITING_TOOL)
-                             logger.info(f"Agent {self.agent_id}: Yielding XML tool request: ID={call_id}, Name={tool_name}, Args={tool_args}")
-                             yield {
-                                 "type": "tool_requests",
-                                 "calls": [{"id": call_id, "name": tool_name, "arguments": tool_args}],
-                                 # Send full text up to this point for manager history
-                                 "raw_assistant_response": complete_assistant_response
-                             }
-                             tool_call_yielded = True
-
-                             # Clear the buffer after yielding request (it now only contains the parsed block or is empty)
-                             self.text_buffer = ""
-                             # Generator execution pauses here until manager sends result (or None) via asend()
-
-                        else:
-                             # No complete tool found yet. Yield the current buffer content as a chunk.
-                             # This assumes that if a tool call *is* coming, it will be the last thing.
-                             if self.text_buffer:
-                                  logger.debug(f"Agent {self.agent_id}: No tool call detected yet, yielding text chunk: '{self.text_buffer[:50]}...'")
-                                  yield {"type": "response_chunk", "content": self.text_buffer}
-                                  # Clear buffer after yielding non-tool text
-                                  self.text_buffer = ""
-
+                        # Yield intermediate text immediately
+                        yield {"type": "response_chunk", "content": content}
 
                 elif event_type == "status":
                     # Forward status messages from the provider
@@ -389,40 +352,38 @@ class Agent:
                     logger.warning(f"Agent {self.agent_id}: Received unknown event type '{event_type}' from provider.")
 
             # --- After the provider stream finishes ---
-            logger.debug(f"Agent {self.agent_id}: Provider stream finished.")
+            logger.debug(f"Agent {self.agent_id}: Provider stream finished. Processing final buffer.")
 
-            # Check remaining buffer content one last time ONLY if no tool call was yielded during the stream
-            if not tool_call_yielded and self.text_buffer:
-                 logger.debug(f"Agent {self.agent_id}: Checking final buffer content...")
-                 parsed_tool_info = self._parse_and_yield_xml_tool_call()
-                 if parsed_tool_info:
-                      tool_name, tool_args, block_len = parsed_tool_info
-                      preceding_text = self.text_buffer[:-block_len]
-                      if preceding_text:
-                           logger.debug(f"Agent {self.agent_id}: Yielding final preceding text: '{preceding_text[:50]}...'")
-                           yield {"type": "response_chunk", "content": preceding_text}
+            # Now parse the completed buffer for the *last* tool call
+            parsed_tool_info = self._find_and_parse_last_tool_call()
 
-                      call_id = f"xml_call_{self.agent_id}_{int(time.time() * 1000)}_{os.urandom(2).hex()}"
-                      self.set_status(AGENT_STATUS_AWAITING_TOOL)
-                      logger.info(f"Agent {self.agent_id}: Yielding final XML tool request: ID={call_id}, Name={tool_name}, Args={tool_args}")
-                      yield {
-                          "type": "tool_requests",
-                          "calls": [{"id": call_id, "name": tool_name, "arguments": tool_args}],
-                          "raw_assistant_response": complete_assistant_response
-                      }
-                      tool_call_yielded = True
-                      self.text_buffer = "" # Clear buffer
-                 else:
-                      # No tool call at the very end, yield remaining text
-                      logger.debug(f"Agent {self.agent_id}: Yielding final remaining text: '{self.text_buffer[:50]}...'")
-                      yield {"type": "response_chunk", "content": self.text_buffer}
-                      self.text_buffer = ""
+            if parsed_tool_info:
+                 tool_name, tool_args, (match_start, match_end) = parsed_tool_info
+                 logger.info(f"Agent {self.agent_id}: Final tool call found: {tool_name}, Span: ({match_start}, {match_end})")
 
-            # Yield the complete assistant response text for the manager to add to history,
-            # but only if *no* tool call was made (manager adds history *before* tool execution otherwise).
-            if not tool_call_yielded and complete_assistant_response:
-                 logger.debug(f"Agent {self.agent_id}: Yielding final_response event.")
-                 yield {"type": "final_response", "content": complete_assistant_response}
+                 # If there was text *before* the tool call that wasn't part of yielded chunks,
+                 # this logic might be complex. Since we yielded all chunks, we assume the UI
+                 # has the text. We just need to yield the tool request.
+                 # The manager will add the `complete_assistant_response` (which includes the tool call text) to history.
+
+                 call_id = f"xml_call_{self.agent_id}_{int(time.time() * 1000)}_{os.urandom(2).hex()}"
+                 self.set_status(AGENT_STATUS_AWAITING_TOOL)
+                 logger.info(f"Agent {self.agent_id}: Yielding final XML tool request: ID={call_id}, Name={tool_name}, Args={tool_args}")
+                 yield {
+                     "type": "tool_requests",
+                     "calls": [{"id": call_id, "name": tool_name, "arguments": tool_args}],
+                     "raw_assistant_response": complete_assistant_response # Send full response for history
+                 }
+                 tool_call_yielded = True
+
+            else:
+                 # No tool call found in the final buffer
+                 logger.debug(f"Agent {self.agent_id}: No tool call found in final buffer.")
+                 # Since chunks were yielded, we only need to yield the final response event
+                 # if there was any response generated at all.
+                 if complete_assistant_response:
+                      logger.debug(f"Agent {self.agent_id}: Yielding final_response event (no tool call).")
+                      yield {"type": "final_response", "content": complete_assistant_response}
 
 
         except Exception as e:
@@ -432,7 +393,6 @@ class Agent:
             yield {"type": "error", "agent_id": self.agent_id, "content": f"[Agent Error: {error_msg}]"}
         finally:
             # Set status to Idle only if it's currently Processing
-            # (Avoid overriding Error or Awaiting Tool Result statuses)
             if self.status == AGENT_STATUS_PROCESSING:
                 self.set_status(AGENT_STATUS_IDLE)
             self.text_buffer = "" # Ensure buffer is cleared on exit
@@ -449,8 +409,6 @@ class Agent:
             "model": self.model,
             "temperature": self.temperature,
             "message_history_length": len(self.message_history),
-            # Avoid logging potentially sensitive provider info directly
-            # "llm_provider_info": repr(self.llm_provider),
             "sandbox_path": str(self.sandbox_path),
             "tool_executor_set": False, # No longer directly used
             "xml_tool_parsing_enabled": (self.raw_xml_tool_call_pattern is not None)
