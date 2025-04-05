@@ -7,10 +7,10 @@ from typing import List, Optional, Dict, Any # Added Dict, Any
 from pathlib import Path
 import logging # Added logging
 
-# Import settings to access loaded configurations (for GET endpoint)
+# Import settings to access loaded configurations (defaults mostly)
 from src.config.settings import settings
 
-# Import the ConfigManager singleton instance for CRUD operations
+# Import the ConfigManager singleton instance for CRUD operations and getting current config
 from src.config.config_manager import config_manager
 
 logger = logging.getLogger(__name__)
@@ -100,16 +100,23 @@ async def get_index_page(request: Request):
 async def get_agent_configurations():
     """
     API endpoint to retrieve a list of configured agents (basic info only).
-    Reads from the centrally loaded settings (which uses ConfigManager initially).
+    Reads the current configuration state directly from the ConfigManager.
     """
     agent_info_list: List[AgentInfo] = []
     try:
-        # Get current config from settings (which was loaded via ConfigManager)
-        # For consistency in the UI after edits, maybe read directly from config_manager?
-        # Let's read directly from config_manager to reflect saved state.
-        raw_configs = config_manager.get_config() # Use config_manager's current state
+        # Use await to call the async get_config method
+        raw_configs = await config_manager.get_config() # <--- Added await HERE
+
         if not raw_configs:
             return [] # Return empty list if no agents are configured
+
+        # Ensure raw_configs is iterable after await (it should be a List)
+        if not isinstance(raw_configs, list):
+             logger.error(f"ConfigManager.get_config() did not return a list, type: {type(raw_configs)}")
+             raise HTTPException(
+                status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Internal error reading configuration structure."
+             )
 
         for agent_conf_entry in raw_configs:
             agent_id = agent_conf_entry.get("agent_id")
@@ -149,12 +156,12 @@ async def create_agent_configuration(agent_data: AgentConfigCreate):
     try:
         logger.info(f"Received request to create agent: {agent_data.agent_id}")
         # Convert Pydantic model back to dictionary for ConfigManager
-        # agent_config_entry = {"agent_id": agent_data.agent_id, "config": agent_data.config.dict(exclude_unset=True)}
         # Using model_dump instead of dict for newer Pydantic versions
         agent_config_entry = {"agent_id": agent_data.agent_id, "config": agent_data.config.model_dump(exclude_unset=True)}
 
+        # Use await to call the async add_agent method
+        success = await config_manager.add_agent(agent_config_entry) # <--- Added await
 
-        success = config_manager.add_agent(agent_config_entry)
         if success:
             logger.info(f"Agent '{agent_data.agent_id}' added successfully.")
             return GeneralResponse(success=True, message=f"Agent '{agent_data.agent_id}' added. Restart application for changes to take effect.")
@@ -162,7 +169,9 @@ async def create_agent_configuration(agent_data: AgentConfigCreate):
             logger.error(f"Failed to add agent '{agent_data.agent_id}' using ConfigManager (e.g., duplicate ID).")
             # ConfigManager logs specifics, return a general failure or check internal state
             # Check if agent exists now (maybe add failed but config was reloaded?)
-            if config_manager.find_agent_index(agent_data.agent_id) is not None:
+             # We need to await get_config here too for the check
+            current_config = await config_manager.get_config()
+            if any(agent.get("agent_id") == agent_data.agent_id for agent in current_config):
                  raise HTTPException(
                     status_code=http_status.HTTP_409_CONFLICT,
                     detail=f"Agent with ID '{agent_data.agent_id}' already exists."
@@ -192,18 +201,20 @@ async def update_agent_configuration(agent_id: str, agent_config_data: AgentConf
     try:
         logger.info(f"Received request to update agent: {agent_id}")
         # Convert Pydantic model to dictionary
-        # updated_config_dict = agent_config_data.dict(exclude_unset=True)
         # Using model_dump instead of dict for newer Pydantic versions
         updated_config_dict = agent_config_data.model_dump(exclude_unset=True)
 
-        success = config_manager.update_agent(agent_id, updated_config_dict)
+        # Use await to call the async update_agent method
+        success = await config_manager.update_agent(agent_id, updated_config_dict) # <--- Added await
 
         if success:
             logger.info(f"Agent '{agent_id}' updated successfully.")
             return GeneralResponse(success=True, message=f"Agent '{agent_id}' updated. Restart application for changes to take effect.")
         else:
             # Check if agent exists before assuming other error
-            if config_manager.find_agent_index(agent_id) is None:
+            # Await get_config for the check
+            current_config = await config_manager.get_config()
+            if not any(agent.get("agent_id") == agent_id for agent in current_config):
                  logger.error(f"Agent '{agent_id}' not found for update.")
                  raise HTTPException(
                     status_code=http_status.HTTP_404_NOT_FOUND,
@@ -233,20 +244,23 @@ async def delete_agent_configuration(agent_id: str):
     """
     try:
         logger.info(f"Received request to delete agent: {agent_id}")
-        success = config_manager.delete_agent(agent_id)
+        # Use await to call the async delete_agent method
+        success = await config_manager.delete_agent(agent_id) # <--- Added await
 
         if success:
             logger.info(f"Agent '{agent_id}' deleted successfully.")
             return GeneralResponse(success=True, message=f"Agent '{agent_id}' deleted. Restart application for changes to take effect.")
         else:
              # Check if agent exists before assuming other error
-            if config_manager.find_agent_index(agent_id) is None:
+             # Await get_config for the check
+             current_config = await config_manager.get_config()
+             if not any(agent.get("agent_id") == agent_id for agent in current_config):
                  logger.error(f"Agent '{agent_id}' not found for deletion.")
                  raise HTTPException(
                     status_code=http_status.HTTP_404_NOT_FOUND,
                     detail=f"Agent with ID '{agent_id}' not found."
                 )
-            else:
+             else:
                 logger.error(f"Failed to delete agent '{agent_id}' using ConfigManager.")
                 raise HTTPException(
                     status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR, # Save likely failed
