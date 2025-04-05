@@ -2,6 +2,7 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field # Use Pydantic for structured parameters
+from pathlib import Path # <--- ADDED THIS IMPORT
 
 # Consider a more structured way to define parameters if needed later
 # For now, a dictionary or Pydantic model is suitable.
