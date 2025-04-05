@@ -48,7 +48,10 @@
         <div class="config-area">
             <div class="config-header"> <!-- Added wrapper for header and button -->
                 <h2>Configuration</h2>
-                <button id="add-agent-button" class="config-action-button add-button" title="Add New Agent">+</button> <!-- Added Add button -->
+                <div> <!-- Wrapper for buttons -->
+                    <button id="refresh-config-button" class="config-action-button refresh-button" title="Refresh Page (Applies Config Changes on Restart)">🔄</button> <!-- Added Refresh -->
+                    <button id="add-agent-button" class="config-action-button add-button" title="Add New Agent">+</button>
+                </div>
             </div>
             <!-- Configuration content will be dynamically loaded here -->
             <div id="config-content">
