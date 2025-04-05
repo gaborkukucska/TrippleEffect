@@ -8,7 +8,8 @@ import traceback # Import traceback
 # Import the Agent class and settings
 # Import AGENT_STATUS constants
 from src.agents.core import Agent, AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_AWAITING_TOOL, AGENT_STATUS_ERROR
-from src.config.settings import settings # Import the settings instance
+# Import settings instance AND BASE_DIR directly
+from src.config.settings import settings, BASE_DIR
 
 # Import the WebSocket broadcast function
 from src.api.websocket_manager import broadcast
@@ -70,8 +71,8 @@ class AgentManager:
 
         print(f"Found {len(agent_configs_list)} agent configuration(s). Attempting to initialize...")
 
-        # Ensure the main 'sandboxes' directory exists
-        main_sandbox_dir = settings.BASE_DIR / "sandboxes"
+        # Ensure the main 'sandboxes' directory exists using the imported BASE_DIR
+        main_sandbox_dir = BASE_DIR / "sandboxes" # <-- Use imported BASE_DIR
         try:
             main_sandbox_dir.mkdir(parents=True, exist_ok=True)
             print(f"Ensured main sandbox directory exists at: {main_sandbox_dir}")
