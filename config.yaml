@@ -8,8 +8,8 @@
 agents:
   - agent_id: "coder" # Unique ID for the agent
     config:
-      provider: "openai" # Specify the provider ('openai', 'ollama', 'openrouter')
-      model: "gpt-4-turbo-preview" # Model name specific to the provider
+      provider: "openrouter" # Specify the provider ('openai', 'ollama', 'openrouter')
+      model: "google/gemini-2.5-pro-exp-03-25:free" # Model name specific to the provider
       system_prompt: "You are an expert Python programmer. Analyze the user's request and provide clean, efficient Python code. Explain your code clearly with comments."
       temperature: 0.2
       persona: "Python Expert Coder"
@@ -21,10 +21,10 @@ agents:
     config:
       provider: "openrouter" # Example using OpenRouter
       # Find appropriate models on OpenRouter, e.g., mistralai/mistral-7b-instruct, google/gemini-pro
-      model: "mistralai/mistral-7b-instruct"
+      model: "google/gemini-2.5-pro-exp-03-25:free"
       system_prompt: "You are a data analyst. You receive input, analyze it for key information, structure, or implications, and provide a concise summary or analysis. Use your tools to read files if needed."
       temperature: 0.7
-      persona: "Data Analyst (OpenRouter)"
+      persona: "Data Analyst"
       # Provider-specific overrides
       # api_key: null # Can override OPENROUTER_API_KEY from .env (NOT RECOMMENDED)
       # base_url: null # Can override OpenRouter default API URL
@@ -32,12 +32,12 @@ agents:
 
   - agent_id: "creative"
     config:
-      provider: "ollama" # Example using Ollama
+      provider: "openrouter" # Example using Ollama
       # Ensure this model is available in your local Ollama instance
-      model: "llama3"
+      model: "google/gemini-2.5-pro-exp-03-25:free"
       system_prompt: "You are a creative writer and brainstormer. Expand on the user's ideas, suggest alternatives, and generate imaginative text. You can use tools to save your work."
       temperature: 0.9
-      persona: "Creative Assistant (Ollama)"
+      persona: "Creative Assistant"
       # Provider-specific overrides
       # base_url: "http://192.168.1.100:11434" # Can override OLLAMA_BASE_URL from .env
 
