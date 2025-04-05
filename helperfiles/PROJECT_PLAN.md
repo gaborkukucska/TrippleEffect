@@ -1,7 +1,7 @@
 <!-- # START OF FILE helperfiles/PROJECT_PLAN.md -->
 # Project Plan: TrippleEffect
 
-**Version:** 1.8 (Planning Admin AI & Human UI Layers)
+**Version:** 1.9 (Reflecting XML Tool Call Implementation)
 **Date:** 2025-04-04 (Note: Should be updated with actual dev dates)
 
 ## 1. Project Goals
@@ -11,6 +11,7 @@
 *   Implement a **Human User Interface** with distinct views for communication/monitoring ("Coms") and administration ("Admin"). *(Planned)*
 *   Enable real-time communication between the backend and frontend using WebSockets, including categorized logs.
 *   Support multiple, configurable LLM agents (including the Admin AI) capable of collaborating on tasks.
+*   **Implement XML-based tool calling mechanism (Cline-style) for enhanced compatibility, especially with providers like OpenRouter.**
 *   Allow agents to utilize tools within sandboxed environments, including specialized tools for the Admin AI.
 *   Ensure the framework is reasonably lightweight and performant for potential use on platforms like Termux.
 *   Integrate with various LLM API providers (OpenRouter, Ollama, OpenAI, **Google** - *planned*).
@@ -23,7 +24,7 @@
 **In Scope (Phases up to ~10):**
 
 *   **Core Backend:** FastAPI application, WebSocket management, asynchronous task handling.
-*   **Agent Core:** Agent class definition, state management, interaction logic via abstracted LLM providers.
+*   **Agent Core:** Agent class definition, state management. **Refactored interaction logic to parse XML tool calls from LLM text responses.**
 *   **Agent Manager:** Coordination logic for multiple agents, agent reloading/update on config change *(Phase 8/9)*.
 *   **Admin AI Agent (Foundation):** Configuration and basic interaction capability via tools *(Phase 9)*.
 *   **Human UI (Foundation):** Two-page structure (Coms, Admin), basic authentication, backend log streaming/filtering UI *(Phase 10)*.
@@ -31,7 +32,7 @@
 *   **WebSocket Communication:** Real-time streaming of agent outputs/status, plus categorized backend logs *(Phase 10)*.
 *   **Basic Sandboxing:** Agent file operation directories.
 *   **Tooling:** `BaseTool`, `ToolExecutor`, `FileSystemTool`, `ConfigTool` *(Phase 9)*.
-*   **LLM Integration:** Support for OpenRouter, Ollama, OpenAI, **Google** *(Phase 9)* via provider abstraction.
+*   **LLM Integration:** Support for OpenRouter, Ollama, OpenAI, **Google** *(Phase 9)* via provider abstraction. **API calls modified to remove native `tools`/`tool_choice` parameters; system prompts updated to instruct XML format.**
 *   **Helper Files:** Maintenance of `PROJECT_PLAN.md` and `FUNCTIONS_INDEX.md`.
 
 **Out of Scope (Deferred to Future Phases 11+):**
@@ -45,6 +46,7 @@
 *   Advanced UI frameworks (React, Vue, etc.).
 *   Advanced sandboxing (containerization).
 *   Sophisticated automated testing suite.
+*   **Native API Tool Calling:** Using provider-specific `tools`/`tool_choice` parameters (standardizing on XML-in-text).
 
 ## 3. Technology Stack
 
@@ -56,10 +58,11 @@
 *   **Configuration:** YAML (`PyYAML`), `.env` files (`python-dotenv`).
 *   **Data Handling:** Pydantic (via FastAPI)
 *   **Authentication (Basic):** Likely FastAPI middleware/dependencies *(Phase 10)*.
+*   **XML Parsing:** Standard library `xml.etree.ElementTree` or similar *(New for Phase 7)*.
 
 ## 4. Proposed Architecture Refinement
 
-(Diagram updated to reflect planned Admin AI and UI structure changes)
+(Diagram updated slightly to reflect XML parsing responsibility)
 
 ```mermaid
 graph TD
@@ -80,8 +83,8 @@ graph TD
 
         subgraph Agents
             ADMIN_AI["🤖 Admin AI Agent <br>(Google Provider - P9)<br>Uses ConfigTool"]
-            AGENT_INST_1["🤖 Worker Agent 1"]
-            AGENT_INST_N["🤖 Worker Agent N"]
+            AGENT_INST_1["🤖 Worker Agent 1 <br>+ XML Tool Parsing"] %% <-- Highlight change
+            AGENT_INST_N["🤖 Worker Agent N <br>+ XML Tool Parsing"] %% <-- Highlight change
             GEUI_AGENT["🤖 GeUI Agent(s) (P11+)"]
         end
 
@@ -90,6 +93,7 @@ graph TD
              PROVIDER_OR["🔌 OpenRouter Provider"]
              PROVIDER_OLLAMA["🔌 Ollama Provider"]
              PROVIDER_OPENAI["🔌 OpenAI Provider"]
+             %% Providers now mainly stream text, don't handle tool_calls internally
          end
 
          subgraph Tools
@@ -132,11 +136,12 @@ graph TD
     AGENT_MANAGER -- "Reads Config/Secrets" --> CONFIG_YAML;
     AGENT_MANAGER -- "Reads Config/Secrets" --> DOT_ENV;
     AGENT_MANAGER -- Injects --> LLM_Providers;
-    AGENT_MANAGER -- Routes Tool Calls --> TOOL_EXECUTOR;
+    AGENT_MANAGER -- Routes Tool Calls --> TOOL_EXECUTOR; %% <--- Agent Manager now receives parsed requests
 
     ADMIN_AI -- Uses --> PROVIDER_GOOGLE;
-    ADMIN_AI -- Requests Tool --> TOOL_EXECUTOR;
-        %% Other agents use their providers
+    ADMIN_AI -- Requests Tool (via XML) --> AGENT_MANAGER;
+    AGENT_INST_1 -- Uses --> LLM_Providers; %% <-- Simplified interaction
+    AGENT_INST_N -- Uses --> LLM_Providers; %% <-- Simplified interaction
 
     TOOL_EXECUTOR -- Executes --> TOOL_CONFIG;
     TOOL_EXECUTOR -- Executes --> TOOL_FS;
@@ -153,14 +158,22 @@ graph TD
 
 ## 5. Development Phases & Milestones
 
-**Phase 1-5.5 (Completed)**
-*   [X] Core Backend, Agent Core, Multi-Agent, Config Loading, Sandboxing, Basic Tools, LLM Abstraction.
+**Phase 1-6 (Completed)**
+*   [X] Core Backend, Agent Core, Multi-Agent, Config Loading, Sandboxing, Basic Tools, LLM Abstraction, UI Enhancements, Initial Testing.
 
-**Phase 6: UI Enhancements & Initial Testing (Completed)**
-*   [X] UI Layout, Status Indicators, Client History, File Upload Context, Config Viewing.
-*   [X] Initial multi-provider testing (ongoing refinement needed).
-
-**Phase 7: Refinement, Optimization & Documentation (Next)**
+**Phase 7: Refinement, XML Tool Calling & Optimization (Current)**
+*   [ ] **Implement XML Tool Calling:**
+    *   [ ] **System Prompts:** Update default system prompt and agent-specific prompts in `config.yaml` to instruct LLMs on the required XML format for tool calls (similar to Cline's). Define the exact XML structure clearly.
+    *   [ ] **LLM Providers:** Modify `stream_completion` methods in all providers (`openai`, `ollama`, `openrouter`) to remove the `tools` and `tool_choice` parameters from the API calls. They should primarily focus on streaming text content.
+    *   [ ] **Agent Core (`src/agents/core.py`):**
+        *   [ ] Refactor `process_message` to buffer the incoming text stream (`response_chunk`).
+        *   [ ] Implement logic (`_parse_xml_tool_calls` helper?) to detect and parse the specific XML tool call structure within the buffered text.
+        *   [ ] When a complete XML tool call is detected, yield the `{'type': 'tool_requests', 'calls': [...]}` event (similar to how providers did before, but now triggered by XML parsing).
+        *   [ ] Ensure partial XML tags at the end of a chunk are handled correctly (buffered until complete).
+        *   [ ] Clear the buffer corresponding to the parsed XML tool call.
+        *   [ ] Continue yielding any remaining text before the tool call as `response_chunk`.
+    *   [ ] **Agent Manager (`src/agents/manager.py`):** Modify `_handle_agent_generator` to correctly receive the `tool_requests` yielded by the *agent* (not the provider) and proceed with tool execution.
+    *   [ ] **Tool Executor:** No major changes expected, as it receives parsed tool name and args.
 *   [ ] Improve error handling and reporting (backend and UI).
 *   [ ] Optimize performance, especially WebSocket handling and LLM calls.
 *   [ ] Refine sandboxing security (more robust path traversal checks, consider limits).
@@ -172,55 +185,39 @@ graph TD
 **Phase 8: Agent Configuration UI Management (Planned)**
 *   **Goal:** Allow users to create, edit, and delete agent configurations via the web UI (foundation for Admin page).
 *   [ ] **Backend API:** CRUD endpoints (`POST`, `PUT`, `DELETE`) for `/api/config/agents`. Pydantic models for validation.
-*   [ ] **Backend Config Handling:** Safe read/modify/write functions for `config.yaml` (likely in `src/config/`). Error handling. **Strictly no secrets (API keys) managed here.**
+*   [ ] **Backend Config Handling:** Safe read/modify/write functions for `config.yaml`. Error handling. **Strictly no secrets (API keys) managed here.**
 *   [ ] **Agent Reloading:** Decide on strategy (manual restart vs. dynamic reload). Implement chosen strategy in `AgentManager`.
 *   [ ] **Frontend UI:** Basic forms/modals for Add/Edit/Delete operations. API integration. Dynamic UI updates. Error display. (To be integrated into Admin Page in Phase 10).
 *   [ ] **Security:** Backend input validation. Confirm file write restrictions.
 *   [ ] **Documentation:** Update `README.md` for basic config UI usage.
 
 **Phase 9: Admin AI Layer Foundation (Planned)**
-*   **Goal:** Introduce the Admin AI agent and enable basic control via config modification.
+*   **Goal:** Introduce the Admin AI agent and enable basic control via config modification using the XML tool format.
 *   [ ] **Backend - Google Provider:**
     *   [ ] Add `google-generativeai` to `requirements.txt`.
     *   [ ] Implement `src/llm_providers/google_provider.py` inheriting `BaseLLMProvider`.
     *   [ ] Handle Google API key (`GOOGLE_API_KEY` in `.env`).
-    *   [ ] Implement `stream_completion`, checking Gemini Pro's tool/function calling support.
+    *   [ ] Implement `stream_completion` (streaming text only, no native tool parameters).
 *   [ ] **Backend - Config Tool:**
-    *   [ ] Implement `src/tools/config_tool.py` inheriting `BaseTool`.
-    *   [ ] Define actions like `read_config`, `add_agent`, `update_agent`, `delete_agent`.
-    *   [ ] Parameters should specify agent details (ID, provider, model, prompt, etc. - *NO API Keys*).
+    *   [ ] Implement `src/tools/config_tool.py` inheriting `BaseTool`. Define actions and parameters.
     *   [ ] Use the safe config read/write functions from Phase 8.
-    *   [ ] Provide clear success/error messages as return values.
-*   [ ] **Backend - Agent Manager:** Ensure `ToolExecutor` registers `ConfigTool`. Ensure manager can reload config/agents upon successful `ConfigTool` execution (using Phase 8 mechanism).
-*   [ ] **Configuration:** Update `.env.example` with `GOOGLE_API_KEY`. Update `config.yaml` example to show how to define the Admin AI agent using the `google` provider and giving it access ONLY to `ConfigTool` (if possible, else document the risk).
-    *   *Model Note:* Confirm exact model name for "Gemini 2.5 Pro Experimental" on Google's API and update config.
-*   [ ] **Testing:** Manually send commands to the Admin AI via the existing UI (e.g., "AdminAI, use ConfigTool to add agent X..."). Verify `config.yaml` changes and agent reloading (or check console for restart instruction).
+    *   [ ] Provide clear success/error messages.
+*   [ ] **Backend - Agent Manager:** Ensure `ToolExecutor` registers `ConfigTool`. Ensure manager can reload config/agents upon successful `ConfigTool` execution.
+*   [ ] **Configuration:** Update `.env.example` with `GOOGLE_API_KEY`. Update `config.yaml` to define the Admin AI agent (google provider), and update its system prompt to use the *XML format* for the `ConfigTool`.
+    *   *Model Note:* Confirm model name for "Gemini 2.5 Pro Experimental".
+*   [ ] **Testing:** Manually send commands to Admin AI via UI (e.g., "AdminAI, use ConfigTool in XML format to add agent X..."). Verify changes and reloading.
 
 **Phase 10: Human UI Foundation (Planned)**
 *   **Goal:** Restructure UI into Coms/Admin pages and implement log streaming & basic auth.
-*   [ ] **Frontend - Structure:**
-    *   [ ] Refactor `index.html` and `app.js` to manage two main views/pages ("Coms", "Admin"). Use simple routing (e.g., hash-based) or div visibility toggling.
-    *   [ ] Design layout for Coms page (placeholder for GeUI, collapsible log stream at bottom).
-    *   [ ] Design layout for Admin page (placeholder for settings).
-*   [ ] **Backend - Logging:**
-    *   [ ] Introduce log levels/categories (e.g., 'INFO', 'WARN', 'ERROR', 'AGENT_MSG', 'TOOL_CALL').
-    *   [ ] Modify logging setup (or use middleware) to capture relevant logs.
-    *   [ ] Update `WebSocketManager` or add dedicated endpoint to stream categorized logs to connected clients.
-*   [ ] **Frontend - Coms Page:**
-    *   [ ] Implement the collapsible log stream display area.
-    *   [ ] Add dropdown/buttons to filter logs by category/level.
-    *   [ ] Update WebSocket handling in `app.js` to receive and display categorized logs in this area.
-*   [ ] **Frontend - Admin Page:**
-    *   [ ] Integrate the Agent Config CRUD components (forms/display) developed in Phase 8 into this page.
-    *   [ ] Add section to display read-only default settings loaded from `.env` on the backend (requires new API endpoint).
-*   [ ] **Backend & Frontend - Authentication:**
-    *   [ ] Implement basic password authentication (e.g., HTTP Basic Auth, simple form + session/token).
-    *   [ ] Protect the Admin page API endpoints and potentially the main page load.
-    *   [ ] Add login form/mechanism to the frontend. Handle login/logout state.
+*   [ ] **Frontend - Structure:** Refactor `index.html`/`app.js` for Coms/Admin views. Design layouts.
+*   [ ] **Backend - Logging:** Introduce log categories. Modify logging setup/middleware. Update `WebSocketManager` for streaming categorized logs.
+*   [ ] **Frontend - Coms Page:** Implement collapsible log stream display. Add log filters. Update WebSocket handling.
+*   [ ] **Frontend - Admin Page:** Integrate Agent Config CRUD (Phase 8). Add read-only settings display (new API endpoint needed).
+*   [ ] **Backend & Frontend - Authentication:** Implement basic password auth. Protect Admin APIs. Add login UI.
 
 **Future Phases (11+) (High-Level)**
-*   **Phase 11: GeUI Implementation:** Design and implement the Generative UI concept for the Coms page. Requires dedicated agent(s) and complex frontend rendering.
-*   **Phase 12: Advanced I/O & Voice Control:** Integrate camera, microphone (STT), speaker (TTS) functionalities using browser APIs and backend processing. Implement voice command parsing and execution mapping.
-*   **Phase 13: Advanced Admin AI Control:** Enhance Admin AI tools and backend APIs to allow dynamic control over running agents (start, stop, pause, modify prompts/memory).
-*   **Phase 14: Advanced Authentication & Multi-User:** Implement more robust authentication (e.g., voice matching) and potentially support multiple users.
-*   **Phase 15: Create Project Plan for Next Iteration:** Re-evaluate and plan further enhancements.
+*   **Phase 11: GeUI Implementation:** Design and implement the Generative UI concept.
+*   **Phase 12: Advanced I/O & Voice Control:** Integrate camera, microphone (STT), speaker (TTS).
+*   **Phase 13: Advanced Admin AI Control:** Enhance Admin AI tools for dynamic control of running agents.
+*   **Phase 14: Advanced Authentication & Multi-User:** Implement more robust authentication.
+*   **Phase 15: Create Project Plan for Next Iteration:** Re-evaluate and plan.
