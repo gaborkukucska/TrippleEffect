@@ -1,3 +1,6 @@
+<!-- important parts of the files referenced in this file are in the `CLINE_REFERENCE_FILES.md` file. -->
+# Cline Tool Use
+
 Here are the specific notes detailing the implementation of Cline's tool use handling:
 
 **Cline Tool Use Handling Mechanism**
