@@ -46,7 +46,10 @@
 
         <!-- Configuration section -->
         <div class="config-area">
-            <h2>Configuration</h2>
+            <div class="config-header"> <!-- Added wrapper for header and button -->
+                <h2>Configuration</h2>
+                <button id="add-agent-button" class="config-action-button add-button" title="Add New Agent">+</button> <!-- Added Add button -->
+            </div>
             <!-- Configuration content will be dynamically loaded here -->
             <div id="config-content">
                  <span class="status-placeholder">Loading config...</span>
@@ -63,6 +66,54 @@
          </div>
 
     </div> <!-- /container -->
+
+    <!-- Modal Dialog for Add/Edit Agent -->
+    <div id="agent-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <span class="close-button" onclick="closeModal('agent-modal')">×</span>
+            <h3 id="modal-title">Add Agent</h3>
+            <form id="agent-form">
+                <input type="hidden" id="edit-agent-id" value=""> <!-- Hidden field for agent ID when editing -->
+
+                <label for="agent-id">Agent ID:</label>
+                <input type="text" id="agent-id" name="agent_id" required pattern="^[a-zA-Z0-9_-]+$" title="Alphanumeric, underscores, hyphens only">
+
+                <label for="persona">Persona:</label>
+                <input type="text" id="persona" name="persona">
+
+                <label for="provider">Provider:</label>
+                <select id="provider" name="provider" required>
+                    <option value="openrouter">OpenRouter</option>
+                    <option value="ollama">Ollama</option>
+                    <option value="openai">OpenAI</option>
+                    <!-- Add other providers if implemented -->
+                </select>
+
+                <label for="model">Model:</label>
+                <input type="text" id="model" name="model" required>
+
+                <label for="temperature">Temperature:</label>
+                <input type="number" id="temperature" name="temperature" step="0.1" min="0" max="2.0" value="0.7">
+
+                <label for="system_prompt">System Prompt:</label>
+                <textarea id="system_prompt" name="system_prompt" rows="4"></textarea>
+
+                <!-- Add fields for other config parameters if needed, e.g., base_url override -->
+                 <!-- Example for extra KVP args (more complex UI needed for generic KVP) -->
+                 <!--
+                 <label for="extra-args">Extra Args (JSON):</label>
+                 <textarea id="extra-args" name="extra_args" rows="2" placeholder='{"top_p": 0.9}'></textarea>
+                 -->
+
+                <div class="modal-actions">
+                    <button type="submit" id="save-agent-button">Save Agent</button>
+                    <button type="button" onclick="closeModal('agent-modal')">Cancel</button>
+                </div>
+                 <p class="restart-note">Note: Application restart is required for changes to take effect.</p>
+            </form>
+        </div>
+    </div>
+
 
     <!-- Link to the JavaScript file -->
     <!-- Placed at the end of body for better performance -->
