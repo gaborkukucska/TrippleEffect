@@ -1,9 +1,10 @@
 # START OF FILE src/config/settings.py
 import os
-import yaml # Import the YAML library
+# import yaml # No longer needed here directly for loading
 from dotenv import load_dotenv
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+import logging
 
 # Define base directory relative to this file's location
 BASE_DIR = Path(__file__).resolve().parent.parent.parent # This should point to TrippleEffect-main/
@@ -19,32 +20,29 @@ else:
 # Define the path to the agent configuration file
 AGENT_CONFIG_PATH = BASE_DIR / 'config.yaml'
 
-def load_agent_config() -> List[Dict[str, Any]]:
-    """Loads agent configurations from the config.yaml file."""
-    if not AGENT_CONFIG_PATH.exists():
-        print(f"Warning: Agent configuration file not found at {AGENT_CONFIG_PATH}. Returning empty list.")
-        return []
-    try:
-        with open(AGENT_CONFIG_PATH, 'r') as f:
-            config_data = yaml.safe_load(f)
-            if config_data and isinstance(config_data.get('agents'), list):
-                print(f"Loaded {len(config_data['agents'])} agent configurations from {AGENT_CONFIG_PATH}.")
-                return config_data['agents'] # Return the list of agents
-            else:
-                print(f"Warning: 'agents' list not found or empty in {AGENT_CONFIG_PATH}. Returning empty list.")
-                return []
-    except yaml.YAMLError as e:
-        print(f"Error parsing YAML file {AGENT_CONFIG_PATH}: {e}")
-        return []
-    except Exception as e:
-        print(f"Error reading agent configuration file {AGENT_CONFIG_PATH}: {e}")
-        return []
+# --- Import the ConfigManager singleton instance ---
+# This assumes config_manager.py is executed and the instance is created
+try:
+    from src.config.config_manager import config_manager
+    print("Successfully imported config_manager instance.")
+except ImportError as e:
+     print(f"Error importing config_manager: {e}. Agent configurations will not be loaded dynamically.")
+     # Provide a fallback or raise an error depending on desired behavior
+     # Fallback: define a dummy config_manager or load statically
+     class DummyConfigManager:
+         def load_config(self): return []
+         def get_config(self): return []
+     config_manager = DummyConfigManager()
+
+
+logger = logging.getLogger(__name__)
 
 
 class Settings:
     """
     Holds application settings, loaded from environment variables and config.yaml.
     Manages API keys and base URLs for different LLM providers.
+    Uses ConfigManager to load agent configurations.
     """
     def __init__(self):
         # --- Provider Configuration (from .env) ---
@@ -68,9 +66,14 @@ class Settings:
         self.DEFAULT_TEMPERATURE: float = float(os.getenv("DEFAULT_TEMPERATURE", 0.7))
         self.DEFAULT_PERSONA: str = os.getenv("DEFAULT_PERSONA", "General Assistant")
 
-        # --- Load Agent Configurations from YAML ---
+        # --- Load Agent Configurations using ConfigManager ---
         # This list contains dictionaries like: {'agent_id': '...', 'config': {'provider': ..., 'model': ...}}
-        self.AGENT_CONFIGURATIONS: List[Dict[str, Any]] = load_agent_config()
+        # The config_manager instance loads the config in its __init__
+        # We retrieve the loaded config here.
+        self.AGENT_CONFIGURATIONS: List[Dict[str, Any]] = config_manager.get_config()
+        if not self.AGENT_CONFIGURATIONS:
+             print("Warning: No agent configurations loaded via ConfigManager.")
+
 
         # --- Other global settings ---
         # e.g., LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -150,15 +153,15 @@ class Settings:
             config['api_key'] = None
             config['base_url'] = self.OLLAMA_BASE_URL
         else:
-             print(f"Warning: Requested provider config for unknown provider '{provider_name}'")
+             logger.warning(f"Requested provider config for unknown provider '{provider_name}'")
 
         # Filter out None values before returning
         return {k: v for k, v in config.items() if v is not None}
 
 
-    # get_agent_config_by_id remains useful if needed elsewhere, no changes needed.
     def get_agent_config_by_id(self, agent_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieves a specific agent's configuration dictionary by its ID."""
+        """Retrieves a specific agent's configuration dictionary by its ID from the loaded configuration."""
+        # Access the already loaded list
         for agent_conf_entry in self.AGENT_CONFIGURATIONS:
             if agent_conf_entry.get('agent_id') == agent_id:
                 # Return the nested 'config' dictionary
@@ -172,3 +175,4 @@ settings = Settings()
 # openrouter_defaults = settings.get_provider_config('openrouter') -> {'api_key': '...', 'referer': '...'}
 # ollama_defaults = settings.get_provider_config('ollama') -> {'base_url': 'http://...'}
 # coder_config_dict = settings.get_agent_config_by_id('coder') -> {'provider': 'openai', 'model': ...}
+# all_agent_configs = settings.AGENT_CONFIGURATIONS
