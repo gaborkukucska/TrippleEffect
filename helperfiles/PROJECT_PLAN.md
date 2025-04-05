@@ -1,8 +1,8 @@
 <!-- # START OF FILE helperfiles/PROJECT_PLAN.md -->
 # Project Plan: TrippleEffect
 
-**Version:** 2.0 (Completed XML Tool Calling)
-**Date:** 2025-04-05 <!-- Updated Date -->
+**Version:** 2.1 (Phase 8 In Progress)
+**Date:** 2025-04-05 <!-- Keep date until phase is complete -->
 
 ## 1. Project Goals
 
@@ -25,10 +25,10 @@
 
 *   **Core Backend:** FastAPI application, WebSocket management, asynchronous task handling.
 *   **Agent Core:** Agent class definition, state management. **Refactored interaction logic to parse XML tool calls from LLM text responses.** *(Completed)*
-*   **Agent Manager:** Coordination logic for multiple agents, agent reloading/update on config change *(Phase 8/9)*, **management of tool result history**. *(Completed)*
+*   **Agent Manager:** Coordination logic for multiple agents, agent reloading/update on config change *(Simplified for Phase 8 - Restart Required)*, **management of tool result history**. *(Completed)*
 *   **Admin AI Agent (Foundation):** Configuration and basic interaction capability via tools *(Phase 9)*.
 *   **Human UI (Foundation):** Two-page structure (Coms, Admin), basic authentication, backend log streaming/filtering UI *(Phase 10)*.
-*   **Configuration:** Loading settings from `config.yaml`/`.env`. Backend API & UI for CRUD operations on `config.yaml` *(Phase 8)*. Safe config modification tool for Admin AI *(Phase 9)*.
+*   **Configuration:** Loading settings from `config.yaml`/`.env`. **Backend API & UI for CRUD operations on `config.yaml` *(Phase 8)*.** Safe config modification tool for Admin AI *(Phase 9)*.
 *   **WebSocket Communication:** Real-time streaming of agent outputs/status, plus categorized backend logs *(Phase 10)*.
 *   **Basic Sandboxing:** Agent file operation directories.
 *   **Tooling:** `BaseTool`, `ToolExecutor` (**with XML description generation** *(Completed)*), `FileSystemTool`, `ConfigTool` *(Phase 9)*.
@@ -42,6 +42,7 @@
 *   **Voice Control:** Full framework control via voice commands.
 *   **Advanced Authentication:** Voice matching, multi-user support.
 *   **Dynamic Admin AI Control:** Real-time modification of running agents (beyond config file changes).
+*   **Dynamic Agent Reloading without Restart:** Deferred from Phase 8.
 *   Complex agent-to-agent delegation protocols.
 *   Advanced UI frameworks (React, Vue, etc.).
 *   Advanced sandboxing (containerization).
@@ -55,64 +56,63 @@
 *   **LLM Interaction:** `openai` library, `aiohttp`, **`google-generativeai`** *(Phase 9)*.
 *   **Frontend:** HTML5, CSS3, Vanilla JavaScript
 *   **Asynchronous Operations:** `asyncio`
-*   **Configuration:** YAML (`PyYAML`), `.env` files (`python-dotenv`).
+*   **Configuration:** YAML (`PyYAML`), `.env` files (`python-dotenv`). **Safe YAML read/write.** *(Phase 8)*
 *   **Data Handling:** Pydantic (via FastAPI)
 *   **Authentication (Basic):** Likely FastAPI middleware/dependencies *(Phase 10)*.
 *   **XML Parsing:** Standard library `re`, `html`.
 
 ## 4. Proposed Architecture Refinement
 
-(Diagram reflects Agent responsibility for XML parsing and Manager handling history)
+(Diagram reflects Agent responsibility for XML parsing, Manager handling history, and ConfigManager for R/W)
 
 ```mermaid
 graph TD
     %% Changed to Top-Down for better layer visualization
     USER[👨‍💻 Human User]
 
-    subgraph Frontend [Human UI Layer - Phase 10+]
+    subgraph Frontend [Human UI Layer] %% Updated Title
         direction LR
-        UI_COMS["Coms Page <br>(GeUI: Phase 11+)<br>Log Stream Filter<br>Adv I/O: Phase 11+"]
-        UI_ADMIN["Admin Page <br>(Config CRUD: Phase 8)<br>Settings View"]
-        AUTH_UI["Login UI <br>(Basic Auth: Phase 10)"]
+        UI_COMS["Coms Page <br>(Log Stream Filter - P10)<br>Adv I/O: P11+"]
+        UI_ADMIN["Admin Page <br>(Config CRUD UI - P8 ✅)<br>Settings View<br>Auth UI: P10"] %% Updated
+        %% AUTH_UI["Login UI <br>(Basic Auth: P10)"] %% Merged into Admin Page area
     end
 
     subgraph Backend
-        FASTAPI["🚀 FastAPI Backend <br>+ Config CRUD API (P8)<br>+ Auth API (P10)<br>+ Log Endpoints (P10?)"]
+        FASTAPI["🚀 FastAPI Backend <br>+ Config CRUD API (P8 ✅)<br>+ Auth API (P10)<br>+ Log Endpoints (P10?)"]
         WS_MANAGER["🔌 WebSocket Manager <br>+ Log Categories (P10)"]
-        AGENT_MANAGER["🧑‍💼 Agent Manager <br>+ Reload Logic (P8/9)<br>+ Tool History Handling ✅<br>Controls All Agents"] %% <-- Updated History Handling
+        AGENT_MANAGER["🧑‍💼 Agent Manager <br>+ Reload Signal (Future)<br>+ Tool History Handling ✅<br>Controls All Agents"] %% Updated Reload
+        CONFIG_MANAGER["📝 Config Manager <br>(Safe R/W config.yaml) P8 ✅"] %% Added P8 Config Manager
 
         subgraph Agents
             ADMIN_AI["🤖 Admin AI Agent <br>(Google Provider - P9)<br>Uses ConfigTool"]
-            AGENT_INST_1["🤖 Worker Agent 1 <br>+ XML Tool Parsing ✅"] %% <-- Highlight change completed
-            AGENT_INST_N["🤖 Worker Agent N <br>+ XML Tool Parsing ✅"] %% <-- Highlight change completed
+            AGENT_INST_1["🤖 Worker Agent 1 <br>+ XML Tool Parsing ✅"]
+            AGENT_INST_N["🤖 Worker Agent N <br>+ XML Tool Parsing ✅"]
             GEUI_AGENT["🤖 GeUI Agent(s) (P11+)"]
         end
 
         subgraph LLM_Providers ["☁️ LLM Providers <br>(src/llm_providers/)"]
              PROVIDER_GOOGLE["🔌 Google Provider (P9)"]
-             PROVIDER_OR["🔌 OpenRouter Provider ✅"] %% Updated
-             PROVIDER_OLLAMA["🔌 Ollama Provider ✅"] %% Updated
-             PROVIDER_OPENAI["🔌 OpenAI Provider ✅"] %% Updated
-             %% Providers now only stream text, don't handle tool_calls internally
+             PROVIDER_OR["🔌 OpenRouter Provider ✅"]
+             PROVIDER_OLLAMA["🔌 Ollama Provider ✅"]
+             PROVIDER_OPENAI["🔌 OpenAI Provider ✅"]
          end
 
          subgraph Tools
-             TOOL_EXECUTOR["🛠️ Tool Executor<br>+ XML Desc Gen ✅"] %% <-- Highlight change completed
-             TOOL_CONFIG["📝 ConfigTool (P9)<br>Safe R/W config.yaml"]
-             TOOL_FS["📄 FileSystem Tool"]
+             TOOL_EXECUTOR["🛠️ Tool Executor<br>+ XML Desc Gen ✅"]
+             TOOL_CONFIG["📝 ConfigTool (P9)<br>Uses Config Manager"] %% Updated to use Config Mgr
+             TOOL_FS["📄 FileSystem Tool ✅"]
              %% Other tools...
          end
 
-         SANDBOXES["📁 Sandboxes"]
-         CONFIG_WRITER["📝 Config Writer <br>(Used by ConfigTool - P9)"]
+         SANDBOXES["📁 Sandboxes ✅"]
     end
 
     subgraph External
         GOOGLE_API["☁️ Google AI APIs"]
         LLM_API_SVC["☁️ Ext. LLM APIs (OR, OpenAI)"]
         OLLAMA_SVC["⚙️ Local Ollama Service"]
-        CONFIG_YAML["⚙️ config.yaml <br>(Read/Write via ConfigTool)"]
-        DOT_ENV[".env File <br>(Secrets - Read Only)"]
+        CONFIG_YAML["⚙️ config.yaml <br>(Read/Write via Config Manager)"] %% Updated description
+        DOT_ENV[".env File <br>(Secrets - Read Only) ✅"]
     end
 
     %% --- Connections ---
@@ -120,9 +120,9 @@ graph TD
     Frontend -- HTTP (API Calls, Auth) --> FASTAPI;
     Frontend -- WebSocket --> WS_MANAGER;
 
+    FASTAPI -- Calls CRUD Ops --> CONFIG_MANAGER; %% Added API to Config Mgr link
     FASTAPI -- Manages --> AGENT_MANAGER;
-    FASTAPI -- Triggers --> CONFIG_WRITER; %% Via API calls handled by ConfigTool
-    FASTAPI -- Notifies --> AGENT_MANAGER; %% On config change
+    %% FastAPI -- Notifies --> AGENT_MANAGER; %% Deferred dynamic notification
     WS_MANAGER -- Forwards Msgs / Sends Logs --> Frontend;
     WS_MANAGER -- Forwards User Msgs --> AGENT_MANAGER;
 
@@ -130,36 +130,35 @@ graph TD
     AGENT_MANAGER -- Controls --> AGENT_INST_1;
     AGENT_MANAGER -- Controls --> AGENT_INST_N;
     AGENT_MANAGER -- Controls --> GEUI_AGENT;
-
-    AGENT_MANAGER -- "Reads Config/Secrets" --> CONFIG_YAML;
+    AGENT_MANAGER -- "Reads Initial Config Via Settings Module" --> CONFIG_YAML; %% Clarified reading path
     AGENT_MANAGER -- "Reads Config/Secrets" --> DOT_ENV;
     AGENT_MANAGER -- Injects --> LLM_Providers;
     AGENT_MANAGER -- Routes Tool Calls --> TOOL_EXECUTOR;
-    AGENT_MANAGER -- "Generates & Injects XML Prompts ✅" --> Agents; %% <-- Clarified prompt injection completed
-    AGENT_MANAGER -- "Appends Tool Results to Agent History ✅" --> Agents; %% <-- Added history update path completed
-
+    AGENT_MANAGER -- "Generates & Injects XML Prompts ✅" --> Agents;
+    AGENT_MANAGER -- "Appends Tool Results to Agent History ✅" --> Agents;
 
     ADMIN_AI -- Uses --> PROVIDER_GOOGLE;
     ADMIN_AI -- "Streams Text" --> AGENT_MANAGER;
     ADMIN_AI -- "Parses Own XML" --> ADMIN_AI;
-    ADMIN_AI -- "Yields Tool Request" --> AGENT_MANAGER;
+    ADMIN_AI -- "Yields Tool Request (ConfigTool)" --> AGENT_MANAGER; %% Example tool request
 
     AGENT_INST_1 -- Uses --> LLM_Providers;
-    AGENT_INST_1 -- "Streams Text ✅" --> AGENT_MANAGER; %% <-- Changed interaction completed
-    AGENT_INST_1 -- "Parses Own XML ✅" --> AGENT_INST_1; %% <-- Agent parses completed
-    AGENT_INST_1 -- "Yields Tool Request ✅" --> AGENT_MANAGER; %% <-- Agent yields request completed
+    AGENT_INST_1 -- "Streams Text ✅" --> AGENT_MANAGER;
+    AGENT_INST_1 -- "Parses Own XML ✅" --> AGENT_INST_1;
+    AGENT_INST_1 -- "Yields Tool Request (e.g., FileSystemTool)" --> AGENT_MANAGER; %% Example tool request
 
     AGENT_INST_N -- Uses --> LLM_Providers;
-    AGENT_INST_N -- "Streams Text ✅" --> AGENT_MANAGER; %% <-- Changed interaction completed
-    AGENT_INST_N -- "Parses Own XML ✅" --> AGENT_INST_N; %% <-- Agent parses completed
-    AGENT_INST_N -- "Yields Tool Request ✅" --> AGENT_MANAGER; %% <-- Agent yields request completed
+    AGENT_INST_N -- "Streams Text ✅" --> AGENT_MANAGER;
+    AGENT_INST_N -- "Parses Own XML ✅" --> AGENT_INST_N;
+    AGENT_INST_N -- "Yields Tool Request" --> AGENT_MANAGER;
 
 
     TOOL_EXECUTOR -- Executes --> TOOL_CONFIG;
     TOOL_EXECUTOR -- Executes --> TOOL_FS;
 
-    TOOL_CONFIG -- Uses --> CONFIG_WRITER;
-    CONFIG_WRITER -- R/W --> CONFIG_YAML;
+    TOOL_CONFIG -- Uses --> CONFIG_MANAGER; %% Updated ConfigTool connection
+    %% CONFIG_WRITER Removed, merged into Config Manager
+    CONFIG_MANAGER -- Reads/Writes --> CONFIG_YAML; %% Added Config Mgr R/W link
 
     PROVIDER_GOOGLE -- Interacts --> GOOGLE_API;
     PROVIDER_OR -- Interacts --> LLM_API_SVC;
@@ -170,69 +169,67 @@ graph TD
 
 ## 5. Development Phases & Milestones
 
-**Phase 1-6 (Completed)**
-*   [X] Core Backend, Agent Core, Multi-Agent, Config Loading, Sandboxing, Basic Tools, LLM Abstraction, UI Enhancements, Initial Testing.
+**Phase 1-7 (Completed)**
+*   [X] Core Backend, Agent Core, Multi-Agent, Config Loading, Sandboxing, Basic Tools, LLM Abstraction, UI Enhancements, Initial Testing, XML Tool Calling Refinement.
 
-**Phase 7: Refinement, XML Tool Calling & Optimization (Completed)**
-*   [X] **Analysis:** Reviewed project and Cline approach. Confirmed plan.
-*   [X] **Implement XML Tool Calling:**
-    *   [X] **Tool Executor (`src/tools/executor.py`):**
-        *   [X] Added `get_formatted_tool_descriptions_xml()` method.
-    *   [X] **Agent Manager (`src/agents/manager.py`):**
-        *   [X] Modified `_initialize_agents`: Call `get_formatted_tool_descriptions_xml()` and pass to `Agent`. Removed `tool_executor` from `Agent` call.
-        *   [X] Modified `_handle_agent_generator`: Append assistant response (incl. XML) and tool results to `agent.message_history`. Use `asend(None)`. Removed `message` arg from `agent.process_message()` call. Changed post-tool status to `PROCESSING`.
-    *   [X] **Agent Core (`src/agents/core.py`):**
-        *   [X] Modified `__init__`: Accept `tool_descriptions_xml`, remove `tool_executor`. Combine prompt. Compile regex.
-        *   [X] Modified `process_message`: Remove `tools`/`tool_choice` from provider call. Implement text buffering & `_parse_and_yield_xml_tool_call`. Yield `response_chunk`, `tool_requests` (with `raw_assistant_response`). Handle final text/tool call. Ignore `asend()` value. Remove `message` argument.
-    *   [X] **LLM Providers (`src/llm_providers/*.py`):**
-        *   [X] Modified `stream_completion` methods to remove `tools`/`tool_choice` params from API calls.
-        *   [X] Removed logic parsing native `tool_calls` from API responses.
-        *   [X] Ensured providers yield `response_chunk`, `status`, `error` (not `tool_requests`).
-    *   [X] **Configuration (`config.yaml`):** Reviewed prompts (they are suitable).
-*   [X] **Testing:** Successfully tested tool calling with OpenRouter/Gemini via XML using `file_system` tool. Basic functionality confirmed.
-*   [X] **Code cleanup and review:** Minor fixes applied (e.g., `TypeError` fix).
-*   [X] Updated `README.md` and `FUNCTIONS_INDEX.md` (pending confirmation).
-
-**Phase 8: Agent Configuration UI Management (Current / Next)**
-*   **Goal:** Allow users to create, edit, and delete agent configurations via the web UI (foundation for Admin page).
-*   [ ] *(Deferred from Phase 7)* Improve general error handling and reporting.
-*   [ ] *(Deferred from Phase 7)* Optimize performance.
-*   [ ] *(Deferred from Phase 7)* Refine sandboxing security.
-*   [ ] *(Deferred from Phase 7)* Add more tools (e.g., web search).
-*   [ ] **Backend API:** CRUD endpoints (`POST`, `PUT`, `DELETE`) for `/api/config/agents`. Pydantic models for validation.
-*   [ ] **Backend Config Handling:** Safe read/modify/write functions for `config.yaml`. Error handling. **Strictly no secrets (API keys) managed here.**
-*   [ ] **Agent Reloading:** Decide on strategy (manual restart vs. dynamic reload). Implement chosen strategy in `AgentManager`.
-*   [ ] **Frontend UI:** Basic forms/modals for Add/Edit/Delete operations. API integration. Dynamic UI updates. Error display. (To be integrated into Admin Page in Phase 10).
-*   [ ] **Security:** Backend input validation. Confirm file write restrictions.
-*   [ ] **Documentation:** Update `README.md` for basic config UI usage.
+**Phase 8: Agent Configuration UI Management (In Progress)**
+*   **Goal:** Allow users to create, edit, and delete agent configurations via the web UI (foundation for Admin page). **Requires application restart after changes.**
+*   [ ] **Analysis & Planning:** Reviewed project, defined Phase 8 scope, outlined file changes. *(Completed)*
+*   [ ] **Backend - Config Manager:**
+    *   [ ] Create `src/config/config_manager.py`.
+    *   [ ] Implement `ConfigManager` class.
+    *   [ ] Add methods: `load_config()`, `save_config()`, `add_agent(config)`, `update_agent(agent_id, config)`, `delete_agent(agent_id)`.
+    *   [ ] Include basic validation (e.g., check for `agent_id`, unique IDs).
+    *   [ ] Ensure safe YAML writing (backup previous file?).
+*   [ ] **Backend - Settings:**
+    *   [ ] Modify `src/config/settings.py` to use `ConfigManager.load_config()` during initialization.
+*   [ ] **Backend - API:**
+    *   [ ] Add Pydantic models in `src/api/http_routes.py` for agent configuration input/output (ensure sensitive fields like `api_key` are handled appropriately - likely excluded or masked).
+    *   [ ] Implement `POST /api/config/agents` endpoint: Validate input, call `ConfigManager.add_agent`, save, return success/error (mention restart).
+    *   [ ] Implement `PUT /api/config/agents/{agent_id}` endpoint: Validate input, call `ConfigManager.update_agent`, save, return success/error (mention restart).
+    *   [ ] Implement `DELETE /api/config/agents/{agent_id}` endpoint: Call `ConfigManager.delete_agent`, save, return success/error (mention restart).
+*   [ ] **Frontend - UI Elements (`index.html`, `style.css`):**
+    *   [ ] Add "Add Agent" button.
+    *   [ ] Add "Edit" and "Delete" buttons next to each agent listed in the "Configuration" section.
+    *   [ ] Create basic HTML structure for Add/Edit modal dialogs (initially hidden).
+    *   [ ] Add CSS for buttons and modals.
+*   [ ] **Frontend - Logic (`app.js`):**
+    *   [ ] Modify `displayAgentConfigurations` to add Edit/Delete buttons and attach event listeners.
+    *   [ ] Implement function to show the "Add Agent" modal.
+    *   [ ] Implement function to show the "Edit Agent" modal, populating it with data fetched via `GET /api/config/agents/{agent_id}` (or use existing data).
+    *   [ ] Implement form submission handlers for Add/Edit modals.
+        *   Gather form data.
+        *   Call `POST` or `PUT` API endpoints.
+        *   Handle responses, show success/error messages (incl. restart note).
+        *   Close modal and refresh the config list on success using `fetchAgentConfigurations`.
+    *   [ ] Implement handler for "Delete" button click.
+        *   Show confirmation prompt.
+        *   Call `DELETE /api/config/agents/{agent_id}` API endpoint.
+        *   Handle responses, show success/error messages (incl. restart note).
+        *   Refresh the config list on success.
+*   [ ] **Testing:** Test CRUD operations via UI, verify `config.yaml` changes, confirm restart instructions appear.
+*   [ ] **Documentation:** Update `README.md` for config UI usage. Update `FUNCTIONS_INDEX.md`.
 
 **Phase 9: Admin AI Layer Foundation (Planned)**
 *   **Goal:** Introduce the Admin AI agent and enable basic control via config modification using the XML tool format.
-*   [ ] **Backend - Google Provider:**
-    *   [ ] Add `google-generativeai` to `requirements.txt`.
-    *   [ ] Implement `src/llm_providers/google_provider.py` inheriting `BaseLLMProvider`.
-    *   [ ] Handle Google API key (`GOOGLE_API_KEY` in `.env`).
-    *   [ ] Implement `stream_completion` (streaming text only).
-*   [ ] **Backend - Config Tool:**
-    *   [ ] Implement `src/tools/config_tool.py` inheriting `BaseTool`. Define actions and parameters.
-    *   [ ] Use the safe config read/write functions from Phase 8.
-    *   [ ] Provide clear success/error messages.
-*   [ ] **Backend - Agent Manager:** Ensure `ToolExecutor` registers `ConfigTool`. Ensure manager can reload config/agents upon successful `ConfigTool` execution.
-*   [ ] **Configuration:** Update `.env.example` with `GOOGLE_API_KEY`. Update `config.yaml` to define the Admin AI agent (google provider), and update its system prompt to use the *XML format* for the `ConfigTool`.
-    *   *Model Note:* Confirm model name for "Gemini 2.5 Pro Experimental".
-*   [ ] **Testing:** Manually send commands to Admin AI via UI (e.g., "AdminAI, use ConfigTool in XML format to add agent X..."). Verify changes and reloading.
+*   [ ] **Backend - Google Provider:** Implement `google_provider.py`. Add dependency. Handle API key.
+*   [ ] **Backend - Config Tool:** Implement `config_tool.py` using `ConfigManager`.
+*   [ ] **Backend - Agent Manager:** Register `ConfigTool`. Ensure manager signals for restart (or handles dynamic reload in future) after `ConfigTool` use.
+*   [ ] **Configuration:** Update `.env.example`, `config.yaml` for Admin AI and XML tool prompt.
+*   [ ] **Testing:** Manually test Admin AI commands via UI.
 
 **Phase 10: Human UI Foundation (Planned)**
 *   **Goal:** Restructure UI into Coms/Admin pages and implement log streaming & basic auth.
-*   [ ] **Frontend - Structure:** Refactor `index.html`/`app.js` for Coms/Admin views. Design layouts.
-*   [ ] **Backend - Logging:** Introduce log categories. Modify logging setup/middleware. Update `WebSocketManager` for streaming categorized logs.
-*   [ ] **Frontend - Coms Page:** Implement collapsible log stream display. Add log filters. Update WebSocket handling.
-*   [ ] **Frontend - Admin Page:** Integrate Agent Config CRUD (Phase 8). Add read-only settings display (new API endpoint needed).
-*   [ ] **Backend & Frontend - Authentication:** Implement basic password auth. Protect Admin APIs. Add login UI.
+*   [ ] **Frontend - Structure:** Refactor UI for Coms/Admin views.
+*   [ ] **Backend - Logging:** Introduce categories, update WebSocket streaming.
+*   [ ] **Frontend - Coms Page:** Implement log stream display/filters.
+*   [ ] **Frontend - Admin Page:** Integrate Agent Config CRUD (Phase 8). Add read-only settings display.
+*   [ ] **Backend & Frontend - Authentication:** Implement basic password auth.
 
 **Future Phases (11+) (High-Level)**
 *   **Phase 11: GeUI Implementation:** Design and implement the Generative UI concept.
 *   **Phase 12: Advanced I/O & Voice Control:** Integrate camera, microphone (STT), speaker (TTS).
 *   **Phase 13: Advanced Admin AI Control:** Enhance Admin AI tools for dynamic control of running agents.
 *   **Phase 14: Advanced Authentication & Multi-User:** Implement more robust authentication.
-*   **Phase 15: Create Project Plan for Next Iteration:** Re-evaluate and plan.
+*   **Phase 15: Dynamic Agent Reloading:** Implement agent reloading without requiring a full application restart.
+*   **Phase 16: Create Project Plan for Next Iteration:** Re-evaluate and plan.
