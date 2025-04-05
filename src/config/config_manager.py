@@ -12,9 +12,14 @@ import tempfile # Use tempfile for safer writing
 # Note: This creates a slight circular dependency potential during startup,
 # but should be okay as we only use BASE_DIR/AGENT_CONFIG_PATH constants.
 # Consider passing the path directly if issues arise.
-from src.config.settings import BASE_DIR, AGENT_CONFIG_PATH
+# from src.config.settings import BASE_DIR, AGENT_CONFIG_PATH # Moving import later if needed
 
 logger = logging.getLogger(__name__)
+
+# --- Define paths here to potentially resolve import order issues ---
+BASE_DIR_CM = Path(__file__).resolve().parent.parent.parent
+AGENT_CONFIG_PATH_CM = BASE_DIR_CM / 'config.yaml'
+
 
 class ConfigManager:
     """
@@ -172,7 +177,19 @@ class ConfigManager:
     async def get_config(self) -> List[Dict[str, Any]]:
         """Returns a copy of the currently loaded agent configuration list. Async-safe."""
         async with self._lock:
-            return self._agents_data[:] # Return a copy
+            # Return a copy to prevent external modification of the internal list
+            return [copy.deepcopy(agent) for agent in self._agents_data] # Use deepcopy for safety
+
+    def get_config_sync(self) -> List[Dict[str, Any]]:
+        """
+        Synchronously returns a copy of the agent configuration list loaded during initialization.
+        Intended for use during synchronous startup phases (like Settings init).
+        Does NOT acquire the async lock. Relies on initial load being complete.
+        """
+        # Return a copy to prevent external modification of the internal list
+        import copy
+        return [copy.deepcopy(agent) for agent in self._agents_data] # Use deepcopy for safety
+
 
     def _find_agent_index_unsafe(self, agent_id: str) -> Optional[int]:
         """Internal helper: Finds the index of an agent by ID. Assumes lock is held."""
@@ -194,6 +211,7 @@ class ConfigManager:
             bool: True if added and saved successfully, False otherwise.
         """
         async with self._lock:
+            import copy # Import here if not globally available
             agent_id = agent_config_entry.get("agent_id")
             if not agent_id:
                 logger.error("Cannot add agent: 'agent_id' is missing.")
@@ -206,8 +224,8 @@ class ConfigManager:
                 logger.error(f"Cannot add agent: Agent with ID '{agent_id}' already exists.")
                 return False
 
-            # Append the new agent entry
-            self._agents_data.append(agent_config_entry)
+            # Append a deep copy to avoid modifying the input dict
+            self._agents_data.append(copy.deepcopy(agent_config_entry))
             logger.info(f"Agent '{agent_id}' added internally.")
 
             # Save the updated configuration safely
@@ -233,18 +251,17 @@ class ConfigManager:
             bool: True if updated and saved successfully, False otherwise.
         """
         async with self._lock:
+            import copy # Import here if not globally available
             index = self._find_agent_index_unsafe(agent_id)
             if index is None:
                 logger.error(f"Cannot update agent: Agent with ID '{agent_id}' not found.")
                 return False
 
             # Keep a deep copy of the original entry in case save fails
-            # (Simple .copy() might not be enough if inner dicts are modified)
-            import copy
             original_config_entry = copy.deepcopy(self._agents_data[index])
 
-            # Update the 'config' key
-            self._agents_data[index]["config"] = updated_config_data
+            # Update the 'config' key with a deep copy of the new data
+            self._agents_data[index]["config"] = copy.deepcopy(updated_config_data)
             logger.info(f"Agent '{agent_id}' config updated internally.")
 
             # Save the updated configuration safely
@@ -291,7 +308,7 @@ class ConfigManager:
 # --- Create a Singleton Instance ---
 # This instance will be used by other modules (like settings and API routes)
 # The initial load is synchronous within __init__
-config_manager = ConfigManager(AGENT_CONFIG_PATH)
+config_manager = ConfigManager(AGENT_CONFIG_PATH_CM) # Use path defined above
 
 # Quick check if initial load failed severely (optional)
 # if not hasattr(config_manager, '_agents_data'):
