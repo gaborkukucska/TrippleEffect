@@ -208,8 +208,8 @@ while [ -z "$OPENROUTER_KEY" ]; do
       read -p "Set OpenRouter + google/gemini-flash-1.5 as default provider/model? [Y/n]: " set_or_defaults
       if [[ "$set_or_defaults" =~ ^[Yy]$ ]] || [ -z "$set_or_defaults" ]; then
           update_env_var "DEFAULT_AGENT_PROVIDER" "openrouter"
-          update_env_var "DEFAULT_AGENT_MODEL" "google/gemini-flash-1.5"
-          success "Set OpenRouter and Gemini Flash 1.5 as defaults."
+          update_env_var "DEFAULT_AGENT_MODEL" "google/gemini-2.5-pro-exp-03-25:free"
+          success "Set OpenRouter and Gemini Pro 2.5 as defaults."
       fi
       break # Exit loop after successful setup
   fi
