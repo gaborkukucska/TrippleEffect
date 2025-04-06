@@ -115,19 +115,49 @@ class OpenRouterProvider(BaseLLMProvider):
             # --- Retryable Error Handling ---
             except RETRYABLE_EXCEPTIONS as e:
                 last_exception = e; logger.warning(f"Retryable OpenRouter error on attempt {attempt + 1}/{MAX_RETRIES + 1}: {type(e).__name__} - {e}")
-                if attempt < MAX_RETRIES: await asyncio.sleep(RETRY_DELAY_SECONDS); continue
-                else: logger.error(f"Max retries ({MAX_RETRIES}) reached after retryable error."); yield {"type": "error", "content": f"[OpenRouterProvider Error]: Max retries reached. Last error: {type(e).__name__}"}; return
+                if attempt < MAX_RETRIES:
+                    logger.info(f"Waiting {RETRY_DELAY_SECONDS}s before retrying...")
+                    await asyncio.sleep(RETRY_DELAY_SECONDS); continue
+                else:
+                    logger.error(f"Max retries ({MAX_RETRIES}) reached after retryable error.")
+                    yield {"type": "error", "content": f"[OpenRouterProvider Error]: Max retries reached. Last error: {type(e).__name__}"}
+                    return
             except openai.APIStatusError as e:
-                last_exception = e; logger.warning(f"OpenRouter API Status Error on attempt {attempt + 1}/{MAX_RETRIES + 1}: Status={e.status_code}, Body={e.body}")
-                if (e.status_code >= 500 or e.status_code in RETRYABLE_STATUS_CODES) and attempt < MAX_RETRIES: await asyncio.sleep(RETRY_DELAY_SECONDS); continue
-                else: logger.error(f"Non-retryable API Status Error ({e.status_code}) or max retries reached."); user_message = f"[OpenRouterProvider Error]: API Status {e.status_code}"; try: body_dict = json.loads(e.body) if isinstance(e.body, str) else (e.body if isinstance(e.body, dict) else {}); error_detail = body_dict.get('error', {}).get('message') or body_dict.get('message'); if error_detail: user_message += f" - {str(error_detail)[:100]}"; except: pass; yield {"type": "error", "content": user_message}; return
+                last_exception = e
+                logger.warning(f"OpenRouter API Status Error on attempt {attempt + 1}/{MAX_RETRIES + 1}: Status={e.status_code}, Body={e.body}")
+                # Retry on 5xx or specific retryable codes
+                if (e.status_code >= 500 or e.status_code in RETRYABLE_STATUS_CODES) and attempt < MAX_RETRIES:
+                    logger.info(f"Status {e.status_code} is retryable. Waiting {RETRY_DELAY_SECONDS}s before retrying...")
+                    await asyncio.sleep(RETRY_DELAY_SECONDS)
+                    continue
+                else:
+                    # --- *** CORRECTED FORMATTING FOR THIS BLOCK *** ---
+                    logger.error(f"Non-retryable API Status Error ({e.status_code}) or max retries reached.")
+                    user_message = f"[OpenRouterProvider Error]: API Status {e.status_code}"
+                    try:
+                        # Attempt to parse body for more details
+                        body_dict = json.loads(e.body) if isinstance(e.body, str) else (e.body if isinstance(e.body, dict) else {})
+                        error_detail = body_dict.get('error', {}).get('message') or body_dict.get('message')
+                        if error_detail:
+                            user_message += f" - {str(error_detail)[:100]}"
+                    except Exception: # Ignore parsing errors
+                        pass
+                    yield {"type": "error", "content": user_message}
+                    return
+                    # --- *** END CORRECTION *** ---
             # --- Non-Retryable Error Handling ---
             except (openai.AuthenticationError, openai.BadRequestError, openai.PermissionDeniedError, openai.NotFoundError) as e:
                  error_type_name = type(e).__name__; status_code = getattr(e, 'status_code', 'N/A'); error_body = getattr(e, 'body', 'N/A'); logger.error(f"Non-retryable OpenAI API error (via OpenRouter): {error_type_name} (Status: {status_code}), Body: {error_body}"); user_message = f"[OpenRouterProvider Error]: {error_type_name}"; try: body_dict = json.loads(error_body) if isinstance(error_body, str) else (error_body if isinstance(error_body, dict) else {}); error_detail = body_dict.get('error', {}).get('message') or body_dict.get('message'); if error_detail: user_message += f" - {str(error_detail)[:100]}"; except: pass; yield {"type": "error", "content": user_message}; return
             except Exception as e: # General catch-all for unexpected errors during API call
                 last_exception = e; logger.exception(f"Unexpected Error during OpenRouter API call attempt {attempt + 1}: {type(e).__name__} - {e}")
-                if attempt < MAX_RETRIES: await asyncio.sleep(RETRY_DELAY_SECONDS); continue
-                else: logger.error(f"Max retries ({MAX_RETRIES}) reached after unexpected error."); yield {"type": "error", "content": f"[OpenRouterProvider Error]: Unexpected Error after retries - {type(e).__name__}"}; return
+                if attempt < MAX_RETRIES:
+                    logger.info(f"Waiting {RETRY_DELAY_SECONDS}s before retrying...")
+                    await asyncio.sleep(RETRY_DELAY_SECONDS)
+                    continue
+                else:
+                    logger.error(f"Max retries ({MAX_RETRIES}) reached after unexpected error.")
+                    yield {"type": "error", "content": f"[OpenRouterProvider Error]: Unexpected Error after retries - {type(e).__name__}"}
+                    return
 
         # --- Check if API call failed after all retries ---
         if response_stream is None:
