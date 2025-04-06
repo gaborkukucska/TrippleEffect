@@ -208,7 +208,7 @@ class AgentManager:
 
         if not agents_in_target_team:
             logger.warning(f"No agents configured for the target team '{target_team_name}'. Cannot process message.")
-            await self._send_to_ui({"type": "error", "agent_id": "manager", "content": f"No agents found for team '{target_team_name}'."})
+            await self.send_to_ui({"type": "error", "agent_id": "manager", "content": f"No agents found for team '{target_team_name}'."})
             return
 
         active_tasks: List[asyncio.Task] = []
@@ -230,7 +230,7 @@ class AgentManager:
 
         if not agents_to_process:
             logger.info(f"No IDLE agents available in team '{target_team_name}' to handle the user message.")
-            await self._send_to_ui({"type": "error", "agent_id": "manager", "content": f"All agents in team '{target_team_name}' are currently busy or in error state."})
+            await self.send_to_ui({"type": "error", "agent_id": "manager", "content": f"All agents in team '{target_team_name}' are currently busy or in error state."})
             return
 
         # Add user message and create processing task for each available agent
@@ -277,7 +277,7 @@ class AgentManager:
                 except Exception as gen_err:
                      logger.error(f"Error interacting with agent '{agent_id}' generator: {gen_err}", exc_info=True)
                      agent.set_status(AGENT_STATUS_ERROR) # Set error state
-                     await self._send_to_ui({"type": "error", "agent_id": agent_id, "content": f"[Manager Error: Agent generator failed: {gen_err}]"})
+                     await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": f"[Manager Error: Agent generator failed: {gen_err}]"})
                      break # Stop handling this agent's cycle
 
                 # Process the yielded event
@@ -286,7 +286,7 @@ class AgentManager:
                 # Pass through simple events directly to UI
                 if event_type in ["response_chunk", "status", "error", "final_response"]:
                     if "agent_id" not in event: event["agent_id"] = agent_id
-                    await self._send_to_ui(event)
+                    await self.send_to_ui(event)
                     if event_type == "error":
                         logger.error(f"Agent '{agent_id}' reported an error, stopping handling.")
                         break
@@ -313,7 +313,7 @@ class AgentManager:
                     if not tool_calls_requested or not isinstance(tool_calls_requested, list):
                         logger.error(f"Manager: Invalid 'tool_requests' format from Agent '{agent_id}': {event}")
                         agent.set_status(AGENT_STATUS_ERROR)
-                        await self._send_to_ui({"type": "error", "agent_id": agent_id, "content": "[Manager Error: Invalid tool request format received from agent]"})
+                        await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": "[Manager Error: Invalid tool request format received from agent]"})
                         break # Stop processing
 
                     # Prepare tool execution tasks and identify SendMessage requests
@@ -355,7 +355,7 @@ class AgentManager:
                             tool_tasks.append(asyncio.create_task(self._failed_tool_result(call_id, tool_name))) # Handle failed dispatch
 
                     if valid_requests_count > 0:
-                        await self._send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Executing {valid_requests_count} tool(s)..."})
+                        await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Executing {valid_requests_count} tool(s)..."})
 
                     # Wait for all tool executions for this batch
                     tool_results_raw: List[Optional[ToolResultDict]] = []
@@ -410,7 +410,7 @@ class AgentManager:
             error_msg = f"Error during manager generator handling for agent {agent_id}: {type(e).__name__} - {e}"
             logger.error(error_msg, exc_info=True)
             agent.set_status(AGENT_STATUS_ERROR) # Ensure error status is set
-            await self._send_to_ui({"type": "error", "agent_id": agent_id, "content": f"[Manager Error: {error_msg}]"})
+            await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": f"[Manager Error: {error_msg}]"})
         finally:
              if agent_generator:
                  try:
@@ -522,7 +522,7 @@ class AgentManager:
             status_data = agent.get_state() # Get the full state dict
             # Add team info to status if available
             status_data["team"] = self.agent_to_team.get(agent_id, "N/A")
-            await self._send_to_ui({
+            await self.send_to_ui({ # Use public method
                 "type": "agent_status_update",
                 "agent_id": agent_id,
                 "status": status_data # Send the whole state dict including team
@@ -531,7 +531,7 @@ class AgentManager:
             logger.warning(f"Manager: Cannot push status for unknown agent_id: {agent_id}")
 
 
-    async def _send_to_ui(self, message_data: Dict[str, Any]):
+    async def send_to_ui(self, message_data: Dict[str, Any]): # Renamed from _send_to_ui
         """Sends a structured message back to the UI via the broadcast function."""
         if not self.send_to_ui_func:
             logger.warning("Warning: UI broadcast function not configured in AgentManager. Cannot send message to UI.")
