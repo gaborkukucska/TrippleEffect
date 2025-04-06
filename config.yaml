@@ -10,8 +10,8 @@ allowed_sub_agent_models:
   # Define allowed models per provider for agents created by ManageTeamTool
   openrouter:
     - "google/gemini-2.5-pro-exp-03-25:free"
-    - "deepseek/deepseek-chat-v3-0324:free"
-    - "meta-llama/llama-3.2-11b-vision-instruct:free"
+    # - "deepseek/deepseek-chat-v3-0324:free"
+    # - "meta-llama/llama-3.2-11b-vision-instruct:free"
     # - "google/gemini-1.5-pro:free" # Added the capable model used by AdminAI itself
     # - "anthropic/claude-3-haiku" # Add more capable/cheaper models as needed
     # - "openai/gpt-3.5-turbo" # Example if routing via OpenRouter
