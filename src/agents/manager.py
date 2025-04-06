@@ -290,7 +290,7 @@ class AgentManager:
                                   else: logger.error(f"SendMessage args incomplete for {call_id}. Args: {tool_args}")
                               else: logger.warning(f"SendMessageTool call {call_id} failed exec. Result: {result_content_str}")
                     if activation_tasks: logger.info(f"Triggered activation for {len(activation_tasks)} agents from '{agent_id}'.")
-                    if manager_action_feedback: # Append feedback
+                    if manager_action_feedback:
                          for feedback in manager_action_feedback:
                              feedback_content = f"[Manager Result for {feedback['action']} (Call ID: {feedback['call_id']})]: Success={feedback['success']}. Message: {feedback['message']}"
                              if feedback.get("data"):
@@ -321,8 +321,9 @@ class AgentManager:
             temperature = params.get("temperature")
             extra_kwargs = {k: v for k, v in params.items() if k not in ['action', 'agent_id', 'team_id', 'provider', 'model', 'system_prompt', 'persona', 'temperature']}
 
-            if action == "create_agent": success, message, created_agent_id = await self.create_agent_instance( agent_id, provider, model, system_prompt, persona, team_id, temperature, **extra_kwargs );
-            if success and created_agent_id: message = f"Agent '{persona}' created with ID '{created_agent_id}'. Status: {message}"; result_data = {"created_agent_id": created_agent_id}
+            if action == "create_agent":
+                 success, message, created_agent_id = await self.create_agent_instance( agent_id, provider, model, system_prompt, persona, team_id, temperature, **extra_kwargs );
+                 if success and created_agent_id: message = f"Agent '{persona}' created with ID '{created_agent_id}'. Status: {message}"; result_data = {"created_agent_id": created_agent_id}
             elif action == "delete_agent": success, message = await self.delete_agent_instance(agent_id)
             elif action == "create_team": success, message = await self.create_new_team(team_id)
             elif action == "delete_team": success, message = await self.delete_existing_team(team_id)
@@ -366,7 +367,7 @@ class AgentManager:
         if not team_id: return False, "Team ID empty.";
         if team_id not in self.teams: return False, f"Team '{team_id}' not found."
         agents_in_team = [aid for aid, tid in self.agent_to_team.items() if tid == team_id]
-        if agents_in_team or self.teams[team_id]: logger.warning(f"Delete team '{team_id}' failed. Agents: {agents_in_team or self.teams[team_id]}."); return False, f"Team '{team_id}' not empty."
+        if agents_in_team or (team_id in self.teams and self.teams[team_id]): logger.warning(f"Delete team '{team_id}' failed. Agents: {agents_in_team or self.teams[team_id]}."); return False, f"Team '{team_id}' not empty."
         del self.teams[team_id]; message = f"Team '{team_id}' deleted."; logger.info(message)
         await self.send_to_ui({"type": "team_deleted", "team_id": team_id}); return True, message
 
