@@ -47,8 +47,7 @@ async def lifespan(app: FastAPI):
     try:
         # Run the async initialization method
         init_task = asyncio.create_task(agent_manager.initialize_bootstrap_agents())
-        # We might want to wait for bootstrap agents to be ready before yielding
-        # especially if admin_ai needs to handle the very first request.
+        # Wait for bootstrap agents to be ready before yielding
         await init_task
         logger.info("Lifespan: Bootstrap agent initialization task completed.")
     except Exception as e:
@@ -108,7 +107,5 @@ except Exception as e:
 # Configuration for running the app with uvicorn directly
 if __name__ == "__main__":
     logger.info("Starting Uvicorn server...")
-    # Use app_dir='.' if running 'python -m src.main' from root,
-    # Use app_dir='src' if running 'python src/main.py' from root
-    # Assuming running with 'python -m src.main' from root
+    # Use app_dir='src' to ensure imports work correctly when running 'python -m src.main' from root
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, app_dir="src", log_level="info")
