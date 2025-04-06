@@ -676,33 +676,68 @@ class AgentManager:
 
     async def add_agent_to_team(self, agent_id: str, team_id: str) -> Tuple[bool, str]:
         """Adds an agent to a team, updating state and agent prompt."""
-        if not agent_id or not team_id: return False, "Agent ID and Team ID cannot be empty."
-        if agent_id not in self.agents: return False, f"Agent '{agent_id}' not found."
+        logger.debug(f"Attempting to add agent '{agent_id}' to team '{team_id}'.") # Entry log
+        if not agent_id or not team_id:
+             logger.error("add_agent_to_team failed: Agent ID or Team ID empty.")
+             return False, "Agent ID and Team ID cannot be empty."
+        if agent_id not in self.agents:
+             logger.error(f"add_agent_to_team failed: Agent '{agent_id}' not found in self.agents.")
+             return False, f"Agent '{agent_id}' not found."
+
+        # Create team if it doesn't exist
         if team_id not in self.teams:
+             logger.info(f"Team '{team_id}' does not exist. Attempting to auto-create.")
              success, msg = await self.create_new_team(team_id)
-             if not success: return False, f"Failed to auto-create team '{team_id}': {msg}"
+             if not success:
+                 logger.error(f"add_agent_to_team failed: Could not auto-create team '{team_id}': {msg}")
+                 return False, f"Failed to auto-create team '{team_id}': {msg}"
 
         old_team = self.agent_to_team.get(agent_id)
-        if old_team == team_id: return True, f"Agent '{agent_id}' is already in team '{team_id}'."
+        if old_team == team_id:
+             logger.info(f"Agent '{agent_id}' is already in team '{team_id}'. No action needed.")
+             return True, f"Agent '{agent_id}' is already in team '{team_id}'."
+
+        # --- State Update Logging ---
+        logger.debug(f"Before update: agent_to_team map contains '{agent_id}': {agent_id in self.agent_to_team}")
+        logger.debug(f"Before update: team '{team_id}' exists: {team_id in self.teams}, members: {self.teams.get(team_id)}")
+        if old_team:
+            logger.debug(f"Before update: old team '{old_team}' exists: {old_team in self.teams}, members: {self.teams.get(old_team)}")
 
         # Remove from old team list if necessary
         if old_team and old_team in self.teams and agent_id in self.teams[old_team]:
-            self.teams[old_team].remove(agent_id)
-            logger.info(f"Removed '{agent_id}' from old team list '{old_team}'.")
+            try:
+                self.teams[old_team].remove(agent_id)
+                logger.info(f"Removed '{agent_id}' from old team list '{old_team}'.")
+            except Exception as e:
+                 logger.error(f"Error removing '{agent_id}' from old team '{old_team}': {e}")
+                 # Continue, but log the error
 
         # Add to new team list
-        if agent_id not in self.teams[team_id]:
-            self.teams[team_id].append(agent_id)
+        try:
+            if agent_id not in self.teams[team_id]:
+                self.teams[team_id].append(agent_id)
+                logger.info(f"Appended '{agent_id}' to new team list '{team_id}'.")
+        except Exception as e:
+             logger.error(f"Error appending '{agent_id}' to new team list '{team_id}': {e}")
+             return False, f"Failed to add agent to team list: {e}" # Fail if append fails
 
         # Update agent_to_team mapping
         self.agent_to_team[agent_id] = team_id
+        logger.info(f"Updated agent_to_team map: '{agent_id}' -> '{team_id}'.")
+
+        # --- Post State Update Logging ---
+        logger.debug(f"After update: agent_to_team map value for '{agent_id}': {self.agent_to_team.get(agent_id)}")
+        logger.debug(f"After update: team '{team_id}' members: {self.teams.get(team_id)}")
+        if old_team:
+            logger.debug(f"After update: old team '{old_team}' members: {self.teams.get(old_team)}")
+        # --- End State Update Logging ---
+
 
         # Update Agent's Prompt/State (if agent exists and is dynamic)
         agent = self.agents.get(agent_id)
         if agent and not (agent_id in self.bootstrap_agents):
             try:
                  new_team_str = f"Your Team ID: {team_id}"
-                 # Use regex for safer replacement
                  agent.final_system_prompt = re.sub(r"Your Team ID:.*", new_team_str, agent.final_system_prompt)
                  agent.agent_config["config"]["system_prompt"] = agent.final_system_prompt
                  if agent.message_history and agent.message_history[0]["role"] == "system":
@@ -712,9 +747,10 @@ class AgentManager:
                  logger.error(f"Error updating system prompt for agent '{agent_id}' after team change: {e}")
 
         message = f"Agent '{agent_id}' added to team '{team_id}'."
-        logger.info(message)
+        # Don't log info here, wait for return
         await self.send_to_ui({ "type": "agent_moved_team", "agent_id": agent_id, "new_team_id": team_id, "old_team_id": old_team })
         await self.push_agent_status_update(agent_id)
+        logger.info(f"add_agent_to_team completed successfully for '{agent_id}' -> '{team_id}'.") # Final success log
         return True, message
 
     async def remove_agent_from_team(self, agent_id: str, team_id: str) -> Tuple[bool, str]:
