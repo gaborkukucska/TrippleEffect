@@ -316,9 +316,9 @@ class AgentManager:
             await self.send_to_ui({ "type": "status", "agent_id": admin_agent.agent_id, "content": f"Admin AI busy ({admin_agent.status}). Your message will be processed when idle." })
 
 
-    # --- **** CORRECTED _handle_agent_generator for UnboundLocalError (Final Attempt) **** ---
+    # --- **** CORRECTED _handle_agent_generator with RETRY and extra LOGGING **** ---
     async def _handle_agent_generator(self, agent: Agent, retry_count: int = 0):
-        """Handles agent processing cycle, including sequential tool execution and stream error retries."""
+        """Handles agent processing cycle, including stream error retries."""
         agent_id = agent.agent_id
         logger.info(f"Starting generator handling for Agent '{agent_id}' (Retry: {retry_count})...")
         agent_generator: Optional[AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]] = None
@@ -351,7 +351,7 @@ class AgentManager:
                     logger.error(f"Agent '{agent_id}' reported error: {error_content}")
                     is_stream_error = any(indicator in error_content for indicator in ["Error processing stream chunk", "APIError during stream", "Failed to decode stream chunk", "Stream connection error"])
                     if is_stream_error:
-                        logger.warning(f"Detected temporary stream error for agent '{agent_id}'. Resetting to idle.")
+                        logger.warning(f"Detected potentially temporary stream error for agent '{agent_id}'.")
                         # UI message handled in finally block if retrying/failing
                     else: # Permanent error
                         if "agent_id" not in event: event["agent_id"] = agent_id
@@ -367,7 +367,6 @@ class AgentManager:
                          agent.message_history.append({"role": "assistant", "content": agent_last_response}); logger.debug(f"Appended assistant response (with tools) for '{agent_id}'.")
 
                     management_calls = []; other_calls = []; executed_results_map = {}; invalid_call_results = []
-
                     # 1. Validate and Categorize Calls
                     for call in all_tool_calls:
                          call_id, tool_name, tool_args = call.get("id"), call.get("name"), call.get("arguments", {})
@@ -375,18 +374,11 @@ class AgentManager:
                             if tool_name == ManageTeamTool.name: management_calls.append(call)
                             else: other_calls.append(call)
                          else:
-                            # --- ** CORRECTED HANDLING OF INVALID CALL ** ---
                             logger.warning(f"Skipping invalid tool request from '{agent_id}': {call}")
-                            # Generate failure result and add it to list *immediately*
                             fail_result = await self._failed_tool_result(call_id, tool_name)
-                            if fail_result:
-                                 invalid_call_results.append(fail_result)
-                            # --- ** END CORRECTION ** ---
-
-                    # Append failure results for invalid calls *after* the loop
-                    if invalid_call_results:
-                        for fail_res in invalid_call_results:
-                             agent.message_history.append({"role": "tool", "tool_call_id": fail_res['call_id'], "content": str(fail_res['content']) })
+                            if fail_result: invalid_call_results.append(fail_result)
+                    if invalid_call_results: # Append failures
+                        for fail_res in invalid_call_results: agent.message_history.append({"role": "tool", "tool_call_id": fail_res['call_id'], "content": str(fail_res['content']) })
 
                     manager_action_feedback = [] # Reset feedback for this batch
                     activation_tasks = [] # Reset activation tasks
@@ -480,15 +472,19 @@ class AgentManager:
                 logger.warning(f"Stream error for '{agent_id}'. Retrying in {retry_delay:.1f}s (Attempt {retry_count + 1}/{MAX_STREAM_RETRIES})...")
                 await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Experiencing provider issues... Retrying automatically (Attempt {retry_count + 1}/{MAX_STREAM_RETRIES})..."})
                 await asyncio.sleep(retry_delay)
-                agent.set_status(AGENT_STATUS_IDLE)
-                asyncio.create_task(self._handle_agent_generator(agent, retry_count + 1))
-                # If retrying, we are done with this cycle's finally block
+                agent.set_status(AGENT_STATUS_IDLE) # Reset status *before* scheduling retry
+                asyncio.create_task(self._handle_agent_generator(agent, retry_count + 1)) # Start retry task
+                # --- ADDED LOG ---
+                logger.info(f"Retry task scheduled for agent '{agent_id}'. This cycle ending.")
+                # If retrying, implicitly return from finally block
             elif reactivate_agent_after_feedback and not current_cycle_error:
                 # Reactivate normally if feedback was added and no error occurred
                 logger.info(f"Reactivating agent '{agent_id}' to process manager feedback.")
                 agent.set_status(AGENT_STATUS_IDLE)
                 asyncio.create_task(self._handle_agent_generator(agent)) # Start next cycle task (retry_count reset to 0)
-                # If reactivating, we are done with this cycle's finally block
+                # --- ADDED LOG ---
+                logger.info(f"Reactivation task scheduled for agent '{agent_id}'. This cycle ending.")
+                # If reactivating, implicitly return from finally block
             else:
                 # If not retrying and not reactivating, finalize the status
                 final_status = agent.status
