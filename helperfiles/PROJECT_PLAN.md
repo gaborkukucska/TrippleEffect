@@ -1,65 +1,71 @@
 <!-- # START OF FILE helperfiles/PROJECT_PLAN.md -->
 # Project Plan: TrippleEffect
 
-**Version:** 2.4 (Phase 9 Planned - Dynamic Management)
+**Version:** 2.5 (Phase 9 Planned - Dynamic Management V2)
 **Date:** 2025-04-06 <!-- Updated Date -->
 
 ## 1. Project Goals
 
 *   Develop an asynchronous, collaborative multi-agent framework (`TrippleEffect`).
-*   **Implement an Admin AI agent capable of interpreting user requests and dynamically creating, managing, and deleting teams and worker agents *in memory* to fulfill those requests.** *(New Core Focus)*
-*   **Enable these dynamically managed agents to communicate and collaborate autonomously within their teams.** *(Refined Focus)*
-*   **Implement persistence for collaborative sessions, capturing the state and configuration of dynamically created agents.** *(Refined Focus)*
-*   Utilize `config.yaml` primarily for bootstrapping essential agents like the `Admin AI`.
-*   Implement a **Human User Interface** that dynamically reflects the current agent/team structure and manages Projects/Sessions. *(Revised Scope)*
-*   Enable real-time communication between the backend and frontend using WebSockets, including categorized logs and dynamic state updates. *(Revised Scope)*
-*   Utilize the **XML-based tool calling mechanism** for agent capabilities, including Admin AI's management actions. *(Completed)*
+*   Implement an **Admin AI** agent that acts as the central coordinator, interpreting user requests and managing teams/agents dynamically.
+*   **Enable dynamic agent/team creation and deletion *in memory* via Admin AI commands, without requiring application restarts.** *(Core Implementation Goal)*
+*   **Inject standardized context (tool descriptions, identity, team info, basic communication instructions) into all agents' system prompts by the framework** to ensure consistent capabilities and simplify Admin AI's prompt generation task. *(New Core Principle)*
+*   Empower agents to **communicate and collaborate autonomously** within their teams using framework-provided tools (`SendMessageTool`, `ManageTeamTool`). *(Refined Focus)*
+*   Implement **session persistence**, capturing the state, histories, and **configurations of dynamically created agents** for reloading. *(Refined Focus)*
+*   Utilize `config.yaml` primarily for bootstrapping the `Admin AI` and defining **allowed models/providers** for dynamic agent creation. *(Revised Scope)*
+*   Implement a **Human User Interface** that dynamically reflects the current agent/team structure (via WebSockets) and manages Projects/Sessions. *(Revised Scope)*
+*   Utilize the **XML-based tool calling mechanism** for all agent actions. *(Completed)*
 *   Allow agents to utilize tools within sandboxed environments.
-*   *(Future Goals)* Enhance Admin AI intelligence for planning and oversight. Explore advanced collaboration patterns, dynamic provider management, Generative UI (GeUI), multi-modal inputs, voice control.
+*   *(Future Goals)* Enhance Admin AI planning, resource management (agent limits), advanced collaboration patterns, dynamic provider management, GeUI, multi-modal inputs, voice control.
 
 ## 2. Scope
 
 **In Scope (Phases up to ~11):**
 
 *   **Core Backend:** FastAPI application, WebSocket management, asynchronous task handling.
-*   **Agent Core:** Agent class definition, state management, XML tool parsing. *(Completed)*
-*   **Admin AI Agent:** The primary recipient of user requests, responsible for planning and managing other agents/teams using `ManageTeamTool`. Defined in `config.yaml`.
+*   **Agent Core:** Agent class definition, state management, XML tool parsing. Uses framework-provided *final* system prompt. *(Revised)*
+*   **Admin AI Agent:** Primary user request handler, plans tasks, uses `ManageTeamTool` (specifying role, persona, provider, model) and `SendMessageTool`. Defined in `config.yaml`. *(Revised Role)*
 *   **Agent Manager:**
-    *   Central registry for *all* agents (bootstrap and dynamic).
-    *   Handles dynamic agent instantiation (`create_agent_instance`) including provider management (reuse/creation) and sandbox setup.
-    *   Handles dynamic agent deletion (`delete_agent_instance`) including cleanup.
-    *   Manages team structures (`add_agent_to_team`, etc.) *in memory*.
-    *   Routes intra-team communication (`SendMessageTool`).
-    *   Manages autonomous agent activation cycles.
-    *   Handles session persistence (saving/loading dynamic agent configs + histories).
-*   **Dynamic Agent/Team Management:** In-memory creation, deletion, and modification of agents and teams via Admin AI commands, reflected immediately in the application state. *(Phase 9)*
-*   **Tooling:** `BaseTool`, `ToolExecutor`, `FileSystemTool`, `SendMessageTool`, **`ManageTeamTool`** (with actions like `create_agent`, `delete_agent`, `add_agent_to_team`, etc.). *(Revised - Phase 9)*
-*   **Session Persistence:** Saving and Loading the full state, including **dynamically created agent configurations** and message histories, within a Project structure. *(Revised - Phase 9)*
-*   **Project Management (Basic):** API/logic for creating projects, saving sessions, listing/loading sessions. *(Phase 9)*
+    *   Central registry for *all* agents (bootstrap + dynamic).
+    *   **Injects standard instructions (tools, ID, team, comms) into agent system prompts.** *(New Responsibility - Phase 9)*
+    *   Handles dynamic agent instantiation (`_create_agent_internal`) including **provider/model validation against allowed list**, provider management, sandbox setup. *(Revised - Phase 9)*
+    *   Handles dynamic agent deletion (`delete_agent_instance`) including cleanup. *(Phase 9)*
+    *   Manages team structures (`add_agent_to_team`, etc.) *in memory*. *(Phase 9)*
+    *   Routes Admin AI's `ManageTeamTool` calls to internal methods. *(Phase 9)*
+    *   Routes intra-team communication (`SendMessageTool`). *(Completed)*
+    *   Manages autonomous agent activation cycles. *(Completed)*
+    *   Handles session persistence (saving/loading dynamic agent configs + histories). *(Revised - Phase 9)*
+*   **Dynamic Agent/Team Management:** In-memory CRUD via Admin AI. *(Phase 9)*
+*   **Tooling:** `BaseTool`, `ToolExecutor`, `FileSystemTool`, `SendMessageTool`, **`ManageTeamTool`** (with enhanced `list_agents`, `list_teams` actions). *(Revised - Phase 9)*
+*   **Configuration (`config.yaml`):** Defines `admin_ai`, **defines `allowed_sub_agent_models` list per provider**. *(Revised - Phase 9)*
+*   **Settings (`settings.py`):** Loads bootstrap config and `allowed_sub_agent_models`. *(Revised - Phase 9)*
+*   **Session Persistence:** Saving/Loading full state including dynamic agent configs, histories, teams. *(Revised - Phase 9)*
+*   **Project Management (Basic):** API/logic for projects/sessions. *(Phase 9)*
 *   **Human UI:**
-    *   Dynamically updates agent/team displays based on WebSocket messages (`agent_added`, `agent_deleted`, etc.). *(Phase 10)*
-    *   UI controls for Project/Session management. *(Phase 10)*
-    *   Displays conversation, including Admin AI and intra-team messages. *(Phase 10)*
+    *   Dynamically updates agent/team displays via WebSockets. *(Phase 10)*
+    *   Project/Session management UI. *(Phase 10)*
+    *   Conversation view showing Admin AI, dynamic agents, intra-team messages. *(Phase 10)*
     *   Basic authentication. *(Phase 10)*
-*   **Configuration (`config.yaml`):** Primarily used only to define bootstrap agent(s) like `admin_ai`. *Not* used for dynamic agents. *(Revised Scope)*
-*   **WebSocket Communication:** Real-time streaming of agent outputs/status, categorized backend logs, **dynamic agent/team state updates**. *(Revised Scope - Phase 9/10)*
-*   **Basic Sandboxing:** Agent file operation directories created dynamically. *(Completed/Adapted)*
-*   **LLM Integration:** Support for OpenRouter, Ollama, OpenAI via provider abstraction. *(Completed)*
+*   **WebSocket Communication:** Real-time streaming + dynamic state updates (`agent_added`, `agent_deleted`, `team_created`, etc.). *(Revised - Phase 9/10)*
+*   **Basic Sandboxing:** Created dynamically for agents. *(Completed/Adapted)*
+*   **LLM Integration:** OpenRouter, Ollama, OpenAI providers. *(Completed)*
 *   **Helper Files:** Maintenance of `PROJECT_PLAN.md` and `FUNCTIONS_INDEX.md`.
 
 **Out of Scope (Deferred to Future Phases 11+):**
 
-*   **Google LLM Provider:** Removed from immediate plan.
-*   **ConfigTool:** Replaced by `ManageTeamTool`.
-*   **Dynamic changes via `config.yaml`:** Configuration file is static after startup (except for Admin AI definition).
-*   **Dynamic LLM Provider Management:** Adding/removing provider *types* without restart.
-*   **Advanced Collaboration:** Complex delegation hierarchies, automated review workflows, conflict resolution.
-*   **Advanced Admin AI Intelligence:** Sophisticated planning, long-term memory, self-improvement.
-*   **Multi-Team Projects:** Multiple distinct teams operating concurrently within the same project scope (Initial focus is single-project context).
-*   **Generative UI (GeUI).**
-*   **Advanced I/O:** Camera, microphone (STT), speaker (TTS), voice control.
-*   Advanced Authentication / Multi-User Support.
-*   Sophisticated automated testing suite.
+*   Google LLM Provider.
+*   ConfigTool (Replaced).
+*   Dynamic changes via `config.yaml` (post-startup).
+*   Dynamic LLM Provider *Type* Management.
+*   Advanced Collaboration (complex delegation, conflict resolution, hierarchy).
+*   Advanced Admin AI Intelligence (planning, memory, self-improvement).
+*   Resource limiting for dynamic agents.
+*   Multi-Team Projects.
+*   Agent prompt updates *after* creation (e.g., on team change).
+*   Generative UI (GeUI).
+*   Advanced I/O, Voice Control.
+*   Advanced Auth/Multi-User.
+*   Automated testing suite.
 
 ## 3. Technology Stack
 
@@ -68,16 +74,16 @@
 *   **LLM Interaction:** `openai` library, `aiohttp`
 *   **Frontend:** HTML5, CSS3, Vanilla JavaScript
 *   **Asynchronous Operations:** `asyncio`
-*   **Configuration:** YAML (`PyYAML`) for bootstrap config, `.env` files (`python-dotenv`). *(Revised)*
-*   **State Management:** In-memory dictionaries in `AgentManager` for dynamic agents/teams.
+*   **Configuration:** YAML (`PyYAML`) for bootstrap & allowed models, `.env`. *(Revised)*
+*   **State Management:** In-memory dictionaries in `AgentManager`.
 *   **Data Handling:** Pydantic (via FastAPI)
-*   **Persistence:** JSON files for session state (dynamic configs + histories). *(Planned)*
+*   **Persistence:** JSON files for session state (dynamic configs + histories). *(Revised)*
 *   **Authentication (Basic):** Likely FastAPI middleware/dependencies *(Phase 10)*.
 *   **XML Parsing:** Standard library `re`, `html`.
 
-## 4. Proposed Architecture Refinement (Conceptual - Phase 9/10 - Dynamic)
+## 4. Proposed Architecture Refinement (Conceptual - Phase 9/10 - Dynamic V2)
 
-(Diagram updated: Config only for AdminAI, Manager handles dynamic creation/state)
+(Diagram remains similar to V1, emphasizes Manager's role in prompt injection and validation)
 
 ```mermaid
 graph TD
@@ -93,13 +99,13 @@ graph TD
     subgraph Backend
         FASTAPI["🚀 FastAPI Backend <br>+ Session API (P9)<br>+ Auth API (P10)<br>+ Log Endpoints (P10?)"]
         WS_MANAGER["🔌 WebSocket Manager <br>+ Dynamic State Updates (P9)<br>+ Log Categories (P10)"]
-        AGENT_MANAGER["🧑‍💼 Agent Manager <br>+ Dynamic Agent/Team CRUD Methods (P9)<br>+ Routes Admin AI Tool Calls (P9)<br>+ Routes Intra-Team Msgs (P9)<br>+ Session Save/Load Logic (P9)<br>Controls All Agents"] %% Enhanced Role
+        AGENT_MANAGER["🧑‍💼 Agent Manager <br>+ Dynamic Agent/Team CRUD Methods (P9)<br>+ Routes Admin AI Tool Calls (P9)<br>+ Routes Intra-Team Msgs ✅<br>+ **Injects Standard Prompts (P9)**<br>+ **Validates Provider/Model (P9)**<br>+ Session Save/Load Logic (P9)<br>Controls All Agents"] %% Enhanced Role
         CONFIG_MANAGER["📝 Config Manager <br>(Reads config.yaml ONCE)"] %% Reduced Role
 
         subgraph Agents ["Bootstrap & Dynamic Agents"]
             direction LR
              ADMIN_AI["🤖 Admin AI Agent <br>(Loaded from Config)<br>Uses ManageTeamTool<br>Uses SendMessageTool"]
-            DYNAMIC_AGENT_1["🤖 Dynamic Agent 1<br>(Created by Manager)<br>Uses FileSystemTool<br>Uses SendMessageTool"]
+            DYNAMIC_AGENT_1["🤖 Dynamic Agent 1<br>(Created by Manager)<br>Receives Injected Prompt<br>Uses Tools"]
             DYNAMIC_AGENT_N["🤖 Dynamic Agent N<br>(Created by Manager)"]
         end
 
@@ -113,7 +119,7 @@ graph TD
              TOOL_EXECUTOR["🛠️ Tool Executor<br>+ XML Desc Gen ✅"]
              TOOL_FS["📄 FileSystem Tool ✅"]
              TOOL_SENDMSG["🗣️ SendMessageTool ✅"]
-             TOOL_MANAGE_TEAM["🛠️ ManageTeamTool (P9)<br>Signals AgentManager"] %% NEW
+             TOOL_MANAGE_TEAM["🛠️ ManageTeamTool (P9)<br>Enhanced List Actions<br>Signals AgentManager"] %% REVISED
          end
 
          SANDBOXES["📁 Sandboxes <br>(Created Dynamically)"]
@@ -123,35 +129,37 @@ graph TD
     subgraph External
         LLM_API_SVC["☁️ Ext. LLM APIs (OR, OpenAI)"]
         OLLAMA_SVC["⚙️ Local Ollama Service"]
-        CONFIG_YAML["⚙️ config.yaml <br>(Defines AdminAI ONLY - Read Once)"] %% Reduced Role
+        CONFIG_YAML["⚙️ config.yaml <br>(AdminAI + Allowed Models)"] %% REVISED
         DOT_ENV[".env File <br>(Secrets - Read Only) ✅"]
     end
 
-    %% --- Connections ---
+    %% --- Connections --- (Mostly unchanged, interpretation shifts)
     USER -- Interacts via Browser --> Frontend;
     Frontend -- HTTP (API Calls, Auth, Session Mgmt) --> FASTAPI;
     Frontend -- WebSocket (Receives dynamic updates) --> WS_MANAGER;
 
     FASTAPI -- Calls Session Ops --> AGENT_MANAGER;
-    FASTAPI -- Manages --> AGENT_MANAGER; %% Less direct management now
+    FASTAPI -- Manages --> AGENT_MANAGER;
     WS_MANAGER -- Forwards Msgs / Sends Logs & Updates --> Frontend;
-    WS_MANAGER -- Forwards User Msgs --> AGENT_MANAGER; %% Routes to AdminAI
+    WS_MANAGER -- Forwards User Msgs --> AGENT_MANAGER; # Routes to AdminAI
 
     AGENT_MANAGER -- "Loads Bootstrap Agent(s)" --> CONFIG_YAML;
+    AGENT_MANAGER -- "Loads Allowed Models" --> CONFIG_YAML; # New read
     AGENT_MANAGER -- "Reads Config/Secrets" --> DOT_ENV;
-    AGENT_MANAGER -- "Instantiates/Reuses" --> LLM_Providers; %% Dynamic
-    AGENT_MANAGER -- "Creates/Deletes/Manages" --> Agents; %% Dynamic
-    AGENT_MANAGER -- "Handles ManageTeamTool Signals" --> AGENT_MANAGER; %% Internal methods
+    AGENT_MANAGER -- "Instantiates/Reuses" --> LLM_Providers;
+    AGENT_MANAGER -- "Creates/Deletes/Manages" --> Agents;
+    AGENT_MANAGER -- "**Injects Standard Context into Prompts**" --> Agents; # New Interaction
+    AGENT_MANAGER -- "Handles ManageTeamTool Signals" --> AGENT_MANAGER;
     AGENT_MANAGER -- Routes Tool Calls --> TOOL_EXECUTOR;
     AGENT_MANAGER -- "Handles Agent-to-Agent Msgs & Activates Target" --> Agents;
     AGENT_MANAGER -- "Saves/Loads Dynamic Configs + Histories" --> PROJECT_SESSIONS;
 
-    ADMIN_AI -- "Uses ManageTeamTool" --> TOOL_EXECUTOR;
+    ADMIN_AI -- "Uses ManageTeamTool (Requests Provider/Model)" --> TOOL_EXECUTOR;
     ADMIN_AI -- "Uses SendMessageTool" --> TOOL_EXECUTOR;
     ADMIN_AI -- "Uses Provider" --> LLM_Providers;
     ADMIN_AI -- "Streams Text" --> AGENT_MANAGER;
 
-    DYNAMIC_AGENT_1 -- "Uses FileSystemTool/SendMessageTool" --> TOOL_EXECUTOR;
+    DYNAMIC_AGENT_1 -- "Uses Tools based on Injected Info" --> TOOL_EXECUTOR;
     DYNAMIC_AGENT_1 -- "Uses Provider" --> LLM_Providers;
     DYNAMIC_AGENT_1 -- "Streams Text" --> AGENT_MANAGER;
 
@@ -159,9 +167,9 @@ graph TD
     TOOL_EXECUTOR -- Executes --> TOOL_SENDMSG;
     TOOL_EXECUTOR -- Executes --> TOOL_MANAGE_TEAM;
 
-    TOOL_MANAGE_TEAM -- "Signals Manager (Action & Args)" --> AGENT_MANAGER; %% Tool signals Manager methods
+    TOOL_MANAGE_TEAM -- "Signals Manager (Action & Args)" --> AGENT_MANAGER;
 
-    CONFIG_MANAGER -- "Reads Bootstrap Config" --> CONFIG_YAML; %% On init only
+    CONFIG_MANAGER -- "Reads Bootstrap Config" --> CONFIG_YAML;
 
     PROVIDER_OR -- Interacts --> LLM_API_SVC;
     PROVIDER_OLLAMA -- Interacts --> OLLAMA_SVC;
@@ -172,52 +180,45 @@ graph TD
 ## 5. Development Phases & Milestones
 
 **Phase 1-8 (Completed)**
-*   [X] Core Backend, Agent Core, Multi-Agent Basics, Config Loading (Static), Sandboxing, Basic Tools, LLM Abstraction, UI Enhancements, XML Tool Calling, **Agent Configuration UI (Static)**.
+*   [X] Core Backend, Agent Core, Multi-Agent Basics, Static Config Loading, Sandboxing, Basic Tools, LLM Abstraction, UI Enhancements, XML Tool Calling, Static Agent Configuration UI.
 
-**Phase 9: Dynamic Agent Management Foundation (Current / Next)**
-*   **Goal:** Implement the core mechanics for Admin AI to dynamically manage agents and teams in memory via `ManageTeamTool`, adapting persistence accordingly.
+**Phase 9: Dynamic Agent Management V2 (Current / Next)**
+*   **Goal:** Implement dynamic agent creation with framework-injected prompts, enhanced `ManageTeamTool`, provider/model validation, and adapted persistence.
 *   [ ] **Configuration (`config.yaml`):**
-    *   [ ] Simplify to define *only* the `admin_ai` agent. Remove other agents and the `teams` section.
-    *   [ ] Update `admin_ai` system prompt: Explain its role as coordinator, instruct it to plan teams/agents, use `ManageTeamTool` (XML format) for creation/deletion, and `SendMessageTool` for delegation. Emphasize no restarts needed for `ManageTeamTool`.
-*   [ ] **Tooling (`ManageTeamTool`):**
-    *   [ ] Create `src/tools/manage_team.py`.
-    *   [ ] Implement `ManageTeamTool` inheriting `BaseTool`.
-    *   [ ] Define parameters for actions: `create_agent` (provider, model, system_prompt, persona, team_id, agent_id[optional]), `delete_agent` (agent_id), `add_agent_to_team` (agent_id, team_id), `remove_agent_from_team` (agent_id, team_id), `create_team` (team_id), `delete_team` (team_id), `list_agents`, `list_teams`.
-    *   [ ] `execute` method validates args and **signals corresponding public method on AgentManager**. Returns success/error string.
+    *   [ ] Define *only* `admin_ai` agent.
+    *   [ ] Add `allowed_sub_agent_models` section mapping provider names to lists of allowed model strings.
+    *   [ ] Revise `admin_ai` system prompt: Focus on planning, requesting agents via `ManageTeamTool` (specifying provider/model), using `list_agents`/`list_teams` for state, and delegating via `SendMessageTool`. Remove detailed tool instructions.
+*   [ ] **Settings (`settings.py`):**
+    *   [ ] Load `allowed_sub_agent_models` into a `settings` attribute.
 *   [ ] **Agent Manager (`agents/manager.py`):**
-    *   [ ] Remove loading of `teams` from `settings`. Initialize `self.teams` and `self.agent_to_team` as empty dicts.
-    *   [ ] Modify `_initialize_agents` to *only* load the bootstrap agent(s) specified in the simplified `config.yaml`.
-    *   [ ] Implement public async methods: `create_agent_instance`, `delete_agent_instance`, `add_agent_to_team`, `remove_agent_from_team`, `create_new_team`, `delete_existing_team`, `get_agent_info_list`, `get_team_info_dict`.
-    *   [ ] `create_agent_instance`: Handles provider lookup/instantiation/reuse, `Agent` instantiation, adding to `self.agents`, updating team maps, creating sandbox, queueing WS update.
-    *   [ ] `delete_agent_instance`: Handles removal from `self.agents`/`self.teams`/`self.agent_to_team`, provider cleanup, queueing WS update.
-    *   [ ] Modify `_handle_agent_generator` to check for `ManageTeamTool` name in executed tool results, parse the signal, and `await` the corresponding manager method.
-    *   [ ] Modify `save_session`: Save `self.teams`, `self.agent_to_team`, and for each agent in `self.agents` (excluding bootstrap?), save its full config (provider, model, prompt, persona) *and* its history.
-    *   [ ] Modify `load_session`: Clear existing dynamic agents/teams. Rebuild `self.teams` map. Call `create_agent_instance` for each dynamic agent config found in save file. *Then* load histories.
-    *   [ ] Modify `handle_user_message`: Route *only* to `admin_ai`. Add checks if `admin_ai` exists/is idle.
-*   [ ] **Tool Executor (`tools/executor.py`):** Register `ManageTeamTool`. Update XML descriptions.
-*   [ ] **WebSocket Manager / UI (`websocket_manager.py`, `app.js`):**
-    *   [ ] Define WS message types (`agent_added`, `agent_deleted`, `team_created`, `team_deleted`, `agent_moved_team`).
-    *   [ ] Implement basic JS handlers to log these events to console (full UI update in Phase 10).
-*   [ ] **Session Persistence API (`api/http_routes.py`):** Implement Save/Load/List endpoints calling the updated manager methods.
+    *   [ ] **`_create_agent_internal`:**
+        *   Implement provider/model validation against `settings.allowed_sub_agent_models`. Reject creation if invalid.
+        *   Construct the final system prompt by appending standard tool/ID/team/comms instructions to the prompt received from `ManageTeamTool`. Use this combined prompt when creating the `Agent` instance and store it on `agent.agent_config`.
+    *   [ ] **`_handle_manage_team_action`:** Ensure it passes validated provider/model to `create_agent_instance`. Correctly handle return data for `list_agents`/`list_teams` feedback.
+    *   [ ] **`get_agent_info_list` / `get_team_info_dict`:** Ensure methods return data in a format usable for Admin AI feedback.
+*   [ ] **Tools (`ManageTeamTool`):**
+    *   [ ] Update `list_agents` action to accept optional `team_id` parameter. Modify `execute` to handle this.
+*   [ ] **Agent Core (`agents/core.py`):**
+    *   [ ] Verify `Agent.__init__` correctly uses the potentially long, combined system prompt.
+*   [ ] **Tool Executor (`tools/executor.py`):**
+    *   [ ] Regenerate/update XML descriptions to reflect `ManageTeamTool` changes.
+*   [ ] **Session Persistence (`agents/manager.py`):**
+    *   [ ] Ensure `save_session` correctly saves the *final combined prompt* (from `agent.agent_config`).
+    *   [ ] Ensure `load_session` correctly uses the saved configuration (including combined prompt) when calling `_create_agent_internal`.
 *   [ ] **Testing:**
-    *   [ ] Send request to Admin AI: "Create a coder agent and an analyst agent in team 'dev_team'". Verify agents are created in manager state.
-    *   [ ] Send request: "List agents". Verify Admin AI uses tool and receives correct list.
-    *   [ ] Send request: "Delete agent 'coder'". Verify removal.
-    *   [ ] Test Save/Load: Verify dynamic agents and teams are restored correctly.
+    *   [ ] Test Admin AI creating agent with valid/invalid models.
+    *   [ ] Test Admin AI using `list_agents` (all/filtered) and `list_teams`. Verify feedback content.
+    *   [ ] Retest Snake Game: Verify Admin AI creates agent -> gets ID feedback -> delegates -> **Verify created agent receives injected prompt** -> **Verify created agent saves code using `file_system` tool based on injected instructions.**
 
-**Phase 10: Admin AI Delegation & Dynamic UI (Planned)**
-*   **Goal:** Enable Admin AI to use dynamic capabilities effectively, refine UI for dynamic updates, implement collaboration, logging/auth.
-*   [ ] **Workflow Testing:** Test full flow: User Request -> Admin AI plans & uses `ManageTeamTool` -> Admin AI uses `SendMessageTool` -> Dynamic Agents collaborate -> Completion/User Query.
-*   [ ] **Admin AI Prompt Tuning:** Extensive tuning for planning, tool use, delegation.
-*   [ ] **Frontend UI (`static/js/app.js`, `templates/index.html`):**
-    *   Implement robust handling of dynamic WS messages (`agent_added`, etc.) to update UI lists/views without refresh.
-    *   Integrate Project/Session UI controls.
-    *   Refine conversation view for Admin AI and intra-team messages.
-*   [ ] **Backend & Frontend - Logging & Auth:** Implement categorized log streaming and basic password authentication.
+**Phase 10: Dynamic UI & Collaboration Polish (Planned)**
+*   **Goal:** Implement dynamic UI updates reflecting in-memory state, Session Management UI, basic collaboration flows, logging/auth.
+*   [ ] **Frontend UI (`static/js/app.js`, `templates/index.html`):** Implement dynamic updates for agent list/status/teams via WS messages (`agent_added`, etc.). Add Session Management UI.
+*   [ ] **Workflow Testing:** Refine Coder -> Reviewer flows.
+*   [ ] **Logging & Auth:** Implement as planned.
 
 **Future Phases (11+) (High-Level)**
 *   **Phase 11: Advanced Collaboration & Admin AI Intelligence.**
-*   **Phase 12: Resource Management & Error Handling:** Implement limits on dynamic agents, better cleanup, refined error reporting.
+*   **Phase 12: Resource Management & Error Handling.**
 *   **Phase 13+:** Multi-Team Projects, Hierarchy, GeUI, Advanced I/O, etc.
 
 **Phase 16: Create Project Plan for Next Iteration:** Re-evaluate and plan.
