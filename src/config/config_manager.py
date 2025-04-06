@@ -7,24 +7,19 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 import logging
 import tempfile # Use tempfile for safer writing
-import copy # <--- ADDED MISSING IMPORT HERE
+import copy # Use copy for deepcopy
 
-# Import settings to get BASE_DIR and AGENT_CONFIG_PATH
-# Note: This creates a slight circular dependency potential during startup,
-# but should be okay as we only use BASE_DIR/AGENT_CONFIG_PATH constants.
-# Consider passing the path directly if issues arise.
-# from src.config.settings import BASE_DIR, AGENT_CONFIG_PATH # Moving import later if needed
-
-logger = logging.getLogger(__name__)
-
-# --- Define paths here to potentially resolve import order issues ---
+# Define paths here to potentially resolve import order issues
 BASE_DIR_CM = Path(__file__).resolve().parent.parent.parent
 AGENT_CONFIG_PATH_CM = BASE_DIR_CM / 'config.yaml'
 
 
+logger = logging.getLogger(__name__)
+
 class ConfigManager:
     """
-    Manages reading and writing of the agent configuration file (config.yaml).
+    Manages reading and writing of the agent configuration file (config.yaml),
+    including both 'agents' and 'teams' structures.
     Provides async-safe methods for CRUD operations on agent configurations
     using asyncio.Lock and atomic file writes.
     Includes a basic backup mechanism before writing.
@@ -38,72 +33,92 @@ class ConfigManager:
             config_path (Path): The path to the config.yaml file.
         """
         self.config_path = config_path
-        self._agents_data: List[Dict[str, Any]] = []
+        # Store the entire loaded config data now
+        self._config_data: Dict[str, Any] = {"agents": [], "teams": {}}
         self._lock = asyncio.Lock() # Use asyncio.Lock for async safety
         # Initial load is done synchronously here for simplicity during startup.
-        # If async loading at startup is needed, adjust main.py lifespan.
         self._load_config_sync()
 
     def _load_config_sync(self):
         """Synchronous initial load for use during startup."""
-        logger.info(f"[Sync Load] Attempting to load agent configuration from: {self.config_path}")
+        logger.info(f"[Sync Load] Attempting to load full configuration from: {self.config_path}")
+        default_structure = {"agents": [], "teams": {}}
         if not self.config_path.exists():
-            logger.warning(f"[Sync Load] Configuration file not found at {self.config_path}. Initializing empty list.")
-            self._agents_data = []
+            logger.warning(f"[Sync Load] Configuration file not found at {self.config_path}. Initializing empty structure.")
+            self._config_data = default_structure
             return
 
         try:
             with open(self.config_path, 'r', encoding='utf-8') as f:
-                config_data = yaml.safe_load(f)
-                if config_data and isinstance(config_data.get('agents'), list):
-                    self._agents_data = config_data['agents']
-                    logger.info(f"[Sync Load] Successfully loaded {len(self._agents_data)} agent configurations.")
+                loaded_data = yaml.safe_load(f)
+                # Validate basic structure
+                if isinstance(loaded_data, dict):
+                     self._config_data['agents'] = loaded_data.get('agents', [])
+                     self._config_data['teams'] = loaded_data.get('teams', {})
+                     if not isinstance(self._config_data['agents'], list):
+                         logger.warning(f"[Sync Load] 'agents' key in {self.config_path} is not a list. Resetting to empty list.")
+                         self._config_data['agents'] = []
+                     if not isinstance(self._config_data['teams'], dict):
+                         logger.warning(f"[Sync Load] 'teams' key in {self.config_path} is not a dictionary. Resetting to empty dict.")
+                         self._config_data['teams'] = {}
+                     logger.info(f"[Sync Load] Successfully loaded configuration: {len(self._config_data['agents'])} agents, {len(self._config_data['teams'])} teams.")
                 else:
-                    logger.warning(f"[Sync Load] 'agents' list not found or is not a list in {self.config_path}. Initializing empty list.")
-                    self._agents_data = []
+                    logger.warning(f"[Sync Load] Configuration file {self.config_path} does not contain a valid dictionary structure. Initializing empty.")
+                    self._config_data = default_structure
+
         except yaml.YAMLError as e:
             logger.error(f"[Sync Load] Error parsing YAML file {self.config_path}: {e}", exc_info=True)
-            self._agents_data = [] # Reset internal state on error
+            self._config_data = default_structure # Reset internal state on error
         except Exception as e:
             logger.error(f"[Sync Load] Error reading configuration file {self.config_path}: {e}", exc_info=True)
-            self._agents_data = [] # Reset internal state on error
+            self._config_data = default_structure # Reset internal state on error
 
-    async def load_config(self) -> List[Dict[str, Any]]:
+    async def load_config(self) -> Dict[str, Any]:
         """
-        Asynchronously reads the YAML configuration file.
-        Handles file not found and parsing errors. Thread-safe via asyncio.Lock.
-        Returns the list of agent configurations.
+        Asynchronously reads the full YAML configuration file ('agents' and 'teams').
+        Handles file not found and parsing errors. Async-safe via asyncio.Lock.
+        Returns the full configuration dictionary.
         """
         async with self._lock:
-            logger.info(f"Attempting to load agent configuration from: {self.config_path}")
+            logger.info(f"Attempting to load full configuration from: {self.config_path}")
+            default_structure = {"agents": [], "teams": {}}
             if not self.config_path.exists():
-                logger.warning(f"Configuration file not found at {self.config_path}. Returning empty list.")
-                self._agents_data = []
-                return []
+                logger.warning(f"Configuration file not found at {self.config_path}. Returning empty structure.")
+                self._config_data = default_structure
+                return copy.deepcopy(self._config_data)
+
             try:
-                 # Use asyncio.to_thread for file I/O to avoid blocking the event loop
+                # Use asyncio.to_thread for file I/O to avoid blocking the event loop
                 def read_file_sync():
                      with open(self.config_path, 'r', encoding='utf-8') as f:
                           return yaml.safe_load(f)
 
-                config_data = await asyncio.to_thread(read_file_sync)
+                loaded_data = await asyncio.to_thread(read_file_sync)
 
-                if config_data and isinstance(config_data.get('agents'), list):
-                    self._agents_data = config_data['agents']
-                    logger.info(f"Successfully loaded {len(self._agents_data)} agent configurations.")
-                    return [copy.deepcopy(agent) for agent in self._agents_data] # Return deep copy
+                # Validate basic structure
+                if isinstance(loaded_data, dict):
+                     self._config_data['agents'] = loaded_data.get('agents', [])
+                     self._config_data['teams'] = loaded_data.get('teams', {})
+                     if not isinstance(self._config_data['agents'], list):
+                         logger.warning(f"'agents' key in {self.config_path} is not a list. Resetting to empty list.")
+                         self._config_data['agents'] = []
+                     if not isinstance(self._config_data['teams'], dict):
+                         logger.warning(f"'teams' key in {self.config_path} is not a dictionary. Resetting to empty dict.")
+                         self._config_data['teams'] = {}
+                     logger.info(f"Successfully loaded configuration: {len(self._config_data['agents'])} agents, {len(self._config_data['teams'])} teams.")
                 else:
-                    logger.warning(f"'agents' list not found or is not a list in {self.config_path}. Returning empty list.")
-                    self._agents_data = []
-                    return []
+                    logger.warning(f"Configuration file {self.config_path} does not contain a valid dictionary structure. Initializing empty.")
+                    self._config_data = default_structure
+
             except yaml.YAMLError as e:
                 logger.error(f"Error parsing YAML file {self.config_path}: {e}", exc_info=True)
-                self._agents_data = [] # Reset internal state on error
-                return []
+                self._config_data = default_structure # Reset internal state on error
             except Exception as e:
                 logger.error(f"Error reading configuration file {self.config_path}: {e}", exc_info=True)
-                self._agents_data = [] # Reset internal state on error
-                return []
+                self._config_data = default_structure # Reset internal state on error
+
+            # Return deep copy of the potentially updated internal state
+            return copy.deepcopy(self._config_data)
 
     async def _backup_config(self) -> bool:
         """Creates a backup of the current config file. Assumes lock is held."""
@@ -121,13 +136,16 @@ class ConfigManager:
 
     async def _save_config_safe(self) -> bool:
         """
-        Writes the current internal agent data list back to the YAML file atomically.
+        Writes the current internal full configuration data (_config_data)
+        back to the YAML file atomically.
         Assumes the lock is already held by the caller. Uses a temporary file.
 
         Returns:
             bool: True if saving was successful, False otherwise.
         """
-        logger.info(f"Attempting to save {len(self._agents_data)} agent configurations to: {self.config_path}")
+        agents_count = len(self._config_data.get('agents', []))
+        teams_count = len(self._config_data.get('teams', {}))
+        logger.info(f"Attempting to save {agents_count} agents and {teams_count} teams to: {self.config_path}")
 
         # 1. Create backup before writing temporary file
         if not await self._backup_config():
@@ -137,33 +155,30 @@ class ConfigManager:
         # 2. Write to a temporary file in the same directory
         temp_file_path = None
         try:
-            # Create a temporary file securely
-            # Use a pattern and ensure it's in the same directory for atomic rename
             temp_fd, temp_path_str = tempfile.mkstemp(suffix=".tmp", prefix=self.config_path.name + '_', dir=self.config_path.parent)
             temp_file_path = Path(temp_path_str)
 
-            config_to_save = {'agents': self._agents_data}
+            # Save the entire internal structure
+            config_to_save = self._config_data
 
             # Use asyncio.to_thread for the blocking file write operation
             def write_yaml_sync():
                  with os.fdopen(temp_fd, 'w', encoding='utf-8') as f:
+                     # Ensure correct structure with 'agents' and 'teams' keys
                      yaml.dump(config_to_save, f, default_flow_style=False, sort_keys=False, indent=2)
 
             await asyncio.to_thread(write_yaml_sync)
             logger.debug(f"Successfully wrote configuration to temporary file: {temp_file_path}")
 
             # 3. Atomically replace the original file with the temporary file
-            # os.replace is atomic on most POSIX systems and Windows
             await asyncio.to_thread(os.replace, temp_file_path, self.config_path)
             logger.info(f"Successfully saved configuration to {self.config_path} (atomic replace)")
             temp_file_path = None # Avoid deletion in finally block if successful
 
-            # 4. Optionally clean up backup? Or leave it? Let's leave it for now.
             return True
 
         except Exception as e:
             logger.error(f"Error writing configuration file {self.config_path}: {e}", exc_info=True)
-            # Attempt to restore from backup? Maybe not automatically. Log it clearly.
             logger.error("Configuration save failed. Original file might be intact or restored from backup if possible manually.")
             return False
         finally:
@@ -176,39 +191,49 @@ class ConfigManager:
                       logger.error(f"Error removing temporary config file {temp_file_path}: {rm_err}")
 
     async def get_config(self) -> List[Dict[str, Any]]:
-        """Returns a deep copy of the currently loaded agent configuration list. Async-safe."""
-        async with self._lock:
-            # Return a deep copy to prevent external modification of the internal list
-            return [copy.deepcopy(agent) for agent in self._agents_data] # Use deepcopy
-
-    def get_config_sync(self) -> List[Dict[str, Any]]:
         """
-        Synchronously returns a deep copy of the agent configuration list loaded during initialization.
+        Returns a deep copy of the currently loaded agent configuration list ('agents').
+        Maintains backward compatibility for API routes. Async-safe.
+        """
+        async with self._lock:
+            # Return a deep copy of just the agents list
+            agents_list = self._config_data.get("agents", [])
+            return copy.deepcopy(agents_list)
+
+    async def get_teams(self) -> Dict[str, List[str]]:
+        """Returns a deep copy of the currently loaded teams configuration. Async-safe."""
+        async with self._lock:
+             teams_dict = self._config_data.get("teams", {})
+             return copy.deepcopy(teams_dict)
+
+    async def get_full_config(self) -> Dict[str, Any]:
+        """Returns a deep copy of the entire loaded configuration data. Async-safe."""
+        async with self._lock:
+             return copy.deepcopy(self._config_data)
+
+    def get_config_data_sync(self) -> Dict[str, Any]:
+        """
+        Synchronously returns a deep copy of the full configuration data loaded during initialization.
         Intended for use during synchronous startup phases (like Settings init).
         Does NOT acquire the async lock. Relies on initial load being complete.
         """
-        # Return a deep copy to prevent external modification of the internal list
-        return [copy.deepcopy(agent) for agent in self._agents_data] # Use deepcopy
-
+        # Return a deep copy to prevent external modification of the internal structure
+        return copy.deepcopy(self._config_data)
 
     def _find_agent_index_unsafe(self, agent_id: str) -> Optional[int]:
-        """Internal helper: Finds the index of an agent by ID. Assumes lock is held."""
-        for index, agent_data in enumerate(self._agents_data):
+        """Internal helper: Finds the index of an agent by ID within the 'agents' list. Assumes lock is held."""
+        agents_list = self._config_data.get("agents", [])
+        for index, agent_data in enumerate(agents_list):
             if agent_data.get("agent_id") == agent_id:
                 return index
         return None
 
+    # --- Agent CRUD Methods (operate on self._config_data['agents']) ---
+
     async def add_agent(self, agent_config_entry: Dict[str, Any]) -> bool:
         """
-        Adds a new agent configuration entry to the list and triggers safe save.
-        Validates ID uniqueness. Async-safe.
-
-        Args:
-            agent_config_entry (Dict[str, Any]): The complete agent entry dictionary
-                                                 (e.g., {'agent_id': 'new_id', 'config': {...}}).
-
-        Returns:
-            bool: True if added and saved successfully, False otherwise.
+        Adds a new agent configuration entry to the 'agents' list and triggers safe save
+        of the entire configuration. Validates ID uniqueness. Async-safe.
         """
         async with self._lock:
             agent_id = agent_config_entry.get("agent_id")
@@ -223,31 +248,28 @@ class ConfigManager:
                 logger.error(f"Cannot add agent: Agent with ID '{agent_id}' already exists.")
                 return False
 
-            # Append a deep copy to avoid modifying the input dict
-            self._agents_data.append(copy.deepcopy(agent_config_entry))
+            # Ensure 'agents' list exists
+            if "agents" not in self._config_data or not isinstance(self._config_data["agents"], list):
+                 self._config_data["agents"] = []
+
+            # Append a deep copy to the internal 'agents' list
+            self._config_data["agents"].append(copy.deepcopy(agent_config_entry))
             logger.info(f"Agent '{agent_id}' added internally.")
 
-            # Save the updated configuration safely
+            # Save the updated *full* configuration safely
             if await self._save_config_safe():
-                logger.info(f"Successfully added and saved agent '{agent_id}'.")
+                logger.info(f"Successfully added agent '{agent_id}' and saved configuration.")
                 return True
             else:
                 # Rollback the addition if save failed
-                self._agents_data.pop() # Remove the just added item
+                self._config_data["agents"].pop() # Remove the just added item
                 logger.error(f"Failed to save configuration after adding agent '{agent_id}'. Addition rolled back.")
                 return False
 
     async def update_agent(self, agent_id: str, updated_config_data: Dict[str, Any]) -> bool:
         """
-        Updates the 'config' part of an existing agent entry identified by agent_id.
-        Triggers safe save. Async-safe.
-
-        Args:
-            agent_id (str): The ID of the agent configuration to update.
-            updated_config_data (Dict[str, Any]): The new dictionary for the 'config' key.
-
-        Returns:
-            bool: True if updated and saved successfully, False otherwise.
+        Updates the 'config' part of an existing agent entry in the 'agents' list.
+        Triggers safe save of the entire configuration. Async-safe.
         """
         async with self._lock:
             index = self._find_agent_index_unsafe(agent_id)
@@ -255,32 +277,32 @@ class ConfigManager:
                 logger.error(f"Cannot update agent: Agent with ID '{agent_id}' not found.")
                 return False
 
-            # Keep a deep copy of the original entry in case save fails
-            original_config_entry = copy.deepcopy(self._agents_data[index])
+             # Ensure 'agents' list exists and index is valid
+            if "agents" not in self._config_data or not isinstance(self._config_data.get("agents"), list) or index >= len(self._config_data["agents"]):
+                 logger.error(f"Internal state error: Could not find agent at index {index} for update.")
+                 return False
 
-            # Update the 'config' key with a deep copy of the new data
-            self._agents_data[index]["config"] = copy.deepcopy(updated_config_data)
+            # Keep a deep copy of the original entry in case save fails
+            original_config_entry = copy.deepcopy(self._config_data["agents"][index])
+
+            # Update the 'config' key within the 'agents' list
+            self._config_data["agents"][index]["config"] = copy.deepcopy(updated_config_data)
             logger.info(f"Agent '{agent_id}' config updated internally.")
 
-            # Save the updated configuration safely
+            # Save the updated *full* configuration safely
             if await self._save_config_safe():
-                logger.info(f"Successfully updated and saved agent '{agent_id}'.")
+                logger.info(f"Successfully updated agent '{agent_id}' and saved configuration.")
                 return True
             else:
                 # Rollback the update if save failed
-                self._agents_data[index] = original_config_entry # Restore original entry
+                self._config_data["agents"][index] = original_config_entry # Restore original entry
                 logger.error(f"Failed to save configuration after updating agent '{agent_id}'. Update rolled back.")
                 return False
 
     async def delete_agent(self, agent_id: str) -> bool:
         """
-        Removes an agent configuration entry by ID. Triggers safe save. Async-safe.
-
-        Args:
-            agent_id (str): The ID of the agent configuration to remove.
-
-        Returns:
-            bool: True if deleted and saved successfully, False otherwise.
+        Removes an agent configuration entry from the 'agents' list by ID.
+        Triggers safe save of the entire configuration. Async-safe.
         """
         async with self._lock:
             index = self._find_agent_index_unsafe(agent_id)
@@ -288,26 +310,46 @@ class ConfigManager:
                 logger.error(f"Cannot delete agent: Agent with ID '{agent_id}' not found.")
                 return False
 
-            # Keep a copy of the item being deleted in case save fails
-            deleted_entry = self._agents_data.pop(index)
-            logger.info(f"Agent '{agent_id}' removed internally.")
+            # Ensure 'agents' list exists and index is valid
+            if "agents" not in self._config_data or not isinstance(self._config_data.get("agents"), list) or index >= len(self._config_data["agents"]):
+                 logger.error(f"Internal state error: Could not find agent at index {index} for deletion.")
+                 return False
 
-            # Save the updated configuration safely
+            # Keep a copy of the item being deleted in case save fails
+            deleted_entry = self._config_data["agents"].pop(index)
+            logger.info(f"Agent '{agent_id}' removed internally from 'agents' list.")
+
+             # Also remove the agent from any teams they might be in (important!)
+            teams_modified = False
+            if "teams" in self._config_data and isinstance(self._config_data["teams"], dict):
+                 for team_name, members in list(self._config_data["teams"].items()): # Iterate over copy of items
+                     if isinstance(members, list) and agent_id in members:
+                         logger.info(f"Removing deleted agent '{agent_id}' from team '{team_name}'.")
+                         self._config_data["teams"][team_name].remove(agent_id)
+                         teams_modified = True
+                         # Optional: Remove team if it becomes empty?
+                         # if not self._config_data["teams"][team_name]:
+                         #     del self._config_data["teams"][team_name]
+            else:
+                 logger.warning("Could not find 'teams' structure to clean up deleted agent ID.")
+
+
+            # Save the updated *full* configuration safely
             if await self._save_config_safe():
-                logger.info(f"Successfully deleted and saved agent '{agent_id}'.")
+                logger.info(f"Successfully deleted agent '{agent_id}' (and removed from teams if applicable) and saved configuration.")
                 return True
             else:
                 # Rollback the deletion if save failed
-                self._agents_data.insert(index, deleted_entry) # Put it back
-                logger.error(f"Failed to save configuration after deleting agent '{agent_id}'. Deletion rolled back.")
+                self._config_data["agents"].insert(index, deleted_entry) # Put agent back
+                # Rollback team changes (more complex - might need to store original teams state)
+                # For simplicity now, we only log the failure. A full rollback would require storing the original team state.
+                if teams_modified:
+                     logger.error(f"Failed to save configuration after deleting agent '{agent_id}'. Agent deletion rolled back, but TEAM CHANGES MAY NOT BE FULLY ROLLED BACK.")
+                else:
+                     logger.error(f"Failed to save configuration after deleting agent '{agent_id}'. Deletion rolled back.")
                 return False
 
 
 # --- Create a Singleton Instance ---
 # This instance will be used by other modules (like settings and API routes)
-# The initial load is synchronous within __init__
-config_manager = ConfigManager(AGENT_CONFIG_PATH_CM) # Use path defined above
-
-# Quick check if initial load failed severely (optional)
-# if not hasattr(config_manager, '_agents_data'):
-#      raise RuntimeError("ConfigManager failed initial load critically.")
+config_manager = ConfigManager(AGENT_CONFIG_PATH_CM)
