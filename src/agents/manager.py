@@ -197,8 +197,10 @@ class AgentManager:
         if not is_bootstrap and not loading_from_session:
             allowed_models = settings.ALLOWED_SUB_AGENT_MODELS.get(provider_name)
             if allowed_models is None: msg = f"Validation Error: Provider '{provider_name}' not in allowed_sub_agent_models."; logger.error(msg); return False, msg, None
-            if not allowed_models or model not in allowed_models:
-                allowed_list_str = ', '.join(m for m in allowed_models if m) if allowed_models else 'None'
+            # Filter out empty strings before checking
+            valid_allowed_models = [m for m in allowed_models if m and m.strip()]
+            if not valid_allowed_models or model not in valid_allowed_models:
+                allowed_list_str = ', '.join(valid_allowed_models) if valid_allowed_models else 'None'
                 msg = f"Validation Error: Model '{model}' not allowed for '{provider_name}'. Allowed: [{allowed_list_str}]"; logger.error(msg); return False, msg, None
             logger.info(f"Dynamic agent creation validated: Provider '{provider_name}', Model '{model}' is allowed.")
 
@@ -349,7 +351,10 @@ class AgentManager:
                 elif event_type == "error": # Handle errors yielded by agent/provider
                     error_content = event.get("content", "[Unknown Agent Error]")
                     logger.error(f"Agent '{agent_id}' reported error: {error_content}")
+                    # Determine if error is stream-related
                     is_stream_error = any(indicator in error_content for indicator in ["Error processing stream chunk", "APIError during stream", "Failed to decode stream chunk", "Stream connection error"])
+                    is_stream_related_error = is_stream_error # Set the flag for the finally block
+
                     if is_stream_error:
                         logger.warning(f"Detected potentially temporary stream error for agent '{agent_id}'.")
                         # UI message handled in finally block if retrying/failing
@@ -466,6 +471,7 @@ class AgentManager:
                 try: await agent_generator.aclose(); logger.debug(f"Closed generator for '{agent_id}'.")
                 except Exception as close_err: logger.error(f"Error closing generator for '{agent_id}': {close_err}", exc_info=True)
 
+            # --- *** CORRECTED FINALLY BLOCK LOGIC *** ---
             # Check for automatic retry *first*
             if current_cycle_error and is_stream_related_error and retry_count < MAX_STREAM_RETRIES:
                 retry_delay = STREAM_RETRY_DELAY * (retry_count + 1)
@@ -474,19 +480,19 @@ class AgentManager:
                 await asyncio.sleep(retry_delay)
                 agent.set_status(AGENT_STATUS_IDLE) # Reset status *before* scheduling retry
                 asyncio.create_task(self._handle_agent_generator(agent, retry_count + 1)) # Start retry task
-                # --- ADDED LOG ---
                 logger.info(f"Retry task scheduled for agent '{agent_id}'. This cycle ending.")
-                # If retrying, implicitly return from finally block
+                return # <-- ADDED RETURN to prevent fall-through
+
+            # Then check for reactivation
             elif reactivate_agent_after_feedback and not current_cycle_error:
-                # Reactivate normally if feedback was added and no error occurred
                 logger.info(f"Reactivating agent '{agent_id}' to process manager feedback.")
                 agent.set_status(AGENT_STATUS_IDLE)
                 asyncio.create_task(self._handle_agent_generator(agent)) # Start next cycle task (retry_count reset to 0)
-                # --- ADDED LOG ---
                 logger.info(f"Reactivation task scheduled for agent '{agent_id}'. This cycle ending.")
-                # If reactivating, implicitly return from finally block
+                return # <-- ADDED RETURN to prevent fall-through
+
+            # Else finalize status (if not retrying or reactivating)
             else:
-                # If not retrying and not reactivating, finalize the status
                 final_status = agent.status
                 if final_status not in [AGENT_STATUS_IDLE, AGENT_STATUS_ERROR]:
                      logger.warning(f"Agent '{agent_id}' ended generator handling in non-terminal state '{final_status}'. Setting to IDLE.")
@@ -495,6 +501,7 @@ class AgentManager:
                 await self.push_agent_status_update(agent_id) # Push the determined final state
                 log_level = logging.ERROR if agent.status == AGENT_STATUS_ERROR else logging.INFO
                 logger.log(log_level, f"Manager finished handling generator cycle for Agent '{agent_id}'. Final status: {agent.status}")
+            # --- *** END CORRECTION *** ---
 
 
     # --- Tool Execution & Team Management Delegation ---
@@ -525,9 +532,8 @@ class AgentManager:
                 if success: await self._update_agent_prompt_team_id(agent_id, None)
             elif action == "list_agents":
                  filter_team_id = params.get("team_id");
-                 # --- Corrected: Call state_manager method ---
-                 result_data = self.get_agent_info_list_sync(filter_team_id=filter_team_id) # Use sync version for simplicity here? Or make async? Let's make get_agent_info_list async
-                 # result_data = await self.get_agent_info_list(filter_team_id=filter_team_id) # If making it async
+                 # Use sync version for simplicity here
+                 result_data = self.get_agent_info_list_sync(filter_team_id=filter_team_id)
                  success = True; count = len(result_data)
                  message = f"Found {count} agent(s) in team '{filter_team_id}'." if filter_team_id else f"Found {count} agent(s) in total."
             elif action == "list_teams":
@@ -562,6 +568,7 @@ class AgentManager:
         sender_team = self.state_manager.get_agent_team(sender_id)
         target_team = self.state_manager.get_agent_team(target_id)
 
+        # Allow Admin AI to send to any agent, otherwise enforce same team
         if sender_id != BOOTSTRAP_AGENT_ID and (not sender_team or sender_team != target_team):
             logger.warning(f"SendMessage blocked: Sender '{sender_id}' (Team: {sender_team}) and Target '{target_id}' (Team: {target_team}) are not in the same team according to StateManager."); return None
         elif sender_id == BOOTSTRAP_AGENT_ID: logger.info(f"Admin AI sending message from '{sender_id}' to '{target_id}'.")
