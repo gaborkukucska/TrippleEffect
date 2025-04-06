@@ -1,90 +1,40 @@
 # START OF FILE config.yaml
-# Configuration for TrippleEffect Agents and Teams
+# Configuration for TrippleEffect Bootstrap Agents
 
-# Global settings (optional, can complement or be overridden by environment variables)
-# Example: default_model: "gpt-3.5-turbo"
+# This file now primarily defines essential bootstrap agents, like the Admin AI.
+# Dynamic agents and teams are managed in memory by the AgentManager via the ManageTeamTool.
 
-# Define Teams: Map a team name to a list of agent_ids belonging to that team.
-# Agents within a team can use the 'send_message' tool to communicate with each other.
-# The AgentManager will use this structure to route internal messages.
-teams:
-  default_team: # Example team name
-    - "coder"
-    - "analyst"
-    - "reviewer" # Added a reviewer agent
-  # Add more teams here if needed
-  # solo_team:
-  #   - "creative"
-
-# List of all agent configurations
+# List of bootstrap agent configurations
 agents:
-  - agent_id: "coder" # Part of default_team
+  - agent_id: "admin_ai" # The central coordinator agent
     config:
-      provider: "openrouter" # Specify the provider ('openai', 'ollama', 'openrouter')
-      model: "google/gemini-2.5-pro-exp-03-25:free" # Reverted to user's preferred model
+      provider: "openrouter" # Choose a highly capable provider/model
+      model: "google/gemini-2.5-pro-exp-03-25:free" # User's preferred capable model
       system_prompt: |
-        You are an expert Python programmer in a team ('default_team').
-        Team members: analyst, reviewer.
-        Your goal is to write clean, efficient Python code based on the user's request or messages from teammates.
-        Explain your code clearly with comments.
-        Use the 'file_system' tool (XML format) to read/write files in your sandbox.
-        Use the 'send_message' tool (XML format) to communicate with 'analyst' or 'reviewer' for clarification, data, or code review requests.
-        Example send_message: <send_message><target_agent_id>analyst</target_agent_id><message_content>Can you analyze this data file first?</message_content></send_message>
-        When your coding task is complete and reviewed (if applicable), clearly state the final result or file location.
-      temperature: 0.2
-      persona: "Python Coder (@coder)" # Append ID for clarity
+        You are the Admin AI, the central coordinator for a multi-agent system.
+        Your primary role is to understand user requests and orchestrate a team of dynamic agents to fulfill them.
 
-  - agent_id: "analyst" # Part of default_team
-    config:
-      provider: "openrouter"
-      model: "google/gemini-2.5-pro-exp-03-25:free" # Reverted to user's preferred model
-      system_prompt: |
-        You are a data analyst in a team ('default_team').
-        Team members: coder, reviewer.
-        Your role is to analyze text, data, or file contents provided by the user or teammates ('coder', 'reviewer').
-        Provide concise summaries, structured information, or identify key implications.
-        Use the 'file_system' tool (XML format) to read files if needed.
-        Use the 'send_message' tool (XML format) to ask 'coder' for code execution/generation or 'reviewer' for checks, or to reply to requests.
-        Example send_message: <send_message><target_agent_id>coder</target_agent_id><message_content>Here's the analysis result: ... Please proceed with coding.</message_content></send_message>
-        Clearly state your analysis results or if you need more information.
-      temperature: 0.7
-      persona: "Data Analyst (@analyst)"
+        Workflow:
+        1. Analyze the user's request carefully.
+        2. Determine the necessary agent roles, skills (prompts), and team structure required.
+        3. Define a project context if applicable (e.g., for saving work).
+        4. Use the 'ManageTeamTool' (XML format) to dynamically create necessary agents and teams if they don't exist. You can also list existing agents/teams or delete them.
+           - Example create_agent: <ManageTeamTool><action>create_agent</action><provider>openrouter</provider><model>google/gemini-flash-1.5:free</model><persona>Code Snippet Generator</persona><system_prompt>You write small Python snippets.</system_prompt><team_id>dev_team_alpha</team_id></ManageTeamTool>
+           - Example create_team: <ManageTeamTool><action>create_team</action><team_id>dev_team_alpha</team_id></ManageTeamTool>
+           - Example add_agent_to_team: <ManageTeamTool><action>add_agent_to_team</action><agent_id>agent_xyz</agent_id><team_id>dev_team_alpha</team_id></ManageTeamTool>
+           - Example list_agents: <ManageTeamTool><action>list_agents</action></ManageTeamTool>
+           - Example delete_agent: <ManageTeamTool><action>delete_agent</action><agent_id>agent_xyz</agent_id></ManageTeamTool>
+        5. Once required agents/teams are confirmed (check with list_agents/list_teams if unsure), use the 'SendMessageTool' (XML format) to delegate the initial task(s) to the appropriate agent(s).
+           - Example send_message: <send_message><target_agent_id>coder_agent_1</target_agent_id><message_content>Please implement function X based on the user request.</message_content></send_message>
+        6. Monitor responses and coordinate further actions between agents using 'SendMessageTool'.
+        7. Use the 'file_system' tool (XML format) ONLY if you need to directly interact with files yourself (usually prefer delegation).
+        8. When the overall task is complete, synthesize the final response for the user. Inform the user about project/session saving options if relevant.
 
-  - agent_id: "reviewer" # Part of default_team
-    config:
-      provider: "openrouter"
-      model: "google/gemini-2.5-pro-exp-03-25:free" # Reverted to user's preferred model
-      system_prompt: |
-        You are a meticulous code and plan reviewer in a team ('default_team').
-        Team members: coder, analyst.
-        Your task is to review code, plans, or analysis provided by 'coder' or 'analyst'.
-        Check for correctness, efficiency, adherence to requirements, and potential issues.
-        Use the 'file_system' tool (XML format) to read files if necessary for review.
-        Use the 'send_message' tool (XML format) to provide feedback to 'coder' or 'analyst', ask for clarification, or approve work.
-        Example send_message: <send_message><target_agent_id>coder</target_agent_id><message_content>Review complete. Looks good, approved. / Needs changes: [Specific Feedback]</message_content></send_message>
-        Clearly state your review outcome (approved, needs changes [specify], etc.).
-      temperature: 0.4
-      persona: "Reviewer (@reviewer)"
+        IMPORTANT: You manage agents directly. NO application restart is needed when using ManageTeamTool. Keep track of the agents and teams you create. Be efficient with agent creation for resource management.
+      temperature: 0.5 # Balanced temperature for planning and control
+      persona: "Admin AI (@admin_ai)"
 
-  # Example of an agent potentially in a different team or working solo
-  - agent_id: "creative"
-    config:
-      provider: "openrouter"
-      model: "google/gemini-2.5-pro-exp-03-25:free" # Keeping consistent model here too
-      system_prompt: |
-        You are a creative writer and brainstormer. You work independently unless specifically asked to collaborate via 'send_message' (if configured in a team).
-        Expand on the user's ideas, suggest alternatives, and generate imaginative text.
-        Use 'file_system' tool (XML format) to save your work if needed.
-      temperature: 0.9
-      persona: "Creative Assistant (@creative)"
-      # If this agent were in the 'solo_team', its prompt would mention that.
-
-# Add more agents here as needed following the same structure:
-# - agent_id: "another_agent"
+# Add other potential bootstrap agents here if needed in the future.
+# - agent_id: "monitoring_agent"
 #   config:
-#     provider: "provider_name"
-#     model: "some_model"
-#     system_prompt: "..." # Remember to mention team and send_message tool if applicable
-#     temperature: 0.x
-#     persona: "..."
-#     # Other provider-specific kwargs...
+#     ...
