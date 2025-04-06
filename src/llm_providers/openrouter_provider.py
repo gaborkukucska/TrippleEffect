@@ -142,6 +142,7 @@ class OpenRouterProvider(BaseLLMProvider):
                             user_message += f" - {str(error_detail)[:100]}"
                     except Exception: # Ignore parsing errors
                         pass
+                    # Yield and return separately
                     yield {"type": "error", "content": user_message}
                     return
                     # --- *** END CORRECTION *** ---
