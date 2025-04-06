@@ -174,7 +174,7 @@ class AgentManager:
         if BOOTSTRAP_AGENT_ID not in self.agents: logger.critical(f"CRITICAL: Admin AI ('{BOOTSTRAP_AGENT_ID}') failed to initialize!")
 
 
-    # --- Agent Creation/Deletion (With Provider Config Check) ---
+    # --- *** CORRECTED _create_agent_internal AGAIN *** ---
     async def _create_agent_internal(
         self, agent_id_requested: Optional[str], agent_config_data: Dict[str, Any], is_bootstrap: bool = False, team_id: Optional[str] = None, loading_from_session: bool = False
         ) -> Tuple[bool, str, Optional[str]]:
@@ -190,7 +190,7 @@ class AgentManager:
         model = agent_config_data.get("model", settings.DEFAULT_AGENT_MODEL)
         persona = agent_config_data.get("persona", settings.DEFAULT_PERSONA)
 
-        # --- ** NEW: Check if provider is configured in Settings ** ---
+        # --- Provider Config Check (Using Settings helper) ---
         if not settings.is_provider_configured(provider_name):
             msg = f"Validation Error: Provider '{provider_name}' is not configured (e.g., missing API key or URL in .env)."
             logger.error(msg)
@@ -200,17 +200,13 @@ class AgentManager:
         # --- Validate Model against allowed list (only for dynamic agents) ---
         if not is_bootstrap and not loading_from_session:
             allowed_models = settings.ALLOWED_SUB_AGENT_MODELS.get(provider_name)
-            # Check if provider key exists in allowed_sub_agent_models
             if allowed_models is None:
                 msg = f"Validation Error: Provider '{provider_name}' not found in allowed_sub_agent_models configuration (config.yaml)."
-                logger.error(msg)
-                return False, msg, None
-            # Check if model is in the list (and list is not empty/invalid)
-            if not allowed_models or model not in allowed_models:
+                logger.error(msg); return False, msg, None
+            if not allowed_models or model not in allowed_models: # Also check if allowed_models list is empty
                 allowed_list_str = ', '.join(m for m in allowed_models if m) if allowed_models else 'None'
                 msg = f"Validation Error: Model '{model}' is not allowed for provider '{provider_name}'. Allowed models: [{allowed_list_str}]"
-                logger.error(msg)
-                return False, msg, None
+                logger.error(msg); return False, msg, None
             logger.info(f"Dynamic agent creation validated: Provider '{provider_name}', Model '{model}' is allowed.")
         # --- End Model Validation ---
 
@@ -230,7 +226,7 @@ class AgentManager:
 
         # 4. Instantiate Provider
         ProviderClass = PROVIDER_CLASS_MAP.get(provider_name)
-        if not ProviderClass: return False, f"Unknown provider '{provider_name}'.", None # Should not happen if validation passed
+        if not ProviderClass: return False, f"Unknown provider '{provider_name}'.", None
         base_provider_config = settings.get_provider_config(provider_name); provider_config_overrides = {k: agent_config_data[k] for k in allowed_provider_keys if k in agent_config_data}
         final_provider_args = { **base_provider_config, **provider_specific_kwargs, **provider_config_overrides}; final_provider_args = {k: v for k, v in final_provider_args.items() if v is not None}
         try: llm_provider_instance = ProviderClass(**final_provider_args); logger.info(f"  Instantiated provider {ProviderClass.__name__} for '{agent_id}'.")
@@ -241,9 +237,15 @@ class AgentManager:
         except Exception as e: logger.error(f"  Agent instantiation failed for '{agent_id}': {e}", exc_info=True); return False, f"Agent instantiation failed: {e}", None
 
         # 6. Ensure Sandbox
-        try: sandbox_ok = await asyncio.to_thread(agent.ensure_sandbox_exists);
-        if not sandbox_ok: logger.warning(f"  Failed to ensure sandbox for '{agent_id}'.")
-        except Exception as e: logger.error(f"Sandbox error for '{agent_id}': {e}", exc_info=True); logger.warning(f"Proceeding without guaranteed sandbox for '{agent_id}'.")
+        # --- **** FINAL SyntaxError FIX **** ---
+        try:
+            sandbox_ok = await asyncio.to_thread(agent.ensure_sandbox_exists)
+            if not sandbox_ok: # Check *inside* the try block
+                 logger.warning(f"  Failed to ensure sandbox for '{agent_id}'.")
+        except Exception as e:
+            logger.error(f"Sandbox error for '{agent_id}': {e}", exc_info=True)
+            logger.warning(f"Proceeding without guaranteed sandbox for '{agent_id}'.")
+        # --- **** END FIX **** ---
 
         # 7. Add agent instance to registry
         self.agents[agent_id] = agent; logger.debug(f"Agent '{agent_id}' added to self.agents dictionary.")
@@ -261,7 +263,9 @@ class AgentManager:
 
         message = f"Agent '{agent_id}' created successfully." + team_add_msg_suffix
         return True, message, agent_id
-
+    # --- *** END CORRECTED _create_agent_internal *** ---
+    
+    
     async def create_agent_instance( # Public method unchanged
         self, agent_id_requested: Optional[str], provider: str, model: str, system_prompt: str, persona: str, team_id: Optional[str] = None, temperature: Optional[float] = None, **kwargs
         ) -> Tuple[bool, str, Optional[str]]:
