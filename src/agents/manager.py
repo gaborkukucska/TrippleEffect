@@ -306,7 +306,7 @@ class AgentManager:
             await self.send_to_ui({ "type": "status", "agent_id": admin_agent.agent_id, "content": f"Admin AI busy ({admin_agent.status}). Your message will be processed when idle." })
 
 
-    # --- **** CORRECTED _handle_agent_generator for UnboundLocalError **** ---
+    # --- **** CORRECTED _handle_agent_generator for Reactivation Timing **** ---
     async def _handle_agent_generator(self, agent: Agent):
         """Handles the async generator interaction for a single agent's processing cycle."""
         agent_id = agent.agent_id
@@ -314,6 +314,7 @@ class AgentManager:
         agent_generator: Optional[AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]] = None
         manager_action_feedback = [] # Feedback from ManageTeamTool actions
         reactivate_agent_after_feedback = False # Flag to re-run generator after adding feedback
+        current_cycle_error = False # Track if an error occurred in this cycle
 
         try:
             agent_generator = agent.process_message() # Get the generator
@@ -325,7 +326,9 @@ class AgentManager:
                     logger.info(f"Agent '{agent_id}' generator finished normally.")
                     break # Normal finish
                 except Exception as gen_err:
-                    logger.error(f"Generator error for '{agent_id}': {gen_err}", exc_info=True); agent.set_status(AGENT_STATUS_ERROR); await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": f"[Manager Error: Generator crashed - {gen_err}]"}); break
+                    logger.error(f"Generator error for '{agent_id}': {gen_err}", exc_info=True); agent.set_status(AGENT_STATUS_ERROR); await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": f"[Manager Error: Generator crashed - {gen_err}]"});
+                    current_cycle_error = True # Mark error occurred
+                    break # Error finish
 
                 event_type = event.get("type")
 
@@ -345,11 +348,13 @@ class AgentManager:
                     if is_stream_error:
                         logger.warning(f"Detected temporary stream error for agent '{agent_id}'. Resetting to idle.")
                         await self.send_to_ui({ "type": "error", "agent_id": agent_id, "content": f"[Manager Note]: Agent '{agent.persona}' experienced a temporary provider issue. Resetting to idle. Retry needed. (Details: {error_content})" })
-                        agent.set_status(AGENT_STATUS_IDLE)
+                        agent.set_status(AGENT_STATUS_IDLE) # Reset status
+                        current_cycle_error = True # Mark as error for finally block logic
                     else: # Permanent error
                         if "agent_id" not in event: event["agent_id"] = agent_id
                         await self.send_to_ui(event)
                         agent.set_status(AGENT_STATUS_ERROR)
+                        current_cycle_error = True # Mark as error
                     break # Stop generator loop on any error
 
                 elif event_type == "tool_requests": # Handle Sequential Tool Execution
@@ -359,7 +364,6 @@ class AgentManager:
                          agent.message_history.append({"role": "assistant", "content": agent_last_response}); logger.debug(f"Appended assistant response (with tools) for '{agent_id}'.")
 
                     management_calls = []; other_calls = []; executed_results_map = {}; invalid_call_results = []
-
                     # 1. Validate and Categorize Calls
                     for call in all_tool_calls:
                          call_id, tool_name, tool_args = call.get("id"), call.get("name"), call.get("arguments", {})
@@ -367,15 +371,11 @@ class AgentManager:
                             if tool_name == ManageTeamTool.name: management_calls.append(call)
                             else: other_calls.append(call)
                          else:
-                            # --- FIX: Process invalid call result immediately ---
                             logger.warning(f"Skipping invalid tool request from '{agent_id}': {call}")
                             fail_result = await self._failed_tool_result(call_id, tool_name)
-                            if fail_result:
-                                 invalid_call_results.append(fail_result) # Collect for history appending
-                            # --- END FIX ---
-                    if invalid_call_results: # Append failures collected above
-                        for fail_res in invalid_call_results:
-                             agent.message_history.append({"role": "tool", "tool_call_id": fail_res['call_id'], "content": str(fail_res['content']) })
+                            if fail_result: invalid_call_results.append(fail_result)
+                    if invalid_call_results: # Append failures
+                        for fail_res in invalid_call_results: agent.message_history.append({"role": "tool", "tool_call_id": fail_res['call_id'], "content": str(fail_res['content']) })
 
                     manager_action_feedback = [] # Reset feedback for this batch
                     activation_tasks = [] # Reset activation tasks
@@ -456,20 +456,32 @@ class AgentManager:
         except Exception as e:
             logger.error(f"Error occurred while handling generator for agent '{agent_id}': {e}", exc_info=True)
             agent.set_status(AGENT_STATUS_ERROR)
+            current_cycle_error = True # Mark error occurred
             await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": f"[Manager Error: Unexpected error in generator handler - {e}]"})
         finally:
             if agent_generator:
                 try: await agent_generator.aclose(); logger.debug(f"Closed generator for '{agent_id}'.")
                 except Exception as close_err: logger.error(f"Error closing generator for '{agent_id}': {close_err}", exc_info=True)
-            if reactivate_agent_after_feedback and agent.status != AGENT_STATUS_ERROR:
-                logger.info(f"Reactivating agent '{agent_id}' to process manager feedback."); agent.set_status(AGENT_STATUS_IDLE); asyncio.create_task(self._handle_agent_generator(agent))
+
+            # --- *** CORRECTED FINAL BLOCK LOGIC *** ---
+            # Check for reactivation *first*
+            if reactivate_agent_after_feedback and not current_cycle_error: # Only reactivate if no error occurred
+                logger.info(f"Reactivating agent '{agent_id}' to process manager feedback.")
+                agent.set_status(AGENT_STATUS_IDLE) # Set idle before restarting
+                asyncio.create_task(self._handle_agent_generator(agent))
+                # If reactivating, DO NOT proceed to the final status push/log below for this cycle
             else:
-                final_status_to_push = agent.status
-                if final_status_to_push != AGENT_STATUS_ERROR and final_status_to_push != AGENT_STATUS_IDLE:
-                     logger.warning(f"Agent '{agent_id}' ended generator handling in non-terminal state '{final_status_to_push}'. Setting to IDLE.")
-                     agent.set_status(AGENT_STATUS_IDLE)
-                await self.push_agent_status_update(agent_id); logger.info(f"Manager finished handling generator cycle for Agent '{agent_id}'. Final status: {agent.status}")
-                
+                # If not reactivating (or if an error occurred), push the final status
+                final_status = agent.status
+                # Ensure agent is left in a terminal state (idle or error) if not reactivating
+                if final_status not in [AGENT_STATUS_IDLE, AGENT_STATUS_ERROR]:
+                     logger.warning(f"Agent '{agent_id}' ended generator handling in non-terminal state '{final_status}'. Setting to IDLE (due to no reactivation or prior error).")
+                     agent.set_status(AGENT_STATUS_IDLE) # Default to IDLE if stuck
+
+                await self.push_agent_status_update(agent_id) # Push the determined final state
+                logger.info(f"Manager finished handling generator cycle for Agent '{agent_id}'. Final status: {agent.status}")
+            # --- *** END CORRECTION *** ---
+
 
     # --- Tool Execution & Team Management Delegation ---
     async def _handle_manage_team_action(self, action: Optional[str], params: Dict[str, Any]) -> Tuple[bool, str, Optional[Any]]:
