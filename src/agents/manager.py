@@ -229,43 +229,99 @@ class AgentManager:
         if not ProviderClass: return False, f"Unknown provider '{provider_name}'.", None
         base_provider_config = settings.get_provider_config(provider_name); provider_config_overrides = {k: agent_config_data[k] for k in allowed_provider_keys if k in agent_config_data}
         final_provider_args = { **base_provider_config, **provider_specific_kwargs, **provider_config_overrides}; final_provider_args = {k: v for k, v in final_provider_args.items() if v is not None}
+    # --- *** CORRECTED _create_agent_internal AGAIN (Prompt Update Block) *** ---
+    async def _create_agent_internal(
+        self, agent_id_requested: Optional[str], agent_config_data: Dict[str, Any], is_bootstrap: bool = False, team_id: Optional[str] = None, loading_from_session: bool = False
+        ) -> Tuple[bool, str, Optional[str]]:
+        """Internal logic including provider config check and model validation."""
+        # 1. Determine Agent ID
+        if agent_id_requested and agent_id_requested in self.agents: return False, f"Agent ID '{agent_id_requested}' already exists.", None
+        agent_id = agent_id_requested or self._generate_unique_agent_id()
+        if not agent_id: return False, "Failed to generate Agent ID.", None
+        logger.debug(f"Creating agent '{agent_id}' (Bootstrap: {is_bootstrap}, SessionLoad: {loading_from_session})")
+
+        # 2. Extract Config & Validate Provider Configuration
+        provider_name = agent_config_data.get("provider", settings.DEFAULT_AGENT_PROVIDER)
+        model = agent_config_data.get("model", settings.DEFAULT_AGENT_MODEL)
+        persona = agent_config_data.get("persona", settings.DEFAULT_PERSONA)
+
+        if not settings.is_provider_configured(provider_name):
+            msg = f"Validation Error: Provider '{provider_name}' is not configured."; logger.error(msg); return False, msg, None
+
+        # 3. Validate Model against allowed list (only for dynamic agents)
+        if not is_bootstrap and not loading_from_session:
+            allowed_models = settings.ALLOWED_SUB_AGENT_MODELS.get(provider_name)
+            if allowed_models is None: msg = f"Validation Error: Provider '{provider_name}' not in allowed_sub_agent_models."; logger.error(msg); return False, msg, None
+            if not allowed_models or model not in allowed_models:
+                allowed_list_str = ', '.join(m for m in allowed_models if m) if allowed_models else 'None'
+                msg = f"Validation Error: Model '{model}' not allowed for '{provider_name}'. Allowed: [{allowed_list_str}]"; logger.error(msg); return False, msg, None
+            logger.info(f"Dynamic agent creation validated: Provider '{provider_name}', Model '{model}' is allowed.")
+
+        # 4. Extract other config and Construct Final Prompt
+        role_specific_prompt = agent_config_data.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
+        temperature = agent_config_data.get("temperature", settings.DEFAULT_TEMPERATURE)
+        allowed_provider_keys = ['api_key', 'base_url', 'referer']; provider_specific_kwargs = { k: v for k, v in agent_config_data.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona'] + allowed_provider_keys}
+        if agent_config_data.get("referer"): provider_specific_kwargs["referer"] = agent_config_data["referer"]
+
+        final_system_prompt = role_specific_prompt
+        if not is_bootstrap and not loading_from_session:
+            standard_info = STANDARD_FRAMEWORK_INSTRUCTIONS.format(agent_id=agent_id, team_id=team_id or "N/A")
+            final_system_prompt = role_specific_prompt + "\n" + standard_info
+            logger.debug(f"Constructed final prompt for dynamic agent '{agent_id}'.")
+
+        final_agent_config_entry = { "agent_id": agent_id, "config": { "provider": provider_name, "model": model, "system_prompt": final_system_prompt, "persona": persona, "temperature": temperature, **provider_specific_kwargs } }
+
+        # 5. Instantiate Provider
+        ProviderClass = PROVIDER_CLASS_MAP.get(provider_name)
+        if not ProviderClass: return False, f"Unknown provider '{provider_name}'.", None
+        base_provider_config = settings.get_provider_config(provider_name); provider_config_overrides = {k: agent_config_data[k] for k in allowed_provider_keys if k in agent_config_data}
+        final_provider_args = { **base_provider_config, **provider_specific_kwargs, **provider_config_overrides}; final_provider_args = {k: v for k, v in final_provider_args.items() if v is not None}
         try: llm_provider_instance = ProviderClass(**final_provider_args); logger.info(f"  Instantiated provider {ProviderClass.__name__} for '{agent_id}'.")
         except Exception as e: logger.error(f"  Provider instantiation failed for '{agent_id}': {e}", exc_info=True); return False, f"Provider instantiation failed: {e}", None
 
-        # 5. Instantiate Agent
+        # 6. Instantiate Agent
         try: agent = Agent( agent_config=final_agent_config_entry, llm_provider=llm_provider_instance, manager=self, tool_descriptions_xml=self.tool_descriptions_xml ); agent.agent_config = final_agent_config_entry; logger.info(f"  Instantiated Agent object for '{agent_id}'.")
         except Exception as e: logger.error(f"  Agent instantiation failed for '{agent_id}': {e}", exc_info=True); return False, f"Agent instantiation failed: {e}", None
 
-        # 6. Ensure Sandbox
-        # --- **** FINAL SyntaxError FIX **** ---
-        try:
-            sandbox_ok = await asyncio.to_thread(agent.ensure_sandbox_exists)
-            if not sandbox_ok: # Check *inside* the try block
-                 logger.warning(f"  Failed to ensure sandbox for '{agent_id}'.")
-        except Exception as e:
-            logger.error(f"Sandbox error for '{agent_id}': {e}", exc_info=True)
-            logger.warning(f"Proceeding without guaranteed sandbox for '{agent_id}'.")
-        # --- **** END FIX **** ---
+        # 7. Ensure Sandbox
+        try: sandbox_ok = await asyncio.to_thread(agent.ensure_sandbox_exists);
+        if not sandbox_ok: logger.warning(f"  Failed to ensure sandbox for '{agent_id}'.")
+        except Exception as e: logger.error(f"Sandbox error for '{agent_id}': {e}", exc_info=True); logger.warning(f"Proceeding without guaranteed sandbox for '{agent_id}'.")
 
-        # 7. Add agent instance to registry
+        # 8. Add agent instance to registry
         self.agents[agent_id] = agent; logger.debug(f"Agent '{agent_id}' added to self.agents dictionary.")
 
-        # 8. Assign to Team State via StateManager
+        # 9. Assign to Team State via StateManager
         team_add_msg_suffix = ""
         if team_id:
-            if not loading_from_session and not is_bootstrap: # Update agent's internal prompt
-                 try: agent.final_system_prompt = re.sub(r"Your Team ID:.*", f"Your Team ID: {team_id}", agent.final_system_prompt); agent.agent_config["config"]["system_prompt"] = agent.final_system_prompt
-                 if agent.message_history and agent.message_history[0]["role"] == "system": agent.message_history[0]["content"] = agent.final_system_prompt
-                 except Exception as e: logger.error(f"Error updating team ID in dynamic agent prompt for {agent_id}: {e}")
-            team_add_success, team_add_msg = await self.state_manager.add_agent_to_team(agent_id, team_id) # Delegate state update
-            if not team_add_success: team_add_msg_suffix = f" (Warning adding to team state: {team_add_msg})"
-            else: logger.info(f"Agent '{agent_id}' state added to team '{team_id}' via StateManager.")
+            # Update agent's internal prompt if dynamically created now
+            if not loading_from_session and not is_bootstrap:
+                 # --- **** CORRECTED TRY/EXCEPT **** ---
+                 try:
+                     new_team_str = f"Your Team ID: {team_id}"
+                     # Use re.sub for safer replacement
+                     agent.final_system_prompt = re.sub(r"Your Team ID:.*", new_team_str, agent.final_system_prompt)
+                     # Update the stored config as well
+                     agent.agent_config["config"]["system_prompt"] = agent.final_system_prompt
+                     # Update the history if it exists and the first message is the system prompt
+                     if agent.message_history and agent.message_history[0]["role"] == "system":
+                          agent.message_history[0]["content"] = agent.final_system_prompt
+                 except Exception as e:
+                      logger.error(f"Error updating team ID in dynamic agent prompt for {agent_id}: {e}")
+                 # --- **** END CORRECTION **** ---
+
+            # Delegate actual state update
+            team_add_success, team_add_msg = await self.state_manager.add_agent_to_team(agent_id, team_id)
+            if not team_add_success:
+                team_add_msg_suffix = f" (Warning adding to team state: {team_add_msg})"
+            else:
+                logger.info(f"Agent '{agent_id}' state added to team '{team_id}' via StateManager.")
 
         message = f"Agent '{agent_id}' created successfully." + team_add_msg_suffix
         return True, message, agent_id
     # --- *** END CORRECTED _create_agent_internal *** ---
-    
-    
+
+
     async def create_agent_instance( # Public method unchanged
         self, agent_id_requested: Optional[str], provider: str, model: str, system_prompt: str, persona: str, team_id: Optional[str] = None, temperature: Optional[float] = None, **kwargs
         ) -> Tuple[bool, str, Optional[str]]:
