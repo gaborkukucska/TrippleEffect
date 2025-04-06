@@ -11,7 +11,7 @@ import logging # Added logging
 from src.tools.base import BaseTool
 from src.tools.file_system import FileSystemTool
 from src.tools.send_message import SendMessageTool
-# --- Import the new ManageTeamTool ---
+# --- Import the updated ManageTeamTool ---
 from src.tools.manage_team import ManageTeamTool
 
 
@@ -29,7 +29,7 @@ class ToolExecutor:
     AVAILABLE_TOOL_CLASSES: List[Type[BaseTool]] = [
         FileSystemTool,
         SendMessageTool,
-        ManageTeamTool, # <-- Added ManageTeamTool here
+        ManageTeamTool, # Ensure ManageTeamTool is listed
         # Add other tool classes here, e.g., WebSearchTool
     ]
 
@@ -65,11 +65,13 @@ class ToolExecutor:
     # --- Tool Schema/Discovery ---
 
     def get_formatted_tool_descriptions_xml(self) -> str:
-        """Formats tool schemas into an XML string suitable for LLM prompts (Cline style)."""
+        """
+        Formats tool schemas into an XML string suitable for LLM prompts.
+        Reflects the latest parameter descriptions from tool classes.
+        """
         if not self.tools:
-            return "<!-- No tools available -->" # Use XML comment for clarity
+            return "<!-- No tools available -->"
 
-        # Using a more structured XML approach for the description itself
         root = ET.Element("tools")
         root.text = "\nYou have access to the following tools. Use the specified XML format to call them. Only one tool call per message.\n"
 
@@ -78,6 +80,7 @@ class ToolExecutor:
 
         for tool_name in sorted_tool_names:
             tool = self.tools[tool_name]
+            # Use the tool's get_schema() method which reads current attributes
             schema = tool.get_schema()
             tool_element = ET.SubElement(root, "tool")
 
@@ -85,39 +88,36 @@ class ToolExecutor:
             name_el.text = schema['name']
 
             desc_el = ET.SubElement(tool_element, "description")
-            desc_el.text = schema['description'].strip() # Ensure no leading/trailing whitespace
+            desc_el.text = schema['description'].strip()
 
             params_el = ET.SubElement(tool_element, "parameters")
             if schema['parameters']:
                  # Sort parameters for consistency
                  sorted_params = sorted(schema['parameters'], key=lambda p: p['name'])
-                 for param in sorted_params:
+                 for param_data in sorted_params: # Use param_data instead of param to avoid confusion
                      param_el = ET.SubElement(params_el, "parameter")
                      param_name = ET.SubElement(param_el, "name")
-                     param_name.text = param['name']
+                     param_name.text = param_data['name']
                      param_type = ET.SubElement(param_el, "type")
-                     param_type.text = param['type']
+                     param_type.text = param_data['type']
                      param_req = ET.SubElement(param_el, "required")
-                     # Use .get() for safety, default to True if missing for some reason
-                     param_req.text = str(param.get('required', True)).lower()
+                     param_req.text = str(param_data.get('required', True)).lower()
                      param_desc = ET.SubElement(param_el, "description")
-                     param_desc.text = param['description'].strip()
+                     # Ensure description is read from the CURRENT schema data
+                     param_desc.text = param_data['description'].strip()
             else:
                  params_el.text = "<!-- No parameters -->"
 
-            # Add XML Usage Example within the description block using CDATA
+            # Add XML Usage Example
             usage_el = ET.SubElement(tool_element, "usage_example")
             usage_str = f"\n<{schema['name']}>\n"
             if schema['parameters']:
-                 # Use sorted parameters in example too
                  sorted_params_usage = sorted(schema['parameters'], key=lambda p: p['name'])
-                 for param in sorted_params_usage:
-                    # Simple placeholder like <param>value</param>
-                    usage_str += f"  <{param['name']}>...</{param['name']}>\n"
+                 for param_data in sorted_params_usage:
+                    usage_str += f"  <{param_data['name']}>...</{param_data['name']}>\n"
             else:
                  usage_str += f"  <!-- No parameters -->\n"
             usage_str += f"</{schema['name']}>\n"
-            # Using CDATA helps prevent confusion if example includes XML-like chars
             usage_el.text = f"<![CDATA[{usage_str}]]>"
 
 
@@ -134,12 +134,13 @@ class ToolExecutor:
             "Place the **entire** XML block for the single tool call at the **very end** of your message."
         )
 
-        # Pretty print the XML for readability in the prompt
+        # Pretty print the XML
         ET.indent(root, space="  ")
         xml_string = ET.tostring(root, encoding='unicode', method='xml')
 
         # Combine with Markdown heading
         final_description = "# Tools Description (XML Format)\n\n" + xml_string
+        # logger.debug(f"Generated Tool Descriptions XML:\n{final_description}") # Optional: Log generated XML
         return final_description
 
 
@@ -150,12 +151,12 @@ class ToolExecutor:
         agent_id: str,
         agent_sandbox_path: Path,
         tool_name: str,
-        tool_args: Dict[str, Any] # Arguments are now parsed by the Agent Core
-    ) -> Any: # Return type changed to Any, as ManageTeamTool returns dict
+        tool_args: Dict[str, Any] # Arguments are pre-parsed by Agent Core
+    ) -> Any:
         """
         Executes the specified tool with the given arguments. Arguments are pre-parsed.
-        For ManageTeamTool, it returns the structured dictionary result directly.
-        For other tools, it ensures the result is a string.
+        Validates arguments against the tool's schema.
+        Returns raw dictionary result for ManageTeamTool, otherwise ensures string result.
 
         Args:
             agent_id: The ID of the agent initiating the call.
@@ -167,34 +168,42 @@ class ToolExecutor:
             Any: The result of the tool execution.
                  - For ManageTeamTool: The dictionary signal {'status': 'success'|'error', ...}
                  - For other tools: A string result or error message.
-                 Returns an error message string if the tool itself is not found.
+                 Returns an error message string or dict if the tool/args are invalid.
         """
         tool = self.tools.get(tool_name)
         if not tool:
             error_msg = f"Error: Tool '{tool_name}' not found."
             logger.error(error_msg)
-            return error_msg # Return string for tool not found
+            # Return error in format appropriate for ManageTeamTool if it was the intended target
+            if tool_name == ManageTeamTool.name:
+                return {"status": "error", "action": tool_args.get("action"), "message": error_msg}
+            else:
+                return error_msg
 
         logger.info(f"Executor: Executing tool '{tool_name}' for agent '{agent_id}' with args: {tool_args}")
         try:
-            # --- Argument Validation (Schema-based) ---
+            # --- Argument Validation (using tool.get_schema()) ---
             schema = tool.get_schema()
             validated_args = {}
             missing_required = []
+            # Check parameters defined in the schema
             if schema.get('parameters'):
-                param_map = {p['name']: p for p in schema['parameters']}
                 for param_info in schema['parameters']:
                     param_name = param_info['name']
                     is_required = param_info.get('required', True)
+
                     if param_name in tool_args:
+                        # Basic type check/conversion could be added here if needed
+                        # e.g., if param_info['type'] == 'integer': try converting tool_args[param_name]
                         validated_args[param_name] = tool_args[param_name]
                     elif is_required:
                         missing_required.append(param_name)
 
+            # Report missing required parameters
             if missing_required:
                 error_msg = f"Error: Tool '{tool_name}' execution failed. Missing required parameters: {', '.join(missing_required)}"
                 logger.error(error_msg)
-                # If ManageTeamTool, return structured error, otherwise string
+                # Return error in appropriate format
                 if tool_name == ManageTeamTool.name:
                     return {"status": "error", "action": tool_args.get("action"), "message": error_msg}
                 else:
@@ -209,10 +218,14 @@ class ToolExecutor:
             )
 
             # --- Handle Result ---
-            # If it's the ManageTeamTool, return the result dictionary directly
             if tool_name == ManageTeamTool.name:
-                 logger.info(f"Executor: Tool '{tool_name}' execution successful. Result: {result}")
-                 return result
+                 # Expecting dict from ManageTeamTool execute
+                 if not isinstance(result, dict):
+                      logger.error(f"ManageTeamTool execution returned unexpected type: {type(result)}. Expected dict.")
+                      # Return a standard error dict
+                      return {"status": "error", "action": tool_args.get("action"), "message": f"Internal Error: ManageTeamTool returned unexpected type {type(result)}."}
+                 logger.info(f"Executor: Tool '{tool_name}' execution returned result: {result}")
+                 return result # Return the dict directly
             else:
                  # For other tools, ensure result is string
                  if not isinstance(result, str):
