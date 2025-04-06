@@ -155,8 +155,7 @@ class AgentManager:
         if BOOTSTRAP_AGENT_ID not in self.agents: logger.critical(f"CRITICAL: Admin AI ('{BOOTSTRAP_AGENT_ID}') failed to initialize!")
 
 
-    # --- Agent Creation/Deletion (Remains in AgentManager) ---
-    # --- *** CORRECTED _create_agent_internal *** ---
+    # --- *** CORRECTED _create_agent_internal with SyntaxError Fix *** ---
     async def _create_agent_internal(
         self, agent_id_requested: Optional[str], agent_config_data: Dict[str, Any], is_bootstrap: bool = False, team_id: Optional[str] = None, loading_from_session: bool = False
         ) -> Tuple[bool, str, Optional[str]]:
@@ -210,12 +209,11 @@ class AgentManager:
         # 6. Ensure Sandbox
         try:
             sandbox_ok = await asyncio.to_thread(agent.ensure_sandbox_exists)
-            if not sandbox_ok: # This check MUST be inside the try block
+            if not sandbox_ok:
                  logger.warning(f"  Failed to ensure sandbox for '{agent_id}'.")
         except Exception as e:
             logger.error(f"Sandbox error for '{agent_id}': {e}", exc_info=True)
             logger.warning(f"Proceeding without guaranteed sandbox for '{agent_id}'.")
-        # --- *** END SyntaxError FIX *** ---
 
         # --- 7. Add agent instance to registry BEFORE assigning team state ---
         self.agents[agent_id] = agent
@@ -226,17 +224,29 @@ class AgentManager:
         if team_id:
             # Update agent's internal prompt if dynamically created now
             if not loading_from_session and not is_bootstrap:
-                 try: agent.final_system_prompt = re.sub(r"Your Team ID:.*", f"Your Team ID: {team_id}", agent.final_system_prompt); agent.agent_config["config"]["system_prompt"] = agent.final_system_prompt
-                 if agent.message_history and agent.message_history[0]["role"] == "system": agent.message_history[0]["content"] = agent.final_system_prompt
-                 except Exception as e: logger.error(f"Error updating team ID in dynamic agent prompt for {agent_id}: {e}")
+                 # --- **** CORRECTED TRY/EXCEPT FOR PROMPT UPDATE **** ---
+                 try:
+                     new_team_str = f"Your Team ID: {team_id}"
+                     agent.final_system_prompt = re.sub(r"Your Team ID:.*", new_team_str, agent.final_system_prompt)
+                     agent.agent_config["config"]["system_prompt"] = agent.final_system_prompt
+                     # Check history exists and is not empty before accessing index 0
+                     if agent.message_history and agent.message_history[0]["role"] == "system":
+                          agent.message_history[0]["content"] = agent.final_system_prompt
+                 except Exception as e:
+                      logger.error(f"Error updating team ID in dynamic agent prompt for {agent_id}: {e}")
+                 # --- **** END CORRECTION **** ---
+
             # Delegate actual state update
             team_add_success, team_add_msg = await self.state_manager.add_agent_to_team(agent_id, team_id)
-            if not team_add_success: team_add_msg_suffix = f" (Warning adding to team state: {team_add_msg})"
-            else: logger.info(f"Agent '{agent_id}' state added to team '{team_id}' via StateManager.")
+            if not team_add_success:
+                team_add_msg_suffix = f" (Warning adding to team state: {team_add_msg})"
+            else:
+                logger.info(f"Agent '{agent_id}' state added to team '{team_id}' via StateManager.")
 
         message = f"Agent '{agent_id}' created successfully." + team_add_msg_suffix
         return True, message, agent_id
     # --- *** END CORRECTED _create_agent_internal *** ---
+
 
     async def create_agent_instance( # Public method remains the same
         self, agent_id_requested: Optional[str], provider: str, model: str, system_prompt: str, persona: str, team_id: Optional[str] = None, temperature: Optional[float] = None, **kwargs
