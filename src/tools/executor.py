@@ -10,8 +10,10 @@ import logging # Added logging
 # Import BaseTool and specific tools
 from src.tools.base import BaseTool
 from src.tools.file_system import FileSystemTool
-# --- Import the new SendMessageTool ---
 from src.tools.send_message import SendMessageTool
+# --- Import the new ManageTeamTool ---
+from src.tools.manage_team import ManageTeamTool
+
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +28,8 @@ class ToolExecutor:
     # --- Tool Registration ---
     AVAILABLE_TOOL_CLASSES: List[Type[BaseTool]] = [
         FileSystemTool,
-        SendMessageTool, # <-- Added SendMessageTool here
+        SendMessageTool,
+        ManageTeamTool, # <-- Added ManageTeamTool here
         # Add other tool classes here, e.g., WebSearchTool
     ]
 
@@ -95,7 +98,8 @@ class ToolExecutor:
                      param_type = ET.SubElement(param_el, "type")
                      param_type.text = param['type']
                      param_req = ET.SubElement(param_el, "required")
-                     param_req.text = str(param['required']).lower() # 'true' or 'false'
+                     # Use .get() for safety, default to True if missing for some reason
+                     param_req.text = str(param.get('required', True)).lower()
                      param_desc = ET.SubElement(param_el, "description")
                      param_desc.text = param['description'].strip()
             else:
@@ -139,7 +143,7 @@ class ToolExecutor:
         return final_description
 
 
-    # --- Tool Execution (no XML parsing needed here anymore) ---
+    # --- Tool Execution ---
 
     async def execute_tool(
         self,
@@ -147,9 +151,11 @@ class ToolExecutor:
         agent_sandbox_path: Path,
         tool_name: str,
         tool_args: Dict[str, Any] # Arguments are now parsed by the Agent Core
-    ) -> str:
+    ) -> Any: # Return type changed to Any, as ManageTeamTool returns dict
         """
         Executes the specified tool with the given arguments. Arguments are pre-parsed.
+        For ManageTeamTool, it returns the structured dictionary result directly.
+        For other tools, it ensures the result is a string.
 
         Args:
             agent_id: The ID of the agent initiating the call.
@@ -158,14 +164,16 @@ class ToolExecutor:
             tool_args: The pre-parsed arguments dictionary for the tool.
 
         Returns:
-            str: The result of the tool execution (should be a string or serializable).
-                 Returns an error message string if execution fails.
-                 For SendMessageTool, this is just a confirmation string for the sender's history.
+            Any: The result of the tool execution.
+                 - For ManageTeamTool: The dictionary signal {'status': 'success'|'error', ...}
+                 - For other tools: A string result or error message.
+                 Returns an error message string if the tool itself is not found.
         """
         tool = self.tools.get(tool_name)
         if not tool:
-            logger.error(f"Tool '{tool_name}' not found.")
-            return f"Error: Tool '{tool_name}' not found."
+            error_msg = f"Error: Tool '{tool_name}' not found."
+            logger.error(error_msg)
+            return error_msg # Return string for tool not found
 
         logger.info(f"Executor: Executing tool '{tool_name}' for agent '{agent_id}' with args: {tool_args}")
         try:
@@ -177,25 +185,21 @@ class ToolExecutor:
                 param_map = {p['name']: p for p in schema['parameters']}
                 for param_info in schema['parameters']:
                     param_name = param_info['name']
-                    is_required = param_info.get('required', True) # Default to required if key missing
+                    is_required = param_info.get('required', True)
                     if param_name in tool_args:
-                        # TODO: Add basic type checking based on param_info['type']?
-                        # e.g., if param_info['type'] == 'integer': try: int(tool_args[param_name]) except ValueError: return "Error..."
                         validated_args[param_name] = tool_args[param_name]
                     elif is_required:
                         missing_required.append(param_name)
 
-                # Check for unexpected arguments (optional - could be useful for debugging)
-                # for arg_name in tool_args:
-                #     if arg_name not in param_map:
-                #         logger.warning(f"Unexpected argument '{arg_name}' provided for tool '{tool_name}'")
-
             if missing_required:
                 error_msg = f"Error: Tool '{tool_name}' execution failed. Missing required parameters: {', '.join(missing_required)}"
                 logger.error(error_msg)
-                return error_msg
+                # If ManageTeamTool, return structured error, otherwise string
+                if tool_name == ManageTeamTool.name:
+                    return {"status": "error", "action": tool_args.get("action"), "message": error_msg}
+                else:
+                    return error_msg
             # --- End Argument Validation ---
-
 
             # Execute with validated arguments
             result = await tool.execute(
@@ -204,19 +208,26 @@ class ToolExecutor:
                 **validated_args # Use validated args
             )
 
-            # Ensure result is string
-            if not isinstance(result, str):
-                 try:
-                     result_str = json.dumps(result, indent=2)
-                 except TypeError:
-                     result_str = str(result) # Fallback to basic string conversion
+            # --- Handle Result ---
+            # If it's the ManageTeamTool, return the result dictionary directly
+            if tool_name == ManageTeamTool.name:
+                 logger.info(f"Executor: Tool '{tool_name}' execution successful. Result: {result}")
+                 return result
             else:
-                 result_str = result
-
-            logger.info(f"Executor: Tool '{tool_name}' execution successful for agent '{agent_id}'. Result (first 100 chars): {result_str[:100]}...")
-            return result_str
+                 # For other tools, ensure result is string
+                 if not isinstance(result, str):
+                     try: result_str = json.dumps(result, indent=2)
+                     except TypeError: result_str = str(result)
+                 else:
+                     result_str = result
+                 logger.info(f"Executor: Tool '{tool_name}' execution successful. Result (stringified, first 100 chars): {result_str[:100]}...")
+                 return result_str
 
         except Exception as e:
             error_msg = f"Executor: Error executing tool '{tool_name}': {type(e).__name__} - {e}"
-            logger.error(error_msg, exc_info=True) # Log traceback for executor errors
-            return error_msg
+            logger.error(error_msg, exc_info=True)
+            # Return appropriate error format
+            if tool_name == ManageTeamTool.name:
+                 return {"status": "error", "action": tool_args.get("action"), "message": error_msg}
+            else:
+                 return error_msg
