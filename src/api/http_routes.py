@@ -3,7 +3,7 @@ from fastapi import APIRouter, Request, HTTPException, status as http_status, De
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any # Added Dict, Any
+from typing import List, Optional, Dict, Any, TYPE_CHECKING # Added Dict, Any, TYPE_CHECKING
 from pathlib import Path
 import logging
 import os # For listing directories
@@ -15,11 +15,12 @@ from src.config.settings import settings
 # Import the ConfigManager singleton instance for agent config CRUD
 from src.config.config_manager import config_manager
 
-# --- Import the global AgentManager instance ---
-# Although FastAPI encourages dependency injection, for simplicity in the current structure,
-# we'll access the globally instantiated AgentManager directly from where it's created (main.py scope).
-# If issues arise, proper dependency injection should be implemented.
-from src.main import agent_manager # Import the instance created in main.py
+# --- Remove direct import of agent_manager from main ---
+# from src.main import agent_manager
+
+# --- Type Hinting for AgentManager ---
+if TYPE_CHECKING:
+    from src.agents.manager import AgentManager
 
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,17 @@ templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 # Create an API router instance
 router = APIRouter()
 
-# --- Pydantic Models for API Responses ---
+# --- Dependency Function to get AgentManager ---
+def get_agent_manager_dependency() -> 'AgentManager':
+    """FastAPI dependency to get the global AgentManager instance."""
+    # Import locally to avoid top-level circular import
+    from src.main import agent_manager
+    if agent_manager is None:
+        # This should ideally not happen if main.py initializes correctly
+        raise RuntimeError("AgentManager instance has not been initialized in main.py")
+    return agent_manager
+
+# --- Pydantic Models (remain the same) ---
 
 class AgentInfo(BaseModel):
     """Model to represent basic agent information for the UI."""
@@ -52,18 +63,15 @@ class GeneralResponse(BaseModel):
     message: str
     details: Optional[str] = None
 
-# --- Pydantic Models for Session/Project API ---
-
 class SessionInfo(BaseModel):
     """ Model for session information. """
     project_name: str
     session_name: str
-    # Add timestamp or other metadata later if needed from session file
 
 class ProjectInfo(BaseModel):
     """ Model for project information. """
     project_name: str
-    sessions: Optional[List[str]] = None # Optional list of session names
+    sessions: Optional[List[str]] = None
 
 class SaveSessionInput(BaseModel):
     """ Optional input for saving session (allows specifying name). """
@@ -74,11 +82,8 @@ class SaveSessionInput(BaseModel):
 
 @router.get("/", response_class=HTMLResponse)
 async def get_index_page(request: Request):
-    """
-    Serves the main index.html page.
-    """
+    """ Serves the main index.html page. """
     try:
-        # Check if template exists before trying to render
         template_path = TEMPLATE_DIR / "index.html"
         if not template_path.is_file():
              logger.error(f"Template file index.html not found at {template_path}")
@@ -86,23 +91,15 @@ async def get_index_page(request: Request):
         return templates.TemplateResponse("index.html", {"request": request})
     except FileNotFoundError as e:
          logger.error(f"Error serving index page: {e}")
-         error_html = """
-         <html><head><title>Error 500</title></head>
-         <body><h1>Internal Server Error</h1><p>Could not load the main application page. Template file missing.</p></body></html>
-         """
+         error_html = "<html><body><h1>Internal Server Error</h1><p>Could not load the main application page. Template file missing.</p></body></html>"
          return HTMLResponse(content=error_html, status_code=500)
     except Exception as e:
         logger.error(f"Error rendering template index.html: {e}", exc_info=True)
-        # Provide a fallback response or raise an appropriate HTTP exception
-        error_html = """
-        <html><head><title>Error 500</title></head>
-        <body><h1>Internal Server Error</h1><p>An unexpected error occurred while loading the page.</p></body></html>
-        """
+        error_html = "<html><body><h1>Internal Server Error</h1><p>An unexpected error occurred while loading the page.</p></body></html>"
         return HTMLResponse(content=error_html, status_code=500)
 
-# --- Agent Config CRUD API Endpoints ---
+# --- Agent Config CRUD API Endpoints (remain the same logic) ---
 
-# Pydantic models for agent config
 class AgentConfigInput(BaseModel):
     provider: str = Field(..., description="Provider name ('openai', 'ollama', 'openrouter', etc.)")
     model: str = Field(..., description="Model name specific to the provider.")
@@ -112,7 +109,7 @@ class AgentConfigInput(BaseModel):
     class Config: extra = "allow"
 
 class AgentConfigCreate(BaseModel):
-    agent_id: str = Field(..., description="Unique identifier for the agent (e.g., 'coder_v2'). Cannot contain spaces or special characters.", pattern=r"^[a-zA-Z0-9_-]+$") # Added pattern
+    agent_id: str = Field(..., description="Unique identifier for the agent (e.g., 'coder_v2'). Cannot contain spaces or special characters.", pattern=r"^[a-zA-Z0-9_-]+$")
     config: AgentConfigInput = Field(..., description="The configuration settings for the agent.")
 
 @router.get("/api/config/agents", response_model=List[AgentInfo])
@@ -121,12 +118,10 @@ async def get_agent_configurations():
     agent_info_list: List[AgentInfo] = []
     try:
         raw_configs = await config_manager.get_config() # Gets only the 'agents' list
-
         if not raw_configs: return []
         if not isinstance(raw_configs, list):
              logger.error(f"ConfigManager.get_config() did not return a list, type: {type(raw_configs)}")
              raise HTTPException(status_code=500, detail="Internal error reading configuration structure.")
-
         for agent_conf_entry in raw_configs:
             agent_id = agent_conf_entry.get("agent_id")
             config_dict = agent_conf_entry.get("config", {})
@@ -189,13 +184,12 @@ async def delete_agent_configuration(agent_id: str):
         if success:
             return GeneralResponse(success=True, message=f"Agent '{agent_id}' deleted. Restart application for changes to take effect.")
         else:
-             # Check if deletion failed because agent wasn't found or save failed
-             all_configs = await config_manager.get_full_config() # Check full config state
+             all_configs = await config_manager.get_full_config()
              agent_still_exists = any(a.get("agent_id") == agent_id for a in all_configs.get("agents", []))
              if not agent_still_exists:
-                 logger.error(f"Agent '{agent_id}' not found for deletion (or was already deleted but save failed?).")
+                 logger.error(f"Agent '{agent_id}' not found for deletion (or already deleted but save failed?).")
                  raise HTTPException(status_code=404, detail=f"Agent with ID '{agent_id}' not found.")
-             else: # Agent exists, but delete op failed (likely save error)
+             else:
                  logger.error(f"Failed to delete agent '{agent_id}' using ConfigManager (likely save failed).")
                  raise HTTPException(status_code=500, detail=f"Failed to delete agent '{agent_id}'. Check server logs for save errors.")
     except HTTPException as http_exc: raise http_exc
@@ -213,11 +207,10 @@ async def list_projects():
     base_dir = settings.PROJECTS_BASE_DIR
     if not base_dir.is_dir():
         logger.warning(f"Projects base directory not found or is not a directory: {base_dir}")
-        return [] # Return empty list if base directory doesn't exist
-
+        return []
     try:
         for item in base_dir.iterdir():
-            if item.is_dir() and not item.name.startswith('.'): # List only directories, ignore hidden
+            if item.is_dir() and not item.name.startswith('.'):
                 projects.append(ProjectInfo(project_name=item.name))
         return projects
     except Exception as e:
@@ -230,48 +223,54 @@ async def list_sessions(project_name: str):
     """ Lists available sessions within a specific project directory. """
     sessions = []
     project_dir = settings.PROJECTS_BASE_DIR / project_name
-
     if not project_dir.is_dir():
         raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found.")
-
     try:
         for item in project_dir.iterdir():
-            # Check if it's a directory AND contains the expected history file
             session_file = item / "agent_histories.json"
             if item.is_dir() and not item.name.startswith('.') and session_file.is_file():
                 sessions.append(SessionInfo(project_name=project_name, session_name=item.name))
             elif item.is_dir() and not item.name.startswith('.'):
                  logger.warning(f"Directory '{item.name}' in project '{project_name}' exists but missing 'agent_histories.json', not listed as session.")
-
         return sessions
     except Exception as e:
         logger.error(f"Error listing sessions in {project_dir}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to list sessions for project '{project_name}': {e}")
 
 @router.post("/api/projects/{project_name}/sessions", response_model=GeneralResponse, status_code=http_status.HTTP_201_CREATED)
-async def save_current_session(project_name: str, session_input: Optional[SaveSessionInput] = None):
+async def save_current_session(
+    project_name: str,
+    session_input: Optional[SaveSessionInput] = None,
+    # --- Inject AgentManager using dependency ---
+    manager: 'AgentManager' = Depends(get_agent_manager_dependency)
+):
     """ Saves the current state (agent histories) as a new session in the specified project. """
     session_name_to_save = session_input.session_name if session_input else None
     try:
-        success, message = await agent_manager.save_session(project_name, session_name_to_save)
+        # --- Use the injected manager instance ---
+        success, message = await manager.save_session(project_name, session_name_to_save)
         if success:
             return GeneralResponse(success=True, message=message)
         else:
-            # Determine appropriate status code based on message?
-            # For now, use 400 for generic failure during save.
             raise HTTPException(status_code=400, detail=message)
     except Exception as e:
         logger.error(f"Unexpected error saving session for project '{project_name}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Unexpected error saving session: {e}")
 
 @router.post("/api/projects/{project_name}/sessions/{session_name}/load", response_model=GeneralResponse)
-async def load_specific_session(project_name: str, session_name: str):
+async def load_specific_session(
+    project_name: str,
+    session_name: str,
+    # --- Inject AgentManager using dependency ---
+    manager: 'AgentManager' = Depends(get_agent_manager_dependency)
+):
     """ Loads the specified session, replacing current agent histories. """
     try:
-        success, message = await agent_manager.load_session(project_name, session_name)
+        # --- Use the injected manager instance ---
+        success, message = await manager.load_session(project_name, session_name)
         if success:
-            # Send a status update via WebSocket to notify UI of the load
-            await agent_manager._send_to_ui({
+            # --- Call send_to_ui (assuming it's made public) ---
+            await manager.send_to_ui({
                 "type": "system_event",
                 "event": "session_loaded",
                 "project": project_name,
@@ -280,12 +279,11 @@ async def load_specific_session(project_name: str, session_name: str):
             })
             return GeneralResponse(success=True, message=message)
         else:
-            # Use 404 if file not found, 400 otherwise
             if "not found" in message.lower():
                  raise HTTPException(status_code=404, detail=message)
             else:
                  raise HTTPException(status_code=400, detail=message)
-    except HTTPException as http_exc: raise http_exc # Re-raise known exceptions
+    except HTTPException as http_exc: raise http_exc
     except Exception as e:
         logger.error(f"Unexpected error loading session '{session_name}' for project '{project_name}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Unexpected error loading session: {e}")
