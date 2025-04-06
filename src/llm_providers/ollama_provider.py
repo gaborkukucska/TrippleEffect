@@ -9,7 +9,6 @@ from typing import List, Dict, Any, Optional, AsyncGenerator
 from .base import BaseLLMProvider, MessageDict, ToolDict, ToolResultDict
 
 logger = logging.getLogger(__name__)
-# Basic config (ideally configure centrally)
 # logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s') # Configured in main
 
 
@@ -109,18 +108,35 @@ class OllamaProvider(BaseLLMProvider):
                     elif response_status >= 500:
                          last_exception = ValueError(f"Ollama API Error {response_status}")
                          logger.warning(f"Ollama API Error on attempt {attempt + 1}: Status {response_status}, Response: {response_text[:200]}...")
-                         if attempt < MAX_RETRIES: await asyncio.sleep(RETRY_DELAY_SECONDS); continue
-                         else: logger.error(f"Max retries ({MAX_RETRIES}) reached after status {response_status}."); yield {"type": "error", "content": f"[OllamaProvider Error]: Max retries. Last error: Status {response_status} - {response_text[:100]}"}; return
+                         if attempt < MAX_RETRIES:
+                             logger.info(f"Status {response_status} >= 500. Waiting {RETRY_DELAY_SECONDS}s before retrying...")
+                             await asyncio.sleep(RETRY_DELAY_SECONDS); continue
+                         else:
+                             logger.error(f"Max retries ({MAX_RETRIES}) reached after status {response_status}.")
+                             yield {"type": "error", "content": f"[OllamaProvider Error]: Max retries. Last error: Status {response_status} - {response_text[:100]}"}
+                             return
                     else: # 4xx errors
-                        logger.error(f"Ollama API Client Error: Status {response_status}, Response: {response_text[:200]}"); yield {"type": "error", "content": f"[OllamaProvider Error]: Client Error {response_status} - {response_text[:100]}"}; return
+                        logger.error(f"Ollama API Client Error: Status {response_status}, Response: {response_text[:200]}")
+                        yield {"type": "error", "content": f"[OllamaProvider Error]: Client Error {response_status} - {response_text[:100]}"}
+                        return
             except RETRYABLE_OLLAMA_EXCEPTIONS as e:
                 last_exception = e; logger.warning(f"Retryable connection/timeout error on attempt {attempt + 1}/{MAX_RETRIES + 1}: {type(e).__name__} - {e}")
-                if attempt < MAX_RETRIES: await asyncio.sleep(RETRY_DELAY_SECONDS); continue
-                else: logger.error(f"Max retries ({MAX_RETRIES}) reached after {type(e).__name__}."); yield {"type": "error", "content": f"[OllamaProvider Error]: Max retries reached after connection/timeout error. Last: {type(e).__name__}"}; return
+                if attempt < MAX_RETRIES:
+                    logger.info(f"Waiting {RETRY_DELAY_SECONDS}s before retrying...")
+                    await asyncio.sleep(RETRY_DELAY_SECONDS); continue
+                else:
+                    logger.error(f"Max retries ({MAX_RETRIES}) reached after {type(e).__name__}.")
+                    yield {"type": "error", "content": f"[OllamaProvider Error]: Max retries reached after connection/timeout error. Last: {type(e).__name__}"}
+                    return
             except Exception as e:
                 last_exception = e; logger.exception(f"Unexpected Error during Ollama API call attempt {attempt + 1}: {type(e).__name__} - {e}")
-                if attempt < MAX_RETRIES: await asyncio.sleep(RETRY_DELAY_SECONDS); continue
-                else: logger.error(f"Max retries ({MAX_RETRIES}) reached after unexpected error."); yield {"type": "error", "content": f"[OllamaProvider Error]: Unexpected Error after retries - {type(e).__name__}"}; return
+                if attempt < MAX_RETRIES:
+                    logger.info(f"Waiting {RETRY_DELAY_SECONDS}s before retrying...")
+                    await asyncio.sleep(RETRY_DELAY_SECONDS); continue
+                else:
+                    logger.error(f"Max retries ({MAX_RETRIES}) reached after unexpected error.")
+                    yield {"type": "error", "content": f"[OllamaProvider Error]: Unexpected Error after retries - {type(e).__name__}"}
+                    return
 
         # --- Check if API call failed after all retries ---
         if response is None or response.status != 200:
@@ -131,25 +147,30 @@ class OllamaProvider(BaseLLMProvider):
         # --- Process the Successful Stream ---
         stream_error_occurred = False
         try:
-            # *** ADDED TRY/EXCEPT AROUND STREAM ITERATION ***
+            # *** MODIFIED TRY/EXCEPT AROUND STREAM ITERATION ***
             async for line in response.content:
                 if line:
                     decoded_line = ""
                     try:
+                        # Decode and parse JSON chunk
                         decoded_line = line.decode('utf-8')
                         chunk_data = json.loads(decoded_line)
 
+                        # Check for explicit error field from Ollama
                         if chunk_data.get("error"):
                             error_msg = chunk_data["error"]
                             logger.error(f"Received error in Ollama stream: {error_msg}")
                             yield {"type": "error", "content": f"[OllamaProvider Error]: {error_msg}"}
                             stream_error_occurred = True; break # Exit loop on stream error
 
+                        # Process message content chunk
                         message_chunk = chunk_data.get("message")
                         if message_chunk and isinstance(message_chunk, dict):
                             content_chunk = message_chunk.get("content")
-                            if content_chunk: yield {"type": "response_chunk", "content": content_chunk}
+                            if content_chunk:
+                                yield {"type": "response_chunk", "content": content_chunk}
 
+                        # Check for stream completion
                         if chunk_data.get("done", False):
                             if not stream_error_occurred:
                                 logger.debug(f"Received done=true from stream for model {model}.")
@@ -162,21 +183,27 @@ class OllamaProvider(BaseLLMProvider):
                         yield {"type": "error", "content": "[OllamaProvider Error]: Failed to decode stream chunk."}
                         stream_error_occurred = True; break # Exit loop on decode error
                     except Exception as e:
+                        # Log other chunk processing errors
                         logger.error(f"Error processing Ollama stream line: {e}", exc_info=True)
                         logger.error(f"Problematic line (decoded): {decoded_line}")
                         yield {"type": "error", "content": f"[OllamaProvider Error]: Error processing stream chunk - {type(e).__name__}"}
                         stream_error_occurred = True; break # Exit loop on other chunk error
-            # *** END ADDED TRY/EXCEPT ***
+                #else: break # Break if empty line received? Probably not needed.
+            # *** END MODIFIED TRY/EXCEPT ***
 
-            if stream_error_occurred: logger.error("Exiting Ollama stream processing due to error encountered.")
+            if stream_error_occurred:
+                logger.error("Exiting Ollama stream processing due to error encountered.")
 
         except aiohttp.ClientPayloadError as payload_err:
+             # Handle errors related to reading the response payload
              logger.error(f"Ollama stream connection error (Payload): {payload_err}", exc_info=True)
              yield {"type": "error", "content": f"[OllamaProvider Error]: Stream connection error (Payload) - {payload_err}"}
         except aiohttp.ClientResponseError as response_err:
+             # Handle client response errors during streaming
              logger.error(f"Ollama stream connection error (Response): {response_err.status} {response_err.message}", exc_info=True)
              yield {"type": "error", "content": f"[OllamaProvider Error]: Stream connection error ({response_err.status}) - {response_err.message}"}
         except Exception as e:
+             # Catch any other unexpected errors during stream processing
              logger.exception(f"Unexpected Error processing Ollama stream: {type(e).__name__} - {e}")
              yield {"type": "error", "content": f"[OllamaProvider Error]: Unexpected Stream processing error - {type(e).__name__}"}
 
