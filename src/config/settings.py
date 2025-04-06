@@ -53,19 +53,15 @@ class Settings:
     Manages API keys, base URLs, default agent parameters, initial agent configs,
     and constraints for dynamic agents (allowed_sub_agent_models).
     Uses ConfigManager to load configurations synchronously at startup.
+    Provides checks for provider configuration status.
     """
     def __init__(self):
         # --- Provider Configuration (from .env) ---
-        # OpenAI
         self.OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY")
         self.OPENAI_BASE_URL: Optional[str] = os.getenv("OPENAI_BASE_URL")
-
-        # OpenRouter
         self.OPENROUTER_API_KEY: Optional[str] = os.getenv("OPENROUTER_API_KEY")
         self.OPENROUTER_BASE_URL: Optional[str] = os.getenv("OPENROUTER_BASE_URL")
         self.OPENROUTER_REFERER: Optional[str] = os.getenv("OPENROUTER_REFERER")
-
-        # Ollama
         self.OLLAMA_BASE_URL: Optional[str] = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
         # --- Project/Session Configuration (from .env) ---
@@ -116,8 +112,9 @@ class Settings:
              print("Warning: No 'allowed_sub_agent_models' constraints loaded. Dynamic agent creation might be unrestricted or fail.")
         else:
              print("Loaded allowed sub-agent models:")
-             for provider, models in self.ALLOWED_SUB_AGENT_MODELS.items():
-                 print(f"  - {provider}: {models}")
+             # Use list comprehension for cleaner logging
+             [print(f"  - {provider}: {models}") for provider, models in self.ALLOWED_SUB_AGENT_MODELS.items()]
+
 
         # --- Other global settings ---
         # e.g., LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -135,60 +132,37 @@ class Settings:
              print(f"Ensured projects directory exists at: {self.PROJECTS_BASE_DIR}")
         except Exception as e:
              print(f"Error creating projects directory at {self.PROJECTS_BASE_DIR}: {e}")
+             # Consider if this should be a fatal error
 
     def _check_required_keys(self):
-        """Checks if necessary API keys/URLs are set based on agent configurations."""
-        required_openai = False
-        required_openrouter = False
-        required_ollama = False
-
-        # Check defaults first
-        if self.DEFAULT_AGENT_PROVIDER == "openai": required_openai = True
-        if self.DEFAULT_AGENT_PROVIDER == "openrouter": required_openrouter = True
-        if self.DEFAULT_AGENT_PROVIDER == "ollama": required_ollama = True
-
-        # Check bootstrap agent configs
+        """Checks if necessary API keys/URLs are set based on bootstrap agent configurations."""
+        # Determine which providers are actually used by bootstrap agents or defaults
+        providers_used_in_bootstrap = {self.DEFAULT_AGENT_PROVIDER}
         if isinstance(self.AGENT_CONFIGURATIONS, list):
              for agent_conf_entry in self.AGENT_CONFIGURATIONS:
-                 agent_conf = agent_conf_entry.get("config", {})
-                 provider = agent_conf.get("provider")
-                 if provider == "openai": required_openai = True
-                 if provider == "openrouter": required_openrouter = True
-                 if provider == "ollama": required_ollama = True
-                 # Allow override via config.yaml's api_key/base_url - if they are set, we don't strictly need the .env var
-                 if provider == "openai" and agent_conf.get("api_key"): required_openai = False
-                 if provider == "openrouter" and agent_conf.get("api_key"): required_openrouter = False
-        else:
-             logger.error("AGENT_CONFIGURATIONS is not a list during _check_required_keys. Check loading.")
+                 provider = agent_conf_entry.get("config", {}).get("provider")
+                 if provider:
+                     providers_used_in_bootstrap.add(provider)
 
-        # Note: We don't check keys for ALLOWED_SUB_AGENT_MODELS here, as they might not be used immediately.
-        # Provider instantiation logic in AgentManager handles missing keys/URLs at creation time.
+        print("-" * 30); print("Bootstrap Configuration Check:")
+        # Check configuration status for each potentially used provider
+        if "openai" in providers_used_in_bootstrap:
+            if not self.is_provider_configured("openai"): print("⚠️ WARNING: OpenAI provider used by bootstrap/default, but OPENAI_API_KEY missing/empty.")
+            else: print("✅ OpenAI API Key: Found")
 
-        print("-" * 30)
-        print("Configuration Check:")
-        if required_openai and not self.OPENAI_API_KEY:
-            print("⚠️ WARNING: OpenAI provider is used by bootstrap/default, but OPENAI_API_KEY is missing in .env.")
-        elif self.OPENAI_API_KEY:
-             print("✅ OpenAI API Key: Found")
+        if "openrouter" in providers_used_in_bootstrap:
+            if not self.is_provider_configured("openrouter"): print("⚠️ WARNING: OpenRouter provider used by bootstrap/default, but OPENROUTER_API_KEY missing/empty.")
+            else: print("✅ OpenRouter API Key: Found")
 
-        if required_openrouter and not self.OPENROUTER_API_KEY:
-            print("⚠️ WARNING: OpenRouter provider is used by bootstrap/default, but OPENROUTER_API_KEY is missing in .env.")
-        elif self.OPENROUTER_API_KEY:
-             print("✅ OpenRouter API Key: Found")
+        if "ollama" in providers_used_in_bootstrap:
+            if not self.is_provider_configured("ollama"): print("⚠️ WARNING: Ollama provider used by bootstrap/default, but OLLAMA_BASE_URL missing/empty (and no default).")
+            elif self.OLLAMA_BASE_URL: print(f"✅ Ollama Base URL: {self.OLLAMA_BASE_URL}")
 
-        if required_ollama and not self.OLLAMA_BASE_URL:
-             print("⚠️ WARNING: Ollama provider is used by bootstrap/default, but OLLAMA_BASE_URL is missing in .env (and no default set).")
-        elif self.OLLAMA_BASE_URL:
-             print(f"✅ Ollama Base URL: {self.OLLAMA_BASE_URL}")
-
-        # Check OpenRouter Referer (Recommended)
-        # Use self.OPENROUTER_REFERER which might have been overridden by .env
-        final_referer = self.OPENROUTER_REFERER or os.getenv("OPENROUTER_REFERER") # Check both
-        if (required_openrouter or self.DEFAULT_AGENT_PROVIDER == "openrouter") and not final_referer:
-            print("ℹ️ INFO: OpenRouter provider used, but OPENROUTER_REFERER not set in .env. Using default.")
-        elif final_referer:
-            print(f"✅ OpenRouter Referer: {final_referer}")
-
+        # Check OpenRouter Referer separately as it's recommended but not strictly required
+        if "openrouter" in providers_used_in_bootstrap:
+            final_referer = self.OPENROUTER_REFERER # Use the value loaded in __init__
+            if not final_referer: print("ℹ️ INFO: OpenRouter provider used, but OPENROUTER_REFERER not set. Using default.")
+            else: print(f"✅ OpenRouter Referer: {final_referer}")
         print("-" * 30)
 
     def get_provider_config(self, provider_name: str) -> Dict[str, Any]:
@@ -203,24 +177,38 @@ class Settings:
             Dict[str, Any]: Containing 'api_key', 'base_url', 'referer' if applicable.
         """
         config = {}
+        provider_name = provider_name.lower() # Ensure lowercase comparison
         if provider_name == "openai":
-            config['api_key'] = self.OPENAI_API_KEY
-            config['base_url'] = self.OPENAI_BASE_URL # Can be None
+            config = {'api_key': self.OPENAI_API_KEY, 'base_url': self.OPENAI_BASE_URL}
         elif provider_name == "openrouter":
-            config['api_key'] = self.OPENROUTER_API_KEY
-            config['base_url'] = self.OPENROUTER_BASE_URL # Can be None
-            # Use self.OPENROUTER_REFERER (which defaults if .env not set)
-            config['referer'] = self.OPENROUTER_REFERER # Pass referer for header setup
+            config = {'api_key': self.OPENROUTER_API_KEY, 'base_url': self.OPENROUTER_BASE_URL, 'referer': self.OPENROUTER_REFERER}
         elif provider_name == "ollama":
-            # Ollama typically doesn't use an API key
-            config['api_key'] = None
-            config['base_url'] = self.OLLAMA_BASE_URL
+            config = {'api_key': None, 'base_url': self.OLLAMA_BASE_URL}
         else:
              logger.warning(f"Requested provider config for unknown provider '{provider_name}'")
+        # Return dict including potential None values
+        return config
 
-        # Filter out None values before returning? No, allow None base_url/referer
-        return config # Return dict with potential None values
-
+    # --- *** NEW METHOD *** ---
+    def is_provider_configured(self, provider_name: str) -> bool:
+        """
+        Checks if a provider has its essential configuration set in .env
+        (e.g., API key for OpenAI/OpenRouter, URL for Ollama).
+        """
+        provider_name = provider_name.lower()
+        if provider_name == "openai":
+            # Check if API key string exists and is not empty
+            return bool(self.OPENAI_API_KEY and self.OPENAI_API_KEY.strip())
+        elif provider_name == "openrouter":
+            # Check if API key string exists and is not empty
+            return bool(self.OPENROUTER_API_KEY and self.OPENROUTER_API_KEY.strip())
+        elif provider_name == "ollama":
+            # Check if Base URL string exists and is not empty
+            return bool(self.OLLAMA_BASE_URL and self.OLLAMA_BASE_URL.strip())
+        else:
+            logger.warning(f"Checking configuration for unknown provider: {provider_name}")
+            return False
+    # --- *** END NEW METHOD *** ---
 
     def get_agent_config_by_id(self, agent_id: str) -> Optional[Dict[str, Any]]:
         """Retrieves a specific bootstrap agent's configuration dictionary by its ID from the loaded configuration."""
@@ -231,19 +219,29 @@ class Settings:
                      return agent_conf_entry.get('config', {})
         return None
 
-    # --- Added Method ---
     def get_formatted_allowed_models(self) -> str:
         """ Returns a formatted string listing allowed models, suitable for prompts. """
         if not self.ALLOWED_SUB_AGENT_MODELS:
-            return "Dynamic agent creation constraints: No models specified (creation might fail)."
+            return "Dynamic agent creation constraints: No models specified."
 
         lines = ["**Allowed Models for Dynamic Agent Creation:**"]
         try:
-            for provider, models in self.ALLOWED_SUB_AGENT_MODELS.items():
-                if models:
-                    lines.append(f"- **{provider}**: `{', '.join(models)}`")
-                else:
-                    lines.append(f"- **{provider}**: (No models specified)")
+            # Filter out providers with empty lists or lists containing only empty strings
+            valid_providers = {
+                provider: models
+                for provider, models in self.ALLOWED_SUB_AGENT_MODELS.items()
+                if models and any(m.strip() for m in models) # Check if list exists and has at least one non-empty string
+            }
+            if not valid_providers:
+                return "Dynamic agent creation constraints: No valid models specified."
+
+            for provider, models in valid_providers.items():
+                 # Filter out empty strings from the list before joining
+                 valid_models = [m for m in models if m and m.strip()]
+                 if valid_models:
+                     lines.append(f"- **{provider}**: `{', '.join(valid_models)}`")
+                 else: # Should not happen due to outer filter, but safe fallback
+                      lines.append(f"- **{provider}**: (No valid models listed)")
             return "\n".join(lines)
         except Exception as e:
             logger.error(f"Error formatting allowed models: {e}")
@@ -256,10 +254,3 @@ class Settings:
 
 # Create a singleton instance of the Settings class
 settings = Settings()
-
-# Example Usage (after import: from src.config.settings import settings):
-# openrouter_defaults = settings.get_provider_config('openrouter')
-# bootstrap_agent_configs = settings.AGENT_CONFIGURATIONS
-# allowed_models = settings.ALLOWED_SUB_AGENT_MODELS
-# projects_dir = settings.PROJECTS_BASE_DIR
-# allowed_models_prompt_string = settings.get_formatted_allowed_models()
