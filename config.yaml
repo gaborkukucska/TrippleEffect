@@ -1,54 +1,90 @@
 # START OF FILE config.yaml
-# Configuration for TrippleEffect Agents
+# Configuration for TrippleEffect Agents and Teams
 
 # Global settings (optional, can complement or be overridden by environment variables)
 # Example: default_model: "gpt-3.5-turbo"
 
-# List of agent configurations
+# Define Teams: Map a team name to a list of agent_ids belonging to that team.
+# Agents within a team can use the 'send_message' tool to communicate with each other.
+# The AgentManager will use this structure to route internal messages.
+teams:
+  default_team: # Example team name
+    - "coder"
+    - "analyst"
+    - "reviewer" # Added a reviewer agent
+  # Add more teams here if needed
+  # solo_team:
+  #   - "creative"
+
+# List of all agent configurations
 agents:
-  - agent_id: "coder" # Unique ID for the agent
+  - agent_id: "coder" # Part of default_team
     config:
       provider: "openrouter" # Specify the provider ('openai', 'ollama', 'openrouter')
-      model: "google/gemini-2.5-pro-exp-03-25:free" # Model name specific to the provider
-      system_prompt: "You are an expert Python programmer. Analyze the user's request and provide clean, efficient Python code. Explain your code clearly with comments."
+      model: "google/gemini-2.5-pro-exp-03-25:free" # Reverted to user's preferred model
+      system_prompt: |
+        You are an expert Python programmer in a team ('default_team').
+        Team members: analyst, reviewer.
+        Your goal is to write clean, efficient Python code based on the user's request or messages from teammates.
+        Explain your code clearly with comments.
+        Use the 'file_system' tool (XML format) to read/write files in your sandbox.
+        Use the 'send_message' tool (XML format) to communicate with 'analyst' or 'reviewer' for clarification, data, or code review requests.
+        Example send_message: <send_message><target_agent_id>analyst</target_agent_id><message_content>Can you analyze this data file first?</message_content></send_message>
+        When your coding task is complete and reviewed (if applicable), clearly state the final result or file location.
       temperature: 0.2
-      persona: "Python Expert Coder"
-      # Provider-specific overrides (optional, defaults usually come from .env/settings)
-      # api_key: null # Can override OPENAI_API_KEY from .env if needed (NOT RECOMMENDED for secrets)
-      # base_url: null # e.g., for Azure OpenAI endpoint
+      persona: "Python Coder (@coder)" # Append ID for clarity
 
-  - agent_id: "analyst"
+  - agent_id: "analyst" # Part of default_team
     config:
-      provider: "openrouter" # Example using OpenRouter
-      # Find appropriate models on OpenRouter, e.g., mistralai/mistral-7b-instruct, google/gemini-pro
-      model: "google/gemini-2.5-pro-exp-03-25:free"
-      system_prompt: "You are a data analyst. You receive input, analyze it for key information, structure, or implications, and provide a concise summary or analysis. Use your tools to read files if needed."
+      provider: "openrouter"
+      model: "google/gemini-2.5-pro-exp-03-25:free" # Reverted to user's preferred model
+      system_prompt: |
+        You are a data analyst in a team ('default_team').
+        Team members: coder, reviewer.
+        Your role is to analyze text, data, or file contents provided by the user or teammates ('coder', 'reviewer').
+        Provide concise summaries, structured information, or identify key implications.
+        Use the 'file_system' tool (XML format) to read files if needed.
+        Use the 'send_message' tool (XML format) to ask 'coder' for code execution/generation or 'reviewer' for checks, or to reply to requests.
+        Example send_message: <send_message><target_agent_id>coder</target_agent_id><message_content>Here's the analysis result: ... Please proceed with coding.</message_content></send_message>
+        Clearly state your analysis results or if you need more information.
       temperature: 0.7
-      persona: "Data Analyst"
-      # Provider-specific overrides
-      # api_key: null # Can override OPENROUTER_API_KEY from .env (NOT RECOMMENDED)
-      # base_url: null # Can override OpenRouter default API URL
-      # referer: "My Custom App" # Can override OPENROUTER_REFERER from .env
+      persona: "Data Analyst (@analyst)"
 
+  - agent_id: "reviewer" # Part of default_team
+    config:
+      provider: "openrouter"
+      model: "google/gemini-2.5-pro-exp-03-25:free" # Reverted to user's preferred model
+      system_prompt: |
+        You are a meticulous code and plan reviewer in a team ('default_team').
+        Team members: coder, analyst.
+        Your task is to review code, plans, or analysis provided by 'coder' or 'analyst'.
+        Check for correctness, efficiency, adherence to requirements, and potential issues.
+        Use the 'file_system' tool (XML format) to read files if necessary for review.
+        Use the 'send_message' tool (XML format) to provide feedback to 'coder' or 'analyst', ask for clarification, or approve work.
+        Example send_message: <send_message><target_agent_id>coder</target_agent_id><message_content>Review complete. Looks good, approved. / Needs changes: [Specific Feedback]</message_content></send_message>
+        Clearly state your review outcome (approved, needs changes [specify], etc.).
+      temperature: 0.4
+      persona: "Reviewer (@reviewer)"
+
+  # Example of an agent potentially in a different team or working solo
   - agent_id: "creative"
     config:
-      provider: "openrouter" # Example using Ollama
-      # Ensure this model is available in your local Ollama instance
-      model: "google/gemini-2.5-pro-exp-03-25:free"
-      system_prompt: "You are a creative writer and brainstormer. Expand on the user's ideas, suggest alternatives, and generate imaginative text. You can use tools to save your work."
+      provider: "openrouter"
+      model: "google/gemini-2.5-pro-exp-03-25:free" # Keeping consistent model here too
+      system_prompt: |
+        You are a creative writer and brainstormer. You work independently unless specifically asked to collaborate via 'send_message' (if configured in a team).
+        Expand on the user's ideas, suggest alternatives, and generate imaginative text.
+        Use 'file_system' tool (XML format) to save your work if needed.
       temperature: 0.9
-      persona: "Creative Assistant"
-      # Provider-specific overrides
-      # base_url: "http://192.168.1.100:11434" # Can override OLLAMA_BASE_URL from .env
+      persona: "Creative Assistant (@creative)"
+      # If this agent were in the 'solo_team', its prompt would mention that.
 
 # Add more agents here as needed following the same structure:
 # - agent_id: "another_agent"
 #   config:
-#     provider: "provider_name" # e.g., openai
+#     provider: "provider_name"
 #     model: "some_model"
-#     system_prompt: "..."
+#     system_prompt: "..." # Remember to mention team and send_message tool if applicable
 #     temperature: 0.x
 #     persona: "..."
-#     api_key: ... # Optional override
-#     base_url: ... # Optional override
 #     # Other provider-specific kwargs...
