@@ -145,7 +145,7 @@ class AgentManager:
         ) -> Tuple[bool, str, Optional[str]]:
         """ASYNC internal logic to instantiate agent, provider, sandbox, and handle team."""
         # 1. Determine Agent ID
-        if agent_id_requested and agent_id_requested in self.agents: return False, f"Agent ID '{agent_id_requested}' already exists.", None
+        if agent_id_requested and agent_id_requested in self.agents: return False, f"Agent ID '{agent_id_requested}' exists.", None
         agent_id = agent_id_requested or self._generate_unique_agent_id()
         if not agent_id: return False, "Failed to generate Agent ID.", None
         logger.debug(f"Creating agent '{agent_id}' (Bootstrap: {is_bootstrap})")
@@ -155,12 +155,9 @@ class AgentManager:
         system_prompt = agent_config_data.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
         persona = agent_config_data.get("persona", settings.DEFAULT_PERSONA)
         temperature = agent_config_data.get("temperature", settings.DEFAULT_TEMPERATURE)
-        # --- Filter kwargs passed to provider carefully ---
-        allowed_provider_keys = ['api_key', 'base_url', 'referer'] # Keys handled explicitly
-        # Collect only EXTRA keys not part of standard config or handled keys
+        allowed_provider_keys = ['api_key', 'base_url', 'referer']
         provider_specific_kwargs = { k: v for k, v in agent_config_data.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona'] + allowed_provider_keys}
-        if agent_config_data.get("referer"): provider_specific_kwargs["referer"] = agent_config_data["referer"] # Add referer if present
-
+        if agent_config_data.get("referer"): provider_specific_kwargs["referer"] = agent_config_data["referer"]
         # 3. Instantiate Provider
         ProviderClass = PROVIDER_CLASS_MAP.get(provider_name)
         if not ProviderClass: return False, f"Unknown provider '{provider_name}'.", None
@@ -171,7 +168,6 @@ class AgentManager:
              llm_provider_instance = ProviderClass(**final_provider_args)
              logger.info(f"  Instantiated provider {ProviderClass.__name__} for '{agent_id}'.")
         except Exception as e: logger.error(f"  Provider instantiation failed for '{agent_id}': {e}", exc_info=True); return False, f"Provider instantiation failed: {e}", None
-
         # 4. Instantiate Agent
         agent_entry = { "agent_id": agent_id, "config": { "provider": provider_name, "model": model, "system_prompt": system_prompt, "persona": persona, "temperature": temperature, **provider_specific_kwargs } }
         try:
@@ -179,24 +175,20 @@ class AgentManager:
             agent.agent_config = agent_entry # Store config
             logger.info(f"  Instantiated Agent object for '{agent_id}'.")
         except Exception as e: logger.error(f"  Agent instantiation failed for '{agent_id}': {e}", exc_info=True); return False, f"Agent instantiation failed: {e}", None
-
         # 5. Ensure Sandbox
         try:
             sandbox_ok = await asyncio.to_thread(agent.ensure_sandbox_exists)
             if not sandbox_ok: logger.warning(f"  Failed to ensure sandbox for '{agent_id}'.")
         except Exception as e: logger.error(f"Sandbox error for '{agent_id}': {e}", exc_info=True); logger.warning(f"Proceeding without guaranteed sandbox for '{agent_id}'.")
-
         # 6. Add to Manager State
         self.agents[agent_id] = agent
         logger.debug(f"Agent '{agent_id}' added to self.agents.")
-
         # 7. Add to Team if specified
         team_add_msg_suffix = ""
         if team_id:
              team_add_success, team_add_msg = await self.add_agent_to_team(agent_id, team_id)
              if not team_add_success: team_add_msg_suffix = f" (Warning: {team_add_msg})"
              else: logger.info(f"Agent '{agent_id}' added to team '{team_id}'.")
-
         message = f"Agent '{agent_id}' created successfully." + team_add_msg_suffix
         return True, message, agent_id
 
@@ -206,31 +198,19 @@ class AgentManager:
         """Public ASYNC method called by Admin AI (via tool) to create a dynamic agent."""
         if not provider or not model or not system_prompt or not persona:
             return False, "Missing required params (provider, model, system_prompt, persona).", None
-
-        # --- Reconstruct config_data carefully, excluding non-agent keys like 'action' ---
         agent_config_data = { "provider": provider, "model": model, "system_prompt": system_prompt, "persona": persona }
         if temperature is not None: agent_config_data["temperature"] = temperature
-        # Add only relevant extra kwargs (filter out 'action', 'agent_id', 'team_id' if they exist in kwargs)
         extra_kwargs = {k: v for k, v in kwargs.items() if k not in ['action', 'agent_id', 'team_id', 'provider', 'model', 'system_prompt', 'persona', 'temperature']}
         agent_config_data.update(extra_kwargs)
-
-        success, message, created_agent_id = await self._create_agent_internal(
-            agent_id_requested=agent_id_requested,
-            agent_config_data=agent_config_data,
-            is_bootstrap=False,
-            team_id=team_id
-        )
-
+        success, message, created_agent_id = await self._create_agent_internal( agent_id_requested=agent_id_requested, agent_config_data=agent_config_data, is_bootstrap=False, team_id=team_id )
         if success and created_agent_id:
             created_agent = self.agents.get(created_agent_id)
             config_sent_to_ui = created_agent.agent_config.get("config", {}) if created_agent and hasattr(created_agent, 'agent_config') else {}
             await self.send_to_ui({ "type": "agent_added", "agent_id": created_agent_id, "config": config_sent_to_ui, "team": self.agent_to_team.get(created_agent_id) })
-
         return success, message, created_agent_id
 
 
     # --- Async Handler Methods ---
-
     async def handle_user_message(self, message: str, client_id: Optional[str] = None):
         """Routes incoming user messages exclusively to the Admin AI agent."""
         logger.info(f"AgentManager received user message for Admin AI: '{message[:100]}...'")
@@ -240,17 +220,14 @@ class AgentManager:
             logger.info(f"Delegating user message to '{BOOTSTRAP_AGENT_ID}'.")
             admin_agent.message_history.append({"role": "user", "content": message})
             asyncio.create_task(self._handle_agent_generator(admin_agent))
-        else:
-            logger.info(f"Admin AI busy ({admin_agent.status}). User message queued implicitly."); await self.push_agent_status_update(admin_agent.agent_id); await self.send_to_ui({ "type": "error", "agent_id": "manager", "content": f"Admin AI busy ({admin_agent.status}). Please wait." })
+        else: logger.info(f"Admin AI busy ({admin_agent.status})."); await self.push_agent_status_update(admin_agent.agent_id); await self.send_to_ui({ "type": "error", "agent_id": "manager", "content": f"Admin AI busy ({admin_agent.status}). Please wait." })
 
 
     async def _handle_agent_generator(self, agent: Agent):
         """Handles the async generator interaction for a single agent's processing cycle."""
-        agent_id = agent.agent_id
-        logger.info(f"Starting generator handling for Agent '{agent_id}'...")
+        agent_id = agent.agent_id; logger.info(f"Starting generator handling for Agent '{agent_id}'...")
         agent_generator: Optional[AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]] = None
-        manager_action_feedback = [] # Store feedback from manager actions
-
+        manager_action_feedback = []
         try:
             agent_generator = agent.process_message()
             while True:
@@ -279,7 +256,7 @@ class AgentManager:
                         else: logger.warning(f"Skipping invalid tool req from '{agent_id}': {call}"); tool_tasks.append(asyncio.create_task(self._failed_tool_result(call_id, tool_name)))
                     executed_results = []
                     if tool_tasks: await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Executing {len(tool_tasks)} tool(s)..."}); tool_results_raw = await asyncio.gather(*tool_tasks); executed_results = [res for res in tool_results_raw if res is not None]
-                    if executed_results: # Append tool results to history
+                    if executed_results:
                         append_count = 0
                         for result in executed_results:
                             call_id_from_res = result.get("call_id"); result_content = result.get("content", "[No content]");
@@ -287,7 +264,6 @@ class AgentManager:
                             tool_msg: MessageDict = {"role": "tool", "tool_call_id": call_id_from_res, "content": str(result_content) }
                             if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("tool_call_id") != call_id_from_res: agent.message_history.append(tool_msg); append_count += 1
                         logger.debug(f"Appended {append_count} tool result(s) for '{agent_id}'.")
-                    # Post-execution processing
                     activation_tasks = []; manager_action_feedback = []
                     for call in calls_post_exec:
                         call_id, tool_name, tool_args = call["id"], call["name"], call["arguments"]
@@ -301,7 +277,7 @@ class AgentManager:
                                   action_success, action_message, action_data = await self._handle_manage_team_action(action, params)
                                   feedback = {"call_id": call_id, "action": action, "success": action_success, "message": action_message}
                                   if action_data: feedback["data"] = action_data
-                                  manager_action_feedback.append(feedback) # Store feedback
+                                  manager_action_feedback.append(feedback)
                              elif raw_tool_output: logger.warning(f"ManageTeamTool call {call_id} unsuccessful. Raw Result: {raw_tool_output}")
                              else: logger.warning(f"ManageTeamTool call {call_id} had unexpected structure: {exec_result}")
                         elif tool_name == "send_message":
@@ -314,8 +290,7 @@ class AgentManager:
                                   else: logger.error(f"SendMessage args incomplete for {call_id}. Args: {tool_args}")
                               else: logger.warning(f"SendMessageTool call {call_id} failed exec. Result: {result_content_str}")
                     if activation_tasks: logger.info(f"Triggered activation for {len(activation_tasks)} agents from '{agent_id}'.")
-                    # Append Manager Action Feedback
-                    if manager_action_feedback:
+                    if manager_action_feedback: # Append feedback
                          for feedback in manager_action_feedback:
                              feedback_content = f"[Manager Result for {feedback['action']} (Call ID: {feedback['call_id']})]: Success={feedback['success']}. Message: {feedback['message']}"
                              if feedback.get("data"):
@@ -340,35 +315,21 @@ class AgentManager:
         created_agent_id = None
         try:
             logger.debug(f"Handling ManageTeam action '{action}' with params: {params}")
-            # --- Explicitly extract needed args, don't use **params ---
-            agent_id = params.get("agent_id")
-            team_id = params.get("team_id")
-            provider = params.get("provider")
-            model = params.get("model")
-            system_prompt = params.get("system_prompt")
-            persona = params.get("persona")
+            agent_id = params.get("agent_id"); team_id = params.get("team_id")
+            provider = params.get("provider"); model = params.get("model")
+            system_prompt = params.get("system_prompt"); persona = params.get("persona")
             temperature = params.get("temperature")
-            # Collect remaining keys as potential extra kwargs for create_agent
             extra_kwargs = {k: v for k, v in params.items() if k not in ['action', 'agent_id', 'team_id', 'provider', 'model', 'system_prompt', 'persona', 'temperature']}
 
-            if action == "create_agent":
-                 success, message, created_agent_id = await self.create_agent_instance(
-                     agent_id_requested=agent_id, provider=provider, model=model,
-                     system_prompt=system_prompt, persona=persona, team_id=team_id,
-                     temperature=temperature, **extra_kwargs # Pass only relevant extras
-                 )
-                 if success and created_agent_id:
-                      message = f"Agent '{persona}' created with ID '{created_agent_id}'. Status: {message}"
-                      result_data = {"created_agent_id": created_agent_id}
+            if action == "create_agent": success, message, created_agent_id = await self.create_agent_instance( agent_id, provider, model, system_prompt, persona, team_id, temperature, **extra_kwargs );
+            if success and created_agent_id: message = f"Agent '{persona}' created with ID '{created_agent_id}'. Status: {message}"; result_data = {"created_agent_id": created_agent_id}
             elif action == "delete_agent": success, message = await self.delete_agent_instance(agent_id)
             elif action == "create_team": success, message = await self.create_new_team(team_id)
             elif action == "delete_team": success, message = await self.delete_existing_team(team_id)
             elif action == "add_agent_to_team": success, message = await self.add_agent_to_team(agent_id, team_id)
             elif action == "remove_agent_from_team": success, message = await self.remove_agent_from_team(agent_id, team_id)
-            elif action == "list_agents":
-                 result_data = await self.get_agent_info_list(); success = True; message = f"Found {len(result_data)} agents."
-            elif action == "list_teams":
-                 result_data = await self.get_team_info_dict(); success = True; message = f"Found {len(result_data)} teams."
+            elif action == "list_agents": result_data = await self.get_agent_info_list(); success = True; message = f"Found {len(result_data)} agents."
+            elif action == "list_teams": result_data = await self.get_team_info_dict(); success = True; message = f"Found {len(result_data)} teams."
             else: message = f"Unrecognized action: {action}"; logger.warning(message)
             logger.info(f"ManageTeamTool action '{action}' result: Success={success}, Message='{message}'")
             return success, message, result_data
@@ -382,7 +343,7 @@ class AgentManager:
         while True:
             new_id = f"{prefix}_{timestamp}_{short_uuid}";
             if new_id not in self.agents: return new_id
-            timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:3] # Regenerate if collision
+            timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:3]
 
 
     # --- Dynamic Team/Agent Async Methods ---
@@ -391,7 +352,7 @@ class AgentManager:
         if agent_id in self.bootstrap_agents: return False, f"Cannot delete bootstrap agent '{agent_id}'."
         agent_instance = self.agents.pop(agent_id); team_id = self.agent_to_team.pop(agent_id, None)
         if team_id and team_id in self.teams and agent_id in self.teams[team_id]: self.teams[team_id].remove(agent_id); logger.info(f"Removed '{agent_id}' from team '{team_id}'.")
-        await self._close_provider_safe(agent_instance.llm_provider) # Use safe close
+        await self._close_provider_safe(agent_instance.llm_provider)
         message = f"Agent '{agent_id}' deleted."; logger.info(message)
         await self.send_to_ui({"type": "agent_deleted", "agent_id": agent_id}); return True, message
 
@@ -412,7 +373,7 @@ class AgentManager:
     async def add_agent_to_team(self, agent_id: str, team_id: str) -> Tuple[bool, str]:
         if not agent_id or not team_id: return False, "Agent/Team ID empty."
         if agent_id not in self.agents: return False, f"Agent '{agent_id}' not found."
-        if team_id not in self.teams: await self.create_new_team(team_id) # Auto-create team
+        if team_id not in self.teams: await self.create_new_team(team_id)
         old_team = None
         if agent_id in self.agent_to_team:
             if self.agent_to_team[agent_id] == team_id: return True, f"Agent '{agent_id}' already in '{team_id}'."
@@ -507,10 +468,13 @@ class AgentManager:
             try: json.dumps(agent.message_history); session_data["agent_histories"][agent_id] = agent.message_history
             except TypeError as e: logger.error(f"History for '{agent_id}' not JSON serializable: {e}."); session_data["agent_histories"][agent_id] = [{"role": "system", "content": f"[History err: {e}]"}]
             if agent_id not in self.bootstrap_agents:
-                 try: config_to_save = agent.agent_config.get("config") if hasattr(agent, 'agent_config') else None
-                 if config_to_save: session_data["dynamic_agents_config"][agent_id] = config_to_save
-                 else: logger.warning(f"No config found for dynamic agent '{agent_id}'. Not saved.")
-                 except Exception as e_cfg: logger.warning(f"Error accessing config for dynamic agent '{agent_id}': {e_cfg}. Not saved.")
+                 try:
+                      config_to_save = agent.agent_config.get("config") if hasattr(agent, 'agent_config') else None
+                      if config_to_save: session_data["dynamic_agents_config"][agent_id] = config_to_save
+                      else: logger.warning(f"No config found for dynamic agent '{agent_id}'. Not saved.")
+                 # --- Corrected Indentation Here ---
+                 except Exception as e_cfg:
+                      logger.warning(f"Error accessing config for dynamic agent '{agent_id}': {e_cfg}. Not saved.")
 
         try:
             def save_sync():
