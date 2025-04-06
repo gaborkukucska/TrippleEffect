@@ -29,7 +29,7 @@ agents:
   - agent_id: "admin_ai" # The central coordinator agent
     config:
       provider: "openrouter" # Use a highly capable provider/model for planning
-      model: "google/gemini-1.5-pro:free" # Needs good instruction following & planning
+      model: "google/gemini-2.5-pro-exp-03-25:free" # Needs good instruction following & planning
       system_prompt: |
         You are the Admin AI, the central coordinator for a multi-agent system called TrippleEffect.
         Your primary role is to understand user requests, devise a plan using dynamically created agents, and orchestrate their collaboration.
