@@ -7,6 +7,7 @@ import traceback
 import time
 import logging
 import uuid # For generating agent IDs
+import re # For replacing team ID in prompts
 
 # Import Agent class, Status constants, and BaseLLMProvider types
 from src.agents.core import Agent, AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_AWAITING_TOOL, AGENT_STATUS_ERROR
@@ -211,11 +212,14 @@ class AgentManager:
         if not is_bootstrap and not loading_from_session:
             allowed_models_for_provider = settings.ALLOWED_SUB_AGENT_MODELS.get(provider_name)
             if allowed_models_for_provider is None:
-                msg = f"Provider '{provider_name}' not found in allowed_sub_agent_models configuration."
+                # Provider itself is not listed in the allowed_sub_agent_models structure
+                msg = f"Validation Error: Provider '{provider_name}' is not configured for dynamic agent creation in allowed_sub_agent_models."
                 logger.error(msg)
                 return False, msg, None
             if model not in allowed_models_for_provider:
-                msg = f"Model '{model}' is not allowed for provider '{provider_name}'. Allowed: {allowed_models_for_provider}"
+                # Provider is listed, but the specific model is not allowed
+                allowed_list_str = ', '.join(allowed_models_for_provider) if allowed_models_for_provider else 'None'
+                msg = f"Validation Error: Model '{model}' is not allowed for provider '{provider_name}'. Allowed models: [{allowed_list_str}]"
                 logger.error(msg)
                 return False, msg, None
             logger.info(f"Dynamic agent creation validated: Provider '{provider_name}', Model '{model}' is allowed.")
@@ -288,16 +292,20 @@ class AgentManager:
         # 8. Add to Team if specified
         team_add_msg_suffix = ""
         if team_id:
-             # Update team_id in the agent's final prompt *if* we just added them
-             # Note: This assumes team_id doesn't change after creation currently.
+             # Update team_id in the agent's final prompt *if* we just added them dynamically
+             # Avoid doing this if loading from session or for bootstrap agents
              if not loading_from_session and not is_bootstrap:
-                 agent.final_system_prompt = agent.final_system_prompt.replace(
-                    f"Your Team ID: N/A", f"Your Team ID: {team_id}"
-                 )
-                 agent.agent_config["config"]["system_prompt"] = agent.final_system_prompt # Update stored config too
-                 # Update message history too (index 0 is system prompt)
-                 if agent.message_history and agent.message_history[0]["role"] == "system":
-                      agent.message_history[0]["content"] = agent.final_system_prompt
+                 try:
+                     # Replace the placeholder team ID set during initial prompt construction
+                     new_team_str = f"Your Team ID: {team_id}"
+                     # Use regex for safer replacement (case-insensitive matching might be useful too)
+                     agent.final_system_prompt = re.sub(r"Your Team ID:.*", new_team_str, agent.final_system_prompt)
+                     agent.agent_config["config"]["system_prompt"] = agent.final_system_prompt # Update stored config too
+                     # Update message history too (index 0 is system prompt)
+                     if agent.message_history and agent.message_history[0]["role"] == "system":
+                         agent.message_history[0]["content"] = agent.final_system_prompt
+                 except Exception as e:
+                     logger.error(f"Error updating team ID in dynamic agent prompt for {agent_id}: {e}")
 
              team_add_success, team_add_msg = await self.add_agent_to_team(agent_id, team_id) # add_agent_to_team handles state update
              if not team_add_success: team_add_msg_suffix = f" (Warning: {team_add_msg})"
@@ -344,6 +352,7 @@ class AgentManager:
             loading_from_session=False # Not loading from session
             )
 
+        # If creation succeeded, notify UI
         if success and created_agent_id:
             created_agent = self.agents.get(created_agent_id)
             # Send the config used for *creation* (which includes final combined prompt)
@@ -357,6 +366,7 @@ class AgentManager:
                 "config": config_sent_to_ui, # Send final config used
                 "team": self.agent_to_team.get(created_agent_id)
                 })
+        # If success is False, the message already contains the reason (e.g., validation error)
         return success, message, created_agent_id
 
 
@@ -376,7 +386,7 @@ class AgentManager:
             admin_agent.message_history.append({"role": "user", "content": message})
             asyncio.create_task(self._handle_agent_generator(admin_agent))
         else:
-            logger.info(f"Admin AI busy ({admin_agent.status}). User message queued implicitly in history if received.")
+            logger.info(f"Admin AI busy ({admin_agent.status}). User message queued implicitly in history.")
             # Send status update to UI, maybe indicate message is implicitly queued
             await self.push_agent_status_update(admin_agent.agent_id)
             await self.send_to_ui({
@@ -400,8 +410,6 @@ class AgentManager:
             while True:
                 try:
                     # Send None into the generator to advance it
-                    # The received value (tool_results) is currently ignored by Agent Core loop
-                    # but captured here if needed later.
                     event = await agent_generator.asend(None) # Use asend(None)
 
                 except StopAsyncIteration:
@@ -512,14 +520,24 @@ class AgentManager:
                                 feedback = {"call_id": call_id, "action": action, "success": action_success, "message": action_message}
                                 if action_data: feedback["data"] = action_data # Include returned data (e.g., agent list)
                                 manager_action_feedback.append(feedback) # Store feedback to append later
-                            elif raw_tool_output:
+                            # Handle case where the tool execution returned an error status dict
+                            elif isinstance(raw_tool_output, dict) and raw_tool_output.get("status") == "error":
                                 logger.warning(f"ManageTeamTool call {call_id} failed validation/execution. Raw Result: {raw_tool_output}")
-                                # Create error feedback if the tool returned an error status
-                                if isinstance(raw_tool_output, dict) and raw_tool_output.get("status") == "error":
-                                     manager_action_feedback.append({"call_id": call_id, "action": raw_tool_output.get("action"), "success": False, "message": raw_tool_output.get("message", "Tool execution failed validation.")})
+                                manager_action_feedback.append({
+                                    "call_id": call_id,
+                                    "action": raw_tool_output.get("action"),
+                                    "success": False,
+                                    "message": raw_tool_output.get("message", "Tool execution failed validation.")
+                                    })
                             else:
+                                # Handle unexpected structure from tool execution
                                 logger.warning(f"ManageTeamTool call {call_id} had unexpected structure: {exec_result}")
-                                manager_action_feedback.append({"call_id": call_id, "action": "unknown", "success": False, "message": "Unexpected tool result structure."})
+                                manager_action_feedback.append({
+                                    "call_id": call_id,
+                                    "action": "unknown",
+                                    "success": False,
+                                    "message": "Unexpected tool result structure."
+                                    })
 
                         elif tool_name == SendMessageTool.name:
                             # SendMessageTool.execute just returns a confirmation string.
@@ -532,7 +550,7 @@ class AgentManager:
                             else:
                                 logger.error(f"SendMessage args incomplete for call {call_id}. Args: {tool_args}")
                                 # Optionally add error feedback for the sender?
-                                # manager_action_feedback.append({"call_id": call_id, "action": "send_message", "success": False, "message": "Missing target_agent_id or message_content."})
+                                manager_action_feedback.append({"call_id": call_id, "action": "send_message", "success": False, "message": "Missing target_agent_id or message_content."})
 
 
                     # Wait for any agent activations triggered by SendMessage
@@ -551,8 +569,8 @@ class AgentManager:
                                  try:
                                      # Format data nicely, maybe limit length?
                                      data_str = json.dumps(feedback['data'], indent=2)
-                                     if len(data_str) > 1000: # Limit length
-                                         data_str = data_str[:1000] + "... (truncated)"
+                                     if len(data_str) > 1500: # Limit length slightly more
+                                         data_str = data_str[:1500] + "... (truncated)"
                                      feedback_content += f"\nData:\n{data_str}"
                                  except TypeError:
                                      feedback_content += f"\nData: [Unserializable Data]"
@@ -603,85 +621,64 @@ class AgentManager:
 
 
     async def _handle_manage_team_action(self, action: Optional[str], params: Dict[str, Any]) -> Tuple[bool, str, Optional[Any]]:
-        """Dispatches ManageTeamTool actions. Returns (success, message, optional_data)."""
+        """Dispatches ManageTeamTool actions, including filtering for list_agents."""
         if not action: return False, "No action specified.", None
         success, message, result_data = False, "Unknown action or error.", None
-        created_agent_id = None
-
         try:
             logger.debug(f"Handling ManageTeam action '{action}' with params: {params}")
-            agent_id = params.get("agent_id")
-            team_id = params.get("team_id")
-            provider = params.get("provider")
-            model = params.get("model")
-            system_prompt = params.get("system_prompt") # Role-specific prompt
-            persona = params.get("persona")
+            agent_id = params.get("agent_id"); team_id = params.get("team_id") # team_id used by multiple actions
+            provider = params.get("provider"); model = params.get("model")
+            system_prompt = params.get("system_prompt"); persona = params.get("persona")
             temperature = params.get("temperature")
-            # Capture any extra args passed in the tool call
             known_args = ['action', 'agent_id', 'team_id', 'provider', 'model', 'system_prompt', 'persona', 'temperature']
             extra_kwargs = {k: v for k, v in params.items() if k not in known_args}
 
             if action == "create_agent":
-                # Pass the role-specific prompt and other params to create_agent_instance
-                success, message, created_agent_id = await self.create_agent_instance(
-                    agent_id_requested=agent_id,
-                    provider=provider,
-                    model=model,
-                    system_prompt=system_prompt, # Pass role-specific prompt
-                    persona=persona,
-                    team_id=team_id,
-                    temperature=temperature,
-                    **extra_kwargs # Pass any extra args
-                    )
+                success, message, created_agent_id = await self.create_agent_instance( agent_id, provider, model, system_prompt, persona, team_id, temperature, **extra_kwargs );
                 if success and created_agent_id:
-                     # Adjust message for clarity, creation message already includes ID
-                     message = f"Agent '{persona}' creation initiated with ID '{created_agent_id}'. Status: {message}"
+                     # Adjust message slightly for clarity
+                     message = f"Agent '{persona}' (ID: {created_agent_id}) creation request processed. Status: {message}"
                      result_data = {"created_agent_id": created_agent_id}
-                # If creation failed (e.g., invalid model), success is False, message contains reason
-
+                # Failure message already contains validation details
             elif action == "delete_agent": success, message = await self.delete_agent_instance(agent_id)
             elif action == "create_team": success, message = await self.create_new_team(team_id)
             elif action == "delete_team": success, message = await self.delete_existing_team(team_id)
             elif action == "add_agent_to_team": success, message = await self.add_agent_to_team(agent_id, team_id)
             elif action == "remove_agent_from_team": success, message = await self.remove_agent_from_team(agent_id, team_id)
             elif action == "list_agents":
-                 result_data = await self.get_agent_info_list()
+                 # --- Handle optional team_id filter ---
+                 filter_team_id = params.get("team_id") # Get team_id from params if provided
+                 result_data = await self.get_agent_info_list(filter_team_id=filter_team_id)
                  success = True
-                 message = f"Found {len(result_data)} agents."
+                 count = len(result_data)
+                 if filter_team_id:
+                     message = f"Found {count} agent(s) in team '{filter_team_id}'."
+                 else:
+                     message = f"Found {count} agent(s) in total."
+                 # --- End filter handling ---
             elif action == "list_teams":
                  result_data = await self.get_team_info_dict()
                  success = True
-                 message = f"Found {len(result_data)} teams."
-            else:
-                 message = f"Unrecognized action: {action}"
-                 logger.warning(message)
+                 message = f"Found {len(result_data)} team(s)."
+            else: message = f"Unrecognized action: {action}"; logger.warning(message)
 
             logger.info(f"ManageTeamTool action '{action}' result: Success={success}, Message='{message}'")
             return success, message, result_data
-
-        except Exception as e:
-            message = f"Error processing '{action}': {e}"
-            logger.error(message, exc_info=True)
-            return False, message, None
+        except Exception as e: message = f"Error processing '{action}': {e}"; logger.error(message, exc_info=True); return False, message, None
 
 
     def _generate_unique_agent_id(self, prefix="agent") -> str:
         """Generates a unique agent ID using timestamp and random hex."""
-        timestamp = int(time.time() * 1000)
-        short_uuid = uuid.uuid4().hex[:4] # Slightly longer UUID part
+        timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4]
         while True:
-            # Ensure agent_id is filesystem-friendly (no colons, etc.)
-            new_id = f"{prefix}_{timestamp}_{short_uuid}".replace(":", "_")
-            if new_id not in self.agents:
-                return new_id
-            # Add small delay and retry if collision (highly unlikely)
-            time.sleep(0.001)
-            timestamp = int(time.time() * 1000)
-            short_uuid = uuid.uuid4().hex[:4]
+            new_id = f"{prefix}_{timestamp}_{short_uuid}".replace(":", "_");
+            if new_id not in self.agents: return new_id
+            time.sleep(0.001); timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4]
 
 
-    # --- Dynamic Team/Agent Async Methods (largely unchanged, ensure correct WS events) ---
+    # --- Dynamic Team/Agent Async Methods ---
     async def delete_agent_instance(self, agent_id: str) -> Tuple[bool, str]:
+        """Deletes a dynamic agent instance."""
         if not agent_id: return False, "Agent ID cannot be empty."
         if agent_id not in self.agents: return False, f"Agent '{agent_id}' not found."
         if agent_id in self.bootstrap_agents: return False, f"Cannot delete bootstrap agent '{agent_id}'."
@@ -692,25 +689,17 @@ class AgentManager:
             self.teams[team_id].remove(agent_id)
             logger.info(f"Removed '{agent_id}' from team '{team_id}'.")
 
-        # Close provider session
         await self._close_provider_safe(agent_instance.llm_provider)
-        # Cleanup sandbox? (Optional, might be useful to keep logs/files)
-        # try:
-        #     await asyncio.to_thread(shutil.rmtree, agent_instance.sandbox_path)
-        #     logger.info(f"Removed sandbox for agent '{agent_id}'.")
-        # except Exception as e:
-        #     logger.error(f"Error removing sandbox for agent '{agent_id}': {e}")
-
+        # Optional: Sandbox cleanup
         message = f"Agent '{agent_id}' deleted successfully."
         logger.info(message)
-        # Send UI update
         await self.send_to_ui({"type": "agent_deleted", "agent_id": agent_id})
         return True, message
 
     async def create_new_team(self, team_id: str) -> Tuple[bool, str]:
+        """Creates a new, empty team."""
         if not team_id: return False, "Team ID cannot be empty."
         if team_id in self.teams: return False, f"Team '{team_id}' already exists."
-
         self.teams[team_id] = []
         message = f"Team '{team_id}' created successfully."
         logger.info(message)
@@ -718,15 +707,14 @@ class AgentManager:
         return True, message
 
     async def delete_existing_team(self, team_id: str) -> Tuple[bool, str]:
+        """Deletes an existing empty team."""
         if not team_id: return False, "Team ID cannot be empty."
         if team_id not in self.teams: return False, f"Team '{team_id}' not found."
-        # Check if team is truly empty (both in teams list and agent_to_team map)
         agents_in_team_map = [aid for aid, tid in self.agent_to_team.items() if tid == team_id]
         if agents_in_team_map or self.teams.get(team_id):
              member_list = agents_in_team_map or self.teams.get(team_id, [])
              logger.warning(f"Delete team '{team_id}' failed. Team still contains agents: {member_list}.")
              return False, f"Team '{team_id}' is not empty. Remove agents first. Members: {member_list}"
-
         del self.teams[team_id]
         message = f"Team '{team_id}' deleted successfully."
         logger.info(message)
@@ -734,64 +722,53 @@ class AgentManager:
         return True, message
 
     async def add_agent_to_team(self, agent_id: str, team_id: str) -> Tuple[bool, str]:
+        """Adds an agent to a team, updating state and agent prompt."""
         if not agent_id or not team_id: return False, "Agent ID and Team ID cannot be empty."
         if agent_id not in self.agents: return False, f"Agent '{agent_id}' not found."
-
-        # Create team if it doesn't exist
         if team_id not in self.teams:
              success, msg = await self.create_new_team(team_id)
              if not success: return False, f"Failed to auto-create team '{team_id}': {msg}"
 
-        old_team = None
-        if agent_id in self.agent_to_team:
-            if self.agent_to_team[agent_id] == team_id: return True, f"Agent '{agent_id}' is already in team '{team_id}'."
-            old_team = self.agent_to_team[agent_id]
-            # Remove from old team's list if it exists
-            if old_team in self.teams and agent_id in self.teams[old_team]:
-                 self.teams[old_team].remove(agent_id)
-                 logger.info(f"Removed '{agent_id}' from old team list '{old_team}'.")
+        old_team = self.agent_to_team.get(agent_id)
+        if old_team == team_id: return True, f"Agent '{agent_id}' is already in team '{team_id}'."
 
-        # Add to new team's list
+        # Remove from old team list if necessary
+        if old_team and old_team in self.teams and agent_id in self.teams[old_team]:
+            self.teams[old_team].remove(agent_id)
+            logger.info(f"Removed '{agent_id}' from old team list '{old_team}'.")
+
+        # Add to new team list
         if agent_id not in self.teams[team_id]:
             self.teams[team_id].append(agent_id)
 
         # Update agent_to_team mapping
         self.agent_to_team[agent_id] = team_id
 
-        # --- Update Agent's Prompt/State (if agent exists and is dynamic) ---
+        # Update Agent's Prompt/State (if agent exists and is dynamic)
         agent = self.agents.get(agent_id)
         if agent and not (agent_id in self.bootstrap_agents):
             try:
-                 # Update final prompt stored on agent
-                 agent.final_system_prompt = agent.final_system_prompt.replace(
-                     f"Your Team ID: {old_team or 'N/A'}", f"Your Team ID: {team_id}"
-                 )
+                 new_team_str = f"Your Team ID: {team_id}"
+                 # Use regex for safer replacement
+                 agent.final_system_prompt = re.sub(r"Your Team ID:.*", new_team_str, agent.final_system_prompt)
                  agent.agent_config["config"]["system_prompt"] = agent.final_system_prompt
-                 # Update message history (index 0 is system prompt)
                  if agent.message_history and agent.message_history[0]["role"] == "system":
                      agent.message_history[0]["content"] = agent.final_system_prompt
                  logger.info(f"Updated team ID in system prompt for agent '{agent_id}'.")
             except Exception as e:
                  logger.error(f"Error updating system prompt for agent '{agent_id}' after team change: {e}")
-        # --- End Prompt Update ---
-
 
         message = f"Agent '{agent_id}' added to team '{team_id}'."
         logger.info(message)
-        await self.send_to_ui({
-            "type": "agent_moved_team",
-            "agent_id": agent_id,
-            "new_team_id": team_id,
-            "old_team_id": old_team
-            })
-        # Push status which now includes the new team
+        await self.send_to_ui({ "type": "agent_moved_team", "agent_id": agent_id, "new_team_id": team_id, "old_team_id": old_team })
         await self.push_agent_status_update(agent_id)
         return True, message
 
     async def remove_agent_from_team(self, agent_id: str, team_id: str) -> Tuple[bool, str]:
+        """Removes an agent from a team, updating state and agent prompt."""
         if not agent_id or not team_id: return False, "Agent ID and Team ID cannot be empty."
         if team_id not in self.teams: return False, f"Team '{team_id}' not found."
-        if agent_id not in self.agent_to_team or self.agent_to_team[agent_id] != team_id:
+        if self.agent_to_team.get(agent_id) != team_id:
              return False, f"Agent '{agent_id}' is not recorded as being in team '{team_id}'."
 
         # Remove from team list
@@ -799,40 +776,36 @@ class AgentManager:
             self.teams[team_id].remove(agent_id)
 
         # Remove from agent_to_team mapping
-        del self.agent_to_team[agent_id]
+        old_team_id = self.agent_to_team.pop(agent_id, None) # Use pop with default
 
-        # --- Update Agent's Prompt/State (if agent exists and is dynamic) ---
+        # Update Agent's Prompt/State (if agent exists and is dynamic)
         agent = self.agents.get(agent_id)
         if agent and not (agent_id in self.bootstrap_agents):
             try:
-                 agent.final_system_prompt = agent.final_system_prompt.replace(
-                     f"Your Team ID: {team_id}", f"Your Team ID: N/A"
-                 )
+                 new_team_str = f"Your Team ID: N/A"
+                 agent.final_system_prompt = re.sub(r"Your Team ID:.*", new_team_str, agent.final_system_prompt)
                  agent.agent_config["config"]["system_prompt"] = agent.final_system_prompt
                  if agent.message_history and agent.message_history[0]["role"] == "system":
                      agent.message_history[0]["content"] = agent.final_system_prompt
                  logger.info(f"Updated team ID to N/A in system prompt for agent '{agent_id}'.")
             except Exception as e:
                  logger.error(f"Error updating system prompt for agent '{agent_id}' after team removal: {e}")
-        # --- End Prompt Update ---
-
 
         message = f"Agent '{agent_id}' removed from team '{team_id}'."
         logger.info(message)
-        await self.send_to_ui({
-            "type": "agent_moved_team",
-            "agent_id": agent_id,
-            "new_team_id": None, # Indicate removed from team
-            "old_team_id": team_id
-            })
-        # Push status which now shows no team
+        await self.send_to_ui({ "type": "agent_moved_team", "agent_id": agent_id, "new_team_id": None, "old_team_id": old_team_id }) # Use popped value
         await self.push_agent_status_update(agent_id)
         return True, message
 
-    async def get_agent_info_list(self) -> List[Dict[str, Any]]:
-        """Returns list of dicts with info about each agent."""
+    async def get_agent_info_list(self, filter_team_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Returns list of dicts with info about each agent, optionally filtered by team."""
         info_list = []
         for agent_id, agent in self.agents.items():
+             current_team = self.agent_to_team.get(agent_id)
+             # Apply filter if provided
+             if filter_team_id is not None and current_team != filter_team_id:
+                 continue # Skip agent if not in the filtered team
+
              state = agent.get_state()
              info = {
                  "agent_id": agent_id,
@@ -840,15 +813,14 @@ class AgentManager:
                  "provider": state.get("provider"),
                  "model": state.get("model"),
                  "status": state.get("status"),
-                 "team": self.agent_to_team.get(agent_id) # Get current team mapping
+                 "team": current_team # Use the fetched current team
              }
              info_list.append(info)
         return info_list
 
     async def get_team_info_dict(self) -> Dict[str, List[str]]:
         """Returns a copy of the current team structure."""
-        # Ensure consistency between teams dict and agent_to_team map?
-        # For now, just return the teams dict.
+        # Could enhance to ensure consistency with agent_to_team map
         return self.teams.copy()
 
 
@@ -904,7 +876,7 @@ class AgentManager:
         """ Executes a tool via ToolExecutor. Returns a dictionary for manager processing. """
         if not self.tool_executor:
             logger.error("ToolExecutor unavailable.")
-            return {"call_id": call_id, "content": "[ToolExec Error: ToolExecutor unavailable]"}
+            return {"call_id": call_id, "content": "[ToolExec Error: ToolExecutor unavailable]", "_raw_result": None}
 
         tool_info = {"name": tool_name, "call_id": call_id}
         agent.set_status(AGENT_STATUS_EXECUTING_TOOL, tool_info=tool_info)
@@ -951,7 +923,8 @@ class AgentManager:
         """Returns a formatted error result dictionary for failed tool dispatch."""
         error_content = f"[ToolExec Error: Failed dispatch for '{tool_name or 'unknown'}'. Invalid format or arguments.]"
         final_call_id = call_id or f"invalid_call_{int(time.time())}"
-        return {"call_id": final_call_id, "content": error_content}
+        # Ensure _raw_result indicates failure
+        return {"call_id": final_call_id, "content": error_content, "_raw_result": {"status": "error", "message": error_content}}
 
     async def push_agent_status_update(self, agent_id: str):
         """Retrieves full agent state and sends to UI."""
@@ -1013,8 +986,7 @@ class AgentManager:
         for agent_id, agent in self.agents.items():
             # Save history for all agents
             try:
-                # Quick check for basic serializability before adding
-                json.dumps(agent.message_history)
+                json.dumps(agent.message_history) # Quick check for basic serializability
                 session_data["agent_histories"][agent_id] = agent.message_history
             except TypeError as e:
                 logger.error(f"History for agent '{agent_id}' is not JSON serializable: {e}. Saving placeholder.")
@@ -1023,8 +995,6 @@ class AgentManager:
             # Save config ONLY for dynamic agents
             if agent_id not in self.bootstrap_agents:
                  try:
-                      # --- Save the config stored ON the agent instance ---
-                      # This now contains the final combined system prompt.
                       config_to_save = agent.agent_config.get("config") if hasattr(agent, 'agent_config') else None
                       if config_to_save:
                           session_data["dynamic_agents_config"][agent_id] = config_to_save
@@ -1044,7 +1014,6 @@ class AgentManager:
             await asyncio.to_thread(save_sync)
             logger.info(f"Session saved successfully: {session_file_path}")
             self.current_project, self.current_session = project_name, session_name
-            # Send UI update about saved session
             await self.send_to_ui({"type": "system_event", "event": "session_saved", "project": project_name, "session": session_name})
             return True, f"Session '{session_name}' saved successfully in project '{project_name}'."
         except Exception as e:
@@ -1068,17 +1037,12 @@ class AgentManager:
             # --- Clear current dynamic state before loading ---
             dynamic_agents_to_delete = [aid for aid in self.agents if aid not in self.bootstrap_agents]
             logger.info(f"Clearing current dynamic state. Agents to delete: {dynamic_agents_to_delete}")
-            # Use gather to run deletions concurrently
-            delete_results = await asyncio.gather(
-                *(self.delete_agent_instance(aid) for aid in dynamic_agents_to_delete),
-                return_exceptions=True
-            )
+            delete_results = await asyncio.gather( *(self.delete_agent_instance(aid) for aid in dynamic_agents_to_delete), return_exceptions=True )
             for i, res in enumerate(delete_results):
                  if isinstance(res, Exception): logger.error(f"Error deleting agent {dynamic_agents_to_delete[i]} during load: {res}")
             self.teams, self.agent_to_team = {}, {} # Reset team structures
-            # Reset histories for bootstrap agents
             for boot_id in self.bootstrap_agents:
-                if boot_id in self.agents: self.agents[boot_id].clear_history() # Resets history to initial prompt
+                if boot_id in self.agents: self.agents[boot_id].clear_history()
             logger.info("Cleared current dynamic agents and teams.")
             # --- End Clearing ---
 
@@ -1092,100 +1056,52 @@ class AgentManager:
             # Recreate dynamic agents
             creation_tasks = []
             for agent_id, agent_cfg in dynamic_configs.items():
-                team_id = self.agent_to_team.get(agent_id) # Get team assignment from loaded data
-                # --- Pass the loaded config directly, indicate loading_from_session=True ---
-                # The loaded config *already contains* the final combined prompt.
-                creation_tasks.append(self._create_agent_internal(
-                    agent_id_requested=agent_id,
-                    agent_config_data=agent_cfg, # Use the loaded config
-                    is_bootstrap=False,
-                    team_id=team_id,
-                    loading_from_session=True # Signal that prompt shouldn't be modified
-                    ))
+                team_id = self.agent_to_team.get(agent_id)
+                creation_tasks.append(self._create_agent_internal( agent_id_requested=agent_id, agent_config_data=agent_cfg, is_bootstrap=False, team_id=team_id, loading_from_session=True ))
 
             creation_results = await asyncio.gather(*creation_tasks, return_exceptions=True)
-            successful_creations = 0
-            failed_creations = []
+            successful_creations = 0; failed_creations = []
             for i, result in enumerate(creation_results):
                  agent_id_attempted = list(dynamic_configs.keys())[i]
-                 if isinstance(result, Exception):
-                     logger.error(f"Failed recreating agent '{agent_id_attempted}' from session: {result}", exc_info=result)
-                     failed_creations.append(f"{agent_id_attempted} (Error: {result})")
-                 elif isinstance(result, tuple) and result[0]:
-                     successful_creations += 1
-                 else:
-                     error_msg = result[1] if isinstance(result, tuple) else 'Unknown creation error'
-                     logger.error(f"Failed recreating agent '{agent_id_attempted}' from session: {error_msg}")
-                     failed_creations.append(f"{agent_id_attempted} (Failed: {error_msg})")
-
+                 if isinstance(result, Exception): logger.error(f"Failed recreating agent '{agent_id_attempted}' from session: {result}", exc_info=result); failed_creations.append(f"{agent_id_attempted} (Error: {result})")
+                 elif isinstance(result, tuple) and result[0]: successful_creations += 1
+                 else: error_msg = result[1] if isinstance(result, tuple) else 'Unknown creation error'; logger.error(f"Failed recreating agent '{agent_id_attempted}' from session: {error_msg}"); failed_creations.append(f"{agent_id_attempted} (Failed: {error_msg})")
             logger.info(f"Successfully recreated {successful_creations}/{len(dynamic_configs)} dynamic agents.")
-            if failed_creations:
-                logger.warning(f"Failed to recreate the following agents: {', '.join(failed_creations)}")
+            if failed_creations: logger.warning(f"Failed to recreate the following agents: {', '.join(failed_creations)}")
 
-
-            # Restore histories for ALL agents (bootstrap + successfully recreated dynamic)
+            # Restore histories
             loaded_history_count = 0
             for agent_id, history in histories.items():
                 agent = self.agents.get(agent_id)
                 if agent:
-                     # Basic validation of history format
                      if isinstance(history, list) and all(isinstance(msg, dict) and 'role' in msg and 'content' in msg for msg in history):
-                         agent.message_history = history
-                         # Reset status to idle after loading history
-                         agent.set_status(AGENT_STATUS_IDLE)
-                         loaded_history_count += 1
-                     else:
-                         logger.warning(f"Invalid or missing history format for agent '{agent_id}' in session file. History not loaded.")
-                # else: # Agent might have failed creation
-                    # logger.warning(f"Agent '{agent_id}' not found after recreation attempt. Cannot load history.")
-
+                         agent.message_history = history; agent.set_status(AGENT_STATUS_IDLE); loaded_history_count += 1
+                     else: logger.warning(f"Invalid or missing history format for agent '{agent_id}' in session file. History not loaded.")
             logger.info(f"Loaded histories for {loaded_history_count} agents.")
             self.current_project, self.current_session = project_name, session_name
 
             # Send full state update to UI
             await asyncio.gather(*(self.push_agent_status_update(aid) for aid in self.agents.keys()))
-            # Send team updates if UI handles them separately
-            # for team_id, members in self.teams.items():
-            #     await self.send_to_ui({"type": "team_created", "team_id": team_id, "members": members})
 
             load_message = f"Session '{session_name}' loaded successfully. {successful_creations} dynamic agents recreated."
             if failed_creations: load_message += f" Failed to recreate {len(failed_creations)} agents."
             return True, load_message
 
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON decode error loading session file {session_file_path}: {e}", exc_info=True)
-            return False, "Invalid session file format (JSON decode error)."
-        except Exception as e:
-            logger.error(f"Unexpected error loading session from {session_file_path}: {e}", exc_info=True)
-            return False, f"Unexpected error loading session: {e}"
+        except json.JSONDecodeError as e: logger.error(f"JSON decode error loading session file {session_file_path}: {e}", exc_info=True); return False, "Invalid session file format (JSON decode error)."
+        except Exception as e: logger.error(f"Unexpected error loading session from {session_file_path}: {e}", exc_info=True); return False, f"Unexpected error loading session: {e}"
 
 
+    # --- Cleanup ---
     async def cleanup_providers(self):
         """ Calls cleanup methods (close_session) on all active LLM providers. """
         logger.info("Cleaning up LLM providers...")
-        # Get unique provider instances currently used by agents
         active_providers = {agent.llm_provider for agent in self.agents.values() if agent.llm_provider}
         logger.info(f"Found {len(active_providers)} unique provider instances to clean up.")
-
-        tasks = []
-        for provider in active_providers:
-             # Check if the provider has the close_session method and if it's async
-             if hasattr(provider, 'close_session') and asyncio.iscoroutinefunction(provider.close_session):
-                 tasks.append(asyncio.create_task(self._close_provider_safe(provider)))
-             # else: logger.debug(f"Provider {provider!r} does not have an async close_session method.")
-
-        if tasks:
-            await asyncio.gather(*tasks)
-            logger.info("LLM Provider cleanup tasks completed.")
-        else:
-            logger.info("No provider cleanup tasks were necessary.")
-
+        tasks = [ asyncio.create_task(self._close_provider_safe(provider)) for provider in active_providers if hasattr(provider, 'close_session') and asyncio.iscoroutinefunction(provider.close_session) ]
+        if tasks: await asyncio.gather(*tasks); logger.info("LLM Provider cleanup tasks completed.")
+        else: logger.info("No provider cleanup tasks were necessary.")
 
     async def _close_provider_safe(self, provider: BaseLLMProvider):
         """Safely attempts to call the asynchronous close_session method on a provider."""
-        try:
-            logger.info(f"Attempting to close session for provider: {provider!r}")
-            await provider.close_session()
-            logger.info(f"Successfully closed session for provider: {provider!r}")
-        except Exception as e:
-            logger.error(f"Error closing session for provider {provider!r}: {e}", exc_info=True)
+        try: logger.info(f"Attempting to close session for provider: {provider!r}"); await provider.close_session(); logger.info(f"Successfully closed session for provider: {provider!r}")
+        except Exception as e: logger.error(f"Error closing session for provider {provider!r}: {e}", exc_info=True)
