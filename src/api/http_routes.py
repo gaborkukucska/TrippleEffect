@@ -1,17 +1,26 @@
 # START OF FILE src/api/http_routes.py
-from fastapi import APIRouter, Request, HTTPException, status as http_status # Added status
+from fastapi import APIRouter, Request, HTTPException, status as http_status, Depends # Added Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any # Added Dict, Any
 from pathlib import Path
-import logging # Added logging
+import logging
+import os # For listing directories
+import time # For default session names
 
-# Import settings to access loaded configurations (defaults mostly)
+# Import settings to access loaded configurations (defaults mostly) and PROJECTS_BASE_DIR
 from src.config.settings import settings
 
-# Import the ConfigManager singleton instance for CRUD operations and getting current config
+# Import the ConfigManager singleton instance for agent config CRUD
 from src.config.config_manager import config_manager
+
+# --- Import the global AgentManager instance ---
+# Although FastAPI encourages dependency injection, for simplicity in the current structure,
+# we'll access the globally instantiated AgentManager directly from where it's created (main.py scope).
+# If issues arise, proper dependency injection should be implemented.
+from src.main import agent_manager # Import the instance created in main.py
+
 
 logger = logging.getLogger(__name__)
 
@@ -37,33 +46,29 @@ class AgentInfo(BaseModel):
     model: str
     persona: str
 
-# --- Pydantic Models for API Input/Output (Phase 8) ---
-
-# Represents the 'config' part of an agent entry in config.yaml
-# IMPORTANT: Define fields that can be SET via the API.
-# Avoid including 'api_key' here if you don't want it settable via API.
-# For now, let's allow setting most fields, but API keys should ideally remain in .env
-class AgentConfigInput(BaseModel):
-    provider: str = Field(..., description="Provider name ('openai', 'ollama', 'openrouter', etc.)")
-    model: str = Field(..., description="Model name specific to the provider.")
-    system_prompt: Optional[str] = Field(settings.DEFAULT_SYSTEM_PROMPT, description="The system prompt for the agent.")
-    temperature: Optional[float] = Field(settings.DEFAULT_TEMPERATURE, description="Sampling temperature (e.g., 0.7).")
-    persona: Optional[str] = Field(settings.DEFAULT_PERSONA, description="Display name for the agent.")
-    # Allow arbitrary other key-value pairs (like provider-specific args)
-    # Be cautious with this, ensure validation or sanitization if needed downstream
-    class Config:
-        extra = "allow"
-
-# Model for creating a new agent config entry (includes agent_id)
-class AgentConfigCreate(BaseModel):
-    agent_id: str = Field(..., description="Unique identifier for the agent (e.g., 'coder_v2'). Cannot contain spaces or special characters.", pattern=r"^[a-zA-Z0-9_-]+$") # Added pattern
-    config: AgentConfigInput = Field(..., description="The configuration settings for the agent.")
-
-# General success/error response model
 class GeneralResponse(BaseModel):
+    """ Simple success/error response model. """
     success: bool
     message: str
     details: Optional[str] = None
+
+# --- Pydantic Models for Session/Project API ---
+
+class SessionInfo(BaseModel):
+    """ Model for session information. """
+    project_name: str
+    session_name: str
+    # Add timestamp or other metadata later if needed from session file
+
+class ProjectInfo(BaseModel):
+    """ Model for project information. """
+    project_name: str
+    sessions: Optional[List[str]] = None # Optional list of session names
+
+class SaveSessionInput(BaseModel):
+    """ Optional input for saving session (allows specifying name). """
+    session_name: Optional[str] = Field(None, description="Optional name for the session. If omitted, a timestamp-based name is generated.")
+
 
 # --- HTTP Routes ---
 
@@ -95,183 +100,192 @@ async def get_index_page(request: Request):
         """
         return HTMLResponse(content=error_html, status_code=500)
 
+# --- Agent Config CRUD API Endpoints ---
+
+# Pydantic models for agent config
+class AgentConfigInput(BaseModel):
+    provider: str = Field(..., description="Provider name ('openai', 'ollama', 'openrouter', etc.)")
+    model: str = Field(..., description="Model name specific to the provider.")
+    system_prompt: Optional[str] = Field(settings.DEFAULT_SYSTEM_PROMPT, description="The system prompt for the agent.")
+    temperature: Optional[float] = Field(settings.DEFAULT_TEMPERATURE, description="Sampling temperature (e.g., 0.7).")
+    persona: Optional[str] = Field(settings.DEFAULT_PERSONA, description="Display name for the agent.")
+    class Config: extra = "allow"
+
+class AgentConfigCreate(BaseModel):
+    agent_id: str = Field(..., description="Unique identifier for the agent (e.g., 'coder_v2'). Cannot contain spaces or special characters.", pattern=r"^[a-zA-Z0-9_-]+$") # Added pattern
+    config: AgentConfigInput = Field(..., description="The configuration settings for the agent.")
 
 @router.get("/api/config/agents", response_model=List[AgentInfo])
 async def get_agent_configurations():
-    """
-    API endpoint to retrieve a list of configured agents (basic info only).
-    Reads the current configuration state directly from the ConfigManager.
-    """
+    """ API endpoint to retrieve a list of configured agents (basic info only). """
     agent_info_list: List[AgentInfo] = []
     try:
-        # Use await to call the async get_config method
-        raw_configs = await config_manager.get_config() # <--- Added await HERE
+        raw_configs = await config_manager.get_config() # Gets only the 'agents' list
 
-        if not raw_configs:
-            return [] # Return empty list if no agents are configured
-
-        # Ensure raw_configs is iterable after await (it should be a List)
+        if not raw_configs: return []
         if not isinstance(raw_configs, list):
              logger.error(f"ConfigManager.get_config() did not return a list, type: {type(raw_configs)}")
-             raise HTTPException(
-                status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Internal error reading configuration structure."
-             )
+             raise HTTPException(status_code=500, detail="Internal error reading configuration structure.")
 
         for agent_conf_entry in raw_configs:
             agent_id = agent_conf_entry.get("agent_id")
             config_dict = agent_conf_entry.get("config", {})
-
-            # Extract only the necessary, non-sensitive info for display
             provider = config_dict.get("provider", settings.DEFAULT_AGENT_PROVIDER)
             model = config_dict.get("model", settings.DEFAULT_AGENT_MODEL)
             persona = config_dict.get("persona", settings.DEFAULT_PERSONA)
-
-            if agent_id: # Only add if agent_id is present
-                agent_info_list.append(
-                    AgentInfo(
-                        agent_id=agent_id,
-                        provider=provider,
-                        model=model,
-                        persona=persona
-                    )
-                )
+            if agent_id:
+                agent_info_list.append(AgentInfo(agent_id=agent_id, provider=provider, model=model, persona=persona))
         return agent_info_list
-
     except Exception as e:
         logger.error(f"Error retrieving agent configurations: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to retrieve agent configurations: {e}"
-        )
-
-# --- Phase 8: CRUD API Endpoints ---
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve agent configurations: {e}")
 
 @router.post("/api/config/agents", response_model=GeneralResponse, status_code=http_status.HTTP_201_CREATED)
 async def create_agent_configuration(agent_data: AgentConfigCreate):
-    """
-    API endpoint to add a new agent configuration to config.yaml.
-    Requires application restart to take effect.
-    """
+    """ API endpoint to add a new agent configuration to config.yaml. Requires restart. """
     try:
         logger.info(f"Received request to create agent: {agent_data.agent_id}")
-        # Convert Pydantic model back to dictionary for ConfigManager
-        # Using model_dump instead of dict for newer Pydantic versions
         agent_config_entry = {"agent_id": agent_data.agent_id, "config": agent_data.config.model_dump(exclude_unset=True)}
-
-        # Use await to call the async add_agent method
-        success = await config_manager.add_agent(agent_config_entry) # <--- Added await
-
+        success = await config_manager.add_agent(agent_config_entry)
         if success:
-            logger.info(f"Agent '{agent_data.agent_id}' added successfully.")
             return GeneralResponse(success=True, message=f"Agent '{agent_data.agent_id}' added. Restart application for changes to take effect.")
         else:
-            logger.error(f"Failed to add agent '{agent_data.agent_id}' using ConfigManager (e.g., duplicate ID).")
-            # ConfigManager logs specifics, return a general failure or check internal state
-            # Check if agent exists now (maybe add failed but config was reloaded?)
-             # We need to await get_config here too for the check
             current_config = await config_manager.get_config()
             if any(agent.get("agent_id") == agent_data.agent_id for agent in current_config):
-                 raise HTTPException(
-                    status_code=http_status.HTTP_409_CONFLICT,
-                    detail=f"Agent with ID '{agent_data.agent_id}' already exists."
-                )
+                 raise HTTPException(status_code=409, detail=f"Agent with ID '{agent_data.agent_id}' already exists.")
             else:
-                 raise HTTPException(
-                    status_code=http_status.HTTP_400_BAD_REQUEST,
-                    detail=f"Failed to add agent '{agent_data.agent_id}'. Check server logs."
-                )
-
-    except HTTPException as http_exc:
-        # Re-raise known HTTP exceptions
-        raise http_exc
+                 raise HTTPException(status_code=400, detail=f"Failed to add agent '{agent_data.agent_id}'. Check server logs.")
+    except HTTPException as http_exc: raise http_exc
     except Exception as e:
         logger.error(f"Error creating agent configuration for '{agent_data.agent_id}': {e}", exc_info=True)
-        raise HTTPException(
-            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create agent configuration: {e}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to create agent configuration: {e}")
 
 @router.put("/api/config/agents/{agent_id}", response_model=GeneralResponse)
 async def update_agent_configuration(agent_id: str, agent_config_data: AgentConfigInput):
-    """
-    API endpoint to update an existing agent's configuration in config.yaml.
-    Requires application restart to take effect.
-    """
+    """ API endpoint to update an existing agent's configuration in config.yaml. Requires restart. """
     try:
         logger.info(f"Received request to update agent: {agent_id}")
-        # Convert Pydantic model to dictionary
-        # Using model_dump instead of dict for newer Pydantic versions
         updated_config_dict = agent_config_data.model_dump(exclude_unset=True)
-
-        # Use await to call the async update_agent method
-        success = await config_manager.update_agent(agent_id, updated_config_dict) # <--- Added await
-
+        success = await config_manager.update_agent(agent_id, updated_config_dict)
         if success:
-            logger.info(f"Agent '{agent_id}' updated successfully.")
             return GeneralResponse(success=True, message=f"Agent '{agent_id}' updated. Restart application for changes to take effect.")
         else:
-            # Check if agent exists before assuming other error
-            # Await get_config for the check
             current_config = await config_manager.get_config()
             if not any(agent.get("agent_id") == agent_id for agent in current_config):
-                 logger.error(f"Agent '{agent_id}' not found for update.")
-                 raise HTTPException(
-                    status_code=http_status.HTTP_404_NOT_FOUND,
-                    detail=f"Agent with ID '{agent_id}' not found."
-                )
+                 raise HTTPException(status_code=404, detail=f"Agent with ID '{agent_id}' not found.")
             else:
-                logger.error(f"Failed to update agent '{agent_id}' using ConfigManager.")
-                raise HTTPException(
-                    status_code=http_status.HTTP_400_BAD_REQUEST, # Or 500 if save failed
-                    detail=f"Failed to update agent '{agent_id}'. Check server logs."
-                )
-
-    except HTTPException as http_exc:
-        raise http_exc
+                raise HTTPException(status_code=400, detail=f"Failed to update agent '{agent_id}'. Check server logs.")
+    except HTTPException as http_exc: raise http_exc
     except Exception as e:
         logger.error(f"Error updating agent configuration for '{agent_id}': {e}", exc_info=True)
-        raise HTTPException(
-            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update agent configuration: {e}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to update agent configuration: {e}")
 
 @router.delete("/api/config/agents/{agent_id}", response_model=GeneralResponse)
 async def delete_agent_configuration(agent_id: str):
-    """
-    API endpoint to remove an agent configuration from config.yaml.
-    Requires application restart to take effect.
-    """
+    """ API endpoint to remove an agent configuration from config.yaml. Requires restart. """
     try:
         logger.info(f"Received request to delete agent: {agent_id}")
-        # Use await to call the async delete_agent method
-        success = await config_manager.delete_agent(agent_id) # <--- Added await
-
+        success = await config_manager.delete_agent(agent_id)
         if success:
-            logger.info(f"Agent '{agent_id}' deleted successfully.")
             return GeneralResponse(success=True, message=f"Agent '{agent_id}' deleted. Restart application for changes to take effect.")
         else:
-             # Check if agent exists before assuming other error
-             # Await get_config for the check
-             current_config = await config_manager.get_config()
-             if not any(agent.get("agent_id") == agent_id for agent in current_config):
-                 logger.error(f"Agent '{agent_id}' not found for deletion.")
-                 raise HTTPException(
-                    status_code=http_status.HTTP_404_NOT_FOUND,
-                    detail=f"Agent with ID '{agent_id}' not found."
-                )
-             else:
-                logger.error(f"Failed to delete agent '{agent_id}' using ConfigManager.")
-                raise HTTPException(
-                    status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR, # Save likely failed
-                    detail=f"Failed to delete agent '{agent_id}'. Check server logs."
-                )
-
-    except HTTPException as http_exc:
-        raise http_exc
+             # Check if deletion failed because agent wasn't found or save failed
+             all_configs = await config_manager.get_full_config() # Check full config state
+             agent_still_exists = any(a.get("agent_id") == agent_id for a in all_configs.get("agents", []))
+             if not agent_still_exists:
+                 logger.error(f"Agent '{agent_id}' not found for deletion (or was already deleted but save failed?).")
+                 raise HTTPException(status_code=404, detail=f"Agent with ID '{agent_id}' not found.")
+             else: # Agent exists, but delete op failed (likely save error)
+                 logger.error(f"Failed to delete agent '{agent_id}' using ConfigManager (likely save failed).")
+                 raise HTTPException(status_code=500, detail=f"Failed to delete agent '{agent_id}'. Check server logs for save errors.")
+    except HTTPException as http_exc: raise http_exc
     except Exception as e:
         logger.error(f"Error deleting agent configuration for '{agent_id}': {e}", exc_info=True)
-        raise HTTPException(
-            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to delete agent configuration: {e}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to delete agent configuration: {e}")
+
+
+# --- Project/Session Management API Endpoints ---
+
+@router.get("/api/projects", response_model=List[ProjectInfo])
+async def list_projects():
+    """ Lists available projects by scanning the projects base directory. """
+    projects = []
+    base_dir = settings.PROJECTS_BASE_DIR
+    if not base_dir.is_dir():
+        logger.warning(f"Projects base directory not found or is not a directory: {base_dir}")
+        return [] # Return empty list if base directory doesn't exist
+
+    try:
+        for item in base_dir.iterdir():
+            if item.is_dir() and not item.name.startswith('.'): # List only directories, ignore hidden
+                projects.append(ProjectInfo(project_name=item.name))
+        return projects
+    except Exception as e:
+        logger.error(f"Error listing projects in {base_dir}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to list projects: {e}")
+
+
+@router.get("/api/projects/{project_name}/sessions", response_model=List[SessionInfo])
+async def list_sessions(project_name: str):
+    """ Lists available sessions within a specific project directory. """
+    sessions = []
+    project_dir = settings.PROJECTS_BASE_DIR / project_name
+
+    if not project_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found.")
+
+    try:
+        for item in project_dir.iterdir():
+            # Check if it's a directory AND contains the expected history file
+            session_file = item / "agent_histories.json"
+            if item.is_dir() and not item.name.startswith('.') and session_file.is_file():
+                sessions.append(SessionInfo(project_name=project_name, session_name=item.name))
+            elif item.is_dir() and not item.name.startswith('.'):
+                 logger.warning(f"Directory '{item.name}' in project '{project_name}' exists but missing 'agent_histories.json', not listed as session.")
+
+        return sessions
+    except Exception as e:
+        logger.error(f"Error listing sessions in {project_dir}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to list sessions for project '{project_name}': {e}")
+
+@router.post("/api/projects/{project_name}/sessions", response_model=GeneralResponse, status_code=http_status.HTTP_201_CREATED)
+async def save_current_session(project_name: str, session_input: Optional[SaveSessionInput] = None):
+    """ Saves the current state (agent histories) as a new session in the specified project. """
+    session_name_to_save = session_input.session_name if session_input else None
+    try:
+        success, message = await agent_manager.save_session(project_name, session_name_to_save)
+        if success:
+            return GeneralResponse(success=True, message=message)
+        else:
+            # Determine appropriate status code based on message?
+            # For now, use 400 for generic failure during save.
+            raise HTTPException(status_code=400, detail=message)
+    except Exception as e:
+        logger.error(f"Unexpected error saving session for project '{project_name}': {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Unexpected error saving session: {e}")
+
+@router.post("/api/projects/{project_name}/sessions/{session_name}/load", response_model=GeneralResponse)
+async def load_specific_session(project_name: str, session_name: str):
+    """ Loads the specified session, replacing current agent histories. """
+    try:
+        success, message = await agent_manager.load_session(project_name, session_name)
+        if success:
+            # Send a status update via WebSocket to notify UI of the load
+            await agent_manager._send_to_ui({
+                "type": "system_event",
+                "event": "session_loaded",
+                "project": project_name,
+                "session": session_name,
+                "message": message
+            })
+            return GeneralResponse(success=True, message=message)
+        else:
+            # Use 404 if file not found, 400 otherwise
+            if "not found" in message.lower():
+                 raise HTTPException(status_code=404, detail=message)
+            else:
+                 raise HTTPException(status_code=400, detail=message)
+    except HTTPException as http_exc: raise http_exc # Re-raise known exceptions
+    except Exception as e:
+        logger.error(f"Unexpected error loading session '{session_name}' for project '{project_name}': {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Unexpected error loading session: {e}")
