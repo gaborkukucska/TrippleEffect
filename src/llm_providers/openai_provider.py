@@ -98,22 +98,34 @@ class OpenAIProvider(BaseLLMProvider):
                     await asyncio.sleep(RETRY_DELAY_SECONDS)
                     continue
                 else:
-                    # --- *** CORRECTED FORMATTING FOR THIS BLOCK *** ---
                     logger.error(f"Non-retryable API Status Error ({e.status_code}) or max retries reached.")
                     user_message = f"[OpenAIProvider Error]: API Status {e.status_code}"
                     try:
-                        # Attempt to parse body for more details
                         body_dict = json.loads(e.body) if isinstance(e.body, str) else (e.body if isinstance(e.body, dict) else {})
                         error_detail = body_dict.get('error', {}).get('message') or body_dict.get('message')
-                        if error_detail:
-                            user_message += f" - {str(error_detail)[:100]}"
-                    except Exception: # Ignore parsing errors
-                        pass
+                        if error_detail: user_message += f" - {str(error_detail)[:100]}"
+                    except Exception: pass
                     yield {"type": "error", "content": user_message}
                     return
-                    # --- *** END CORRECTION *** ---
             except (openai.AuthenticationError, openai.BadRequestError, openai.PermissionDeniedError, openai.NotFoundError) as e:
-                 error_type_name = type(e).__name__; status_code = getattr(e, 'status_code', 'N/A'); error_body = getattr(e, 'body', 'N/A'); logger.error(f"Non-retryable OpenAI API error: {error_type_name} (Status: {status_code}), Body: {error_body}"); user_message = f"[OpenAIProvider Error]: {error_type_name}"; try: body_dict = json.loads(error_body) if isinstance(error_body, str) else (error_body if isinstance(error_body, dict) else {}); error_detail = body_dict.get('error', {}).get('message') or body_dict.get('message'); if error_detail: user_message += f" - {str(error_detail)[:100]}"; except: pass; yield {"type": "error", "content": user_message}; return
+                 # --- *** CORRECTED FORMATTING FOR THIS BLOCK *** ---
+                 error_type_name = type(e).__name__
+                 status_code = getattr(e, 'status_code', 'N/A')
+                 error_body = getattr(e, 'body', 'N/A')
+                 logger.error(f"Non-retryable OpenAI API error: {error_type_name} (Status: {status_code}), Body: {error_body}")
+                 user_message = f"[OpenAIProvider Error]: {error_type_name}"
+                 try:
+                     # Attempt to parse body for more details
+                     body_dict = json.loads(error_body) if isinstance(error_body, str) else (error_body if isinstance(error_body, dict) else {})
+                     error_detail = body_dict.get('error', {}).get('message') or body_dict.get('message')
+                     if error_detail:
+                         user_message += f" - {str(error_detail)[:100]}"
+                 except Exception: # Ignore parsing errors
+                     pass
+                 # Yield and return separately
+                 yield {"type": "error", "content": user_message}
+                 return # Exit function
+                 # --- *** END CORRECTION *** ---
             except Exception as e:
                 last_exception = e; logger.exception(f"Unexpected Error during API call attempt {attempt + 1}: {type(e).__name__} - {e}")
                 if attempt < MAX_RETRIES:
@@ -135,12 +147,10 @@ class OpenAIProvider(BaseLLMProvider):
         # --- Process the Stream (with error handling for stream iteration) ---
         try:
             finish_reason = None
-            # *** ADDED TRY/EXCEPT AROUND STREAM ITERATION ***
             try:
                 async for chunk in response_stream:
                     raw_chunk_data_for_log = None
                     try:
-                         # Process chunk content
                          delta = chunk.choices[0].delta if chunk.choices else None
                          if chunk.choices and chunk.choices[0].finish_reason:
                              finish_reason = chunk.choices[0].finish_reason
@@ -148,7 +158,6 @@ class OpenAIProvider(BaseLLMProvider):
                          if not delta: continue
                          if delta.content:
                              yield {"type": "response_chunk", "content": delta.content}
-                         # Tool call logic removed
 
                     except Exception as chunk_proc_err:
                          logger.error(f"Error processing chunk content: {chunk_proc_err}", exc_info=True)
@@ -163,7 +172,6 @@ class OpenAIProvider(BaseLLMProvider):
                 except Exception: pass
                 yield {"type": "error", "content": f"[OpenAIProvider Error]: APIError during stream - {stream_api_err}"}
                 return
-            # *** END ADDED TRY/EXCEPT ***
 
             logger.debug(f"OpenAI stream finished processing loop. Finish reason captured: {finish_reason}")
 
