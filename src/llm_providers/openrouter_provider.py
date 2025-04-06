@@ -194,31 +194,38 @@ class OpenRouterProvider(BaseLLMProvider):
         # --- Process the Successful Stream ---
         try:
             finish_reason = None
-            async for chunk in response_stream:
-                delta = chunk.choices[0].delta if chunk.choices else None
-                if chunk.choices and chunk.choices[0].finish_reason:
-                    finish_reason = chunk.choices[0].finish_reason # Capture finish reason
+            # --- Added try/except around stream iteration ---
+            try:
+                async for chunk in response_stream:
+                    delta = chunk.choices[0].delta if chunk.choices else None
+                    if chunk.choices and chunk.choices[0].finish_reason:
+                        finish_reason = chunk.choices[0].finish_reason # Capture finish reason
 
-                if not delta: continue
+                    if not delta: continue
 
-                # --- Handle Text Content ---
-                if delta.content:
-                    yield {"type": "response_chunk", "content": delta.content}
+                    # --- Handle Text Content ---
+                    if delta.content:
+                        yield {"type": "response_chunk", "content": delta.content}
 
-                # --- REMOVED: Tool Call Delta Handling ---
-                # if delta.tool_calls:
-                #     logger.warning(f"OpenRouter model returned 'tool_calls' unexpectedly, but provider ignores them.")
+                    # --- REMOVED: Tool Call Delta Handling ---
 
-            # --- Stream Finished for this turn ---
-            logger.debug(f"OpenRouter stream finished. Finish reason: {finish_reason}")
+            except openai.APIError as stream_api_err:
+                # --- Catch the specific APIError during streaming ---
+                logger.error(f"OpenAI APIError occurred during stream processing: {stream_api_err}", exc_info=True)
+                yield {"type": "error", "content": f"[OpenRouterProvider Error]: APIError during stream processing - Provider might have sent an error."}
+                # We exit the generator after yielding the error
+                return
+            # --- End added try/except ---
 
-            # --- REMOVED: Tool Call Assembly and Logic ---
+            # --- Stream Finished (or broken by error) ---
+            logger.debug(f"OpenRouter stream finished processing loop. Finish reason captured: {finish_reason}")
+
 
         except Exception as stream_err:
-             logger.exception(f"Error processing OpenRouter response stream: {stream_err}")
-             yield {"type": "error", "content": f"[OpenRouterProvider Error]: Error processing stream - {type(stream_err).__name__}"}
+             # Catch any other unexpected errors during stream processing
+             logger.exception(f"Unexpected Error processing OpenRouter response stream: {stream_err}")
+             yield {"type": "error", "content": f"[OpenRouterProvider Error]: Unexpected Error processing stream - {type(stream_err).__name__}"}
 
-        # --- REMOVED: Outer Tool Call Loop ---
 
         logger.info(f"OpenRouterProvider stream_completion finished for model {model}.")
 
