@@ -156,6 +156,7 @@ class AgentManager:
 
 
     # --- Agent Creation/Deletion (Remains in AgentManager) ---
+    # --- *** CORRECTED _create_agent_internal *** ---
     async def _create_agent_internal(
         self, agent_id_requested: Optional[str], agent_config_data: Dict[str, Any], is_bootstrap: bool = False, team_id: Optional[str] = None, loading_from_session: bool = False
         ) -> Tuple[bool, str, Optional[str]]:
@@ -207,9 +208,14 @@ class AgentManager:
         except Exception as e: logger.error(f"  Agent instantiation failed for '{agent_id}': {e}", exc_info=True); return False, f"Agent instantiation failed: {e}", None
 
         # 6. Ensure Sandbox
-        try: sandbox_ok = await asyncio.to_thread(agent.ensure_sandbox_exists);
-        if not sandbox_ok: logger.warning(f"  Failed to ensure sandbox for '{agent_id}'.")
-        except Exception as e: logger.error(f"Sandbox error for '{agent_id}': {e}", exc_info=True); logger.warning(f"Proceeding without guaranteed sandbox for '{agent_id}'.")
+        try:
+            sandbox_ok = await asyncio.to_thread(agent.ensure_sandbox_exists)
+            if not sandbox_ok: # This check MUST be inside the try block
+                 logger.warning(f"  Failed to ensure sandbox for '{agent_id}'.")
+        except Exception as e:
+            logger.error(f"Sandbox error for '{agent_id}': {e}", exc_info=True)
+            logger.warning(f"Proceeding without guaranteed sandbox for '{agent_id}'.")
+        # --- *** END SyntaxError FIX *** ---
 
         # --- 7. Add agent instance to registry BEFORE assigning team state ---
         self.agents[agent_id] = agent
@@ -230,6 +236,7 @@ class AgentManager:
 
         message = f"Agent '{agent_id}' created successfully." + team_add_msg_suffix
         return True, message, agent_id
+    # --- *** END CORRECTED _create_agent_internal *** ---
 
     async def create_agent_instance( # Public method remains the same
         self, agent_id_requested: Optional[str], provider: str, model: str, system_prompt: str, persona: str, team_id: Optional[str] = None, temperature: Optional[float] = None, **kwargs
@@ -467,14 +474,9 @@ class AgentManager:
                 if success: await self._update_agent_prompt_team_id(agent_id, None) # Pass None for team_id
             # --- List actions use StateManager getters ---
             elif action == "list_agents":
-                 filter_team_id = params.get("team_id"); agent_list = self.agents.values() # Get agent objects
-                 filtered_agents = []
-                 for agent_obj in agent_list:
-                     agt_id = agent_obj.agent_id; current_team = self.state_manager.get_agent_team(agt_id)
-                     if filter_team_id is None or current_team == filter_team_id:
-                          state = agent_obj.get_state()
-                          filtered_agents.append({ "agent_id": agt_id, "persona": state.get("persona"), "provider": state.get("provider"), "model": state.get("model"), "status": state.get("status"), "team": current_team })
-                 result_data = filtered_agents; success = True; count = len(result_data)
+                 filter_team_id = params.get("team_id"); # Use state_manager method directly now
+                 result_data = self.state_manager.get_agent_info_list(filter_team_id=filter_team_id) # Corrected: Call state_manager method
+                 success = True; count = len(result_data)
                  message = f"Found {count} agent(s) in team '{filter_team_id}'." if filter_team_id else f"Found {count} agent(s) in total."
             elif action == "list_teams":
                  result_data = self.state_manager.get_team_info_dict(); success = True; message = f"Found {len(result_data)} team(s)."
