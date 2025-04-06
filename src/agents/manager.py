@@ -525,8 +525,6 @@ class AgentManager:
 
 
     # --- Remaining methods (_handle_manage_team_action to end) are unchanged ---
-    # ... (paste the _handle_manage_team_action method and all subsequent methods from response #21 here) ...
-    # --- Paste Start ---
     async def _handle_manage_team_action(self, action: Optional[str], params: Dict[str, Any]) -> Tuple[bool, str, Optional[Any]]:
         """Dispatches ManageTeamTool actions, including filtering for list_agents."""
         if not action: return False, "No action specified.", None
@@ -734,7 +732,6 @@ class AgentManager:
 
 
     # --- Tool Execution and Routing ---
-    # --- **** MODIFIED _route_and_activate_agent_message **** ---
     async def _route_and_activate_agent_message(self, sender_id: str, target_id: str, message_content: str) -> Optional[asyncio.Task]:
         """Routes a message between agents, appends to history, activates target if idle."""
         sender_agent = self.agents.get(sender_id)
@@ -988,4 +985,3 @@ class AgentManager:
         """Safely attempts to call the asynchronous close_session method on a provider."""
         try: logger.info(f"Attempting to close session for provider: {provider!r}"); await provider.close_session(); logger.info(f"Successfully closed session for provider: {provider!r}")
         except Exception as e: logger.error(f"Error closing session for provider {provider!r}: {e}", exc_info=True)
-    # --- Paste End ---
