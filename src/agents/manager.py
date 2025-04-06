@@ -174,61 +174,6 @@ class AgentManager:
         if BOOTSTRAP_AGENT_ID not in self.agents: logger.critical(f"CRITICAL: Admin AI ('{BOOTSTRAP_AGENT_ID}') failed to initialize!")
 
 
-    # --- *** CORRECTED _create_agent_internal AGAIN *** ---
-    async def _create_agent_internal(
-        self, agent_id_requested: Optional[str], agent_config_data: Dict[str, Any], is_bootstrap: bool = False, team_id: Optional[str] = None, loading_from_session: bool = False
-        ) -> Tuple[bool, str, Optional[str]]:
-        """Internal logic including provider config check and model validation."""
-        # 1. Determine Agent ID
-        if agent_id_requested and agent_id_requested in self.agents: return False, f"Agent ID '{agent_id_requested}' already exists.", None
-        agent_id = agent_id_requested or self._generate_unique_agent_id()
-        if not agent_id: return False, "Failed to generate Agent ID.", None
-        logger.debug(f"Creating agent '{agent_id}' (Bootstrap: {is_bootstrap}, SessionLoad: {loading_from_session})")
-
-        # 2. Extract Config & Validate Provider Configuration
-        provider_name = agent_config_data.get("provider", settings.DEFAULT_AGENT_PROVIDER)
-        model = agent_config_data.get("model", settings.DEFAULT_AGENT_MODEL)
-        persona = agent_config_data.get("persona", settings.DEFAULT_PERSONA)
-
-        # --- Provider Config Check (Using Settings helper) ---
-        if not settings.is_provider_configured(provider_name):
-            msg = f"Validation Error: Provider '{provider_name}' is not configured (e.g., missing API key or URL in .env)."
-            logger.error(msg)
-            return False, msg, None
-        # --- End Provider Config Check ---
-
-        # --- Validate Model against allowed list (only for dynamic agents) ---
-        if not is_bootstrap and not loading_from_session:
-            allowed_models = settings.ALLOWED_SUB_AGENT_MODELS.get(provider_name)
-            if allowed_models is None:
-                msg = f"Validation Error: Provider '{provider_name}' not found in allowed_sub_agent_models configuration (config.yaml)."
-                logger.error(msg); return False, msg, None
-            if not allowed_models or model not in allowed_models: # Also check if allowed_models list is empty
-                allowed_list_str = ', '.join(m for m in allowed_models if m) if allowed_models else 'None'
-                msg = f"Validation Error: Model '{model}' is not allowed for provider '{provider_name}'. Allowed models: [{allowed_list_str}]"
-                logger.error(msg); return False, msg, None
-            logger.info(f"Dynamic agent creation validated: Provider '{provider_name}', Model '{model}' is allowed.")
-        # --- End Model Validation ---
-
-        # 3. Extract other config and Construct Final Prompt
-        role_specific_prompt = agent_config_data.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
-        temperature = agent_config_data.get("temperature", settings.DEFAULT_TEMPERATURE)
-        allowed_provider_keys = ['api_key', 'base_url', 'referer']; provider_specific_kwargs = { k: v for k, v in agent_config_data.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona'] + allowed_provider_keys}
-        if agent_config_data.get("referer"): provider_specific_kwargs["referer"] = agent_config_data["referer"]
-
-        final_system_prompt = role_specific_prompt
-        if not is_bootstrap and not loading_from_session:
-            standard_info = STANDARD_FRAMEWORK_INSTRUCTIONS.format(agent_id=agent_id, team_id=team_id or "N/A")
-            final_system_prompt = role_specific_prompt + "\n" + standard_info
-            logger.debug(f"Constructed final prompt for dynamic agent '{agent_id}'.")
-
-        final_agent_config_entry = { "agent_id": agent_id, "config": { "provider": provider_name, "model": model, "system_prompt": final_system_prompt, "persona": persona, "temperature": temperature, **provider_specific_kwargs } }
-
-        # 4. Instantiate Provider
-        ProviderClass = PROVIDER_CLASS_MAP.get(provider_name)
-        if not ProviderClass: return False, f"Unknown provider '{provider_name}'.", None
-        base_provider_config = settings.get_provider_config(provider_name); provider_config_overrides = {k: agent_config_data[k] for k in allowed_provider_keys if k in agent_config_data}
-        final_provider_args = { **base_provider_config, **provider_specific_kwargs, **provider_config_overrides}; final_provider_args = {k: v for k, v in final_provider_args.items() if v is not None}
     # --- *** CORRECTED _create_agent_internal AGAIN (Prompt Update Block) *** ---
     async def _create_agent_internal(
         self, agent_id_requested: Optional[str], agent_config_data: Dict[str, Any], is_bootstrap: bool = False, team_id: Optional[str] = None, loading_from_session: bool = False
