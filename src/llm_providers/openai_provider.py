@@ -9,7 +9,6 @@ from typing import List, Dict, Any, Optional, AsyncGenerator
 from .base import BaseLLMProvider, MessageDict, ToolDict, ToolResultDict
 
 logger = logging.getLogger(__name__)
-# Basic config (ideally configure centrally)
 # logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s') # Configured in main
 
 # Retry Configuration (Remains the same)
@@ -84,18 +83,47 @@ class OpenAIProvider(BaseLLMProvider):
 
             except RETRYABLE_EXCEPTIONS as e:
                 last_exception = e; logger.warning(f"Retryable error on attempt {attempt + 1}/{MAX_RETRIES + 1}: {type(e).__name__} - {e}")
-                if attempt < MAX_RETRIES: await asyncio.sleep(RETRY_DELAY_SECONDS); continue
-                else: logger.error(f"Max retries ({MAX_RETRIES}) reached after retryable error."); yield {"type": "error", "content": f"[OpenAIProvider Error]: Max retries reached. Last error: {type(e).__name__}"}; return
+                if attempt < MAX_RETRIES:
+                    logger.info(f"Waiting {RETRY_DELAY_SECONDS}s before retrying...")
+                    await asyncio.sleep(RETRY_DELAY_SECONDS); continue
+                else:
+                    logger.error(f"Max retries ({MAX_RETRIES}) reached after retryable error.")
+                    yield {"type": "error", "content": f"[OpenAIProvider Error]: Max retries reached. Last error: {type(e).__name__}"}
+                    return
             except openai.APIStatusError as e:
-                last_exception = e; logger.warning(f"API Status Error on attempt {attempt + 1}/{MAX_RETRIES + 1}: Status={e.status_code}, Body={e.body}")
-                if (e.status_code >= 500 or e.status_code in RETRYABLE_STATUS_CODES) and attempt < MAX_RETRIES: await asyncio.sleep(RETRY_DELAY_SECONDS); continue
-                else: logger.error(f"Non-retryable API Status Error ({e.status_code}) or max retries reached."); user_message = f"[OpenAIProvider Error]: API Status {e.status_code}"; try: body_dict = json.loads(e.body) if isinstance(e.body, str) else (e.body if isinstance(e.body, dict) else {}); error_detail = body_dict.get('error', {}).get('message') or body_dict.get('message'); if error_detail: user_message += f" - {str(error_detail)[:100]}"; except: pass; yield {"type": "error", "content": user_message}; return
+                last_exception = e
+                logger.warning(f"API Status Error on attempt {attempt + 1}/{MAX_RETRIES + 1}: Status={e.status_code}, Body={e.body}")
+                if (e.status_code >= 500 or e.status_code in RETRYABLE_STATUS_CODES) and attempt < MAX_RETRIES:
+                    logger.info(f"Status {e.status_code} is retryable. Waiting {RETRY_DELAY_SECONDS}s before retrying...")
+                    await asyncio.sleep(RETRY_DELAY_SECONDS)
+                    continue
+                else:
+                    # --- *** CORRECTED FORMATTING FOR THIS BLOCK *** ---
+                    logger.error(f"Non-retryable API Status Error ({e.status_code}) or max retries reached.")
+                    user_message = f"[OpenAIProvider Error]: API Status {e.status_code}"
+                    try:
+                        # Attempt to parse body for more details
+                        body_dict = json.loads(e.body) if isinstance(e.body, str) else (e.body if isinstance(e.body, dict) else {})
+                        error_detail = body_dict.get('error', {}).get('message') or body_dict.get('message')
+                        if error_detail:
+                            user_message += f" - {str(error_detail)[:100]}"
+                    except Exception: # Ignore parsing errors
+                        pass
+                    yield {"type": "error", "content": user_message}
+                    return
+                    # --- *** END CORRECTION *** ---
             except (openai.AuthenticationError, openai.BadRequestError, openai.PermissionDeniedError, openai.NotFoundError) as e:
                  error_type_name = type(e).__name__; status_code = getattr(e, 'status_code', 'N/A'); error_body = getattr(e, 'body', 'N/A'); logger.error(f"Non-retryable OpenAI API error: {error_type_name} (Status: {status_code}), Body: {error_body}"); user_message = f"[OpenAIProvider Error]: {error_type_name}"; try: body_dict = json.loads(error_body) if isinstance(error_body, str) else (error_body if isinstance(error_body, dict) else {}); error_detail = body_dict.get('error', {}).get('message') or body_dict.get('message'); if error_detail: user_message += f" - {str(error_detail)[:100]}"; except: pass; yield {"type": "error", "content": user_message}; return
             except Exception as e:
                 last_exception = e; logger.exception(f"Unexpected Error during API call attempt {attempt + 1}: {type(e).__name__} - {e}")
-                if attempt < MAX_RETRIES: await asyncio.sleep(RETRY_DELAY_SECONDS); continue
-                else: logger.error(f"Max retries ({MAX_RETRIES}) reached after unexpected error."); yield {"type": "error", "content": f"[OpenAIProvider Error]: Unexpected Error after retries - {type(e).__name__}"}; return
+                if attempt < MAX_RETRIES:
+                    logger.info(f"Waiting {RETRY_DELAY_SECONDS}s before retrying...")
+                    await asyncio.sleep(RETRY_DELAY_SECONDS)
+                    continue
+                else:
+                    logger.error(f"Max retries ({MAX_RETRIES}) reached after unexpected error.")
+                    yield {"type": "error", "content": f"[OpenAIProvider Error]: Unexpected Error after retries - {type(e).__name__}"}
+                    return
 
         # --- Check if API call failed after all retries ---
         if response_stream is None:
@@ -110,7 +138,6 @@ class OpenAIProvider(BaseLLMProvider):
             # *** ADDED TRY/EXCEPT AROUND STREAM ITERATION ***
             try:
                 async for chunk in response_stream:
-                    # Attempt to log raw chunk on error later if needed
                     raw_chunk_data_for_log = None
                     try:
                          # Process chunk content
@@ -124,24 +151,18 @@ class OpenAIProvider(BaseLLMProvider):
                          # Tool call logic removed
 
                     except Exception as chunk_proc_err:
-                         # Log error during processing of a specific chunk
                          logger.error(f"Error processing chunk content: {chunk_proc_err}", exc_info=True)
-                         try: # Try to get raw chunk data for logging
-                             raw_chunk_data_for_log = chunk.model_dump_json()
-                             logger.error(f"Raw chunk causing processing error: {raw_chunk_data_for_log}")
-                         except Exception: pass # Ignore errors during logging attempt
-                         # Yield a specific chunk processing error
+                         try: raw_chunk_data_for_log = chunk.model_dump_json(); logger.error(f"Raw chunk causing processing error: {raw_chunk_data_for_log}")
+                         except Exception: pass
                          yield {"type": "error", "content": f"[OpenAIProvider Error]: Error processing stream chunk - {type(chunk_proc_err).__name__}"}
-                         return # Stop processing stream on chunk error
+                         return
 
             except openai.APIError as stream_api_err:
-                # Catch APIError specifically during stream iteration
                 logger.error(f"OpenAI APIError occurred during stream processing: {stream_api_err}", exc_info=True)
-                # Try to log response data if available in the exception
                 try: logger.error(f"APIError details: Status={stream_api_err.status_code}, Body={stream_api_err.body}")
                 except Exception: pass
                 yield {"type": "error", "content": f"[OpenAIProvider Error]: APIError during stream - {stream_api_err}"}
-                return # Stop processing stream
+                return
             # *** END ADDED TRY/EXCEPT ***
 
             logger.debug(f"OpenAI stream finished processing loop. Finish reason captured: {finish_reason}")
