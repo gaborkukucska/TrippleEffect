@@ -228,21 +228,25 @@ class AgentManager:
         agent_id = agent.agent_id; logger.info(f"Starting generator handling for Agent '{agent_id}'...")
         agent_generator: Optional[AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]] = None
         manager_action_feedback = []
+        reactivate_agent_after_feedback = False # Flag to check if agent needs re-activation
+
         try:
             agent_generator = agent.process_message()
             while True:
                 try: event = await agent_generator.asend(None)
-                except StopAsyncIteration: logger.info(f"Agent '{agent_id}' generator finished."); break
-                except Exception as gen_err: logger.error(f"Generator error for '{agent_id}': {gen_err}", exc_info=True); agent.set_status(AGENT_STATUS_ERROR); await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": f"[Manager Error: {gen_err}]"}); break
+                except StopAsyncIteration: logger.info(f"Agent '{agent_id}' generator finished normally."); break # Normal finish
+                except Exception as gen_err: logger.error(f"Generator error for '{agent_id}': {gen_err}", exc_info=True); agent.set_status(AGENT_STATUS_ERROR); await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": f"[Manager Error: {gen_err}]"}); break # Error finish
+
                 event_type = event.get("type")
                 if event_type in ["response_chunk", "status", "error", "final_response"]:
                     if "agent_id" not in event: event["agent_id"] = agent_id
                     await self.send_to_ui(event)
-                    if event_type == "error": logger.error(f"Agent '{agent_id}' reported error."); break
+                    if event_type == "error": logger.error(f"Agent '{agent_id}' reported error."); break # Break loop on agent error
                     if event_type == "final_response":
                         final_content = event.get("content")
                         if final_content and (not agent.message_history or agent.message_history[-1].get("content") != final_content or agent.message_history[-1].get("role") != "assistant"):
                             agent.message_history.append({"role": "assistant", "content": final_content}); logger.debug(f"Appended final response for '{agent_id}'.")
+
                 elif event_type == "tool_requests":
                     tool_calls = event.get("calls", []); agent_last_response = event.get("raw_assistant_response")
                     if agent_last_response and (not agent.message_history or agent.message_history[-1].get("content") != agent_last_response or agent.message_history[-1].get("role") != "assistant"):
@@ -264,7 +268,9 @@ class AgentManager:
                             tool_msg: MessageDict = {"role": "tool", "tool_call_id": call_id_from_res, "content": str(result_content) }
                             if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("tool_call_id") != call_id_from_res: agent.message_history.append(tool_msg); append_count += 1
                         logger.debug(f"Appended {append_count} tool result(s) for '{agent_id}'.")
-                    activation_tasks = []; manager_action_feedback = []
+
+                    # --- Post-execution processing ---
+                    activation_tasks = []; manager_action_feedback = [] # Reset feedback list
                     for call in calls_post_exec:
                         call_id, tool_name, tool_args = call["id"], call["name"], call["arguments"]
                         exec_result = next((r for r in executed_results if isinstance(r, dict) and r.get("call_id") == call_id), None)
@@ -277,7 +283,7 @@ class AgentManager:
                                   action_success, action_message, action_data = await self._handle_manage_team_action(action, params)
                                   feedback = {"call_id": call_id, "action": action, "success": action_success, "message": action_message}
                                   if action_data: feedback["data"] = action_data
-                                  manager_action_feedback.append(feedback)
+                                  manager_action_feedback.append(feedback) # Store feedback
                              elif raw_tool_output: logger.warning(f"ManageTeamTool call {call_id} unsuccessful. Raw Result: {raw_tool_output}")
                              else: logger.warning(f"ManageTeamTool call {call_id} had unexpected structure: {exec_result}")
                         elif tool_name == "send_message":
@@ -290,7 +296,10 @@ class AgentManager:
                                   else: logger.error(f"SendMessage args incomplete for {call_id}. Args: {tool_args}")
                               else: logger.warning(f"SendMessageTool call {call_id} failed exec. Result: {result_content_str}")
                     if activation_tasks: logger.info(f"Triggered activation for {len(activation_tasks)} agents from '{agent_id}'.")
+
+                    # --- Append Manager Action Feedback ---
                     if manager_action_feedback:
+                         feedback_appended = False
                          for feedback in manager_action_feedback:
                              feedback_content = f"[Manager Result for {feedback['action']} (Call ID: {feedback['call_id']})]: Success={feedback['success']}. Message: {feedback['message']}"
                              if feedback.get("data"):
@@ -298,14 +307,29 @@ class AgentManager:
                                   except TypeError: feedback_content += f"\nData: [Unserializable Data]"
                              feedback_message: MessageDict = { "role": "tool", "tool_call_id": feedback['call_id'], "content": feedback_content }
                              agent.message_history.append(feedback_message); logger.debug(f"Appended manager feedback for call {feedback['call_id']} to '{agent_id}' history.")
+                             feedback_appended = True
+                         # --- Set flag to reactivate this agent ---
+                         if feedback_appended:
+                             reactivate_agent_after_feedback = True
+
                 else: logger.warning(f"Unknown event type '{event_type}' from '{agent_id}'.")
+
         except Exception as e: logger.error(f"Error handling generator for {agent_id}: {e}", exc_info=True); agent.set_status(AGENT_STATUS_ERROR); await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": f"[Manager Error: {e}]"})
         finally:
              if agent_generator:
                  try: await agent_generator.aclose(); logger.debug(f"Closed generator for '{agent_id}'.")
                  except Exception as close_err: logger.error(f"Error closing generator for '{agent_id}': {close_err}", exc_info=True)
-             await self.push_agent_status_update(agent_id)
-             logger.info(f"Manager finished handling generator cycle for Agent '{agent_id}'. Final status: {agent.status}")
+
+             # --- Reactivate agent if feedback was added ---
+             if reactivate_agent_after_feedback and agent.status != AGENT_STATUS_ERROR:
+                 logger.info(f"Reactivating agent '{agent_id}' to process manager feedback.")
+                 agent.set_status(AGENT_STATUS_IDLE) # Ensure it's idle before restarting
+                 asyncio.create_task(self._handle_agent_generator(agent))
+                 # Don't update status to IDLE here, let the new task handle it
+             else:
+                 # Update final status only if not reactivating
+                 await self.push_agent_status_update(agent_id)
+                 logger.info(f"Manager finished handling generator cycle for Agent '{agent_id}'. Final status: {agent.status}")
 
 
     async def _handle_manage_team_action(self, action: Optional[str], params: Dict[str, Any]) -> Tuple[bool, str, Optional[Any]]:
@@ -473,7 +497,6 @@ class AgentManager:
                       config_to_save = agent.agent_config.get("config") if hasattr(agent, 'agent_config') else None
                       if config_to_save: session_data["dynamic_agents_config"][agent_id] = config_to_save
                       else: logger.warning(f"No config found for dynamic agent '{agent_id}'. Not saved.")
-                 # --- Corrected Indentation Here ---
                  except Exception as e_cfg:
                       logger.warning(f"Error accessing config for dynamic agent '{agent_id}': {e_cfg}. Not saved.")
 
