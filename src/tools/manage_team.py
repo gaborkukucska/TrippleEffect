@@ -49,7 +49,7 @@ class ManageTeamTool(BaseTool):
         ToolParameter(
             name="team_id",
             type="string",
-            description="The unique ID for a team. Required for create_team, delete_team, add_agent_to_team, remove_agent_from_team. Also used optionally during create_agent.",
+            description="The unique ID for a team. Required for create_team, delete_team, add_agent_to_team, remove_agent_from_team. Optional for create_agent. **Also optional for 'list_agents' to filter by team.**", # Updated description
             required=False,
         ),
         ToolParameter(
@@ -61,13 +61,13 @@ class ManageTeamTool(BaseTool):
         ToolParameter(
             name="model",
             type="string",
-            description="LLM model name specific to the provider. Required for create_agent.",
+            description="LLM model name specific to the provider (must be from the allowed list). Required for create_agent.", # Added note about allowed list
             required=False,
         ),
         ToolParameter(
             name="system_prompt",
             type="string",
-            description="The system prompt defining the agent's role and instructions. Required for create_agent.",
+            description="The system prompt defining the agent's specific role and instructions (framework context is added automatically). Required for create_agent.", # Added note about framework context
             required=False,
         ),
         ToolParameter(
@@ -123,7 +123,7 @@ class ManageTeamTool(BaseTool):
             required_params = ["agent_id", "team_id"]
         elif action == "remove_agent_from_team":
             required_params = ["agent_id", "team_id"]
-        # list_agents, list_teams have no required params
+        # list_agents, list_teams have no required params (team_id is optional for list_agents)
 
         missing = [p for p in required_params if p not in params or not params[p]]
         if missing:
@@ -136,9 +136,10 @@ class ManageTeamTool(BaseTool):
         # If validation passes, return success signal for AgentManager
         success_msg = f"Request for action '{action}' validated. Signaling manager to proceed."
         logger.info(success_msg)
+        # The 'params' dictionary already contains all kwargs, including the optional team_id for list_agents
         return {
             "status": "success",
             "action": action,
-            "params": params, # Pass all provided params to manager
+            "params": params, # Pass all provided params (including optional ones) to manager
             "message": success_msg # This becomes the tool result for the Admin AI's history
         }
