@@ -23,8 +23,6 @@ AGENT_CONFIG_PATH = BASE_DIR / 'config.yaml'
 # --- Import the ConfigManager singleton instance ---
 # This assumes config_manager.py is executed and the instance is created
 try:
-    # Use the path defined in config_manager itself if needed:
-    # from src.config.config_manager import config_manager, AGENT_CONFIG_PATH_CM
     from src.config.config_manager import config_manager
     print("Successfully imported config_manager instance.")
 except ImportError as e:
@@ -32,10 +30,13 @@ except ImportError as e:
      # Provide a fallback or raise an error depending on desired behavior
      # Fallback: define a dummy config_manager or load statically
      class DummyConfigManager:
-         def _load_config_sync(self): self._agents_data = []
-         def get_config_sync(self): return []
+         def _load_config_sync(self):
+             self._agents_data = []
+             self._teams_data = {} # Add dummy teams data
+         def get_config_sync(self): return [], {} # Return tuple now
          # Add dummy async methods if needed elsewhere during testing
          async def get_config(self): return []
+         async def get_teams(self): return {} # Add dummy async teams getter
          async def load_config(self): return []
 
      # Use the actual AGENT_CONFIG_PATH for the dummy if needed
@@ -48,8 +49,8 @@ logger = logging.getLogger(__name__)
 class Settings:
     """
     Holds application settings, loaded from environment variables and config.yaml.
-    Manages API keys and base URLs for different LLM providers.
-    Uses ConfigManager to load agent configurations synchronously at startup.
+    Manages API keys, base URLs, default agent parameters, and team configurations.
+    Uses ConfigManager to load agent and team configurations synchronously at startup.
     """
     def __init__(self):
         # --- Provider Configuration (from .env) ---
@@ -65,26 +66,94 @@ class Settings:
         # Ollama
         self.OLLAMA_BASE_URL: Optional[str] = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434") # Default if not set
 
+        # --- Project/Session Configuration (from .env) ---
+        self.PROJECTS_BASE_DIR: Path = Path(os.getenv("PROJECTS_BASE_DIR", str(BASE_DIR / "projects")))
+
         # --- Default Agent Configuration (from .env) ---
-        # Used if not specified in config.yaml or if file is missing/incomplete.
-        self.DEFAULT_AGENT_PROVIDER: str = os.getenv("DEFAULT_AGENT_PROVIDER", "openai") # Default provider
-        self.DEFAULT_AGENT_MODEL: str = os.getenv("DEFAULT_AGENT_MODEL", "gpt-3.5-turbo")
+        self.DEFAULT_AGENT_PROVIDER: str = os.getenv("DEFAULT_AGENT_PROVIDER", "openrouter") # Changed default
+        self.DEFAULT_AGENT_MODEL: str = os.getenv("DEFAULT_AGENT_MODEL", "google/gemini-2.5-pro-exp-03-25:free") # Changed default
         self.DEFAULT_SYSTEM_PROMPT: str = os.getenv("DEFAULT_SYSTEM_PROMPT", "You are a helpful assistant.")
         self.DEFAULT_TEMPERATURE: float = float(os.getenv("DEFAULT_TEMPERATURE", 0.7))
         self.DEFAULT_PERSONA: str = os.getenv("DEFAULT_PERSONA", "General Assistant")
 
-        # --- Load Agent Configurations using ConfigManager (Synchronously) ---
+        # --- Load Agent and Team Configurations using ConfigManager (Synchronously) ---
         # Use the new synchronous getter for initialization.
-        self.AGENT_CONFIGURATIONS: List[Dict[str, Any]] = config_manager.get_config_sync()
+        # Need to adjust ConfigManager's sync load to also fetch teams if we modify it,
+        # or keep loading the whole structure here. Let's load the whole structure.
+        full_config = {}
+        try:
+            # Load the raw config dictionary synchronously
+            # Modify ConfigManager's _load_config_sync and get_config_sync if needed
+            # For now, assume config_manager._agents_data holds the list as before
+            # and add loading for the 'teams' key directly here if needed or enhance ConfigManager.
+            # Let's enhance ConfigManager first.
+            # Assuming ConfigManager's get_config_sync is updated to return both.
+            # Placeholder: Modify ConfigManager.py first, then update here.
+
+            # ---> Modification needed in ConfigManager._load_config_sync & get_config_sync
+            # ---> For now, we will access the raw loaded data via ConfigManager.
+
+            # Accessing the raw loaded data (less ideal, better to enhance ConfigManager)
+            # This requires accessing a potentially "private" attribute, which isn't best practice.
+            # Let's stick to the plan: Update ConfigManager first.
+            # Assume ConfigManager.get_full_config_sync() exists and returns {'agents': [...], 'teams': {...}}
+
+            # --- Let's update ConfigManager first ---
+            # Assume for now that config_manager loads the full structure.
+            # We'll load the sections here.
+
+            raw_config_data = config_manager.get_config_data_sync() # Needs to be added to ConfigManager
+
+            self.AGENT_CONFIGURATIONS: List[Dict[str, Any]] = raw_config_data.get("agents", [])
+            self.TEAMS_CONFIG: Dict[str, List[str]] = raw_config_data.get("teams", {})
+
+        except AttributeError:
+             logger.error("ConfigManager does not have 'get_config_data_sync' method. Loading manually.")
+             # Manual loading as fallback (less ideal)
+             self.AGENT_CONFIGURATIONS = []
+             self.TEAMS_CONFIG = {}
+             if AGENT_CONFIG_PATH.exists():
+                 try:
+                     with open(AGENT_CONFIG_PATH, 'r', encoding='utf-8') as f:
+                         yaml_data = yaml.safe_load(f)
+                         if yaml_data:
+                             self.AGENT_CONFIGURATIONS = yaml_data.get("agents", [])
+                             self.TEAMS_CONFIG = yaml_data.get("teams", {})
+                 except Exception as e:
+                     logger.error(f"Error loading config manually in settings: {e}")
+
+
         if not self.AGENT_CONFIGURATIONS:
-             print("Warning: No agent configurations loaded via ConfigManager.")
+             print("Warning: No agent configurations loaded.")
+        if not self.TEAMS_CONFIG:
+             print("Warning: No team configurations loaded.")
+        else:
+             print(f"Loaded teams: {list(self.TEAMS_CONFIG.keys())}")
+             # Add validation: check if all agents listed in teams exist in the agents list
+             all_configured_agent_ids = {agent.get("agent_id") for agent in self.AGENT_CONFIGURATIONS if agent.get("agent_id")}
+             for team_name, member_ids in self.TEAMS_CONFIG.items():
+                 for member_id in member_ids:
+                     if member_id not in all_configured_agent_ids:
+                         print(f"⚠️ WARNING: Agent '{member_id}' listed in team '{team_name}' but not found in the main 'agents' configuration list.")
 
 
         # --- Other global settings ---
         # e.g., LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
+        # Ensure projects base directory exists
+        self._ensure_projects_dir()
+
         # Post-initialization check for necessary keys based on loaded configs
         self._check_required_keys()
+
+    def _ensure_projects_dir(self):
+        """Creates the base directory for storing project/session data if it doesn't exist."""
+        try:
+             self.PROJECTS_BASE_DIR.mkdir(parents=True, exist_ok=True)
+             print(f"Ensured projects directory exists at: {self.PROJECTS_BASE_DIR}")
+        except Exception as e:
+             print(f"Error creating projects directory at {self.PROJECTS_BASE_DIR}: {e}")
+             # Consider if this should be a fatal error
 
     def _check_required_keys(self):
         """Checks if necessary API keys/URLs are set based on agent configurations."""
@@ -183,7 +252,7 @@ class Settings:
 settings = Settings()
 
 # Example Usage (after import: from src.config.settings import settings):
-# openrouter_defaults = settings.get_provider_config('openrouter') -> {'api_key': '...', 'referer': '...'}
-# ollama_defaults = settings.get_provider_config('ollama') -> {'base_url': 'http://...'}
-# coder_config_dict = settings.get_agent_config_by_id('coder') -> {'provider': 'openai', 'model': ...}
+# openrouter_defaults = settings.get_provider_config('openrouter')
 # all_agent_configs = settings.AGENT_CONFIGURATIONS
+# teams_structure = settings.TEAMS_CONFIG
+# projects_dir = settings.PROJECTS_BASE_DIR
