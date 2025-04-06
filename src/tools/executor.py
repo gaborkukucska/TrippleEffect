@@ -1,16 +1,19 @@
 # START OF FILE src/tools/executor.py
 import json
-import re # Keep re for the initial block detection
+import re # Keep re for potential future use, though less critical now
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Type
 import xml.etree.ElementTree as ET # Use ElementTree for robust parsing
 import html # For unescaping potentially escaped values in XML
+import logging # Added logging
 
 # Import BaseTool and specific tools
 from src.tools.base import BaseTool
 from src.tools.file_system import FileSystemTool
-# Import other tools here as they are created, e.g.:
-# from src.tools.web_search import WebSearchTool
+# --- Import the new SendMessageTool ---
+from src.tools.send_message import SendMessageTool
+
+logger = logging.getLogger(__name__)
 
 class ToolExecutor:
     """
@@ -23,6 +26,7 @@ class ToolExecutor:
     # --- Tool Registration ---
     AVAILABLE_TOOL_CLASSES: List[Type[BaseTool]] = [
         FileSystemTool,
+        SendMessageTool, # <-- Added SendMessageTool here
         # Add other tool classes here, e.g., WebSearchTool
     ]
 
@@ -39,21 +43,21 @@ class ToolExecutor:
             try:
                 instance = tool_cls()
                 if instance.name in self.tools:
-                    print(f"Warning: Tool name conflict. '{instance.name}' already registered. Overwriting.")
+                    logger.warning(f"Tool name conflict. '{instance.name}' already registered. Overwriting.")
                 self.tools[instance.name] = instance
-                print(f"  Registered tool: {instance.name}")
+                logger.info(f"  Registered tool: {instance.name}")
             except Exception as e:
-                print(f"Error instantiating or registering tool {tool_cls.__name__}: {e}")
+                logger.error(f"Error instantiating or registering tool {tool_cls.__name__}: {e}", exc_info=True)
 
     def register_tool(self, tool_instance: BaseTool):
         """Manually registers a tool instance."""
         if not isinstance(tool_instance, BaseTool):
-            print(f"Error: Cannot register object of type {type(tool_instance)}. Must be subclass of BaseTool.")
+            logger.error(f"Error: Cannot register object of type {type(tool_instance)}. Must be subclass of BaseTool.")
             return
         if tool_instance.name in self.tools:
-            print(f"Warning: Tool name conflict. '{tool_instance.name}' already registered. Overwriting.")
+            logger.warning(f"Tool name conflict. '{tool_instance.name}' already registered. Overwriting.")
         self.tools[tool_instance.name] = tool_instance
-        print(f"Manually registered tool: {tool_instance.name}")
+        logger.info(f"Manually registered tool: {tool_instance.name}")
 
     # --- Tool Schema/Discovery ---
 
@@ -66,7 +70,11 @@ class ToolExecutor:
         root = ET.Element("tools")
         root.text = "\nYou have access to the following tools. Use the specified XML format to call them. Only one tool call per message.\n"
 
-        for tool in self.tools.values():
+        # Sort tools alphabetically by name for consistent output
+        sorted_tool_names = sorted(self.tools.keys())
+
+        for tool_name in sorted_tool_names:
+            tool = self.tools[tool_name]
             schema = tool.get_schema()
             tool_element = ET.SubElement(root, "tool")
 
@@ -78,7 +86,9 @@ class ToolExecutor:
 
             params_el = ET.SubElement(tool_element, "parameters")
             if schema['parameters']:
-                 for param in schema['parameters']:
+                 # Sort parameters for consistency
+                 sorted_params = sorted(schema['parameters'], key=lambda p: p['name'])
+                 for param in sorted_params:
                      param_el = ET.SubElement(params_el, "parameter")
                      param_name = ET.SubElement(param_el, "name")
                      param_name.text = param['name']
@@ -95,7 +105,9 @@ class ToolExecutor:
             usage_el = ET.SubElement(tool_element, "usage_example")
             usage_str = f"\n<{schema['name']}>\n"
             if schema['parameters']:
-                for param in schema['parameters']:
+                 # Use sorted parameters in example too
+                 sorted_params_usage = sorted(schema['parameters'], key=lambda p: p['name'])
+                 for param in sorted_params_usage:
                     # Simple placeholder like <param>value</param>
                     usage_str += f"  <{param['name']}>...</{param['name']}>\n"
             else:
@@ -148,14 +160,16 @@ class ToolExecutor:
         Returns:
             str: The result of the tool execution (should be a string or serializable).
                  Returns an error message string if execution fails.
+                 For SendMessageTool, this is just a confirmation string for the sender's history.
         """
         tool = self.tools.get(tool_name)
         if not tool:
+            logger.error(f"Tool '{tool_name}' not found.")
             return f"Error: Tool '{tool_name}' not found."
 
-        print(f"Executor: Executing tool '{tool_name}' for agent '{agent_id}' with args: {tool_args}")
+        logger.info(f"Executor: Executing tool '{tool_name}' for agent '{agent_id}' with args: {tool_args}")
         try:
-            # --- Argument Validation (moved from parsing step) ---
+            # --- Argument Validation (Schema-based) ---
             schema = tool.get_schema()
             validated_args = {}
             missing_required = []
@@ -163,20 +177,23 @@ class ToolExecutor:
                 param_map = {p['name']: p for p in schema['parameters']}
                 for param_info in schema['parameters']:
                     param_name = param_info['name']
-                    is_required = param_info.get('required', False)
+                    is_required = param_info.get('required', True) # Default to required if key missing
                     if param_name in tool_args:
-                        # Basic type check could be added here if needed, but Pydantic in BaseTool might handle it
+                        # TODO: Add basic type checking based on param_info['type']?
+                        # e.g., if param_info['type'] == 'integer': try: int(tool_args[param_name]) except ValueError: return "Error..."
                         validated_args[param_name] = tool_args[param_name]
                     elif is_required:
                         missing_required.append(param_name)
 
-                # Check for unexpected arguments (optional)
+                # Check for unexpected arguments (optional - could be useful for debugging)
                 # for arg_name in tool_args:
                 #     if arg_name not in param_map:
-                #         print(f"Warning: Unexpected argument '{arg_name}' provided for tool '{tool_name}'")
+                #         logger.warning(f"Unexpected argument '{arg_name}' provided for tool '{tool_name}'")
 
             if missing_required:
-                return f"Error: Tool '{tool_name}' execution failed. Missing required parameters: {', '.join(missing_required)}"
+                error_msg = f"Error: Tool '{tool_name}' execution failed. Missing required parameters: {', '.join(missing_required)}"
+                logger.error(error_msg)
+                return error_msg
             # --- End Argument Validation ---
 
 
@@ -192,16 +209,14 @@ class ToolExecutor:
                  try:
                      result_str = json.dumps(result, indent=2)
                  except TypeError:
-                     result_str = str(result)
+                     result_str = str(result) # Fallback to basic string conversion
             else:
                  result_str = result
 
-            print(f"Executor: Tool '{tool_name}' execution result (first 100 chars): {result_str[:100]}...")
+            logger.info(f"Executor: Tool '{tool_name}' execution successful for agent '{agent_id}'. Result (first 100 chars): {result_str[:100]}...")
             return result_str
 
         except Exception as e:
             error_msg = f"Executor: Error executing tool '{tool_name}': {type(e).__name__} - {e}"
-            print(error_msg)
-            # import traceback # Uncomment for detailed debug logs
-            # traceback.print_exc() # Uncomment for detailed debug logs
+            logger.error(error_msg, exc_info=True) # Log traceback for executor errors
             return error_msg
