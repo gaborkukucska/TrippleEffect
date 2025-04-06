@@ -318,7 +318,7 @@ class AgentManager:
             await self.send_to_ui({ "type": "status", "agent_id": admin_agent.agent_id, "content": f"Admin AI busy ({admin_agent.status}). Your message will be processed when idle." })
 
 
-    # --- **** CORRECTED _handle_agent_generator with RETRY and extra LOGGING **** ---
+    # --- **** CORRECTED _handle_agent_generator with activation_task init **** ---
     async def _handle_agent_generator(self, agent: Agent, retry_count: int = 0):
         """Handles agent processing cycle, including stream error retries."""
         agent_id = agent.agent_id
@@ -427,25 +427,43 @@ class AgentManager:
                              result = await self._execute_single_tool(agent, call['id'], call['name'], call['arguments'])
                              if result: executed_results_map[call['id']] = result
                         logger.info(f"Finished executing other tool calls for agent '{agent_id}'.")
-                        for call in other_calls: # Process results
+
+                        # Process results of other calls
+                        for call in other_calls:
                             result = executed_results_map.get(call['id'])
                             if not result: continue
+
+                            # Append raw tool result to history
                             raw_content_for_hist = result.get("content", "[Tool Error: No content]")
                             tool_msg: MessageDict = {"role": "tool", "tool_call_id": call['id'], "content": str(raw_content_for_hist) }
                             if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("tool_call_id") != call['id']:
                                 agent.message_history.append(tool_msg); logger.debug(f"Appended raw other tool result for {call['id']}.")
-                            if call['name'] == SendMessageTool.name: # Process SendMessage
-                                target_id = call['arguments'].get("target_agent_id"); msg_content = call['arguments'].get("message_content")
+
+                            # Specific handling for SendMessageTool
+                            if call['name'] == SendMessageTool.name:
+                                target_id = call['arguments'].get("target_agent_id")
+                                msg_content = call['arguments'].get("message_content")
+                                activation_task = None # <-- Initialize activation_task to None HERE
                                 if target_id and msg_content is not None:
-                                    if target_id in self.agents: activation_task = await self._route_and_activate_agent_message(agent_id, target_id, msg_content);
-                                    if activation_task: activation_tasks.append(activation_task)
-                                    else: logger.error(f"SendMessage failed: Target agent '{target_id}' not found after management actions."); manager_action_feedback.append({"call_id": call['id'], "action": "send_message", "success": False, "message": f"Failed to send: Target agent '{target_id}' not found."})
-                                else: logger.error(f"SendMessage args incomplete for call {call['id']}. Args: {call['arguments']}"); manager_action_feedback.append({"call_id": call['id'], "action": "send_message", "success": False, "message": "Missing target_agent_id or message_content."})
+                                    if target_id in self.agents:
+                                        activation_task = await self._route_and_activate_agent_message(agent_id, target_id, msg_content)
+                                        if activation_task: # Only append if routing succeeds and target needs activation
+                                             activation_tasks.append(activation_task)
+                                    else:
+                                        # Log error and generate feedback if target agent not found
+                                        logger.error(f"SendMessage failed: Target agent '{target_id}' not found.")
+                                        manager_action_feedback.append({"call_id": call['id'], "action": "send_message", "success": False, "message": f"Failed to send: Target agent '{target_id}' not found."})
+                                else:
+                                    logger.error(f"SendMessage args incomplete for call {call['id']}. Args: {call['arguments']}")
+                                    manager_action_feedback.append({"call_id": call['id'], "action": "send_message", "success": False, "message": "Missing target_agent_id or message_content."})
 
-                    # 5. Wait for any agent activations
-                    if activation_tasks: await asyncio.gather(*activation_tasks); logger.info(f"Completed activation tasks triggered by '{agent_id}'.")
+                    # 5. Wait for any agent activations triggered by SendMessage
+                    if activation_tasks:
+                        logger.info(f"Waiting for {len(activation_tasks)} activation tasks triggered by '{agent_id}'.")
+                        await asyncio.gather(*activation_tasks)
+                        logger.info(f"Completed activation tasks triggered by '{agent_id}'.")
 
-                    # 6. Append All Manager Feedback
+                    # 6. Append All Manager Feedback (from both ManageTeam and failed SendMessage)
                     if manager_action_feedback:
                         feedback_appended = False
                         for feedback in manager_action_feedback:
@@ -471,8 +489,7 @@ class AgentManager:
                 try: await agent_generator.aclose(); logger.debug(f"Closed generator for '{agent_id}'.")
                 except Exception as close_err: logger.error(f"Error closing generator for '{agent_id}': {close_err}", exc_info=True)
 
-            # --- *** CORRECTED FINALLY BLOCK LOGIC *** ---
-            # Check for automatic retry *first*
+            # --- Corrected Finally Block Logic (Remains the same) ---
             if current_cycle_error and is_stream_related_error and retry_count < MAX_STREAM_RETRIES:
                 retry_delay = STREAM_RETRY_DELAY * (retry_count + 1)
                 logger.warning(f"Stream error for '{agent_id}'. Retrying in {retry_delay:.1f}s (Attempt {retry_count + 1}/{MAX_STREAM_RETRIES})...")
@@ -481,17 +498,15 @@ class AgentManager:
                 agent.set_status(AGENT_STATUS_IDLE) # Reset status *before* scheduling retry
                 asyncio.create_task(self._handle_agent_generator(agent, retry_count + 1)) # Start retry task
                 logger.info(f"Retry task scheduled for agent '{agent_id}'. This cycle ending.")
-                return # <-- ADDED RETURN to prevent fall-through
+                return
 
-            # Then check for reactivation
             elif reactivate_agent_after_feedback and not current_cycle_error:
                 logger.info(f"Reactivating agent '{agent_id}' to process manager feedback.")
                 agent.set_status(AGENT_STATUS_IDLE)
                 asyncio.create_task(self._handle_agent_generator(agent)) # Start next cycle task (retry_count reset to 0)
                 logger.info(f"Reactivation task scheduled for agent '{agent_id}'. This cycle ending.")
-                return # <-- ADDED RETURN to prevent fall-through
+                return
 
-            # Else finalize status (if not retrying or reactivating)
             else:
                 final_status = agent.status
                 if final_status not in [AGENT_STATUS_IDLE, AGENT_STATUS_ERROR]:
@@ -501,7 +516,7 @@ class AgentManager:
                 await self.push_agent_status_update(agent_id) # Push the determined final state
                 log_level = logging.ERROR if agent.status == AGENT_STATUS_ERROR else logging.INFO
                 logger.log(log_level, f"Manager finished handling generator cycle for Agent '{agent_id}'. Final status: {agent.status}")
-            # --- *** END CORRECTION *** ---
+            # --- End Corrected Finally Block ---
 
 
     # --- Tool Execution & Team Management Delegation ---
@@ -520,9 +535,11 @@ class AgentManager:
 
             if action == "create_agent":
                 success, message, created_agent_id = await self.create_agent_instance( agent_id, provider, model, system_prompt, persona, team_id, temperature, **extra_kwargs );
-                if success and created_agent_id: message = f"Agent '{persona}' (ID: {created_agent_id}) creation request processed."; result_data = {"created_agent_id": created_agent_id}
+                if success and created_agent_id: message = f"Agent '{persona}' created successfully with ID '{created_agent_id}'."; result_data = {"created_agent_id": created_agent_id, "persona": persona, "provider": provider, "model": model, "team_id": team_id} # Add more info to data
             elif action == "delete_agent": success, message = await self.delete_agent_instance(agent_id)
-            elif action == "create_team": success, message = await self.state_manager.create_new_team(team_id)
+            elif action == "create_team":
+                success, message = await self.state_manager.create_new_team(team_id)
+                if success: result_data = {"created_team_id": team_id}
             elif action == "delete_team": success, message = await self.state_manager.delete_existing_team(team_id)
             elif action == "add_agent_to_team":
                 success, message = await self.state_manager.add_agent_to_team(agent_id, team_id)
