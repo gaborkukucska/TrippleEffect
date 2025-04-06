@@ -208,8 +208,7 @@ class AgentManager:
         # 5. Ensure Sandbox (Asynchronously using agent's method which now runs mkdir in thread)
         sandbox_ok = False
         try:
-            # Calling ensure_sandbox_exists which might do sync I/O
-            # Run the synchronous ensure_sandbox_exists in a thread if it blocks
+            # ensure_sandbox_exists is sync but contains I/O
             sandbox_ok = await asyncio.to_thread(agent.ensure_sandbox_exists)
             if not sandbox_ok:
                  logger.warning(f"  Failed to ensure sandbox for agent '{agent_id}'. File operations may fail.")
@@ -230,7 +229,6 @@ class AgentManager:
                  team_add_msg_suffix = f" (Warning: {team_add_msg})"
              else:
                  logger.info(f"Agent '{agent_id}' successfully added to team '{team_id}'.")
-
 
         message = f"Agent '{agent_id}' created successfully." + team_add_msg_suffix
         return True, message, agent_id
@@ -296,6 +294,9 @@ class AgentManager:
         agent_id = agent.agent_id
         logger.info(f"Starting generator handling for Agent '{agent_id}'...")
         agent_generator: Optional[AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]] = None
+        # --- Store feedback from manager actions ---
+        manager_action_feedback = []
+
         try:
             agent_generator = agent.process_message()
             while True:
@@ -327,36 +328,37 @@ class AgentManager:
                     if executed_results:
                         append_count = 0
                         for result in executed_results:
-                            call_id_from_res = result.get("call_id", None) # Get call_id from result dict if present
-                            if not call_id_from_res: continue # Skip if result format is unexpected
-
-                            if isinstance(result, dict): result_content = result.get("content", "[No content found in tool result dict]")
-                            elif isinstance(result, str): result_content = result
-                            else: result_content = "[Unexpected tool result type]"
-
+                            call_id_from_res = result.get("call_id", None)
+                            if not call_id_from_res: continue
+                            result_content = result.get("content", "[No content found]") if isinstance(result, dict) else result
                             tool_msg: MessageDict = {"role": "tool", "tool_call_id": call_id_from_res, "content": str(result_content) }
                             if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("tool_call_id") != call_id_from_res: agent.message_history.append(tool_msg); append_count += 1
                         logger.debug(f"Appended {append_count} tool result(s) for '{agent_id}'.")
-                    # Post-execution processing
+
+                    # --- Post-execution processing ---
                     activation_tasks = []
+                    manager_action_feedback = [] # Reset feedback for this turn
                     for call in calls_post_exec:
                         call_id, tool_name, tool_args = call["id"], call["name"], call["arguments"]
-                        # Find the specific result dictionary using call_id
                         exec_result = next((r for r in executed_results if isinstance(r, dict) and r.get("call_id") == call_id), None)
-                        if not exec_result: logger.error(f"No dict execution result found for processed call {call_id} ({tool_name}). Skipping post-processing."); continue # Skip if no result found
+                        if not exec_result: logger.error(f"No dict execution result found for {call_id} ({tool_name}). Skipping."); continue
 
-                        raw_tool_output = exec_result.get("_raw_result") # Check if raw dict is present
+                        raw_tool_output = exec_result.get("_raw_result") # Check for raw dict from ManageTeamTool
 
                         if tool_name == ManageTeamTool.name:
                              if isinstance(raw_tool_output, dict) and raw_tool_output.get("status") == "success":
                                   action = raw_tool_output.get("action"); params = raw_tool_output.get("params", {})
                                   logger.info(f"Processing ManageTeamTool action '{action}' from '{agent_id}'.")
-                                  await self._handle_manage_team_action(action, params) # Await manager action
+                                  # --- Store feedback from manager action ---
+                                  action_success, action_message, action_data = await self._handle_manage_team_action(action, params)
+                                  feedback = {"call_id": call_id, "action": action, "success": action_success, "message": action_message}
+                                  if action_data: feedback["data"] = action_data # Include data like list_agents result
+                                  manager_action_feedback.append(feedback)
                              elif raw_tool_output: logger.warning(f"ManageTeamTool call {call_id} did not succeed. Raw Result: {raw_tool_output}")
                              else: logger.warning(f"ManageTeamTool call {call_id} had unexpected result structure: {exec_result}")
 
                         elif tool_name == "send_message":
-                              result_content_str = exec_result.get("content", "") # Get content from the processed result dict
+                              result_content_str = exec_result.get("content", "")
                               if not result_content_str.startswith("Error:"):
                                   target_id, msg_content = tool_args.get("target_agent_id"), tool_args.get("message_content")
                                   if target_id and msg_content is not None:
@@ -366,6 +368,28 @@ class AgentManager:
                               else: logger.warning(f"SendMessageTool call {call_id} failed exec. Result: {result_content_str}")
 
                     if activation_tasks: logger.info(f"Triggered activation for {len(activation_tasks)} agents from '{agent_id}'.")
+
+                    # --- Append Manager Action Feedback to agent's history ---
+                    # This happens AFTER the main tool result is appended above
+                    if manager_action_feedback:
+                         for feedback in manager_action_feedback:
+                             # Format feedback clearly for the LLM
+                             feedback_content = f"[Manager Result for {feedback['action']} (Call ID: {feedback['call_id']})]: Success={feedback['success']}. Message: {feedback['message']}"
+                             if feedback.get("data"): # Include data if present (e.g., for list_agents)
+                                  try: feedback_content += f"\nData: {json.dumps(feedback['data'], indent=2)}"
+                                  except TypeError: feedback_content += f"\nData: [Could not serialize data: {feedback['data']}]"
+
+                             feedback_message: MessageDict = {
+                                 "role": "tool", # Still attribute to the tool call
+                                 "tool_call_id": feedback['call_id'], # Match original call
+                                 # Prepend content to distinguish it, or use a different role? 'tool' is simplest.
+                                 "content": feedback_content
+                             }
+                             # Check if a result for this call_id already exists, append slightly differently?
+                             # For simplicity, just append. The LLM should handle multiple messages for the same call ID.
+                             agent.message_history.append(feedback_message)
+                             logger.debug(f"Appended manager action feedback for call {feedback['call_id']} to '{agent_id}' history.")
+
                 else: logger.warning(f"Unknown event type '{event_type}' from '{agent_id}'.")
         except Exception as e: logger.error(f"Error handling generator for {agent_id}: {e}", exc_info=True); agent.set_status(AGENT_STATUS_ERROR); await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": f"[Manager Error: {e}]"})
         finally:
@@ -376,29 +400,48 @@ class AgentManager:
              logger.info(f"Manager finished handling generator cycle for Agent '{agent_id}'. Final status: {agent.status}")
 
 
-    async def _handle_manage_team_action(self, action: Optional[str], params: Dict[str, Any]):
-        """Dispatches ManageTeamTool actions to the corresponding manager methods. MUST await async methods."""
-        if not action: return
+    async def _handle_manage_team_action(self, action: Optional[str], params: Dict[str, Any]) -> Tuple[bool, str, Optional[Any]]:
+        """
+        Dispatches ManageTeamTool actions. Returns (success, message, optional_data).
+        MUST await async methods.
+        """
+        if not action: return False, "No action specified.", None
         success, message, result_data = False, "Unknown action or error.", None
+        created_agent_id = None # Store created ID specifically
         try:
-            # Ensure all awaited calls are correct
-            if action == "create_agent": success, message, _ = await self.create_agent_instance( params.get("agent_id"), params.get("provider"), params.get("model"), params.get("system_prompt"), params.get("persona"), params.get("team_id"), params.get("temperature"), **params ) # Pass all params
+            if action == "create_agent":
+                 # Pass all params using **params
+                 success, message, created_agent_id = await self.create_agent_instance(params.get("agent_id"), **params)
+                 if success and created_agent_id: # If successful, embed the ID in the message
+                      message = f"Agent '{params.get('persona', 'Unknown Persona')}' created with ID '{created_agent_id}'. Status: {message}"
+                      result_data = {"created_agent_id": created_agent_id} # Pass back ID explicitly
             elif action == "delete_agent": success, message = await self.delete_agent_instance(params.get("agent_id"))
             elif action == "create_team": success, message = await self.create_new_team(params.get("team_id"))
             elif action == "delete_team": success, message = await self.delete_existing_team(params.get("team_id"))
             elif action == "add_agent_to_team": success, message = await self.add_agent_to_team(params.get("agent_id"), params.get("team_id"))
             elif action == "remove_agent_from_team": success, message = await self.remove_agent_from_team(params.get("agent_id"), params.get("team_id"))
-            elif action == "list_agents": success, result_data, message = True, await self.get_agent_info_list(), f"Found {len(result_data)} agents."
-            elif action == "list_teams": success, result_data, message = True, await self.get_team_info_dict(), f"Found {len(result_data)} teams."
+            elif action == "list_agents":
+                 result_data = await self.get_agent_info_list(); success = True; message = f"Found {len(result_data)} agents."
+            elif action == "list_teams":
+                 result_data = await self.get_team_info_dict(); success = True; message = f"Found {len(result_data)} teams."
             else: message = f"Unrecognized action: {action}"; logger.warning(message)
             logger.info(f"ManageTeamTool action '{action}' result: Success={success}, Message='{message}'")
-            # TODO: Feedback mechanism to Admin AI using result_data or message.
-        except Exception as e: message = f"Error processing '{action}': {e}"; logger.error(message, exc_info=True)
+            return success, message, result_data
+        except Exception as e: message = f"Error processing '{action}': {e}"; logger.error(message, exc_info=True); return False, message, None
+
 
     def _generate_unique_agent_id(self, prefix="agent") -> str:
         """Generates a unique agent ID."""
-        while True: new_id = f"{prefix}_{uuid.uuid4().hex[:6]}";
-        if new_id not in self.agents: return new_id
+        timestamp = int(time.time() * 1000) # Milliseconds for more uniqueness
+        short_uuid = uuid.uuid4().hex[:3] # Shorter UUID part
+        while True:
+            # Combine timestamp and short UUID for readability and uniqueness
+            new_id = f"{prefix}_{timestamp}_{short_uuid}"
+            if new_id not in self.agents:
+                return new_id
+            # If collision (unlikely), just retry with new timestamp/uuid
+            timestamp = int(time.time() * 1000)
+            short_uuid = uuid.uuid4().hex[:3]
 
 
     # --- Dynamic Team/Agent Async Methods ---
@@ -407,10 +450,9 @@ class AgentManager:
         if agent_id in self.bootstrap_agents: return False, f"Cannot delete bootstrap agent '{agent_id}'."
         agent_instance = self.agents.pop(agent_id); team_id = self.agent_to_team.pop(agent_id, None)
         if team_id and team_id in self.teams and agent_id in self.teams[team_id]: self.teams[team_id].remove(agent_id); logger.info(f"Removed '{agent_id}' from team '{team_id}'.")
-        provider = agent_instance.llm_provider
-        if hasattr(provider, 'close_session') and asyncio.iscoroutinefunction(provider.close_session):
-            try: logger.info(f"Closing provider session for deleted '{agent_id}'..."); await provider.close_session()
-            except Exception as e: logger.error(f"Error closing provider session for '{agent_id}': {e}", exc_info=True)
+        provider = agent_instance.llm_provider # Cleanup provider
+        # Use the safe close method
+        await self._close_provider_safe(provider)
         message = f"Agent '{agent_id}' deleted."; logger.info(message)
         await self.send_to_ui({"type": "agent_deleted", "agent_id": agent_id}); return True, message
 
@@ -423,7 +465,11 @@ class AgentManager:
     async def delete_existing_team(self, team_id: str) -> Tuple[bool, str]:
         if not team_id: return False, "Team ID empty.";
         if team_id not in self.teams: return False, f"Team '{team_id}' not found."
-        if self.teams[team_id]: return False, f"Team '{team_id}' not empty."
+        # Check if any agent is still mapped to this team (important edge case)
+        agents_in_team = [aid for aid, tid in self.agent_to_team.items() if tid == team_id]
+        if agents_in_team or self.teams[team_id]: # Check both the list and the map
+             logger.warning(f"Attempt to delete non-empty team '{team_id}'. Agents found: {agents_in_team or self.teams[team_id]}.")
+             return False, f"Team '{team_id}' not empty. Remove agents first."
         del self.teams[team_id]; message = f"Team '{team_id}' deleted."; logger.info(message)
         await self.send_to_ui({"type": "team_deleted", "team_id": team_id}); return True, message
 
@@ -465,11 +511,13 @@ class AgentManager:
     # --- Tool Execution and Routing ---
     async def _route_and_activate_agent_message(self, sender_id: str, target_id: str, message_content: str) -> Optional[asyncio.Task]:
         sender_agent, target_agent = self.agents.get(sender_id), self.agents.get(target_id)
-        if not sender_agent or not target_agent: logger.error(f"SendMsg route err: Sender/Target not found."); return None
+        if not sender_agent or not target_agent: logger.error(f"SendMsg route err: Sender '{sender_id}' or Target '{target_id}' not found."); return None # Changed log msg
         sender_team, target_team = self.agent_to_team.get(sender_id), self.agent_to_team.get(target_id)
+        # Allow AdminAI to send to any agent, others must be in same team
         if sender_id != BOOTSTRAP_AGENT_ID and (not sender_team or not target_team or sender_team != target_team):
-             logger.warning(f"SendMsg blocked: Agents not in same team."); return None
-        elif sender_id == BOOTSTRAP_AGENT_ID: logger.info(f"AdminAI sending message to '{target_id}'.")
+             logger.warning(f"SendMsg blocked: Sender '{sender_id}' (Team: {sender_team}) and Target '{target_id}' (Team: {target_team}) not in same team.");
+             return None
+        elif sender_id == BOOTSTRAP_AGENT_ID: logger.info(f"AdminAI sending message from '{sender_id}' to '{target_id}'.")
         else: logger.info(f"Routing message from '{sender_id}' to '{target_id}' in team '{target_team}'.")
 
         formatted_message: MessageDict = { "role": "user", "content": f"[From @{sender_id}]: {message_content}" }
@@ -482,23 +530,23 @@ class AgentManager:
         """ Executes a tool. Returns a dictionary containing call_id, content, and optionally _raw_result. """
         if not self.tool_executor: logger.error(f"ToolExecutor unavailable."); return {"call_id": call_id, "content": "[ToolExec Error: ToolExecutor unavailable]"}
         tool_info = {"name": tool_name, "call_id": call_id}; agent.set_status(AGENT_STATUS_EXECUTING_TOOL, tool_info=tool_info)
-        result_data: Optional[Any] = None # Result from tool executor can be dict or str
-        response_dict = {"call_id": call_id, "content": "[Tool Execution Error: Unknown]"} # Default response structure
+        result_data: Optional[Any] = None
+        response_dict = {"call_id": call_id, "content": "[Tool Execution Error: Unknown]"}
         try:
             logger.debug(f"Executing tool '{tool_name}' (ID: {call_id}) for '{agent.agent_id}'"); result_data = await self.tool_executor.execute_tool(agent.agent_id, agent.sandbox_path, tool_name, tool_args); logger.debug(f"Tool '{tool_name}' completed.")
             if isinstance(result_data, dict) and tool_name == ManageTeamTool.name: # ManageTeamTool dict result
                  response_dict["content"] = result_data.get("message", "Action processed.")
-                 response_dict["_raw_result"] = result_data # Pass raw result for post-processing
+                 response_dict["_raw_result"] = result_data
             elif isinstance(result_data, str): # Other tools return string
                  response_dict["content"] = result_data
-            elif isinstance(result_data, dict): # Error dict from ManageTeamTool
-                 response_dict["content"] = result_data.get("message", "Error executing action.")
-                 response_dict["_raw_result"] = result_data
+            elif isinstance(result_data, dict): # Error dict from ManageTeamTool or other tools? Be robust.
+                 response_dict["content"] = result_data.get("message", "[Tool Error Content Missing]")
+                 response_dict["_raw_result"] = result_data # Include error dict if available
             else: logger.error(f"Unexpected result type {type(result_data)} from tool '{tool_name}'"); response_dict["content"] = "[ToolExec Error: Unexpected result type]"
         except Exception as e: error_msg = f"Manager error during _execute_single_tool '{tool_name}': {e}"; logger.error(error_msg, exc_info=True); response_dict["content"] = f"[ToolExec Error: {error_msg}]"
         finally:
             if agent.status == AGENT_STATUS_EXECUTING_TOOL: agent.set_status(AGENT_STATUS_PROCESSING)
-        return response_dict # Always return the dictionary
+        return response_dict
 
 
     async def _failed_tool_result(self, call_id: Optional[str], tool_name: Optional[str]) -> Optional[ToolResultDict]:
@@ -534,20 +582,15 @@ class AgentManager:
             except TypeError as e: logger.error(f"History for '{agent_id}' not JSON serializable: {e}."); session_data["agent_histories"][agent_id] = [{"role": "system", "content": f"[History err: {e}]"}]
             if agent_id not in self.bootstrap_agents:
                  try:
-                      # --- Corrected Access ---
                       config_to_save = agent.agent_config.get("config") if hasattr(agent, 'agent_config') else None
                       if config_to_save: session_data["dynamic_agents_config"][agent_id] = config_to_save
                       else: logger.warning(f"No config found for dynamic agent '{agent_id}'. Not saved.")
-                 except Exception as e_cfg: # Catch broader errors here just in case
-                      logger.warning(f"Error accessing config for dynamic agent '{agent_id}': {e_cfg}. Not saved.")
+                 except Exception as e_cfg: logger.warning(f"Error accessing config for dynamic agent '{agent_id}': {e_cfg}. Not saved.")
 
         try:
             def save_sync():
                 session_file.parent.mkdir(parents=True, exist_ok=True)
-                # Use 'with open' correctly with asyncio.to_thread
-                with open(session_file, 'w', encoding='utf-8') as f:
-                     json.dump(session_data, f, indent=2)
-
+                with open(session_file, 'w', encoding='utf-8') as f: json.dump(session_data, f, indent=2)
             await asyncio.to_thread(save_sync)
             logger.info(f"Session saved: {session_file}"); self.current_project, self.current_session = project_name, session_name
             return True, f"Session '{session_name}' saved in '{project_name}'."
@@ -560,22 +603,13 @@ class AgentManager:
         if not session_file.is_file(): return False, f"Session file '{session_name}' not found in '{project_name}'."
         try:
             def load_sync():
-                 # Use 'with open' correctly
-                 with open(session_file, 'r', encoding='utf-8') as f:
-                      return json.load(f)
+                 with open(session_file, 'r', encoding='utf-8') as f: return json.load(f)
             session_data = await asyncio.to_thread(load_sync)
-
-            # Clear dynamic state BEFORE loading
             dynamic_agents_to_delete = [aid for aid in self.agents if aid not in self.bootstrap_agents]; logger.info(f"Clearing dynamic agents: {dynamic_agents_to_delete}")
-            # Ensure deletion happens concurrently and completes before proceeding
-            await asyncio.gather(*(self.delete_agent_instance(aid) for aid in dynamic_agents_to_delete), return_exceptions=True)
+            await asyncio.gather(*(self.delete_agent_instance(aid) for aid in dynamic_agents_to_delete), return_exceptions=True) # Use gather with return_exceptions
             self.teams, self.agent_to_team = {}, {}; logger.info("Cleared dynamic state.")
-
-            # Load state from file
             self.teams = session_data.get("teams", {}); self.agent_to_team = session_data.get("agent_to_team", {}); dynamic_configs = session_data.get("dynamic_agents_config", {}); histories = session_data.get("agent_histories", {})
             logger.info(f"Loading {len(dynamic_configs)} dynamic agents...");
-
-            # Recreate agents
             creation_tasks = [self._create_agent_internal(aid, cfg, False, self.agent_to_team.get(aid)) for aid, cfg in dynamic_configs.items()]
             creation_results = await asyncio.gather(*creation_tasks, return_exceptions=True)
             successful_creations = 0
@@ -585,8 +619,6 @@ class AgentManager:
                  elif isinstance(result, tuple) and result[0]: successful_creations += 1
                  else: logger.error(f"Failed recreating agent '{agent_id_attempted}' from session: {result[1] if isinstance(result, tuple) else 'Unknown error'}")
             logger.info(f"Recreated {successful_creations}/{len(dynamic_configs)} dynamic agents.")
-
-            # Load histories AFTER agents are recreated
             loaded_history_count = 0
             for agent_id, history in histories.items():
                 agent = self.agents.get(agent_id)
@@ -594,7 +626,6 @@ class AgentManager:
                      agent.message_history = history; agent.set_status(AGENT_STATUS_IDLE); loaded_history_count += 1
                 elif agent: logger.warning(f"Invalid/missing history for '{agent_id}'.")
             logger.info(f"Loaded histories for {loaded_history_count} agents.")
-
             self.current_project, self.current_session = project_name, session_name
             await asyncio.gather(*(self.push_agent_status_update(aid) for aid in self.agents.keys())); return True, f"Session '{session_name}' loaded. {successful_creations} dynamic agents recreated."
         except json.JSONDecodeError as e: logger.error(f"JSON decode error: {e}"); return False, f"Invalid session file format."
