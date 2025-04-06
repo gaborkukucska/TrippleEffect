@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import logging
+import json # Added for formatting allowed models list
 
 # Define base directory relative to this file's location
 BASE_DIR = Path(__file__).resolve().parent.parent.parent # This should point to TrippleEffect-main/
@@ -13,7 +14,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent # This should point to 
 dotenv_path = BASE_DIR / '.env'
 if dotenv_path.exists():
     load_dotenv(dotenv_path=dotenv_path)
-    print(f"Loaded environment variables from: {dotenv_path}") # Optional debug print
+    print(f"Loaded environment variables from: {dotenv_path}")
 else:
     print(f"Warning: .env file not found at {dotenv_path}. Environment variables might not be loaded.")
 
@@ -21,25 +22,25 @@ else:
 AGENT_CONFIG_PATH = BASE_DIR / 'config.yaml'
 
 # --- Import the ConfigManager singleton instance ---
-# This assumes config_manager.py is executed and the instance is created
 try:
     from src.config.config_manager import config_manager
     print("Successfully imported config_manager instance.")
 except ImportError as e:
      print(f"Error importing config_manager: {e}. Agent configurations will not be loaded dynamically.")
-     # Provide a fallback or raise an error depending on desired behavior
-     # Fallback: define a dummy config_manager or load statically
+     # Fallback dummy class (keep for robustness during development phases)
      class DummyConfigManager:
-         def _load_config_sync(self):
-             self._agents_data = []
-             self._teams_data = {} # Add dummy teams data
-         def get_config_sync(self): return [], {} # Return tuple now
+         def get_config_data_sync(self):
+             print("WARNING: Using DummyConfigManager - Returning empty config.")
+             return {"agents": [], "teams": {}, "allowed_sub_agent_models": {}} # Add allowed models key
          # Add dummy async methods if needed elsewhere during testing
          async def get_config(self): return []
-         async def get_teams(self): return {} # Add dummy async teams getter
-         async def load_config(self): return []
+         async def get_teams(self): return {}
+         async def get_full_config(self): return {}
+         async def load_config(self): return {"agents": [], "teams": {}, "allowed_sub_agent_models": {}}
+         async def add_agent(self, a): return False
+         async def update_agent(self, a, d): return False
+         async def delete_agent(self, a): return False
 
-     # Use the actual AGENT_CONFIG_PATH for the dummy if needed
      config_manager = DummyConfigManager()
 
 
@@ -49,93 +50,74 @@ logger = logging.getLogger(__name__)
 class Settings:
     """
     Holds application settings, loaded from environment variables and config.yaml.
-    Manages API keys, base URLs, default agent parameters, and team configurations.
-    Uses ConfigManager to load agent and team configurations synchronously at startup.
+    Manages API keys, base URLs, default agent parameters, initial agent configs,
+    and constraints for dynamic agents (allowed_sub_agent_models).
+    Uses ConfigManager to load configurations synchronously at startup.
     """
     def __init__(self):
         # --- Provider Configuration (from .env) ---
         # OpenAI
         self.OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY")
-        self.OPENAI_BASE_URL: Optional[str] = os.getenv("OPENAI_BASE_URL") # Optional
+        self.OPENAI_BASE_URL: Optional[str] = os.getenv("OPENAI_BASE_URL")
 
         # OpenRouter
         self.OPENROUTER_API_KEY: Optional[str] = os.getenv("OPENROUTER_API_KEY")
-        self.OPENROUTER_BASE_URL: Optional[str] = os.getenv("OPENROUTER_BASE_URL") # Optional
-        self.OPENROUTER_REFERER: Optional[str] = os.getenv("OPENROUTER_REFERER") # Optional
+        self.OPENROUTER_BASE_URL: Optional[str] = os.getenv("OPENROUTER_BASE_URL")
+        self.OPENROUTER_REFERER: Optional[str] = os.getenv("OPENROUTER_REFERER")
 
         # Ollama
-        self.OLLAMA_BASE_URL: Optional[str] = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434") # Default if not set
+        self.OLLAMA_BASE_URL: Optional[str] = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
         # --- Project/Session Configuration (from .env) ---
         self.PROJECTS_BASE_DIR: Path = Path(os.getenv("PROJECTS_BASE_DIR", str(BASE_DIR / "projects")))
 
         # --- Default Agent Configuration (from .env) ---
-        self.DEFAULT_AGENT_PROVIDER: str = os.getenv("DEFAULT_AGENT_PROVIDER", "openrouter") # Changed default
-        self.DEFAULT_AGENT_MODEL: str = os.getenv("DEFAULT_AGENT_MODEL", "google/gemini-2.5-pro-exp-03-25:free") # Changed default
+        self.DEFAULT_AGENT_PROVIDER: str = os.getenv("DEFAULT_AGENT_PROVIDER", "openrouter")
+        self.DEFAULT_AGENT_MODEL: str = os.getenv("DEFAULT_AGENT_MODEL", "google/gemini-flash-1.5:free") # Changed default
         self.DEFAULT_SYSTEM_PROMPT: str = os.getenv("DEFAULT_SYSTEM_PROMPT", "You are a helpful assistant.")
         self.DEFAULT_TEMPERATURE: float = float(os.getenv("DEFAULT_TEMPERATURE", 0.7))
         self.DEFAULT_PERSONA: str = os.getenv("DEFAULT_PERSONA", "General Assistant")
 
-        # --- Load Agent and Team Configurations using ConfigManager (Synchronously) ---
-        # Use the new synchronous getter for initialization.
-        # Need to adjust ConfigManager's sync load to also fetch teams if we modify it,
-        # or keep loading the whole structure here. Let's load the whole structure.
-        full_config = {}
+        # --- Load Initial Configurations using ConfigManager (Synchronously) ---
+        raw_config_data: Dict[str, Any] = {}
         try:
-            # Load the raw config dictionary synchronously
-            # Modify ConfigManager's _load_config_sync and get_config_sync if needed
-            # For now, assume config_manager._agents_data holds the list as before
-            # and add loading for the 'teams' key directly here if needed or enhance ConfigManager.
-            # Let's enhance ConfigManager first.
-            # Assuming ConfigManager's get_config_sync is updated to return both.
-            # Placeholder: Modify ConfigManager.py first, then update here.
+            # Load the full raw config dictionary synchronously at startup
+            raw_config_data = config_manager.get_config_data_sync()
+            print("Successfully loaded initial config via ConfigManager.get_config_data_sync()")
+        except Exception as e:
+            logger.error(f"Failed to load initial config via ConfigManager: {e}", exc_info=True)
+            # If using DummyConfigManager, this will return the default empty structure
 
-            # ---> Modification needed in ConfigManager._load_config_sync & get_config_sync
-            # ---> For now, we will access the raw loaded data via ConfigManager.
+        # Bootstrap Agents config (expecting a list)
+        self.AGENT_CONFIGURATIONS: List[Dict[str, Any]] = raw_config_data.get("agents", [])
+        if not isinstance(self.AGENT_CONFIGURATIONS, list):
+            logger.error("Config format error: 'agents' key is not a list. Resetting to empty.")
+            self.AGENT_CONFIGURATIONS = []
 
-            # Accessing the raw loaded data (less ideal, better to enhance ConfigManager)
-            # This requires accessing a potentially "private" attribute, which isn't best practice.
-            # Let's stick to the plan: Update ConfigManager first.
-            # Assume ConfigManager.get_full_config_sync() exists and returns {'agents': [...], 'teams': {...}}
+        # Allowed models for dynamic agents (expecting a dict provider -> list[str])
+        self.ALLOWED_SUB_AGENT_MODELS: Dict[str, List[str]] = raw_config_data.get("allowed_sub_agent_models", {})
+        if not isinstance(self.ALLOWED_SUB_AGENT_MODELS, dict):
+            logger.error("Config format error: 'allowed_sub_agent_models' key is not a dictionary. Resetting to empty.")
+            self.ALLOWED_SUB_AGENT_MODELS = {}
 
-            # --- Let's update ConfigManager first ---
-            # Assume for now that config_manager loads the full structure.
-            # We'll load the sections here.
-
-            raw_config_data = config_manager.get_config_data_sync() # Needs to be added to ConfigManager
-
-            self.AGENT_CONFIGURATIONS: List[Dict[str, Any]] = raw_config_data.get("agents", [])
-            self.TEAMS_CONFIG: Dict[str, List[str]] = raw_config_data.get("teams", {})
-
-        except AttributeError:
-             logger.error("ConfigManager does not have 'get_config_data_sync' method. Loading manually.")
-             # Manual loading as fallback (less ideal)
-             self.AGENT_CONFIGURATIONS = []
-             self.TEAMS_CONFIG = {}
-             if AGENT_CONFIG_PATH.exists():
-                 try:
-                     with open(AGENT_CONFIG_PATH, 'r', encoding='utf-8') as f:
-                         yaml_data = yaml.safe_load(f)
-                         if yaml_data:
-                             self.AGENT_CONFIGURATIONS = yaml_data.get("agents", [])
-                             self.TEAMS_CONFIG = yaml_data.get("teams", {})
-                 except Exception as e:
-                     logger.error(f"Error loading config manually in settings: {e}")
+        # Deprecated static Teams config (load but warn if present)
+        self.TEAMS_CONFIG: Dict[str, List[str]] = raw_config_data.get("teams", {})
+        if self.TEAMS_CONFIG:
+            logger.warning("Config Warning: Static 'teams' definition found in config.yaml. This section is deprecated and teams should be managed dynamically via Admin AI.")
 
 
+        # --- Log Loaded Config Summary ---
         if not self.AGENT_CONFIGURATIONS:
-             print("Warning: No agent configurations loaded.")
-        if not self.TEAMS_CONFIG:
-             print("Warning: No team configurations loaded.")
+             print("Warning: No bootstrap agent configurations loaded.")
         else:
-             print(f"Loaded teams: {list(self.TEAMS_CONFIG.keys())}")
-             # Add validation: check if all agents listed in teams exist in the agents list
-             all_configured_agent_ids = {agent.get("agent_id") for agent in self.AGENT_CONFIGURATIONS if agent.get("agent_id")}
-             for team_name, member_ids in self.TEAMS_CONFIG.items():
-                 for member_id in member_ids:
-                     if member_id not in all_configured_agent_ids:
-                         print(f"⚠️ WARNING: Agent '{member_id}' listed in team '{team_name}' but not found in the main 'agents' configuration list.")
+             print(f"Loaded bootstrap agent IDs: {[a.get('agent_id', 'N/A') for a in self.AGENT_CONFIGURATIONS]}")
 
+        if not self.ALLOWED_SUB_AGENT_MODELS:
+             print("Warning: No 'allowed_sub_agent_models' constraints loaded. Dynamic agent creation might be unrestricted or fail.")
+        else:
+             print("Loaded allowed sub-agent models:")
+             for provider, models in self.ALLOWED_SUB_AGENT_MODELS.items():
+                 print(f"  - {provider}: {models}")
 
         # --- Other global settings ---
         # e.g., LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -153,21 +135,19 @@ class Settings:
              print(f"Ensured projects directory exists at: {self.PROJECTS_BASE_DIR}")
         except Exception as e:
              print(f"Error creating projects directory at {self.PROJECTS_BASE_DIR}: {e}")
-             # Consider if this should be a fatal error
 
     def _check_required_keys(self):
         """Checks if necessary API keys/URLs are set based on agent configurations."""
         required_openai = False
         required_openrouter = False
-        required_ollama = False # Ollama usually doesn't require keys, maybe check URL reachability later?
+        required_ollama = False
 
         # Check defaults first
         if self.DEFAULT_AGENT_PROVIDER == "openai": required_openai = True
         if self.DEFAULT_AGENT_PROVIDER == "openrouter": required_openrouter = True
         if self.DEFAULT_AGENT_PROVIDER == "ollama": required_ollama = True
 
-        # Check specific agent configs
-        # Ensure AGENT_CONFIGURATIONS is iterable before looping
+        # Check bootstrap agent configs
         if isinstance(self.AGENT_CONFIGURATIONS, list):
              for agent_conf_entry in self.AGENT_CONFIGURATIONS:
                  agent_conf = agent_conf_entry.get("config", {})
@@ -181,43 +161,46 @@ class Settings:
         else:
              logger.error("AGENT_CONFIGURATIONS is not a list during _check_required_keys. Check loading.")
 
+        # Note: We don't check keys for ALLOWED_SUB_AGENT_MODELS here, as they might not be used immediately.
+        # Provider instantiation logic in AgentManager handles missing keys/URLs at creation time.
 
         print("-" * 30)
         print("Configuration Check:")
         if required_openai and not self.OPENAI_API_KEY:
-            print("⚠️ WARNING: OpenAI provider is used, but OPENAI_API_KEY is missing in .env.")
+            print("⚠️ WARNING: OpenAI provider is used by bootstrap/default, but OPENAI_API_KEY is missing in .env.")
         elif self.OPENAI_API_KEY:
              print("✅ OpenAI API Key: Found")
 
         if required_openrouter and not self.OPENROUTER_API_KEY:
-            print("⚠️ WARNING: OpenRouter provider is used, but OPENROUTER_API_KEY is missing in .env.")
+            print("⚠️ WARNING: OpenRouter provider is used by bootstrap/default, but OPENROUTER_API_KEY is missing in .env.")
         elif self.OPENROUTER_API_KEY:
              print("✅ OpenRouter API Key: Found")
 
         if required_ollama and not self.OLLAMA_BASE_URL:
-             # This default is set in __init__, so this might not trigger unless default changes
-             print("⚠️ WARNING: Ollama provider is used, but OLLAMA_BASE_URL is missing in .env (and no default set).")
+             print("⚠️ WARNING: Ollama provider is used by bootstrap/default, but OLLAMA_BASE_URL is missing in .env (and no default set).")
         elif self.OLLAMA_BASE_URL:
              print(f"✅ Ollama Base URL: {self.OLLAMA_BASE_URL}")
 
         # Check OpenRouter Referer (Recommended)
-        if required_openrouter and not self.OPENROUTER_REFERER:
-            print("ℹ️ INFO: OpenRouter provider is used, but OPENROUTER_REFERER is not set in .env. Using default.")
-        elif self.OPENROUTER_REFERER:
-            print(f"✅ OpenRouter Referer: {self.OPENROUTER_REFERER}")
+        # Use self.OPENROUTER_REFERER which might have been overridden by .env
+        final_referer = self.OPENROUTER_REFERER or os.getenv("OPENROUTER_REFERER") # Check both
+        if (required_openrouter or self.DEFAULT_AGENT_PROVIDER == "openrouter") and not final_referer:
+            print("ℹ️ INFO: OpenRouter provider used, but OPENROUTER_REFERER not set in .env. Using default.")
+        elif final_referer:
+            print(f"✅ OpenRouter Referer: {final_referer}")
 
         print("-" * 30)
 
     def get_provider_config(self, provider_name: str) -> Dict[str, Any]:
         """
-        Gets the relevant API key and base URL for a given provider name
-        based on environment variables.
+        Gets the relevant API key, base URL, and referer for a given provider name
+        based on environment variables. Used for instantiating providers.
 
         Args:
             provider_name (str): 'openai', 'ollama', or 'openrouter'.
 
         Returns:
-            Dict[str, Any]: Containing 'api_key' and/or 'base_url' if applicable.
+            Dict[str, Any]: Containing 'api_key', 'base_url', 'referer' if applicable.
         """
         config = {}
         if provider_name == "openai":
@@ -226,6 +209,7 @@ class Settings:
         elif provider_name == "openrouter":
             config['api_key'] = self.OPENROUTER_API_KEY
             config['base_url'] = self.OPENROUTER_BASE_URL # Can be None
+            # Use self.OPENROUTER_REFERER (which defaults if .env not set)
             config['referer'] = self.OPENROUTER_REFERER # Pass referer for header setup
         elif provider_name == "ollama":
             # Ollama typically doesn't use an API key
@@ -234,13 +218,12 @@ class Settings:
         else:
              logger.warning(f"Requested provider config for unknown provider '{provider_name}'")
 
-        # Filter out None values before returning
-        return {k: v for k, v in config.items() if v is not None}
+        # Filter out None values before returning? No, allow None base_url/referer
+        return config # Return dict with potential None values
 
 
     def get_agent_config_by_id(self, agent_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieves a specific agent's configuration dictionary by its ID from the loaded configuration."""
-        # Access the already loaded list
+        """Retrieves a specific bootstrap agent's configuration dictionary by its ID from the loaded configuration."""
         if isinstance(self.AGENT_CONFIGURATIONS, list):
              for agent_conf_entry in self.AGENT_CONFIGURATIONS:
                  if agent_conf_entry.get('agent_id') == agent_id:
@@ -248,11 +231,35 @@ class Settings:
                      return agent_conf_entry.get('config', {})
         return None
 
+    # --- Added Method ---
+    def get_formatted_allowed_models(self) -> str:
+        """ Returns a formatted string listing allowed models, suitable for prompts. """
+        if not self.ALLOWED_SUB_AGENT_MODELS:
+            return "Dynamic agent creation constraints: No models specified (creation might fail)."
+
+        lines = ["**Allowed Models for Dynamic Agent Creation:**"]
+        try:
+            for provider, models in self.ALLOWED_SUB_AGENT_MODELS.items():
+                if models:
+                    lines.append(f"- **{provider}**: `{', '.join(models)}`")
+                else:
+                    lines.append(f"- **{provider}**: (No models specified)")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.error(f"Error formatting allowed models: {e}")
+            # Fallback to raw JSON representation
+            try:
+                return "**Allowed Models (Raw):**\n```json\n" + json.dumps(self.ALLOWED_SUB_AGENT_MODELS, indent=2) + "\n```"
+            except:
+                return "**Error:** Could not format allowed models list."
+
+
 # Create a singleton instance of the Settings class
 settings = Settings()
 
 # Example Usage (after import: from src.config.settings import settings):
 # openrouter_defaults = settings.get_provider_config('openrouter')
-# all_agent_configs = settings.AGENT_CONFIGURATIONS
-# teams_structure = settings.TEAMS_CONFIG
+# bootstrap_agent_configs = settings.AGENT_CONFIGURATIONS
+# allowed_models = settings.ALLOWED_SUB_AGENT_MODELS
 # projects_dir = settings.PROJECTS_BASE_DIR
+# allowed_models_prompt_string = settings.get_formatted_allowed_models()
