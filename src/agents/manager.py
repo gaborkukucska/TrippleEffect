@@ -316,27 +316,28 @@ class AgentManager:
             await self.send_to_ui({ "type": "status", "agent_id": admin_agent.agent_id, "content": f"Admin AI busy ({admin_agent.status}). Your message will be processed when idle." })
 
 
-    # --- **** MODIFIED _handle_agent_generator with RETRY **** ---
+    # --- **** CORRECTED _handle_agent_generator for UnboundLocalError (Final Attempt) **** ---
     async def _handle_agent_generator(self, agent: Agent, retry_count: int = 0):
-        """Handles agent processing cycle, including stream error retries."""
+        """Handles agent processing cycle, including sequential tool execution and stream error retries."""
         agent_id = agent.agent_id
         logger.info(f"Starting generator handling for Agent '{agent_id}' (Retry: {retry_count})...")
         agent_generator: Optional[AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]] = None
-        manager_action_feedback = []
-        reactivate_agent_after_feedback = False
-        current_cycle_error = False
+        manager_action_feedback = [] # Feedback from ManageTeamTool actions
+        reactivate_agent_after_feedback = False # Flag to re-run generator after adding feedback
+        current_cycle_error = False # Track if an error occurred in this cycle
         is_stream_related_error = False # Flag specific error type
 
         try:
-            agent_generator = agent.process_message()
+            agent_generator = agent.process_message() # Get the generator
 
             while True:
-                try: event = await agent_generator.asend(None)
+                try: event = await agent_generator.asend(None) # Use asend(None)
                 except StopAsyncIteration: logger.info(f"Agent '{agent_id}' generator finished normally."); break
                 except Exception as gen_err: logger.error(f"Generator error for '{agent_id}': {gen_err}", exc_info=True); agent.set_status(AGENT_STATUS_ERROR); await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": f"[Manager Error: Generator crashed - {gen_err}]"}); current_cycle_error = True; break
 
                 event_type = event.get("type")
 
+                # --- Handle Standard Events ---
                 if event_type in ["response_chunk", "status", "final_response"]:
                     if "agent_id" not in event: event["agent_id"] = agent_id
                     await self.send_to_ui(event)
@@ -345,74 +346,97 @@ class AgentManager:
                         if final_content and (not agent.message_history or agent.message_history[-1].get("content") != final_content or agent.message_history[-1].get("role") != "assistant"):
                             agent.message_history.append({"role": "assistant", "content": final_content}); logger.debug(f"Appended final response for '{agent_id}'.")
 
-                elif event_type == "error":
+                elif event_type == "error": # Handle errors yielded by agent/provider
                     error_content = event.get("content", "[Unknown Agent Error]")
                     logger.error(f"Agent '{agent_id}' reported error: {error_content}")
-                    # Check if it's a stream processing error
-                    stream_error_indicators = ["Error processing stream chunk", "APIError during stream", "Failed to decode stream chunk", "Stream connection error"]
-                    if any(indicator in error_content for indicator in stream_error_indicators):
-                        is_stream_related_error = True # Set flag for retry logic
-                        logger.warning(f"Detected potentially temporary stream error for agent '{agent_id}'.")
+                    is_stream_error = any(indicator in error_content for indicator in ["Error processing stream chunk", "APIError during stream", "Failed to decode stream chunk", "Stream connection error"])
+                    if is_stream_error:
+                        logger.warning(f"Detected temporary stream error for agent '{agent_id}'. Resetting to idle.")
                         # UI message handled in finally block if retrying/failing
-                    else: # Treat as permanent error
+                    else: # Permanent error
                         if "agent_id" not in event: event["agent_id"] = agent_id
                         await self.send_to_ui(event)
                         agent.set_status(AGENT_STATUS_ERROR)
                     current_cycle_error = True # Mark error occurred
-                    break # Stop processing loop on any error
+                    break # Stop generator loop on any error
 
                 elif event_type == "tool_requests": # Handle Sequential Tool Execution
-                    all_tool_calls = event.get("calls", []); agent_last_response = event.get("raw_assistant_response")
+                    all_tool_calls = event.get("calls", [])
+                    agent_last_response = event.get("raw_assistant_response")
                     if agent_last_response and (not agent.message_history or agent.message_history[-1].get("content") != agent_last_response or agent.message_history[-1].get("role") != "assistant"):
                          agent.message_history.append({"role": "assistant", "content": agent_last_response}); logger.debug(f"Appended assistant response (with tools) for '{agent_id}'.")
 
                     management_calls = []; other_calls = []; executed_results_map = {}; invalid_call_results = []
-                    for call in all_tool_calls: # Validate and Categorize
+
+                    # 1. Validate and Categorize Calls
+                    for call in all_tool_calls:
                          call_id, tool_name, tool_args = call.get("id"), call.get("name"), call.get("arguments", {})
                          if call_id and tool_name and isinstance(tool_args, dict):
                             if tool_name == ManageTeamTool.name: management_calls.append(call)
                             else: other_calls.append(call)
-                         else: logger.warning(f"Skipping invalid tool request from '{agent_id}': {call}"); fail_result = await self._failed_tool_result(call_id, tool_name);
-                         if fail_result: invalid_call_results.append(fail_result)
-                    if invalid_call_results: # Append failures
-                        for fail_res in invalid_call_results: agent.message_history.append({"role": "tool", "tool_call_id": fail_res['call_id'], "content": str(fail_res['content']) })
+                         else:
+                            # --- ** CORRECTED HANDLING OF INVALID CALL ** ---
+                            logger.warning(f"Skipping invalid tool request from '{agent_id}': {call}")
+                            # Generate failure result and add it to list *immediately*
+                            fail_result = await self._failed_tool_result(call_id, tool_name)
+                            if fail_result:
+                                 invalid_call_results.append(fail_result)
+                            # --- ** END CORRECTION ** ---
 
-                    manager_action_feedback = [] # Reset feedback
+                    # Append failure results for invalid calls *after* the loop
+                    if invalid_call_results:
+                        for fail_res in invalid_call_results:
+                             agent.message_history.append({"role": "tool", "tool_call_id": fail_res['call_id'], "content": str(fail_res['content']) })
+
+                    manager_action_feedback = [] # Reset feedback for this batch
                     activation_tasks = [] # Reset activation tasks
 
-                    # Execute Management Calls Sequentially
+                    # 2. Execute Management Calls Sequentially
                     if management_calls:
                         logger.info(f"Executing {len(management_calls)} management tool call(s) sequentially for agent '{agent_id}'.")
                         await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Executing {len(management_calls)} management tool(s)..."})
-                        for call in management_calls: result = await self._execute_single_tool(agent, call['id'], call['name'], call['arguments']);
-                        if result: executed_results_map[call['id']] = result
+                        for call in management_calls:
+                            result = await self._execute_single_tool(agent, call['id'], call['name'], call['arguments'])
+                            if result: executed_results_map[call['id']] = result
                         logger.info(f"Finished executing management tool calls for agent '{agent_id}'.")
-                        for call in management_calls: # Process Management Results & Generate Feedback
-                            call_id = call['id']; result = executed_results_map.get(call_id);
+
+                        # 3. Process Management Results & Generate Feedback
+                        for call in management_calls:
+                            call_id = call['id']; result = executed_results_map.get(call_id)
                             if not result: continue
-                            raw_content_for_hist = result.get("content", "[Tool Error: No content]"); tool_msg: MessageDict = {"role": "tool", "tool_call_id": call_id, "content": str(raw_content_for_hist) }
-                            if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("tool_call_id") != call_id: agent.message_history.append(tool_msg); logger.debug(f"Appended raw mgmt tool result for {call_id}.")
+                            raw_content_for_hist = result.get("content", "[Tool Error: No content]")
+                            tool_msg: MessageDict = {"role": "tool", "tool_call_id": call_id, "content": str(raw_content_for_hist) }
+                            if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("tool_call_id") != call_id:
+                                agent.message_history.append(tool_msg); logger.debug(f"Appended raw mgmt tool result for {call_id}.")
                             raw_tool_output = result.get("_raw_result")
-                            if call['name'] == ManageTeamTool.name:
+                            if call['name'] == ManageTeamTool.name: # Only ManageTeamTool requires manager action
                                 if isinstance(raw_tool_output, dict) and raw_tool_output.get("status") == "success":
-                                    action = raw_tool_output.get("action"); params = raw_tool_output.get("params", {}); logger.info(f"Processing successful ManageTeamTool execution: Action='{action}' by '{agent_id}'.")
-                                    action_success, action_message, action_data = await self._handle_manage_team_action(action, params); feedback = {"call_id": call_id, "action": action, "success": action_success, "message": action_message};
-                                    if action_data: feedback["data"] = action_data; manager_action_feedback.append(feedback)
-                                elif isinstance(raw_tool_output, dict) and raw_tool_output.get("status") == "error": logger.warning(f"ManageTeamTool call {call_id} failed validation/execution. Raw Result: {raw_tool_output}"); manager_action_feedback.append({"call_id": call_id, "action": raw_tool_output.get("action"), "success": False, "message": raw_tool_output.get("message", "Tool execution failed.")})
+                                    action = raw_tool_output.get("action"); params = raw_tool_output.get("params", {})
+                                    logger.info(f"Processing successful ManageTeamTool execution: Action='{action}' by '{agent_id}'.")
+                                    action_success, action_message, action_data = await self._handle_manage_team_action(action, params)
+                                    feedback = {"call_id": call_id, "action": action, "success": action_success, "message": action_message}
+                                    if action_data: feedback["data"] = action_data
+                                    manager_action_feedback.append(feedback)
+                                elif isinstance(raw_tool_output, dict) and raw_tool_output.get("status") == "error":
+                                     logger.warning(f"ManageTeamTool call {call_id} failed validation/execution. Raw Result: {raw_tool_output}")
+                                     manager_action_feedback.append({"call_id": call_id, "action": raw_tool_output.get("action"), "success": False, "message": raw_tool_output.get("message", "Tool execution failed.")})
                                 else: logger.warning(f"ManageTeamTool call {call_id} had unexpected structure: {result}"); manager_action_feedback.append({"call_id": call_id, "action": "unknown", "success": False, "message": "Unexpected tool result structure."})
 
-                    # Execute Other Tool Calls Sequentially
+                    # 4. Execute Other Tool Calls Sequentially
                     if other_calls:
                         logger.info(f"Executing {len(other_calls)} other tool call(s) sequentially for agent '{agent_id}'.")
                         await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Executing {len(other_calls)} other tool(s)..."})
-                        for call in other_calls: result = await self._execute_single_tool(agent, call['id'], call['name'], call['arguments']);
-                        if result: executed_results_map[call['id']] = result
+                        for call in other_calls:
+                             result = await self._execute_single_tool(agent, call['id'], call['name'], call['arguments'])
+                             if result: executed_results_map[call['id']] = result
                         logger.info(f"Finished executing other tool calls for agent '{agent_id}'.")
                         for call in other_calls: # Process results
-                            result = executed_results_map.get(call['id']);
+                            result = executed_results_map.get(call['id'])
                             if not result: continue
-                            raw_content_for_hist = result.get("content", "[Tool Error: No content]"); tool_msg: MessageDict = {"role": "tool", "tool_call_id": call['id'], "content": str(raw_content_for_hist) }
-                            if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("tool_call_id") != call['id']: agent.message_history.append(tool_msg); logger.debug(f"Appended raw other tool result for {call['id']}.")
+                            raw_content_for_hist = result.get("content", "[Tool Error: No content]")
+                            tool_msg: MessageDict = {"role": "tool", "tool_call_id": call['id'], "content": str(raw_content_for_hist) }
+                            if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("tool_call_id") != call['id']:
+                                agent.message_history.append(tool_msg); logger.debug(f"Appended raw other tool result for {call['id']}.")
                             if call['name'] == SendMessageTool.name: # Process SendMessage
                                 target_id = call['arguments'].get("target_agent_id"); msg_content = call['arguments'].get("message_content")
                                 if target_id and msg_content is not None:
@@ -421,9 +445,10 @@ class AgentManager:
                                     else: logger.error(f"SendMessage failed: Target agent '{target_id}' not found after management actions."); manager_action_feedback.append({"call_id": call['id'], "action": "send_message", "success": False, "message": f"Failed to send: Target agent '{target_id}' not found."})
                                 else: logger.error(f"SendMessage args incomplete for call {call['id']}. Args: {call['arguments']}"); manager_action_feedback.append({"call_id": call['id'], "action": "send_message", "success": False, "message": "Missing target_agent_id or message_content."})
 
+                    # 5. Wait for any agent activations
                     if activation_tasks: await asyncio.gather(*activation_tasks); logger.info(f"Completed activation tasks triggered by '{agent_id}'.")
 
-                    # Append All Manager Feedback
+                    # 6. Append All Manager Feedback
                     if manager_action_feedback:
                         feedback_appended = False
                         for feedback in manager_action_feedback:
@@ -449,22 +474,21 @@ class AgentManager:
                 try: await agent_generator.aclose(); logger.debug(f"Closed generator for '{agent_id}'.")
                 except Exception as close_err: logger.error(f"Error closing generator for '{agent_id}': {close_err}", exc_info=True)
 
-            # --- *** UPDATED FINAL BLOCK LOGIC with RETRY *** ---
+            # Check for automatic retry *first*
             if current_cycle_error and is_stream_related_error and retry_count < MAX_STREAM_RETRIES:
-                # Attempt automatic retry for stream errors
-                retry_delay = STREAM_RETRY_DELAY * (retry_count + 1) # Simple exponential backoff
+                retry_delay = STREAM_RETRY_DELAY * (retry_count + 1)
                 logger.warning(f"Stream error for '{agent_id}'. Retrying in {retry_delay:.1f}s (Attempt {retry_count + 1}/{MAX_STREAM_RETRIES})...")
                 await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Experiencing provider issues... Retrying automatically (Attempt {retry_count + 1}/{MAX_STREAM_RETRIES})..."})
                 await asyncio.sleep(retry_delay)
-                agent.set_status(AGENT_STATUS_IDLE) # Reset status before retry
-                asyncio.create_task(self._handle_agent_generator(agent, retry_count + 1)) # Start retry task
-                # Don't proceed to final status push/log for this cycle
+                agent.set_status(AGENT_STATUS_IDLE)
+                asyncio.create_task(self._handle_agent_generator(agent, retry_count + 1))
+                # If retrying, we are done with this cycle's finally block
             elif reactivate_agent_after_feedback and not current_cycle_error:
                 # Reactivate normally if feedback was added and no error occurred
                 logger.info(f"Reactivating agent '{agent_id}' to process manager feedback.")
                 agent.set_status(AGENT_STATUS_IDLE)
                 asyncio.create_task(self._handle_agent_generator(agent)) # Start next cycle task (retry_count reset to 0)
-                # Don't proceed to final status push/log for this cycle
+                # If reactivating, we are done with this cycle's finally block
             else:
                 # If not retrying and not reactivating, finalize the status
                 final_status = agent.status
@@ -472,11 +496,9 @@ class AgentManager:
                      logger.warning(f"Agent '{agent_id}' ended generator handling in non-terminal state '{final_status}'. Setting to IDLE.")
                      agent.set_status(AGENT_STATUS_IDLE)
 
-                # Push final status if not retrying/reactivating
-                await self.push_agent_status_update(agent_id)
+                await self.push_agent_status_update(agent_id) # Push the determined final state
                 log_level = logging.ERROR if agent.status == AGENT_STATUS_ERROR else logging.INFO
                 logger.log(log_level, f"Manager finished handling generator cycle for Agent '{agent_id}'. Final status: {agent.status}")
-            # --- *** END UPDATED FINAL BLOCK LOGIC *** ---
 
 
     # --- Tool Execution & Team Management Delegation ---
