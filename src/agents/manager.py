@@ -229,9 +229,14 @@ class AgentManager:
         except Exception as e: logger.error(f"  Agent instantiation failed for '{agent_id}': {e}", exc_info=True); return False, f"Agent instantiation failed: {e}", None
 
         # 7. Ensure Sandbox
-        try: sandbox_ok = await asyncio.to_thread(agent.ensure_sandbox_exists);
-        if not sandbox_ok: logger.warning(f"  Failed to ensure sandbox for '{agent_id}'.")
-        except Exception as e: logger.error(f"Sandbox error for '{agent_id}': {e}", exc_info=True); logger.warning(f"Proceeding without guaranteed sandbox for '{agent_id}'.")
+        try:
+            sandbox_ok = await asyncio.to_thread(agent.ensure_sandbox_exists)
+            # CORRECT INDENTATION:
+            if not sandbox_ok:
+                 logger.warning(f"  Failed to ensure sandbox for '{agent_id}'.")
+        except Exception as e:
+            logger.error(f"Sandbox error for '{agent_id}': {e}", exc_info=True)
+            logger.warning(f"Proceeding without guaranteed sandbox for '{agent_id}'.")
 
         # 8. Add agent instance to registry
         self.agents[agent_id] = agent; logger.debug(f"Agent '{agent_id}' added to self.agents dictionary.")
