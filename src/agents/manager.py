@@ -55,20 +55,29 @@ BOOTSTRAP_AGENT_ID = "admin_ai" # Define the primary bootstrap agent ID
 STREAM_RETRY_DELAYS = [5.0, 10.0, 10.0, 65.0] # New retry delays
 MAX_STREAM_RETRIES = len(STREAM_RETRY_DELAYS) # Max retries based on delay list length
 
-# Standard framework instructions (remains the same)
+# --- *** MOVED Standard Instructions Here *** ---
+# This block will be injected into dynamic agents' system prompts.
+# Includes placeholders for agent_id and team_id.
 STANDARD_FRAMEWORK_INSTRUCTIONS = """
 
 --- Standard Tool & Communication Protocol ---
-You have access to the following tools (use the XML format described in the main prompt):
-- `file_system`: Read, write, list files in your sandbox. Paths are relative.
-- `send_message`: Communicate with other agents in your team. Specify `target_agent_id` and `message_content`.
-
 Your Agent ID: `{agent_id}`
-Your Team ID: `{team_id}` (if assigned)
+Your Assigned Team ID: `{team_id}`
 
-Respond to messages directed to you. Use tools appropriately to fulfill your role.
+You have access to the following tools. Use the specified XML format precisely when you need to use a tool. Only use one tool call per response message, placed at the very end.
+
+{tool_descriptions_xml}
+
+**Communication:**
+- Use the `<send_message>` tool to communicate with other agents *within your team* or the Admin AI (`admin_ai`). Specify the `target_agent_id` and `message_content`.
+- Respond to messages directed to you ([From @...]).
+- **Report results:** When you complete a task assigned by the Admin AI or another agent, use the `<send_message>` tool to send your results (e.g., generated code, analysis summary, file content, or path to created file in your sandbox) back to the requesting agent (usually `admin_ai`).
+
+**File System:**
+- Use the `<file_system>` tool to read/write/list files *only within your own sandbox*. All paths are relative to your sandbox root.
 --- End Standard Protocol ---
 """
+# --- *** END MOVED Standard Instructions *** ---
 
 
 class AgentManager:
@@ -76,6 +85,7 @@ class AgentManager:
     Main coordinator for agents. Handles task distribution, agent lifecycle (creation/deletion),
     tool execution routing, and orchestrates state/session management via dedicated managers.
     Includes provider configuration checks and stream error retries with user override.
+    Injects standard framework instructions into dynamic agents.
     """
     def __init__(self, websocket_manager: Optional[Any] = None):
         """
@@ -147,10 +157,21 @@ class AgentManager:
                 logger.error(f"--- Cannot initialize bootstrap agent '{agent_id}': Provider '{provider_name}' is not configured in .env. Skipping. ---")
                 continue # Skip this agent if its provider isn't set up
 
-            if agent_id == BOOTSTRAP_AGENT_ID: # Inject allowed models for Admin AI
-                original_prompt = agent_config_data.get("system_prompt", ""); agent_config_data = agent_config_data.copy()
-                agent_config_data["system_prompt"] = original_prompt + "\n\n" + formatted_allowed_models
-                logger.info(f"Injected allowed models list into '{BOOTSTRAP_AGENT_ID}' system prompt.")
+            # --- *** Modify Admin AI prompt injection slightly *** ---
+            # Inject allowed models, but ALSO the standard tool descriptions for Admin AI itself
+            if agent_id == BOOTSTRAP_AGENT_ID:
+                original_prompt = agent_config_data.get("system_prompt", "")
+                agent_config_data = agent_config_data.copy() # Avoid modifying original settings dict
+                # Format standard instructions for Admin AI (no team initially)
+                standard_info = STANDARD_FRAMEWORK_INSTRUCTIONS.format(
+                    agent_id=BOOTSTRAP_AGENT_ID,
+                    team_id="N/A", # Admin AI doesn't belong to a dynamic team
+                    tool_descriptions_xml=self.tool_descriptions_xml
+                )
+                # Combine: Original Prompt + Allowed Models + Standard Instructions
+                agent_config_data["system_prompt"] = original_prompt + "\n\n" + formatted_allowed_models + "\n\n" + standard_info
+                logger.info(f"Injected allowed models list AND standard instructions into '{BOOTSTRAP_AGENT_ID}' system prompt.")
+            # --- *** END Modification *** ---
 
             tasks.append(self._create_agent_internal( agent_id_requested=agent_id, agent_config_data=agent_config_data, is_bootstrap=True ))
 
@@ -179,15 +200,16 @@ class AgentManager:
         if BOOTSTRAP_AGENT_ID not in self.agents: logger.critical(f"CRITICAL: Admin AI ('{BOOTSTRAP_AGENT_ID}') failed to initialize!")
 
 
-    # --- Agent Creation Logic (remains mostly the same) ---
+    # --- *** MODIFIED Agent Creation Logic to Inject Standard Prompt *** ---
     async def _create_agent_internal(
         self, agent_id_requested: Optional[str], agent_config_data: Dict[str, Any], is_bootstrap: bool = False, team_id: Optional[str] = None, loading_from_session: bool = False
         ) -> Tuple[bool, str, Optional[str]]:
+        """Internal logic including provider config check, model validation, and standard prompt injection."""
         # 1. Determine Agent ID
         if agent_id_requested and agent_id_requested in self.agents: return False, f"Agent ID '{agent_id_requested}' already exists.", None
         agent_id = agent_id_requested or self._generate_unique_agent_id()
         if not agent_id: return False, "Failed to generate Agent ID.", None
-        logger.debug(f"Creating agent '{agent_id}' (Bootstrap: {is_bootstrap}, SessionLoad: {loading_from_session})")
+        logger.debug(f"Creating agent '{agent_id}' (Bootstrap: {is_bootstrap}, SessionLoad: {loading_from_session}, Team: {team_id})")
 
         # 2. Extract Config & Validate Provider Configuration
         provider_name = agent_config_data.get("provider", settings.DEFAULT_AGENT_PROVIDER)
@@ -201,39 +223,53 @@ class AgentManager:
         if not is_bootstrap and not loading_from_session:
             allowed_models = settings.ALLOWED_SUB_AGENT_MODELS.get(provider_name)
             if allowed_models is None: msg = f"Validation Error: Provider '{provider_name}' not in allowed_sub_agent_models."; logger.error(msg); return False, msg, None
-            # Filter out empty strings before checking
             valid_allowed_models = [m for m in allowed_models if m and m.strip()]
             if not valid_allowed_models or model not in valid_allowed_models:
                 allowed_list_str = ', '.join(valid_allowed_models) if valid_allowed_models else 'None'
                 msg = f"Validation Error: Model '{model}' not allowed for '{provider_name}'. Allowed: [{allowed_list_str}]"; logger.error(msg); return False, msg, None
             logger.info(f"Dynamic agent creation validated: Provider '{provider_name}', Model '{model}' is allowed.")
 
-        # 4. Extract other config and Construct Final Prompt
+        # 4. Extract other config
         role_specific_prompt = agent_config_data.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
         temperature = agent_config_data.get("temperature", settings.DEFAULT_TEMPERATURE)
         allowed_provider_keys = ['api_key', 'base_url', 'referer']; provider_specific_kwargs = { k: v for k, v in agent_config_data.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona'] + allowed_provider_keys}
         if agent_config_data.get("referer"): provider_specific_kwargs["referer"] = agent_config_data["referer"]
 
-        final_system_prompt = role_specific_prompt
-        if not is_bootstrap and not loading_from_session:
-            standard_info = STANDARD_FRAMEWORK_INSTRUCTIONS.format(agent_id=agent_id, team_id=team_id or "N/A")
-            final_system_prompt = role_specific_prompt + "\n" + standard_info
-            logger.debug(f"Constructed final prompt for dynamic agent '{agent_id}'.")
+        # 5. Construct Final Prompt (Injecting Standard Instructions)
+        final_system_prompt = role_specific_prompt # Start with the role-specific part
 
-        # Store the full config entry used to create the agent
+        # Inject standard instructions for dynamic agents *unless* loading from session
+        # (Assume loaded session prompts already include framework instructions)
+        # Also inject for AdminAI during bootstrap init (handled there)
+        if not loading_from_session and (not is_bootstrap or agent_id == BOOTSTRAP_AGENT_ID):
+             # Format the standard instructions with current details
+             standard_info = STANDARD_FRAMEWORK_INSTRUCTIONS.format(
+                 agent_id=agent_id,
+                 team_id=team_id or "N/A", # Use provided team_id or N/A
+                 tool_descriptions_xml=self.tool_descriptions_xml
+             )
+             # Prepend standard info to the role-specific prompt for clarity
+             final_system_prompt = standard_info + "\n\n--- Your Specific Role & Task ---\n" + role_specific_prompt
+             logger.debug(f"Injected standard framework instructions for agent '{agent_id}'.")
+        elif loading_from_session:
+             logger.debug(f"Skipping standard instruction injection for agent '{agent_id}' (loading from session).")
+        # Bootstrap agents other than AdminAI don't get standard instructions by default (can be added manually in config.yaml)
+
+
+        # 6. Store the final combined config entry
         final_agent_config_entry = {
             "agent_id": agent_id,
             "config": {
                 "provider": provider_name,
                 "model": model,
-                "system_prompt": final_system_prompt, # Use the potentially combined prompt
+                "system_prompt": final_system_prompt, # Use the final combined prompt
                 "persona": persona,
                 "temperature": temperature,
                 **provider_specific_kwargs
             }
         }
 
-        # 5. Instantiate Provider
+        # 7. Instantiate Provider
         ProviderClass = PROVIDER_CLASS_MAP.get(provider_name)
         if not ProviderClass: return False, f"Unknown provider '{provider_name}'.", None
         base_provider_config = settings.get_provider_config(provider_name); provider_config_overrides = {k: agent_config_data[k] for k in allowed_provider_keys if k in agent_config_data}
@@ -241,24 +277,23 @@ class AgentManager:
         try: llm_provider_instance = ProviderClass(**final_provider_args); logger.info(f"  Instantiated provider {ProviderClass.__name__} for '{agent_id}'.")
         except Exception as e: logger.error(f"  Provider instantiation failed for '{agent_id}': {e}", exc_info=True); return False, f"Provider instantiation failed: {e}", None
 
-        # 6. Instantiate Agent
+        # 8. Instantiate Agent
         try:
-            # Pass the full final_agent_config_entry to the Agent constructor
+            # Pass the full final config entry and the provider instance
+            # The Agent constructor NO LONGER needs tool_descriptions_xml separately
             agent = Agent(
                 agent_config=final_agent_config_entry,
                 llm_provider=llm_provider_instance,
-                manager=self,
-                tool_descriptions_xml=self.tool_descriptions_xml
+                manager=self
+                # tool_descriptions_xml is now part of the prompt
             )
-            # No need to set agent.agent_config again, it's done in __init__
             logger.info(f"  Instantiated Agent object for '{agent_id}'.")
         except Exception as e:
             logger.error(f"  Agent instantiation failed for '{agent_id}': {e}", exc_info=True)
-            # Clean up provider if agent creation failed
             await self._close_provider_safe(llm_provider_instance)
             return False, f"Agent instantiation failed: {e}", None
 
-        # 7. Ensure Sandbox
+        # 9. Ensure Sandbox
         try:
             sandbox_ok = await asyncio.to_thread(agent.ensure_sandbox_exists)
             if not sandbox_ok:
@@ -267,27 +302,14 @@ class AgentManager:
             logger.error(f"Sandbox error for '{agent_id}': {e}", exc_info=True)
             logger.warning(f"Proceeding without guaranteed sandbox for '{agent_id}'.")
 
-        # 8. Add agent instance to registry
+        # 10. Add agent instance to registry
         self.agents[agent_id] = agent; logger.debug(f"Agent '{agent_id}' added to self.agents dictionary.")
 
-        # 9. Assign to Team State via StateManager
+        # 11. Assign to Team State via StateManager
         team_add_msg_suffix = ""
         if team_id:
-            # Update agent's internal prompt if dynamically created now
-            if not loading_from_session and not is_bootstrap:
-                 try:
-                     new_team_str = f"Your Team ID: {team_id}"
-                     # Use re.sub for safer replacement
-                     agent.final_system_prompt = re.sub(r"Your Team ID:.*", new_team_str, agent.final_system_prompt)
-                     # Update the stored config as well
-                     agent.agent_config["config"]["system_prompt"] = agent.final_system_prompt
-                     # Update the history if it exists and the first message is the system prompt
-                     if agent.message_history and agent.message_history[0]["role"] == "system":
-                          agent.message_history[0]["content"] = agent.final_system_prompt
-                 except Exception as e:
-                      logger.error(f"Error updating team ID in dynamic agent prompt for {agent_id}: {e}")
-
-            # Delegate actual state update
+            # Team ID should already be in the prompt from step 5, no need to update here
+            # Delegate state update
             team_add_success, team_add_msg = await self.state_manager.add_agent_to_team(agent_id, team_id)
             if not team_add_success:
                 team_add_msg_suffix = f" (Warning adding to team state: {team_add_msg})"
@@ -296,6 +318,7 @@ class AgentManager:
 
         message = f"Agent '{agent_id}' created successfully." + team_add_msg_suffix
         return True, message, agent_id
+    # --- *** END MODIFIED Agent Creation Logic *** ---
 
 
     async def create_agent_instance( # Public method unchanged
@@ -347,7 +370,7 @@ class AgentManager:
             await self.send_to_ui({ "type": "status", "agent_id": admin_agent.agent_id, "content": f"Admin AI busy ({admin_agent.status}). Your message will be processed when idle." })
 
 
-    # --- *** CORRECTED _handle_agent_generator typo *** ---
+    # --- Generator Handling (Remains the Same from previous step) ---
     async def _handle_agent_generator(self, agent: Agent, retry_count: int = 0):
         """Handles agent processing cycle, including specific retry delays and user override signal."""
         agent_id = agent.agent_id
@@ -369,7 +392,7 @@ class AgentManager:
 
                 event_type = event.get("type")
 
-                # --- Handle Standard Events ---
+                # Handle Standard Events
                 if event_type in ["response_chunk", "status", "final_response"]:
                     if "agent_id" not in event: event["agent_id"] = agent_id
                     await self.send_to_ui(event)
@@ -378,37 +401,32 @@ class AgentManager:
                         if final_content and (not agent.message_history or agent.message_history[-1].get("content") != final_content or agent.message_history[-1].get("role") != "assistant"):
                             agent.message_history.append({"role": "assistant", "content": final_content}); logger.debug(f"Appended final response for '{agent_id}'.")
 
-                elif event_type == "error": # Handle errors yielded by agent/provider
+                # Handle errors yielded by agent/provider
+                elif event_type == "error":
                     last_error_content = event.get("content", "[Unknown Agent Error]")
                     logger.error(f"Agent '{agent_id}' reported error: {last_error_content}")
-                    # Determine if error is stream-related
                     is_stream_error = any(indicator in last_error_content for indicator in ["Error processing stream chunk", "APIError during stream", "Failed to decode stream chunk", "Stream connection error", "Provider returned error"])
-                    is_stream_related_error = is_stream_error # Set the flag for the finally block
-
+                    is_stream_related_error = is_stream_error
                     if is_stream_error:
                         logger.warning(f"Detected potentially temporary stream error for agent '{agent_id}'.")
-                        # UI message handled in finally block if retrying/failing
-                    else: # Permanent error (not stream related)
+                    else: # Permanent error
                         if "agent_id" not in event: event["agent_id"] = agent_id
                         await self.send_to_ui(event)
                         agent.set_status(AGENT_STATUS_ERROR)
-                    current_cycle_error = True # Mark error occurred
+                    current_cycle_error = True
                     break # Stop generator loop on any error
 
+                # Handle Tool Requests (List)
                 elif event_type == "tool_requests":
                     all_tool_calls: List[Dict] = event.get("calls", [])
-                    if not all_tool_calls:
-                        logger.warning(f"Agent '{agent_id}' yielded 'tool_requests' event with empty calls list.")
-                        continue
+                    if not all_tool_calls: continue
 
                     logger.info(f"Agent '{agent_id}' yielded {len(all_tool_calls)} tool request(s).")
-
                     agent_last_response = event.get("raw_assistant_response")
                     if agent_last_response and (not agent.message_history or agent.message_history[-1].get("content") != agent_last_response or agent.message_history[-1].get("role") != "assistant"):
                          agent.message_history.append({"role": "assistant", "content": agent_last_response}); logger.debug(f"Appended assistant response (with tools) for '{agent_id}'.")
 
                     management_calls = []; other_calls = []; executed_results_map = {}; invalid_call_results = []
-                    # 1. Validate and Categorize All Calls from the list
                     for call in all_tool_calls:
                          call_id, tool_name, tool_args = call.get("id"), call.get("name"), call.get("arguments", {})
                          if call_id and tool_name and isinstance(tool_args, dict):
@@ -418,33 +436,27 @@ class AgentManager:
                             logger.warning(f"Skipping invalid tool request format from '{agent_id}': {call}")
                             fail_result = await self._failed_tool_result(call_id, tool_name)
                             if fail_result: invalid_call_results.append(fail_result)
-                    if invalid_call_results: # Append failures early
+                    if invalid_call_results:
                         for fail_res in invalid_call_results: agent.message_history.append({"role": "tool", "tool_call_id": fail_res['call_id'], "content": str(fail_res['content']) })
 
-                    manager_action_feedback = [] # Reset feedback for this batch
-                    activation_tasks = [] # Reset activation tasks
-
-                    # --- Execute ALL Calls Sequentially (Management First) ---
+                    manager_action_feedback = []
+                    activation_tasks = []
                     calls_to_execute = management_calls + other_calls
 
                     if calls_to_execute:
                         logger.info(f"Executing {len(calls_to_execute)} tool call(s) sequentially for agent '{agent_id}'. Mgmt: {len(management_calls)}, Other: {len(other_calls)}")
                         await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Executing {len(calls_to_execute)} tool(s)..."})
 
-                        # Iterate and execute each call
                         for call in calls_to_execute:
                             call_id = call['id']; tool_name = call['name']; tool_args = call['arguments']
                             result = await self._execute_single_tool(agent, call_id, tool_name, tool_args)
                             if result:
                                 executed_results_map[call_id] = result
-
-                                # Append raw tool result immediately to history
                                 raw_content_for_hist = result.get("content", "[Tool Error: No content]")
                                 tool_msg: MessageDict = {"role": "tool", "tool_call_id": call_id, "content": str(raw_content_for_hist) }
                                 if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("tool_call_id") != call_id:
                                      agent.message_history.append(tool_msg); logger.debug(f"Appended raw tool result for {call_id}.")
 
-                                # Process side effects (Manager Actions, SendMessage)
                                 raw_tool_output = result.get("_raw_result")
                                 if tool_name == ManageTeamTool.name:
                                     if isinstance(raw_tool_output, dict) and raw_tool_output.get("status") == "success":
@@ -460,11 +472,9 @@ class AgentManager:
                                     else:
                                          logger.warning(f"ManageTeamTool call {call_id} had unexpected structure: {result}")
                                          manager_action_feedback.append({"call_id": call_id, "action": "unknown", "success": False, "message": "Unexpected tool result structure."})
-
                                 elif tool_name == SendMessageTool.name:
-                                    # --- *** CORRECTED TYPO HERE *** ---
                                     target_id = call['arguments'].get("target_agent_id"); msg_content = call['arguments'].get("message_content")
-                                    activation_task = None # Reset for this call
+                                    activation_task = None
                                     if target_id and msg_content is not None:
                                         if target_id in self.agents:
                                             activation_task = await self._route_and_activate_agent_message(agent_id, target_id, msg_content)
@@ -475,23 +485,15 @@ class AgentManager:
                                     else:
                                         logger.error(f"SendMessage args incomplete for call {call_id}. Args: {call['arguments']}")
                                         manager_action_feedback.append({"call_id": call_id, "action": "send_message", "success": False, "message": "Missing target_agent_id or message_content."})
-                                    # --- *** END CORRECTION *** ---
                             else:
-                                 # Handle case where tool execution failed unexpectedly
                                  logger.error(f"Tool execution failed for call_id {call_id}, no result returned.")
-                                 # Append a generic failure message to feedback?
                                  manager_action_feedback.append({"call_id": call_id, "action": tool_name, "success": False, "message": "Tool execution failed unexpectedly."})
 
-
                         logger.info(f"Finished executing {len(calls_to_execute)} tool calls for agent '{agent_id}'.")
-
-                        # Wait for any agent activations triggered by SendMessage
                         if activation_tasks:
                             logger.info(f"Waiting for {len(activation_tasks)} activation tasks triggered by '{agent_id}'.")
                             await asyncio.gather(*activation_tasks)
                             logger.info(f"Completed activation tasks triggered by '{agent_id}'.")
-
-                        # Append All Manager Feedback to History
                         if manager_action_feedback:
                             feedback_appended = False
                             for feedback in manager_action_feedback:
@@ -500,11 +502,9 @@ class AgentManager:
                                      try: data_str = json.dumps(feedback['data'], indent=2); feedback_content += f"\nData:\n{data_str[:1500]}{'... (truncated)' if len(data_str) > 1500 else ''}"
                                      except TypeError: feedback_content += f"\nData: [Unserializable Data]"
                                 feedback_message: MessageDict = { "role": "tool", "tool_call_id": feedback['call_id'], "content": feedback_content }
-                                # Avoid adding duplicate feedback if manager retries internally somehow
                                 if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("content") != feedback_content:
                                      agent.message_history.append(feedback_message); logger.debug(f"Appended manager feedback for call {feedback['call_id']} to '{agent_id}' history."); feedback_appended = True
                             if feedback_appended: reactivate_agent_after_feedback = True
-                    # --- End Sequential Execution ---
 
                 else:
                     logger.warning(f"Unknown event type '{event_type}' received from agent '{agent_id}'.")
@@ -512,28 +512,27 @@ class AgentManager:
         except Exception as e:
             logger.error(f"Error occurred while handling generator for agent '{agent_id}': {e}", exc_info=True)
             agent.set_status(AGENT_STATUS_ERROR)
-            current_cycle_error = True # Mark error occurred
-            last_error_content = f"[Manager Error: Unexpected error in generator handler - {e}]" # Capture error
+            current_cycle_error = True
+            last_error_content = f"[Manager Error: Unexpected error in generator handler - {e}]"
             await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": last_error_content})
         finally:
             if agent_generator:
                 try: await agent_generator.aclose(); logger.debug(f"Closed generator for '{agent_id}'.")
                 except Exception as close_err: logger.error(f"Error closing generator for '{agent_id}': {close_err}", exc_info=True)
 
-            # --- Updated Finally Block Logic (Remains the same) ---
             if current_cycle_error and is_stream_related_error and retry_count < MAX_STREAM_RETRIES:
                 retry_delay = STREAM_RETRY_DELAYS[retry_count]
                 logger.warning(f"Stream error for '{agent_id}'. Retrying in {retry_delay:.1f}s (Attempt {retry_count + 1}/{MAX_STREAM_RETRIES})...")
                 await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Experiencing provider issues... Retrying automatically (Attempt {retry_count + 1}/{MAX_STREAM_RETRIES}, delay {retry_delay}s)..."})
                 await asyncio.sleep(retry_delay)
-                agent.set_status(AGENT_STATUS_IDLE) # Reset status *before* scheduling retry
+                agent.set_status(AGENT_STATUS_IDLE)
                 asyncio.create_task(self._handle_agent_generator(agent, retry_count + 1))
                 logger.info(f"Retry task scheduled for agent '{agent_id}'. This cycle ending.")
                 return
 
             elif current_cycle_error and is_stream_related_error and retry_count >= MAX_STREAM_RETRIES:
                 logger.error(f"Agent '{agent_id}' failed after {MAX_STREAM_RETRIES} retries. Requesting user override.")
-                agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE) # Set specific status
+                agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE)
                 await self.send_to_ui({
                     "type": "request_user_override",
                     "agent_id": agent_id,
@@ -549,7 +548,7 @@ class AgentManager:
             elif reactivate_agent_after_feedback and not current_cycle_error:
                 logger.info(f"Reactivating agent '{agent_id}' to process manager feedback.")
                 agent.set_status(AGENT_STATUS_IDLE)
-                asyncio.create_task(self._handle_agent_generator(agent, 0)) # Start next cycle task, reset retry_count
+                asyncio.create_task(self._handle_agent_generator(agent, 0))
                 logger.info(f"Reactivation task scheduled for agent '{agent_id}'. This cycle ending.")
                 return
 
@@ -559,10 +558,9 @@ class AgentManager:
                      logger.warning(f"Agent '{agent_id}' ended generator handling in non-terminal state '{final_status}'. Setting to IDLE.")
                      agent.set_status(AGENT_STATUS_IDLE)
 
-                await self.push_agent_status_update(agent_id) # Push the determined final state
+                await self.push_agent_status_update(agent_id)
                 log_level = logging.ERROR if agent.status in [AGENT_STATUS_ERROR, AGENT_STATUS_AWAITING_USER_OVERRIDE] else logging.INFO
                 logger.log(log_level, f"Manager finished handling generator cycle for Agent '{agent_id}'. Final status: {agent.status}")
-            # --- End Updated Finally Block ---
 
 
     # --- Tool Execution & Team Management Delegation (Remains the Same) ---
@@ -590,10 +588,10 @@ class AgentManager:
             elif action == "delete_team": success, message = await self.state_manager.delete_existing_team(team_id)
             elif action == "add_agent_to_team":
                 success, message = await self.state_manager.add_agent_to_team(agent_id, team_id)
-                if success: await self._update_agent_prompt_team_id(agent_id, team_id)
+                if success: await self._update_agent_prompt_team_id(agent_id, team_id) # This updates internal state, not the prompt file
             elif action == "remove_agent_from_team":
                 success, message = await self.state_manager.remove_agent_from_team(agent_id, team_id)
-                if success: await self._update_agent_prompt_team_id(agent_id, None)
+                if success: await self._update_agent_prompt_team_id(agent_id, None) # This updates internal state
             elif action == "list_agents":
                  filter_team_id = params.get("team_id");
                  result_data = self.get_agent_info_list_sync(filter_team_id=filter_team_id)
@@ -607,17 +605,28 @@ class AgentManager:
             return success, message, result_data
         except Exception as e: message = f"Error processing '{action}': {e}"; logger.error(message, exc_info=True); return False, message, None
 
+    # NOTE: _update_agent_prompt_team_id only updates the *in-memory* prompt state.
+    # It does NOT write back to config.yaml.
     async def _update_agent_prompt_team_id(self, agent_id: str, new_team_id: Optional[str]):
-        # (Keep the existing logic)
         agent = self.agents.get(agent_id)
-        if agent and not (agent_id in self.bootstrap_agents):
+        if agent and not (agent_id in self.bootstrap_agents): # Only update for dynamic agents
             try:
-                new_team_str = f"Your Team ID: {new_team_id or 'N/A'}"
-                agent.final_system_prompt = re.sub(r"Your Team ID:.*", new_team_str, agent.final_system_prompt)
-                agent.agent_config["config"]["system_prompt"] = agent.final_system_prompt
+                # Use regex to replace the team ID line safely
+                team_line_regex = r"Your Assigned Team ID:.*"
+                new_team_line = f"Your Assigned Team ID: {new_team_id or 'N/A'}"
+
+                # Update the agent's live system prompt
+                agent.final_system_prompt = re.sub(team_line_regex, new_team_line, agent.final_system_prompt)
+
+                # Update the prompt within the stored agent_config dictionary
+                if hasattr(agent, 'agent_config') and isinstance(agent.agent_config, dict) and "config" in agent.agent_config:
+                     agent.agent_config["config"]["system_prompt"] = agent.final_system_prompt
+
+                # Update the prompt in the agent's active message history
                 if agent.message_history and agent.message_history[0]["role"] == "system":
                     agent.message_history[0]["content"] = agent.final_system_prompt
-                logger.info(f"Updated team ID ({new_team_id}) in system prompt state for agent '{agent_id}'.")
+
+                logger.info(f"Updated team ID ({new_team_id}) in live prompt state for dynamic agent '{agent_id}'.")
             except Exception as e:
                  logger.error(f"Error updating system prompt state for agent '{agent_id}' after team change: {e}")
 
