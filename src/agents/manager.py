@@ -347,7 +347,7 @@ class AgentManager:
             await self.send_to_ui({ "type": "status", "agent_id": admin_agent.agent_id, "content": f"Admin AI busy ({admin_agent.status}). Your message will be processed when idle." })
 
 
-    # --- *** UPDATED _handle_agent_generator to handle list of tool calls *** ---
+    # --- *** CORRECTED _handle_agent_generator typo *** ---
     async def _handle_agent_generator(self, agent: Agent, retry_count: int = 0):
         """Handles agent processing cycle, including specific retry delays and user override signal."""
         agent_id = agent.agent_id
@@ -395,13 +395,11 @@ class AgentManager:
                     current_cycle_error = True # Mark error occurred
                     break # Stop generator loop on any error
 
-                # --- *** MODIFIED TOOL REQUEST HANDLING *** ---
                 elif event_type == "tool_requests":
-                    # Now expects a LIST of calls
                     all_tool_calls: List[Dict] = event.get("calls", [])
                     if not all_tool_calls:
                         logger.warning(f"Agent '{agent_id}' yielded 'tool_requests' event with empty calls list.")
-                        continue # Nothing to process
+                        continue
 
                     logger.info(f"Agent '{agent_id}' yielded {len(all_tool_calls)} tool request(s).")
 
@@ -427,7 +425,6 @@ class AgentManager:
                     activation_tasks = [] # Reset activation tasks
 
                     # --- Execute ALL Calls Sequentially (Management First) ---
-                    # Combine calls in order: Management, then Others
                     calls_to_execute = management_calls + other_calls
 
                     if calls_to_execute:
@@ -465,7 +462,8 @@ class AgentManager:
                                          manager_action_feedback.append({"call_id": call_id, "action": "unknown", "success": False, "message": "Unexpected tool result structure."})
 
                                 elif tool_name == SendMessageTool.name:
-                                    target_id = call_args.get("target_agent_id"); msg_content = call_args.get("message_content")
+                                    # --- *** CORRECTED TYPO HERE *** ---
+                                    target_id = call['arguments'].get("target_agent_id"); msg_content = call['arguments'].get("message_content")
                                     activation_task = None # Reset for this call
                                     if target_id and msg_content is not None:
                                         if target_id in self.agents:
@@ -475,8 +473,9 @@ class AgentManager:
                                             logger.error(f"SendMessage failed: Target agent '{target_id}' not found.")
                                             manager_action_feedback.append({"call_id": call_id, "action": "send_message", "success": False, "message": f"Failed to send: Target agent '{target_id}' not found."})
                                     else:
-                                        logger.error(f"SendMessage args incomplete for call {call_id}. Args: {call_args}")
+                                        logger.error(f"SendMessage args incomplete for call {call_id}. Args: {call['arguments']}")
                                         manager_action_feedback.append({"call_id": call_id, "action": "send_message", "success": False, "message": "Missing target_agent_id or message_content."})
+                                    # --- *** END CORRECTION *** ---
                             else:
                                  # Handle case where tool execution failed unexpectedly
                                  logger.error(f"Tool execution failed for call_id {call_id}, no result returned.")
@@ -506,8 +505,6 @@ class AgentManager:
                                      agent.message_history.append(feedback_message); logger.debug(f"Appended manager feedback for call {feedback['call_id']} to '{agent_id}' history."); feedback_appended = True
                             if feedback_appended: reactivate_agent_after_feedback = True
                     # --- End Sequential Execution ---
-
-                # --- END MODIFIED TOOL REQUEST HANDLING ---
 
                 else:
                     logger.warning(f"Unknown event type '{event_type}' received from agent '{agent_id}'.")
@@ -570,7 +567,6 @@ class AgentManager:
 
     # --- Tool Execution & Team Management Delegation (Remains the Same) ---
     async def _handle_manage_team_action(self, action: Optional[str], params: Dict[str, Any]) -> Tuple[bool, str, Optional[Any]]:
-        # (Keep the existing logic)
         if not action: return False, "No action specified.", None
         success, message, result_data = False, "Unknown action or error.", None
         try:
