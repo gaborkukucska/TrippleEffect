@@ -3,80 +3,92 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no"> <!-- Added user-scalable=no -->
     <title>TrippleEffect</title>
     <!-- Link to the CSS file -->
     <link href="/static/css/style.css" rel="stylesheet">
+    <!-- Optional: Add meta tags for dark mode preference -->
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#1a1a1a"> <!-- Example dark theme color -->
 </head>
 <body>
-    <div class="container">
-        <h1>TrippleEffect Interface</h1>
+    <!-- New container for swipeable pages -->
+    <div id="page-container">
 
-        <!-- Main content area -->
-        <div class="main-content">
-
-            <!-- Area for displaying conversation messages (User and Agent) -->
-            <div id="conversation-area" class="message-area conversation-area">
-                <!-- Conversation messages will be dynamically added here -->
-                <div class="message status initial-placeholder"><span>Conversation Area</span></div>
-            </div>
-
-            <!-- Area for displaying system/status/error messages -->
-            <div id="system-log-area" class="message-area system-log-area">
-                <!-- System/status messages will be dynamically added here -->
-                 <div class="message status initial-placeholder"><span>System Logs & Status</span></div>
-                 <div class="message status initial-connecting initial-placeholder"><span>Connecting to backend...</span></div>
-            </div>
-
-        </div> <!-- /main-content -->
-
-
-        <!-- Input area for sending tasks/messages -->
-        <div class="input-area">
-            <textarea id="message-input" placeholder="Enter your task here..."></textarea>
-            <div class="input-controls">
-                <input type="file" id="file-input" accept=".txt,.py,.js,.html,.css,.md,.json,.yaml,.csv" style="display: none;"> <!-- Hidden file input -->
-                <button id="attach-file-button" title="Attach text file">📎</button> <!-- Button to trigger file input -->
-                <button id="send-button">Send</button>
-            </div>
-        </div>
-        <div id="file-info-area" class="file-info-area">
-             <!-- Selected file info will be shown here -->
-        </div>
-
-        <!-- Configuration section -->
-        <div class="config-area">
-            <div class="config-header"> <!-- Added wrapper for header and button -->
-                <h2>Configuration</h2>
-                <div> <!-- Wrapper for buttons -->
-                    <button id="refresh-config-button" class="config-action-button refresh-button" title="Refresh Page (Applies Config Changes on Restart)">🔄</button> <!-- Added Refresh -->
-                    <button id="add-agent-button" class="config-action-button add-button" title="Add New Agent">+</button>
+        <!-- Page 1: Main Chat and Agent List -->
+        <div id="main-page" class="page">
+            <div class="main-page-layout">
+                <!-- Top Section: Chat & Input -->
+                <div class="main-chat-section">
+                    <h1>TrippleEffect</h1>
+                    <!-- Area for displaying conversation messages -->
+                    <div id="conversation-area" class="message-area conversation-area">
+                        <div class="message status initial-placeholder"><span>Conversation Area</span></div>
+                    </div>
+                    <!-- Input area -->
+                    <div class="input-area">
+                        <textarea id="message-input" placeholder="Enter your task here..."></textarea>
+                        <div class="input-controls">
+                            <input type="file" id="file-input" accept=".txt,.py,.js,.html,.css,.md,.json,.yaml,.csv" style="display: none;">
+                            <button id="attach-file-button" title="Attach text file">📎</button>
+                            <button id="send-button">Send</button>
+                        </div>
+                    </div>
+                    <div id="file-info-area" class="file-info-area">
+                         <!-- Selected file info -->
+                    </div>
+                </div>
+                <!-- Bottom Section: Agent Status List -->
+                <div class="main-agent-status-section">
+                    <h2>Active Agents</h2>
+                    <div id="agent-status-content">
+                        <span class="status-placeholder">Waiting for status...</span>
+                    </div>
                 </div>
             </div>
-            <!-- Configuration content will be dynamically loaded here -->
-            <div id="config-content">
-                 <span class="status-placeholder">Loading config...</span>
-            </div>
         </div>
 
-         <!-- Agent status section -->
-         <div class="agent-status-area">
-            <h2>Agent Status</h2>
-             <div id="agent-status-content">
-                <!-- Agent status indicators will go here later -->
-                <span class="status-placeholder">Waiting for status...</span>
+        <!-- Page 2: System Logs -->
+        <div id="log-page" class="page">
+            <h1>System Logs</h1>
+             <!-- Area for displaying system/status/error messages -->
+             <div id="system-log-area" class="message-area system-log-area full-page-area">
+                 <!-- System/status messages will be dynamically added here -->
+                  <div class="message status initial-placeholder"><span>System Logs & Status</span></div>
+                  <div class="message status initial-connecting initial-placeholder"><span>Connecting to backend...</span></div>
              </div>
-         </div>
+        </div>
 
-    </div> <!-- /container -->
+        <!-- Page 3: Configuration -->
+        <div id="config-page" class="page">
+             <h1>Configuration</h1>
+             <!-- Configuration section -->
+             <div class="config-area full-page-area">
+                 <div class="config-header">
+                     <h2>Static Config</h2>
+                     <div>
+                         <button id="refresh-config-button" class="config-action-button refresh-button" title="Refresh Config List">🔄</button>
+                         <button id="add-agent-button" class="config-action-button add-button" title="Add New Static Agent">+</button>
+                     </div>
+                 </div>
+                 <div id="config-content">
+                      <span class="status-placeholder">Loading config...</span>
+                 </div>
+                 <p class="restart-note">Note: Static config changes require application restart.</p>
+             </div>
+             <!-- Maybe add project/session management UI here later -->
+        </div>
 
+    </div> <!-- /page-container -->
+
+    <!-- Modal Dialogs (kept outside page container) -->
     <!-- Modal Dialog for Add/Edit Agent -->
     <div id="agent-modal" class="modal" style="display: none;">
         <div class="modal-content">
             <span class="close-button" onclick="closeModal('agent-modal')">×</span>
             <h3 id="modal-title">Add Agent</h3>
             <form id="agent-form">
-                <input type="hidden" id="edit-agent-id" value=""> <!-- Hidden field for agent ID when editing -->
+                <input type="hidden" id="edit-agent-id" value="">
 
                 <label for="agent-id">Agent ID:</label>
                 <input type="text" id="agent-id" name="agent_id" required pattern="^[a-zA-Z0-9_-]+$" title="Alphanumeric, underscores, hyphens only">
@@ -89,7 +101,6 @@
                     <option value="openrouter">OpenRouter</option>
                     <option value="ollama">Ollama</option>
                     <option value="openai">OpenAI</option>
-                    <!-- Add other providers if implemented -->
                 </select>
 
                 <label for="model">Model:</label>
@@ -101,23 +112,16 @@
                 <label for="system_prompt">System Prompt:</label>
                 <textarea id="system_prompt" name="system_prompt" rows="4"></textarea>
 
-                <!-- Add fields for other config parameters if needed, e.g., base_url override -->
-                 <!-- Example for extra KVP args (more complex UI needed for generic KVP) -->
-                 <!--
-                 <label for="extra-args">Extra Args (JSON):</label>
-                 <textarea id="extra-args" name="extra_args" rows="2" placeholder='{"top_p": 0.9}'></textarea>
-                 -->
-
                 <div class="modal-actions">
                     <button type="submit" id="save-agent-button">Save Agent</button>
                     <button type="button" onclick="closeModal('agent-modal')">Cancel</button>
                 </div>
-                 <p class="restart-note">Note: Application restart is required for changes to take effect.</p>
+                 <p class="restart-note">Note: Static config changes require application restart.</p>
             </form>
         </div>
     </div>
 
-    <!-- ****** NEW: Modal Dialog for Agent Override ****** -->
+    <!-- Modal Dialog for Agent Override -->
     <div id="override-modal" class="modal" style="display: none;">
         <div class="modal-content">
             <span class="close-button" onclick="closeModal('override-modal')">×</span>
@@ -125,21 +129,17 @@
             <p id="override-message">Agent '[Persona]' ([Agent ID]) failed after multiple retries.</p>
             <p><strong>Last Error:</strong> <code id="override-last-error">[Error Details]</code></p>
             <form id="override-form">
-                <input type="hidden" id="override-agent-id" value=""> <!-- Hidden field for agent ID -->
+                <input type="hidden" id="override-agent-id" value="">
 
                 <label for="override-provider">New Provider:</label>
                 <select id="override-provider" name="new_provider" required>
                     <option value="openrouter">OpenRouter</option>
                     <option value="ollama">Ollama</option>
                     <option value="openai">OpenAI</option>
-                    <!-- TODO: Populate dynamically? -->
                 </select>
 
                 <label for="override-model">New Model:</label>
-                <input type="text" id="override-model" name="new_model" required placeholder="Enter new model name (e.g., google/gemini-flash-1.5)">
-                <!-- TODO: Populate dynamically? -->
-
-                <!-- Optional: Add other fields if backend supports overriding them -->
+                <input type="text" id="override-model" name="new_model" required placeholder="Enter new model name">
 
                 <div class="modal-actions">
                     <button type="submit" id="submit-override-button">Apply & Retry</button>
@@ -148,11 +148,8 @@
             </form>
         </div>
     </div>
-    <!-- ****** END NEW MODAL ****** -->
-
 
     <!-- Link to the JavaScript file -->
-    <!-- Placed at the end of body for better performance -->
     <script src="/static/js/app.js"></script>
 </body>
 </html>
