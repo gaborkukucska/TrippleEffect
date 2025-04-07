@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__) # Added logger
 
 class FileSystemTool(BaseTool):
     """
-    Tool for reading, writing, and listing files within an agent's sandboxed directory.
+    Tool for reading, writing, and listing files within an agent's sandboxed working directory.
     Ensures operations are restricted to the designated sandbox path.
     """
     name: str = "file_system"
@@ -115,8 +115,12 @@ class FileSystemTool(BaseTool):
             # Normalize the relative path to prevent trivial traversals like "." or ""
             norm_relative_path = Path(relative_file_path)
             if not norm_relative_path or str(norm_relative_path) == '.':
-                 logger.warning(f"Agent {agent_id} provided invalid relative path: '{relative_file_path}'")
-                 return None
+                 # Allow '.' only for the list action
+                 if action == 'list' and relative_file_path == '.':
+                     pass # Allow listing the root
+                 else:
+                      logger.warning(f"Agent {agent_id} provided invalid relative path: '{relative_file_path}'")
+                      return None
 
             absolute_path = (sandbox_path / norm_relative_path).resolve()
 
@@ -124,22 +128,22 @@ class FileSystemTool(BaseTool):
             if sandbox_path.resolve() in absolute_path.parents or sandbox_path.resolve() == absolute_path:
                 # Use is_relative_to (Python 3.9+) for a more robust check
                  try:
+                     # Check if the resolved path is relative to the sandbox root
+                     # This handles symlinks pointing outside correctly in most cases
                      if absolute_path.is_relative_to(sandbox_path.resolve()):
                          return absolute_path
+                     # Allow access to the sandbox root itself
+                     elif absolute_path == sandbox_path.resolve():
+                          return absolute_path
                      else:
-                         # This case might occur for the sandbox root itself or if symlinks are involved.
-                         # Let's explicitly allow the sandbox root for LIST action only.
-                         if absolute_path == sandbox_path.resolve() and relative_file_path == '.': # Check original path was '.' for list
-                              return absolute_path
-                         else:
-                              logger.warning(f"Agent {agent_id} path traversal attempt blocked: {absolute_path} is not safely relative to {sandbox_path.resolve()}")
-                              return None
+                         logger.warning(f"Agent {agent_id} path traversal attempt blocked (not relative): {absolute_path} vs {sandbox_path.resolve()}")
+                         return None
                  except ValueError as ve: # Catches case where paths are on different drives on Windows
                      logger.warning(f"Agent {agent_id} path validation error ({ve}): Resolved path {absolute_path}, Sandbox: {sandbox_path.resolve()}")
                      return None
             else:
                 # Path is outside the sandbox
-                logger.warning(f"Agent {agent_id} path traversal attempt blocked: Resolved path {absolute_path} is outside sandbox {sandbox_path.resolve()}")
+                logger.warning(f"Agent {agent_id} path traversal attempt blocked (outside parent): Resolved path {absolute_path} vs sandbox {sandbox_path.resolve()}")
                 return None
 
         except Exception as e:
@@ -148,7 +152,7 @@ class FileSystemTool(BaseTool):
             return None
 
 
-    # --- *** CORRECTED _read_file METHOD *** ---
+    # --- *** CORRECTED _read_file METHOD AGAIN *** ---
     async def _read_file(self, sandbox_path: Path, filename: str, agent_id: str) -> str:
         """Reads content from a file within the sandbox."""
         validated_path = await self._resolve_and_validate_path(sandbox_path, filename, agent_id)
@@ -159,7 +163,7 @@ class FileSystemTool(BaseTool):
              return f"Error: File not found or is not a regular file at '{filename}'."
 
         try:
-            # Use asyncio.to_thread for async file read and await it
+            # Correctly use asyncio.to_thread and await the result
             content = await asyncio.to_thread(validated_path.read_text, encoding='utf-8')
             logger.info(f"Agent {agent_id} successfully read file: {filename}")
             # Optional: Limit file size read?
