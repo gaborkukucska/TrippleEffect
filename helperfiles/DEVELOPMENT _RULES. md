@@ -10,4 +10,41 @@ During development please follow these rules.
     *   Provide complete file contents for modification.
     *   Wait for confirmation before proceeding to the next file.
     *   Maintain code consistency.
-*   **Mermaid Syntax:** Remember that Mermaid diagrams used in Markdown (like in `README.md` or `PROJECT_PLAN.md`) are sensitive to inline comments. Use `%% Comment Text` on a **separate line** for comments within diagram definitions, not after a statement on the same line (e.g., `NodeA --> NodeB; %% This might break`).
+
+# Example Mermaid graph 
+**Mermaid Syntax:** Remember that Mermaid diagrams used in Markdown (like in `README.md` or `PROJECT_PLAN.md`) are sensitive to inline comments. Use `%% Comment Text` on a **separate line** for comments within diagram definitions, not after a statement on the same line (e.g., `NodeA --> NodeB; %% This might break`).
+
+```mermaid
+graph TD %% Or LR, etc. Choose layout direction
+
+    %% --- Node Definitions ---
+    %% Use simple alphanumeric IDs. Use "" for text. Use <br> for line breaks.
+    %% Avoid [], (), {}, ;, or other special characters within the quoted node text unless escaped or known to work.
+    Node_A["Node A Text <br>Line 2"]
+    Node_B["Node B Text"]
+
+    %% --- Subgraph Definitions ---
+    subgraph Subgraph_Title ["Optional Display Title"]
+        %% Indentation is optional but helps readability
+        direction LR %% Optional: Direction within subgraph
+        Subgraph_Node1["Node 1 in Subgraph"]
+        Subgraph_Node2["Node 2 in Subgraph"]
+    end %% End of subgraph
+
+    %% --- Connections ---
+    %% Use -- --> for standard links. Add labels in "".
+    Node_A -- "Connects to" --> Node_B;
+    Node_B -- --> Subgraph_Node1; %% Connection without label
+    Subgraph_Node1 -- --> Subgraph_Node2;
+
+    %% --- Comments ---
+    %% CRITICAL: Comments MUST be on their own separate line.
+    %% Do NOT place comments at the end of node or connection lines.
+
+    %% Good Comment Style:
+    %% This explains the next section.
+    Node_X --> Node_Y;
+
+    %% BAD Comment Style (DO NOT DO THIS):
+    %% Node_X --> Node_Y; %% This comment will break the diagram!
+```
