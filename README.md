@@ -58,7 +58,8 @@ graph TD
     subgraph Backend
         FASTAPI["🚀 FastAPI Backend <br>+ Session API ✅<br>+ Auth API (P10)<br>+ Log Endpoints (P10?)"]
         WS_MANAGER["🔌 WebSocket Manager <br>+ Dynamic State Updates (P9/10)<br>+ Log Categories (P10)<br>**+ Override Handling ✅**"]
-        AGENT_MANAGER["🧑‍💼 Agent Manager <br>(Orchestrator)<br>+ Agent Create/Delete ✅<br>+ Routes Admin/User Msgs ✅<br>+ Routes Tool Calls (Multi)✅<br>+ Handles Agent Generators ✅<br>+ Stream Error Retries/Override ✅<br>+ **Injects Standard Prompts ✅**<br>+ **Handles Queued Messages ✅**<br>+ Uses State/Session Mgrs ✅<br>Controls All Agents"] %% REFINED ROLE
+        AGENT_MANAGER["🧑‍💼 Agent Manager <br>(Orchestrator)<br>+ Agent Create/Delete ✅<br>+ Routes Admin/User Msgs ✅<br>+ Routes Tool Calls (Multi)✅<br>+ Handles Agent Generators ✅<br>+ Stream Error Retries/Override ✅<br>+ **Injects Standard Prompts ✅**<br>+ **Handles Queued Messages ✅**<br>+ Uses State/Session Mgrs ✅<br>Controls All Agents"]
+        %% REFINED ROLE -- Moved comment to its own line
         STATE_MANAGER["📝 AgentStateManager <br>(Manages Teams State) P9 ✅"]
         SESSION_MANAGER["💾 SessionManager <br>(Handles Save/Load Logic) P9 ✅"]
 
@@ -172,7 +173,7 @@ graph TD
 │   │   └── state_manager.py   # Handles team/assignment state 📝 ✨ NEW (P9)
 │   ├── api/                # FastAPI routes & WebSocket logic 🔌
 │   │   ├── __init__.py
-│   │   ├── http_routes.py  # Config CRUD removed, Session API added ✨ UPDATED
+│   │   ├── http_routes.py  # Session API added ✨ UPDATED
 │   │   └── websocket_manager.py # Handles override messages ✨ UPDATED
 │   ├── config/             # Configuration loading & management ⚙️
 │   │   ├── __init__.py
@@ -188,7 +189,7 @@ graph TD
 │   │   ├── __init__.py
 │   │   ├── base.py
 │   │   ├── executor.py     # Executes tools, fixed arg passing ✨ UPDATED
-│   │   ├── file_system.py  # Filesystem tool with path validation ✨ UPDATED
+│   │   ├── file_system.py  # Filesystem tool with path validation & async fix ✨ UPDATED
 │   │   ├── manage_team.py  # Signals manager for agent/team ops ✨ UPDATED
 │   │   └── send_message.py # Signals manager for inter-agent comms ✨ UPDATED
 │   ├── ui/                 # UI backend helpers (if needed)
@@ -199,18 +200,18 @@ graph TD
 │   └── main.py             # Application entry point 🚀
 ├── static/                 # Frontend static files 🌐
 │   ├── css/
-│   │   └── style.css       # Config UI styles removed, Override Modal styles added ✨ UPDATED
+│   │   └── style.css       # Override Modal styles added ✨ UPDATED
 │   └── js/
-│       └── app.js          # Config CRUD removed, Override Modal logic added ✨ UPDATED
+│       └── app.js          # Override Modal logic added ✨ UPDATED
 ├── templates/              # HTML templates (Jinja2)
-│   └── index.html          # Config UI removed, Override Modal added ✨ UPDATED
+│   └── index.html          # Override Modal added ✨ UPDATED
 ├── .env.example            # Example environment variables
 ├── .gitignore
 ├── LICENSE                 # Project License (MIT) 📜
 ├── README.md               # This file! 📖
 └── requirements.txt        # Python dependencies
 ```
-*(Note: Config CRUD UI/API was removed as agent management is now fully dynamic)*
+*(Note: Removed reference to Config CRUD UI/API as it's no longer used)*
 
 ## ⚙️ Installation
 
