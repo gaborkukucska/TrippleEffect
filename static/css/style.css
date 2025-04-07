@@ -1,536 +1,659 @@
 /* START OF FILE static/css/style.css */
 
+/* --- CSS Variables for Theming (Dark Mode) --- */
+:root {
+    --bg-color-primary: #1a1a1a;       /* Very dark grey (almost black) */
+    --bg-color-secondary: #2a2a2a;    /* Dark grey */
+    --bg-color-tertiary: #3a3a3a;     /* Medium dark grey */
+    --text-color-primary: #e0e0e0;    /* Light grey */
+    --text-color-secondary: #b0b0b0;   /* Medium grey */
+    --text-color-muted: #888888;     /* Darker grey */
+    --border-color: #444444;         /* Dark border */
+    --accent-color-1: #007bff;       /* Blue */
+    --accent-color-2: #17a2b8;       /* Teal */
+    --accent-color-green: #28a745;   /* Green */
+    --accent-color-red: #dc3545;     /* Red */
+    --accent-color-orange: #fd7e14;  /* Orange */
+    --accent-color-yellow: #ffc107;  /* Yellow */
+    --accent-color-magenta: #ff00ff; /* Magenta */
+
+    --user-message-bg: #056162;      /* Dark cyan/teal for user */
+    --agent-msg-bg-base: #303030;    /* Base for agent messages */
+    --status-bg: #252525;
+    --error-bg: #5c1a1a;
+    --error-text: #ffdddd;
+    --input-bg: #252525;
+    --input-border: #555;
+    --button-bg: #007bff;
+    --button-hover-bg: #0056b3;
+    --button-disabled-bg: #555;
+    --scrollbar-track-bg: #2a2a2a;
+    --scrollbar-thumb-bg: #555;
+    --scrollbar-thumb-hover-bg: #777;
+
+    --modal-bg: rgba(0, 0, 0, 0.7);  /* Darker modal overlay */
+    --modal-content-bg: #2c2c2c;
+    --modal-border-color: #555;
+    --modal-input-bg: #383838;
+    --modal-input-border: #666;
+}
+
+/* --- Basic Setup --- */
+html {
+    box-sizing: border-box;
+    /* Prevent pull-to-refresh and overscroll effects which interfere with swiping */
+    overscroll-behavior: none;
+}
+*, *:before, *:after {
+    box-sizing: inherit;
+}
+
 body {
-    font-family: sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
     margin: 0;
-    padding: 20px;
-    background-color: #f4f4f4;
-    display: flex; /* Use flexbox to center the container better */
-    justify-content: center; /* Center container horizontally */
-    min-height: 100vh; /* Ensure body takes at least full viewport height */
-    box-sizing: border-box; /* Include padding in body size */
+    padding: 0; /* Remove body padding */
+    background-color: var(--bg-color-primary);
+    color: var(--text-color-primary);
+    /* Prevent scrolling on the body itself, scrolling happens within pages */
+    overflow: hidden;
+    height: 100vh; /* Full viewport height */
+    width: 100vw;  /* Full viewport width */
+    display: flex; /* Use flex for page container */
+    overscroll-behavior: none; /* Reinforce on body */
 }
 
-.container {
-    max-width: 900px; /* Slightly wider for two columns */
-    width: 100%; /* Use full width up to max-width */
-    background: #fff;
-    padding: 20px;
-    box-shadow: 0 0 15px rgba(0, 0, 0, 0.1);
+/* --- Page Container for Swiping --- */
+#page-container {
     display: flex;
-    flex-direction: column; /* Stack sections vertically */
-    height: calc(100vh - 40px); /* Calculate height based on viewport minus body padding */
-    box-sizing: border-box;
+    width: 100vw; /* Takes full viewport width */
+    height: 100vh; /* Takes full viewport height */
+    overflow: hidden; /* Hide overflowing pages */
+    position: relative; /* Needed for absolute positioning of pages if using transform */
+    transition: transform 0.3s ease-in-out; /* Smooth transition for swipe */
 }
 
-h1 {
+/* --- Individual Page Styling --- */
+.page {
+    width: 100vw; /* Each page takes full width */
+    height: 100vh; /* Each page takes full height */
+    flex-shrink: 0; /* Prevent pages from shrinking */
+    overflow: hidden; /* Prevent content overflow causing body scroll */
+    display: flex;
+    flex-direction: column; /* Stack content vertically */
+    padding: 15px; /* Padding inside each page */
+    background-color: var(--bg-color-primary); /* Background for each page */
+    position: relative; /* For potential absolute positioning inside */
+}
+
+/* --- Page Titles --- */
+.page h1 {
     text-align: center;
-    color: #333;
-    margin-top: 0; /* Remove default top margin */
-    margin-bottom: 15px;
+    color: var(--text-color-primary);
+    margin: 0 0 15px 0; /* Top, Right, Bottom, Left */
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border-color);
+    flex-shrink: 0; /* Prevent title from shrinking */
 }
 
-/* Main content area holds the two message columns */
-.main-content {
+/* --- Main Page (Page 1) Specific Layout --- */
+#main-page .main-page-layout {
+    flex-grow: 1; /* Take remaining vertical space */
     display: flex;
-    flex-grow: 1; /* Allow this area to take available vertical space */
-    overflow: hidden; /* Prevent content spillover */
-    gap: 15px; /* Space between the two columns */
-    margin-bottom: 15px; /* Space before input area */
+    flex-direction: column; /* Stack chat and agent list vertically */
+    overflow: hidden; /* Prevent overflow */
 }
 
-/* Base styles for both message areas */
-.message-area {
-    flex-basis: 50%; /* Each area takes half the width */
-    overflow-y: auto; /* Enable vertical scrolling within each area */
-    border: 1px solid #ccc;
+#main-page .main-chat-section {
+    flex-basis: 70%; /* Chat takes ~70% of the height */
+    display: flex;
+    flex-direction: column;
+    overflow: hidden; /* Prevent overflow */
+    margin-bottom: 10px; /* Space below chat section */
+}
+
+#main-page .main-agent-status-section {
+    flex-basis: 30%; /* Agent list takes ~30% */
+    display: flex;
+    flex-direction: column;
+    overflow: hidden; /* Prevent overflow */
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background-color: var(--bg-color-secondary);
+}
+#main-page .main-agent-status-section h2 {
+    margin: 0;
+    padding: 8px 10px;
+    font-size: 1.1em;
+    color: var(--text-color-secondary);
+    background-color: var(--bg-color-tertiary);
+    border-bottom: 1px solid var(--border-color);
+    flex-shrink: 0;
+}
+#main-page #agent-status-content { /* Ensure agent list scrolls */
+    overflow-y: auto;
+    flex-grow: 1;
     padding: 10px;
-    background-color: #e9e9e9;
-    display: flex; /* Use flexbox for vertical stacking of messages */
-    flex-direction: column; /* Stack messages vertically */
-    height: 100%; /* Take full height of parent (.main-content) */
-    box-sizing: border-box;
-}
-
-/* Specific styling (optional - could add different backgrounds) */
-.conversation-area {
-    background-color: #f0f8ff; /* AliceBlue for conversation */
-}
-
-.system-log-area {
-    background-color: #f5f5f5; /* Lighter grey for system logs */
-    font-size: 0.9em; /* Slightly smaller font for logs */
 }
 
 
-/* Message Styling */
+/* --- Message Area Styling (Shared & Specific) --- */
+.message-area {
+    flex-grow: 1; /* Take available space */
+    overflow-y: auto; /* Enable vertical scrolling */
+    border: 1px solid var(--border-color);
+    padding: 10px;
+    background-color: var(--bg-color-secondary);
+    display: flex;
+    flex-direction: column;
+    border-radius: 4px;
+    margin-bottom: 10px; /* Space below message areas */
+    min-height: 100px; /* Ensure some minimum height */
+}
+
+.full-page-area { /* For Log and Config pages */
+    flex-grow: 1; /* Take all available vertical space */
+    margin-bottom: 0; /* No margin at bottom */
+}
+
+/* Conversation Area Specific (within main page) */
+#main-page .conversation-area {
+    background-color: var(--bg-color-secondary); /* Use secondary bg for consistency */
+}
+
+/* System Log Area Specific (within log page) */
+#log-page .system-log-area {
+    font-size: 0.9em;
+    background-color: var(--bg-color-secondary);
+    line-height: 1.4;
+}
+/* Add timestamp style */
+.system-log-area .message .timestamp {
+    font-size: 0.8em;
+    color: var(--text-color-muted);
+    margin-right: 8px;
+    display: inline-block; /* Prevent wrapping */
+}
+
+
+/* --- Message Styling --- */
 .message {
     margin-bottom: 8px;
     padding: 8px 12px;
     border-radius: 8px;
     word-wrap: break-word;
-    max-width: 95%; /* Allow slightly wider messages within their columns */
-    border: 1px solid transparent; /* Base border */
+    max-width: 90%; /* Max width within its container */
+    border: 1px solid var(--border-color);
     box-sizing: border-box;
+    color: var(--text-color-primary); /* Default text color */
+    background-color: var(--agent-msg-bg-base); /* Default background */
 }
 
-.message p { /* Target potential inner <p> if structure changes later */
-    margin: 0;
-}
-.message span { /* Ensure span inside status doesn't break layout */
-    display: inline-block;
-}
+.message p { margin: 0; }
+.message span { display: inline-block; }
 
-/* User messages align right in CONVERSATION area */
+/* User messages in CONVERSATION area */
 .conversation-area .message.user {
-    text-align: left;
-    background-color: #dcf8c6;
-    border-color: #baddaf;
+    background-color: var(--user-message-bg);
+    border-color: var(--user-message-bg);
     margin-left: auto;
     align-self: flex-end;
+    text-align: left; /* Keep text left-aligned */
 }
 
-/* Agent responses align left in CONVERSATION area */
+/* Agent responses in CONVERSATION area */
 .conversation-area .message.agent_response {
     margin-right: auto;
     align-self: flex-start;
-    font-family: monospace;
+    font-family: Menlo, Monaco, Consolas, "Courier New", monospace; /* Monospace for agent */
+    background-color: var(--agent-msg-bg-base);
+    border-color: var(--border-color);
 }
 
-/* Agent-specific coloring (remains the same) */
+/* Agent-specific coloring (Adjust for dark mode) */
+.message[data-agent-id="admin_ai"] { /* Style Admin AI distinctly */
+    border-left: 4px solid var(--accent-color-1);
+    background-color: #2a3a4a; /* Dark blue-grey */
+}
 .message[data-agent-id="agent_0"],
-.message[data-agent-id="coder"] { /* Add agent IDs from config */
-    background-color: #e1f5fe;
-    border-color: #b3e5fc;
-    border-left: 4px solid #03a9f4;
+.message[data-agent-id*="coder"] {
+    border-left: 4px solid var(--accent-color-2); /* Teal */
+    background-color: #2a4a3a; /* Dark green-grey */
 }
-
 .message[data-agent-id="agent_1"],
-.message[data-agent-id="analyst"] {
-    background-color: #fff3e0;
-    border-color: #ffe0b2;
-    border-left: 4px solid #ff9800;
+.message[data-agent-id*="analyst"] {
+    border-left: 4px solid var(--accent-color-orange);
+    background-color: #4a3a2a; /* Dark orange-grey */
 }
-
 .message[data-agent-id="agent_2"],
-.message[data-agent-id="creative"] {
-    background-color: #f1f8e9;
-    border-color: #dcedc8;
-    border-left: 4px solid #8bc34a;
+.message[data-agent-id*="creative"],
+.message[data-agent-id*="reviewer"] {
+    border-left: 4px solid var(--accent-color-green);
+    background-color: #3a4a2a; /* Dark lime-grey */
 }
-/* Add more agent IDs as needed */
-.message[data-agent-id="default"] { /* Example for a default style */
-    background-color: #eeeeee;
-    border-color: #dddddd;
-    border-left: 4px solid #aaaaaa;
+.message[data-agent-id="default"] {
+    border-left: 4px solid var(--text-color-muted);
 }
-.message[data-agent-id="unknown_agent"] { /* Style for unknown */
-     background-color: #e0e0e0;
-    border-color: #bdbdbd;
-    border-left: 4px solid #757575;
+.message[data-agent-id*="unknown_agent"] {
+     border-left: 4px solid var(--text-color-secondary);
 }
 
-
-/* Status messages style (applied in BOTH areas) */
+/* Status messages */
 .message.status {
     font-style: italic;
-    color: #666;
-    background-color: #f0f0f0;
-    border: 1px dashed #ccc; /* Dashed border for distinction */
+    color: var(--text-color-secondary);
+    background-color: var(--status-bg);
+    border: 1px dashed var(--border-color);
     text-align: center;
     align-self: center;
-    width: auto; /* Adjust width based on content */
+    width: auto;
     max-width: 95%;
     margin-left: auto;
     margin-right: auto;
     padding: 4px 10px;
-    border-radius: 4px; /* Less rounded */
+    border-radius: 4px;
 }
-/* Initial placeholder specific style */
 .message.status.initial-placeholder span {
-    color: #999;
+    color: var(--text-color-muted);
 }
 
-
-/* Tool execution status style */
+/* Tool execution status */
 .message.status.tool-execution {
-    background-color: #fffde7;
-    border-color: #fff59d;
-    border-left: 3px solid #ffeb3b;
-    color: #555;
+    background-color: #404030; /* Dark yellow-grey */
+    border-color: var(--accent-color-yellow);
+    border-left: 3px solid var(--accent-color-yellow);
+    color: var(--text-color-primary);
     font-style: normal;
-    text-align: left; /* Align tool exec details left */
-    align-self: stretch; /* Span width within its area */
+    text-align: left;
+    align-self: stretch;
     margin-left: 5px;
     margin-right: 5px;
     padding: 6px 10px;
 }
 
-/* Error messages style (applied in SYSTEM LOG area usually) */
-.system-log-area .message.error {
-    color: #D8000C;
-    background-color: #FFD2D2;
-    border: 1px solid #ffbaba;
-    font-weight: bold;
-    align-self: stretch; /* Span full width of the system log area */
-    text-align: center;
-    margin-left: 0;
-    margin-right: 0;
-}
-/* Ensure errors in conversation area are also visible */
-.conversation-area .message.error {
-    color: #D8000C;
-    background-color: #FFD2D2;
-    border: 1px solid #ffbaba;
+/* Error messages */
+.message.error {
+    color: var(--error-text);
+    background-color: var(--error-bg);
+    border: 1px solid var(--accent-color-red);
     font-weight: bold;
     align-self: stretch;
     text-align: center;
     margin-left: 0;
     margin-right: 0;
+    padding: 6px 10px;
 }
 
 /* --- Input Area --- */
 .input-area {
     display: flex;
-    flex-shrink: 0; /* Prevent input area from shrinking */
-    gap: 10px; /* Space between textarea and controls */
-    align-items: flex-end; /* Align items to the bottom */
+    flex-shrink: 0;
+    gap: 10px;
+    align-items: flex-end;
+    margin-top: 10px; /* Space above input area */
 }
 
 .input-area textarea {
     flex-grow: 1;
     padding: 10px;
-    border: 1px solid #ccc;
+    border: 1px solid var(--input-border);
+    background-color: var(--input-bg);
+    color: var(--text-color-primary);
     border-radius: 4px;
     resize: vertical;
-    min-height: 50px; /* Min height */
-    height: 60px; /* Default height */
-    max-height: 150px; /* Max height before scroll */
+    min-height: 50px;
+    height: 60px;
+    max-height: 150px;
     box-sizing: border-box;
+}
+.input-area textarea::placeholder {
+    color: var(--text-color-muted);
 }
 
 .input-controls {
     display: flex;
-    align-items: flex-end; /* Align buttons to bottom */
-    gap: 5px; /* Space between buttons */
+    align-items: flex-end;
+    gap: 5px;
 }
 
 .input-controls button {
-    padding: 10px; /* Adjust padding for icon/text buttons */
+    padding: 10px;
     border: none;
-    background-color: #5cb85c; /* Default green for send */
+    background-color: var(--button-bg);
     color: white;
     border-radius: 4px;
     cursor: pointer;
-    height: 40px; /* Match approximate height */
-    line-height: 1; /* Ensure text/icon is centered vertically */
+    height: 40px;
+    line-height: 1;
 }
-/* Specific style for attach button */
 #attach-file-button {
-    background-color: #6c757d; /* Grey */
-    width: 40px; /* Make it square-ish */
-    font-size: 1.2em; /* Make icon slightly larger */
+    background-color: var(--text-color-muted);
+    width: 40px;
+    font-size: 1.2em;
 }
 #attach-file-button:hover {
-    background-color: #5a6268;
+    background-color: var(--text-color-secondary);
 }
 
 #send-button {
-    padding-left: 20px; /* More padding for text */
-    padding-right: 20px;
+    padding-left: 15px;
+    padding-right: 15px;
 }
 #send-button:hover {
-    background-color: #4cae4c;
+    background-color: var(--button-hover-bg);
 }
 
 .input-controls button:disabled {
-    background-color: #cccccc;
+    background-color: var(--button-disabled-bg);
     cursor: not-allowed;
+    color: var(--text-color-muted);
 }
 
 /* --- File Info Area --- */
 .file-info-area {
     flex-shrink: 0;
     padding: 5px 10px;
-    margin-top: 5px; /* Space below input area */
+    margin-top: 5px;
     font-size: 0.85em;
-    color: #555;
-    background-color: #f9f9f9;
-    border: 1px solid #eee;
+    color: var(--text-color-secondary);
+    background-color: var(--input-bg);
+    border: 1px solid var(--input-border);
     border-radius: 4px;
-    min-height: 28px; /* Ensure it has some height even when empty */
+    min-height: 28px;
     box-sizing: border-box;
-    display: flex; /* Use flexbox */
-    justify-content: space-between; /* Space out filename and clear button */
-    align-items: center; /* Vertically center items */
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
 }
-
 .file-info-area span {
-     /* Style for filename text if needed */
-     overflow: hidden; /* Prevent long names from breaking layout */
+     overflow: hidden;
      white-space: nowrap;
      text-overflow: ellipsis;
-     max-width: 80%; /* Limit width of filename span */
+     max-width: 80%;
 }
-
 .file-info-area button {
-    /* Style for the clear button */
     background: none;
     border: none;
-    color: #dc3545; /* Red */
+    color: var(--accent-color-red);
     cursor: pointer;
     font-size: 1.1em;
     padding: 0 5px;
 }
 .file-info-area button:hover {
-    color: #a0212e;
+    opacity: 0.8;
 }
 
-
-/* Config and Agent Status Area */
-.config-area, .agent-status-area {
-    margin-top: 15px; /* Space above these areas */
+/* --- Config Area (Page 3) --- */
+#config-page .config-area {
     padding: 10px 15px;
-    border: 1px solid #eee;
-    background-color: #fafafa;
-    flex-shrink: 0; /* Prevent shrinking */
-    max-height: 200px; /* Increase height slightly */
-    overflow-y: auto; /* Allow scrolling if content exceeds max-height */
+    border: 1px solid var(--border-color);
+    background-color: var(--bg-color-secondary);
+    overflow-y: auto; /* Allow scrolling */
 }
 
-h2 {
-    margin-top: 0;
-    margin-bottom: 10px;
-    font-size: 1.1em;
-    color: #555;
-    border-bottom: 1px solid #eee;
-    padding-bottom: 5px;
-}
-
-/* --- Config Area Specific --- */
-.config-header { /* Phase 8: Wrapper for H2 and Add button */
+#config-page .config-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 10px; /* Add margin below header */
-    border-bottom: 1px solid #eee; /* Reapply border here */
-    padding-bottom: 5px; /* Reapply padding here */
+    margin-bottom: 10px;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 5px;
+    flex-shrink: 0; /* Prevent header shrinking */
 }
-.config-header h2 {
-    margin: 0; /* Remove margin from H2 inside flex */
-    border: none; /* Remove border from H2 inside flex */
-    padding: 0; /* Remove padding from H2 inside flex */
+#config-page .config-header h2 {
+    margin: 0;
+    border: none;
+    padding: 0;
+    font-size: 1.1em;
+    color: var(--text-color-secondary);
 }
-.config-header div { /* Wrapper for buttons */
+#config-page .config-header div {
     display: flex;
     gap: 5px;
 }
 
-/* Phase 8: General styles for Add/Edit/Delete/Refresh buttons */
+/* General styles for Add/Edit/Delete/Refresh buttons */
 .config-action-button {
     border: none;
     border-radius: 4px;
-    padding: 3px 8px; /* Smaller padding */
+    padding: 3px 8px;
     cursor: pointer;
     font-size: 0.9em;
-    margin-left: 5px; /* Space between buttons */
+    margin-left: 5px;
     color: white;
     font-weight: bold;
-    min-width: 28px; /* Ensure minimum width */
+    min-width: 28px;
     line-height: 1.2;
 }
-.add-button { background-color: #28a745; } /* Green */
-.refresh-button { background-color: #17a2b8; } /* Teal */
-.edit-button { background-color: #ffc107; color: #333; } /* Yellow */
-.delete-button { background-color: #dc3545; } /* Red */
+.add-button { background-color: var(--accent-color-green); }
+.refresh-button { background-color: var(--accent-color-2); } /* Teal */
+.edit-button { background-color: var(--accent-color-yellow); color: var(--bg-color-primary); } /* Yellow */
+.delete-button { background-color: var(--accent-color-red); } /* Red */
 
-.add-button:hover { background-color: #218838; }
-.refresh-button:hover { background-color: #138496; }
-.edit-button:hover { background-color: #e0a800; }
-.delete-button:hover { background-color: #c82333; }
+.add-button:hover { filter: brightness(1.2); }
+.refresh-button:hover { filter: brightness(1.2); }
+.edit-button:hover { filter: brightness(1.1); }
+.delete-button:hover { filter: brightness(1.2); }
 
-/* Phase 8: Style for each agent config item (will be generated by JS) */
+/* Style for each config item */
 .config-item {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 5px 0;
-    border-bottom: 1px dotted #eee;
+    padding: 6px 2px; /* Slightly more padding */
+    border-bottom: 1px solid var(--border-color);
     font-size: 0.9em;
 }
-.config-item:last-child {
-    border-bottom: none;
-}
+.config-item:last-child { border-bottom: none; }
 .config-item span {
     flex-grow: 1;
     margin-right: 10px;
-    overflow: hidden; /* Prevent long text from breaking layout */
+    overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
 }
 .config-item .agent-details {
-    color: #666;
+    color: var(--text-color-secondary);
 }
-.config-item .config-item-actions { /* Container for edit/delete buttons */
-    flex-shrink: 0; /* Prevent buttons from shrinking */
-}
+.config-item .config-item-actions { flex-shrink: 0; }
 
 
-#agent-status-content {
-    font-size: 0.9em;
-    line-height: 1.4;
-}
-
-/* --- Agent Status Display Styles --- */
+/* --- Agent Status Display Styles (Main Page) --- */
 .agent-status-item {
     margin-bottom: 5px;
-    padding: 3px 5px;
+    padding: 4px 6px; /* Slightly more padding */
     border-radius: 4px;
-    border: 1px solid transparent; /* Base border */
-    transition: background-color 0.3s ease; /* Smooth transition */
+    border: 1px solid transparent;
+    border-left: 3px solid transparent; /* Add left border for status color */
+    transition: background-color 0.3s ease;
+    background-color: var(--bg-color-tertiary); /* Base background */
+    color: var(--text-color-primary);
 }
 
-.agent-status-item strong {
-    color: #333;
-}
-
+.agent-status-item strong { color: var(--text-color-primary); }
 .agent-status-item .agent-model {
     font-size: 0.9em;
-    color: #777;
+    color: var(--text-color-secondary);
     margin-left: 2px;
     margin-right: 5px;
 }
-
 .agent-status-item .agent-status {
     font-weight: bold;
-    padding: 1px 4px;
+    padding: 1px 5px; /* More horizontal padding */
     border-radius: 3px;
-    color: white; /* Default text color, overridden below */
+    color: white;
+    margin-left: 5px; /* Space before status badge */
+    float: right; /* Align status badge to the right */
 }
 
 /* Status-specific styles */
-.agent-status-item.status-idle .agent-status { background-color: #6c757d; }
-.agent-status-item.status-processing .agent-status { background-color: #007bff; }
-.agent-status-item.status-awaiting_tool_result .agent-status { background-color: #fd7e14; }
-.agent-status-item.status-executing_tool .agent-status { background-color: #ffc107; color: #333; }
-.agent-status-item.status-error .agent-status { background-color: #dc3545; }
-.agent-status-item.status-unknown .agent-status { background-color: #adb5bd; }
-.agent-status-item.status-awaiting_user_override .agent-status { background-color: #ff00ff; } /* Magenta for waiting */
-/* Optional: Highlight the whole item */
-.agent-status-item.status-awaiting_user_override { border-left: 3px solid #ff00ff; background-color: #fce4ec; }
+.agent-status-item.status-idle { border-left-color: var(--text-color-muted); }
+.agent-status-item.status-idle .agent-status { background-color: var(--text-color-muted); color: var(--bg-color-primary); }
+.agent-status-item.status-processing { border-left-color: var(--accent-color-1); }
+.agent-status-item.status-processing .agent-status { background-color: var(--accent-color-1); }
+.agent-status-item.status-awaiting_tool_result { border-left-color: var(--accent-color-orange); }
+.agent-status-item.status-awaiting_tool_result .agent-status { background-color: var(--accent-color-orange); }
+.agent-status-item.status-executing_tool { border-left-color: var(--accent-color-yellow); }
+.agent-status-item.status-executing_tool .agent-status { background-color: var(--accent-color-yellow); color: var(--bg-color-primary); }
+.agent-status-item.status-error { border-left-color: var(--accent-color-red); }
+.agent-status-item.status-error .agent-status { background-color: var(--accent-color-red); }
+.agent-status-item.status-awaiting_user_override { border-left-color: var(--accent-color-magenta); }
+.agent-status-item.status-awaiting_user_override .agent-status { background-color: var(--accent-color-magenta); }
+.agent-status-item.status-unknown { border-left-color: var(--text-color-secondary); }
+.agent-status-item.status-unknown .agent-status { background-color: var(--text-color-secondary); color: var(--bg-color-primary); }
 
-
-/* Optional: Highlight the whole item based on status */
-.agent-status-item.status-processing { border-left: 3px solid #007bff; background-color: #e7f3ff; }
-.agent-status-item.status-executing_tool { border-left: 3px solid #ffc107; background-color: #fff9e7; }
-.agent-status-item.status-awaiting_tool_result { border-left: 3px solid #fd7e14; background-color: #fff3e0; }
-.agent-status-item.status-error { border-left: 3px solid #dc3545; background-color: #fbe7e9; }
 
 /* Placeholder style */
-#agent-status-content .status-placeholder,
-#config-content .status-placeholder {
-    color: #999;
+.status-placeholder {
+    color: var(--text-color-muted);
     font-style: italic;
+    display: block; /* Ensure it takes space */
+    padding: 10px;
+    text-align: center;
 }
 
-/* --- Phase 8: Modal Styles --- */
+/* --- Modal Styles (Dark Mode) --- */
 .modal {
-    display: none; /* Hidden by default */
-    position: fixed; /* Stay in place */
-    z-index: 1000; /* Sit on top */
+    display: none;
+    position: fixed;
+    z-index: 1000;
     left: 0;
     top: 0;
-    width: 100%; /* Full width */
-    height: 100%; /* Full height */
-    overflow: auto; /* Enable scroll if needed */
-    background-color: rgba(0,0,0,0.5); /* Black w/ opacity */
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    background-color: var(--modal-bg);
 }
 
 .modal-content {
-    background-color: #fefefe;
-    margin: 10% auto; /* 10% from the top and centered */
+    background-color: var(--modal-content-bg);
+    color: var(--text-color-primary);
+    margin: 8% auto; /* Slightly lower */
     padding: 25px;
-    border: 1px solid #888;
-    width: 80%; /* Could be more specific */
-    max-width: 600px; /* Max width */
+    border: 1px solid var(--modal-border-color);
+    width: 85%;
+    max-width: 550px; /* Slightly narrower */
     border-radius: 8px;
     position: relative;
-    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    box-shadow: 0 5px 15px rgba(0,0,0,0.5);
 }
 
 .close-button {
-    color: #aaa;
+    color: var(--text-color-secondary);
     position: absolute;
     top: 10px;
     right: 15px;
     font-size: 28px;
     font-weight: bold;
 }
-
-.close-button:hover,
-.close-button:focus {
-    color: black;
+.close-button:hover, .close-button:focus {
+    color: var(--text-color-primary);
     text-decoration: none;
     cursor: pointer;
 }
+.modal-content h3 {
+    margin-top: 0;
+    color: var(--text-color-primary);
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 10px;
+}
 
-#agent-form label {
+#agent-form label, #override-form label {
     display: block;
-    margin-top: 10px;
-    margin-bottom: 3px;
+    margin-top: 12px; /* More space */
+    margin-bottom: 4px;
     font-weight: bold;
     font-size: 0.9em;
+    color: var(--text-color-secondary);
 }
 
 #agent-form input[type="text"],
 #agent-form input[type="number"],
 #agent-form select,
-#agent-form textarea {
+#agent-form textarea,
+#override-form input[type="text"],
+#override-form select {
     width: 100%;
-    padding: 8px;
-    border: 1px solid #ccc;
+    padding: 9px; /* Slightly more padding */
+    border: 1px solid var(--modal-input-border);
+    background-color: var(--modal-input-bg);
+    color: var(--text-color-primary);
     border-radius: 4px;
     box-sizing: border-box;
     font-size: 0.95em;
 }
-
-#agent-form textarea {
-    resize: vertical;
-    min-height: 60px;
-}
+#agent-form textarea { resize: vertical; min-height: 70px; }
 
 .modal-actions {
-    margin-top: 20px;
+    margin-top: 25px;
     text-align: right;
 }
-
 .modal-actions button {
-    padding: 10px 15px;
+    padding: 10px 18px; /* More padding */
     border: none;
     border-radius: 4px;
     cursor: pointer;
     margin-left: 10px;
+    font-weight: bold;
 }
-
 .modal-actions button[type="submit"] {
-    background-color: #007bff; /* Blue */
+    background-color: var(--accent-color-1);
     color: white;
 }
 .modal-actions button[type="submit"]:hover {
-    background-color: #0056b3;
+    background-color: var(--button-hover-bg);
 }
-.modal-actions button[type="button"] { /* Cancel button */
-    background-color: #6c757d; /* Grey */
-    color: white;
+.modal-actions button[type="button"] {
+    background-color: var(--text-color-muted);
+    color: var(--text-color-primary);
 }
 .modal-actions button[type="button"]:hover {
-    background-color: #5a6268;
+    background-color: var(--text-color-secondary);
 }
 
 .restart-note {
     margin-top: 15px;
     font-size: 0.85em;
-    color: #dc3545; /* Red */
+    color: var(--accent-color-red);
     text-align: center;
     font-style: italic;
+}
+#override-form p { /* Style text within override modal */
+    margin-bottom: 10px;
+    line-height: 1.4;
+}
+#override-form code { /* Style error code */
+    background-color: var(--bg-color-primary);
+    padding: 2px 5px;
+    border-radius: 3px;
+    font-family: monospace;
+    font-size: 0.9em;
+    color: var(--error-text);
+    display: block; /* Make it block for better readability */
+    white-space: pre-wrap; /* Allow wrapping */
+    max-height: 100px; /* Limit height */
+    overflow-y: auto; /* Add scroll if needed */
+    border: 1px solid var(--border-color);
+}
+
+/* --- Scrollbar Styling (Dark Mode) --- */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+::-webkit-scrollbar-track {
+    background: var(--scrollbar-track-bg);
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb {
+    background-color: var(--scrollbar-thumb-bg);
+    border-radius: 4px;
+    border: 2px solid var(--scrollbar-track-bg); /* Creates padding around thumb */
+}
+::-webkit-scrollbar-thumb:hover {
+    background-color: var(--scrollbar-thumb-hover-bg);
+}
+/* Firefox scrollbar */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb-bg) var(--scrollbar-track-bg);
 }
