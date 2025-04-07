@@ -110,29 +110,38 @@ graph TD
 
     AGENT_MANAGER -- "Loads Bootstrap Agent(s)" --> CONFIG_YAML;
     AGENT_MANAGER -- "Uses Settings For Checks" --> DOT_ENV;
-    %% Via Settings (Moved comment)
+    %% Via Settings
     AGENT_MANAGER -- "Instantiates/Reuses/Cleans" --> LLM_Providers;
     AGENT_MANAGER -- "Creates/Deletes/Manages Instances" --> Agents;
-    AGENT_MANAGER -- "**Injects Standard Context into Prompts**" --> Agents; %% Updated
-    AGENT_MANAGER -- "Handles Tool Call Signals" --> Tools; %% Handles ManageTeamTool signal
-    AGENT_MANAGER -- Routes Tool Results Back --> Agents; %% Handles SendMessage activation
+    AGENT_MANAGER -- "**Injects Standard Context into Prompts**" --> Agents;
+    %% Updated
+    AGENT_MANAGER -- "Handles Tool Call Signals" --> Tools;
+    %% Handles ManageTeamTool signal
+    AGENT_MANAGER -- Routes Tool Results Back --> Agents;
+    %% Handles SendMessage activation
     AGENT_MANAGER -- Delegates State Ops --> STATE_MANAGER;
     AGENT_MANAGER -- Delegates Session Ops --> SESSION_MANAGER;
-    AGENT_MANAGER -- Handles User Override --> Agents; %% Updates config/provider
+    AGENT_MANAGER -- Handles User Override --> Agents;
+    %% Updates config/provider
 
-    STATE_MANAGER -- Manages --> "[Team State Dictionaries]"; %% Conceptual State
-    SESSION_MANAGER -- Uses --> STATE_MANAGER; %% To get/set state
-    SESSION_MANAGER -- Uses --> AGENT_MANAGER; %% To get agent configs/histories
+    STATE_MANAGER -- Manages --> "[Team State Dictionaries]";
+    %% Conceptual State
+    SESSION_MANAGER -- Uses --> STATE_MANAGER;
+    %% To get/set state
+    SESSION_MANAGER -- Uses --> AGENT_MANAGER;
+    %% To get agent configs/histories
     SESSION_MANAGER -- Reads/Writes --> PROJECT_SESSIONS;
 
     ADMIN_AI -- "Uses Tools" --> TOOL_EXECUTOR;
     ADMIN_AI -- "Uses Provider" --> LLM_Providers;
     ADMIN_AI -- "Streams Text" --> AGENT_MANAGER;
 
-    DYNAMIC_AGENT_1 -- "**Uses Tools based on Injected Info**" --> TOOL_EXECUTOR; %% Updated
+    DYNAMIC_AGENT_1 -- "**Uses Tools based on Injected Info**" --> TOOL_EXECUTOR;
+    %% Updated
     DYNAMIC_AGENT_1 -- "Uses Provider" --> LLM_Providers;
     DYNAMIC_AGENT_1 -- "Streams Text" --> AGENT_MANAGER;
-    DYNAMIC_AGENT_1 -- "**Sends Result Message**" --> TOOL_SENDMSG; %% Updated
+    DYNAMIC_AGENT_1 -- "**Sends Result Message**" --> TOOL_SENDMSG;
+    %% Updated
 
     TOOL_EXECUTOR -- Executes --> TOOL_FS;
     TOOL_EXECUTOR -- Executes --> TOOL_SENDMSG;
