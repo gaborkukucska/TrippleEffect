@@ -124,8 +124,11 @@ graph TD
     AGENT_MANAGER -- Handles User Override --> Agents;
     %% Updates config/provider
 
-    STATE_MANAGER -- Manages --> "[Team State Dictionaries]";
+    %% Conceptual State Node Definition
+    TeamStateDicts("Team State Dictionaries")
+    STATE_MANAGER -- Manages --> TeamStateDicts;
     %% Conceptual State
+
     SESSION_MANAGER -- Uses --> STATE_MANAGER;
     %% To get/set state
     SESSION_MANAGER -- Uses --> AGENT_MANAGER;
