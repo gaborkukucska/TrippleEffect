@@ -109,7 +109,8 @@ graph TD
     WS_MANAGER -- Forwards User Msgs & Overrides --> AGENT_MANAGER;
 
     AGENT_MANAGER -- "Loads Bootstrap Agent(s)" --> CONFIG_YAML;
-    AGENT_MANAGER -- "Uses Settings For Checks" --> DOT_ENV; %% Via Settings
+    AGENT_MANAGER -- "Uses Settings For Checks" --> DOT_ENV;
+    %% Via Settings (Moved comment)
     AGENT_MANAGER -- "Instantiates/Reuses/Cleans" --> LLM_Providers;
     AGENT_MANAGER -- "Creates/Deletes/Manages Instances" --> Agents;
     AGENT_MANAGER -- "**Injects Standard Context into Prompts**" --> Agents; %% Updated
