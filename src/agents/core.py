@@ -31,6 +31,7 @@ AGENT_STATUS_PROCESSING = "processing"
 AGENT_STATUS_AWAITING_TOOL = "awaiting_tool_result"
 AGENT_STATUS_EXECUTING_TOOL = "executing_tool"
 AGENT_STATUS_ERROR = "error"
+AGENT_STATUS_AWAITING_USER_OVERRIDE = "awaiting_user_override" # <-- New Status
 
 # --- Regex for XML Tool Call Detection ---
 # We'll compile this in __init__ based on available tools.
@@ -71,9 +72,13 @@ class Agent:
         # Core configuration from agent_config, falling back to global defaults
         self.provider_name: str = config.get("provider", settings.DEFAULT_AGENT_PROVIDER)
         self.model: str = config.get("model", settings.DEFAULT_AGENT_MODEL)
-        original_system_prompt: str = config.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
+        # Store the original system prompt separately if needed for resets, though combined is used mostly
+        self.original_system_prompt: str = config.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
         self.temperature: float = float(config.get("temperature", settings.DEFAULT_TEMPERATURE))
         self.persona: str = config.get("persona", settings.DEFAULT_PERSONA)
+        # Store the full config entry used to create this agent (useful for saving/loading/override)
+        self.agent_config: Dict[str, Any] = agent_config # Store the full entry
+
         self.provider_kwargs = {k: v for k, v in config.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'api_key', 'base_url', 'referer']}
 
         # Injected dependencies
@@ -81,7 +86,15 @@ class Agent:
         self.manager: 'AgentManager' = manager # Manager is essential now
 
         # Combine original prompt with dynamic tool descriptions
-        self.final_system_prompt: str = original_system_prompt + "\n\n" + tool_descriptions_xml
+        # Use the prompt from the stored agent_config as it might have been updated (e.g., team ID)
+        current_system_prompt = self.agent_config.get("config", {}).get("system_prompt", self.original_system_prompt)
+        self.final_system_prompt: str = current_system_prompt # Initial value before tools might be added
+        if not tool_descriptions_xml.startswith("# Tools Description"): # Basic check to avoid double-adding
+            self.final_system_prompt += "\n\n" + tool_descriptions_xml
+        else:
+             # If tool description is already part of the prompt (e.g. loaded session), just use it
+             self.final_system_prompt = current_system_prompt
+
         logger.debug(f"Agent {self.agent_id} Final System Prompt (first 500 chars):\n{self.final_system_prompt[:500]}...")
 
         # State management
@@ -283,8 +296,9 @@ class Agent:
         Receives:
              Optional[List[ToolResultDict]]: Currently ignored. Manager handles loop continuation.
         """
-        if self.status != AGENT_STATUS_IDLE:
-            logger.warning(f"Agent {self.agent_id} process_message called but agent is not idle (Status: {self.status}).")
+        # Check status - allow processing if idle OR awaiting override
+        if self.status not in [AGENT_STATUS_IDLE, AGENT_STATUS_AWAITING_USER_OVERRIDE]:
+            logger.warning(f"Agent {self.agent_id} process_message called but agent is not idle or awaiting override (Status: {self.status}).")
             yield {"type": "error", "content": f"[Agent Busy - Status: {self.status}]"}
             return
 
@@ -345,14 +359,21 @@ class Agent:
                     logger.error(f"Agent {self.agent_id}: Received error event from provider: {error_content}")
                     event["agent_id"] = self.agent_id
                     event["content"] = error_content
-                    self.set_status(AGENT_STATUS_ERROR)
-                    yield event
-                    break # Stop processing loop on provider error
+                    # DON'T set status to error here, let manager handle retries/override
+                    # self.set_status(AGENT_STATUS_ERROR)
+                    yield event # Yield the error event for the manager
+                    # Don't break here, let manager decide based on error type
+                    # break # Stop processing loop on provider error
                 else:
                     logger.warning(f"Agent {self.agent_id}: Received unknown event type '{event_type}' from provider.")
 
-            # --- After the provider stream finishes ---
-            logger.debug(f"Agent {self.agent_id}: Provider stream finished. Processing final buffer.")
+            # --- After the provider stream finishes (or error yielded) ---
+            logger.debug(f"Agent {self.agent_id}: Provider stream finished or yielded error. Processing final buffer.")
+
+            # Check if an error was yielded by the stream loop above. If so, manager handles it.
+            # We only proceed to parse tools or yield final_response if no error occurred.
+            # How to check? The manager loop will break on error event. Here we just need to know if loop finished cleanly.
+            # Let's assume if we reach here without the manager loop breaking, the stream finished *without* yielding an error event directly.
 
             # Now parse the completed buffer for the *last* tool call
             parsed_tool_info = self._find_and_parse_last_tool_call()
@@ -389,10 +410,11 @@ class Agent:
         except Exception as e:
             error_msg = f"Unexpected Error processing message in Agent {self.agent_id}: {type(e).__name__} - {e}"
             logger.error(error_msg, exc_info=True)
-            self.set_status(AGENT_STATUS_ERROR)
-            yield {"type": "error", "agent_id": self.agent_id, "content": f"[Agent Error: {error_msg}]"}
+            # Don't set status to error, let manager handle it
+            # self.set_status(AGENT_STATUS_ERROR)
+            yield {"type": "error", "agent_id": self.agent_id, "content": f"[Agent Error: {error_msg}]"} # Yield error for manager
         finally:
-            # Set status to Idle only if it's currently Processing
+            # Set status to Idle only if it's currently Processing (and not awaiting override)
             if self.status == AGENT_STATUS_PROCESSING:
                 self.set_status(AGENT_STATUS_IDLE)
             self.text_buffer = "" # Ensure buffer is cleared on exit
@@ -413,6 +435,9 @@ class Agent:
             "tool_executor_set": False, # No longer directly used
             "xml_tool_parsing_enabled": (self.raw_xml_tool_call_pattern is not None)
         }
+        # Include full config in state? Maybe just essential parts for UI status.
+        # state["config"] = self.agent_config.get("config", {}) # Maybe too much?
+
         if self.status == AGENT_STATUS_EXECUTING_TOOL and self.current_tool_info:
             state["current_tool"] = self.current_tool_info
         return state
@@ -421,5 +446,5 @@ class Agent:
         """Clears the agent's message history, keeping the system prompt."""
         logger.info(f"Clearing message history for Agent {self.agent_id}")
         self.message_history = []
-        # Use the final combined system prompt
+        # Use the final combined system prompt (which might include tools/team info)
         self.message_history.append({"role": "system", "content": self.final_system_prompt})
