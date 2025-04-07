@@ -415,6 +415,10 @@ h2 {
 .agent-status-item.status-executing_tool .agent-status { background-color: #ffc107; color: #333; }
 .agent-status-item.status-error .agent-status { background-color: #dc3545; }
 .agent-status-item.status-unknown .agent-status { background-color: #adb5bd; }
+.agent-status-item.status-awaiting_user_override .agent-status { background-color: #ff00ff; } /* Magenta for waiting */
+/* Optional: Highlight the whole item */
+.agent-status-item.status-awaiting_user_override { border-left: 3px solid #ff00ff; background-color: #fce4ec; }
+
 
 /* Optional: Highlight the whole item based on status */
 .agent-status-item.status-processing { border-left: 3px solid #007bff; background-color: #e7f3ff; }
