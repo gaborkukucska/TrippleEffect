@@ -49,22 +49,25 @@ class Agent:
     communicating via an injected LLM provider, managing its sandbox,
     parsing XML tool calls from responses (handling potential markdown fences),
     and yielding requests. Tracks its own status.
+    Relies on the system_prompt within its config for all instructions, including tools.
     """
     def __init__(
         self,
         agent_config: Dict[str, Any],
         llm_provider: BaseLLMProvider, # Inject the provider instance
-        manager: 'AgentManager', # Manager is now required
-        tool_descriptions_xml: str # Inject the formatted tool descriptions
+        manager: 'AgentManager' # Manager is now required
+        # tool_descriptions_xml: str <-- REMOVED THIS PARAMETER
         ):
         """
         Initializes an Agent instance using configuration and injected dependencies.
+        The final system prompt, including tool descriptions, should be present
+        within the agent_config dictionary.
 
         Args:
             agent_config (Dict[str, Any]): Configuration dictionary for this agent.
+                                          MUST contain ['config']['system_prompt'].
             llm_provider (BaseLLMProvider): An initialized instance of an LLM provider.
             manager ('AgentManager'): A reference to the agent manager (required).
-            tool_descriptions_xml (str): Formatted XML string describing available tools.
         """
         config: Dict[str, Any] = agent_config.get("config", {})
         self.agent_id: str = agent_config.get("agent_id", f"unknown_agent_{os.urandom(4).hex()}")
@@ -72,8 +75,13 @@ class Agent:
         # Core configuration from agent_config, falling back to global defaults
         self.provider_name: str = config.get("provider", settings.DEFAULT_AGENT_PROVIDER)
         self.model: str = config.get("model", settings.DEFAULT_AGENT_MODEL)
-        # Store the original system prompt separately if needed for resets, though combined is used mostly
-        self.original_system_prompt: str = config.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
+        # Use the system prompt provided in the config - it should include standard instructions now
+        self.final_system_prompt: str = config.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
+        if not self.final_system_prompt:
+             logger.error(f"Agent {self.agent_id}: 'system_prompt' is missing or empty in agent_config['config']!")
+             # Provide a minimal default to avoid errors, but this is likely a config issue
+             self.final_system_prompt = "You are a helpful assistant."
+
         self.temperature: float = float(config.get("temperature", settings.DEFAULT_TEMPERATURE))
         self.persona: str = config.get("persona", settings.DEFAULT_PERSONA)
         # Store the full config entry used to create this agent (useful for saving/loading/override)
@@ -85,19 +93,7 @@ class Agent:
         self.llm_provider: BaseLLMProvider = llm_provider
         self.manager: 'AgentManager' = manager # Manager is essential now
 
-        # Combine original prompt with dynamic tool descriptions
-        # Use the prompt from the stored agent_config as it might have been updated (e.g., team ID)
-        current_system_prompt = self.agent_config.get("config", {}).get("system_prompt", self.original_system_prompt)
-        self.final_system_prompt: str = current_system_prompt # Initial value before tools might be added
-        # Check if the tool descriptions XML marker is already present
-        tool_desc_marker = "# Tools Description (XML Format)"
-        if tool_desc_marker not in self.final_system_prompt:
-            self.final_system_prompt += "\n\n" + tool_descriptions_xml
-            # Also update the stored config if we modified the prompt
-            if "config" in self.agent_config:
-                 self.agent_config["config"]["system_prompt"] = self.final_system_prompt
-
-        logger.debug(f"Agent {self.agent_id} Final System Prompt (first 500 chars):\n{self.final_system_prompt[:500]}...")
+        logger.debug(f"Agent {self.agent_id} using final system prompt (first 500 chars):\n{self.final_system_prompt[:500]}...")
 
         # State management
         self.status: str = AGENT_STATUS_IDLE
@@ -175,7 +171,7 @@ class Agent:
             logger.error(f"Unexpected error ensuring sandbox for Agent {self.agent_id}: {e}", exc_info=True)
             return False
 
-    # --- *** MODIFIED XML Parsing Helper to find ALL calls *** ---
+    # --- XML Parsing Helper (Find ALL calls - unchanged from previous step) ---
     def _find_and_parse_tool_calls(self) -> List[Tuple[str, Dict[str, Any], Tuple[int, int]]]:
         """
         Finds *all* occurrences of valid tool calls (raw or fenced) in the text_buffer,
@@ -195,7 +191,7 @@ class Agent:
         found_calls = []
         processed_spans = set() # Keep track of spans already processed to avoid double-parsing
 
-        # --- Helper Function for Parsing ---
+        # Helper Function for Parsing
         def parse_single_match(match, is_markdown):
              match_start, match_end = match.span()
              # Skip if this span overlaps with an already processed span
@@ -216,7 +212,6 @@ class Agent:
                      logger.warning(f"Agent {self.agent_id}: Found XML tag <{tool_name_from_outer_match}> but no matching tool is registered.")
                      return None
 
-                 # Use re.search on the potentially fenced block
                  inner_match = self.raw_xml_tool_call_pattern.search(xml_block_to_parse)
                  if not inner_match:
                       logger.warning(f"Agent {self.agent_id}: Could not parse inner content of extracted block: '{xml_block_to_parse}'")
@@ -241,8 +236,7 @@ class Agent:
              except Exception as parse_err:
                  logger.error(f"Agent {self.agent_id}: Error parsing parameters for tool call '{xml_block_to_parse[:100]}...': {parse_err}", exc_info=True)
                  return None
-        # --- End Helper Function ---
-
+        # End Helper Function
 
         # 1. Find all markdown fence matches
         markdown_matches = []
@@ -258,7 +252,7 @@ class Agent:
             for m in self.raw_xml_tool_call_pattern.finditer(buffer_content):
                 parsed = parse_single_match(m, False)
                 if parsed:
-                     raw_matches.append(parsed) # We already checked for overlap in parse_single_match
+                     raw_matches.append(parsed) # Overlap check is inside helper
 
         # Combine and sort by start index
         found_calls = markdown_matches + raw_matches
@@ -270,9 +264,9 @@ class Agent:
              logger.info(f"Agent {self.agent_id}: Found {len(found_calls)} valid tool call(s) in buffer.")
 
         return found_calls
-    # --- *** END MODIFIED XML Parsing Helper *** ---
 
-    # --- Main Processing Logic ---
+
+    # --- Main Processing Logic (unchanged from previous step) ---
     async def process_message(self) -> AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]:
         """
         Processes the task based on the current message history using the LLM provider.
