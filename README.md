@@ -47,7 +47,7 @@ Configuration (`config.yaml`) primarily defines the `Admin AI` and constraints (
 ```mermaid
 graph TD
     %% Changed to Top-Down for better layer visualization
-    USER[👨‍💻 Human User]
+    USER[Human User]
     subgraph Frontend [Human UI Layer]
         direction LR
         UI_SESSION_VIEW["Session View <br>(Agent Status/Comms)<br>Log Stream Filter<br>Adv I/O: P11+<br>**Dynamic Updates: P10**"]
