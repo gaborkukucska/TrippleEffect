@@ -10,7 +10,11 @@ import uuid # For generating agent IDs
 import re # For replacing team ID in prompts
 
 # Import Agent class, Status constants, and BaseLLMProvider types
-from src.agents.core import Agent, AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_AWAITING_TOOL, AGENT_STATUS_ERROR
+from src.agents.core import (
+    Agent, AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING,
+    AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_AWAITING_TOOL,
+    AGENT_STATUS_ERROR, AGENT_STATUS_AWAITING_USER_OVERRIDE # <-- Import new status
+)
 from src.llm_providers.base import BaseLLMProvider, ToolResultDict, MessageDict
 
 # Import settings instance, BASE_DIR, and default values
@@ -47,8 +51,9 @@ PROVIDER_CLASS_MAP: Dict[str, type[BaseLLMProvider]] = {
 
 # --- Constants ---
 BOOTSTRAP_AGENT_ID = "admin_ai" # Define the primary bootstrap agent ID
-MAX_STREAM_RETRIES = 2 # Max times to auto-retry a request after a stream error
-STREAM_RETRY_DELAY = 3.0 # Seconds to wait before retrying stream
+# Define the retry delays and calculate max retries
+STREAM_RETRY_DELAYS = [5.0, 10.0, 10.0, 65.0] # New retry delays
+MAX_STREAM_RETRIES = len(STREAM_RETRY_DELAYS) # Max retries based on delay list length
 
 # Standard framework instructions (remains the same)
 STANDARD_FRAMEWORK_INSTRUCTIONS = """
@@ -70,7 +75,7 @@ class AgentManager:
     """
     Main coordinator for agents. Handles task distribution, agent lifecycle (creation/deletion),
     tool execution routing, and orchestrates state/session management via dedicated managers.
-    Includes provider configuration checks and stream error retries.
+    Includes provider configuration checks and stream error retries with user override.
     """
     def __init__(self, websocket_manager: Optional[Any] = None):
         """
@@ -174,11 +179,12 @@ class AgentManager:
         if BOOTSTRAP_AGENT_ID not in self.agents: logger.critical(f"CRITICAL: Admin AI ('{BOOTSTRAP_AGENT_ID}') failed to initialize!")
 
 
-    # --- *** CORRECTED _create_agent_internal AGAIN (Prompt Update Block) *** ---
+    # --- Agent Creation Logic (remains mostly the same) ---
     async def _create_agent_internal(
         self, agent_id_requested: Optional[str], agent_config_data: Dict[str, Any], is_bootstrap: bool = False, team_id: Optional[str] = None, loading_from_session: bool = False
         ) -> Tuple[bool, str, Optional[str]]:
-        """Internal logic including provider config check and model validation."""
+        # (Keep the existing logic from previous step)
+        # ... (validation, provider instantiation, agent instantiation, sandbox, team assignment) ...
         # 1. Determine Agent ID
         if agent_id_requested and agent_id_requested in self.agents: return False, f"Agent ID '{agent_id_requested}' already exists.", None
         agent_id = agent_id_requested or self._generate_unique_agent_id()
@@ -216,7 +222,18 @@ class AgentManager:
             final_system_prompt = role_specific_prompt + "\n" + standard_info
             logger.debug(f"Constructed final prompt for dynamic agent '{agent_id}'.")
 
-        final_agent_config_entry = { "agent_id": agent_id, "config": { "provider": provider_name, "model": model, "system_prompt": final_system_prompt, "persona": persona, "temperature": temperature, **provider_specific_kwargs } }
+        # Store the full config entry used to create the agent
+        final_agent_config_entry = {
+            "agent_id": agent_id,
+            "config": {
+                "provider": provider_name,
+                "model": model,
+                "system_prompt": final_system_prompt, # Use the potentially combined prompt
+                "persona": persona,
+                "temperature": temperature,
+                **provider_specific_kwargs
+            }
+        }
 
         # 5. Instantiate Provider
         ProviderClass = PROVIDER_CLASS_MAP.get(provider_name)
@@ -227,13 +244,25 @@ class AgentManager:
         except Exception as e: logger.error(f"  Provider instantiation failed for '{agent_id}': {e}", exc_info=True); return False, f"Provider instantiation failed: {e}", None
 
         # 6. Instantiate Agent
-        try: agent = Agent( agent_config=final_agent_config_entry, llm_provider=llm_provider_instance, manager=self, tool_descriptions_xml=self.tool_descriptions_xml ); agent.agent_config = final_agent_config_entry; logger.info(f"  Instantiated Agent object for '{agent_id}'.")
-        except Exception as e: logger.error(f"  Agent instantiation failed for '{agent_id}': {e}", exc_info=True); return False, f"Agent instantiation failed: {e}", None
+        try:
+            # Pass the full final_agent_config_entry to the Agent constructor
+            agent = Agent(
+                agent_config=final_agent_config_entry,
+                llm_provider=llm_provider_instance,
+                manager=self,
+                tool_descriptions_xml=self.tool_descriptions_xml
+            )
+            # No need to set agent.agent_config again, it's done in __init__
+            logger.info(f"  Instantiated Agent object for '{agent_id}'.")
+        except Exception as e:
+            logger.error(f"  Agent instantiation failed for '{agent_id}': {e}", exc_info=True)
+            # Clean up provider if agent creation failed
+            await self._close_provider_safe(llm_provider_instance)
+            return False, f"Agent instantiation failed: {e}", None
 
         # 7. Ensure Sandbox
         try:
             sandbox_ok = await asyncio.to_thread(agent.ensure_sandbox_exists)
-            # CORRECT INDENTATION:
             if not sandbox_ok:
                  logger.warning(f"  Failed to ensure sandbox for '{agent_id}'.")
         except Exception as e:
@@ -248,7 +277,6 @@ class AgentManager:
         if team_id:
             # Update agent's internal prompt if dynamically created now
             if not loading_from_session and not is_bootstrap:
-                 # --- **** CORRECTED TRY/EXCEPT **** ---
                  try:
                      new_team_str = f"Your Team ID: {team_id}"
                      # Use re.sub for safer replacement
@@ -260,7 +288,6 @@ class AgentManager:
                           agent.message_history[0]["content"] = agent.final_system_prompt
                  except Exception as e:
                       logger.error(f"Error updating team ID in dynamic agent prompt for {agent_id}: {e}")
-                 # --- **** END CORRECTION **** ---
 
             # Delegate actual state update
             team_add_success, team_add_msg = await self.state_manager.add_agent_to_team(agent_id, team_id)
@@ -271,7 +298,7 @@ class AgentManager:
 
         message = f"Agent '{agent_id}' created successfully." + team_add_msg_suffix
         return True, message, agent_id
-    # --- *** END CORRECTED _create_agent_internal *** ---
+        # ... end of _create_agent_internal ...
 
 
     async def create_agent_instance( # Public method unchanged
@@ -284,7 +311,9 @@ class AgentManager:
         extra_kwargs = {k: v for k, v in kwargs.items() if k not in known_args}; agent_config_data.update(extra_kwargs)
         success, message, created_agent_id = await self._create_agent_internal( agent_id_requested=agent_id_requested, agent_config_data=agent_config_data, is_bootstrap=False, team_id=team_id, loading_from_session=False )
         if success and created_agent_id:
-            created_agent = self.agents.get(created_agent_id); config_sent_to_ui = created_agent.agent_config.get("config", {}) if created_agent and hasattr(created_agent, 'agent_config') else {}
+            created_agent = self.agents.get(created_agent_id)
+            # Fetch the config from the agent instance itself, as it might have been modified
+            config_sent_to_ui = created_agent.agent_config.get("config", {}) if created_agent else {}
             await self.send_to_ui({ "type": "agent_added", "agent_id": created_agent_id, "config": config_sent_to_ui, "team": self.state_manager.get_agent_team(created_agent_id) })
         return success, message, created_agent_id
 
@@ -312,22 +341,26 @@ class AgentManager:
             logger.info(f"Delegating user message to '{BOOTSTRAP_AGENT_ID}'.")
             admin_agent.message_history.append({"role": "user", "content": message})
             asyncio.create_task(self._handle_agent_generator(admin_agent))
+        elif admin_agent.status == AGENT_STATUS_AWAITING_USER_OVERRIDE:
+             logger.warning(f"Admin AI ({admin_agent.status}) awaiting user override. New message ignored.")
+             await self.send_to_ui({ "type": "status", "agent_id": admin_agent.agent_id, "content": f"Admin AI is waiting for user input to resolve previous error. Please respond to the prompt." })
         else:
             logger.info(f"Admin AI busy ({admin_agent.status}). User message queued implicitly in history.")
             await self.push_agent_status_update(admin_agent.agent_id)
             await self.send_to_ui({ "type": "status", "agent_id": admin_agent.agent_id, "content": f"Admin AI busy ({admin_agent.status}). Your message will be processed when idle." })
 
 
-    # --- **** CORRECTED _handle_agent_generator with activation_task init **** ---
+    # --- *** UPDATED _handle_agent_generator with new retry and override signal *** ---
     async def _handle_agent_generator(self, agent: Agent, retry_count: int = 0):
-        """Handles agent processing cycle, including stream error retries."""
+        """Handles agent processing cycle, including specific retry delays and user override signal."""
         agent_id = agent.agent_id
-        logger.info(f"Starting generator handling for Agent '{agent_id}' (Retry: {retry_count})...")
+        logger.info(f"Starting generator handling for Agent '{agent_id}' (Retry Attempt: {retry_count})...") # Changed log
         agent_generator: Optional[AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]] = None
         manager_action_feedback = [] # Feedback from ManageTeamTool actions
         reactivate_agent_after_feedback = False # Flag to re-run generator after adding feedback
         current_cycle_error = False # Track if an error occurred in this cycle
         is_stream_related_error = False # Flag specific error type
+        last_error_content = "" # Store last error for override message
 
         try:
             agent_generator = agent.process_message() # Get the generator
@@ -349,16 +382,16 @@ class AgentManager:
                             agent.message_history.append({"role": "assistant", "content": final_content}); logger.debug(f"Appended final response for '{agent_id}'.")
 
                 elif event_type == "error": # Handle errors yielded by agent/provider
-                    error_content = event.get("content", "[Unknown Agent Error]")
-                    logger.error(f"Agent '{agent_id}' reported error: {error_content}")
+                    last_error_content = event.get("content", "[Unknown Agent Error]")
+                    logger.error(f"Agent '{agent_id}' reported error: {last_error_content}")
                     # Determine if error is stream-related
-                    is_stream_error = any(indicator in error_content for indicator in ["Error processing stream chunk", "APIError during stream", "Failed to decode stream chunk", "Stream connection error"])
+                    is_stream_error = any(indicator in last_error_content for indicator in ["Error processing stream chunk", "APIError during stream", "Failed to decode stream chunk", "Stream connection error", "Provider returned error"])
                     is_stream_related_error = is_stream_error # Set the flag for the finally block
 
                     if is_stream_error:
                         logger.warning(f"Detected potentially temporary stream error for agent '{agent_id}'.")
                         # UI message handled in finally block if retrying/failing
-                    else: # Permanent error
+                    else: # Permanent error (not stream related)
                         if "agent_id" not in event: event["agent_id"] = agent_id
                         await self.send_to_ui(event)
                         agent.set_status(AGENT_STATUS_ERROR)
@@ -483,45 +516,68 @@ class AgentManager:
             logger.error(f"Error occurred while handling generator for agent '{agent_id}': {e}", exc_info=True)
             agent.set_status(AGENT_STATUS_ERROR)
             current_cycle_error = True # Mark error occurred
-            await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": f"[Manager Error: Unexpected error in generator handler - {e}]"})
+            last_error_content = f"[Manager Error: Unexpected error in generator handler - {e}]" # Capture error
+            await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": last_error_content})
         finally:
             if agent_generator:
                 try: await agent_generator.aclose(); logger.debug(f"Closed generator for '{agent_id}'.")
                 except Exception as close_err: logger.error(f"Error closing generator for '{agent_id}': {close_err}", exc_info=True)
 
-            # --- Corrected Finally Block Logic (Remains the same) ---
+            # --- Updated Finally Block with New Retry Logic and Override Signal ---
+            # Check for automatic retry *first*
             if current_cycle_error and is_stream_related_error and retry_count < MAX_STREAM_RETRIES:
-                retry_delay = STREAM_RETRY_DELAY * (retry_count + 1)
+                # Use the specific delay from the list based on the current retry_count
+                retry_delay = STREAM_RETRY_DELAYS[retry_count]
                 logger.warning(f"Stream error for '{agent_id}'. Retrying in {retry_delay:.1f}s (Attempt {retry_count + 1}/{MAX_STREAM_RETRIES})...")
-                await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Experiencing provider issues... Retrying automatically (Attempt {retry_count + 1}/{MAX_STREAM_RETRIES})..."})
+                await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Experiencing provider issues... Retrying automatically (Attempt {retry_count + 1}/{MAX_STREAM_RETRIES}, delay {retry_delay}s)..."})
                 await asyncio.sleep(retry_delay)
                 agent.set_status(AGENT_STATUS_IDLE) # Reset status *before* scheduling retry
-                asyncio.create_task(self._handle_agent_generator(agent, retry_count + 1)) # Start retry task
+                # Increment retry_count for the next attempt
+                asyncio.create_task(self._handle_agent_generator(agent, retry_count + 1))
                 logger.info(f"Retry task scheduled for agent '{agent_id}'. This cycle ending.")
-                return
+                return # <-- Exit finally block after scheduling retry
 
+            # Check if all retries failed
+            elif current_cycle_error and is_stream_related_error and retry_count >= MAX_STREAM_RETRIES:
+                logger.error(f"Agent '{agent_id}' failed after {MAX_STREAM_RETRIES} retries. Requesting user override.")
+                agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE) # Set specific status
+                await self.send_to_ui({
+                    "type": "request_user_override",
+                    "agent_id": agent_id,
+                    "persona": agent.persona,
+                    "current_provider": agent.provider_name,
+                    "current_model": agent.model,
+                    "last_error": last_error_content,
+                    "message": f"Agent '{agent.persona}' ({agent_id}) failed after multiple retries. Please provide an alternative Provider/Model or try again later."
+                })
+                logger.info(f"User override requested for agent '{agent_id}'. Cycle ending, awaiting user input.")
+                return # <-- Exit finally block, awaiting user override
+
+            # Then check for normal reactivation
             elif reactivate_agent_after_feedback and not current_cycle_error:
                 logger.info(f"Reactivating agent '{agent_id}' to process manager feedback.")
                 agent.set_status(AGENT_STATUS_IDLE)
-                asyncio.create_task(self._handle_agent_generator(agent)) # Start next cycle task (retry_count reset to 0)
+                asyncio.create_task(self._handle_agent_generator(agent, 0)) # Start next cycle task, reset retry_count
                 logger.info(f"Reactivation task scheduled for agent '{agent_id}'. This cycle ending.")
                 return
 
+            # Else finalize status (if not retrying, not awaiting override, and not reactivating)
             else:
                 final_status = agent.status
-                if final_status not in [AGENT_STATUS_IDLE, AGENT_STATUS_ERROR]:
+                # Don't change status if it's already Error or Awaiting Override
+                if final_status not in [AGENT_STATUS_IDLE, AGENT_STATUS_ERROR, AGENT_STATUS_AWAITING_USER_OVERRIDE]:
                      logger.warning(f"Agent '{agent_id}' ended generator handling in non-terminal state '{final_status}'. Setting to IDLE.")
                      agent.set_status(AGENT_STATUS_IDLE)
 
                 await self.push_agent_status_update(agent_id) # Push the determined final state
-                log_level = logging.ERROR if agent.status == AGENT_STATUS_ERROR else logging.INFO
+                log_level = logging.ERROR if agent.status in [AGENT_STATUS_ERROR, AGENT_STATUS_AWAITING_USER_OVERRIDE] else logging.INFO
                 logger.log(log_level, f"Manager finished handling generator cycle for Agent '{agent_id}'. Final status: {agent.status}")
-            # --- End Corrected Finally Block ---
+            # --- End Updated Finally Block ---
 
 
-    # --- Tool Execution & Team Management Delegation ---
+    # --- Tool Execution & Team Management Delegation (Remains the Same) ---
     async def _handle_manage_team_action(self, action: Optional[str], params: Dict[str, Any]) -> Tuple[bool, str, Optional[Any]]:
-        """Validates and delegates ManageTeamTool actions to appropriate methods."""
+        # (Keep the existing logic from previous step)
         if not action: return False, "No action specified.", None
         success, message, result_data = False, "Unknown action or error.", None
         try:
@@ -535,7 +591,18 @@ class AgentManager:
 
             if action == "create_agent":
                 success, message, created_agent_id = await self.create_agent_instance( agent_id, provider, model, system_prompt, persona, team_id, temperature, **extra_kwargs );
-                if success and created_agent_id: message = f"Agent '{persona}' created successfully with ID '{created_agent_id}'."; result_data = {"created_agent_id": created_agent_id, "persona": persona, "provider": provider, "model": model, "team_id": team_id} # Add more info to data
+                if success and created_agent_id:
+                    # Include more details in the result data for AdminAI
+                    result_data = {
+                        "created_agent_id": created_agent_id,
+                        "persona": persona,
+                        "provider": provider,
+                        "model": model,
+                        "team_id": team_id
+                    }
+                    # Ensure message reflects the created ID
+                    message = f"Agent '{persona}' created successfully with ID '{created_agent_id}'."
+
             elif action == "delete_agent": success, message = await self.delete_agent_instance(agent_id)
             elif action == "create_team":
                 success, message = await self.state_manager.create_new_team(team_id)
@@ -560,9 +627,10 @@ class AgentManager:
             logger.info(f"ManageTeamTool action '{action}' result: Success={success}, Message='{message}'")
             return success, message, result_data
         except Exception as e: message = f"Error processing '{action}': {e}"; logger.error(message, exc_info=True); return False, message, None
+        # ... (Keep the rest of the existing logic from previous step) ...
 
     async def _update_agent_prompt_team_id(self, agent_id: str, new_team_id: Optional[str]):
-        """Internal helper to update agent's prompt state after team change."""
+        # (Keep the existing logic from previous step)
         agent = self.agents.get(agent_id)
         if agent and not (agent_id in self.bootstrap_agents):
             try:
@@ -577,7 +645,7 @@ class AgentManager:
 
 
     async def _route_and_activate_agent_message(self, sender_id: str, target_id: str, message_content: str) -> Optional[asyncio.Task]:
-        """Routes a message between agents, checking team state via StateManager."""
+        # (Keep the existing logic from previous step)
         sender_agent = self.agents.get(sender_id); target_agent = self.agents.get(target_id)
         if not sender_agent: logger.error(f"SendMsg route error: Sender '{sender_id}' not found."); return None
         if not target_agent: logger.error(f"SendMsg route error: Target '{target_id}' not found in self.agents dictionary."); return None
@@ -598,7 +666,7 @@ class AgentManager:
 
 
     async def _execute_single_tool(self, agent: Agent, call_id: str, tool_name: str, tool_args: Dict[str, Any]) -> Optional[Dict]:
-        """ Executes a tool via ToolExecutor. """
+        # (Keep the existing logic from previous step)
         if not self.tool_executor: logger.error("ToolExecutor unavailable."); return {"call_id": call_id, "content": "[ToolExec Error: ToolExecutor unavailable]", "_raw_result": None}
         tool_info = {"name": tool_name, "call_id": call_id}; agent.set_status(AGENT_STATUS_EXECUTING_TOOL, tool_info=tool_info)
         raw_result: Optional[Any] = None; result_content: str = "[Tool Execution Error: Unknown]"
@@ -616,15 +684,15 @@ class AgentManager:
 
 
     async def _failed_tool_result(self, call_id: Optional[str], tool_name: Optional[str]) -> Optional[ToolResultDict]:
-        """Returns a formatted error result dictionary for failed tool dispatch."""
+        # (Keep the existing logic from previous step)
         error_content = f"[ToolExec Error: Failed dispatch for '{tool_name or 'unknown'}'. Invalid format or arguments.]"
         final_call_id = call_id or f"invalid_call_{int(time.time())}"
         return {"call_id": final_call_id, "content": error_content, "_raw_result": {"status": "error", "message": error_content}}
 
 
-    # --- Status and UI Update Methods ---
+    # --- Status and UI Update Methods (Remains the Same) ---
     async def push_agent_status_update(self, agent_id: str):
-        """Retrieves full agent state (including team from StateManager) and sends to UI."""
+        # (Keep the existing logic from previous step)
         agent = self.agents.get(agent_id)
         if agent:
             state = agent.get_state()
@@ -633,14 +701,14 @@ class AgentManager:
         else: logger.warning(f"Cannot push status update for unknown agent: {agent_id}")
 
     async def send_to_ui(self, message_data: Dict[str, Any]):
-        """Sends JSON-serialized data to all UI clients via broadcast."""
+        # (Keep the existing logic from previous step)
         if not self.send_to_ui_func: logger.warning("UI broadcast function not configured."); return
         try: await self.send_to_ui_func(json.dumps(message_data))
         except TypeError as e: logger.error(f"JSON serialization error sending to UI: {e}. Data: {message_data}", exc_info=True)
         except Exception as e: logger.error(f"Error sending message to UI: {e}", exc_info=True)
 
     def get_agent_status(self) -> Dict[str, Dict[str, Any]]:
-        """Synchronously gets status snapshot of all agents (including team from StateManager)."""
+        # (Keep the existing logic from previous step)
         statuses = {}
         for agent_id, agent in self.agents.items():
              state = agent.get_state()
@@ -649,37 +717,34 @@ class AgentManager:
         return statuses
 
 
-    # --- Session Persistence (Delegated to SessionManager) ---
+    # --- Session Persistence (Delegated to SessionManager - Remains the Same) ---
     async def save_session(self, project_name: str, session_name: Optional[str] = None) -> Tuple[bool, str]:
-        """Delegates saving the current session state to the SessionManager."""
+        # (Keep the existing logic from previous step)
         logger.info(f"Delegating save_session call for project '{project_name}'...")
         return await self.session_manager.save_session(project_name, session_name)
 
     async def load_session(self, project_name: str, session_name: str) -> Tuple[bool, str]:
-        """Delegates loading a session state to the SessionManager."""
+        # (Keep the existing logic from previous step)
         logger.info(f"Delegating load_session call for project '{project_name}', session '{session_name}'...")
         return await self.session_manager.load_session(project_name, session_name)
 
 
-    # --- Cleanup ---
+    # --- Cleanup (Remains the Same) ---
     async def cleanup_providers(self):
-        """ Calls cleanup methods (close_session) on all active LLM providers. """
+        # (Keep the existing logic from previous step)
         logger.info("Cleaning up LLM providers..."); active_providers = {agent.llm_provider for agent in self.agents.values() if agent.llm_provider}; logger.info(f"Found {len(active_providers)} unique provider instances to clean up.")
         tasks = [ asyncio.create_task(self._close_provider_safe(provider)) for provider in active_providers if hasattr(provider, 'close_session') and asyncio.iscoroutinefunction(provider.close_session) ]
         if tasks: await asyncio.gather(*tasks); logger.info("LLM Provider cleanup tasks completed.")
         else: logger.info("No provider cleanup tasks were necessary.")
 
     async def _close_provider_safe(self, provider: BaseLLMProvider):
-        """Safely attempts to call the asynchronous close_session method on a provider."""
+        # (Keep the existing logic from previous step)
         try: logger.info(f"Attempting to close session for provider: {provider!r}"); await provider.close_session(); logger.info(f"Successfully closed session for provider: {provider!r}")
         except Exception as e: logger.error(f"Error closing session for provider {provider!r}: {e}", exc_info=True)
 
-    # --- ** NEW ** Method needed for ManageTeamTool list_agents ----
-    # This was accidentally removed in refactoring, putting it back
+    # --- get_agent_info_list_sync (Remains the Same) ----
     def get_agent_info_list_sync(self, filter_team_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Synchronously gets agent info list, optionally filtered by team."""
-        # NOTE: This is sync, called from _handle_manage_team_action which runs within the async _handle_agent_generator.
-        # This is generally okay for reading simple state. If state access becomes complex, make this async.
+        # (Keep the existing logic from previous step)
         info_list = []
         for agent_id, agent in self.agents.items():
              current_team = self.state_manager.get_agent_team(agent_id)
@@ -688,4 +753,105 @@ class AgentManager:
              info = { "agent_id": agent_id, "persona": state.get("persona"), "provider": state.get("provider"), "model": state.get("model"), "status": state.get("status"), "team": current_team }
              info_list.append(info)
         return info_list
-    # --- End new method ---
+
+    # --- *** NEW METHOD: Handle User Override *** ---
+    async def handle_user_override(self, override_data: Dict[str, Any]):
+        """Handles configuration override provided by the user for a stuck agent."""
+        agent_id = override_data.get("agent_id")
+        new_provider_name = override_data.get("new_provider")
+        new_model = override_data.get("new_model")
+
+        if not all([agent_id, new_provider_name, new_model]):
+            logger.error(f"Received invalid user override data: {override_data}")
+            await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": "Invalid override data received from UI."})
+            return
+
+        agent = self.agents.get(agent_id)
+        if not agent:
+            logger.error(f"Cannot apply user override: Agent '{agent_id}' not found.")
+            await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": f"Cannot apply override: Agent {agent_id} not found."})
+            return
+
+        if agent.status != AGENT_STATUS_AWAITING_USER_OVERRIDE:
+            logger.warning(f"Received override for agent '{agent_id}' but its status is '{agent.status}', not '{AGENT_STATUS_AWAITING_USER_OVERRIDE}'. Ignoring.")
+            return
+
+        logger.info(f"Applying user override for agent '{agent_id}'. New provider: '{new_provider_name}', New model: '{new_model}'")
+
+        # --- Validate Provider/Model (Basic Checks) ---
+        # Check if new provider is known
+        ProviderClass = PROVIDER_CLASS_MAP.get(new_provider_name)
+        if not ProviderClass:
+            logger.error(f"Override failed: Unknown provider '{new_provider_name}'.")
+            await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": f"Override failed: Unknown provider '{new_provider_name}'."})
+            agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE) # Keep awaiting
+            return
+
+        # Check if new provider is configured in settings
+        if not settings.is_provider_configured(new_provider_name):
+            logger.error(f"Override failed: Provider '{new_provider_name}' is not configured in settings.")
+            await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": f"Override failed: Provider '{new_provider_name}' is not configured in settings."})
+            agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE) # Keep awaiting
+            return
+
+        # TODO: Optionally add validation against allowed_sub_agent_models here if desired for overrides?
+        # For now, assume user knows best if they are overriding.
+
+        # --- Update Agent Configuration and Re-instantiate Provider ---
+        old_provider_instance = agent.llm_provider
+        old_provider_name = agent.provider_name
+        old_model = agent.model
+
+        try:
+            # Update agent attributes
+            agent.provider_name = new_provider_name
+            agent.model = new_model
+
+            # Update stored config dictionary (important for saving session later)
+            if hasattr(agent, 'agent_config') and isinstance(agent.agent_config, dict):
+                if "config" not in agent.agent_config: agent.agent_config["config"] = {}
+                agent.agent_config["config"]["provider"] = new_provider_name
+                agent.agent_config["config"]["model"] = new_model
+            else:
+                logger.warning(f"Agent '{agent_id}' missing agent_config attribute. Config persistence might be affected.")
+
+            # Prepare args for new provider instance (use existing kwargs if possible)
+            base_provider_config = settings.get_provider_config(new_provider_name)
+            # Get original provider_kwargs from agent's stored config if possible
+            provider_kwargs = agent.agent_config.get("config", {}).copy()
+            for key in ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'api_key', 'base_url', 'referer']:
+                provider_kwargs.pop(key, None)
+            # Use any relevant overrides from the *original* config, but apply *new* base config
+            # (This logic might need refinement depending on desired override behavior for base_url etc.)
+            final_provider_args = { **base_provider_config, **provider_kwargs }
+            final_provider_args = {k: v for k, v in final_provider_args.items() if v is not None}
+
+
+            # Instantiate new provider
+            new_provider_instance = ProviderClass(**final_provider_args)
+            agent.llm_provider = new_provider_instance
+            logger.info(f"Instantiated new provider {ProviderClass.__name__} for agent '{agent_id}' after override.")
+
+            # Close the old provider session safely
+            await self._close_provider_safe(old_provider_instance)
+
+            # Reset status and restart the generator cycle
+            logger.info(f"User override applied successfully for agent '{agent_id}'. Restarting processing cycle.")
+            agent.set_status(AGENT_STATUS_IDLE)
+            await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Configuration updated by user. Retrying with Provider: {new_provider_name}, Model: {new_model}."})
+            # Restart generator with retry_count = 0 using the new config
+            asyncio.create_task(self._handle_agent_generator(agent, 0))
+
+        except Exception as e:
+            logger.error(f"Error applying user override for agent '{agent_id}': {e}", exc_info=True)
+            # Attempt to revert changes if possible
+            agent.provider_name = old_provider_name
+            agent.model = old_model
+            agent.llm_provider = old_provider_instance # Put back old provider if new one failed
+            if hasattr(agent, 'agent_config') and isinstance(agent.agent_config, dict) and "config" in agent.agent_config:
+                 agent.agent_config["config"]["provider"] = old_provider_name
+                 agent.agent_config["config"]["model"] = old_model
+            # Set status back to awaiting override
+            agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE)
+            await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": f"Failed to apply override: {e}. Please try again."})
+    # --- *** END NEW METHOD *** ---
