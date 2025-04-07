@@ -13,7 +13,7 @@ import re # For replacing team ID in prompts
 from src.agents.core import (
     Agent, AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING,
     AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_AWAITING_TOOL,
-    AGENT_STATUS_ERROR, AGENT_STATUS_AWAITING_USER_OVERRIDE # <-- Import new status
+    AGENT_STATUS_ERROR, AGENT_STATUS_AWAITING_USER_OVERRIDE
 )
 from src.llm_providers.base import BaseLLMProvider, ToolResultDict, MessageDict
 
@@ -183,8 +183,6 @@ class AgentManager:
     async def _create_agent_internal(
         self, agent_id_requested: Optional[str], agent_config_data: Dict[str, Any], is_bootstrap: bool = False, team_id: Optional[str] = None, loading_from_session: bool = False
         ) -> Tuple[bool, str, Optional[str]]:
-        # (Keep the existing logic from previous step)
-        # ... (validation, provider instantiation, agent instantiation, sandbox, team assignment) ...
         # 1. Determine Agent ID
         if agent_id_requested and agent_id_requested in self.agents: return False, f"Agent ID '{agent_id_requested}' already exists.", None
         agent_id = agent_id_requested or self._generate_unique_agent_id()
@@ -298,7 +296,6 @@ class AgentManager:
 
         message = f"Agent '{agent_id}' created successfully." + team_add_msg_suffix
         return True, message, agent_id
-        # ... end of _create_agent_internal ...
 
 
     async def create_agent_instance( # Public method unchanged
@@ -350,11 +347,11 @@ class AgentManager:
             await self.send_to_ui({ "type": "status", "agent_id": admin_agent.agent_id, "content": f"Admin AI busy ({admin_agent.status}). Your message will be processed when idle." })
 
 
-    # --- *** UPDATED _handle_agent_generator with new retry and override signal *** ---
+    # --- *** UPDATED _handle_agent_generator to handle list of tool calls *** ---
     async def _handle_agent_generator(self, agent: Agent, retry_count: int = 0):
         """Handles agent processing cycle, including specific retry delays and user override signal."""
         agent_id = agent.agent_id
-        logger.info(f"Starting generator handling for Agent '{agent_id}' (Retry Attempt: {retry_count})...") # Changed log
+        logger.info(f"Starting generator handling for Agent '{agent_id}' (Retry Attempt: {retry_count})...")
         agent_generator: Optional[AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]] = None
         manager_action_feedback = [] # Feedback from ManageTeamTool actions
         reactivate_agent_after_feedback = False # Flag to re-run generator after adding feedback
@@ -398,116 +395,119 @@ class AgentManager:
                     current_cycle_error = True # Mark error occurred
                     break # Stop generator loop on any error
 
-                elif event_type == "tool_requests": # Handle Sequential Tool Execution
-                    all_tool_calls = event.get("calls", [])
+                # --- *** MODIFIED TOOL REQUEST HANDLING *** ---
+                elif event_type == "tool_requests":
+                    # Now expects a LIST of calls
+                    all_tool_calls: List[Dict] = event.get("calls", [])
+                    if not all_tool_calls:
+                        logger.warning(f"Agent '{agent_id}' yielded 'tool_requests' event with empty calls list.")
+                        continue # Nothing to process
+
+                    logger.info(f"Agent '{agent_id}' yielded {len(all_tool_calls)} tool request(s).")
+
                     agent_last_response = event.get("raw_assistant_response")
                     if agent_last_response and (not agent.message_history or agent.message_history[-1].get("content") != agent_last_response or agent.message_history[-1].get("role") != "assistant"):
                          agent.message_history.append({"role": "assistant", "content": agent_last_response}); logger.debug(f"Appended assistant response (with tools) for '{agent_id}'.")
 
                     management_calls = []; other_calls = []; executed_results_map = {}; invalid_call_results = []
-                    # 1. Validate and Categorize Calls
+                    # 1. Validate and Categorize All Calls from the list
                     for call in all_tool_calls:
                          call_id, tool_name, tool_args = call.get("id"), call.get("name"), call.get("arguments", {})
                          if call_id and tool_name and isinstance(tool_args, dict):
                             if tool_name == ManageTeamTool.name: management_calls.append(call)
                             else: other_calls.append(call)
                          else:
-                            logger.warning(f"Skipping invalid tool request from '{agent_id}': {call}")
+                            logger.warning(f"Skipping invalid tool request format from '{agent_id}': {call}")
                             fail_result = await self._failed_tool_result(call_id, tool_name)
                             if fail_result: invalid_call_results.append(fail_result)
-                    if invalid_call_results: # Append failures
+                    if invalid_call_results: # Append failures early
                         for fail_res in invalid_call_results: agent.message_history.append({"role": "tool", "tool_call_id": fail_res['call_id'], "content": str(fail_res['content']) })
 
                     manager_action_feedback = [] # Reset feedback for this batch
                     activation_tasks = [] # Reset activation tasks
 
-                    # 2. Execute Management Calls Sequentially
-                    if management_calls:
-                        logger.info(f"Executing {len(management_calls)} management tool call(s) sequentially for agent '{agent_id}'.")
-                        await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Executing {len(management_calls)} management tool(s)..."})
-                        for call in management_calls:
-                            result = await self._execute_single_tool(agent, call['id'], call['name'], call['arguments'])
-                            if result: executed_results_map[call['id']] = result
-                        logger.info(f"Finished executing management tool calls for agent '{agent_id}'.")
+                    # --- Execute ALL Calls Sequentially (Management First) ---
+                    # Combine calls in order: Management, then Others
+                    calls_to_execute = management_calls + other_calls
 
-                        # 3. Process Management Results & Generate Feedback
-                        for call in management_calls:
-                            call_id = call['id']; result = executed_results_map.get(call_id)
-                            if not result: continue
-                            raw_content_for_hist = result.get("content", "[Tool Error: No content]")
-                            tool_msg: MessageDict = {"role": "tool", "tool_call_id": call_id, "content": str(raw_content_for_hist) }
-                            if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("tool_call_id") != call_id:
-                                agent.message_history.append(tool_msg); logger.debug(f"Appended raw mgmt tool result for {call_id}.")
-                            raw_tool_output = result.get("_raw_result")
-                            if call['name'] == ManageTeamTool.name: # Only ManageTeamTool requires manager action
-                                if isinstance(raw_tool_output, dict) and raw_tool_output.get("status") == "success":
-                                    action = raw_tool_output.get("action"); params = raw_tool_output.get("params", {})
-                                    logger.info(f"Processing successful ManageTeamTool execution: Action='{action}' by '{agent_id}'.")
-                                    action_success, action_message, action_data = await self._handle_manage_team_action(action, params)
-                                    feedback = {"call_id": call_id, "action": action, "success": action_success, "message": action_message}
-                                    if action_data: feedback["data"] = action_data
-                                    manager_action_feedback.append(feedback)
-                                elif isinstance(raw_tool_output, dict) and raw_tool_output.get("status") == "error":
-                                     logger.warning(f"ManageTeamTool call {call_id} failed validation/execution. Raw Result: {raw_tool_output}")
-                                     manager_action_feedback.append({"call_id": call_id, "action": raw_tool_output.get("action"), "success": False, "message": raw_tool_output.get("message", "Tool execution failed.")})
-                                else: logger.warning(f"ManageTeamTool call {call_id} had unexpected structure: {result}"); manager_action_feedback.append({"call_id": call_id, "action": "unknown", "success": False, "message": "Unexpected tool result structure."})
+                    if calls_to_execute:
+                        logger.info(f"Executing {len(calls_to_execute)} tool call(s) sequentially for agent '{agent_id}'. Mgmt: {len(management_calls)}, Other: {len(other_calls)}")
+                        await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Executing {len(calls_to_execute)} tool(s)..."})
 
-                    # 4. Execute Other Tool Calls Sequentially
-                    if other_calls:
-                        logger.info(f"Executing {len(other_calls)} other tool call(s) sequentially for agent '{agent_id}'.")
-                        await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Executing {len(other_calls)} other tool(s)..."})
-                        for call in other_calls:
-                             result = await self._execute_single_tool(agent, call['id'], call['name'], call['arguments'])
-                             if result: executed_results_map[call['id']] = result
-                        logger.info(f"Finished executing other tool calls for agent '{agent_id}'.")
+                        # Iterate and execute each call
+                        for call in calls_to_execute:
+                            call_id = call['id']; tool_name = call['name']; tool_args = call['arguments']
+                            result = await self._execute_single_tool(agent, call_id, tool_name, tool_args)
+                            if result:
+                                executed_results_map[call_id] = result
 
-                        # Process results of other calls
-                        for call in other_calls:
-                            result = executed_results_map.get(call['id'])
-                            if not result: continue
+                                # Append raw tool result immediately to history
+                                raw_content_for_hist = result.get("content", "[Tool Error: No content]")
+                                tool_msg: MessageDict = {"role": "tool", "tool_call_id": call_id, "content": str(raw_content_for_hist) }
+                                if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("tool_call_id") != call_id:
+                                     agent.message_history.append(tool_msg); logger.debug(f"Appended raw tool result for {call_id}.")
 
-                            # Append raw tool result to history
-                            raw_content_for_hist = result.get("content", "[Tool Error: No content]")
-                            tool_msg: MessageDict = {"role": "tool", "tool_call_id": call['id'], "content": str(raw_content_for_hist) }
-                            if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("tool_call_id") != call['id']:
-                                agent.message_history.append(tool_msg); logger.debug(f"Appended raw other tool result for {call['id']}.")
-
-                            # Specific handling for SendMessageTool
-                            if call['name'] == SendMessageTool.name:
-                                target_id = call['arguments'].get("target_agent_id")
-                                msg_content = call['arguments'].get("message_content")
-                                activation_task = None # <-- Initialize activation_task to None HERE
-                                if target_id and msg_content is not None:
-                                    if target_id in self.agents:
-                                        activation_task = await self._route_and_activate_agent_message(agent_id, target_id, msg_content)
-                                        if activation_task: # Only append if routing succeeds and target needs activation
-                                             activation_tasks.append(activation_task)
+                                # Process side effects (Manager Actions, SendMessage)
+                                raw_tool_output = result.get("_raw_result")
+                                if tool_name == ManageTeamTool.name:
+                                    if isinstance(raw_tool_output, dict) and raw_tool_output.get("status") == "success":
+                                        action = raw_tool_output.get("action"); params = raw_tool_output.get("params", {})
+                                        logger.info(f"Processing successful ManageTeamTool execution: Action='{action}' by '{agent_id}'.")
+                                        action_success, action_message, action_data = await self._handle_manage_team_action(action, params)
+                                        feedback = {"call_id": call_id, "action": action, "success": action_success, "message": action_message}
+                                        if action_data: feedback["data"] = action_data
+                                        manager_action_feedback.append(feedback)
+                                    elif isinstance(raw_tool_output, dict) and raw_tool_output.get("status") == "error":
+                                         logger.warning(f"ManageTeamTool call {call_id} failed validation/execution. Raw Result: {raw_tool_output}")
+                                         manager_action_feedback.append({"call_id": call_id, "action": raw_tool_output.get("action"), "success": False, "message": raw_tool_output.get("message", "Tool execution failed.")})
                                     else:
-                                        # Log error and generate feedback if target agent not found
-                                        logger.error(f"SendMessage failed: Target agent '{target_id}' not found.")
-                                        manager_action_feedback.append({"call_id": call['id'], "action": "send_message", "success": False, "message": f"Failed to send: Target agent '{target_id}' not found."})
-                                else:
-                                    logger.error(f"SendMessage args incomplete for call {call['id']}. Args: {call['arguments']}")
-                                    manager_action_feedback.append({"call_id": call['id'], "action": "send_message", "success": False, "message": "Missing target_agent_id or message_content."})
+                                         logger.warning(f"ManageTeamTool call {call_id} had unexpected structure: {result}")
+                                         manager_action_feedback.append({"call_id": call_id, "action": "unknown", "success": False, "message": "Unexpected tool result structure."})
 
-                    # 5. Wait for any agent activations triggered by SendMessage
-                    if activation_tasks:
-                        logger.info(f"Waiting for {len(activation_tasks)} activation tasks triggered by '{agent_id}'.")
-                        await asyncio.gather(*activation_tasks)
-                        logger.info(f"Completed activation tasks triggered by '{agent_id}'.")
+                                elif tool_name == SendMessageTool.name:
+                                    target_id = call_args.get("target_agent_id"); msg_content = call_args.get("message_content")
+                                    activation_task = None # Reset for this call
+                                    if target_id and msg_content is not None:
+                                        if target_id in self.agents:
+                                            activation_task = await self._route_and_activate_agent_message(agent_id, target_id, msg_content)
+                                            if activation_task: activation_tasks.append(activation_task)
+                                        else:
+                                            logger.error(f"SendMessage failed: Target agent '{target_id}' not found.")
+                                            manager_action_feedback.append({"call_id": call_id, "action": "send_message", "success": False, "message": f"Failed to send: Target agent '{target_id}' not found."})
+                                    else:
+                                        logger.error(f"SendMessage args incomplete for call {call_id}. Args: {call_args}")
+                                        manager_action_feedback.append({"call_id": call_id, "action": "send_message", "success": False, "message": "Missing target_agent_id or message_content."})
+                            else:
+                                 # Handle case where tool execution failed unexpectedly
+                                 logger.error(f"Tool execution failed for call_id {call_id}, no result returned.")
+                                 # Append a generic failure message to feedback?
+                                 manager_action_feedback.append({"call_id": call_id, "action": tool_name, "success": False, "message": "Tool execution failed unexpectedly."})
 
-                    # 6. Append All Manager Feedback (from both ManageTeam and failed SendMessage)
-                    if manager_action_feedback:
-                        feedback_appended = False
-                        for feedback in manager_action_feedback:
-                            feedback_content = f"[Manager Result for {feedback.get('action', 'N/A')} (Call ID: {feedback['call_id']})]: Success={feedback['success']}. Message: {feedback['message']}"
-                            if feedback.get("data"):
-                                 try: data_str = json.dumps(feedback['data'], indent=2); feedback_content += f"\nData:\n{data_str[:1500]}{'... (truncated)' if len(data_str) > 1500 else ''}"
-                                 except TypeError: feedback_content += f"\nData: [Unserializable Data]"
-                            feedback_message: MessageDict = { "role": "tool", "tool_call_id": feedback['call_id'], "content": feedback_content }
-                            if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("content") != feedback_content:
-                                 agent.message_history.append(feedback_message); logger.debug(f"Appended manager feedback for call {feedback['call_id']} to '{agent_id}' history."); feedback_appended = True
-                        if feedback_appended: reactivate_agent_after_feedback = True
+
+                        logger.info(f"Finished executing {len(calls_to_execute)} tool calls for agent '{agent_id}'.")
+
+                        # Wait for any agent activations triggered by SendMessage
+                        if activation_tasks:
+                            logger.info(f"Waiting for {len(activation_tasks)} activation tasks triggered by '{agent_id}'.")
+                            await asyncio.gather(*activation_tasks)
+                            logger.info(f"Completed activation tasks triggered by '{agent_id}'.")
+
+                        # Append All Manager Feedback to History
+                        if manager_action_feedback:
+                            feedback_appended = False
+                            for feedback in manager_action_feedback:
+                                feedback_content = f"[Manager Result for {feedback.get('action', 'N/A')} (Call ID: {feedback['call_id']})]: Success={feedback['success']}. Message: {feedback['message']}"
+                                if feedback.get("data"):
+                                     try: data_str = json.dumps(feedback['data'], indent=2); feedback_content += f"\nData:\n{data_str[:1500]}{'... (truncated)' if len(data_str) > 1500 else ''}"
+                                     except TypeError: feedback_content += f"\nData: [Unserializable Data]"
+                                feedback_message: MessageDict = { "role": "tool", "tool_call_id": feedback['call_id'], "content": feedback_content }
+                                # Avoid adding duplicate feedback if manager retries internally somehow
+                                if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("content") != feedback_content:
+                                     agent.message_history.append(feedback_message); logger.debug(f"Appended manager feedback for call {feedback['call_id']} to '{agent_id}' history."); feedback_appended = True
+                            if feedback_appended: reactivate_agent_after_feedback = True
+                    # --- End Sequential Execution ---
+
+                # --- END MODIFIED TOOL REQUEST HANDLING ---
 
                 else:
                     logger.warning(f"Unknown event type '{event_type}' received from agent '{agent_id}'.")
@@ -523,21 +523,17 @@ class AgentManager:
                 try: await agent_generator.aclose(); logger.debug(f"Closed generator for '{agent_id}'.")
                 except Exception as close_err: logger.error(f"Error closing generator for '{agent_id}': {close_err}", exc_info=True)
 
-            # --- Updated Finally Block with New Retry Logic and Override Signal ---
-            # Check for automatic retry *first*
+            # --- Updated Finally Block Logic (Remains the same) ---
             if current_cycle_error and is_stream_related_error and retry_count < MAX_STREAM_RETRIES:
-                # Use the specific delay from the list based on the current retry_count
                 retry_delay = STREAM_RETRY_DELAYS[retry_count]
                 logger.warning(f"Stream error for '{agent_id}'. Retrying in {retry_delay:.1f}s (Attempt {retry_count + 1}/{MAX_STREAM_RETRIES})...")
                 await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Experiencing provider issues... Retrying automatically (Attempt {retry_count + 1}/{MAX_STREAM_RETRIES}, delay {retry_delay}s)..."})
                 await asyncio.sleep(retry_delay)
                 agent.set_status(AGENT_STATUS_IDLE) # Reset status *before* scheduling retry
-                # Increment retry_count for the next attempt
                 asyncio.create_task(self._handle_agent_generator(agent, retry_count + 1))
                 logger.info(f"Retry task scheduled for agent '{agent_id}'. This cycle ending.")
-                return # <-- Exit finally block after scheduling retry
+                return
 
-            # Check if all retries failed
             elif current_cycle_error and is_stream_related_error and retry_count >= MAX_STREAM_RETRIES:
                 logger.error(f"Agent '{agent_id}' failed after {MAX_STREAM_RETRIES} retries. Requesting user override.")
                 agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE) # Set specific status
@@ -551,9 +547,8 @@ class AgentManager:
                     "message": f"Agent '{agent.persona}' ({agent_id}) failed after multiple retries. Please provide an alternative Provider/Model or try again later."
                 })
                 logger.info(f"User override requested for agent '{agent_id}'. Cycle ending, awaiting user input.")
-                return # <-- Exit finally block, awaiting user override
+                return
 
-            # Then check for normal reactivation
             elif reactivate_agent_after_feedback and not current_cycle_error:
                 logger.info(f"Reactivating agent '{agent_id}' to process manager feedback.")
                 agent.set_status(AGENT_STATUS_IDLE)
@@ -561,10 +556,8 @@ class AgentManager:
                 logger.info(f"Reactivation task scheduled for agent '{agent_id}'. This cycle ending.")
                 return
 
-            # Else finalize status (if not retrying, not awaiting override, and not reactivating)
             else:
                 final_status = agent.status
-                # Don't change status if it's already Error or Awaiting Override
                 if final_status not in [AGENT_STATUS_IDLE, AGENT_STATUS_ERROR, AGENT_STATUS_AWAITING_USER_OVERRIDE]:
                      logger.warning(f"Agent '{agent_id}' ended generator handling in non-terminal state '{final_status}'. Setting to IDLE.")
                      agent.set_status(AGENT_STATUS_IDLE)
@@ -577,7 +570,7 @@ class AgentManager:
 
     # --- Tool Execution & Team Management Delegation (Remains the Same) ---
     async def _handle_manage_team_action(self, action: Optional[str], params: Dict[str, Any]) -> Tuple[bool, str, Optional[Any]]:
-        # (Keep the existing logic from previous step)
+        # (Keep the existing logic)
         if not action: return False, "No action specified.", None
         success, message, result_data = False, "Unknown action or error.", None
         try:
@@ -592,17 +585,8 @@ class AgentManager:
             if action == "create_agent":
                 success, message, created_agent_id = await self.create_agent_instance( agent_id, provider, model, system_prompt, persona, team_id, temperature, **extra_kwargs );
                 if success and created_agent_id:
-                    # Include more details in the result data for AdminAI
-                    result_data = {
-                        "created_agent_id": created_agent_id,
-                        "persona": persona,
-                        "provider": provider,
-                        "model": model,
-                        "team_id": team_id
-                    }
-                    # Ensure message reflects the created ID
+                    result_data = { "created_agent_id": created_agent_id, "persona": persona, "provider": provider, "model": model, "team_id": team_id }
                     message = f"Agent '{persona}' created successfully with ID '{created_agent_id}'."
-
             elif action == "delete_agent": success, message = await self.delete_agent_instance(agent_id)
             elif action == "create_team":
                 success, message = await self.state_manager.create_new_team(team_id)
@@ -616,7 +600,6 @@ class AgentManager:
                 if success: await self._update_agent_prompt_team_id(agent_id, None)
             elif action == "list_agents":
                  filter_team_id = params.get("team_id");
-                 # Use sync version for simplicity here
                  result_data = self.get_agent_info_list_sync(filter_team_id=filter_team_id)
                  success = True; count = len(result_data)
                  message = f"Found {count} agent(s) in team '{filter_team_id}'." if filter_team_id else f"Found {count} agent(s) in total."
@@ -627,10 +610,9 @@ class AgentManager:
             logger.info(f"ManageTeamTool action '{action}' result: Success={success}, Message='{message}'")
             return success, message, result_data
         except Exception as e: message = f"Error processing '{action}': {e}"; logger.error(message, exc_info=True); return False, message, None
-        # ... (Keep the rest of the existing logic from previous step) ...
 
     async def _update_agent_prompt_team_id(self, agent_id: str, new_team_id: Optional[str]):
-        # (Keep the existing logic from previous step)
+        # (Keep the existing logic)
         agent = self.agents.get(agent_id)
         if agent and not (agent_id in self.bootstrap_agents):
             try:
@@ -645,7 +627,7 @@ class AgentManager:
 
 
     async def _route_and_activate_agent_message(self, sender_id: str, target_id: str, message_content: str) -> Optional[asyncio.Task]:
-        # (Keep the existing logic from previous step)
+        # (Keep the existing logic)
         sender_agent = self.agents.get(sender_id); target_agent = self.agents.get(target_id)
         if not sender_agent: logger.error(f"SendMsg route error: Sender '{sender_id}' not found."); return None
         if not target_agent: logger.error(f"SendMsg route error: Target '{target_id}' not found in self.agents dictionary."); return None
@@ -666,7 +648,7 @@ class AgentManager:
 
 
     async def _execute_single_tool(self, agent: Agent, call_id: str, tool_name: str, tool_args: Dict[str, Any]) -> Optional[Dict]:
-        # (Keep the existing logic from previous step)
+        # (Keep the existing logic)
         if not self.tool_executor: logger.error("ToolExecutor unavailable."); return {"call_id": call_id, "content": "[ToolExec Error: ToolExecutor unavailable]", "_raw_result": None}
         tool_info = {"name": tool_name, "call_id": call_id}; agent.set_status(AGENT_STATUS_EXECUTING_TOOL, tool_info=tool_info)
         raw_result: Optional[Any] = None; result_content: str = "[Tool Execution Error: Unknown]"
@@ -684,7 +666,7 @@ class AgentManager:
 
 
     async def _failed_tool_result(self, call_id: Optional[str], tool_name: Optional[str]) -> Optional[ToolResultDict]:
-        # (Keep the existing logic from previous step)
+        # (Keep the existing logic)
         error_content = f"[ToolExec Error: Failed dispatch for '{tool_name or 'unknown'}'. Invalid format or arguments.]"
         final_call_id = call_id or f"invalid_call_{int(time.time())}"
         return {"call_id": final_call_id, "content": error_content, "_raw_result": {"status": "error", "message": error_content}}
@@ -692,7 +674,7 @@ class AgentManager:
 
     # --- Status and UI Update Methods (Remains the Same) ---
     async def push_agent_status_update(self, agent_id: str):
-        # (Keep the existing logic from previous step)
+        # (Keep the existing logic)
         agent = self.agents.get(agent_id)
         if agent:
             state = agent.get_state()
@@ -701,14 +683,14 @@ class AgentManager:
         else: logger.warning(f"Cannot push status update for unknown agent: {agent_id}")
 
     async def send_to_ui(self, message_data: Dict[str, Any]):
-        # (Keep the existing logic from previous step)
+        # (Keep the existing logic)
         if not self.send_to_ui_func: logger.warning("UI broadcast function not configured."); return
         try: await self.send_to_ui_func(json.dumps(message_data))
         except TypeError as e: logger.error(f"JSON serialization error sending to UI: {e}. Data: {message_data}", exc_info=True)
         except Exception as e: logger.error(f"Error sending message to UI: {e}", exc_info=True)
 
     def get_agent_status(self) -> Dict[str, Dict[str, Any]]:
-        # (Keep the existing logic from previous step)
+        # (Keep the existing logic)
         statuses = {}
         for agent_id, agent in self.agents.items():
              state = agent.get_state()
@@ -719,32 +701,32 @@ class AgentManager:
 
     # --- Session Persistence (Delegated to SessionManager - Remains the Same) ---
     async def save_session(self, project_name: str, session_name: Optional[str] = None) -> Tuple[bool, str]:
-        # (Keep the existing logic from previous step)
+        # (Keep the existing logic)
         logger.info(f"Delegating save_session call for project '{project_name}'...")
         return await self.session_manager.save_session(project_name, session_name)
 
     async def load_session(self, project_name: str, session_name: str) -> Tuple[bool, str]:
-        # (Keep the existing logic from previous step)
+        # (Keep the existing logic)
         logger.info(f"Delegating load_session call for project '{project_name}', session '{session_name}'...")
         return await self.session_manager.load_session(project_name, session_name)
 
 
     # --- Cleanup (Remains the Same) ---
     async def cleanup_providers(self):
-        # (Keep the existing logic from previous step)
+        # (Keep the existing logic)
         logger.info("Cleaning up LLM providers..."); active_providers = {agent.llm_provider for agent in self.agents.values() if agent.llm_provider}; logger.info(f"Found {len(active_providers)} unique provider instances to clean up.")
         tasks = [ asyncio.create_task(self._close_provider_safe(provider)) for provider in active_providers if hasattr(provider, 'close_session') and asyncio.iscoroutinefunction(provider.close_session) ]
         if tasks: await asyncio.gather(*tasks); logger.info("LLM Provider cleanup tasks completed.")
         else: logger.info("No provider cleanup tasks were necessary.")
 
     async def _close_provider_safe(self, provider: BaseLLMProvider):
-        # (Keep the existing logic from previous step)
+        # (Keep the existing logic)
         try: logger.info(f"Attempting to close session for provider: {provider!r}"); await provider.close_session(); logger.info(f"Successfully closed session for provider: {provider!r}")
         except Exception as e: logger.error(f"Error closing session for provider {provider!r}: {e}", exc_info=True)
 
     # --- get_agent_info_list_sync (Remains the Same) ----
     def get_agent_info_list_sync(self, filter_team_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        # (Keep the existing logic from previous step)
+        # (Keep the existing logic)
         info_list = []
         for agent_id, agent in self.agents.items():
              current_team = self.state_manager.get_agent_team(agent_id)
@@ -754,7 +736,7 @@ class AgentManager:
              info_list.append(info)
         return info_list
 
-    # --- *** NEW METHOD: Handle User Override *** ---
+    # --- Handle User Override Method (Remains the Same) ---
     async def handle_user_override(self, override_data: Dict[str, Any]):
         """Handles configuration override provided by the user for a stuck agent."""
         agent_id = override_data.get("agent_id")
@@ -779,7 +761,6 @@ class AgentManager:
         logger.info(f"Applying user override for agent '{agent_id}'. New provider: '{new_provider_name}', New model: '{new_model}'")
 
         # --- Validate Provider/Model (Basic Checks) ---
-        # Check if new provider is known
         ProviderClass = PROVIDER_CLASS_MAP.get(new_provider_name)
         if not ProviderClass:
             logger.error(f"Override failed: Unknown provider '{new_provider_name}'.")
@@ -787,15 +768,11 @@ class AgentManager:
             agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE) # Keep awaiting
             return
 
-        # Check if new provider is configured in settings
         if not settings.is_provider_configured(new_provider_name):
             logger.error(f"Override failed: Provider '{new_provider_name}' is not configured in settings.")
             await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": f"Override failed: Provider '{new_provider_name}' is not configured in settings."})
             agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE) # Keep awaiting
             return
-
-        # TODO: Optionally add validation against allowed_sub_agent_models here if desired for overrides?
-        # For now, assume user knows best if they are overriding.
 
         # --- Update Agent Configuration and Re-instantiate Provider ---
         old_provider_instance = agent.llm_provider
@@ -817,15 +794,11 @@ class AgentManager:
 
             # Prepare args for new provider instance (use existing kwargs if possible)
             base_provider_config = settings.get_provider_config(new_provider_name)
-            # Get original provider_kwargs from agent's stored config if possible
             provider_kwargs = agent.agent_config.get("config", {}).copy()
             for key in ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'api_key', 'base_url', 'referer']:
                 provider_kwargs.pop(key, None)
-            # Use any relevant overrides from the *original* config, but apply *new* base config
-            # (This logic might need refinement depending on desired override behavior for base_url etc.)
             final_provider_args = { **base_provider_config, **provider_kwargs }
             final_provider_args = {k: v for k, v in final_provider_args.items() if v is not None}
-
 
             # Instantiate new provider
             new_provider_instance = ProviderClass(**final_provider_args)
@@ -844,14 +817,13 @@ class AgentManager:
 
         except Exception as e:
             logger.error(f"Error applying user override for agent '{agent_id}': {e}", exc_info=True)
-            # Attempt to revert changes if possible
+            # Attempt to revert changes
             agent.provider_name = old_provider_name
             agent.model = old_model
-            agent.llm_provider = old_provider_instance # Put back old provider if new one failed
+            agent.llm_provider = old_provider_instance
             if hasattr(agent, 'agent_config') and isinstance(agent.agent_config, dict) and "config" in agent.agent_config:
                  agent.agent_config["config"]["provider"] = old_provider_name
                  agent.agent_config["config"]["model"] = old_model
             # Set status back to awaiting override
             agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE)
             await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": f"Failed to apply override: {e}. Please try again."})
-    # --- *** END NEW METHOD *** ---
