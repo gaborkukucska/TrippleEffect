@@ -623,7 +623,7 @@ class AgentManager:
                  logger.error(f"Error updating system prompt state for agent '{agent_id}' after team change: {e}")
 
 
-    # --- *** CORRECTED _route_and_activate_agent_message *** ---
+    # --- *** RE-CORRECTED _route_and_activate_agent_message *** ---
     async def _route_and_activate_agent_message(self, sender_id: str, target_id: str, message_content: str) -> Optional[asyncio.Task]:
         """Routes a message between agents, allowing messages TO Admin AI."""
         sender_agent = self.agents.get(sender_id); target_agent = self.agents.get(target_id)
@@ -635,31 +635,42 @@ class AgentManager:
 
         # --- Communication Rules ---
         allowed = False
+        # Case 1: Sender is Admin AI
         if sender_id == BOOTSTRAP_AGENT_ID:
-            allowed = True # Admin AI can send to anyone
+            allowed = True
             logger.info(f"Admin AI sending message from '{sender_id}' to '{target_id}'.")
+        # Case 2: Target is Admin AI
         elif target_id == BOOTSTRAP_AGENT_ID:
-             allowed = True # Any agent can send TO Admin AI
-             logger.info(f"Agent '{sender_id}' sending message to Admin AI.")
+             allowed = True
+             logger.info(f"Agent '{sender_id}' sending message to Admin AI ('{target_id}').") # Corrected log
+        # Case 3: Sender and Target are in the same team (and neither is Admin AI implicitly)
         elif sender_team and sender_team == target_team:
-            allowed = True # Agents within the same team can communicate
+            allowed = True
             logger.info(f"Routing message from '{sender_id}' to '{target_id}' in team '{target_team}'.")
         # --- End Communication Rules ---
 
         if not allowed:
             logger.warning(f"SendMessage blocked: Sender '{sender_id}' (Team: {sender_team}) cannot send to Target '{target_id}' (Team: {target_team}).")
-            # Send feedback TO THE SENDER that the message was blocked
-            # This requires modifying how _handle_agent_generator processes SendMessageTool results
-            # For now, just block silently in the backend logs.
-            # We could potentially add a failed SendMessage feedback to manager_action_feedback list?
+            # TODO: Consider sending feedback to the sender agent?
             return None # Indicate routing failed
 
         # Proceed with message routing and activation
         formatted_message: MessageDict = { "role": "user", "content": f"[From @{sender_id}]: {message_content}" }
         target_agent.message_history.append(formatted_message); logger.debug(f"Appended message from '{sender_id}' to history of '{target_id}'.")
-        if target_agent.status == AGENT_STATUS_IDLE: logger.info(f"Target '{target_id}' is IDLE. Activating..."); return asyncio.create_task(self._handle_agent_generator(target_agent)) # Pass default retry_count=0
-        else: logger.info(f"Target '{target_id}' not IDLE (Status: {target_agent.status}). Message queued in history."); await self.send_to_ui({ "type": "status", "agent_id": target_id, "content": f"Message received from @{sender_id}, queued." }); return None
-    # --- *** END CORRECTION *** ---
+
+        if target_agent.status == AGENT_STATUS_IDLE:
+            logger.info(f"Target '{target_id}' is IDLE. Activating...");
+            return asyncio.create_task(self._handle_agent_generator(target_agent))
+        # Handle case where target is awaiting override - queue message but don't activate
+        elif target_agent.status == AGENT_STATUS_AWAITING_USER_OVERRIDE:
+             logger.info(f"Target '{target_id}' is {AGENT_STATUS_AWAITING_USER_OVERRIDE}. Message queued, not activating.")
+             await self.send_to_ui({ "type": "status", "agent_id": target_id, "content": f"Message received from @{sender_id}, queued (awaiting user override)." })
+             return None
+        else: # Target is busy (processing, executing tool, etc.)
+            logger.info(f"Target '{target_id}' not IDLE (Status: {target_agent.status}). Message queued in history.")
+            await self.send_to_ui({ "type": "status", "agent_id": target_id, "content": f"Message received from @{sender_id}, queued." })
+            return None
+    # --- *** END RE-CORRECTION *** ---
 
     async def _execute_single_tool(self, agent: Agent, call_id: str, tool_name: str, tool_args: Dict[str, Any]) -> Optional[Dict]:
         # (Keep the existing logic)
