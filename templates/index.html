@@ -117,6 +117,39 @@
         </div>
     </div>
 
+    <!-- ****** NEW: Modal Dialog for Agent Override ****** -->
+    <div id="override-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <span class="close-button" onclick="closeModal('override-modal')">×</span>
+            <h3 id="override-modal-title">Agent Override Required</h3>
+            <p id="override-message">Agent '[Persona]' ([Agent ID]) failed after multiple retries.</p>
+            <p><strong>Last Error:</strong> <code id="override-last-error">[Error Details]</code></p>
+            <form id="override-form">
+                <input type="hidden" id="override-agent-id" value=""> <!-- Hidden field for agent ID -->
+
+                <label for="override-provider">New Provider:</label>
+                <select id="override-provider" name="new_provider" required>
+                    <option value="openrouter">OpenRouter</option>
+                    <option value="ollama">Ollama</option>
+                    <option value="openai">OpenAI</option>
+                    <!-- TODO: Populate dynamically? -->
+                </select>
+
+                <label for="override-model">New Model:</label>
+                <input type="text" id="override-model" name="new_model" required placeholder="Enter new model name (e.g., google/gemini-flash-1.5)">
+                <!-- TODO: Populate dynamically? -->
+
+                <!-- Optional: Add other fields if backend supports overriding them -->
+
+                <div class="modal-actions">
+                    <button type="submit" id="submit-override-button">Apply & Retry</button>
+                    <button type="button" onclick="closeModal('override-modal')">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    <!-- ****** END NEW MODAL ****** -->
+
 
     <!-- Link to the JavaScript file -->
     <!-- Placed at the end of body for better performance -->
