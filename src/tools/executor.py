@@ -65,6 +65,7 @@ class ToolExecutor:
     # --- Tool Schema/Discovery ---
 
     def get_formatted_tool_descriptions_xml(self) -> str:
+        # (Unchanged from previous step)
         """
         Formats tool schemas into an XML string suitable for LLM prompts.
         Reflects the latest parameter descriptions from tool classes.
@@ -144,8 +145,7 @@ class ToolExecutor:
         return final_description
 
 
-    # --- Tool Execution ---
-
+    # --- *** UPDATED Tool Execution *** ---
     async def execute_tool(
         self,
         agent_id: str,
@@ -156,6 +156,7 @@ class ToolExecutor:
         """
         Executes the specified tool with the given arguments. Arguments are pre-parsed.
         Validates arguments against the tool's schema.
+        Removes agent_id and agent_sandbox_path from args before passing via kwargs.
         Returns raw dictionary result for ManageTeamTool, otherwise ensures string result.
 
         Args:
@@ -180,7 +181,7 @@ class ToolExecutor:
             else:
                 return error_msg
 
-        logger.info(f"Executor: Executing tool '{tool_name}' for agent '{agent_id}' with args: {tool_args}")
+        logger.info(f"Executor: Executing tool '{tool_name}' for agent '{agent_id}' with raw args: {tool_args}")
         try:
             # --- Argument Validation (using tool.get_schema()) ---
             schema = tool.get_schema()
@@ -194,7 +195,6 @@ class ToolExecutor:
 
                     if param_name in tool_args:
                         # Basic type check/conversion could be added here if needed
-                        # e.g., if param_info['type'] == 'integer': try converting tool_args[param_name]
                         validated_args[param_name] = tool_args[param_name]
                     elif is_required:
                         missing_required.append(param_name)
@@ -210,19 +210,24 @@ class ToolExecutor:
                     return error_msg
             # --- End Argument Validation ---
 
+            # --- Remove explicitly passed args from kwargs ---
+            # These are passed directly to tool.execute, not via kwargs
+            kwargs_for_tool = validated_args.copy() # Start with validated args
+            kwargs_for_tool.pop('agent_id', None)
+            kwargs_for_tool.pop('agent_sandbox_path', None)
+            # --- End Removal ---
+
             # Execute with validated arguments
             result = await tool.execute(
-                agent_id=agent_id,
-                agent_sandbox_path=agent_sandbox_path,
-                **validated_args # Use validated args
+                agent_id=agent_id, # Pass caller's ID explicitly
+                agent_sandbox_path=agent_sandbox_path, # Pass sandbox explicitly
+                **kwargs_for_tool # Pass the REST of the validated args
             )
 
             # --- Handle Result ---
             if tool_name == ManageTeamTool.name:
-                 # Expecting dict from ManageTeamTool execute
                  if not isinstance(result, dict):
                       logger.error(f"ManageTeamTool execution returned unexpected type: {type(result)}. Expected dict.")
-                      # Return a standard error dict
                       return {"status": "error", "action": tool_args.get("action"), "message": f"Internal Error: ManageTeamTool returned unexpected type {type(result)}."}
                  logger.info(f"Executor: Tool '{tool_name}' execution returned result: {result}")
                  return result # Return the dict directly
