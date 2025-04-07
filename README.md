@@ -46,8 +46,9 @@ Configuration (`config.yaml`) primarily defines the `Admin AI` and constraints (
 
 ```mermaid
 graph TD
-    Changed to Top-Down for better layer visualization
-    USER[🤓Human User]
+    %% Changed to Top-Down for better layer visualization
+    USER[👨‍💻 Human User]
+
     subgraph Frontend [Human UI Layer]
         direction LR
         UI_SESSION_VIEW["Session View <br>(Agent Status/Comms)<br>Log Stream Filter<br>Adv I/O: P11+<br>**Dynamic Updates: P10**"]
@@ -58,7 +59,7 @@ graph TD
         FASTAPI["🚀 FastAPI Backend <br>+ Session API ✅<br>+ Auth API (P10)<br>+ Log Endpoints (P10?)"]
         WS_MANAGER["🔌 WebSocket Manager <br>+ Dynamic State Updates (P9/10)<br>+ Log Categories (P10)<br>**+ Override Handling ✅**"]
         AGENT_MANAGER["🧑‍💼 Agent Manager <br>(Orchestrator)<br>+ Agent Create/Delete ✅<br>+ Routes Admin/User Msgs ✅<br>+ Routes Tool Calls (Multi)✅<br>+ Handles Agent Generators ✅<br>+ Stream Error Retries/Override ✅<br>+ **Injects Standard Prompts ✅**<br>+ **Handles Queued Messages ✅**<br>+ Uses State/Session Mgrs ✅<br>Controls All Agents"]
-        %% REFINED ROLE -- Moved comment to its own line
+        %% REFINED ROLE comment moved to own line above
         STATE_MANAGER["📝 AgentStateManager <br>(Manages Teams State) P9 ✅"]
         SESSION_MANAGER["💾 SessionManager <br>(Handles Save/Load Logic) P9 ✅"]
 
@@ -136,7 +137,6 @@ graph TD
     PROVIDER_OR -- Interacts --> LLM_API_SVC;
     PROVIDER_OLLAMA -- Interacts --> OLLAMA_SVC;
     PROVIDER_OPENAI -- Interacts --> LLM_API_SVC;
-
 ```
 
 ## 💻 Technology Stack
