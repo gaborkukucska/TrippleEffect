@@ -105,7 +105,8 @@ graph TD
     FASTAPI -- Manages --> AGENT_MANAGER;
 
     WS_MANAGER -- Forwards Msgs / Sends Logs & Updates / Requests Override --> Frontend;
-    WS_MANAGER -- Forwards User Msgs & Overrides --> AGENT_MANAGER; %% Routes to AdminAI or Handler
+    %% Routes to AdminAI or Handler
+    WS_MANAGER -- Forwards User Msgs & Overrides --> AGENT_MANAGER;
 
     AGENT_MANAGER -- "Loads Bootstrap Agent(s)" --> CONFIG_YAML;
     AGENT_MANAGER -- "Uses Settings For Checks" --> DOT_ENV; %% Via Settings
