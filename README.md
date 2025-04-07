@@ -99,8 +99,10 @@ graph TD
     Frontend -- HTTP (API Calls, Auth, Session Mgmt) --> FASTAPI;
     Frontend -- WebSocket (Receives updates, Sends Overrides) --> WS_MANAGER;
 
-    FASTAPI -- Calls AgentManager Ops --> AGENT_MANAGER; %% Simplified view
-    FASTAPI -- Manages --> AGENT_MANAGER; %% App startup context
+    %% Simplified view of FastAPI interactions
+    FASTAPI -- Calls AgentManager Ops --> AGENT_MANAGER;
+    %% App startup context connection
+    FASTAPI -- Manages --> AGENT_MANAGER;
 
     WS_MANAGER -- Forwards Msgs / Sends Logs & Updates / Requests Override --> Frontend;
     WS_MANAGER -- Forwards User Msgs & Overrides --> AGENT_MANAGER; %% Routes to AdminAI or Handler
