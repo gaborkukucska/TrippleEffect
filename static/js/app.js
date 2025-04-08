@@ -1,4 +1,4 @@
-// START OF FILE static/js/app.js - Main Application Orchestrator (v3 - Ensuring Completeness)
+// START OF FILE static/js/app.js - Main Application Orchestrator (v4 - COMPLETE + Set Wrapper Width)
 
 // --- Import Modules ---
 import { initConfigUI, displayAgentConfigurations } from './modules/config.js';
@@ -11,7 +11,7 @@ import {
 import { initModals, openModal, closeModal, showOverrideModal } from './modules/modal.js';
 import {
     initSwipe, handleTouchStart, handleTouchMove, handleTouchEnd,
-    updateContentWrapperTransform, addKeyboardNavListeners // Removed getCurrent/setCurrent exports - use callbacks
+    updateContentWrapperTransform, addKeyboardNavListeners
 } from './modules/swipe.js';
 
 // --- Global State ---
@@ -19,7 +19,7 @@ let currentSectionIndex = 0; // Managed here, passed to/from swipe module via ca
 let currentFile = null;      // File handling state
 let currentFileContent = null;
 
-// --- DOM Element References (for Initialization) ---
+// --- DOM Element References ---
 let contentWrapper = null;
 let swipeSections = null;
 let messageInput = null;
@@ -31,10 +31,14 @@ let agentStatusContent = null;
 let conversationArea = null;
 let systemLogArea = null;
 let configContent = null;
+// Add modal elements refs here as they are used globally for checks
+let agentModal = null;
+let overrideModal = null;
+
 
 // --- Initialization ---
 document.addEventListener('DOMContentLoaded', () => {
-    console.log("DOM fully loaded. Starting Initialization (Full App Code)...");
+    console.log("DOM fully loaded. Starting Initialization (v4 - Set Wrapper Width)...");
 
     // --- Get Core Elements ---
     console.log("Getting core DOM elements...");
@@ -49,13 +53,17 @@ document.addEventListener('DOMContentLoaded', () => {
     conversationArea = document.getElementById('conversation-area');
     systemLogArea = document.getElementById('system-log-area');
     configContent = document.getElementById('config-content');
+    // Get modal refs
+    agentModal = document.getElementById('agent-modal');
+    overrideModal = document.getElementById('override-modal');
+
 
     // --- Basic Checks ---
-    if (!contentWrapper || swipeSections.length === 0 || !conversationArea || !systemLogArea || !messageInput || !agentStatusContent || !configContent || !sendButton) {
+    if (!contentWrapper || swipeSections.length === 0 || !conversationArea || !systemLogArea || !messageInput || !agentStatusContent || !configContent || !sendButton || !agentModal || !overrideModal) {
         console.error("Essential UI elements missing! Aborting initialization. Check HTML IDs/Classes:", {
             contentWrapper: !!contentWrapper, swipeSections: swipeSections.length, conversationArea: !!conversationArea,
             systemLogArea: !!systemLogArea, messageInput: !!messageInput, agentStatusContent: !!agentStatusContent,
-            configContent: !!configContent, sendButton: !!sendButton
+            configContent: !!configContent, sendButton: !!sendButton, agentModal: !!agentModal, overrideModal: !!overrideModal
         });
         document.body.innerHTML = '<h1 style="color: red; text-align: center;">UI Initialization Error: Core elements missing.</h1>';
         return;
@@ -66,7 +74,14 @@ document.addEventListener('DOMContentLoaded', () => {
     if (numSections > 0) {
          console.log(`Found ${numSections} swipe sections.`);
 
-         // --- Initialize Modules (Order matters for dependencies) ---
+         // --- *** ADDED: Set Content Wrapper Width *** ---
+         // This helps browsers understand the total width needed for the flex items
+         console.log(`Setting content wrapper width to ${numSections * 100}%`);
+         contentWrapper.style.width = `${numSections * 100}%`;
+         // --- *** END ADDED CODE *** ---
+
+
+         // --- Initialize Modules (Order might matter for dependencies) ---
          try {
              console.log("Initializing uiUpdate module...");
              initUIUpdate(
@@ -123,7 +138,7 @@ document.addEventListener('DOMContentLoaded', () => {
              setupGlobalEventListeners(); // This will attach swipe handlers from the swipe module
              console.log("Global event listeners setup complete.");
 
-             // Initial transform is now set within initSwipe
+             // Initial transform is set within initSwipe
 
              console.log("All modules initialized successfully.");
 
@@ -159,13 +174,14 @@ function setupGlobalEventListeners() {
         contentWrapper.addEventListener('touchmove', handleTouchMove, { passive: false });
         contentWrapper.addEventListener('touchend', handleTouchEnd);
         contentWrapper.addEventListener('touchcancel', handleTouchEnd);
-        console.log("Swipe event listeners attached to content wrapper.");
+        console.log("Swipe event listeners correctly attached to content wrapper.");
     } else { console.error("Content wrapper not found for swipe listeners!"); }
 
     // Global listener to close modals when clicking outside
     window.addEventListener('click', function(event) {
-        if (event.target.classList.contains('modal')) {
-            closeModal(event.target.id); // Use closeModal from modal module
+        // Ensure closeModal is available before calling
+        if (typeof closeModal === 'function' && event.target.classList.contains('modal')) {
+            closeModal(event.target.id);
         }
     });
 
@@ -299,14 +315,13 @@ function clearFileInput() {
     displayFileInfo(); console.log("File input cleared.");
 }
 
-// --- Stubs for potentially needed functions (if backend requests them) ---
+// --- Stubs for potentially needed functions ---
 // function requestInitialAgentStatus() { console.log("Req init status (needs backend)..."); }
 // function requestAgentStatus(agentId) { console.log(`Req status for ${agentId} (needs backend)...`); }
 
-// --- Make functions globally accessible IF needed by inline HTML onclick (like modals) ---
-// This is generally discouraged in module setups, prefer adding listeners in JS.
-// However, for the simple modal close buttons, we can expose the function.
+// --- Make necessary functions globally accessible ---
+// Expose functions needed by inline HTML onclick attributes
 window.closeModal = closeModal; // Expose closeModal from modal module globally
 window.clearFileInput = clearFileInput; // Expose clearFileInput globally for the button
 
-console.log("Main app.js execution finished.");
+console.log("Main app.js execution finished (v4 - Complete).");
