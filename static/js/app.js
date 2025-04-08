@@ -48,10 +48,10 @@ const modalTitle = document.getElementById('modal-title');
 // --- Initialization ---
 document.addEventListener('DOMContentLoaded', () => {
     console.log("DOM fully loaded (Swipe Sections - Full JS).");
-    // Check for essential elements
+    // Check for essential elements for swipe layout
     if (!contentWrapper || swipeSections.length === 0 || !conversationArea || !systemLogArea || !messageInput || !agentStatusContent || !configContent) {
         console.error("Essential UI elements for swipe section layout not found! Check HTML structure & IDs.");
-        document.body.innerHTML = '<h1 style="color: red; text-align: center;">UI Initialization Error: Essential swipe elements missing.</h1>';
+        document.body.innerHTML = '<h1 style="color: red; text-align: center;">UI Initialization Error: Swipe elements missing.</h1>';
         return;
     }
     if (numSections > 0) {
@@ -69,44 +69,42 @@ document.addEventListener('DOMContentLoaded', () => {
 function setupWebSocket() {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
-    console.log(`Attempting to connect WebSocket to: ${wsUrl}`);
+    console.log(`Attempting WS connection: ${wsUrl}`);
     ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
-        console.log('WebSocket connection established.');
-        updateLogStatus('Connected to backend!', false);
-        requestInitialAgentStatus(); // Request status on connect/reconnect
-        reconnectInterval = 5000; // Reset reconnect interval on successful connection
+        console.log('WS connected.');
+        updateLogStatus('Connected!', false);
+        requestInitialAgentStatus();
+        reconnectInterval = 5000;
     };
 
     ws.onmessage = (event) => {
         try {
             const messageData = JSON.parse(event.data);
-            // console.debug('Raw message from server:', messageData); // Optional debug
             handleWebSocketMessage(messageData);
         } catch (error) {
-            console.error('Failed to parse WebSocket message:', error);
-            addMessage('system-log-area', `[System Error] Received unparseable message: ${event.data}`, 'error');
+            console.error('WS parse error:', error);
+            addMessage('system-log-area', `[SysErr] Bad msg: ${event.data}`, 'error');
         }
     };
 
     ws.onerror = (event) => {
-        console.error('WebSocket error:', event);
-        addMessage('system-log-area', '[WebSocket Error] Connection error occurred.', 'error');
-        updateLogStatus('Connection Error. Retrying...', true);
+        console.error('WS error:', event);
+        addMessage('system-log-area', '[WS Error] Connect error.', 'error');
+        updateLogStatus('Connect Error. Retry...', true);
     };
 
     ws.onclose = (event) => {
-        console.log('WebSocket connection closed:', event.reason, `(Code: ${event.code})`);
+        console.log('WS closed:', event.reason, `(${event.code})`);
         const message = event.wasClean
-            ? `[WebSocket Closed] Code: ${event.code}.`
-            : `[WebSocket Closed] Connection lost unexpectedly. Code: ${event.code}. Trying to reconnect...`;
+            ? `[WS Closed] Code: ${event.code}.`
+            : `[WS Closed] Lost connection. Code: ${event.code}. Reconnecting...`;
         const type = event.wasClean ? 'status' : 'error';
         addMessage('system-log-area', message, type);
-        updateLogStatus('Disconnected. Retrying...', true);
-        // Simple exponential backoff for reconnect attempts
+        updateLogStatus('Disconnected. Retry...', true);
         setTimeout(setupWebSocket, reconnectInterval);
-        reconnectInterval = Math.min(reconnectInterval * 1.5, 30000); // Increase delay up to 30s
+        reconnectInterval = Math.min(reconnectInterval * 1.5, 30000);
     };
 }
 
@@ -169,15 +167,17 @@ function handleWebSocketMessage(data) {
 
 function requestInitialAgentStatus() {
     console.log("Requesting initial agent status (needs backend implementation)...");
+    // if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: "get_initial_status" })); }
 }
 function requestAgentStatus(agentId) {
     console.log(`Requesting status update for agent ${agentId} (needs backend implementation)...`);
+    // if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ type: "get_agent_status", agent_id: agentId })); }
 }
 
 // --- UI Update Functions ---
 function addMessage(areaId, text, type = 'status', agentId = null) {
     const area = document.getElementById(areaId);
-    if (!area) return;
+    if (!area) { console.error(`Message area #${areaId} not found.`); return; }
     const placeholder = area.querySelector('.initial-placeholder');
     if (placeholder) placeholder.remove();
 
@@ -194,13 +194,16 @@ function addMessage(areaId, text, type = 'status', agentId = null) {
     }
 
     const contentSpan = document.createElement('span');
+    // Use textContent to prevent XSS, replace newlines with <br> for display
     contentSpan.innerHTML = text.replace(/&/g, "&").replace(/</g, "<").replace(/>/g, ">").replace(/\n/g, '<br>');
     messageDiv.appendChild(contentSpan);
 
     area.appendChild(messageDiv);
     // Scroll only if the area is within the currently active section
-    if(area.closest('.swipe-section') === swipeSections[currentSectionIndex]) {
-        area.scrollTop = area.scrollHeight;
+    const currentSection = swipeSections[currentSectionIndex];
+    if (area.closest('.swipe-section') === currentSection) {
+        // Scroll smoothly after a short delay to allow rendering
+        setTimeout(() => { area.scrollTop = area.scrollHeight; }, 50);
     }
 }
 
@@ -214,7 +217,11 @@ function appendAgentResponseChunk(agentId, chunk) {
         label.textContent = `Agent @${agentId}:\n`; agentMsgDiv.appendChild(label); area.appendChild(agentMsgDiv);
     }
     const chunkNode = document.createTextNode(chunk); agentMsgDiv.appendChild(chunkNode);
-    if (area.closest('.swipe-section') === swipeSections[currentSectionIndex]) area.scrollTop = area.scrollHeight;
+    // Scroll only if the area is within the currently active section
+    if (area.closest('.swipe-section') === swipeSections[currentSectionIndex]) {
+         // Scroll smoothly after a short delay
+        setTimeout(() => { area.scrollTop = area.scrollHeight; }, 50);
+    }
 }
 
 function finalizeAgentResponse(agentId, finalContent) {
@@ -222,7 +229,9 @@ function finalizeAgentResponse(agentId, finalContent) {
     let agentMsgDiv = area.querySelector(`.message.agent_response[data-agent-id="${agentId}"].incomplete`);
     if (agentMsgDiv) { agentMsgDiv.classList.remove('incomplete'); }
     else if (finalContent) { addMessage('conversation-area', `Agent @${agentId}:\n${finalContent}`, 'agent_response', agentId); }
-    if (area.closest('.swipe-section') === swipeSections[currentSectionIndex]) area.scrollTop = area.scrollHeight;
+    if (area.closest('.swipe-section') === swipeSections[currentSectionIndex]) {
+         setTimeout(() => { area.scrollTop = area.scrollHeight; }, 50);
+    }
 }
 
 function updateLogStatus(message, isError = false) {
@@ -290,11 +299,11 @@ function setupEventListeners() {
         if (e.key === 'ArrowLeft' && currentSectionIndex > 0) {
             console.log("Key Left -> Previous Section");
             currentSectionIndex--;
-            updateContentWrapperTransform(); // Use transition defined in update func
+            updateContentWrapperTransform(true); // Use transition
         } else if (e.key === 'ArrowRight' && currentSectionIndex < numSections - 1) {
              console.log("Key Right -> Next Section");
             currentSectionIndex++;
-            updateContentWrapperTransform(); // Use transition defined in update func
+            updateContentWrapperTransform(true); // Use transition
         }
     });
 }
@@ -321,9 +330,9 @@ function handleTouchStart(event) {
     const target = event.target;
     // Allow swipe ONLY if the touch starts directly on the wrapper or section background,
     // AND NOT on elements known to scroll or be interactive within a section.
-    const isDirectTarget = target === contentWrapper || target.classList.contains('swipe-section') || target.classList.contains('section-content'); // Allow starting on section content background
+    const isDirectTarget = target === contentWrapper || target.classList.contains('swipe-section') || target.classList.contains('section-content');
     const isInteractive = target.closest('button, input, textarea, select, a, .modal-content');
-    // Check if the touch started INSIDE a scrollable area that needs vertical scroll
+    // Check if the touch started INSIDE a scrollable area
     const isInsideScrollable = target.closest('.message-area, #agent-status-content, #config-content');
     const isModalOpen = agentModal?.style.display !== 'none' || overrideModal?.style.display !== 'none';
 
@@ -331,16 +340,16 @@ function handleTouchStart(event) {
     if (isInteractive || isModalOpen || isInsideScrollable) {
         isSwiping = false;
         console.log(`Swipe ignored (target: ${target.tagName}, direct: ${isDirectTarget}, interact: ${!!isInteractive}, insideScroll: ${!!isInsideScrollable}, modal: ${isModalOpen})`);
-        return;
+        return; // Exit if interaction is likely needed or target is wrong
     }
 
     // Proceed with swipe initialization
     touchStartX = event.touches[0].clientX;
-    touchStartY = event.touches[0].clientY; // Record Y start
+    touchStartY = event.touches[0].clientY;
     touchCurrentX = touchStartX;
     isSwiping = true;
-    horizontalSwipeConfirmed = false; // Reset confirmation flag
-    if (contentWrapper) contentWrapper.style.transition = 'none'; // Disable transition during drag
+    horizontalSwipeConfirmed = false;
+    if (contentWrapper) contentWrapper.style.transition = 'none';
     console.log(`TouchStart: startX=${touchStartX.toFixed(0)}`);
 }
 
@@ -354,30 +363,29 @@ function handleTouchMove(event) {
 
     // Determine dominant direction ONCE per swipe
     if (!horizontalSwipeConfirmed) {
-        if (Math.abs(diffX) > Math.abs(diffY) + 5) { // Check if horizontal movement is clearly dominant
+        if (Math.abs(diffX) > Math.abs(diffY) + 5) { // Horizontal movement dominant
             horizontalSwipeConfirmed = true;
             console.log("Horizontal swipe confirmed.");
-        } else if (Math.abs(diffY) > Math.abs(diffX) + 5) {
-            // Vertical scroll is dominant, stop swipe attempt
-            isSwiping = false;
+        } else if (Math.abs(diffY) > Math.abs(diffX) + 5) { // Vertical movement dominant
+            isSwiping = false; // Cancel swipe
             console.log("Vertical scroll detected, canceling swipe.");
             return; // Allow default vertical scroll
         }
-        // Else: direction not yet clear, continue monitoring but don't prevent default yet
     }
 
     // Only prevent default and apply transform if horizontal swipe is confirmed
     if (horizontalSwipeConfirmed) {
-        event.preventDefault(); // Prevent vertical scrolling ONLY when swiping horizontally
+        event.preventDefault(); // Prevent page scroll during horizontal drag
         const baseTranslateXPercent = -currentSectionIndex * 100;
         if (contentWrapper) {
+             // Apply immediate transform feedback based on drag distance
              contentWrapper.style.transform = `translateX(calc(${baseTranslateXPercent}% + ${diffX}px))`;
         }
     }
 }
 
 function handleTouchEnd(event) {
-    if (!isSwiping) return; // Exit if swipe didn't start properly or was cancelled
+    if (!isSwiping) return; // Exit if swipe was cancelled (e.g., vertical scroll)
     const wasHorizontal = horizontalSwipeConfirmed; // Store confirmation state
     // Reset flags
     isSwiping = false;
@@ -388,7 +396,7 @@ function handleTouchEnd(event) {
         const diffX = touchCurrentX - touchStartX;
         console.log(`TouchEnd (Horizontal): diffX=${diffX.toFixed(0)}, threshold=${swipeThreshold}`);
 
-        let finalSectionIndex = currentSectionIndex;
+        let finalSectionIndex = currentSectionIndex; // Start with current index
 
         // Determine if swipe was significant enough to change section
         if (Math.abs(diffX) > swipeThreshold) {
@@ -404,7 +412,7 @@ function handleTouchEnd(event) {
          console.log("TouchEnd: No horizontal swipe confirmed. Snapping back.");
     }
 
-    updateContentWrapperTransform(true); // Animate to the final section position
+    updateContentWrapperTransform(true); // Animate to the final section position (snap back or move)
 }
 
 function updateContentWrapperTransform(useTransition = true) {
@@ -413,23 +421,98 @@ function updateContentWrapperTransform(useTransition = true) {
         currentSectionIndex = Math.max(0, Math.min(numSections - 1, currentSectionIndex));
         const newTranslateXPercent = -currentSectionIndex * 100;
         console.log(`Updating transform: Index=${currentSectionIndex}, TranslateX=${newTranslateXPercent}% (transition: ${useTransition})`);
+        // Apply or remove transition based on flag
         contentWrapper.style.transition = useTransition ? 'transform 0.3s ease-in-out' : 'none';
+        // Apply final transform
         contentWrapper.style.transform = `translateX(${newTranslateXPercent}%)`;
     } else {
         console.error("contentWrapper not found in updateContentWrapperTransform!");
     }
 }
 
+
 // --- Configuration Management UI ---
-// (displayAgentConfigurations, handleSaveAgent, handleDeleteAgent remain unchanged)
-async function displayAgentConfigurations() { if (!configContent) { console.warn("Config area not found."); return; } configContent.innerHTML = '<span class="status-placeholder">Loading...</span>'; try { const r = await fetch('/api/config/agents'); if (!r.ok) throw new Error(`HTTP ${r.status}`); const a = await r.json(); configContent.innerHTML = ''; if (a.length === 0) { configContent.innerHTML = '<span class="status-placeholder">No static agents.</span>'; return; } a.sort((x, y) => x.agent_id.localeCompare(y.agent_id)); a.forEach(g => { const i = document.createElement('div'); i.classList.add('config-item'); i.innerHTML = `<span><strong>${g.persona || g.agent_id}</strong> (${g.agent_id}) <span class="agent-details">- ${g.provider} / ${g.model}</span></span> <div class="config-item-actions"> <button class="config-action-button edit-button" data-id="${g.agent_id}" title="Edit">✏️</button> <button class="config-action-button delete-button" data-id="${g.agent_id}" title="Delete">🗑️</button> </div>`; configContent.appendChild(i); i.querySelector('.edit-button')?.addEventListener('click', () => openModal('agent-modal', g.agent_id)); i.querySelector('.delete-button')?.addEventListener('click', () => handleDeleteAgent(g.agent_id)); }); } catch (e) { console.error('Error fetching configs:', e); if(configContent) configContent.innerHTML = '<span class="status-placeholder error">Error loading.</span>'; addMessage('system-log-area', `[UI Error] Failed config load: ${e}`, 'error'); } }
-async function handleSaveAgent(event) { event.preventDefault(); const f = event.target; if (!f) return; const iI = f.querySelector('#agent-id'); const eI = f.querySelector('#edit-agent-id'); if (!iI || !eI) return; const aId = iI.value.trim(); const eId = eI.value; const ed = !!eId; if (!aId || !/^[a-zA-Z0-9_-]+$/.test(aId)) { alert("Valid Agent ID required."); return; } const cfg = { provider: f.querySelector('#provider')?.value, model: f.querySelector('#model')?.value.trim() ?? '', persona: f.querySelector('#persona')?.value.trim() || aId, temperature: parseFloat(f.querySelector('#temperature')?.value) || 0.7, system_prompt: f.querySelector('#system_prompt')?.value.trim() || 'You are helpful.' }; if (!cfg.provider || !cfg.model) { alert("Provider/Model required."); return; } const u = ed ? `/api/config/agents/${eId}` : '/api/config/agents'; const m = ed ? 'PUT' : 'POST'; const p = ed ? cfg : { agent_id: aId, config: cfg }; console.log(`Sending ${m} to ${u}`); try { const r = await fetch(u, { method: m, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) }); const x = await r.json(); if (r.ok && x.success) { alert(x.message || `Agent ${ed ? 'updated' : 'added'}. Restart required.`); closeModal('agent-modal'); displayAgentConfigurations(); } else { throw new Error(x.detail || x.message || `Failed op.`); } } catch (e) { console.error(`Save agent err:`, e); alert(`Error: ${e.message}`); addMessage('system-log-area', `[UI Err] Save agent failed: ${e.message}`, 'error'); } }
-async function handleDeleteAgent(agentId) { if (!confirm(`Delete static cfg '${agentId}'? Restart needed.`)) return; try { const r = await fetch(`/api/config/agents/${agentId}`, { method: 'DELETE' }); const x = await r.json(); if (r.ok && x.success) { alert(x.message || 'Agent cfg deleted. Restart.'); displayAgentConfigurations(); } else { throw new Error(x.detail || x.message || 'Failed delete.'); } } catch (e) { console.error('Delete agent err:', e); alert(`Error: ${e.message}`); addMessage('system-log-area', `[UI Err] Delete agent failed: ${e.message}`, 'error'); } }
+async function displayAgentConfigurations() {
+    if (!configContent) { console.warn("Config area not found."); return; }
+    configContent.innerHTML = '<span class="status-placeholder">Loading...</span>';
+    try {
+        const response = await fetch('/api/config/agents');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const agents = await response.json();
+        configContent.innerHTML = '';
+        if (agents.length === 0) { configContent.innerHTML = '<span class="status-placeholder">No static agents.</span>'; return; }
+        agents.sort((a, b) => a.agent_id.localeCompare(b.agent_id));
+        agents.forEach(agent => {
+            const item = document.createElement('div'); item.classList.add('config-item');
+            item.innerHTML = `<span><strong>${agent.persona || agent.agent_id}</strong> (${agent.agent_id}) <span class="agent-details">- ${agent.provider} / ${agent.model}</span></span> <div class="config-item-actions"> <button class="config-action-button edit-button" data-id="${agent.agent_id}" title="Edit">✏️</button> <button class="config-action-button delete-button" data-id="${agent.agent_id}" title="Delete">🗑️</button> </div>`;
+            configContent.appendChild(item);
+            item.querySelector('.edit-button')?.addEventListener('click', () => openModal('agent-modal', agent.agent_id));
+            item.querySelector('.delete-button')?.addEventListener('click', () => handleDeleteAgent(agent.agent_id));
+        });
+    } catch (error) {
+        console.error('Error fetching configs:', error);
+        if(configContent) configContent.innerHTML = '<span class="status-placeholder error">Error loading.</span>';
+        addMessage('system-log-area', `[UI Error] Failed config load: ${error}`, 'error');
+    }
+}
+
+async function handleSaveAgent(event) {
+    event.preventDefault(); const form = event.target; if (!form) return;
+    const agentIdInput = form.querySelector('#agent-id'); const editAgentIdInput = form.querySelector('#edit-agent-id'); if (!agentIdInput || !editAgentIdInput) return;
+    const agentId = agentIdInput.value.trim(); const editAgentId = editAgentIdInput.value; const isEditing = !!editAgentId;
+    if (!agentId || !/^[a-zA-Z0-9_-]+$/.test(agentId)) { alert("Valid Agent ID required."); return; }
+    const agentConfig = { provider: form.querySelector('#provider')?.value, model: form.querySelector('#model')?.value.trim() ?? '', persona: form.querySelector('#persona')?.value.trim() || agentId, temperature: parseFloat(form.querySelector('#temperature')?.value) || 0.7, system_prompt: form.querySelector('#system_prompt')?.value.trim() || 'You are helpful.' };
+    if (!agentConfig.provider || !agentConfig.model) { alert("Provider/Model required."); return; }
+    const url = isEditing ? `/api/config/agents/${editAgentId}` : '/api/config/agents'; const method = isEditing ? 'PUT' : 'POST'; const payload = isEditing ? agentConfig : { agent_id: agentId, config: agentConfig }; console.log(`Sending ${method} to ${url}`);
+    try {
+        const response = await fetch(url, { method: method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); const result = await response.json();
+        if (response.ok && result.success) { alert(result.message || `Agent ${isEditing ? 'updated' : 'added'}. Restart.`); closeModal('agent-modal'); displayAgentConfigurations(); }
+        else { throw new Error(result.detail || result.message || `Failed op.`); }
+    } catch (error) { console.error(`Save agent err:`, error); alert(`Error: ${error.message}`); addMessage('system-log-area', `[UI Err] Save agent failed: ${error.message}`, 'error'); }
+}
+
+async function handleDeleteAgent(agentId) {
+    if (!confirm(`Delete static cfg '${agentId}'? Restart needed.`)) return;
+    try {
+        const response = await fetch(`/api/config/agents/${agentId}`, { method: 'DELETE' }); const result = await response.json();
+        if (response.ok && result.success) { alert(result.message || 'Agent cfg deleted. Restart.'); displayAgentConfigurations(); }
+        else { throw new Error(result.detail || result.message || 'Failed delete.'); }
+    } catch (error) { console.error('Delete agent err:', e); alert(`Error: ${error.message}`); addMessage('system-log-area', `[UI Err] Delete agent failed: ${e.message}`, 'error'); }
+}
 
 // --- Modal Handling ---
-// (openModal, closeModal, showOverrideModal, handleSubmitOverride remain unchanged)
-async function openModal(modalId, editId = null) { const m = document.getElementById(modalId); if (!m) { console.error(`Modal ${modalId} not found.`); return; } if (modalId === 'agent-modal') { const f = m.querySelector('#agent-form'); const t = m.querySelector('#modal-title'); const iI = f?.querySelector('#agent-id'); const eI = f?.querySelector('#edit-agent-id'); if (!f || !t || !iI || !eI) { console.error("Agent modal elements missing."); return; } f.reset(); eI.value = ''; iI.disabled = false; if (editId) { t.textContent = `Edit Agent: ${editId}`; eI.value = editId; iI.value = editId; iI.disabled = true; try { console.log(`Fetching list for edit: ${editId}`); const r = await fetch('/api/config/agents'); if (!r.ok) throw new Error('Fetch agent list failed.'); const a = await r.json(); const d = a.find(x => x.agent_id === editId); if (!d) throw new Error(`Agent ${editId} not found.`); f.querySelector('#persona').value = d.persona || editId; f.querySelector('#provider').value = d.provider || 'openrouter'; f.querySelector('#model').value = d.model || ''; console.warn("Edit modal prefilled limited data."); } catch (e) { console.error("Edit fetch err:", e); alert(`Load agent error: ${e.message}`); return; } } else { t.textContent = 'Add New Static Agent'; f.querySelector('#temperature').value = 0.7; f.querySelector('#provider').value = 'openrouter'; } } m.style.display = 'block'; }
+async function openModal(modalId, editId = null) {
+    const modal = document.getElementById(modalId); if (!modal) { console.error(`Modal ${modalId} not found.`); return; }
+    if (modalId === 'agent-modal') {
+        const form = modal.querySelector('#agent-form'); const titleEl = modal.querySelector('#modal-title'); const agentIdInput = form?.querySelector('#agent-id'); const editAgentIdInput = form?.querySelector('#edit-agent-id');
+        if (!form || !titleEl || !agentIdInput || !editAgentIdInput) { console.error("Agent modal elements missing."); return; }
+        form.reset(); editAgentIdInput.value = ''; agentIdInput.disabled = false;
+        if (editId) {
+            titleEl.textContent = `Edit Agent: ${editId}`; eI.value = editId; iI.value = editId; iI.disabled = true;
+            try {
+                 console.log(`Fetching list for edit: ${editId}`); const r = await fetch('/api/config/agents'); if (!r.ok) throw new Error('Fetch list failed.'); const a = await r.json(); const d = a.find(x => x.agent_id === editId); if (!d) throw new Error(`Agent ${editId} not found.`);
+                 form.querySelector('#persona').value = d.persona || editId; form.querySelector('#provider').value = d.provider || 'openrouter'; form.querySelector('#model').value = d.model || ''; console.warn("Edit modal prefilled limited data.");
+            } catch (e) { console.error("Edit fetch err:", e); alert(`Load agent error: ${e.message}`); return; }
+        } else { titleEl.textContent = 'Add New Static Agent'; form.querySelector('#temperature').value = 0.7; form.querySelector('#provider').value = 'openrouter'; }
+    }
+    modal.style.display = 'block';
+}
+
 function closeModal(modalId) { const m = document.getElementById(modalId); if (m) m.style.display = 'none'; const f = m?.querySelector('form'); if(f) f.reset(); if(modalId === 'agent-modal') { const eI = document.getElementById('edit-agent-id'); const iI = document.getElementById('agent-id'); if(eI) eI.value = ''; if(iI) iI.disabled = false; } }
 window.onclick = function(event) { if (event.target.classList.contains('modal')) closeModal(event.target.id); }
-function showOverrideModal(data) { if (!overrideModal) return; const aId = data.agent_id; const p = data.persona || aId; document.getElementById('override-agent-id').value = aId; document.getElementById('override-modal-title').textContent = `Override for: ${p}`; document.getElementById('override-message').textContent = data.message || `Agent '${p}' (${aId}) failed. Provide alternative.`; document.getElementById('override-last-error').textContent = data.last_error || "Unknown error"; const s = document.getElementById('override-provider'); const i = document.getElementById('override-model'); if (s && data.current_provider) s.value = data.current_provider; if (i) i.value = data.current_model || ''; openModal('override-modal'); }
-function handleSubmitOverride(event) { event.preventDefault(); const aId = document.getElementById('override-agent-id')?.value; const nP = document.getElementById('override-provider')?.value; const nM = document.getElementById('override-model')?.value.trim(); if (!aId || !nP || !nM) { alert("Fill all override fields."); return; } const oD = { type: "submit_user_override", agent_id: aId, new_provider: nP, new_model: nM }; if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(oD)); addMessage('system-log-area', `[UI] Submitted override for ${aId} (Prov: ${nP}, Model: ${nM}).`, 'status'); closeModal('override-modal'); } else { alert("WS not connected."); addMessage('system-log-area', `[UI Err] Override failed for ${aId}: WS not connected.`, 'error'); } }
+
+function showOverrideModal(data) {
+    if (!overrideModal) return; const aId = data.agent_id; const p = data.persona || aId;
+    document.getElementById('override-agent-id').value = aId; document.getElementById('override-modal-title').textContent = `Override for: ${p}`;
+    document.getElementById('override-message').textContent = data.message || `Agent '${p}' (${aId}) failed. Provide alternative.`; document.getElementById('override-last-error').textContent = data.last_error || "Unknown error";
+    const s = document.getElementById('override-provider'); const i = document.getElementById('override-model');
+    if (s && data.current_provider) s.value = data.current_provider; if (i) i.value = data.current_model || '';
+    openModal('override-modal');
+}
+
+function handleSubmitOverride(event) {
+    event.preventDefault(); const aId = document.getElementById('override-agent-id')?.value; const nP = document.getElementById('override-provider')?.value; const nM = document.getElementById('override-model')?.value.trim();
+    if (!aId || !nP || !nM) { alert("Fill all override fields."); return; } const oD = { type: "submit_user_override", agent_id: aId, new_provider: nP, new_model: nM };
+    if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(oD)); addMessage('system-log-area', `[UI] Submitted override for ${aId} (Prov: ${nP}, Model: ${nM}).`, 'status'); closeModal('override-modal'); }
+    else { alert("WS not connected."); addMessage('system-log-area', `[UI Err] Override failed for ${aId}: WS not connected.`, 'error'); }
+}
