@@ -53,42 +53,45 @@ body {
     padding: 0;
     background-color: var(--bg-color-primary);
     color: var(--text-color-primary);
-    overflow: hidden; /* Body clips the page container */
-    height: 100vh;
-    width: 100vw;
-    display: flex;
+    overflow: hidden; /* CRITICAL: Body must hide overflow */
+    height: 100vh; /* Use viewport height */
+    width: 100vw;  /* Use viewport width */
     overscroll-behavior: none;
+    display: flex; /* Ensure body fills viewport */
 }
 
 /* --- Page Container for Swiping --- */
 #page-container {
     display: flex;
-    width: 100%; /* Container takes full body width */
-    height: 100%; /* Container takes full body height */
-    overflow: hidden; /* Hide overflowing pages */
-    position: relative;
+    width: 100%; /* Takes full body width */
+    height: 100%; /* Takes full body height */
+    overflow: hidden; /* Hide overflowing pages (redundant with body, but safe) */
     transition: transform 0.3s ease-in-out;
     will-change: transform; /* Hint for performance */
+    /* Ensure flex items (pages) don't wrap */
+    flex-wrap: nowrap;
 }
 
 /* --- Individual Page Styling --- */
 .page {
-    width: 100%; /* Use % instead of vw for pages inside container */
-    height: 100%;
-    flex-shrink: 0;
+    width: 100%; /* Each page takes 100% width OF THE CONTAINER */
+    height: 100%; /* Each page takes 100% height OF THE CONTAINER */
+    flex-shrink: 0; /* CRITICAL: Prevent pages from shrinking */
     overflow-x: hidden; /* Prevent horizontal scroll within page */
-    overflow-y: auto; /* Allow vertical scroll WITHIN each page */
-    display: flex;
+    overflow-y: auto;   /* Allow vertical scroll WITHIN each page */
+    display: flex;      /* Use flex to manage content vertically */
     flex-direction: column;
     padding: 15px;
-    /* background-color: var(--bg-color-primary); /* Base background set here */
-    position: relative; /* Needed if children use absolute positioning */
+    position: relative; /* Keep for modals or other internal positioning needs */
+    /* Add temporary outline for debugging */
+    outline: 2px solid red;
 }
 
 /* --- *** TEMPORARY DEBUG BACKGROUND COLORS *** --- */
-#main-page { background-color: #202020; } /* Slightly different dark */
-#log-page { background-color: #152515; } /* Dark green tint */
-#config-page { background-color: #251515; } /* Dark red tint */
+/* Keep these for now */
+#main-page { background-color: #202020; }
+#log-page { background-color: #152515; }
+#config-page { background-color: #251515; }
 /* --- *** END TEMPORARY *** --- */
 
 
@@ -99,7 +102,7 @@ body {
     margin: 0 0 15px 0;
     padding-bottom: 10px;
     border-bottom: 1px solid var(--border-color);
-    flex-shrink: 0;
+    flex-shrink: 0; /* Prevent title shrinking */
 }
 
 /* --- Main Page (Page 1) Specific Layout --- */
@@ -225,7 +228,7 @@ body {
     border-left: 4px solid var(--accent-color-1);
     background-color: #2a3a4a;
 }
-.message[data-agent-id*="coder"] {
+.message[data-agent-id*="coder"] { /* Match variations */
     border-left: 4px solid var(--accent-color-2);
     background-color: #2a4a3a;
 }
