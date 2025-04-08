@@ -1,111 +1,104 @@
 /* START OF FILE static/css/style.css */
 
 /* --- CSS Variables (Dark Mode - Unchanged) --- */
-:root {
-    --bg-color-primary: #1a1a1a;
-    --bg-color-secondary: #2a2a2a;
-    --bg-color-tertiary: #3a3a3a;
-    --text-color-primary: #e0e0e0;
-    --text-color-secondary: #b0b0b0;
-    --text-color-muted: #888888;
-    --border-color: #444444;
-    --accent-color-1: #0d6efd;
-    --accent-color-2: #17a2b8;
-    --accent-color-green: #198754;
-    --accent-color-red: #dc3545;
-    --accent-color-orange: #fd7e14;
-    --accent-color-yellow: #ffc107;
-    --accent-color-magenta: #d63384;
-    --user-message-bg: #056162;
-    --agent-msg-bg-base: #303030;
-    --status-bg: #252525;
-    --error-bg: #5c1a1a;
-    --error-text: #ffdddd;
-    --input-bg: #252525;
-    --input-border: #555;
-    --button-bg: #0d6efd;
-    --button-hover-bg: #0b5ed7;
-    --button-disabled-bg: #555;
-    --scrollbar-track-bg: #2a2a2a;
-    --scrollbar-thumb-bg: #555;
-    --scrollbar-thumb-hover-bg: #777;
-    --modal-bg: rgba(0, 0, 0, 0.7);
-    --modal-content-bg: #2c2c2c;
-    --modal-border-color: #555;
-    --modal-input-bg: #383838;
-    --modal-input-border: #666;
+:root { /* ... variables as before ... */
+    --bg-color-primary: #1a1a1a; --bg-color-secondary: #2a2a2a; --bg-color-tertiary: #3a3a3a; --text-color-primary: #e0e0e0; --text-color-secondary: #b0b0b0; --text-color-muted: #888888; --border-color: #444444; --accent-color-1: #0d6efd; --accent-color-2: #17a2b8; --accent-color-green: #198754; --accent-color-red: #dc3545; --accent-color-orange: #fd7e14; --accent-color-yellow: #ffc107; --accent-color-magenta: #d63384; --user-message-bg: #056162; --agent-msg-bg-base: #303030; --status-bg: #252525; --error-bg: #5c1a1a; --error-text: #ffdddd; --input-bg: #252525; --input-border: #555; --button-bg: #0d6efd; --button-hover-bg: #0b5ed7; --button-disabled-bg: #555; --scrollbar-track-bg: #2a2a2a; --scrollbar-thumb-bg: #555; --scrollbar-thumb-hover-bg: #777; --modal-bg: rgba(0, 0, 0, 0.7); --modal-content-bg: #2c2c2c; --modal-border-color: #555; --modal-input-bg: #383838; --modal-input-border: #666;
 }
 
 /* --- Basic Setup --- */
-html {
-    box-sizing: border-box;
-    overscroll-behavior: none;
-    height: 100%;
-    width: 100%; /* Ensure html takes full width */
-    overflow: hidden; /* Prevent html scrollbars */
-}
-*, *:before, *:after {
-    box-sizing: inherit;
-}
+html { box-sizing: border-box; overscroll-behavior: none; height: 100%; width: 100%; overflow: hidden; }
+*, *:before, *:after { box-sizing: inherit; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; background-color: var(--bg-color-primary); color: var(--text-color-primary); overflow: hidden; height: 100%; width: 100%; overscroll-behavior: none; display: flex; }
 
-body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    margin: 0;
-    padding: 0;
-    background-color: var(--bg-color-primary);
-    color: var(--text-color-primary);
-    overflow: hidden; /* Body MUST clip the content wrapper */
-    height: 100%;
-    width: 100%;
-    overscroll-behavior: none;
-    /* Body itself doesn't need flex if wrapper takes 100% */
-}
-
-/* --- Content Wrapper for Swiping --- */
-.content-wrapper {
-    display: flex; /* CRITICAL: This makes children align horizontally */
-    /* Width will be set by JS to e.g. 300% */
-    height: 100%; /* Takes full body height */
-    overflow: visible; /* Allow sections to overflow horizontally initially */
-    transition: transform 0.3s ease-in-out;
+/* --- Page Container for Swiping --- */
+#page-container {
+    display: flex; /* Makes .page children align horizontally */
+    width: 100%;   /* Takes full body width */
+    height: 100%;  /* Takes full body height */
+    overflow: hidden; /* Hide overflowing pages */
+    transition: transform 0.3s ease-out; /* Use ease-out for snap */
     will-change: transform;
-    flex-wrap: nowrap; /* Default, but good to be explicit */
+    flex-wrap: nowrap; /* Ensure pages stay in one line */
+    position: relative; /* Keep for potential absolute elements if needed */
 }
 
-/* --- Individual Section Styling --- */
-.swipe-section {
-    width: 100vw; /* CRITICAL: Each section is full viewport width */
-    height: 100vh; /* CRITICAL: Each section is full viewport height */
-    flex-shrink: 0; /* CRITICAL: Prevent sections from shrinking */
-    overflow: hidden; /* Hide internal overflow (scrolling handled by .section-content) */
+/* --- Individual Page Styling --- */
+.page {
+    width: 100%;   /* Each page is 100% of the container's width (which is 100vw) */
+    height: 100%;  /* Each page is 100% of the container's height */
+    flex-shrink: 0; /* CRITICAL: Prevent pages from shrinking */
+    overflow: hidden; /* Hide internal overflow; scrolling managed by inner divs */
+    display: flex;
+    flex-direction: column; /* Stack content vertically within a page */
+    background-color: var(--bg-color-primary); /* Base background for pages */
+    padding: 15px; /* Padding applied inside each page */
+    position: relative; /* Context for absolute elements like pseudo-elements */
+}
+/* Add pseudo-element to show page ID easily during debugging */
+/*
+.page::before {
+    content: attr(id);
+    position: absolute; top: 2px; left: 2px; background-color: rgba(0,0,0,0.7);
+    color: white; padding: 2px 5px; font-size: 10px; border-radius: 3px; z-index: 10;
+}
+*/
+
+/* --- Page Titles --- */
+.page h1 { text-align: center; color: var(--text-color-primary); margin: 0 0 15px 0; padding-bottom: 10px; border-bottom: 1px solid var(--border-color); flex-shrink: 0; }
+
+/* --- Main Page (#main-page) Specific Layout --- */
+/* Uses flex direction column */
+#main-page .main-page-layout {
+    flex-grow: 1; /* Allows this inner layout to take remaining space */
     display: flex;
     flex-direction: column;
-    background-color: var(--bg-color-primary); /* Base background */
+    overflow: hidden; /* Contains the two main sections */
 }
-
-/* Inner content area within each section */
-.section-content {
-    padding: 15px;
-    overflow-y: auto; /* Allow vertical scrolling for the content */
-    overflow-x: hidden;
-    height: 100%; /* Take full height of the section */
+#main-page .main-chat-section {
+    flex-grow: 1; /* Let chat area take most space */
+    min-height: 200px;
     display: flex;
-    flex-direction: column; /* Stack elements vertically */
+    flex-direction: column;
+    overflow: hidden;
+    margin-bottom: 10px;
 }
-
-/* Section Titles */
-.section-content h1 { text-align: center; color: var(--text-color-primary); margin: 0 0 15px 0; padding-bottom: 10px; border-bottom: 1px solid var(--border-color); flex-shrink: 0; }
-
-/* --- Main Section Layout --- */
-#main-section .main-top-area { flex-grow: 1; min-height: 250px; display: flex; flex-direction: column; overflow: hidden; margin-bottom: 10px; }
-#main-section .main-bottom-area { flex-shrink: 0; height: 200px; max-height: 35%; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border-color); border-radius: 4px; background-color: var(--bg-color-secondary); }
-#main-section .main-bottom-area h2 { margin: 0; padding: 8px 10px; font-size: 1.1em; color: var(--text-color-secondary); background-color: var(--bg-color-tertiary); border-bottom: 1px solid var(--border-color); flex-shrink: 0; }
-#main-section #agent-status-content { overflow-y: auto; flex-grow: 1; padding: 10px; }
+#main-page .main-agent-status-section {
+    flex-shrink: 0; /* Don't shrink status area */
+    height: 200px; /* Fixed height */
+    max-height: 35%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background-color: var(--bg-color-secondary);
+}
+#main-page .main-agent-status-section h2 { margin: 0; padding: 8px 10px; font-size: 1.1em; color: var(--text-color-secondary); background-color: var(--bg-color-tertiary); border-bottom: 1px solid var(--border-color); flex-shrink: 0; }
+#main-page #agent-status-content { overflow-y: auto; flex-grow: 1; padding: 10px; }
 
 /* --- Message Area Styling --- */
-.message-area { flex-grow: 1; overflow-y: auto; border: 1px solid var(--border-color); padding: 10px; background-color: var(--bg-color-tertiary); display: flex; flex-direction: column; border-radius: 4px; margin-bottom: 10px; min-height: 100px; }
-.full-page-area { flex-grow: 1; margin-bottom: 0; background-color: var(--bg-color-secondary); border-radius: 4px; border: 1px solid var(--border-color); }
-#main-section .conversation-area { background-color: var(--bg-color-tertiary); }
+.message-area {
+    flex-grow: 1; /* Takes space within its parent flex container */
+    overflow-y: auto; /* Allows internal scrolling */
+    border: 1px solid var(--border-color);
+    padding: 10px;
+    background-color: var(--bg-color-tertiary);
+    display: flex;
+    flex-direction: column;
+    border-radius: 4px;
+    margin-bottom: 10px; /* Space below conversation/log areas */
+    min-height: 100px;
+}
+/* Special styling for log/config areas that fill their page */
+.full-page-area {
+    flex-grow: 1; /* Takes all remaining vertical space in its page */
+    margin-bottom: 0; /* No margin needed at bottom */
+    background-color: var(--bg-color-secondary);
+    /* Allow internal scrolling if needed */
+    overflow-y: auto;
+    display: flex; /* Use flex for internal layout (e.g., config header+content) */
+    flex-direction: column;
+}
 #log-section .system-log-area { font-size: 0.9em; line-height: 1.4; }
 .system-log-area .message .timestamp { font-size: 0.8em; color: var(--text-color-muted); margin-right: 8px; display: inline-block; }
 
@@ -135,19 +128,28 @@ body {
 .file-info-area span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 80%; }
 .file-info-area button { background: none; border: none; color: var(--accent-color-red); cursor: pointer; font-size: 1.1em; padding: 0 5px; } .file-info-area button:hover { opacity: 0.8; }
 
-/* --- Config Area Styling (Unchanged) --- */
-#config-section .config-area { overflow-y: auto; display: flex; flex-direction: column; }
-#config-section .config-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid var(--border-color); padding: 8px 0; flex-shrink: 0; }
-#config-section .config-header h2 { margin: 0; border: none; padding: 0; font-size: 1.1em; color: var(--text-color-secondary); } #config-section .config-header div { display: flex; gap: 5px; }
-#config-section #config-content { flex-grow: 1; overflow-y: auto; padding-top: 5px; }
-#config-section .restart-note { flex-shrink: 0; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color); font-size: 0.85em; color: var(--accent-color-red); text-align: center; font-style: italic; }
+/* --- Config Area Styling (within #config-page) --- */
+#config-page .config-area {
+    /* Styled by .full-page-area: flex-grow, bg, border, overflow, flex-direction */
+}
+#config-page .config-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid var(--border-color); padding: 8px 0; flex-shrink: 0; }
+#config-page .config-header h2 { margin: 0; border: none; padding: 0; font-size: 1.1em; color: var(--text-color-secondary); }
+#config-page .config-header div { display: flex; gap: 5px; }
+#config-page #config-content {
+    flex-grow: 1; /* Allow config list to take space */
+    overflow-y: auto; /* Scroll config list if needed */
+    padding-top: 5px;
+}
+#config-page .restart-note { flex-shrink: 0; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color); font-size: 0.85em; color: var(--accent-color-red); text-align: center; font-style: italic; }
+/* Config Buttons/Items (Unchanged) */
 .config-action-button { border: none; border-radius: 4px; padding: 3px 8px; cursor: pointer; font-size: 0.9em; margin-left: 5px; color: white; font-weight: bold; min-width: 28px; line-height: 1.2; }
 .add-button { background-color: var(--accent-color-green); } .refresh-button { background-color: var(--accent-color-2); } .edit-button { background-color: var(--accent-color-yellow); color: var(--bg-color-primary); } .delete-button { background-color: var(--accent-color-red); }
 .add-button:hover, .refresh-button:hover, .delete-button:hover { filter: brightness(1.2); } .edit-button:hover { filter: brightness(1.1); }
 .config-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 2px; border-bottom: 1px solid var(--border-color); font-size: 0.9em; }
 .config-item:last-child { border-bottom: none; } .config-item span { flex-grow: 1; margin-right: 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; } .config-item .agent-details { color: var(--text-color-secondary); } .config-item .config-item-actions { flex-shrink: 0; }
 
-/* --- Agent Status Display Styles (Unchanged) --- */
+/* --- Agent Status Display Styles (within #main-page) --- */
+/* Styling unchanged, just ensure parent selectors are correct if needed */
 .agent-status-item { margin-bottom: 5px; padding: 4px 6px; border-radius: 4px; border: 1px solid transparent; border-left: 3px solid transparent; transition: background-color 0.3s ease; background-color: var(--bg-color-tertiary); color: var(--text-color-primary); }
 .agent-status-item strong { color: var(--text-color-primary); } .agent-status-item .agent-model { font-size: 0.9em; color: var(--text-color-secondary); margin-left: 2px; margin-right: 5px; } .agent-status-item .agent-status { font-weight: bold; padding: 1px 5px; border-radius: 3px; color: white; margin-left: 5px; float: right; }
 .agent-status-item.status-idle { border-left-color: var(--text-color-muted); } .agent-status-item.status-idle .agent-status { background-color: var(--text-color-muted); color: var(--bg-color-primary); }
@@ -175,6 +177,6 @@ body {
 .restart-note { margin-top: 15px; font-size: 0.85em; color: var(--accent-color-red); text-align: center; font-style: italic; }
 #override-form p { margin-bottom: 10px; line-height: 1.4; } #override-form code { background-color: var(--bg-color-primary); padding: 2px 5px; border-radius: 3px; font-family: monospace; font-size: 0.9em; color: var(--error-text); display: block; white-space: pre-wrap; max-height: 100px; overflow-y: auto; border: 1px solid var(--border-color); }
 
-/* --- Scrollbar Styling (Unchanged) --- */
+/* --- Scrollbar Styling --- */
 ::-webkit-scrollbar { width: 8px; height: 8px; } ::-webkit-scrollbar-track { background: var(--scrollbar-track-bg); border-radius: 4px; } ::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb-bg); border-radius: 4px; border: 2px solid var(--scrollbar-track-bg); } ::-webkit-scrollbar-thumb:hover { background-color: var(--scrollbar-thumb-hover-bg); }
 * { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb-bg) var(--scrollbar-track-bg); }
