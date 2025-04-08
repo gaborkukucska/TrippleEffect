@@ -2,36 +2,36 @@
 
 /* --- CSS Variables for Theming (Dark Mode) --- */
 :root {
-    --bg-color-primary: #1a1a1a;       /* Very dark grey (almost black) */
-    --bg-color-secondary: #2a2a2a;    /* Dark grey */
-    --bg-color-tertiary: #3a3a3a;     /* Medium dark grey */
-    --text-color-primary: #e0e0e0;    /* Light grey */
-    --text-color-secondary: #b0b0b0;   /* Medium grey */
-    --text-color-muted: #888888;     /* Darker grey */
-    --border-color: #444444;         /* Dark border */
-    --accent-color-1: #007bff;       /* Blue */
-    --accent-color-2: #17a2b8;       /* Teal */
-    --accent-color-green: #28a745;   /* Green */
-    --accent-color-red: #dc3545;     /* Red */
-    --accent-color-orange: #fd7e14;  /* Orange */
-    --accent-color-yellow: #ffc107;  /* Yellow */
-    --accent-color-magenta: #ff00ff; /* Magenta */
+    --bg-color-primary: #1a1a1a;
+    --bg-color-secondary: #2a2a2a;
+    --bg-color-tertiary: #3a3a3a;
+    --text-color-primary: #e0e0e0;
+    --text-color-secondary: #b0b0b0;
+    --text-color-muted: #888888;
+    --border-color: #444444;
+    --accent-color-1: #0d6efd; /* Slightly different blue */
+    --accent-color-2: #17a2b8;
+    --accent-color-green: #198754; /* Different green */
+    --accent-color-red: #dc3545;
+    --accent-color-orange: #fd7e14;
+    --accent-color-yellow: #ffc107;
+    --accent-color-magenta: #d63384; /* Different magenta */
 
-    --user-message-bg: #056162;      /* Dark cyan/teal for user */
-    --agent-msg-bg-base: #303030;    /* Base for agent messages */
+    --user-message-bg: #056162;
+    --agent-msg-bg-base: #303030;
     --status-bg: #252525;
     --error-bg: #5c1a1a;
     --error-text: #ffdddd;
     --input-bg: #252525;
     --input-border: #555;
-    --button-bg: #007bff;
-    --button-hover-bg: #0056b3;
+    --button-bg: #0d6efd;
+    --button-hover-bg: #0b5ed7;
     --button-disabled-bg: #555;
     --scrollbar-track-bg: #2a2a2a;
     --scrollbar-thumb-bg: #555;
     --scrollbar-thumb-hover-bg: #777;
 
-    --modal-bg: rgba(0, 0, 0, 0.7);  /* Darker modal overlay */
+    --modal-bg: rgba(0, 0, 0, 0.7);
     --modal-content-bg: #2c2c2c;
     --modal-border-color: #555;
     --modal-input-bg: #383838;
@@ -41,7 +41,6 @@
 /* --- Basic Setup --- */
 html {
     box-sizing: border-box;
-    /* Prevent pull-to-refresh and overscroll effects which interfere with swiping */
     overscroll-behavior: none;
 }
 *, *:before, *:after {
@@ -51,71 +50,77 @@ html {
 body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
     margin: 0;
-    padding: 0; /* Remove body padding */
+    padding: 0;
     background-color: var(--bg-color-primary);
     color: var(--text-color-primary);
-    /* Prevent scrolling on the body itself, scrolling happens within pages */
-    overflow: hidden;
-    height: 100vh; /* Full viewport height */
-    width: 100vw;  /* Full viewport width */
-    display: flex; /* Use flex for page container */
-    overscroll-behavior: none; /* Reinforce on body */
+    overflow: hidden; /* Body clips the page container */
+    height: 100vh;
+    width: 100vw;
+    display: flex; /* Keep flex just in case, though page-container is the main layout */
+    overscroll-behavior: none;
 }
 
 /* --- Page Container for Swiping --- */
 #page-container {
     display: flex;
-    width: 100vw; /* Takes full viewport width */
-    height: 100vh; /* Takes full viewport height */
+    width: 100%; /* Container takes full body width */
+    height: 100%; /* Container takes full body height */
     overflow: hidden; /* Hide overflowing pages */
-    position: relative; /* Needed for absolute positioning of pages if using transform */
-    transition: transform 0.3s ease-in-out; /* Smooth transition for swipe */
+    position: relative;
+    transition: transform 0.3s ease-in-out;
+    will-change: transform; /* Hint for performance */
 }
 
 /* --- Individual Page Styling --- */
 .page {
-    width: 100vw; /* Each page takes full width */
-    height: 100vh; /* Each page takes full height */
-    flex-shrink: 0; /* Prevent pages from shrinking */
-    overflow: hidden; /* Prevent content overflow causing body scroll */
+    width: 100%; /* Use % instead of vw for pages inside container */
+    height: 100%;
+    flex-shrink: 0;
+    overflow-x: hidden; /* Prevent horizontal scroll within page */
+    overflow-y: auto; /* Allow vertical scroll WITHIN each page */
     display: flex;
-    flex-direction: column; /* Stack content vertically */
-    padding: 15px; /* Padding inside each page */
-    background-color: var(--bg-color-primary); /* Background for each page */
-    position: relative; /* For potential absolute positioning inside */
+    flex-direction: column;
+    padding: 15px;
+    background-color: var(--bg-color-primary);
+    position: relative; /* Needed if children use absolute positioning */
 }
 
 /* --- Page Titles --- */
 .page h1 {
     text-align: center;
     color: var(--text-color-primary);
-    margin: 0 0 15px 0; /* Top, Right, Bottom, Left */
+    margin: 0 0 15px 0;
     padding-bottom: 10px;
     border-bottom: 1px solid var(--border-color);
-    flex-shrink: 0; /* Prevent title from shrinking */
+    flex-shrink: 0;
 }
 
 /* --- Main Page (Page 1) Specific Layout --- */
 #main-page .main-page-layout {
-    flex-grow: 1; /* Take remaining vertical space */
+    flex-grow: 1;
     display: flex;
-    flex-direction: column; /* Stack chat and agent list vertically */
-    overflow: hidden; /* Prevent overflow */
+    flex-direction: column;
+    overflow: hidden; /* Contains the two sections */
 }
 
 #main-page .main-chat-section {
-    flex-basis: 70%; /* Chat takes ~70% of the height */
+    /* flex-basis: 70%; Removed fixed basis, use flex-grow */
+    flex-grow: 1; /* Let chat grow more */
+    min-height: 200px; /* Minimum space for chat */
     display: flex;
     flex-direction: column;
-    overflow: hidden; /* Prevent overflow */
-    margin-bottom: 10px; /* Space below chat section */
+    overflow: hidden;
+    margin-bottom: 10px;
 }
 
 #main-page .main-agent-status-section {
-    flex-basis: 30%; /* Agent list takes ~30% */
+   /* flex-basis: 30%; Removed fixed basis */
+    flex-shrink: 0; /* Don't shrink agent list */
+    height: 200px; /* Fixed height for agent list */
+    max-height: 35%; /* Max height relative to parent */
     display: flex;
     flex-direction: column;
-    overflow: hidden; /* Prevent overflow */
+    overflow: hidden;
     border: 1px solid var(--border-color);
     border-radius: 4px;
     background-color: var(--bg-color-secondary);
@@ -129,7 +134,7 @@ body {
     border-bottom: 1px solid var(--border-color);
     flex-shrink: 0;
 }
-#main-page #agent-status-content { /* Ensure agent list scrolls */
+#main-page #agent-status-content {
     overflow-y: auto;
     flex-grow: 1;
     padding: 10px;
@@ -139,25 +144,26 @@ body {
 /* --- Message Area Styling (Shared & Specific) --- */
 .message-area {
     flex-grow: 1; /* Take available space */
-    overflow-y: auto; /* Enable vertical scrolling */
+    overflow-y: auto;
     border: 1px solid var(--border-color);
     padding: 10px;
     background-color: var(--bg-color-secondary);
     display: flex;
     flex-direction: column;
     border-radius: 4px;
-    margin-bottom: 10px; /* Space below message areas */
-    min-height: 100px; /* Ensure some minimum height */
+    margin-bottom: 10px;
+    min-height: 100px;
 }
 
-.full-page-area { /* For Log and Config pages */
-    flex-grow: 1; /* Take all available vertical space */
-    margin-bottom: 0; /* No margin at bottom */
+.full-page-area {
+    flex-grow: 1;
+    margin-bottom: 0;
+    height: auto; /* Allow it to take full height within the flex page */
 }
 
 /* Conversation Area Specific (within main page) */
 #main-page .conversation-area {
-    background-color: var(--bg-color-secondary); /* Use secondary bg for consistency */
+    background-color: var(--bg-color-secondary);
 }
 
 /* System Log Area Specific (within log page) */
@@ -166,12 +172,11 @@ body {
     background-color: var(--bg-color-secondary);
     line-height: 1.4;
 }
-/* Add timestamp style */
 .system-log-area .message .timestamp {
     font-size: 0.8em;
     color: var(--text-color-muted);
     margin-right: 8px;
-    display: inline-block; /* Prevent wrapping */
+    display: inline-block;
 }
 
 
@@ -181,54 +186,51 @@ body {
     padding: 8px 12px;
     border-radius: 8px;
     word-wrap: break-word;
-    max-width: 90%; /* Max width within its container */
+    max-width: 90%;
     border: 1px solid var(--border-color);
     box-sizing: border-box;
-    color: var(--text-color-primary); /* Default text color */
-    background-color: var(--agent-msg-bg-base); /* Default background */
+    color: var(--text-color-primary);
+    background-color: var(--agent-msg-bg-base);
 }
 
 .message p { margin: 0; }
 .message span { display: inline-block; }
 
-/* User messages in CONVERSATION area */
+/* User messages */
 .conversation-area .message.user {
     background-color: var(--user-message-bg);
     border-color: var(--user-message-bg);
     margin-left: auto;
     align-self: flex-end;
-    text-align: left; /* Keep text left-aligned */
+    text-align: left;
 }
 
-/* Agent responses in CONVERSATION area */
+/* Agent responses */
 .conversation-area .message.agent_response {
     margin-right: auto;
     align-self: flex-start;
-    font-family: Menlo, Monaco, Consolas, "Courier New", monospace; /* Monospace for agent */
+    font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
     background-color: var(--agent-msg-bg-base);
     border-color: var(--border-color);
 }
 
-/* Agent-specific coloring (Adjust for dark mode) */
-.message[data-agent-id="admin_ai"] { /* Style Admin AI distinctly */
+/* Agent-specific coloring */
+.message[data-agent-id="admin_ai"] {
     border-left: 4px solid var(--accent-color-1);
-    background-color: #2a3a4a; /* Dark blue-grey */
+    background-color: #2a3a4a;
 }
-.message[data-agent-id="agent_0"],
-.message[data-agent-id*="coder"] {
-    border-left: 4px solid var(--accent-color-2); /* Teal */
-    background-color: #2a4a3a; /* Dark green-grey */
+.message[data-agent-id*="coder"] { /* Match variations */
+    border-left: 4px solid var(--accent-color-2);
+    background-color: #2a4a3a;
 }
-.message[data-agent-id="agent_1"],
 .message[data-agent-id*="analyst"] {
     border-left: 4px solid var(--accent-color-orange);
-    background-color: #4a3a2a; /* Dark orange-grey */
+    background-color: #4a3a2a;
 }
-.message[data-agent-id="agent_2"],
 .message[data-agent-id*="creative"],
 .message[data-agent-id*="reviewer"] {
     border-left: 4px solid var(--accent-color-green);
-    background-color: #3a4a2a; /* Dark lime-grey */
+    background-color: #3a4a2a;
 }
 .message[data-agent-id="default"] {
     border-left: 4px solid var(--text-color-muted);
@@ -258,7 +260,7 @@ body {
 
 /* Tool execution status */
 .message.status.tool-execution {
-    background-color: #404030; /* Dark yellow-grey */
+    background-color: #404030;
     border-color: var(--accent-color-yellow);
     border-left: 3px solid var(--accent-color-yellow);
     color: var(--text-color-primary);
@@ -289,7 +291,7 @@ body {
     flex-shrink: 0;
     gap: 10px;
     align-items: flex-end;
-    margin-top: 10px; /* Space above input area */
+    margin-top: 10px;
 }
 
 .input-area textarea {
@@ -387,7 +389,7 @@ body {
     padding: 10px 15px;
     border: 1px solid var(--border-color);
     background-color: var(--bg-color-secondary);
-    overflow-y: auto; /* Allow scrolling */
+    overflow-y: auto;
 }
 
 #config-page .config-header {
@@ -397,7 +399,7 @@ body {
     margin-bottom: 10px;
     border-bottom: 1px solid var(--border-color);
     padding-bottom: 5px;
-    flex-shrink: 0; /* Prevent header shrinking */
+    flex-shrink: 0;
 }
 #config-page .config-header h2 {
     margin: 0;
@@ -411,7 +413,7 @@ body {
     gap: 5px;
 }
 
-/* General styles for Add/Edit/Delete/Refresh buttons */
+/* Config action buttons */
 .config-action-button {
     border: none;
     border-radius: 4px;
@@ -425,21 +427,21 @@ body {
     line-height: 1.2;
 }
 .add-button { background-color: var(--accent-color-green); }
-.refresh-button { background-color: var(--accent-color-2); } /* Teal */
-.edit-button { background-color: var(--accent-color-yellow); color: var(--bg-color-primary); } /* Yellow */
-.delete-button { background-color: var(--accent-color-red); } /* Red */
+.refresh-button { background-color: var(--accent-color-2); }
+.edit-button { background-color: var(--accent-color-yellow); color: var(--bg-color-primary); }
+.delete-button { background-color: var(--accent-color-red); }
 
 .add-button:hover { filter: brightness(1.2); }
 .refresh-button:hover { filter: brightness(1.2); }
 .edit-button:hover { filter: brightness(1.1); }
 .delete-button:hover { filter: brightness(1.2); }
 
-/* Style for each config item */
+/* Config item */
 .config-item {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 6px 2px; /* Slightly more padding */
+    padding: 6px 2px;
     border-bottom: 1px solid var(--border-color);
     font-size: 0.9em;
 }
@@ -460,12 +462,12 @@ body {
 /* --- Agent Status Display Styles (Main Page) --- */
 .agent-status-item {
     margin-bottom: 5px;
-    padding: 4px 6px; /* Slightly more padding */
+    padding: 4px 6px;
     border-radius: 4px;
     border: 1px solid transparent;
-    border-left: 3px solid transparent; /* Add left border for status color */
+    border-left: 3px solid transparent;
     transition: background-color 0.3s ease;
-    background-color: var(--bg-color-tertiary); /* Base background */
+    background-color: var(--bg-color-tertiary);
     color: var(--text-color-primary);
 }
 
@@ -478,11 +480,11 @@ body {
 }
 .agent-status-item .agent-status {
     font-weight: bold;
-    padding: 1px 5px; /* More horizontal padding */
+    padding: 1px 5px;
     border-radius: 3px;
     color: white;
-    margin-left: 5px; /* Space before status badge */
-    float: right; /* Align status badge to the right */
+    margin-left: 5px;
+    float: right;
 }
 
 /* Status-specific styles */
@@ -501,12 +503,11 @@ body {
 .agent-status-item.status-unknown { border-left-color: var(--text-color-secondary); }
 .agent-status-item.status-unknown .agent-status { background-color: var(--text-color-secondary); color: var(--bg-color-primary); }
 
-
 /* Placeholder style */
 .status-placeholder {
     color: var(--text-color-muted);
     font-style: italic;
-    display: block; /* Ensure it takes space */
+    display: block;
     padding: 10px;
     text-align: center;
 }
@@ -527,11 +528,11 @@ body {
 .modal-content {
     background-color: var(--modal-content-bg);
     color: var(--text-color-primary);
-    margin: 8% auto; /* Slightly lower */
+    margin: 8% auto;
     padding: 25px;
     border: 1px solid var(--modal-border-color);
     width: 85%;
-    max-width: 550px; /* Slightly narrower */
+    max-width: 550px;
     border-radius: 8px;
     position: relative;
     box-shadow: 0 5px 15px rgba(0,0,0,0.5);
@@ -559,7 +560,7 @@ body {
 
 #agent-form label, #override-form label {
     display: block;
-    margin-top: 12px; /* More space */
+    margin-top: 12px;
     margin-bottom: 4px;
     font-weight: bold;
     font-size: 0.9em;
@@ -573,7 +574,7 @@ body {
 #override-form input[type="text"],
 #override-form select {
     width: 100%;
-    padding: 9px; /* Slightly more padding */
+    padding: 9px;
     border: 1px solid var(--modal-input-border);
     background-color: var(--modal-input-bg);
     color: var(--text-color-primary);
@@ -588,7 +589,7 @@ body {
     text-align: right;
 }
 .modal-actions button {
-    padding: 10px 18px; /* More padding */
+    padding: 10px 18px;
     border: none;
     border-radius: 4px;
     cursor: pointer;
@@ -617,21 +618,21 @@ body {
     text-align: center;
     font-style: italic;
 }
-#override-form p { /* Style text within override modal */
+#override-form p {
     margin-bottom: 10px;
     line-height: 1.4;
 }
-#override-form code { /* Style error code */
+#override-form code {
     background-color: var(--bg-color-primary);
     padding: 2px 5px;
     border-radius: 3px;
     font-family: monospace;
     font-size: 0.9em;
     color: var(--error-text);
-    display: block; /* Make it block for better readability */
-    white-space: pre-wrap; /* Allow wrapping */
-    max-height: 100px; /* Limit height */
-    overflow-y: auto; /* Add scroll if needed */
+    display: block;
+    white-space: pre-wrap;
+    max-height: 100px;
+    overflow-y: auto;
     border: 1px solid var(--border-color);
 }
 
@@ -647,12 +648,11 @@ body {
 ::-webkit-scrollbar-thumb {
     background-color: var(--scrollbar-thumb-bg);
     border-radius: 4px;
-    border: 2px solid var(--scrollbar-track-bg); /* Creates padding around thumb */
+    border: 2px solid var(--scrollbar-track-bg);
 }
 ::-webkit-scrollbar-thumb:hover {
     background-color: var(--scrollbar-thumb-hover-bg);
 }
-/* Firefox scrollbar */
 * {
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb-bg) var(--scrollbar-track-bg);
