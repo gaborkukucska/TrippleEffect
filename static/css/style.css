@@ -1,6 +1,6 @@
 /* START OF FILE static/css/style.css */
 
-/* --- CSS Variables for Theming (Dark Mode) --- */
+/* --- CSS Variables (Dark Mode - Unchanged) --- */
 :root {
     --bg-color-primary: #1a1a1a;
     --bg-color-secondary: #2a2a2a;
@@ -39,7 +39,7 @@
 /* --- Basic Setup --- */
 html {
     box-sizing: border-box;
-    overscroll-behavior: contain; /* Prevent pull-to-refresh on html */
+    overscroll-behavior: none; /* Prevent pull-to-refresh */
     height: 100%;
 }
 *, *:before, *:after {
@@ -49,73 +49,131 @@ html {
 body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
     margin: 0;
-    /* Reintroduce body padding */
-    padding: 20px;
+    padding: 0; /* No padding on body */
     background-color: var(--bg-color-primary);
     color: var(--text-color-primary);
-    display: flex; /* Use flexbox to center the container */
-    justify-content: center; /* Center container horizontally */
-    align-items: flex-start; /* Align container to top */
-    min-height: 100%; /* Ensure body takes at least full viewport height */
-    overscroll-behavior: contain; /* Prevent pull-to-refresh on body */
+    overflow: hidden; /* Body clips the content wrapper */
+    height: 100%; /* Use 100% to fill html */
+    width: 100%;
+    overscroll-behavior: none;
+    display: flex; /* Use flex to contain wrapper */
 }
 
-/* --- Original Container Styling --- */
-.container {
-    max-width: 900px; /* Original width */
-    width: 100%; /* Use full width up to max-width */
-    background: var(--bg-color-secondary); /* Dark secondary background */
-    padding: 20px;
-    box-shadow: 0 0 15px rgba(0, 0, 0, 0.3); /* Slightly darker shadow */
+/* --- Content Wrapper for Swiping --- */
+.content-wrapper {
     display: flex;
-    flex-direction: column; /* Stack sections vertically */
-    /* Calculate height based on viewport minus body padding */
-    height: calc(100vh - 40px);
-    max-height: calc(100vh - 40px); /* Explicit max height */
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
+    width: 100%; /* Wrapper takes full body width */
+    height: 100%; /* Wrapper takes full body height */
+    overflow: hidden; /* Hide overflowing sections */
+    transition: transform 0.3s ease-in-out;
+    will-change: transform;
+    flex-wrap: nowrap; /* Ensure sections stay in one line */
 }
 
-h1 {
+/* --- Individual Section Styling --- */
+.swipe-section {
+    width: 100%; /* Each section takes 100% width OF THE CONTAINER */
+    height: 100%; /* Each section takes 100% height OF THE CONTAINER */
+    flex-shrink: 0; /* CRITICAL: Prevent sections from shrinking */
+    overflow: hidden; /* Hide internal overflow initially */
+    display: flex; /* Use flex for the inner .section-content */
+    flex-direction: column;
+    background-color: var(--bg-color-primary); /* Base background for sections */
+    /* outline: 2px dashed green; */ /* Debugging outline */
+}
+
+/* Inner content area within each section */
+.section-content {
+    padding: 15px; /* Add padding inside */
+    overflow-y: auto; /* Allow vertical scrolling for the content */
+    overflow-x: hidden;
+    height: 100%; /* Take full height of the section */
+    display: flex;
+    flex-direction: column; /* Stack elements vertically */
+    /* outline: 1px dotted blue; */ /* Debugging outline */
+}
+
+/* Section Titles */
+.section-content h1 {
     text-align: center;
     color: var(--text-color-primary);
-    margin-top: 0; /* Remove default top margin */
-    margin-bottom: 15px;
+    margin: 0 0 15px 0;
     padding-bottom: 10px;
     border-bottom: 1px solid var(--border-color);
     flex-shrink: 0;
 }
 
-/* --- Original Main content area (Chat + Logs Side-by-Side) --- */
-.main-content {
+/* --- Main Section (#main-section) Specific Layout --- */
+#main-section .main-top-area {
+    flex-grow: 1; /* Allow top area (chat/input) to grow */
+    min-height: 250px; /* Ensure minimum height */
     display: flex;
-    flex-grow: 1; /* Allow this area to take available vertical space */
-    overflow: hidden; /* Prevent content spillover */
-    gap: 15px; /* Space between the two columns */
-    margin-bottom: 15px; /* Space before input area */
-    min-height: 200px; /* Ensure minimum height */
+    flex-direction: column;
+    overflow: hidden; /* Hide overflow */
+    margin-bottom: 10px; /* Space below top area */
 }
 
-/* Base styles for both message areas */
+#main-section .main-bottom-area { /* Agent list */
+    flex-shrink: 0; /* Prevent shrinking */
+    height: 200px; /* Fixed height */
+    max-height: 35%; /* Limit max height */
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background-color: var(--bg-color-secondary);
+}
+#main-section .main-bottom-area h2 {
+    margin: 0;
+    padding: 8px 10px;
+    font-size: 1.1em;
+    color: var(--text-color-secondary);
+    background-color: var(--bg-color-tertiary);
+    border-bottom: 1px solid var(--border-color);
+    flex-shrink: 0;
+}
+#main-section #agent-status-content {
+    overflow-y: auto;
+    flex-grow: 1;
+    padding: 10px;
+}
+
+
+/* --- Message Area Styling (Shared & Specific) --- */
 .message-area {
-    flex-basis: 50%; /* Each area takes half the width */
-    overflow-y: auto; /* Enable vertical scrolling within each area */
+    flex-grow: 1; /* Take available space in parent flex container */
+    overflow-y: auto;
     border: 1px solid var(--border-color);
     padding: 10px;
-    background-color: var(--bg-color-tertiary); /* Slightly lighter dark background */
+    background-color: var(--bg-color-tertiary); /* Use tertiary for contrast */
     display: flex;
     flex-direction: column;
     border-radius: 4px;
-    /* Height is determined by flex-grow in .main-content */
+    margin-bottom: 10px; /* Default space below message areas */
+    min-height: 100px;
 }
 
-/* Specific styling */
-.conversation-area {
-    /* background-color: var(--bg-color-tertiary); */
+/* Apply to log/config areas that should fill their section's content area */
+.full-page-area {
+    flex-grow: 1;
+    margin-bottom: 0;
+    /* Height determined by flex context */
+    background-color: var(--bg-color-secondary); /* Use secondary for these */
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
 }
-.system-log-area {
-    /* background-color: var(--bg-color-tertiary); */
+
+/* Conversation Area Specific */
+#main-section .conversation-area {
+    /* Style inherited from .message-area */
+    background-color: var(--bg-color-tertiary);
+}
+
+/* System Log Area Specific */
+#log-section .system-log-area {
     font-size: 0.9em;
+    line-height: 1.4;
 }
 .system-log-area .message .timestamp {
     font-size: 0.8em;
@@ -125,110 +183,26 @@ h1 {
 }
 
 
-/* --- Message Styling (Dark Mode Adjustments) --- */
-.message {
-    margin-bottom: 8px;
-    padding: 8px 12px;
-    border-radius: 8px;
-    word-wrap: break-word;
-    max-width: 95%; /* Max width within its column */
-    border: 1px solid var(--border-color);
-    box-sizing: border-box;
-    color: var(--text-color-primary);
-    background-color: var(--agent-msg-bg-base); /* Default agent background */
-}
+/* --- Message Styling --- */
+.message { margin-bottom: 8px; padding: 8px 12px; border-radius: 8px; word-wrap: break-word; max-width: 90%; border: 1px solid var(--border-color); box-sizing: border-box; color: var(--text-color-primary); background-color: var(--agent-msg-bg-base); }
 .message p { margin: 0; }
 .message span { display: inline-block; }
-
-/* User messages */
-.conversation-area .message.user {
-    background-color: var(--user-message-bg);
-    border-color: var(--user-message-bg);
-    margin-left: auto; /* Align right */
-    align-self: flex-end;
-    text-align: left;
-}
-
-/* Agent responses */
-.conversation-area .message.agent_response {
-    margin-right: auto; /* Align left */
-    align-self: flex-start;
-    font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
-    background-color: var(--agent-msg-bg-base);
-    border-color: var(--border-color);
-}
-
-/* Agent-specific coloring */
+.conversation-area .message.user { background-color: var(--user-message-bg); border-color: var(--user-message-bg); margin-left: auto; align-self: flex-end; text-align: left; }
+.conversation-area .message.agent_response { margin-right: auto; align-self: flex-start; font-family: Menlo, Monaco, Consolas, "Courier New", monospace; background-color: var(--agent-msg-bg-base); border-color: var(--border-color); }
 .message[data-agent-id="admin_ai"] { border-left: 4px solid var(--accent-color-1); background-color: #2a3a4a; }
 .message[data-agent-id*="coder"] { border-left: 4px solid var(--accent-color-2); background-color: #2a4a3a; }
 .message[data-agent-id*="analyst"] { border-left: 4px solid var(--accent-color-orange); background-color: #4a3a2a; }
 .message[data-agent-id*="creative"], .message[data-agent-id*="reviewer"] { border-left: 4px solid var(--accent-color-green); background-color: #3a4a2a; }
 .message[data-agent-id="default"] { border-left: 4px solid var(--text-color-muted); }
 .message[data-agent-id*="unknown_agent"] { border-left: 4px solid var(--text-color-secondary); }
-
-/* Status messages */
-.message.status {
-    font-style: italic;
-    color: var(--text-color-secondary);
-    background-color: var(--status-bg);
-    border: 1px dashed var(--border-color);
-    text-align: center;
-    align-self: center; /* Center status messages */
-    width: auto;
-    max-width: 95%;
-    margin-left: auto;
-    margin-right: auto;
-    padding: 4px 10px;
-    border-radius: 4px;
-}
+.message.status { font-style: italic; color: var(--text-color-secondary); background-color: var(--status-bg); border: 1px dashed var(--border-color); text-align: center; align-self: center; width: auto; max-width: 95%; margin-left: auto; margin-right: auto; padding: 4px 10px; border-radius: 4px; }
 .message.status.initial-placeholder span { color: var(--text-color-muted); }
+.message.status.tool-execution { background-color: #404030; border-color: var(--accent-color-yellow); border-left: 3px solid var(--accent-color-yellow); color: var(--text-color-primary); font-style: normal; text-align: left; align-self: stretch; margin-left: 5px; margin-right: 5px; padding: 6px 10px; }
+.message.error { color: var(--error-text); background-color: var(--error-bg); border: 1px solid var(--accent-color-red); font-weight: bold; align-self: stretch; text-align: center; margin-left: 0; margin-right: 0; padding: 6px 10px; }
 
-/* Tool execution status */
-.message.status.tool-execution {
-    background-color: #404030;
-    border-color: var(--accent-color-yellow);
-    border-left: 3px solid var(--accent-color-yellow);
-    color: var(--text-color-primary);
-    font-style: normal;
-    text-align: left;
-    align-self: stretch; /* Span width */
-    margin-left: 5px;
-    margin-right: 5px;
-    padding: 6px 10px;
-}
-
-/* Error messages */
-.message.error {
-    color: var(--error-text);
-    background-color: var(--error-bg);
-    border: 1px solid var(--accent-color-red);
-    font-weight: bold;
-    align-self: stretch; /* Span width */
-    text-align: center;
-    margin-left: 0;
-    margin-right: 0;
-    padding: 6px 10px;
-}
-
-/* --- Input Area (Dark Mode Adjustments) --- */
-.input-area {
-    display: flex;
-    flex-shrink: 0;
-    gap: 10px;
-    align-items: flex-end;
-    margin-top: 10px; /* Space above input */
-}
-.input-area textarea {
-    flex-grow: 1;
-    padding: 10px;
-    border: 1px solid var(--input-border);
-    background-color: var(--input-bg);
-    color: var(--text-color-primary);
-    border-radius: 4px;
-    resize: vertical;
-    min-height: 50px; height: 60px; max-height: 150px;
-    box-sizing: border-box;
-}
+/* --- Input Area --- */
+.input-area { display: flex; flex-shrink: 0; gap: 10px; align-items: flex-end; margin-top: 10px; }
+.input-area textarea { flex-grow: 1; padding: 10px; border: 1px solid var(--input-border); background-color: var(--input-bg); color: var(--text-color-primary); border-radius: 4px; resize: vertical; min-height: 50px; height: 60px; max-height: 150px; box-sizing: border-box; }
 .input-area textarea::placeholder { color: var(--text-color-muted); }
 .input-controls { display: flex; align-items: flex-end; gap: 5px; }
 .input-controls button { padding: 10px; border: none; background-color: var(--button-bg); color: white; border-radius: 4px; cursor: pointer; height: 40px; line-height: 1; }
@@ -238,47 +212,27 @@ h1 {
 #send-button:hover { background-color: var(--button-hover-bg); }
 .input-controls button:disabled { background-color: var(--button-disabled-bg); cursor: not-allowed; color: var(--text-color-muted); }
 
-/* --- File Info Area (Dark Mode Adjustments) --- */
+/* --- File Info Area --- */
 .file-info-area { flex-shrink: 0; padding: 5px 10px; margin-top: 5px; font-size: 0.85em; color: var(--text-color-secondary); background-color: var(--input-bg); border: 1px solid var(--input-border); border-radius: 4px; min-height: 28px; box-sizing: border-box; display: flex; justify-content: space-between; align-items: center; }
 .file-info-area span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 80%; }
 .file-info-area button { background: none; border: none; color: var(--accent-color-red); cursor: pointer; font-size: 1.1em; padding: 0 5px; }
 .file-info-area button:hover { opacity: 0.8; }
 
-/* --- Config and Agent Status Area (Below main content) --- */
-.config-area, .agent-status-area {
-    margin-top: 15px;
-    padding: 10px 15px;
-    border: 1px solid var(--border-color);
-    background-color: var(--bg-color-secondary); /* Use secondary bg */
-    flex-shrink: 0;
-    max-height: 180px; /* Limit height */
+/* --- Config Area Styling (within #config-section .section-content) --- */
+#config-section .config-area {
+    /* padding handled by .section-content */
+    /* background/border handled by .full-page-area */
     overflow-y: auto;
-    border-radius: 4px;
+    display: flex; /* Use flex for header + content */
+    flex-direction: column;
 }
-.config-area { max-height: 150px; } /* Slightly less height for config */
-.agent-status-area { max-height: 120px; } /* Less height for status */
+#config-section .config-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid var(--border-color); padding: 8px 0; flex-shrink: 0; }
+#config-section .config-header h2 { margin: 0; border: none; padding: 0; font-size: 1.1em; color: var(--text-color-secondary); }
+#config-section .config-header div { display: flex; gap: 5px; }
+#config-section #config-content { flex-grow: 1; overflow-y: auto; padding-top: 5px; } /* Allow config list to scroll */
+#config-section .restart-note { flex-shrink: 0; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color); font-size: 0.85em; color: var(--accent-color-red); text-align: center; font-style: italic; }
 
-/* Shared Header Style */
-.config-area h2, .agent-status-area h2 {
-    margin-top: 0;
-    margin-bottom: 10px;
-    font-size: 1.1em;
-    color: var(--text-color-secondary);
-    border-bottom: 1px solid var(--border-color);
-    padding-bottom: 5px;
-}
-
-/* Config Area Specific Header */
-.config-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    /* H2 styles handled above */
-}
-.config-header h2 { margin-bottom: 0; border-bottom: none; padding-bottom: 0;} /* Remove bottom style from h2 inside flex */
-.config-header div { display: flex; gap: 5px; }
-
-/* Config action buttons (Dark Mode Adjustments) */
+/* Config action buttons */
 .config-action-button { border: none; border-radius: 4px; padding: 3px 8px; cursor: pointer; font-size: 0.9em; margin-left: 5px; color: white; font-weight: bold; min-width: 28px; line-height: 1.2; }
 .add-button { background-color: var(--accent-color-green); }
 .refresh-button { background-color: var(--accent-color-2); }
@@ -288,15 +242,13 @@ h1 {
 .edit-button:hover { filter: brightness(1.1); }
 
 /* Config item */
-#config-content { padding-top: 5px; } /* Add slight padding above items */
-.config-item { display: flex; justify-content: space-between; align-items: center; padding: 4px 2px; border-bottom: 1px solid var(--border-color); font-size: 0.9em; }
+.config-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 2px; border-bottom: 1px solid var(--border-color); font-size: 0.9em; }
 .config-item:last-child { border-bottom: none; }
 .config-item span { flex-grow: 1; margin-right: 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .config-item .agent-details { color: var(--text-color-secondary); }
 .config-item .config-item-actions { flex-shrink: 0; }
 
-/* --- Agent Status Display Styles (Dark Mode Adjustments) --- */
-#agent-status-content { font-size: 0.9em; line-height: 1.4; }
+/* --- Agent Status Display Styles (within #main-section .main-bottom-area) --- */
 .agent-status-item { margin-bottom: 5px; padding: 4px 6px; border-radius: 4px; border: 1px solid transparent; border-left: 3px solid transparent; transition: background-color 0.3s ease; background-color: var(--bg-color-tertiary); color: var(--text-color-primary); }
 .agent-status-item strong { color: var(--text-color-primary); }
 .agent-status-item .agent-model { font-size: 0.9em; color: var(--text-color-secondary); margin-left: 2px; margin-right: 5px; }
@@ -319,7 +271,7 @@ h1 {
 /* Placeholder style */
 .status-placeholder { color: var(--text-color-muted); font-style: italic; display: block; padding: 10px; text-align: center; }
 
-/* --- Modal Styles (Dark Mode - Unchanged from previous dark versions) --- */
+/* --- Modal Styles (Unchanged) --- */
 .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: var(--modal-bg); }
 .modal-content { background-color: var(--modal-content-bg); color: var(--text-color-primary); margin: 8% auto; padding: 25px; border: 1px solid var(--modal-border-color); width: 85%; max-width: 550px; border-radius: 8px; position: relative; box-shadow: 0 5px 15px rgba(0,0,0,0.5); }
 .close-button { color: var(--text-color-secondary); position: absolute; top: 10px; right: 15px; font-size: 28px; font-weight: bold; }
@@ -338,7 +290,7 @@ h1 {
 #override-form p { margin-bottom: 10px; line-height: 1.4; }
 #override-form code { background-color: var(--bg-color-primary); padding: 2px 5px; border-radius: 3px; font-family: monospace; font-size: 0.9em; color: var(--error-text); display: block; white-space: pre-wrap; max-height: 100px; overflow-y: auto; border: 1px solid var(--border-color); }
 
-/* --- Scrollbar Styling (Dark Mode - Unchanged) --- */
+/* --- Scrollbar Styling --- */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: var(--scrollbar-track-bg); border-radius: 4px; }
 ::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb-bg); border-radius: 4px; border: 2px solid var(--scrollbar-track-bg); }
