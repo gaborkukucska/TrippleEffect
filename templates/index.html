@@ -3,80 +3,67 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no"> <!-- Keep user-scalable=no -->
     <title>TrippleEffect</title>
     <link href="/static/css/style.css" rel="stylesheet">
     <meta name="color-scheme" content="dark">
     <meta name="theme-color" content="#1a1a1a">
 </head>
 <body>
-    <!-- Main wrapper for the swipeable sections -->
-    <div class="content-wrapper">
+    <!-- Original Single Container Structure -->
+    <div class="container">
+        <h1>TrippleEffect Interface</h1>
 
-        <!-- Section 1: Main Chat and Agent List -->
-        <section id="main-section" class="swipe-section">
-            <div class="section-content"> <!-- Added inner wrapper for padding/layout -->
-                <h1>TrippleEffect</h1>
-                <!-- Top Area: Chat & Input -->
-                <div class="main-top-area">
-                    <div id="conversation-area" class="message-area conversation-area">
-                        <div class="message status initial-placeholder"><span>Conversation Area</span></div>
-                    </div>
-                    <!-- Input area -->
-                    <div class="input-area">
-                        <textarea id="message-input" placeholder="Enter your task here..."></textarea>
-                        <div class="input-controls">
-                            <input type="file" id="file-input" accept=".txt,.py,.js,.html,.css,.md,.json,.yaml,.csv" style="display: none;">
-                            <button id="attach-file-button" title="Attach text file">📎</button>
-                            <button id="send-button">Send</button>
-                        </div>
-                    </div>
-                    <div id="file-info-area" class="file-info-area"></div>
-                </div>
-                <!-- Bottom Area: Agent Status List -->
-                <div class="main-bottom-area agent-status-section"> <!-- Combined classes -->
-                    <h2>Active Agents</h2>
-                    <div id="agent-status-content">
-                        <span class="status-placeholder">Waiting for status...</span>
-                    </div>
+        <!-- Original Main content area (Chat + Logs) -->
+        <div class="main-content">
+            <!-- Area for displaying conversation messages (User and Agent) -->
+            <div id="conversation-area" class="message-area conversation-area">
+                <div class="message status initial-placeholder"><span>Conversation Area</span></div>
+            </div>
+            <!-- Area for displaying system/status/error messages -->
+            <div id="system-log-area" class="message-area system-log-area">
+                 <div class="message status initial-placeholder"><span>System Logs & Status</span></div>
+                 <div class="message status initial-connecting initial-placeholder"><span>Connecting to backend...</span></div>
+            </div>
+        </div> <!-- /main-content -->
+
+        <!-- Input area -->
+        <div class="input-area">
+            <textarea id="message-input" placeholder="Enter your task here..."></textarea>
+            <div class="input-controls">
+                <input type="file" id="file-input" accept=".txt,.py,.js,.html,.css,.md,.json,.yaml,.csv" style="display: none;">
+                <button id="attach-file-button" title="Attach text file">📎</button>
+                <button id="send-button">Send</button>
+            </div>
+        </div>
+        <div id="file-info-area" class="file-info-area"></div>
+
+        <!-- Configuration section -->
+        <div class="config-area">
+            <div class="config-header">
+                <h2>Configuration</h2>
+                <div>
+                    <button id="refresh-config-button" class="config-action-button refresh-button" title="Refresh Config List">🔄</button>
+                    <button id="add-agent-button" class="config-action-button add-button" title="Add New Static Agent">+</button>
                 </div>
             </div>
-        </section>
-
-        <!-- Section 2: System Logs -->
-        <section id="log-section" class="swipe-section">
-            <div class="section-content">
-                <h1>System Logs</h1>
-                 <div id="system-log-area" class="message-area system-log-area full-page-area">
-                      <div class="message status initial-placeholder"><span>System Logs & Status</span></div>
-                      <div class="message status initial-connecting initial-placeholder"><span>Connecting to backend...</span></div>
-                 </div>
+            <div id="config-content">
+                 <span class="status-placeholder">Loading config...</span>
             </div>
-        </section>
+            <p class="restart-note">Note: Static config changes require application restart.</p>
+        </div>
 
-        <!-- Section 3: Configuration -->
-        <section id="config-section" class="swipe-section">
-             <div class="section-content">
-                 <h1>Configuration</h1>
-                 <div class="config-area full-page-area">
-                     <div class="config-header">
-                         <h2>Static Config</h2>
-                         <div>
-                             <button id="refresh-config-button" class="config-action-button refresh-button" title="Refresh Config List">🔄</button>
-                             <button id="add-agent-button" class="config-action-button add-button" title="Add New Static Agent">+</button>
-                         </div>
-                     </div>
-                     <div id="config-content">
-                          <span class="status-placeholder">Loading config...</span>
-                     </div>
-                     <p class="restart-note">Note: Static config changes require application restart.</p>
-                 </div>
+         <!-- Agent status section -->
+         <div class="agent-status-area">
+            <h2>Agent Status</h2>
+             <div id="agent-status-content">
+                <span class="status-placeholder">Waiting for status...</span>
              </div>
-        </section>
+         </div>
 
-    </div> <!-- /.content-wrapper -->
+    </div> <!-- /container -->
 
-    <!-- Modals remain outside the swipe wrapper -->
+    <!-- Modals remain outside -->
     <!-- Modal Dialog for Add/Edit Agent -->
     <div id="agent-modal" class="modal" style="display: none;">
         <div class="modal-content">
