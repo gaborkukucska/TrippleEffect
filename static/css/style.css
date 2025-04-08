@@ -1,85 +1,14 @@
 /* START OF FILE static/css/style.css */
 
-/* --- CSS Variables (Dark Mode) --- */
-:root {
-    --bg-color-primary: #121212; /* Slightly less black */
-    --bg-color-secondary: #1e1e1e;
-    --bg-color-tertiary: #2c2c2c;
-    --text-color-primary: #e0e0e0;
-    --text-color-secondary: #b0b0b0;
-    --text-color-muted: #888888;
-    --border-color: #383838; /* Slightly lighter border */
-    --accent-color-1: #0d6efd;
-    --accent-color-2: #17a2b8;
-    --accent-color-green: #198754;
-    --accent-color-red: #dc3545;
-    --accent-color-orange: #fd7e14;
-    --accent-color-yellow: #ffc107;
-    --accent-color-magenta: #d63384;
-    --user-message-bg: #056162;
-    --agent-msg-bg-base: #303030;
-    --status-bg: #252525;
-    --error-bg: #5c1a1a;
-    --error-text: #ffdddd;
-    --input-bg: #252525;
-    --input-border: #555;
-    --button-bg: #0d6efd;
-    --button-text: #ffffff;
-    --button-hover-bg: #0b5ed7;
-    --button-disabled-bg: #555;
-    --nav-bg: #1e1e1e;
-    --nav-button-inactive: #888888;
-    --nav-button-active: #0d6efd; /* Blue for active nav */
-    --scrollbar-track-bg: #2a2a2a;
-    --scrollbar-thumb-bg: #555;
-    --scrollbar-thumb-hover-bg: #777;
-    --modal-bg: rgba(0, 0, 0, 0.75);
-    --modal-content-bg: #2c2c2c;
-    --modal-border-color: #555;
-    --modal-input-bg: #383838;
-    --modal-input-border: #666;
-}
-
-/* --- Basic Setup --- */
-html {
-    box-sizing: border-box;
-    overscroll-behavior: contain;
-    height: 100%;
-    width: 100%;
-    overflow: hidden;
-}
-*, *:before, *:after {
-    box-sizing: inherit;
-}
-
-body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    margin: 0;
-    padding: 0;
-    background-color: var(--bg-color-primary);
-    color: var(--text-color-primary);
-    overflow: hidden;
-    height: 100%;
-    width: 100%;
-    overscroll-behavior: contain;
-    display: flex; /* Use flex for app container layout */
-}
-
-/* --- Main Application Container --- */
-#app-container {
-    display: flex;
-    flex-direction: column; /* Stack views above nav */
-    width: 100%;
-    height: 100%;
-    overflow: hidden; /* Prevent scrolling of the container itself */
-}
+/* ... (Keep all previous CSS rules, including variables, body, #app-container, .view-panel etc.) ... */
 
 /* --- View Panels --- */
 .view-panel {
     display: none; /* Hide inactive panels */
     flex-direction: column; /* Stack header and content */
     flex-grow: 1; /* Take available vertical space */
-    overflow: hidden; /* Prevent panel overflow */
+    height: 100%; /* Ensure view panel attempts full height */
+    overflow: hidden; /* Prevent panel overflow - content scrolls inside */
     background-color: var(--bg-color-primary);
 }
 .view-panel.active {
@@ -93,103 +22,77 @@ body {
     flex-shrink: 0; /* Prevent header shrinking */
 }
 .view-header h1 {
-    margin: 0;
-    font-size: 1.3em;
-    text-align: center;
-    color: var(--text-color-primary);
+    margin: 0; font-size: 1.3em; text-align: center; color: var(--text-color-primary);
 }
 
 .view-content {
-    flex-grow: 1;
-    padding: 10px; /* Padding around content */
-    overflow-y: auto; /* Allow content area to scroll if needed */
-    overflow-x: hidden;
-    display: flex; /* Use flex for internal layout */
+    flex-grow: 1; /* Allow content area to fill remaining space */
+    padding: 10px;
+    overflow: hidden; /* Hide direct overflow, children will scroll */
+    display: flex; /* Use flex for children like .full-page-area */
     flex-direction: column;
 }
 
-
-/* --- Chat View Specific Layout (#chat-view .view-content) --- */
-#chat-view .chat-view-layout {
-    flex-grow: 1;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden; /* Prevent layout overflow */
-}
-
-#chat-view .chat-area-container {
-    flex-grow: 1; /* Let chat take most space */
-    min-height: 150px; /* Min height for chat */
-    overflow: hidden; /* Contain message area */
-    display: flex; /* Needed for message-area to grow */
-    margin-bottom: 10px;
-}
-#chat-view .conversation-area { /* Make it grow within container */
-    width: 100%;
-    /* flex-grow: 1; applied via .message-area */
-    margin-bottom: 0; /* Remove margin as container has it */
-}
-
-#chat-view .input-container {
-    flex-shrink: 0; /* Prevent input area from shrinking */
-}
-
-#chat-view .agent-status-container {
-    flex-shrink: 0; /* Prevent status area shrinking */
-    height: 150px; /* Fixed height for agent status */
-    max-height: 30%; /* Limit height */
-    margin-top: 10px;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    background-color: var(--bg-color-secondary);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-}
-#chat-view .agent-status-container h2 {
-    margin: 0; padding: 8px 10px; font-size: 1em; color: var(--text-color-secondary);
-    background-color: var(--bg-color-tertiary); border-bottom: 1px solid var(--border-color); flex-shrink: 0;
-}
-#chat-view #agent-status-content { overflow-y: auto; flex-grow: 1; padding: 8px; }
-
+/* ... (Keep Chat View Layout) ... */
 
 /* --- Logs & Config View Layouts --- */
 #logs-view .view-content,
 #config-view .view-content {
-    padding: 10px; /* Consistent padding */
+    padding: 10px; /* Keep padding */
 }
 
-#logs-view .message-area,
-#config-view .config-area {
-    flex-grow: 1; /* Make log/config area fill the view-content */
-    margin-bottom: 0; /* No bottom margin needed */
-    border: none; /* Remove default border if .view-content handles it */
-    background-color: var(--bg-color-secondary); /* Match other areas */
-    padding: 10px; /* Padding inside the area */
+/* Area for log/config content within their respective view-content */
+.full-page-area {
+    flex-grow: 1; /* Make it fill the parent .view-content */
+    margin-bottom: 0;
+    background-color: var(--bg-color-secondary);
     border-radius: 4px;
-    display: flex; /* Use flex for internal layout */
-    flex-direction: column;
-    overflow: hidden; /* Internal elements handle scroll */
-}
-
-/* --- Message Area Styling --- */
-.message-area {
-    /* flex-grow: 1; */ /* Should grow within its parent */
-    overflow-y: auto;
     border: 1px solid var(--border-color);
-    padding: 10px;
-    background-color: var(--bg-color-tertiary);
-    display: flex;
+    display: flex; /* Use flex for internal layout (e.g., config header+content) */
     flex-direction: column;
-    border-radius: 4px;
-    min-height: 100px;
+    overflow: hidden; /* Hide direct overflow, children should scroll */
+    /* *** ADD min-height: 0; to help flex calculations *** */
+    min-height: 0;
 }
-.system-log-area { font-size: 0.9em; line-height: 1.4; }
+
+/* --- Specific area adjustments --- */
+#logs-view .system-log-area {
+    font-size: 0.9em;
+    line-height: 1.4;
+    padding: 10px; /* Add padding back */
+    overflow-y: auto; /* *** THIS is where the scrolling happens *** */
+    /* flex-grow: 1; is inherited from .full-page-area */
+}
 .system-log-area .message .timestamp { font-size: 0.8em; color: var(--text-color-muted); margin-right: 8px; display: inline-block; }
 
+#config-view .config-area {
+    /* .full-page-area provides flex column, bg, border */
+    padding: 10px 15px; /* Keep specific padding if needed */
+}
+#config-view .config-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; flex-shrink: 0; }
+#config-view .config-header h2 { margin: 0; border: none; padding: 0; font-size: 1.1em; color: var(--text-color-secondary); }
+#config-view .config-header div { display: flex; gap: 5px; }
+#config-view #config-content { flex-grow: 1; overflow-y: auto; padding-top: 5px; }
+#config-view .restart-note { flex-shrink: 0; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color); font-size: 0.85em; color: var(--accent-color-red); text-align: center; font-style: italic; }
+
+
 /* --- Message Styling --- */
-/* (Identical to previous dark mode version) */
-.message { margin-bottom: 8px; padding: 8px 12px; border-radius: 8px; word-wrap: break-word; max-width: 95%; border: 1px solid var(--border-color); box-sizing: border-box; color: var(--text-color-primary); background-color: var(--agent-msg-bg-base); align-self: flex-start; /* Default align left */ }
+/* Add new classes for color coding */
+.message.log-tool-use span { /* Target the text span */
+    color: #98FB98; /* PaleGreen */
+}
+.message.log-agent-message span { /* Target the text span */
+    color: #ADD8E6; /* LightBlue */
+}
+
+/* Ensure error styling is specific enough */
+.message.error, .message.error span { /* Style the whole message and inner span */
+    color: var(--error-text) !important; /* Use important if needed */
+    background-color: var(--error-bg) !important;
+    font-weight: bold;
+}
+/* Keep other message styles */
+.message { margin-bottom: 8px; padding: 8px 12px; border-radius: 8px; word-wrap: break-word; max-width: 95%; border: 1px solid var(--border-color); box-sizing: border-box; color: var(--text-color-primary); background-color: var(--agent-msg-bg-base); align-self: flex-start; }
 .message p { margin: 0; } .message span { display: inline-block; }
 .conversation-area .message.user { background-color: var(--user-message-bg); border-color: var(--user-message-bg); margin-left: auto; align-self: flex-end; }
 .conversation-area .message.agent_response { margin-right: auto; align-self: flex-start; font-family: Menlo, Monaco, Consolas, "Courier New", monospace; }
@@ -197,9 +100,11 @@ body {
 .message.status { font-style: italic; color: var(--text-color-secondary); background-color: var(--status-bg); border: 1px dashed var(--border-color); text-align: center; align-self: center; width: auto; max-width: 95%; margin-left: auto; margin-right: auto; padding: 4px 10px; border-radius: 4px; }
 .message.status.initial-placeholder span { color: var(--text-color-muted); }
 .message.status.tool-execution { background-color: #404030; border-color: var(--accent-color-yellow); border-left: 3px solid var(--accent-color-yellow); color: var(--text-color-primary); font-style: normal; text-align: left; align-self: stretch; margin-left: 5px; margin-right: 5px; padding: 6px 10px; }
-.message.error { color: var(--error-text); background-color: var(--error-bg); border: 1px solid var(--accent-color-red); font-weight: bold; align-self: stretch; text-align: center; margin-left: 0; margin-right: 0; padding: 6px 10px; }
+/* Error style moved up */
 
-/* --- Input Area --- */
+/* ... (Keep Input Area, File Info, Agent Status, Modals, Scrollbar styles unchanged) ... */
+
+/* --- Input Area (Unchanged) --- */
 .input-area { display: flex; flex-shrink: 0; gap: 10px; align-items: flex-end; margin-top: 10px; }
 .input-area textarea { flex-grow: 1; padding: 10px; border: 1px solid var(--input-border); background-color: var(--input-bg); color: var(--text-color-primary); border-radius: 4px; resize: vertical; min-height: 50px; height: 60px; max-height: 150px; box-sizing: border-box; }
 .input-area textarea::placeholder { color: var(--text-color-muted); }
@@ -209,27 +114,12 @@ body {
 #send-button { padding-left: 15px; padding-right: 15px; } #send-button:hover { background-color: var(--button-hover-bg); }
 .input-controls button:disabled { background-color: var(--button-disabled-bg); cursor: not-allowed; color: var(--text-color-muted); }
 
-/* --- File Info Area --- */
+/* --- File Info Area (Unchanged) --- */
 .file-info-area { flex-shrink: 0; padding: 5px 10px; margin-top: 5px; font-size: 0.85em; color: var(--text-color-secondary); background-color: var(--input-bg); border: 1px solid var(--input-border); border-radius: 4px; min-height: 28px; box-sizing: border-box; display: flex; justify-content: space-between; align-items: center; }
 .file-info-area span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 80%; }
 .file-info-area button { background: none; border: none; color: var(--accent-color-red); cursor: pointer; font-size: 1.1em; padding: 0 5px; } .file-info-area button:hover { opacity: 0.8; }
 
-/* --- Config Area Styling (within #config-view) --- */
-#config-view .config-area { /* .full-page-area provides flex column layout */ }
-#config-view .config-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; flex-shrink: 0; }
-#config-view .config-header h2 { margin: 0; border: none; padding: 0; font-size: 1.1em; color: var(--text-color-secondary); }
-#config-view .config-header div { display: flex; gap: 5px; }
-#config-view #config-content { flex-grow: 1; overflow-y: auto; padding-top: 5px; }
-#config-view .restart-note { flex-shrink: 0; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color); font-size: 0.85em; color: var(--accent-color-red); text-align: center; font-style: italic; }
-/* Config Buttons/Items (Unchanged) */
-.config-action-button { border: none; border-radius: 4px; padding: 3px 8px; cursor: pointer; font-size: 0.9em; margin-left: 5px; color: white; font-weight: bold; min-width: 28px; line-height: 1.2; }
-.add-button { background-color: var(--accent-color-green); } .refresh-button { background-color: var(--accent-color-2); } .edit-button { background-color: var(--accent-color-yellow); color: var(--bg-color-primary); } .delete-button { background-color: var(--accent-color-red); }
-.add-button:hover, .refresh-button:hover, .delete-button:hover { filter: brightness(1.2); } .edit-button:hover { filter: brightness(1.1); }
-.config-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 2px; border-bottom: 1px solid var(--border-color); font-size: 0.9em; }
-.config-item:last-child { border-bottom: none; } .config-item span { flex-grow: 1; margin-right: 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; } .config-item .agent-details { color: var(--text-color-secondary); } .config-item .config-item-actions { flex-shrink: 0; }
-
 /* --- Agent Status Display Styles (within #chat-view) --- */
-/* Styling unchanged */
 .agent-status-item { margin-bottom: 5px; padding: 4px 6px; border-radius: 4px; border: 1px solid transparent; border-left: 3px solid transparent; transition: background-color 0.3s ease; background-color: var(--bg-color-tertiary); color: var(--text-color-primary); }
 .agent-status-item strong { color: var(--text-color-primary); } .agent-status-item .agent-model { font-size: 0.9em; color: var(--text-color-secondary); margin-left: 2px; margin-right: 5px; } .agent-status-item .agent-status { font-weight: bold; padding: 1px 5px; border-radius: 3px; color: white; margin-left: 5px; float: right; }
 .agent-status-item.status-idle { border-left-color: var(--text-color-muted); } .agent-status-item.status-idle .agent-status { background-color: var(--text-color-muted); color: var(--bg-color-primary); }
@@ -243,40 +133,13 @@ body {
 /* Placeholder style */
 .status-placeholder { color: var(--text-color-muted); font-style: italic; display: block; padding: 10px; text-align: center; }
 
-/* --- Bottom Navigation Bar --- */
-#bottom-nav {
-    display: flex;
-    justify-content: space-around; /* Distribute buttons evenly */
-    align-items: center;
-    background-color: var(--nav-bg);
-    border-top: 1px solid var(--border-color);
-    padding: 5px 0; /* Add some vertical padding */
-    flex-shrink: 0; /* Prevent nav bar shrinking */
-    height: 55px; /* Fixed height */
-}
+/* --- Bottom Navigation Bar (Keep as is) --- */
+#bottom-nav { display: flex; justify-content: space-around; align-items: center; background-color: var(--nav-bg); border-top: 1px solid var(--border-color); padding: 5px 0; flex-shrink: 0; height: 55px; }
+.nav-button { background: none; border: none; color: var(--nav-button-inactive); font-size: 1.8em; cursor: pointer; padding: 5px 15px; transition: color 0.2s ease-in-out; flex-grow: 1; text-align: center; }
+.nav-button:hover { color: var(--text-color-primary); }
+.nav-button.active { color: var(--nav-button-active); }
 
-.nav-button {
-    background: none;
-    border: none;
-    color: var(--nav-button-inactive);
-    font-size: 1.8em; /* Make icons larger */
-    cursor: pointer;
-    padding: 5px 15px; /* Adjust padding */
-    transition: color 0.2s ease-in-out;
-    flex-grow: 1; /* Allow buttons to share space */
-    text-align: center;
-}
-
-.nav-button:hover {
-    color: var(--text-color-primary); /* Lighter color on hover */
-}
-
-.nav-button.active {
-    color: var(--nav-button-active); /* Active color */
-}
-
-
-/* --- Modal Styles (Unchanged) --- */
+/* --- Modal Styles (Keep as is) --- */
 .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: var(--modal-bg); }
 .modal-content { background-color: var(--modal-content-bg); color: var(--text-color-primary); margin: 8% auto; padding: 25px; border: 1px solid var(--modal-border-color); width: 85%; max-width: 550px; border-radius: 8px; position: relative; box-shadow: 0 5px 15px rgba(0,0,0,0.5); }
 .close-button { color: var(--text-color-secondary); position: absolute; top: 10px; right: 15px; font-size: 28px; font-weight: bold; } .close-button:hover, .close-button:focus { color: var(--text-color-primary); text-decoration: none; cursor: pointer; }
