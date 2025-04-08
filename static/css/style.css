@@ -56,7 +56,7 @@ body {
     overflow: hidden; /* Body clips the page container */
     height: 100vh;
     width: 100vw;
-    display: flex; /* Keep flex just in case, though page-container is the main layout */
+    display: flex;
     overscroll-behavior: none;
 }
 
@@ -81,9 +81,16 @@ body {
     display: flex;
     flex-direction: column;
     padding: 15px;
-    background-color: var(--bg-color-primary);
+    /* background-color: var(--bg-color-primary); /* Base background set here */
     position: relative; /* Needed if children use absolute positioning */
 }
+
+/* --- *** TEMPORARY DEBUG BACKGROUND COLORS *** --- */
+#main-page { background-color: #202020; } /* Slightly different dark */
+#log-page { background-color: #152515; } /* Dark green tint */
+#config-page { background-color: #251515; } /* Dark red tint */
+/* --- *** END TEMPORARY *** --- */
+
 
 /* --- Page Titles --- */
 .page h1 {
@@ -104,9 +111,8 @@ body {
 }
 
 #main-page .main-chat-section {
-    /* flex-basis: 70%; Removed fixed basis, use flex-grow */
-    flex-grow: 1; /* Let chat grow more */
-    min-height: 200px; /* Minimum space for chat */
+    flex-grow: 1;
+    min-height: 200px;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -114,10 +120,9 @@ body {
 }
 
 #main-page .main-agent-status-section {
-   /* flex-basis: 30%; Removed fixed basis */
-    flex-shrink: 0; /* Don't shrink agent list */
-    height: 200px; /* Fixed height for agent list */
-    max-height: 35%; /* Max height relative to parent */
+    flex-shrink: 0;
+    height: 200px;
+    max-height: 35%;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -143,7 +148,7 @@ body {
 
 /* --- Message Area Styling (Shared & Specific) --- */
 .message-area {
-    flex-grow: 1; /* Take available space */
+    flex-grow: 1;
     overflow-y: auto;
     border: 1px solid var(--border-color);
     padding: 10px;
@@ -159,6 +164,7 @@ body {
     flex-grow: 1;
     margin-bottom: 0;
     height: auto; /* Allow it to take full height within the flex page */
+    background-color: var(--bg-color-secondary); /* Ensure consistent background */
 }
 
 /* Conversation Area Specific (within main page) */
@@ -169,7 +175,7 @@ body {
 /* System Log Area Specific (within log page) */
 #log-page .system-log-area {
     font-size: 0.9em;
-    background-color: var(--bg-color-secondary);
+    /* background-color set by .full-page-area */
     line-height: 1.4;
 }
 .system-log-area .message .timestamp {
@@ -219,7 +225,7 @@ body {
     border-left: 4px solid var(--accent-color-1);
     background-color: #2a3a4a;
 }
-.message[data-agent-id*="coder"] { /* Match variations */
+.message[data-agent-id*="coder"] {
     border-left: 4px solid var(--accent-color-2);
     background-color: #2a4a3a;
 }
@@ -388,7 +394,7 @@ body {
 #config-page .config-area {
     padding: 10px 15px;
     border: 1px solid var(--border-color);
-    background-color: var(--bg-color-secondary);
+    /* background-color set by .full-page-area */
     overflow-y: auto;
 }
 
