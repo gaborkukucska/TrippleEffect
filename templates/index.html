@@ -8,75 +8,88 @@
     <link href="/static/css/style.css" rel="stylesheet">
     <meta name="color-scheme" content="dark">
     <meta name="theme-color" content="#1a1a1a">
+    <!-- Add link to a potential icon library like Font Awesome if desired later -->
 </head>
 <body>
-    <!-- Container for the swipeable pages -->
-    <div id="page-container">
+    <!-- Main Application Container -->
+    <div id="app-container">
 
-        <!-- Page 1: Main Chat and Agent List -->
-        <div id="main-page" class="page active-page"> <!-- Start with main page active -->
-            <div class="main-page-layout">
-                <!-- Top Section: Chat & Input -->
-                <div class="main-chat-section">
-                    <h1>TrippleEffect</h1>
-                    <div id="conversation-area" class="message-area conversation-area">
-                        <div class="message status initial-placeholder"><span>Conversation Area</span></div>
-                    </div>
-                    <div class="input-area">
-                        <textarea id="message-input" placeholder="Enter your task here..."></textarea>
-                        <div class="input-controls">
-                            <input type="file" id="file-input" accept=".txt,.py,.js,.html,.css,.md,.json,.yaml,.csv" style="display: none;">
-                            <button id="attach-file-button" title="Attach text file">📎</button>
-                            <button id="send-button">Send</button>
-                        </div>
-                    </div>
-                    <div id="file-info-area" class="file-info-area"></div>
-                </div>
-                <!-- Bottom Section: Agent Status List -->
-                <div class="main-agent-status-section">
-                    <h2>Active Agents</h2>
-                    <div id="agent-status-content">
-                        <span class="status-placeholder">Waiting for status...</span>
-                    </div>
+        <!-- View Panels (Only one visible at a time) -->
+        <div id="chat-view" class="view-panel active">
+             <div class="view-header"><h1>Chat & Agents</h1></div>
+             <div class="view-content">
+                 <!-- Layout for Chat/Input + Agent Status -->
+                 <div class="chat-view-layout">
+                     <div class="chat-area-container">
+                         <div id="conversation-area" class="message-area conversation-area">
+                             <div class="message status initial-placeholder"><span>Conversation Area</span></div>
+                         </div>
+                     </div>
+                     <div class="input-container">
+                          <div class="input-area">
+                              <textarea id="message-input" placeholder="Enter your task here..."></textarea>
+                              <div class="input-controls">
+                                  <input type="file" id="file-input" accept=".txt,.py,.js,.html,.css,.md,.json,.yaml,.csv,.log" style="display: none;">
+                                  <button id="attach-file-button" title="Attach text file">📎</button>
+                                  <button id="send-button">Send</button>
+                              </div>
+                          </div>
+                          <div id="file-info-area" class="file-info-area"></div>
+                     </div>
+                     <div class="agent-status-container">
+                          <h2>Active Agents</h2>
+                          <div id="agent-status-content">
+                              <span class="status-placeholder">Waiting for status...</span>
+                          </div>
+                     </div>
+                 </div>
+             </div>
+        </div>
+
+        <div id="logs-view" class="view-panel">
+             <div class="view-header"><h1>System Logs</h1></div>
+             <div class="view-content">
+                <div id="system-log-area" class="message-area system-log-area">
+                     <div class="message status initial-placeholder"><span>System Logs & Status</span></div>
+                     <div class="message status initial-connecting initial-placeholder"><span>Connecting...</span></div>
                 </div>
             </div>
         </div>
 
-        <!-- Page 2: System Logs -->
-        <div id="log-page" class="page">
-             <h1>System Logs</h1>
-             <div id="system-log-area" class="message-area system-log-area full-page-area">
-                  <div class="message status initial-placeholder"><span>System Logs & Status</span></div>
-                  <div class="message status initial-connecting initial-placeholder"><span>Connecting...</span></div>
-             </div>
-        </div>
-
-        <!-- Page 3: Configuration -->
-        <div id="config-page" class="page">
-             <h1>Configuration</h1>
-             <div class="config-area full-page-area">
-                 <div class="config-header">
-                     <h2>Static Config</h2>
-                     <div>
-                         <button id="refresh-config-button" class="config-action-button refresh-button" title="Refresh Config List">🔄</button>
-                         <button id="add-agent-button" class="config-action-button add-button" title="Add New Static Agent">+</button>
+        <div id="config-view" class="view-panel">
+             <div class="view-header"><h1>Configuration</h1></div>
+             <div class="view-content">
+                 <div class="config-area">
+                     <div class="config-header">
+                         <h2>Static Config</h2>
+                         <div>
+                             <button id="refresh-config-button" class="config-action-button refresh-button" title="Refresh Config List">🔄</button>
+                             <button id="add-agent-button" class="config-action-button add-button" title="Add New Static Agent">+</button>
+                         </div>
                      </div>
+                     <div id="config-content">
+                          <span class="status-placeholder">Loading config...</span>
+                     </div>
+                     <p class="restart-note">Note: Static config changes require application restart.</p>
                  </div>
-                 <div id="config-content">
-                      <span class="status-placeholder">Loading config...</span>
-                 </div>
-                 <p class="restart-note">Note: Static config changes require application restart.</p>
-             </div>
+            </div>
         </div>
 
-    </div> <!-- /#page-container -->
+        <!-- Bottom Navigation Bar -->
+        <nav id="bottom-nav">
+            <button data-view="chat-view" class="nav-button active" title="Chat">💬</button>
+            <button data-view="logs-view" class="nav-button" title="Logs">📋</button>
+            <button data-view="config-view" class="nav-button" title="Config">⚙️</button>
+        </nav>
 
-    <!-- Modals remain outside the page container -->
+    </div> <!-- /#app-container -->
+
+    <!-- Modals remain global -->
     <!-- (Modal HTML unchanged) -->
     <div id="agent-modal" class="modal" style="display: none;"> <div class="modal-content"> <span class="close-button" onclick="closeModal('agent-modal')">×</span> <h3 id="modal-title">Add Agent</h3> <form id="agent-form"> <input type="hidden" id="edit-agent-id" value=""> <label for="agent-id">Agent ID:</label> <input type="text" id="agent-id" name="agent_id" required pattern="^[a-zA-Z0-9_-]+$" title="Alphanumeric, underscores, hyphens only"> <label for="persona">Persona:</label> <input type="text" id="persona" name="persona"> <label for="provider">Provider:</label> <select id="provider" name="provider" required> <option value="openrouter">OpenRouter</option> <option value="ollama">Ollama</option> <option value="openai">OpenAI</option> </select> <label for="model">Model:</label> <input type="text" id="model" name="model" required> <label for="temperature">Temperature:</label> <input type="number" id="temperature" name="temperature" step="0.1" min="0" max="2.0" value="0.7"> <label for="system_prompt">System Prompt:</label> <textarea id="system_prompt" name="system_prompt" rows="4"></textarea> <div class="modal-actions"> <button type="submit" id="save-agent-button">Save Agent</button> <button type="button" onclick="closeModal('agent-modal')">Cancel</button> </div> <p class="restart-note">Note: Static config changes require application restart.</p> </form> </div> </div>
     <div id="override-modal" class="modal" style="display: none;"> <div class="modal-content"> <span class="close-button" onclick="closeModal('override-modal')">×</span> <h3 id="override-modal-title">Agent Override Required</h3> <p id="override-message">Agent '[Persona]' ([Agent ID]) failed.</p> <p><strong>Last Error:</strong> <code id="override-last-error">[Error Details]</code></p> <form id="override-form"> <input type="hidden" id="override-agent-id" value=""> <label for="override-provider">New Provider:</label> <select id="override-provider" name="new_provider" required> <option value="openrouter">OpenRouter</option> <option value="ollama">Ollama</option> <option value="openai">OpenAI</option> </select> <label for="override-model">New Model:</label> <input type="text" id="override-model" name="new_model" required placeholder="Enter new model name"> <div class="modal-actions"> <button type="submit" id="submit-override-button">Apply & Retry</button> <button type="button" onclick="closeModal('override-modal')">Cancel</button> </div> </form> </div> </div>
 
-    <!-- Main script - MUST be type="module" -->
+    <!-- Main script - can be module or regular, we'll use module for consistency -->
     <script type="module" src="/static/js/app.js"></script>
 </body>
 </html>
