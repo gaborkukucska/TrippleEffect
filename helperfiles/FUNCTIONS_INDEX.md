@@ -14,23 +14,23 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 
 ## **Configuration (`src/config/`)**
 
-*   `src/config/config_manager.py::ConfigManager` (Class) - Manages reading/writing of `config.yaml` (agents, teams, allowed_models). Async-safe CRUD via `asyncio.Lock` and atomic writes.
-*   `src/config/config_manager.py::ConfigManager.__init__(config_path: Path)` - Initializes with config path. Performs initial synchronous load of the full config.
-*   `src/config/config_manager.py::ConfigManager._load_config_sync()` - **(Internal)** Synchronous load method. Loads full config dict, validates core keys.
-*   `src/config/config_manager.py::ConfigManager.load_config()` -> `Dict[str, Any]` (Async) - Asynchronously reads the full YAML file safely. Returns a deep copy of the full config. Async-safe. Keeps previous state on load/parse error.
+*   `src/config/config_manager.py::ConfigManager` (Class) - Manages reading/writing of `config.yaml` (agents, teams, allowed_sub_agent_models). Async-safe CRUD via `asyncio.Lock` and atomic writes. Includes backup. *Note: Team management is primarily dynamic now, this handles static bootstrap/allowed models.*
+*   `src/config/config_manager.py::ConfigManager.__init__(config_path: Path)` - Initializes with config path. Performs initial synchronous load.
+*   `src/config/config_manager.py::ConfigManager._load_config_sync()` - **(Internal)** Synchronous load method. Loads full config dict, validates keys.
+*   `src/config/config_manager.py::ConfigManager.load_config()` -> `Dict[str, Any]` (Async) - Asynchronously reads the full YAML file safely. Returns a deep copy. Async-safe. Keeps previous state on load/parse error.
 *   `src/config/config_manager.py::ConfigManager._backup_config()` -> `bool` (Async Internal) - Backs up config file. Assumes lock is held.
-*   `src/config/config_manager.py::ConfigManager._save_config_safe()` -> `bool` (Async Internal) - Safely writes internal full config state (`_config_data`) using atomic replace. Assumes lock is held. Prunes empty teams.
-*   `src/config/config_manager.py::ConfigManager.get_config()` -> `List[Dict[str, Any]]` (Async) - Returns deep copy of agent config list ('agents'). Backward compatible API. Async-safe.
-*   `src/config/config_manager.py::ConfigManager.get_teams()` -> `Dict[str, List[str]]` (Async) - Returns deep copy of teams config. Async-safe.
+*   `src/config/config_manager.py::ConfigManager._save_config_safe()` -> `bool` (Async Internal) - Safely writes internal full config state using atomic replace. Assumes lock is held. Prunes empty teams.
+*   `src/config/config_manager.py::ConfigManager.get_config()` -> `List[Dict[str, Any]]` (Async) - Returns deep copy of agent config list ('agents'). Async-safe.
+*   `src/config/config_manager.py::ConfigManager.get_teams()` -> `Dict[str, List[str]]` (Async) - Returns deep copy of teams config (static part, if any). Async-safe.
 *   `src/config/config_manager.py::ConfigManager.get_full_config()` -> `Dict[str, Any]` (Async) - Returns deep copy of entire loaded config. Async-safe.
 *   `src/config/config_manager.py::ConfigManager.get_config_data_sync()` -> `Dict[str, Any]` - **(Synchronous)** Returns deep copy of full config data loaded during `__init__`.
 *   `src/config/config_manager.py::ConfigManager._find_agent_index_unsafe(agent_id: str)` -> `Optional[int]` - **(Internal)** Finds agent index. Assumes lock is held.
-*   `src/config/config_manager.py::ConfigManager.add_agent(agent_config_entry: Dict[str, Any])` -> `bool` (Async) - Adds agent entry to 'agents' list, saves full config. Async-safe.
-*   `src/config/config_manager.py::ConfigManager.update_agent(agent_id: str, updated_config_data: Dict[str, Any])` -> `bool` (Async) - Updates agent's 'config' dict, saves full config. Async-safe.
-*   `src/config/config_manager.py::ConfigManager.delete_agent(agent_id: str)` -> `bool` (Async) - Removes agent from 'agents' and 'teams', saves full config. Async-safe. Includes rollback.
+*   `src/config/config_manager.py::ConfigManager.add_agent(agent_config_entry: Dict[str, Any])` -> `bool` (Async) - Adds static agent entry to 'agents' list, saves full config. Async-safe.
+*   `src/config/config_manager.py::ConfigManager.update_agent(agent_id: str, updated_config_data: Dict[str, Any])` -> `bool` (Async) - Updates static agent's 'config' dict, saves full config. Async-safe.
+*   `src/config/config_manager.py::ConfigManager.delete_agent(agent_id: str)` -> `bool` (Async) - Removes static agent from 'agents' and 'teams', saves full config. Async-safe. Includes rollback.
 *   `src/config/config_manager.py::config_manager` (Instance) - Singleton instance.
 
-*   `src/config/settings.py::Settings` (Class) - Holds settings from `.env` and initial `config.yaml`. Manages keys, URLs, defaults, initial configs, `allowed_sub_agent_models`. Uses `ConfigManager.get_config_data_sync()`.
+*   `src/config/settings.py::Settings` (Class) - Holds settings from `.env` and initial `config.yaml`. Manages keys, URLs, defaults, initial bootstrap configs, `allowed_sub_agent_models`. Uses `ConfigManager.get_config_data_sync()`.
 *   `src/config/settings.py::Settings.__init__()` - Initializes settings, loads env vars & initial full config, calls helpers.
 *   `src/config/settings.py::Settings._ensure_projects_dir()` - Creates project data directory.
 *   `src/config/settings.py::Settings._check_required_keys()` - Validates necessary keys/URLs based on bootstrap agent providers using `is_provider_configured`.
@@ -42,40 +42,39 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 
 ## **API Routes (`src/api/`)**
 
-*   **Pydantic Models (`src/api/http_routes.py`)**: `AgentInfo`, `GeneralResponse`, `SessionInfo`, `ProjectInfo`, `SaveSessionInput`, `AgentConfigInput`, `AgentConfigCreate` (Unchanged from previous state).
+*   **Pydantic Models (`src/api/http_routes.py`)**: `AgentInfo`, `GeneralResponse`, `SessionInfo`, `ProjectInfo`, `SaveSessionInput`, `AgentConfigInput`, `AgentConfigCreate`.
 *   `src/api/http_routes.py::get_agent_manager_dependency()` -> `'AgentManager'` - FastAPI dependency to inject `AgentManager`.
 *   `src/api/http_routes.py::get_index_page(request: Request)` (Async) - Serves `index.html`.
-*   `src/api/http_routes.py::get_agent_configurations()` -> `List[AgentInfo]` (Async) - (`GET /api/config/agents`) Retrieves basic info for agents listed in `config.yaml` via `ConfigManager`.
-*   `src/api/http_routes.py::create_agent_configuration(agent_data: AgentConfigCreate)` -> `GeneralResponse` (Async) - (`POST /api/config/agents`) Adds agent to `config.yaml` via `ConfigManager`. Requires restart.
-*   `src/api/http_routes.py::update_agent_configuration(agent_id: str, agent_config_data: AgentConfigInput)` -> `GeneralResponse` (Async) - (`PUT /api/config/agents/{agent_id}`) Updates agent in `config.yaml` via `ConfigManager`. Requires restart.
-*   `src/api/http_routes.py::delete_agent_configuration(agent_id: str)` -> `GeneralResponse` (Async) - (`DELETE /api/config/agents/{agent_id}`) Removes agent from `config.yaml` via `ConfigManager`. Requires restart.
+*   `src/api/http_routes.py::get_agent_configurations()` -> `List[AgentInfo]` (Async) - (`GET /api/config/agents`) Retrieves basic info for STATIC agents listed in `config.yaml` via `ConfigManager`.
+*   `src/api/http_routes.py::create_agent_configuration(agent_data: AgentConfigCreate)` -> `GeneralResponse` (Async) - (`POST /api/config/agents`) Adds STATIC agent to `config.yaml` via `ConfigManager`. Requires restart.
+*   `src/api/http_routes.py::update_agent_configuration(agent_id: str, agent_config_data: AgentConfigInput)` -> `GeneralResponse` (Async) - (`PUT /api/config/agents/{agent_id}`) Updates STATIC agent in `config.yaml` via `ConfigManager`. Requires restart.
+*   `src/api/http_routes.py::delete_agent_configuration(agent_id: str)` -> `GeneralResponse` (Async) - (`DELETE /api/config/agents/{agent_id}`) Removes STATIC agent from `config.yaml` via `ConfigManager`. Requires restart.
 *   `src/api/http_routes.py::list_projects()` -> `List[ProjectInfo]` (Async) - (`GET /api/projects`) Lists project directories.
 *   `src/api/http_routes.py::list_sessions(project_name: str)` -> `List[SessionInfo]` (Async) - (`GET /api/projects/{project_name}/sessions`) Lists session directories.
-*   `src/api/http_routes.py::save_current_session(project_name: str, session_input: Optional[SaveSessionInput], manager: 'AgentManager')` -> `GeneralResponse` (Async) - (`POST /api/projects/{project_name}/sessions`) Saves current state via `AgentManager.save_session()` (which delegates to `SessionManager`).
-*   `src/api/http_routes.py::load_specific_session(project_name: str, session_name: str, manager: 'AgentManager')` -> `GeneralResponse` (Async) - (`POST /api/projects/{project_name}/sessions/{session_name}/load`) Loads saved state via `AgentManager.load_session()` (which delegates to `SessionManager`).
+*   `src/api/http_routes.py::save_current_session(project_name: str, session_input: Optional[SaveSessionInput], manager: 'AgentManager')` -> `GeneralResponse` (Async) - (`POST /api/projects/{project_name}/sessions`) Saves current state via `AgentManager.save_session()`.
+*   `src/api/http_routes.py::load_specific_session(project_name: str, session_name: str, manager: 'AgentManager')` -> `GeneralResponse` (Async) - (`POST /api/projects/{project_name}/sessions/{session_name}/load`) Loads saved state via `AgentManager.load_session()`.
 
 ## **WebSocket Management (`src/api/`)**
 
 *   `src/api/websocket_manager.py::set_agent_manager(manager: 'AgentManager')` - Module-level injection of `AgentManager`.
 *   `src/api/websocket_manager.py::broadcast(message: str)` (Async) - Sends message to all active WebSocket connections.
-*   `src/api/websocket_manager.py::websocket_endpoint(websocket: WebSocket)` (Async) - Handler for `/ws`. Manages connection lifecycle, calls `agent_manager_instance.handle_user_message()` via `asyncio.create_task`.
+*   `src/api/websocket_manager.py::websocket_endpoint(websocket: WebSocket)` (Async) - Handler for `/ws`. Manages connection lifecycle, receives messages, routes user messages/overrides to `agent_manager_instance`.
 
 ## **Agent Core (`src/agents/`)**
 
-*   `src/agents/core.py::Agent` (Class) - Represents individual LLM agent. Handles prompt setup, LLM interaction via provider, XML tool parsing, sandbox creation.
-*   `src/agents/core.py::Agent.__init__(agent_config: Dict, llm_provider: BaseLLMProvider, manager: 'AgentManager', tool_descriptions_xml: str)` - Initializes agent. Stores `agent_config`. Compiles tool regex.
+*   `src/agents/core.py::Agent` (Class) - Represents individual LLM agent. Handles prompt setup, LLM interaction via provider, XML tool parsing (multiple), sandbox creation.
+*   `src/agents/core.py::Agent.__init__(agent_config: Dict, llm_provider: BaseLLMProvider, manager: 'AgentManager')` - Initializes agent using final config from manager. Stores config, compiles tool regex.
 *   `src/agents/core.py::Agent.set_status(new_status: str, tool_info: Optional[Dict[str, str]] = None)` - Updates agent status, notifies manager.
-*   `src/agents/core.py::Agent.set_manager(manager: 'AgentManager')` - (Potentially redundant if always passed in init).
-*   `src/agents/core.py::Agent.set_tool_executor(tool_executor: Any)` - **(Discouraged)** Logs warning.
+*   `src/agents/core.py::Agent.set_manager(manager: 'AgentManager')` - Sets manager reference.
 *   `src/agents/core.py::Agent.ensure_sandbox_exists()` -> `bool` - Creates agent's sandbox directory.
-*   `src/agents/core.py::Agent._find_and_parse_last_tool_call()` -> `Optional[Tuple[str, Dict[str, Any], Tuple[int, int]]]` - **(Internal)** Finds/parses last raw or fenced XML tool call in buffer.
-*   `src/agents/core.py::Agent.process_message()` -> `AsyncGenerator[Dict, None]` (Async) - Core logic. Calls provider `stream_completion`, yields events (`response_chunk`, `tool_requests`, `final_response`, `error`). Manager handles history.
+*   `src/agents/core.py::Agent._find_and_parse_tool_calls()` -> `List[Tuple[str, Dict[str, Any], Tuple[int, int]]]` - **(Internal)** Finds and parses *all* valid XML tool calls (raw or fenced) in the text buffer.
+*   `src/agents/core.py::Agent.process_message()` -> `AsyncGenerator[Dict, None]` (Async) - Core logic. Calls provider `stream_completion`, yields events (`response_chunk`, `tool_requests`, `final_response`, `error`). Manager handles history and tool results.
 *   `src/agents/core.py::Agent.get_state()` -> `Dict[str, Any]` - Returns current agent state dictionary.
 *   `src/agents/core.py::Agent.clear_history()` - Clears message history, resets with system prompt.
 
 ## **Agent State Manager (`src/agents/`)**
 
-*   `src/agents/state_manager.py::AgentStateManager` (Class) - Manages team/agent assignment state (`teams`, `agent_to_team` dictionaries).
+*   `src/agents/state_manager.py::AgentStateManager` (Class) - Manages dynamic team/agent assignment state (`teams`, `agent_to_team` dictionaries). In-memory.
 *   `src/agents/state_manager.py::AgentStateManager.__init__(manager: 'AgentManager')` - Initializes with reference to main AgentManager.
 *   `src/agents/state_manager.py::AgentStateManager.create_new_team(team_id: str)` -> `Tuple[bool, str]` (Async) - Creates new empty team. Notifies UI.
 *   `src/agents/state_manager.py::AgentStateManager.delete_existing_team(team_id: str)` -> `Tuple[bool, str]` (Async) - Deletes an empty team. Notifies UI.
@@ -97,20 +96,21 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 
 ## **Agent Manager (Coordinator) (`src/agents/`)**
 
-*   `src/agents/manager.py::AgentManager` (Class) - Central coordinator. Manages agent instances, orchestrates task execution, delegates state/session management.
+*   `src/agents/manager.py::AgentManager` (Class) - Central coordinator. Manages agent instances (bootstrap & dynamic), orchestrates task execution, delegates state/session management, handles tool calls & errors.
 *   `src/agents/manager.py::AgentManager.__init__(websocket_manager: Optional[Any] = None)` - Initializes self, `ToolExecutor`, `AgentStateManager`, `SessionManager`. Gets tool descriptions. Ensures projects dir.
 *   `src/agents/manager.py::AgentManager._ensure_projects_dir()` - **(Internal)** Creates base project directory.
-*   `src/agents/manager.py::AgentManager.initialize_bootstrap_agents()` (Async) - Loads bootstrap agents from `settings`, injects allowed models prompt into Admin AI, calls `_create_agent_internal`.
+*   `src/agents/manager.py::AgentManager.initialize_bootstrap_agents()` (Async) - Loads bootstrap agents from `settings`, injects allowed models/standard instructions prompt into Admin AI, calls `_create_agent_internal`.
 *   `src/agents/manager.py::AgentManager._create_agent_internal(...)` -> `Tuple[bool, str, Optional[str]]` (Async Internal) - Core logic: Validates provider config & allowed model (if dynamic), constructs final prompt (injecting standard instructions if dynamic), instantiates Provider & Agent, ensures sandbox, adds agent to `self.agents`, delegates team state update to `StateManager`.
 *   `src/agents/manager.py::AgentManager.create_agent_instance(...)` -> `Tuple[bool, str, Optional[str]]` (Async) - Public method for dynamic agent creation (called by `_handle_manage_team_action`). Calls `_create_agent_internal`, notifies UI.
-*   `src/agents/manager.py::AgentManager.delete_agent_instance(agent_id: str)` -> `Tuple[bool, str]` (Async) - Removes agent from `self.agents`, delegates team state cleanup to `StateManager`, closes provider. Notifies UI.
+*   `src/agents/manager.py::AgentManager.delete_agent_instance(agent_id: str)` -> `Tuple[bool, str]` (Async) - Removes agent from `self.agents`, delegates team state cleanup to `StateManager`, closes provider. Notifies UI. Handles bootstrap agent check.
 *   `src/agents/manager.py::AgentManager._generate_unique_agent_id(prefix="agent")` -> `str` - **(Internal)** Generates unique agent ID.
-*   `src/agents/manager.py::AgentManager.handle_user_message(message: str, client_id: Optional[str] = None)` (Async) - Routes user message to Admin AI, starts its `_handle_agent_generator`.
-*   `src/agents/manager.py::AgentManager._handle_agent_generator(agent: Agent, retry_count: int = 0)` (Async) - Manages agent's `process_message` generator loop. Handles events (`response_chunk`, `status`, `error`, `final_response`, `tool_requests`). **Handles temporary stream errors with retry logic.** Executes tools sequentially (`ManageTeamTool` first). Processes feedback/results, appends to history. Delegates team actions to `_handle_manage_team_action`. Reactivates agent if needed.
-*   `src/agents/manager.py::AgentManager._handle_manage_team_action(action: Optional[str], params: Dict[str, Any])` -> `Tuple[bool, str, Optional[Any]]` (Async Internal) - Dispatches `ManageTeamTool` actions. Calls `create_agent_instance`, `delete_agent_instance` locally. Delegates team state actions (`create_team`, `delete_team`, `add_agent_to_team`, `remove_agent_from_team`) to `StateManager`. Calls `_update_agent_prompt_team_id` after successful team changes. Gets list data from `StateManager`.
-*   `src/agents/manager.py::AgentManager._update_agent_prompt_team_id(agent_id: str, new_team_id: Optional[str])` (Async Internal) - Updates the agent's internal prompt state after team assignment changes.
-*   `src/agents/manager.py::AgentManager._route_and_activate_agent_message(sender_id: str, target_id: str, message_content: str)` -> `Optional[asyncio.Task]` (Async Internal) - Routes message via `SendMessageTool`. Checks team state via `StateManager`. Appends to target history, activates target if idle. Includes check if target agent exists.
-*   `src/agents/manager.py::AgentManager._execute_single_tool(agent: Agent, call_id: str, tool_name: str, tool_args: Dict[str, Any])` -> `Optional[Dict]` (Async) - Executes tool via `ToolExecutor`. Returns result dict.
+*   `src/agents/manager.py::AgentManager.handle_user_message(message: str, client_id: Optional[str] = None)` (Async) - Routes user message to Admin AI, starts its `_handle_agent_generator`. Checks agent status.
+*   `src/agents/manager.py::AgentManager.handle_user_override(override_data: Dict[str, Any])` (Async) - Handles config override for a stuck agent, recreates provider, restarts generator loop.
+*   `src/agents/manager.py::AgentManager._handle_agent_generator(agent: Agent, retry_count: int = 0)` (Async Internal) - Manages agent's `process_message` generator loop. Handles events (`response_chunk`, `status`, `error`, `final_response`, `tool_requests`). Handles stream errors with retry logic & user override request. Executes tools sequentially (`ManageTeamTool` first). Processes manager feedback, appends to history. Reactivates agent if needed based on feedback or queued messages.
+*   `src/agents/manager.py::AgentManager._handle_manage_team_action(action: Optional[str], params: Dict[str, Any])` -> `Tuple[bool, str, Optional[Any]]` (Async Internal) - Dispatches `ManageTeamTool` actions. Calls `create_agent_instance`, `delete_agent_instance` locally. Delegates team state actions to `StateManager`. Calls `_update_agent_prompt_team_id`. Gets list data from `StateManager`.
+*   `src/agents/manager.py::AgentManager._update_agent_prompt_team_id(agent_id: str, new_team_id: Optional[str])` (Async Internal) - Updates the agent's internal prompt state (in memory & history) after team assignment changes.
+*   `src/agents/manager.py::AgentManager._route_and_activate_agent_message(sender_id: str, target_id: str, message_content: str)` -> `Optional[asyncio.Task]` (Async Internal) - Routes message via `SendMessageTool`. Checks team state via `StateManager`. Appends to target history, activates target if idle (or queues if busy/awaiting override).
+*   `src/agents/manager.py::AgentManager._execute_single_tool(agent: Agent, call_id: str, tool_name: str, tool_args: Dict[str, Any])` -> `Optional[Dict]` (Async Internal) - Executes tool via `ToolExecutor`. Returns result dict.
 *   `src/agents/manager.py::AgentManager._failed_tool_result(call_id: Optional[str], tool_name: Optional[str])` -> `Optional[ToolResultDict]` (Async Helper) - Returns formatted error result dict for failed tool dispatch.
 *   `src/agents/manager.py::AgentManager.push_agent_status_update(agent_id: str)` (Async Helper) - Gets agent state (incl. team from `StateManager`), sends to UI.
 *   `src/agents/manager.py::AgentManager.send_to_ui(message_data: Dict[str, Any])` (Async Helper) - Sends JSON data to UI via `broadcast`.
@@ -119,74 +119,89 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 *   `src/agents/manager.py::AgentManager.load_session(...)` -> `Tuple[bool, str]` (Async) - Delegates call to `SessionManager`.
 *   `src/agents/manager.py::AgentManager.cleanup_providers()` (Async) - Calls `close_session` on unique active providers.
 *   `src/agents/manager.py::AgentManager._close_provider_safe(provider: BaseLLMProvider)` (Async Internal) - Safely calls `close_session`.
-*   `src/agents/manager.py::AgentManager.get_agent_info_list_sync(filter_team_id: Optional[str])` -> `List[Dict]` - **(Synchronous)** Helper used by `_handle_manage_team_action` to get filtered/full agent info list. *(Note: Potential candidate for making async if state access becomes complex)*.
+*   `src/agents/manager.py::AgentManager.get_agent_info_list_sync(filter_team_id: Optional[str])` -> `List[Dict]` - **(Synchronous)** Helper used by `_handle_manage_team_action` to get filtered/full agent info list.
 
 ## **LLM Providers Base (`src/llm_providers/`)**
 
 *   `src/llm_providers/base.py::BaseLLMProvider` (ABC) - Abstract Base Class for LLM providers.
 *   `src/llm_providers/base.py::BaseLLMProvider.__init__(api_key, base_url, **kwargs)` (Abstract) - Init signature.
-*   `src/llm_providers/base.py::BaseLLMProvider.stream_completion(...)` -> `AsyncGenerator[Dict, Optional[List[ToolResultDict]]]` (Abstract Async) - Core interaction method. Yields events.
+*   `src/llm_providers/base.py::BaseLLMProvider.stream_completion(...)` -> `AsyncGenerator[Dict, Optional[List[ToolResultDict]]]` (Abstract Async) - Core interaction method. Yields events. Can receive tool results via `asend`. Handles text chunks and potential errors.
 *   `src/llm_providers/base.py::BaseLLMProvider.close_session()` (Async Abstract) - Optional cleanup method.
 *   `src/llm_providers/base.py::BaseLLMProvider.__repr__()` - Basic instance representation.
 
 ## **LLM Providers Implementations (`src/llm_providers/`)**
 
 *   **Ollama (`ollama_provider.py`)**
-    *   `src/llm_providers/ollama_provider.py::OllamaProvider(BaseLLMProvider)` - Implements provider for local Ollama. Includes stream error handling.
-    *   `src/llm_providers/ollama_provider.py::OllamaProvider.__init__(...)` - Initializes provider.
-    *   `src/llm_providers/ollama_provider.py::OllamaProvider._get_session()` (Async Internal) - Manages `aiohttp` session.
-    *   `src/llm_providers/ollama_provider.py::OllamaProvider.close_session()` (Async) - Closes session.
-    *   `src/llm_providers/ollama_provider.py::OllamaProvider.stream_completion(...)` (Async) - Makes POST request. Handles retries for initial call. Includes `try/except` around stream iteration to catch & yield specific stream errors.
-    *   `src/llm_providers/ollama_provider.py::OllamaProvider.__repr__()`, `__aenter__()`, `__aexit__()`
+    *   `src/llm_providers/ollama_provider.py::OllamaProvider(BaseLLMProvider)` - Implements provider for local Ollama. Includes stream error handling and initial call retries. Ignores tools/tool_choice args.
+    *   `(All other methods like __init__, _get_session, close_session, stream_completion)` - Handles aiohttp session and API interaction specifics for Ollama.
 *   **OpenAI (`openai_provider.py`)**
-    *   `src/llm_providers/openai_provider.py::OpenAIProvider(BaseLLMProvider)` - Implements provider for OpenAI API. Includes stream error handling.
-    *   `src/llm_providers/openai_provider.py::OpenAIProvider.__init__(...)` - Initializes `openai.AsyncOpenAI` client.
-    *   `src/llm_providers/openai_provider.py::OpenAIProvider.stream_completion(...)` (Async) - Calls `client.chat.completions.create`. Handles retries for initial call. Includes `try/except openai.APIError` around stream iteration to catch & yield specific stream errors.
-    *   `src/llm_providers/openai_provider.py::OpenAIProvider.__repr__()`
+    *   `src/llm_providers/openai_provider.py::OpenAIProvider(BaseLLMProvider)` - Implements provider for OpenAI API. Includes stream error handling and initial call retries. Ignores tools/tool_choice args.
+    *   `(All other methods like __init__, stream_completion)` - Handles `openai` library client and API interaction specifics.
 *   **OpenRouter (`openrouter_provider.py`)**
-    *   `src/llm_providers/openrouter_provider.py::OpenRouterProvider(BaseLLMProvider)` - Implements provider for OpenRouter API. Includes stream error handling.
-    *   `src/llm_providers/openrouter_provider.py::OpenRouterProvider.__init__(...)` - Initializes `openai.AsyncOpenAI` client for OpenRouter.
-    *   `src/llm_providers/openrouter_provider.py::OpenRouterProvider.stream_completion(...)` (Async) - Calls `client.chat.completions.create`. Handles retries for initial call. Includes `try/except openai.APIError` around stream iteration to catch & yield specific stream errors.
-    *   `src/llm_providers/openrouter_provider.py::OpenRouterProvider.__repr__()`
+    *   `src/llm_providers/openrouter_provider.py::OpenRouterProvider(BaseLLMProvider)` - Implements provider for OpenRouter API. Includes stream error handling and initial call retries. Ignores tools/tool_choice args.
+    *   `(All other methods like __init__, stream_completion)` - Handles `openai` library client (configured for OpenRouter) and API interaction specifics.
 
 ## **Tools Base (`src/tools/`)**
 
 *   `src/tools/base.py::ToolParameter` (Pydantic Class) - Defines tool parameters.
-*   `src/tools/base.py::BaseTool` (ABC) - Abstract base class for tools.
+*   `src/tools/base.py::BaseTool` (ABC) - Abstract base class for tools. Defines `name`, `description`, `parameters`.
 *   `src/tools/base.py::BaseTool.execute(agent_id: str, agent_sandbox_path: Path, **kwargs: Any)` (Abstract Async) - Core execution logic signature.
-*   `src/tools/base.py::BaseTool.get_schema()` -> `Dict` - Returns tool schema.
+*   `src/tools/base.py::BaseTool.get_schema()` -> `Dict` - Returns tool schema dictionary.
 
 ## **Tool Executor (`src/tools/`)**
 
-*   `src/tools/executor.py::ToolExecutor` (Class) - Manages and executes tools.
-*   `src/tools/executor.py::ToolExecutor.__init__()` - Initializes and registers tools.
+*   `src/tools/executor.py::ToolExecutor` (Class) - Manages and executes tools. Registers tools on init.
+*   `src/tools/executor.py::ToolExecutor.__init__()` - Initializes and calls `_register_available_tools`.
 *   `src/tools/executor.py::ToolExecutor._register_available_tools()` - **(Internal)** Instantiates tools from `AVAILABLE_TOOL_CLASSES`.
 *   `src/tools/executor.py::ToolExecutor.register_tool(tool_instance: BaseTool)` - Manually registers tool.
 *   `src/tools/executor.py::ToolExecutor.get_formatted_tool_descriptions_xml()` -> `str` - Gets tool schemas as XML string for prompts.
-*   `src/tools/executor.py::ToolExecutor.execute_tool(agent_id: str, agent_sandbox_path: Path, tool_name: str, tool_args: Dict)` -> `Any` (Async) - Finds tool, validates args, calls `execute`. Returns raw result for `ManageTeamTool`, string for others.
+*   `src/tools/executor.py::ToolExecutor.execute_tool(agent_id: str, agent_sandbox_path: Path, tool_name: str, tool_args: Dict)` -> `Any` (Async) - Finds tool, validates args based on schema, calls `execute`. Returns raw dict for `ManageTeamTool`, stringified result for others. Handles execution errors.
 
 ## **Tool Implementations (`src/tools/`)**
 
 *   **FileSystem (`file_system.py`)**
     *   `src/tools/file_system.py::FileSystemTool(BaseTool)` - File operations in sandbox.
-    *   `src/tools/file_system.py::FileSystemTool.execute(...)` (Async) - Delegates to internal read/write/list methods based on 'action'.
+    *   `src/tools/file_system.py::FileSystemTool.execute(...)` (Async) - Delegates to internal read/write/list methods based on 'action'. Validates paths.
     *   `src/tools/file_system.py::FileSystemTool._resolve_and_validate_path(...)` (Async Internal) - Resolves/validates path within sandbox.
     *   `src/tools/file_system.py::FileSystemTool._read_file(...)` (Async Internal) - Reads file.
     *   `src/tools/file_system.py::FileSystemTool._write_file(...)` (Async Internal) - Writes file.
     *   `src/tools/file_system.py::FileSystemTool._list_directory(...)` (Async Internal) - Lists directory.
 *   **ManageTeam (`manage_team.py`)**
-    *   `src/tools/manage_team.py::ManageTeamTool(BaseTool)` - Signals AgentManager for agent/team management.
-    *   `src/tools/manage_team.py::ManageTeamTool.execute(...)` (Async) - Validates params, returns structured dict signal for AgentManager.
+    *   `src/tools/manage_team.py::ManageTeamTool(BaseTool)` - Signals AgentManager for agent/team management (dynamic, in-memory).
+    *   `src/tools/manage_team.py::ManageTeamTool.execute(...)` (Async) - Validates params based on action, returns structured dict signal for AgentManager to process.
 *   **SendMessage (`send_message.py`)**
     *   `src/tools/send_message.py::SendMessageTool(BaseTool)` - Signals AgentManager for inter-agent messaging.
-    *   `src/tools/send_message.py::SendMessageTool.execute(...)` (Async) - Validates params, returns confirmation string for sender's history.
+    *   `src/tools/send_message.py::SendMessageTool.execute(...)` (Async) - Validates params, returns confirmation string for sender's history. Actual routing done by AgentManager.
 
 ## **Frontend Logic (`static/js/app.js`)**
 
-*   (Functions remain largely the same as listed previously, responsible for UI updates via WebSockets, handling user input, file uploads, config CRUD UI interactions, and session management interactions if UI elements are added). Key functions include `connectWebSocket`, `sendMessage`, `addMessage`, `updateAgentStatusUI`, `displayAgentConfigurations`, `handleSaveAgent`, `handleDeleteAgent`, `fetchProjects`, `handleLoadSession`, etc. Needs updates for handling new WS events like `agent_added`, `team_created`, etc. if dynamic UI updates are fully implemented.)
+*   `static/js/app.js::DOMContentLoaded Listener` - Entry point. Gets DOM elements, initializes WebSocket connection (`setupWebSocket`), sets up event listeners (`setupEventListeners`), loads initial config display (`displayAgentConfigurations`). Handles initialization errors.
+*   `static/js/app.js::setupWebSocket()` - Establishes and manages the WebSocket connection lifecycle (open, message, error, close) with automatic reconnection logic. Assigns global `ws` instance.
+*   `static/js/app.js::handleWebSocketMessage(data)` - Central handler for incoming WebSocket messages. Parses message, determines type, and calls appropriate UI update or modal functions.
+*   `static/js/app.js::requestInitialAgentStatus()` - Placeholder to request full status on connect (requires backend implementation).
+*   `static/js/app.js::requestAgentStatus(agentId)` - Placeholder to request status for a specific agent (requires backend implementation).
+*   `static/js/app.js::addMessage(areaId, text, type, agentId)` - Adds a formatted message div to the specified message area (conversation or system log), handles timestamp for logs, scrolls the area.
+*   `static/js/app.js::appendAgentResponseChunk(agentId, chunk)` - Appends streaming text chunks to an agent's response message in the conversation area. Creates the message div if needed. Scrolls area.
+*   `static/js/app.js::finalizeAgentResponse(agentId, finalContent)` - Marks an agent's streaming response as complete. Adds full message if no chunks were received. Scrolls area.
+*   `static/js/app.js::updateLogStatus(message, isError)` - Updates the connection status message shown in the system log area.
+*   `static/js/app.js::updateAgentStatusUI(agentId, statusData)` - Entry point to update the Agent Status list. Calls `addOrUpdateAgentStatusEntry`.
+*   `static/js/app.js::addOrUpdateAgentStatusEntry(agentId, statusData)` - Adds or updates a specific agent's display item in the status list UI.
+*   `static/js/app.js::removeAgentStatusEntry(agentId)` - Removes an agent's display item from the status list UI.
+*   `static/js/app.js::addRawLogEntry(data)` - Logs raw received WebSocket data to the browser console for debugging.
+*   `static/js/app.js::setupEventListeners()` - Attaches event listeners for send button, message input (Enter key), file attachment, config buttons, modal forms, bottom navigation buttons, and global modal closing.
+*   `static/js/app.js::showView(viewId)` - Handles bottom navigation clicks. Hides all `.view-panel` elements, shows the target panel, and updates the active state of navigation buttons.
+*   `static/js/app.js::handleSendMessage()` - Gathers text from input and file data (if attached), checks WebSocket connection, formats message object, calls `addMessage` for user prompt, sends message via `ws.send()`, clears input/file.
+*   `static/js/app.js::handleFileSelect(event)` - Handles file input change event, validates file type/size, reads file content using FileReader, stores file info/content in global variables.
+*   `static/js/app.js::displayFileInfo()` - Updates the UI element to show attached file name and size, or clears it.
+*   `static/js/app.js::clearFileInput()` - Resets file attachment state variables and clears the file input display.
+*   `static/js/app.js::displayAgentConfigurations()` - Fetches static agent configurations from `/api/config/agents`, renders them in the config view, attaches edit/delete listeners.
+*   `static/js/app.js::handleSaveAgent(event)` - Handles submission of the add/edit static agent modal form. Sends POST/PUT request to `/api/config/agents`. Reloads config display on success.
+*   `static/js/app.js::handleDeleteAgent(agentId)` - Handles click on delete button for static agent config. Sends DELETE request to `/api/config/agents/{agentId}`. Reloads config display on success.
+*   `static/js/app.js::openModal(modalId, editId)` - Displays the specified modal (`agent-modal` or `override-modal`). Pre-fills agent edit form if `editId` is provided.
+*   `static/js/app.js::closeModal(modalId)` - Hides the specified modal and resets its form.
+*   `static/js/app.js::showOverrideModal(data)` - Pre-fills and opens the agent override modal based on data received from backend.
+*   `static/js/app.js::handleSubmitOverride(event)` - Handles submission of the agent override modal form. Sends `submit_user_override` message via WebSocket.
 
 ---
 
-*Note: Obsolete functions listed in previous versions have been removed.*
-
----
+*Note: Functions previously listed under separate JS modules (`config.js`, `modal.js`, etc.) are now integrated into `static/js/app.js`.*
