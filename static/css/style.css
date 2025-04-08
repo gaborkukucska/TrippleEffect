@@ -1,7 +1,7 @@
 /* START OF FILE static/css/style.css */
 
 /* --- CSS Variables (Dark Mode - Unchanged) --- */
-:root { /* ... variables ... */
+:root { /* ... variables as before ... */
     --bg-color-primary: #121212; --bg-color-secondary: #1e1e1e; --bg-color-tertiary: #2c2c2c; --text-color-primary: #e0e0e0; --text-color-secondary: #b0b0b0; --text-color-muted: #888888; --border-color: #383838; --accent-color-1: #0d6efd; --accent-color-2: #17a2b8; --accent-color-green: #198754; --accent-color-red: #dc3545; --accent-color-orange: #fd7e14; --accent-color-yellow: #ffc107; --accent-color-magenta: #d63384; --user-message-bg: #056162; --agent-msg-bg-base: #303030; --status-bg: #252525; --error-bg: #5c1a1a; --error-text: #ffdddd; --input-bg: #252525; --input-border: #555; --button-bg: #0d6efd; --button-text: #ffffff; --button-hover-bg: #0b5ed7; --button-disabled-bg: #555; --nav-bg: #1e1e1e; --nav-button-inactive: #888888; --nav-button-active: #0d6efd; --scrollbar-track-bg: #2a2a2a; --scrollbar-thumb-bg: #555; --scrollbar-thumb-hover-bg: #777; --modal-bg: rgba(0, 0, 0, 0.75); --modal-content-bg: #2c2c2c; --modal-border-color: #555; --modal-input-bg: #383838; --modal-input-border: #666;
 }
 
@@ -16,32 +16,24 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helve
     flex-direction: column; /* Stack views above nav */
     width: 100%;
     height: 100%;
-    overflow: hidden;
+    overflow: hidden; /* Should not scroll */
 }
 
-/* --- View Panels Container (Implicitly takes space above nav) --- */
-/* We need a container for the view panels that flex-grows */
-.view-panels-container {
-    flex-grow: 1; /* Takes up space above nav bar */
-    overflow: hidden; /* Hides inactive panels */
-    position: relative; /* For positioning panels inside */
-}
+/* --- Container for the View Panels --- */
+/* This div implicitly takes the space above the nav bar */
+/* We don't select it directly, but rely on flex-grow of its children */
 
 /* --- Individual View Panels --- */
 .view-panel {
-    display: none; /* Hide inactive panels by default */
+    display: none; /* Hide inactive panels */
     flex-direction: column; /* Stack header and content */
-    position: absolute; /* Position panels absolutely within their container */
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    overflow: hidden; /* Hide internal overflow, content div handles scroll */
+    flex-grow: 1; /* Takes available vertical space in app-container */
+    height: 100%; /* Attempt full height (constrained by flex parent) */
+    overflow: hidden; /* Panel itself shouldn't scroll */
     background-color: var(--bg-color-primary);
 }
 .view-panel.active {
     display: flex; /* Show active panel */
-    z-index: 1; /* Ensure active panel is on top */
 }
 
 /* View Header */
@@ -49,85 +41,77 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helve
     padding: 10px 15px;
     border-bottom: 1px solid var(--border-color);
     background-color: var(--bg-color-secondary);
-    flex-shrink: 0;
+    flex-shrink: 0; /* Prevent header shrinking */
+    position: sticky; /* Make header sticky? Optional */
+    top: 0;
+    z-index: 2; /* Ensure header is above scrolling content */
 }
-.view-header h1 { margin: 0; font-size: 1.2em; /* Slightly smaller */ text-align: center; color: var(--text-color-primary); }
+.view-header h1 { margin: 0; font-size: 1.2em; text-align: center; color: var(--text-color-primary); }
 
 /* View Content (Area below header within a panel) */
 .view-content {
-    flex-grow: 1; /* Takes remaining space in the panel */
+    flex-grow: 1; /* Takes remaining space below header */
     padding: 10px;
-    overflow: hidden; /* Hide direct overflow */
-    display: flex;
-    flex-direction: column; /* Layout children vertically */
+    overflow-y: auto; /* THIS is where the main content scrolling happens */
+    overflow-x: hidden;
+    display: flex; /* Use flex for internal layout */
+    flex-direction: column;
     min-height: 0; /* Flexbox fix */
 }
 
 /* --- Chat View Specific Layout --- */
-#chat-view .chat-view-layout {
+#chat-view .chat-view-layout { /* This is inside .view-content */
     flex-grow: 1; display: flex; flex-direction: column; overflow: hidden;
 }
-#chat-view .chat-area-container {
-    flex-grow: 1; /* Chat area grows */
-    min-height: 150px;
-    overflow: hidden; /* Contain message area */
-    display: flex; /* Allow message area to grow */
-    margin-bottom: 10px;
-}
+#chat-view .chat-area-container { flex-grow: 1; min-height: 150px; overflow: hidden; display: flex; margin-bottom: 10px; }
 #chat-view .input-container { flex-shrink: 0; }
-#chat-view .agent-status-container {
-    flex-shrink: 0; height: 180px; /* Slightly more height */ max-height: 35%; margin-top: 10px;
-    border: 1px solid var(--border-color); border-radius: 4px; background-color: var(--bg-color-secondary);
-    display: flex; flex-direction: column; overflow: hidden;
-}
+#chat-view .agent-status-container { flex-shrink: 0; height: 180px; max-height: 30%; margin-top: 10px; border: 1px solid var(--border-color); border-radius: 4px; background-color: var(--bg-color-secondary); display: flex; flex-direction: column; overflow: hidden; }
 #chat-view .agent-status-container h2 { margin: 0; padding: 8px 10px; font-size: 1em; color: var(--text-color-secondary); background-color: var(--bg-color-tertiary); border-bottom: 1px solid var(--border-color); flex-shrink: 0; }
 #chat-view #agent-status-content { overflow-y: auto; flex-grow: 1; padding: 8px; }
-
 
 /* --- Logs & Config View Layouts --- */
 #logs-view .view-content,
 #config-view .view-content {
-    padding: 10px; /* Keep padding */
+    padding: 10px; /* Reset padding */
 }
 /* Make the primary content area fill the view */
-#logs-view .message-area,
-#config-view .config-area {
+#logs-view .message-area, /* System log area */
+#config-view .config-area { /* Config area container */
     flex-grow: 1;
     margin-bottom: 0;
-    border: 1px solid var(--border-color); /* Add border back */
+    border: 1px solid var(--border-color);
     background-color: var(--bg-color-secondary);
     border-radius: 4px;
     display: flex;
     flex-direction: column;
-    overflow: hidden; /* Parent hides overflow */
-    min-height: 0; /* Flexbox fix */
+    overflow: hidden; /* Hide direct overflow */
+    min-height: 0;
+    padding: 10px; /* Add padding inside these areas */
 }
 /* Ensure internal scrolling works */
-#logs-view #system-log-area { overflow-y: auto; flex-grow: 1; padding: 10px;}
-#config-view .config-area { padding: 10px 15px; } /* Padding inside config area */
+#logs-view #system-log-area { /* The actual list */
+     overflow-y: auto;
+     flex-grow: 1;
+     padding: 0; /* Padding is on parent now */
+     margin: 0; /* Remove default margin if any */
+}
+#config-view .config-area { padding: 10px 15px; }
 #config-view #config-content { overflow-y: auto; flex-grow: 1; }
 #config-view .config-header { flex-shrink: 0; /* ... other header styles ... */ display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid var(--border-color); padding-bottom: 5px;}
 #config-view .restart-note { flex-shrink: 0; /* ... other note styles ... */ margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color); font-size: 0.85em; color: var(--accent-color-red); text-align: center; font-style: italic;}
 
 /* --- Message Area General Styling --- */
 .message-area {
-    flex-grow: 1; /* Takes space */
-    overflow-y: auto; /* Allows internal scrolling */
-    border: 1px solid var(--border-color);
-    padding: 10px;
-    background-color: var(--bg-color-tertiary);
-    display: flex;
-    flex-direction: column;
-    border-radius: 4px;
-    min-height: 100px;
+    flex-grow: 1; overflow-y: auto; border: 1px solid var(--border-color); padding: 10px;
+    background-color: var(--bg-color-tertiary); display: flex; flex-direction: column;
+    border-radius: 4px; min-height: 100px;
 }
-/* Ensure conversation area doesn't have extra margin */
-#chat-view .conversation-area { margin-bottom: 0; }
-
+#chat-view .conversation-area { margin-bottom: 0; } /* Remove margin inside chat area container */
+.system-log-area .message .timestamp { font-size: 0.8em; color: var(--text-color-muted); margin-right: 8px; display: inline-block; }
 
 /* --- Message Styling (Includes Color Coding) --- */
-.message { margin-bottom: 8px; padding: 8px 12px; border-radius: 8px; word-wrap: break-word; max-width: 95%; border: 1px solid var(--border-color); box-sizing: border-box; color: var(--text-color-primary); background-color: var(--agent-msg-bg-base); align-self: flex-start; }
-.message p { margin: 0; } .message span { display: inline-block; vertical-align: top; /* Align timestamp/text */ } /* Allow span content to wrap */ .message span:not(.timestamp) { white-space: pre-wrap; word-break: break-word; flex: 1; /* Allow text span to take space */}
+.message { margin-bottom: 8px; padding: 8px 12px; border-radius: 8px; word-wrap: break-word; max-width: 95%; border: 1px solid var(--border-color); box-sizing: border-box; color: var(--text-color-primary); background-color: var(--agent-msg-bg-base); align-self: flex-start; display: flex; /* Use flex for timestamp + content */ }
+.message p { margin: 0; } .message span { display: inline-block; vertical-align: top; } .message span:not(.timestamp) { white-space: pre-wrap; word-break: break-word; flex: 1; }
 .conversation-area .message.user { background-color: var(--user-message-bg); border-color: var(--user-message-bg); margin-left: auto; align-self: flex-end; }
 .conversation-area .message.agent_response { margin-right: auto; align-self: flex-start; font-family: Menlo, Monaco, Consolas, "Courier New", monospace; }
 .message[data-agent-id="admin_ai"] { border-left: 4px solid var(--accent-color-1); background-color: #2a3a4a; } .message[data-agent-id*="coder"] { border-left: 4px solid var(--accent-color-2); background-color: #2a4a3a; } .message[data-agent-id*="analyst"] { border-left: 4px solid var(--accent-color-orange); background-color: #4a3a2a; } .message[data-agent-id*="creative"], .message[data-agent-id*="reviewer"] { border-left: 4px solid var(--accent-color-green); background-color: #3a4a2a; } .message[data-agent-id="default"] { border-left: 4px solid var(--text-color-muted); } .message[data-agent-id*="unknown_agent"] { border-left: 4px solid var(--text-color-secondary); }
