@@ -3,25 +3,22 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no"> <!-- Added user-scalable=no -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>TrippleEffect</title>
-    <!-- Link to the CSS file -->
     <link href="/static/css/style.css" rel="stylesheet">
-    <!-- Optional: Add meta tags for dark mode preference -->
     <meta name="color-scheme" content="dark">
-    <meta name="theme-color" content="#1a1a1a"> <!-- Example dark theme color -->
+    <meta name="theme-color" content="#1a1a1a">
 </head>
 <body>
-    <!-- New container for swipeable pages -->
-    <div id="page-container">
+    <!-- Main wrapper for the swipeable sections -->
+    <div class="content-wrapper">
 
-        <!-- Page 1: Main Chat and Agent List -->
-        <div id="main-page" class="page">
-            <div class="main-page-layout">
-                <!-- Top Section: Chat & Input -->
-                <div class="main-chat-section">
-                    <h1>TrippleEffect</h1>
-                    <!-- Area for displaying conversation messages -->
+        <!-- Section 1: Main Chat and Agent List -->
+        <section id="main-section" class="swipe-section">
+            <div class="section-content"> <!-- Added inner wrapper for padding/layout -->
+                <h1>TrippleEffect</h1>
+                <!-- Top Area: Chat & Input -->
+                <div class="main-top-area">
                     <div id="conversation-area" class="message-area conversation-area">
                         <div class="message status initial-placeholder"><span>Conversation Area</span></div>
                     </div>
@@ -34,54 +31,52 @@
                             <button id="send-button">Send</button>
                         </div>
                     </div>
-                    <div id="file-info-area" class="file-info-area">
-                         <!-- Selected file info -->
-                    </div>
+                    <div id="file-info-area" class="file-info-area"></div>
                 </div>
-                <!-- Bottom Section: Agent Status List -->
-                <div class="main-agent-status-section">
+                <!-- Bottom Area: Agent Status List -->
+                <div class="main-bottom-area agent-status-section"> <!-- Combined classes -->
                     <h2>Active Agents</h2>
                     <div id="agent-status-content">
                         <span class="status-placeholder">Waiting for status...</span>
                     </div>
                 </div>
             </div>
-        </div>
+        </section>
 
-        <!-- Page 2: System Logs -->
-        <div id="log-page" class="page">
-            <h1>System Logs</h1>
-             <!-- Area for displaying system/status/error messages -->
-             <div id="system-log-area" class="message-area system-log-area full-page-area">
-                 <!-- System/status messages will be dynamically added here -->
-                  <div class="message status initial-placeholder"><span>System Logs & Status</span></div>
-                  <div class="message status initial-connecting initial-placeholder"><span>Connecting to backend...</span></div>
-             </div>
-        </div>
+        <!-- Section 2: System Logs -->
+        <section id="log-section" class="swipe-section">
+            <div class="section-content">
+                <h1>System Logs</h1>
+                 <div id="system-log-area" class="message-area system-log-area full-page-area">
+                      <div class="message status initial-placeholder"><span>System Logs & Status</span></div>
+                      <div class="message status initial-connecting initial-placeholder"><span>Connecting to backend...</span></div>
+                 </div>
+            </div>
+        </section>
 
-        <!-- Page 3: Configuration -->
-        <div id="config-page" class="page">
-             <h1>Configuration</h1>
-             <!-- Configuration section -->
-             <div class="config-area full-page-area">
-                 <div class="config-header">
-                     <h2>Static Config</h2>
-                     <div>
-                         <button id="refresh-config-button" class="config-action-button refresh-button" title="Refresh Config List">🔄</button>
-                         <button id="add-agent-button" class="config-action-button add-button" title="Add New Static Agent">+</button>
+        <!-- Section 3: Configuration -->
+        <section id="config-section" class="swipe-section">
+             <div class="section-content">
+                 <h1>Configuration</h1>
+                 <div class="config-area full-page-area">
+                     <div class="config-header">
+                         <h2>Static Config</h2>
+                         <div>
+                             <button id="refresh-config-button" class="config-action-button refresh-button" title="Refresh Config List">🔄</button>
+                             <button id="add-agent-button" class="config-action-button add-button" title="Add New Static Agent">+</button>
+                         </div>
                      </div>
+                     <div id="config-content">
+                          <span class="status-placeholder">Loading config...</span>
+                     </div>
+                     <p class="restart-note">Note: Static config changes require application restart.</p>
                  </div>
-                 <div id="config-content">
-                      <span class="status-placeholder">Loading config...</span>
-                 </div>
-                 <p class="restart-note">Note: Static config changes require application restart.</p>
              </div>
-             <!-- Maybe add project/session management UI here later -->
-        </div>
+        </section>
 
-    </div> <!-- /page-container -->
+    </div> <!-- /.content-wrapper -->
 
-    <!-- Modal Dialogs (kept outside page container) -->
+    <!-- Modals remain outside the swipe wrapper -->
     <!-- Modal Dialog for Add/Edit Agent -->
     <div id="agent-modal" class="modal" style="display: none;">
         <div class="modal-content">
@@ -89,34 +84,20 @@
             <h3 id="modal-title">Add Agent</h3>
             <form id="agent-form">
                 <input type="hidden" id="edit-agent-id" value="">
-
                 <label for="agent-id">Agent ID:</label>
                 <input type="text" id="agent-id" name="agent_id" required pattern="^[a-zA-Z0-9_-]+$" title="Alphanumeric, underscores, hyphens only">
-
                 <label for="persona">Persona:</label>
                 <input type="text" id="persona" name="persona">
-
                 <label for="provider">Provider:</label>
-                <select id="provider" name="provider" required>
-                    <option value="openrouter">OpenRouter</option>
-                    <option value="ollama">Ollama</option>
-                    <option value="openai">OpenAI</option>
-                </select>
-
+                <select id="provider" name="provider" required> <option value="openrouter">OpenRouter</option> <option value="ollama">Ollama</option> <option value="openai">OpenAI</option> </select>
                 <label for="model">Model:</label>
                 <input type="text" id="model" name="model" required>
-
                 <label for="temperature">Temperature:</label>
                 <input type="number" id="temperature" name="temperature" step="0.1" min="0" max="2.0" value="0.7">
-
                 <label for="system_prompt">System Prompt:</label>
                 <textarea id="system_prompt" name="system_prompt" rows="4"></textarea>
-
-                <div class="modal-actions">
-                    <button type="submit" id="save-agent-button">Save Agent</button>
-                    <button type="button" onclick="closeModal('agent-modal')">Cancel</button>
-                </div>
-                 <p class="restart-note">Note: Static config changes require application restart.</p>
+                <div class="modal-actions"> <button type="submit" id="save-agent-button">Save Agent</button> <button type="button" onclick="closeModal('agent-modal')">Cancel</button> </div>
+                <p class="restart-note">Note: Static config changes require application restart.</p>
             </form>
         </div>
     </div>
@@ -130,26 +111,15 @@
             <p><strong>Last Error:</strong> <code id="override-last-error">[Error Details]</code></p>
             <form id="override-form">
                 <input type="hidden" id="override-agent-id" value="">
-
                 <label for="override-provider">New Provider:</label>
-                <select id="override-provider" name="new_provider" required>
-                    <option value="openrouter">OpenRouter</option>
-                    <option value="ollama">Ollama</option>
-                    <option value="openai">OpenAI</option>
-                </select>
-
+                <select id="override-provider" name="new_provider" required> <option value="openrouter">OpenRouter</option> <option value="ollama">Ollama</option> <option value="openai">OpenAI</option> </select>
                 <label for="override-model">New Model:</label>
                 <input type="text" id="override-model" name="new_model" required placeholder="Enter new model name">
-
-                <div class="modal-actions">
-                    <button type="submit" id="submit-override-button">Apply & Retry</button>
-                    <button type="button" onclick="closeModal('override-modal')">Cancel</button>
-                </div>
+                <div class="modal-actions"> <button type="submit" id="submit-override-button">Apply & Retry</button> <button type="button" onclick="closeModal('override-modal')">Cancel</button> </div>
             </form>
         </div>
     </div>
 
-    <!-- Link to the JavaScript file -->
     <script src="/static/js/app.js"></script>
 </body>
 </html>
