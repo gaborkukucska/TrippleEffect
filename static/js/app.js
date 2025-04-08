@@ -1,233 +1,820 @@
-// START OF FILE static/js/app.js (Bottom Navigation Version - Agent Label Fix)
+// START OF FILE static/js/app.js
 
-// --- WebSocket Connection ---
-let ws; // WebSocket instance
-let reconnectInterval = 5000;
-let currentFile = null; // To store the currently selected file object
-let currentFileContent = null; // Store content separately
+// --- Global Variables ---
+let ws = null; // WebSocket connection instance
+let currentView = 'chat-view'; // Default view
+let attachedFile = { name: null, content: null, size: null }; // Store attached file info
+const MAX_FILE_SIZE_MB = 5;
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 
-// --- DOM Element References ---
-let chatView, logsView, configView, viewPanels, bottomNav, navButtons,
-    conversationArea, systemLogArea, messageInput, sendButton, agentStatusContent,
-    configContent, fileInput, attachFileButton, fileInfoArea, agentModal,
-    overrideModal, agentForm, overrideForm, modalTitle, addAgentButton, refreshConfigButton;
+// --- DOM Elements (Cached on Load) ---
+let messageInput, sendButton, conversationArea, systemLogArea, logStatus,
+    agentStatusContent, bottomNavButtons, views, fileInfoArea, fileInput,
+    attachFileButton, agentModal, agentForm, modalTitle, editAgentIdInput,
+    overrideModal, overrideForm, overrideAgentIdInput, overrideMessageP,
+    overrideLastErrorCode, overrideProviderSelect, overrideModelInput,
+    configContent, refreshConfigButton, addAgentButton;
 
 // --- Initialization ---
 document.addEventListener('DOMContentLoaded', () => {
-    console.log("DOM fully loaded. Initializing Bottom Nav UI...");
-    // Get Elements
-    chatView = document.getElementById('chat-view');
-    logsView = document.getElementById('logs-view');
-    configView = document.getElementById('config-view');
-    viewPanels = document.querySelectorAll('.view-panel');
-    bottomNav = document.getElementById('bottom-nav');
-    navButtons = bottomNav?.querySelectorAll('.nav-button');
-    conversationArea = document.getElementById('conversation-area');
-    systemLogArea = document.getElementById('system-log-area');
+    console.log("DOM fully loaded and parsed");
+
+    // Cache DOM elements
     messageInput = document.getElementById('message-input');
     sendButton = document.getElementById('send-button');
+    conversationArea = document.getElementById('conversation-area');
+    systemLogArea = document.getElementById('system-log-area');
+    logStatus = document.querySelector('#logs-view .message.status.initial-connecting'); // Target specific status line
     agentStatusContent = document.getElementById('agent-status-content');
-    configContent = document.getElementById('config-content');
+    bottomNavButtons = document.querySelectorAll('.nav-button');
+    views = document.querySelectorAll('.view-panel');
+    fileInfoArea = document.getElementById('file-info-area');
     fileInput = document.getElementById('file-input');
     attachFileButton = document.getElementById('attach-file-button');
-    fileInfoArea = document.getElementById('file-info-area');
     agentModal = document.getElementById('agent-modal');
-    overrideModal = document.getElementById('override-modal');
     agentForm = document.getElementById('agent-form');
-    overrideForm = document.getElementById('override-form');
     modalTitle = document.getElementById('modal-title');
-    addAgentButton = document.getElementById('add-agent-button');
+    editAgentIdInput = document.getElementById('edit-agent-id'); // Hidden input for editing
+    overrideModal = document.getElementById('override-modal');
+    overrideForm = document.getElementById('override-form');
+    overrideAgentIdInput = document.getElementById('override-agent-id');
+    overrideMessageP = document.getElementById('override-message');
+    overrideLastErrorCode = document.getElementById('override-last-error');
+    overrideProviderSelect = document.getElementById('override-provider');
+    overrideModelInput = document.getElementById('override-model');
+    configContent = document.getElementById('config-content');
     refreshConfigButton = document.getElementById('refresh-config-button');
+    addAgentButton = document.getElementById('add-agent-button');
 
-    // Checks
-    const essentialElements = [ chatView, logsView, configView, bottomNav, navButtons, conversationArea, systemLogArea, messageInput, sendButton, agentStatusContent, configContent, agentModal, overrideModal, agentForm, overrideForm ];
-    if (viewPanels.length === 0 || !navButtons || navButtons.length === 0 || essentialElements.some(el => !el)) { console.error("Essential UI elements missing!"); document.body.innerHTML = '<h1 style="color: red;">UI Init Error</h1>'; return; }
-    console.log("Core DOM elements found.");
 
-    // Init
-     try {
-        console.log("Setting up WebSocket...");
-        setupWebSocket();
-        console.log("Setting up Event Listeners...");
-        setupEventListeners();
-        console.log("Loading initial config display...");
-        displayAgentConfigurations();
-        console.log("UI Initialized Successfully.");
-     } catch(error) { console.error("Error during initialization:", error); document.body.innerHTML = `<h1 style="color: red;">UI Init Error: ${error.message}</h1><pre>${error.stack}</pre>`; }
+    // Check if essential elements are found
+    if (!messageInput || !sendButton || !conversationArea || !systemLogArea || !logStatus || !agentStatusContent) {
+        console.error("Initialization Error: One or more essential DOM elements are missing.");
+        // Display error to user?
+        document.body.innerHTML = "<h1>Initialization Error</h1><p>Could not find essential page elements. Please reload or contact support.</p>";
+        return;
+    }
+
+    // Setup WebSocket
+    setupWebSocket();
+
+    // Setup Event Listeners
+    setupEventListeners();
+
+    // Initial Setup
+    showView(currentView); // Show the default view
+    clearFileInput(); // Ensure file input is clear on load
+    displayAgentConfigurations(); // Load initial config view
+
+    console.log("Initialization complete.");
 });
 
+// --- WebSocket Management ---
+function setupWebSocket() {
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+    console.log(`Attempting to connect WebSocket to: ${wsUrl}`);
+    updateLogStatus("Connecting...", false);
 
-// --- WebSocket Setup ---
-function setupWebSocket() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; const wsUrl = `${wsProtocol}//${window.location.host}/ws`; console.log(`Attempting WS: ${wsUrl}`); ws = new WebSocket(wsUrl); ws.onopen = () => { console.log('WS connected.'); updateLogStatus('Connected!', false); requestInitialAgentStatus(); reconnectInterval = 5000; }; ws.onmessage = (event) => { try { const d = JSON.parse(event.data); handleWebSocketMessage(d); } catch (e) { console.error('WS parse error:', e); addMessage('system-log-area', `[SysErr] Bad msg: ${event.data}`, 'error'); } }; ws.onerror = (e) => { console.error('WS error:', e); addMessage('system-log-area', '[WS Error] Connect error.', 'error'); updateLogStatus('Connect Error. Retry...', true); }; ws.onclose = (e) => { console.log('WS closed:', e.reason, `(${e.code})`); const m = e.wasClean ? `[WS Closed] Code: ${e.code}.` : `[WS Closed] Lost connection. Code: ${e.code}. Reconnecting...`; const t = e.wasClean ? 'status' : 'error'; addMessage('system-log-area', m, t); updateLogStatus('Disconnected. Retry...', true); ws = null; setTimeout(setupWebSocket, reconnectInterval); reconnectInterval = Math.min(reconnectInterval * 1.5, 30000); }; }
+    ws = new WebSocket(wsUrl);
 
-// --- WebSocket Message Handling ---
-function handleWebSocketMessage(data) { addRawLogEntry(data); switch (data.type) { case 'response_chunk': appendAgentResponseChunk(data.agent_id, data.content); break; case 'status': case 'system_event': addMessage('system-log-area', `[${data.agent_id || 'System'}] ${data.content || data.message || 'Status.'}`, 'status'); if (data.message === 'Connected to TrippleEffect backend!') { updateLogStatus('Connected!', false); } break; case 'error': addMessage('system-log-area', `[${data.agent_id || 'Error'}] ${data.content}`, 'error'); break; case 'final_response': finalizeAgentResponse(data.agent_id, data.content); break; case 'agent_status_update': updateAgentStatusUI(data.agent_id, data.status); break; case 'agent_added': addMessage('system-log-area', `[Sys] Agent Added: ${data.agent_id} (Team: ${data.team || 'N/A'})`, 'status'); addOrUpdateAgentStatusEntry(data.agent_id, { agent_id: data.agent_id, persona: data.config?.persona || data.agent_id, status: data.config?.status || 'idle', provider: data.config?.provider, model: data.config?.model, team: data.team }); break; case 'agent_deleted': addMessage('system-log-area', `[Sys] Agent Deleted: ${data.agent_id}`, 'status'); removeAgentStatusEntry(data.agent_id); break; case 'team_created': addMessage('system-log-area', `[Sys] Team Created: ${data.team_id}`, 'status'); break; case 'team_deleted': addMessage('system-log-area', `[Sys] Team Deleted: ${data.team_id}`, 'status'); break; case 'agent_moved_team': addMessage('system-log-area', `[Sys] Agent ${data.agent_id} moved to team ${data.new_team_id || 'None'} (from ${data.old_team_id || 'None'})`, 'status'); requestAgentStatus(data.agent_id); break; case 'request_user_override': showOverrideModal(data); addMessage('system-log-area', `[Sys] Override Required for Agent ${data.agent_id}`, 'error'); break; default: console.warn('Unknown WS msg type:', data.type, data); addMessage('system-log-area', `[Sys] Unhandled msg type: ${data.type}`, 'status'); } }
-function requestInitialAgentStatus() { console.log("Req init status (needs backend)..."); }
-function requestAgentStatus(agentId) { console.log(`Req status for ${agentId} (needs backend)...`); }
+    ws.onopen = () => {
+        console.log("WebSocket connection established.");
+        updateLogStatus("Connected", false);
+        active_connections = []; // Reset active connections (client-side tracking if needed)
+        // Optional: Request initial agent status after connection
+        // requestInitialAgentStatus();
+    };
+
+    ws.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            addRawLogEntry(data); // Log raw data for debugging
+            handleWebSocketMessage(data); // Process the message
+        } catch (error) {
+            console.error("Error parsing WebSocket message or handling data:", error);
+            // Handle non-JSON messages or errors
+            addMessage('system-log-area', `Raw/Error Data: ${event.data}`, 'error');
+        }
+    };
+
+    ws.onerror = (error) => {
+        console.error("WebSocket Error:", error);
+        updateLogStatus("Connection Error", true);
+        addMessage('system-log-area', 'WebSocket connection error occurred.', 'error');
+    };
+
+    ws.onclose = (event) => {
+        console.log(`WebSocket connection closed. Code: ${event.code}, Reason: ${event.reason}`);
+        updateLogStatus(`Disconnected (Code: ${event.code})`, true);
+        addMessage('system-log-area', `WebSocket connection closed. Trying to reconnect in 5 seconds...`, 'error');
+        // Implement reconnection logic
+        setTimeout(setupWebSocket, 5000);
+    };
+}
+
+function handleWebSocketMessage(data) {
+    const agentId = data.agent_id || 'system'; // Default to system if no agent_id
+
+    switch (data.type) {
+        case 'response_chunk':
+            appendAgentResponseChunk(agentId, data.content);
+            break;
+        case 'final_response':
+            finalizeAgentResponse(agentId, data.content);
+            break;
+        case 'status':
+        case 'system_event': // Treat system events like status messages for logging
+            addMessage('system-log-area', `[${agentId}] ${data.content || data.message || 'Status update'}`, 'status');
+            // Also update agent status list if it's an agent-specific status message
+             if (data.type === 'status' && data.agent_id && data.content?.startsWith("Configuration updated")) {
+                 // Trigger a full status refresh if config changed
+                 updateAgentStatusUI(agentId, { /* Need full status data here */ }); // Might need backend to send full status after override success
+             }
+            break;
+        case 'error':
+            addMessage('system-log-area', `[ERROR - ${agentId}] ${data.content}`, 'error');
+            // If the error is agent-specific, reflect it in the status list
+            if(data.agent_id) {
+                updateAgentStatusUI(agentId, { status: 'error' }); // Update status to error
+            }
+            break;
+        case 'agent_status_update':
+            // Handles updates for a specific agent's status, potentially including team changes
+            updateAgentStatusUI(data.agent_id, data.status); // Pass the whole status object
+            break;
+        case 'agent_added':
+            // *** NEW: Handle agent addition ***
+            console.log("Agent Added Event:", data);
+            addMessage('system-log-area', `[System] Agent Added: ${data.agent_id} (Persona: ${data.config?.persona || 'N/A'}, Team: ${data.team || 'N/A'})`, 'status log-agent-message');
+            // Create/Update the status entry using the provided config and team
+            addOrUpdateAgentStatusEntry(data.agent_id, {
+                persona: data.config?.persona,
+                model: data.config?.model,
+                provider: data.config?.provider,
+                status: 'idle', // Assume idle initially
+                team: data.team || 'N/A'
+            });
+            break;
+        case 'agent_deleted':
+            // *** NEW: Handle agent deletion ***
+             console.log("Agent Deleted Event:", data);
+            addMessage('system-log-area', `[System] Agent Deleted: ${data.agent_id}`, 'status log-agent-message');
+            removeAgentStatusEntry(data.agent_id);
+            break;
+         case 'team_created':
+             addMessage('system-log-area', `[System] Team Created: ${data.team_id}`, 'status log-agent-message');
+             // Potentially update UI elements related to teams if added later
+             break;
+         case 'team_deleted':
+             addMessage('system-log-area', `[System] Team Deleted: ${data.team_id}`, 'status log-agent-message');
+             // Potentially update UI elements related to teams
+             break;
+         case 'agent_moved_team': // Could be handled by agent_status_update if it includes team
+             addMessage('system-log-area', `[System] Agent ${data.agent_id} moved to Team: ${data.new_team_id || 'None'} (from ${data.old_team_id || 'None'})`, 'status log-agent-message');
+             // Status update should handle the visual change via addOrUpdateAgentStatusEntry
+             break;
+        case 'request_user_override':
+            showOverrideModal(data);
+            break;
+        default:
+            addMessage('system-log-area', `Unknown message type: ${data.type} from ${agentId}`, 'status');
+            console.warn("Received unknown WebSocket message type:", data);
+    }
+}
 
 // --- UI Update Functions ---
-function addMessage(areaId, text, type = 'status', agentId = null) {
+
+function updateLogStatus(message, isError = false) {
+    if (logStatus) {
+        logStatus.textContent = message;
+        logStatus.style.color = isError ? 'var(--accent-color-red)' : 'var(--text-color-secondary)';
+        logStatus.style.fontWeight = isError ? 'bold' : 'normal';
+        // Make sure it's visible if it was hidden
+        logStatus.classList.remove("initial-placeholder");
+    }
+}
+
+function addMessage(areaId, text, type = 'info', agentId = null) {
     const area = document.getElementById(areaId);
-    if (!area) { console.error(`Message area #${areaId} not found.`); return; }
+    if (!area) {
+        console.error(`addMessage Error: Area with ID '${areaId}' not found.`);
+        return;
+    }
+
+    // Remove placeholder if it exists
     const placeholder = area.querySelector('.initial-placeholder');
     if (placeholder) placeholder.remove();
 
     const messageDiv = document.createElement('div');
-    messageDiv.classList.add('message', type);
-    if (agentId) messageDiv.dataset.agentId = agentId;
+    messageDiv.classList.add('message', type); // Add base 'message' class and specific type class
 
-    // Add timestamp for system logs
+    const contentSpan = document.createElement('span');
+
+    // Add timestamp for system logs only
     if (areaId === 'system-log-area') {
-        const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         const timestampSpan = document.createElement('span');
         timestampSpan.classList.add('timestamp');
-        timestampSpan.textContent = `[${timestamp}] `;
+        timestampSpan.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ':';
         messageDiv.appendChild(timestampSpan);
+    }
 
-        // Apply color classes based on content (only if not an error)
-        if (type !== 'error') {
-            if (text.includes("Executing tool") || text.includes("Tool result") || text.includes("Manager Result for") || text.includes("validated. Signaling manager")) {
-                messageDiv.classList.add('log-tool-use');
-            } else if (text.startsWith("[From @")) {
-                messageDiv.classList.add('log-agent-message');
-            }
+    // Specific class based on log type for potential styling
+    if (text.includes("Executing tool")) contentSpan.classList.add('log-tool-use');
+    if (text.includes("Received message from") || text.includes("Sending message to") || text.includes("Agent Added") || text.includes("Agent Deleted")) contentSpan.classList.add('log-agent-message');
+
+    contentSpan.textContent = text;
+    messageDiv.appendChild(contentSpan);
+
+    // Add data attribute if agentId is provided
+    if (agentId) {
+        messageDiv.dataset.agentId = agentId;
+         // Add specific styling for user/agent in conversation
+         if (areaId === 'conversation-area') {
+             if (type === 'user') messageDiv.classList.add('user');
+             else messageDiv.classList.add('agent_response'); // Default to agent styling if not user
         }
     }
 
-    // *** MODIFICATION for Agent Responses in Conversation Area ***
-    if (areaId === 'conversation-area' && type === 'agent_response' && agentId) {
-        // Add Agent Label Element
-        const label = document.createElement('div'); // Use div for block display
-        label.classList.add('agent-label');
-        label.textContent = `Agent @${agentId}:`;
-        messageDiv.appendChild(label);
-        // Message content will be added to a separate container below
-        const contentContainer = document.createElement('div');
-        contentContainer.classList.add('message-content');
-        // Use innerHTML for content to render <br> tags
-        contentContainer.innerHTML = text.replace(/&/g, "&").replace(/</g, "<").replace(/>/g, ">").replace(/\n/g, '<br>');
-        messageDiv.appendChild(contentContainer);
-    } else {
-        // For user messages or system logs, add content directly
-        const contentSpan = document.createElement('span');
-        contentSpan.innerHTML = text.replace(/&/g, "&").replace(/</g, "<").replace(/>/g, ">").replace(/\n/g, '<br>');
-        messageDiv.appendChild(contentSpan);
+    // Add class for tool execution status messages
+    if (type === 'status' && text.includes("Executing tool")) {
+         messageDiv.classList.add('tool-execution');
     }
-    // *** END MODIFICATION ***
 
     area.appendChild(messageDiv);
-    setTimeout(() => { area.scrollTop = area.scrollHeight; }, 50); // Scroll after append
+    area.scrollTop = area.scrollHeight; // Scroll to bottom
 }
 
+
 function appendAgentResponseChunk(agentId, chunk) {
-    const area = conversationArea; if (!area) return;
-    let agentMsgDiv = area.querySelector(`.message.agent_response[data-agent-id="${agentId}"].incomplete`);
-    let contentContainer;
+    if (!conversationArea) return;
+    const agentMessageId = `agent-msg-${agentId}`;
+    let agentMsgDiv = conversationArea.querySelector(`#${agentMessageId}`);
 
     if (!agentMsgDiv) {
-        // Create the main message div
-        const placeholder = area.querySelector('.initial-placeholder'); if (placeholder) placeholder.remove();
+        // Create the message container if it doesn't exist
         agentMsgDiv = document.createElement('div');
-        agentMsgDiv.classList.add('message', 'agent_response', 'incomplete');
-        agentMsgDiv.dataset.agentId = agentId;
+        agentMsgDiv.classList.add('message', 'agent_response'); // Base + agent styling
+        agentMsgDiv.id = agentMessageId;
+        agentMsgDiv.dataset.agentId = agentId; // Add data attribute
 
-        // Add Agent Label Element
-        const label = document.createElement('div');
-        label.classList.add('agent-label');
-        label.textContent = `Agent @${agentId}:`;
-        agentMsgDiv.appendChild(label);
+        const labelSpan = document.createElement('span');
+        labelSpan.classList.add('agent-label');
+        // Use agentId as fallback label if persona not yet known
+        labelSpan.textContent = `Agent @${agentId}:`;
+        agentMsgDiv.appendChild(labelSpan);
 
-        // Add Container for the content chunks
-        contentContainer = document.createElement('div');
-        contentContainer.classList.add('message-content');
-        agentMsgDiv.appendChild(contentContainer);
+        const contentSpan = document.createElement('span');
+        contentSpan.classList.add('message-content');
+        contentSpan.textContent = chunk; // Start with the first chunk
+        agentMsgDiv.appendChild(contentSpan);
 
-        area.appendChild(agentMsgDiv);
+        conversationArea.appendChild(agentMsgDiv);
+        // Update label if persona is available from status updates
+        const statusEntry = agentStatusContent?.querySelector(`#agent-status-${agentId}`);
+        if(statusEntry) {
+            labelSpan.textContent = statusEntry.dataset.persona || `Agent @${agentId}:`;
+        }
+
     } else {
-        // Find existing content container
-        contentContainer = agentMsgDiv.querySelector('.message-content');
-        if (!contentContainer) { // Should not happen, but safety check
-            console.error("Could not find message-content container for chunk append!");
-            contentContainer = agentMsgDiv; // Append to main div as fallback
+        // Append chunk to existing content span
+        const contentSpan = agentMsgDiv.querySelector('.message-content');
+        if (contentSpan) {
+            contentSpan.textContent += chunk;
         }
     }
-    // Append text chunk safely
-    const chunkNode = document.createTextNode(chunk);
-    contentContainer.appendChild(chunkNode);
-
-    setTimeout(() => { area.scrollTop = area.scrollHeight; }, 50);
+    conversationArea.scrollTop = conversationArea.scrollHeight;
 }
 
 function finalizeAgentResponse(agentId, finalContent) {
-    const area = conversationArea; if (!area) return;
-    let agentMsgDiv = area.querySelector(`.message.agent_response[data-agent-id="${agentId}"].incomplete`);
+     if (!conversationArea) return;
+     const agentMessageId = `agent-msg-${agentId}`;
+     let agentMsgDiv = conversationArea.querySelector(`#${agentMessageId}`);
 
-    if (agentMsgDiv) {
-        agentMsgDiv.classList.remove('incomplete');
-        // Content should already be in the .message-content div from chunks
-    } else if (finalContent) {
-        // If no streaming occurred, add the full message using the new structure
-        addMessage('conversation-area', finalContent, 'agent_response', agentId);
-    }
-    setTimeout(() => { area.scrollTop = area.scrollHeight; }, 50);
+     if (agentMsgDiv) {
+         // Message div exists (streamed chunks received) - mark as complete? (Optional)
+         agentMsgDiv.classList.add('finalized');
+         // Optionally update content if finalContent differs significantly (rare)
+         const contentSpan = agentMsgDiv.querySelector('.message-content');
+         if (contentSpan && contentSpan.textContent !== finalContent) {
+             // console.warn(`Final content for ${agentId} differs from streamed content. Updating.`);
+             // contentSpan.textContent = finalContent; // Uncomment to force update
+         }
+     } else {
+         // No chunks were received, add the whole message now
+         addMessage('conversation-area', finalContent, 'agent_response', agentId);
+         // Try to set the label correctly if status is available
+         const newMsgDiv = conversationArea.querySelector(`#agent-msg-${agentId}`); // Should exist now
+         const statusEntry = agentStatusContent?.querySelector(`#agent-status-${agentId}`);
+         const labelSpan = newMsgDiv?.querySelector('.agent-label');
+         if(newMsgDiv && labelSpan && statusEntry) {
+             labelSpan.textContent = statusEntry.dataset.persona || `Agent @${agentId}:`;
+         }
+     }
+     conversationArea.scrollTop = conversationArea.scrollHeight;
+ }
+
+
+function updateAgentStatusUI(agentId, statusData) {
+    // Central function to call the update/add logic
+    addOrUpdateAgentStatusEntry(agentId, statusData);
 }
 
-function updateLogStatus(message, isError = false) { const area = systemLogArea; if (!area) return; let s = area.querySelector('.status.initial-connecting'); if (!s) s = area.querySelector('.message.status:last-child'); if (!s && message) { addMessage('system-log-area', message, isError ? 'error' : 'status'); } else if (s) { s.textContent = message; s.className = `message status ${isError ? 'error' : ''}`; if (message === 'Connected!' || message === 'Connected to backend!') s.classList.remove('initial-connecting'); } }
-function updateAgentStatusUI(agentId, statusData) { if (!agentStatusContent) return; const p = agentStatusContent.querySelector('.status-placeholder'); if (p) p.remove(); addOrUpdateAgentStatusEntry(agentId, statusData); }
-function addOrUpdateAgentStatusEntry(agentId, statusData) { if (!agentStatusContent) return; let i = agentStatusContent.querySelector(`.agent-status-item[data-agent-id="${agentId}"]`); if (!i) { i = document.createElement('div'); i.classList.add('agent-status-item'); i.dataset.agentId = agentId; agentStatusContent.appendChild(i); } const p = statusData?.persona || agentId; const s = statusData?.status || 'unknown'; const v = statusData?.provider || 'N/A'; const m = statusData?.model || 'N/A'; const t = statusData?.team || 'None'; i.title = `ID: ${agentId}\nProvider: ${v}\nModel: ${m}\nTeam: ${t}\nStatus: ${s}`; i.innerHTML = `<strong>${p}</strong> <span class="agent-model">(${m})</span> <span>[Team: ${t}]</span> <span class="agent-status">${s.replace('_', ' ')}</span>`; i.className = `agent-status-item status-${s}`; }
-function removeAgentStatusEntry(agentId) { if (!agentStatusContent) return; const i = agentStatusContent.querySelector(`.agent-status-item[data-agent-id="${agentId}"]`); if (i) i.remove(); if (!agentStatusContent.hasChildNodes() || agentStatusContent.innerHTML.trim() === '') { agentStatusContent.innerHTML = '<span class="status-placeholder">No active agents.</span>'; } }
-function addRawLogEntry(data) { try { const t = JSON.stringify(data); console.debug("Raw:", t.substring(0, 300) + (t.length > 300 ? '...' : '')); } catch (e) { console.warn("Cannot stringify raw data:", data); } }
+// --- *** MODIFIED to include team *** ---
+function addOrUpdateAgentStatusEntry(agentId, statusData) {
+    if (!agentStatusContent) return;
 
+    // Remove placeholder if it's the first agent being added
+    const placeholder = agentStatusContent.querySelector('.status-placeholder');
+    if (placeholder) placeholder.remove();
+
+    let entry = agentStatusContent.querySelector(`#agent-status-${agentId}`);
+    const status = statusData.status || 'unknown';
+    const persona = statusData.persona || `Agent @${agentId}`; // Use persona if available
+    const modelInfo = statusData.model ? `(${statusData.provider || 'N/A'}/${statusData.model})` : '';
+    // --- Get team info ---
+    const teamInfo = statusData.team ? `[Team: ${statusData.team}]` : '[Team: N/A]';
+
+    if (!entry) {
+        // Create new entry
+        entry = document.createElement('div');
+        entry.id = `agent-status-${agentId}`;
+        entry.classList.add('agent-status-item');
+        agentStatusContent.appendChild(entry);
+        console.log(`Added status entry for ${agentId}`);
+    }
+
+    // Update content and classes
+    entry.className = `agent-status-item status-${status.toLowerCase().replace(/\s+/g, '_')}`; // Update classes based on status
+    // Store persona for potential use in conversation label update
+    entry.dataset.persona = persona;
+
+    // --- Updated innerHTML to include team ---
+    entry.innerHTML = `
+        <span>
+            <strong>${persona}</strong>
+            <span class="agent-model">${modelInfo}</span>
+            <span class="agent-team">${teamInfo}</span>
+        </span>
+        <span class="agent-status">${status}</span>
+    `;
+}
+// --- *** END MODIFICATION *** ---
+
+function removeAgentStatusEntry(agentId) {
+    if (!agentStatusContent) return;
+    const entry = agentStatusContent.querySelector(`#agent-status-${agentId}`);
+    if (entry) {
+        entry.remove();
+        console.log(`Removed status entry for ${agentId}`);
+    }
+    // Add placeholder back if list becomes empty
+    if (agentStatusContent.children.length === 0) {
+        const placeholder = document.createElement('span');
+        placeholder.classList.add('status-placeholder');
+        placeholder.textContent = 'No active agents.';
+        agentStatusContent.appendChild(placeholder);
+    }
+}
+
+
+function addRawLogEntry(data) {
+    console.debug("WebSocket Received:", data);
+}
 
 // --- Event Listeners ---
 function setupEventListeners() {
+    // Send Button
     sendButton?.addEventListener('click', handleSendMessage);
-    messageInput?.addEventListener('keypress', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); } });
+
+    // Message Input (Enter Key)
+    messageInput?.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault(); // Prevent newline
+            handleSendMessage();
+        }
+    });
+
+    // Attach File Button
     attachFileButton?.addEventListener('click', () => fileInput?.click());
+
+    // File Input Change
     fileInput?.addEventListener('change', handleFileSelect);
-    addAgentButton?.addEventListener('click', () => openModal('agent-modal'));
+
+    // Config View Buttons
     refreshConfigButton?.addEventListener('click', displayAgentConfigurations);
+    addAgentButton?.addEventListener('click', () => openModal('agent-modal'));
+
+    // Agent Modal Form Submit
     agentForm?.addEventListener('submit', handleSaveAgent);
+
+    // Override Modal Form Submit
     overrideForm?.addEventListener('submit', handleSubmitOverride);
-    navButtons?.forEach(button => { button.addEventListener('click', () => { const viewId = button.dataset.view; showView(viewId); }); });
-    window.addEventListener('click', function(event) { if (event.target.classList.contains('modal')) closeModal(event.target.id); });
-    console.log("Global event listeners setup complete (Bottom Nav).");
+
+    // Bottom Navigation Buttons
+    bottomNavButtons?.forEach(button => {
+        button.addEventListener('click', () => {
+            const viewId = button.dataset.view;
+            if (viewId) {
+                showView(viewId);
+            }
+        });
+    });
+
+    // Global listener to close modals when clicking outside
+     window.addEventListener('click', (event) => {
+         if (event.target === agentModal) {
+             closeModal('agent-modal');
+         }
+         if (event.target === overrideModal) {
+              closeModal('override-modal');
+         }
+     });
 }
 
-// --- Navigation Logic ---
+// --- View Navigation ---
 function showView(viewId) {
-    console.log(`Switching view to: ${viewId}`);
-    viewPanels?.forEach(panel => { panel.classList.remove('active'); });
-    navButtons?.forEach(button => { button.classList.remove('active'); });
-    const targetPanel = document.getElementById(viewId);
-    if (targetPanel) { targetPanel.classList.add('active'); }
-    else { console.error(`View panel ${viewId} not found!`); document.getElementById('chat-view')?.classList.add('active'); viewId = 'chat-view'; }
-    const targetButton = bottomNav?.querySelector(`button[data-view="${viewId}"]`);
-    if (targetButton) { targetButton.classList.add('active'); }
+    views?.forEach(panel => {
+        panel.classList.remove('active');
+        if (panel.id === viewId) {
+            panel.classList.add('active');
+        }
+    });
+    bottomNavButtons?.forEach(button => {
+         button.classList.remove('active');
+         if (button.dataset.view === viewId) {
+             button.classList.add('active');
+         }
+     });
+    currentView = viewId;
+    console.log(`Switched to view: ${viewId}`);
 }
 
-// --- Action Handlers ---
-function handleSendMessage() { const messageText = messageInput?.value.trim() ?? ''; if (!messageText && !currentFile) { return; } if (!ws || ws.readyState !== WebSocket.OPEN) { addMessage('system-log-area', '[SysErr] WS not connected.', 'error'); console.error("WS not open. State:", ws ? ws.readyState : 'null'); return; } const messageToSend = { type: currentFile ? 'user_message_with_file' : 'user_message', text: messageText }; if (currentFile && currentFileContent) { messageToSend.filename = currentFile.name; messageToSend.file_content = currentFileContent; } else if (currentFile && !currentFileContent) { console.error("File selected but no content."); addMessage('system-log-area', '[UI Err] File content missing.', 'error'); clearFileInput(); return; } const displayMessage = currentFile ? `[File: ${currentFile.name}]\n${messageText}` : messageText; addMessage('conversation-area', displayMessage, 'user'); try { const messageString = JSON.stringify(messageToSend); console.log(`Sending WS msg: ${messageString.substring(0,100)}...`); ws.send(messageString); } catch (error) { console.error("Error sending WS message:", error); addMessage('system-log-area', '[SysErr] Failed to send message.', 'error'); return; } if(messageInput) messageInput.value = ''; clearFileInput(); }
+// --- Message Sending Logic ---
+function handleSendMessage() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        addMessage('system-log-area', 'WebSocket is not connected. Cannot send message.', 'error');
+        return;
+    }
+
+    const messageText = messageInput?.value.trim();
+
+    // Check if there's either text or an attached file
+    if (!messageText && !attachedFile.name) {
+        return; // Do nothing if input and file are both empty
+    }
+
+    let messageToSend;
+
+    if (attachedFile.name && attachedFile.content) {
+        // Send structured message with file content
+        messageToSend = {
+            type: "user_message_with_file", // Specific type for messages with files
+            text: messageText,
+            filename: attachedFile.name,
+            file_content: attachedFile.content
+        };
+        addMessage('conversation-area', `You (with ${attachedFile.name}): ${messageText}`, 'user');
+    } else {
+        // Send plain text message (as string)
+        messageToSend = messageText; // Send directly as string
+        addMessage('conversation-area', `You: ${messageText}`, 'user');
+    }
+
+    // Send the message (string or JSON stringified object)
+    try {
+        ws.send(typeof messageToSend === 'string' ? messageToSend : JSON.stringify(messageToSend));
+    } catch (error) {
+        console.error("Error sending message via WebSocket:", error);
+        addMessage('system-log-area', `Error sending message: ${error}`, 'error');
+        return; // Don't clear input if send failed
+    }
+
+
+    // Clear input and file attachment after sending
+    if (messageInput) messageInput.value = '';
+    clearFileInput();
+    if (messageInput) messageInput.style.height = 'auto'; // Reset height potentially
+
+     // Re-enable send button (it might be disabled elsewhere)
+     if (sendButton) sendButton.disabled = false;
+}
 
 // --- File Handling ---
-function handleFileSelect(event) { const f = event.target.files[0]; if (!f) { clearFileInput(); return; } const t=['text/plain', 'text/markdown', 'text/csv', 'text/html', 'text/css', 'application/javascript', 'application/json', 'application/x-yaml', 'application/yaml']; const e=['.txt', '.md', '.py', '.js', '.html', '.css', '.json', '.yaml', '.yml', '.csv', '.log']; const x='.' + f.name.split('.').pop().toLowerCase(); const v=t.includes(f.type) || e.includes(x); if (!v) { alert(`Unsupported type: ${f.type || x}. Upload text files.`); clearFileInput(); return; } const s=1*1024*1024; if (f.size > s) { alert(`File too large (${(f.size / 1024 / 1024).toFixed(2)} MB). Max 1 MB.`); clearFileInput(); return; } const r=new FileReader(); r.onload = (ev) => { currentFile = { name: f.name, size: f.size, type: f.type }; currentFileContent = ev.target.result; displayFileInfo(); console.log(`File "${f.name}" selected.`); }; r.onerror = (ev) => { console.error("File read error:", ev); alert("Error reading file."); clearFileInput(); }; r.readAsText(f); }
-function displayFileInfo() { if (!fileInfoArea) return; if (currentFile) { fileInfoArea.innerHTML = `<span>📎 ${currentFile.name} (${(currentFile.size / 1024).toFixed(1)} KB)</span><button onclick="clearFileInput()" title="Remove file">×</button>`; } else { fileInfoArea.innerHTML = ''; } }
-function clearFileInput() { currentFile = null; currentFileContent = null; if(fileInput) fileInput.value = ''; displayFileInfo(); console.log("File input cleared."); }
+function handleFileSelect(event) {
+    const file = event.target.files[0];
+    if (!file) {
+        clearFileInput();
+        return;
+    }
+
+    // Basic file type check (adjust mimetypes as needed)
+    const allowedTypes = [
+        'text/plain', 'text/markdown', 'text/csv', 'text/html', 'text/css',
+        'application/json', 'application/yaml', 'application/x-yaml',
+        'application/javascript', 'text/javascript', 'application/x-python-code', 'text/x-python'
+    ];
+    // Looser check by extension for common types if MIME type isn't perfect
+    const allowedExtensions = ['.txt', '.py', '.js', '.html', '.css', '.md', '.json', '.yaml', '.yml', '.csv', '.log'];
+    const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
+
+    // if (!allowedTypes.includes(file.type) && !allowedExtensions.includes(fileExtension)) {
+    //      addMessage('system-log-area', `Error: Invalid file type. Allowed types: ${allowedExtensions.join(', ')}`, 'error');
+    //      clearFileInput();
+    //      return;
+    // }
+    // ^^^ Relaxed file type check for now ^^^
+
+    // File size check
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+        addMessage('system-log-area', `Error: File size exceeds ${MAX_FILE_SIZE_MB}MB limit.`, 'error');
+        clearFileInput();
+        return;
+    }
+
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        attachedFile.name = file.name;
+        attachedFile.content = e.target.result;
+        attachedFile.size = file.size;
+        displayFileInfo();
+    };
+    reader.onerror = (e) => {
+        console.error("FileReader Error:", e);
+        addMessage('system-log-area', 'Error reading file.', 'error');
+        clearFileInput();
+    };
+    reader.readAsText(file); // Read as text
+}
+
+function displayFileInfo() {
+    if (fileInfoArea) {
+        if (attachedFile.name) {
+            const fileSizeKB = attachedFile.size ? (attachedFile.size / 1024).toFixed(1) : 'N/A';
+            fileInfoArea.innerHTML = `
+                <span>📎 ${attachedFile.name} (${fileSizeKB} KB)</span>
+                <button onclick="clearFileInput()" title="Remove File">✖</button>
+            `;
+            fileInfoArea.style.display = 'flex'; // Show the area
+        } else {
+            fileInfoArea.innerHTML = '';
+            fileInfoArea.style.display = 'none'; // Hide the area
+        }
+    }
+}
+
+function clearFileInput() {
+    attachedFile = { name: null, content: null, size: null };
+    if (fileInput) fileInput.value = ''; // Clear the input element
+    displayFileInfo(); // Update the UI
+}
+
 
 // --- Configuration Management UI ---
-async function displayAgentConfigurations() { if (!configContent) { console.warn("Config area not found."); return; } configContent.innerHTML = '<span class="status-placeholder">Loading...</span>'; try { const r = await fetch('/api/config/agents'); if (!r.ok) throw new Error(`HTTP ${r.status}`); const a = await r.json(); configContent.innerHTML = ''; if (!Array.isArray(a)) throw new Error("Expected agent array"); if (a.length === 0) { configContent.innerHTML = '<span class="status-placeholder">No static agents.</span>'; return; } a.sort((x, y) => (x.agent_id || "").localeCompare(y.agent_id || "")); a.forEach(g => { if (!g || !g.agent_id) return; const i = document.createElement('div'); i.classList.add('config-item'); const dT = `- ${g.provider || 'N/A'} / ${g.model || 'N/A'}`; i.innerHTML = `<span><strong></strong> (${g.agent_id}) <span class="agent-details"></span></span> <div class="config-item-actions"> <button class="config-action-button edit-button" data-id="${g.agent_id}" title="Edit">✏️</button> <button class="config-action-button delete-button" data-id="${g.agent_id}" title="Delete">🗑️</button> </div>`; i.querySelector('strong').textContent = g.persona || g.agent_id; i.querySelector('.agent-details').textContent = dT; configContent.appendChild(i); i.querySelector('.edit-button')?.addEventListener('click', () => openModal('agent-modal', g.agent_id)); i.querySelector('.delete-button')?.addEventListener('click', () => handleDeleteAgent(g.agent_id)); }); } catch (e) { console.error('Error fetching configs:', e); if(configContent) configContent.innerHTML = '<span class="status-placeholder error">Error loading.</span>'; addMessage('system-log-area', `[UI Error] Failed config load: ${e}`, 'error'); } }
-async function handleSaveAgent(event) { event.preventDefault(); const f = event.target; if (!f) return; const iI = f.querySelector('#agent-id'); const eI = f.querySelector('#edit-agent-id'); if (!iI || !eI) return; const aId = iI.value.trim(); const eId = eI.value; const ed = !!eId; if (!aId || !/^[a-zA-Z0-9_-]+$/.test(aId)) { alert("Valid Agent ID required."); return; } const cfg = { provider: f.querySelector('#provider')?.value, model: f.querySelector('#model')?.value.trim() ?? '', persona: f.querySelector('#persona')?.value.trim() || aId, temperature: parseFloat(f.querySelector('#temperature')?.value) || 0.7, system_prompt: f.querySelector('#system_prompt')?.value.trim() || 'You are helpful.' }; if (!cfg.provider || !cfg.model) { alert("Provider/Model required."); return; } const u = ed ? `/api/config/agents/${eId}` : '/api/config/agents'; const m = ed ? 'PUT' : 'POST'; const p = ed ? cfg : { agent_id: aId, config: cfg }; console.log(`Sending ${m} to ${u}`); try { const r = await fetch(u, { method: m, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) }); const x = await r.json(); if (r.ok && x.success) { alert(x.message || `Agent ${ed ? 'updated' : 'added'}. Restart.`); closeModal('agent-modal'); displayAgentConfigurations(); } else { throw new Error(x.detail || x.message || `Failed op.`); } } catch (e) { console.error(`Save agent err:`, e); alert(`Error: ${e.message}`); addMessage('system-log-area', `[UI Err] Save agent failed: ${e.message}`, 'error'); } }
-async function handleDeleteAgent(agentId) { if (!confirm(`Delete static cfg '${agentId}'? Restart needed.`)) return; try { const r = await fetch(`/api/config/agents/${agentId}`, { method: 'DELETE' }); const x = await r.json(); if (r.ok && x.success) { alert(x.message || 'Agent cfg deleted. Restart.'); displayAgentConfigurations(); } else { throw new Error(x.detail || x.message || 'Failed delete.'); } } catch (e) { console.error('Delete agent err:', e); alert(`Error: ${e.message}`); addMessage('system-log-area', `[UI Err] Delete agent failed: ${e.message}`, 'error'); } }
+async function displayAgentConfigurations() {
+    if (!configContent) return;
+    configContent.innerHTML = '<span class="status-placeholder">Loading...</span>'; // Show loading state
+
+    try {
+        const response = await fetch('/api/config/agents');
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const agents = await response.json();
+
+        configContent.innerHTML = ''; // Clear loading/previous content
+
+        if (agents.length === 0) {
+            configContent.innerHTML = '<span class="status-placeholder">No static agents configured.</span>';
+            return;
+        }
+
+        agents.forEach(agent => {
+            const itemDiv = document.createElement('div');
+            itemDiv.classList.add('config-item');
+            itemDiv.innerHTML = `
+                <span>
+                    <strong>${agent.agent_id}</strong>
+                    <span class="agent-details">(${agent.persona || 'No Persona'} - ${agent.provider}/${agent.model})</span>
+                </span>
+                <div class="config-item-actions">
+                    <button class="config-action-button edit-button" data-agent-id="${agent.agent_id}" title="Edit Agent">✏️</button>
+                    <button class="config-action-button delete-button" data-agent-id="${agent.agent_id}" title="Delete Agent">🗑️</button>
+                </div>
+            `;
+            configContent.appendChild(itemDiv);
+
+            // Add event listeners for edit/delete buttons
+            itemDiv.querySelector('.edit-button').addEventListener('click', (e) => {
+                const idToEdit = e.currentTarget.dataset.agentId;
+                openModal('agent-modal', idToEdit);
+            });
+            itemDiv.querySelector('.delete-button').addEventListener('click', (e) => {
+                const idToDelete = e.currentTarget.dataset.agentId;
+                if (confirm(`Are you sure you want to delete agent configuration '${idToDelete}'? This requires an application restart.`)) {
+                    handleDeleteAgent(idToDelete);
+                }
+            });
+        });
+
+    } catch (error) {
+        console.error("Error fetching agent configurations:", error);
+        configContent.innerHTML = '<span class="status-placeholder">Error loading configuration.</span>';
+        addMessage('system-log-area', `Error fetching config: ${error.message}`, 'error');
+    }
+}
 
 
-// --- Modal Handling ---
-async function openModal(modalId, editId = null) { const m = document.getElementById(modalId); if (!m) { console.error(`Modal ${modalId} not found.`); return; } if (modalId === 'agent-modal') { const f = m.querySelector('#agent-form'); const t = m.querySelector('#modal-title'); const iI = f?.querySelector('#agent-id'); const eI = f?.querySelector('#edit-agent-id'); if (!f || !t || !iI || !eI) { console.error("Agent modal elements missing."); return; } f.reset(); eI.value = ''; iI.disabled = false; if (editId) { t.textContent = `Edit Agent: ${editId}`; eI.value = editId; iI.value = editId; iI.disabled = true; try { console.log(`Fetching list for edit: ${editId}`); const r = await fetch('/api/config/agents'); if (!r.ok) throw new Error('Fetch list failed.'); const a = await r.json(); const d = a.find(x => x.agent_id === editId); if (!d) throw new Error(`Agent ${editId} not found.`); f.querySelector('#persona').value = d.persona || editId; f.querySelector('#provider').value = d.provider || 'openrouter'; f.querySelector('#model').value = d.model || ''; console.warn("Edit modal prefilled limited data."); } catch (e) { console.error("Edit fetch err:", e); alert(`Load agent error: ${e.message}`); return; } } else { t.textContent = 'Add New Static Agent'; f.querySelector('#temperature').value = 0.7; f.querySelector('#provider').value = 'openrouter'; } } m.style.display = 'block'; }
-function closeModal(modalId) { const m = document.getElementById(modalId); if (m) m.style.display = 'none'; const f = m?.querySelector('form'); if(f) f.reset(); if(modalId === 'agent-modal') { const eI = document.getElementById('edit-agent-id'); const iI = document.getElementById('agent-id'); if(eI) eI.value = ''; if(iI) iI.disabled = false; } }
-function showOverrideModal(data) { if (!overrideModal) return; const aId = data.agent_id; const p = data.persona || aId; document.getElementById('override-agent-id').value = aId; document.getElementById('override-modal-title').textContent = `Override for: ${p}`; document.getElementById('override-message').textContent = data.message || `Agent '${p}' (${aId}) failed. Provide alternative.`; document.getElementById('override-last-error').textContent = data.last_error || "Unknown error"; const s = document.getElementById('override-provider'); const i = document.getElementById('override-model'); if (s && data.current_provider) s.value = data.current_provider; if (i) i.value = data.current_model || ''; openModal('override-modal'); }
-function handleSubmitOverride(event) { event.preventDefault(); const aId = document.getElementById('override-agent-id')?.value; const nP = document.getElementById('override-provider')?.value; const nM = document.getElementById('override-model')?.value.trim(); if (!aId || !nP || !nM) { alert("Fill all override fields."); return; } const oD = { type: "submit_user_override", agent_id: aId, new_provider: nP, new_model: nM }; if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(oD)); addMessage('system-log-area', `[UI] Submitted override for ${aId} (Prov: ${nP}, Model: ${nM}).`, 'status'); closeModal('override-modal'); } else { alert("WS not connected."); addMessage('system-log-area', `[UI Err] Override failed for ${aId}: WS not connected.`, 'error'); } }
+async function handleSaveAgent(event) {
+    event.preventDefault();
+    if (!agentForm) return;
 
-// --- Make necessary functions globally accessible ---
-window.closeModal = closeModal;
-window.clearFileInput = clearFileInput;
+    const agentId = agentForm.elements['agent-id'].value;
+    const isEditing = !!agentForm.elements['edit-agent-id'].value; // Check hidden input
 
-console.log("Main app.js execution finished (Bottom Nav - Agent Label Fix).");
+    const agentConfigData = {
+        provider: agentForm.elements['provider'].value,
+        model: agentForm.elements['model'].value,
+        persona: agentForm.elements['persona'].value || settings.DEFAULT_PERSONA, // Use default if empty
+        temperature: parseFloat(agentForm.elements['temperature'].value) || settings.DEFAULT_TEMPERATURE,
+        system_prompt: agentForm.elements['system_prompt'].value || settings.DEFAULT_SYSTEM_PROMPT,
+    };
+
+    const url = isEditing ? `/api/config/agents/${agentId}` : '/api/config/agents';
+    const method = isEditing ? 'PUT' : 'POST';
+
+    const bodyPayload = isEditing
+        ? agentConfigData // PUT expects only the config part
+        : { agent_id: agentId, config: agentConfigData }; // POST expects agent_id + config
+
+    try {
+        const response = await fetch(url, {
+            method: method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(bodyPayload),
+        });
+
+        const result = await response.json();
+
+        if (response.ok) {
+            addMessage('system-log-area', result.message || `Agent configuration ${isEditing ? 'updated' : 'added'} successfully. Restart required.`, 'status');
+            closeModal('agent-modal');
+            displayAgentConfigurations(); // Refresh the list
+        } else {
+            throw new Error(result.detail || `Failed to ${isEditing ? 'update' : 'add'} agent configuration.`);
+        }
+    } catch (error) {
+        console.error(`Error saving agent configuration for '${agentId}':`, error);
+        addMessage('system-log-area', `Error saving agent config: ${error.message}`, 'error');
+        // Optionally display error within the modal
+    }
+}
+
+async function handleDeleteAgent(agentId) {
+    try {
+        const response = await fetch(`/api/config/agents/${agentId}`, {
+            method: 'DELETE',
+        });
+        const result = await response.json();
+
+        if (response.ok) {
+            addMessage('system-log-area', result.message || `Agent configuration '${agentId}' deleted. Restart required.`, 'status');
+            displayAgentConfigurations(); // Refresh the list
+        } else {
+            throw new Error(result.detail || `Failed to delete agent configuration '${agentId}'.`);
+        }
+    } catch (error) {
+        console.error(`Error deleting agent configuration '${agentId}':`, error);
+        addMessage('system-log-area', `Error deleting agent config: ${error.message}`, 'error');
+    }
+}
+
+// --- Modal Management ---
+
+function openModal(modalId, editId = null) {
+    const modal = document.getElementById(modalId);
+    if (!modal) return;
+
+    if (modalId === 'agent-modal') {
+        agentForm?.reset(); // Reset form fields
+        editAgentIdInput.value = ''; // Clear hidden edit ID
+        const agentIdInput = agentForm?.elements['agent-id'];
+
+        if (editId) {
+            // --- Pre-fill form for editing ---
+            modalTitle.textContent = 'Edit Agent';
+            editAgentIdInput.value = editId; // Set hidden input
+            if (agentIdInput) {
+                agentIdInput.value = editId;
+                agentIdInput.readOnly = true; // Prevent changing ID during edit
+            }
+            // Fetch existing config to pre-fill (replace with actual API call if needed)
+             fetch(`/api/config/agents`) // Re-fetch all to find the one easily
+                 .then(response => response.json())
+                 .then(agents => {
+                     const agentToEdit = agents.find(a => a.agent_id === editId);
+                     // Need full config detail, not just AgentInfo. Assuming backend would provide it.
+                     // This part needs adjustment based on backend sending full config for edit.
+                     // For now, we only have basic info. Let's fetch it (if an endpoint existed)
+                     // fetch(`/api/config/agents/${editId}/details`) ...
+                     // --- SIMULATED PREFILL based on list view data ---
+                     if (agentToEdit && agentForm) {
+                         agentForm.elements['persona'].value = agentToEdit.persona || '';
+                         agentForm.elements['provider'].value = agentToEdit.provider || 'openrouter';
+                         agentForm.elements['model'].value = agentToEdit.model || '';
+                         // Defaults for others as full config isn't fetched here
+                         agentForm.elements['temperature'].value = settings.DEFAULT_TEMPERATURE;
+                         agentForm.elements['system_prompt'].value = settings.DEFAULT_SYSTEM_PROMPT;
+                         console.warn("Pre-filling edit modal with limited data. Temperature/Prompt use defaults.");
+
+                     } else {
+                          console.error(`Agent config for ${editId} not found for editing.`);
+                          closeModal('agent-modal'); // Close if agent not found
+                     }
+                 })
+                 .catch(err => {
+                      console.error("Error fetching agent details for edit:", err);
+                      closeModal('agent-modal');
+                 });
+
+
+        } else {
+            // --- Setup for adding new agent ---
+            modalTitle.textContent = 'Add Agent';
+            if (agentIdInput) agentIdInput.readOnly = false;
+             // Set defaults for add mode
+             if(agentForm) {
+                 agentForm.elements['persona'].value = settings.DEFAULT_PERSONA;
+                 agentForm.elements['provider'].value = settings.DEFAULT_AGENT_PROVIDER;
+                 agentForm.elements['model'].value = settings.DEFAULT_AGENT_MODEL;
+                 agentForm.elements['temperature'].value = settings.DEFAULT_TEMPERATURE;
+                 agentForm.elements['system_prompt'].value = settings.DEFAULT_SYSTEM_PROMPT;
+             }
+        }
+    }
+    modal.style.display = 'block';
+}
+
+function closeModal(modalId) {
+    const modal = document.getElementById(modalId);
+    if (modal) {
+        modal.style.display = 'none';
+        // Optional: Reset form specific to the modal being closed
+        if (modalId === 'agent-modal' && agentForm) {
+             agentForm.reset();
+             const agentIdInput = agentForm.elements['agent-id'];
+             if(agentIdInput) agentIdInput.readOnly = false; // Ensure ID is editable for next add
+        } else if (modalId === 'override-modal' && overrideForm) {
+             overrideForm.reset();
+        }
+    }
+}
+
+function showOverrideModal(data) {
+     if (!overrideModal || !overrideForm) return;
+     console.log("Showing override modal for:", data);
+
+     overrideAgentIdInput.value = data.agent_id || '';
+     overrideMessageP.textContent = data.message || `Agent '${data.persona || data.agent_id}' requires new configuration.`;
+     overrideLastErrorCode.textContent = data.last_error || '[No error details provided]';
+
+     // Pre-select current provider/model if possible
+     if (data.current_provider) overrideProviderSelect.value = data.current_provider;
+     if (data.current_model) overrideModelInput.value = data.current_model;
+     else overrideModelInput.value = ''; // Clear model if not provided
+
+     openModal('override-modal');
+}
+
+async function handleSubmitOverride(event) {
+     event.preventDefault();
+     if (!ws || ws.readyState !== WebSocket.OPEN) {
+         addMessage('system-log-area', 'WebSocket is not connected. Cannot submit override.', 'error');
+         return;
+     }
+     const overrideData = {
+         type: "submit_user_override",
+         agent_id: overrideAgentIdInput.value,
+         new_provider: overrideProviderSelect.value,
+         new_model: overrideModelInput.value.trim()
+     };
+
+     if (!overrideData.agent_id || !overrideData.new_provider || !overrideData.new_model) {
+          addMessage('system-log-area', 'Override Error: Missing required fields in override form.', 'error');
+          return;
+     }
+
+     console.log("Submitting user override:", overrideData);
+     ws.send(JSON.stringify(overrideData));
+     closeModal('override-modal');
+     addMessage('system-log-area', `Submitted configuration override for agent ${overrideData.agent_id}.`, 'status');
+}
+
+
+// --- Utility Functions (Example: Placeholder for initial status request) ---
+// function requestInitialAgentStatus() {
+//     if (ws && ws.readyState === WebSocket.OPEN) {
+//         ws.send(JSON.stringify({ type: 'request_all_status' }));
+//     }
+// }
