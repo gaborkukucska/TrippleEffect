@@ -1,6 +1,6 @@
 /* START OF FILE static/css/style.css */
 
-/* --- CSS Variables (Dark Mode - Unchanged) --- */
+/* --- CSS Variables (Unchanged) --- */
 :root {
     --bg-color-primary: #1a1a1a;
     --bg-color-secondary: #2a2a2a;
@@ -36,39 +36,13 @@
     --modal-input-border: #666;
 }
 
-/* --- Basic Setup --- */
-html {
-    box-sizing: border-box;
-    overscroll-behavior: none; /* Prevent pull-to-refresh */
-    height: 100%;
-}
-*, *:before, *:after {
-    box-sizing: inherit;
-}
+/* --- Basic Setup (Unchanged) --- */
+html { box-sizing: border-box; overscroll-behavior: none; height: 100%; }
+*, *:before, *:after { box-sizing: inherit; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; background-color: var(--bg-color-primary); color: var(--text-color-primary); overflow: hidden; height: 100%; width: 100%; overscroll-behavior: none; display: flex; }
 
-body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
-    margin: 0;
-    padding: 0; /* No padding on body */
-    background-color: var(--bg-color-primary);
-    color: var(--text-color-primary);
-    overflow: hidden; /* Body clips the content wrapper */
-    height: 100%; /* Use 100% to fill html */
-    width: 100%;
-    overscroll-behavior: none;
-    display: flex; /* Use flex to contain wrapper */
-}
-
-/* --- Content Wrapper for Swiping --- */
-.content-wrapper {
-    display: flex;
-    width: 100%; /* Wrapper takes full body width */
-    height: 100%; /* Wrapper takes full body height */
-    overflow: hidden; /* Hide overflowing sections */
-    transition: transform 0.3s ease-in-out;
-    will-change: transform;
-    flex-wrap: nowrap; /* Ensure sections stay in one line */
-}
+/* --- Content Wrapper for Swiping (Unchanged) --- */
+.content-wrapper { display: flex; width: 100%; height: 100%; overflow: hidden; transition: transform 0.3s ease-in-out; will-change: transform; flex-wrap: nowrap; }
 
 /* --- Individual Section Styling --- */
 .swipe-section {
@@ -76,131 +50,80 @@ body {
     height: 100%; /* Each section takes 100% height OF THE CONTAINER */
     flex-shrink: 0; /* CRITICAL: Prevent sections from shrinking */
     overflow: hidden; /* Hide internal overflow initially */
-    display: flex; /* Use flex for the inner .section-content */
+    display: flex;
     flex-direction: column;
-    background-color: var(--bg-color-primary); /* Base background for sections */
-    /* outline: 2px dashed green; */ /* Debugging outline */
+    background-color: var(--bg-color-primary); /* Base background */
+    /* --- DEBUG STYLES --- */
+    outline: 3px solid lime; /* Outline for the whole section */
+    position: relative; /* Needed for pseudo-element */
 }
+/* Add pseudo-element to show section ID easily */
+.swipe-section::before {
+    content: attr(id); /* Display the ID */
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    background-color: rgba(0, 0, 0, 0.7);
+    color: white;
+    padding: 2px 5px;
+    font-size: 10px;
+    border-radius: 3px;
+    z-index: 10;
+}
+
 
 /* Inner content area within each section */
 .section-content {
-    padding: 15px; /* Add padding inside */
+    padding: 15px;
     overflow-y: auto; /* Allow vertical scrolling for the content */
     overflow-x: hidden;
-    height: 100%; /* Take full height of the section */
+    height: 100%;
     display: flex;
-    flex-direction: column; /* Stack elements vertically */
-    /* outline: 1px dotted blue; */ /* Debugging outline */
+    flex-direction: column;
+    /* --- DEBUG STYLE --- */
+    outline: 1px dashed cyan; /* Outline for the content area */
 }
+
+/* --- *** TEMPORARY DEBUG BACKGROUND COLORS *** --- */
+/* Make them highly visible */
+#main-section { background-color: #440000; } /* Dark Red */
+#log-section { background-color: #004400; } /* Dark Green */
+#config-section { background-color: #000044; } /* Dark Blue */
+/* --- *** END TEMPORARY *** --- */
+
 
 /* Section Titles */
-.section-content h1 {
-    text-align: center;
-    color: var(--text-color-primary);
-    margin: 0 0 15px 0;
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--border-color);
-    flex-shrink: 0;
-}
+.section-content h1 { text-align: center; color: var(--text-color-primary); margin: 0 0 15px 0; padding-bottom: 10px; border-bottom: 1px solid var(--border-color); flex-shrink: 0; }
 
-/* --- Main Section (#main-section) Specific Layout --- */
-#main-section .main-top-area {
-    flex-grow: 1; /* Allow top area (chat/input) to grow */
-    min-height: 250px; /* Ensure minimum height */
-    display: flex;
-    flex-direction: column;
-    overflow: hidden; /* Hide overflow */
-    margin-bottom: 10px; /* Space below top area */
-}
+/* --- Main Section Layout (Unchanged) --- */
+#main-section .main-top-area { flex-grow: 1; min-height: 250px; display: flex; flex-direction: column; overflow: hidden; margin-bottom: 10px; }
+#main-section .main-bottom-area { flex-shrink: 0; height: 200px; max-height: 35%; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border-color); border-radius: 4px; background-color: var(--bg-color-secondary); }
+#main-section .main-bottom-area h2 { margin: 0; padding: 8px 10px; font-size: 1.1em; color: var(--text-color-secondary); background-color: var(--bg-color-tertiary); border-bottom: 1px solid var(--border-color); flex-shrink: 0; }
+#main-section #agent-status-content { overflow-y: auto; flex-grow: 1; padding: 10px; }
 
-#main-section .main-bottom-area { /* Agent list */
-    flex-shrink: 0; /* Prevent shrinking */
-    height: 200px; /* Fixed height */
-    max-height: 35%; /* Limit max height */
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    background-color: var(--bg-color-secondary);
-}
-#main-section .main-bottom-area h2 {
-    margin: 0;
-    padding: 8px 10px;
-    font-size: 1.1em;
-    color: var(--text-color-secondary);
-    background-color: var(--bg-color-tertiary);
-    border-bottom: 1px solid var(--border-color);
-    flex-shrink: 0;
-}
-#main-section #agent-status-content {
-    overflow-y: auto;
-    flex-grow: 1;
-    padding: 10px;
-}
+/* --- Message Area Styling (Unchanged) --- */
+.message-area { flex-grow: 1; overflow-y: auto; border: 1px solid var(--border-color); padding: 10px; background-color: var(--bg-color-tertiary); display: flex; flex-direction: column; border-radius: 4px; margin-bottom: 10px; min-height: 100px; }
+.full-page-area { flex-grow: 1; margin-bottom: 0; background-color: var(--bg-color-secondary); border-radius: 4px; border: 1px solid var(--border-color); }
+#main-section .conversation-area { background-color: var(--bg-color-tertiary); }
+#log-section .system-log-area { font-size: 0.9em; line-height: 1.4; }
+.system-log-area .message .timestamp { font-size: 0.8em; color: var(--text-color-muted); margin-right: 8px; display: inline-block; }
 
-
-/* --- Message Area Styling (Shared & Specific) --- */
-.message-area {
-    flex-grow: 1; /* Take available space in parent flex container */
-    overflow-y: auto;
-    border: 1px solid var(--border-color);
-    padding: 10px;
-    background-color: var(--bg-color-tertiary); /* Use tertiary for contrast */
-    display: flex;
-    flex-direction: column;
-    border-radius: 4px;
-    margin-bottom: 10px; /* Default space below message areas */
-    min-height: 100px;
-}
-
-/* Apply to log/config areas that should fill their section's content area */
-.full-page-area {
-    flex-grow: 1;
-    margin-bottom: 0;
-    /* Height determined by flex context */
-    background-color: var(--bg-color-secondary); /* Use secondary for these */
-    border-radius: 4px;
-    border: 1px solid var(--border-color);
-}
-
-/* Conversation Area Specific */
-#main-section .conversation-area {
-    /* Style inherited from .message-area */
-    background-color: var(--bg-color-tertiary);
-}
-
-/* System Log Area Specific */
-#log-section .system-log-area {
-    font-size: 0.9em;
-    line-height: 1.4;
-}
-.system-log-area .message .timestamp {
-    font-size: 0.8em;
-    color: var(--text-color-muted);
-    margin-right: 8px;
-    display: inline-block;
-}
-
-
-/* --- Message Styling --- */
+/* --- Message Styling (Unchanged) --- */
 .message { margin-bottom: 8px; padding: 8px 12px; border-radius: 8px; word-wrap: break-word; max-width: 90%; border: 1px solid var(--border-color); box-sizing: border-box; color: var(--text-color-primary); background-color: var(--agent-msg-bg-base); }
-.message p { margin: 0; }
-.message span { display: inline-block; }
+.message p { margin: 0; } .message span { display: inline-block; }
 .conversation-area .message.user { background-color: var(--user-message-bg); border-color: var(--user-message-bg); margin-left: auto; align-self: flex-end; text-align: left; }
 .conversation-area .message.agent_response { margin-right: auto; align-self: flex-start; font-family: Menlo, Monaco, Consolas, "Courier New", monospace; background-color: var(--agent-msg-bg-base); border-color: var(--border-color); }
 .message[data-agent-id="admin_ai"] { border-left: 4px solid var(--accent-color-1); background-color: #2a3a4a; }
 .message[data-agent-id*="coder"] { border-left: 4px solid var(--accent-color-2); background-color: #2a4a3a; }
 .message[data-agent-id*="analyst"] { border-left: 4px solid var(--accent-color-orange); background-color: #4a3a2a; }
 .message[data-agent-id*="creative"], .message[data-agent-id*="reviewer"] { border-left: 4px solid var(--accent-color-green); background-color: #3a4a2a; }
-.message[data-agent-id="default"] { border-left: 4px solid var(--text-color-muted); }
-.message[data-agent-id*="unknown_agent"] { border-left: 4px solid var(--text-color-secondary); }
+.message[data-agent-id="default"] { border-left: 4px solid var(--text-color-muted); } .message[data-agent-id*="unknown_agent"] { border-left: 4px solid var(--text-color-secondary); }
 .message.status { font-style: italic; color: var(--text-color-secondary); background-color: var(--status-bg); border: 1px dashed var(--border-color); text-align: center; align-self: center; width: auto; max-width: 95%; margin-left: auto; margin-right: auto; padding: 4px 10px; border-radius: 4px; }
 .message.status.initial-placeholder span { color: var(--text-color-muted); }
 .message.status.tool-execution { background-color: #404030; border-color: var(--accent-color-yellow); border-left: 3px solid var(--accent-color-yellow); color: var(--text-color-primary); font-style: normal; text-align: left; align-self: stretch; margin-left: 5px; margin-right: 5px; padding: 6px 10px; }
 .message.error { color: var(--error-text); background-color: var(--error-bg); border: 1px solid var(--accent-color-red); font-weight: bold; align-self: stretch; text-align: center; margin-left: 0; margin-right: 0; padding: 6px 10px; }
 
-/* --- Input Area --- */
+/* --- Input Area (Unchanged) --- */
 .input-area { display: flex; flex-shrink: 0; gap: 10px; align-items: flex-end; margin-top: 10px; }
 .input-area textarea { flex-grow: 1; padding: 10px; border: 1px solid var(--input-border); background-color: var(--input-bg); color: var(--text-color-primary); border-radius: 4px; resize: vertical; min-height: 50px; height: 60px; max-height: 150px; box-sizing: border-box; }
 .input-area textarea::placeholder { color: var(--text-color-muted); }
@@ -212,61 +135,35 @@ body {
 #send-button:hover { background-color: var(--button-hover-bg); }
 .input-controls button:disabled { background-color: var(--button-disabled-bg); cursor: not-allowed; color: var(--text-color-muted); }
 
-/* --- File Info Area --- */
+/* --- File Info Area (Unchanged) --- */
 .file-info-area { flex-shrink: 0; padding: 5px 10px; margin-top: 5px; font-size: 0.85em; color: var(--text-color-secondary); background-color: var(--input-bg); border: 1px solid var(--input-border); border-radius: 4px; min-height: 28px; box-sizing: border-box; display: flex; justify-content: space-between; align-items: center; }
 .file-info-area span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 80%; }
 .file-info-area button { background: none; border: none; color: var(--accent-color-red); cursor: pointer; font-size: 1.1em; padding: 0 5px; }
 .file-info-area button:hover { opacity: 0.8; }
 
-/* --- Config Area Styling (within #config-section .section-content) --- */
-#config-section .config-area {
-    /* padding handled by .section-content */
-    /* background/border handled by .full-page-area */
-    overflow-y: auto;
-    display: flex; /* Use flex for header + content */
-    flex-direction: column;
-}
+/* --- Config Area Styling (Unchanged) --- */
+#config-section .config-area { overflow-y: auto; display: flex; flex-direction: column; }
 #config-section .config-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid var(--border-color); padding: 8px 0; flex-shrink: 0; }
 #config-section .config-header h2 { margin: 0; border: none; padding: 0; font-size: 1.1em; color: var(--text-color-secondary); }
 #config-section .config-header div { display: flex; gap: 5px; }
-#config-section #config-content { flex-grow: 1; overflow-y: auto; padding-top: 5px; } /* Allow config list to scroll */
+#config-section #config-content { flex-grow: 1; overflow-y: auto; padding-top: 5px; }
 #config-section .restart-note { flex-shrink: 0; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color); font-size: 0.85em; color: var(--accent-color-red); text-align: center; font-style: italic; }
-
-/* Config action buttons */
 .config-action-button { border: none; border-radius: 4px; padding: 3px 8px; cursor: pointer; font-size: 0.9em; margin-left: 5px; color: white; font-weight: bold; min-width: 28px; line-height: 1.2; }
-.add-button { background-color: var(--accent-color-green); }
-.refresh-button { background-color: var(--accent-color-2); }
-.edit-button { background-color: var(--accent-color-yellow); color: var(--bg-color-primary); }
-.delete-button { background-color: var(--accent-color-red); }
-.add-button:hover, .refresh-button:hover, .delete-button:hover { filter: brightness(1.2); }
-.edit-button:hover { filter: brightness(1.1); }
-
-/* Config item */
+.add-button { background-color: var(--accent-color-green); } .refresh-button { background-color: var(--accent-color-2); } .edit-button { background-color: var(--accent-color-yellow); color: var(--bg-color-primary); } .delete-button { background-color: var(--accent-color-red); }
+.add-button:hover, .refresh-button:hover, .delete-button:hover { filter: brightness(1.2); } .edit-button:hover { filter: brightness(1.1); }
 .config-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 2px; border-bottom: 1px solid var(--border-color); font-size: 0.9em; }
-.config-item:last-child { border-bottom: none; }
-.config-item span { flex-grow: 1; margin-right: 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.config-item .agent-details { color: var(--text-color-secondary); }
-.config-item .config-item-actions { flex-shrink: 0; }
+.config-item:last-child { border-bottom: none; } .config-item span { flex-grow: 1; margin-right: 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; } .config-item .agent-details { color: var(--text-color-secondary); } .config-item .config-item-actions { flex-shrink: 0; }
 
-/* --- Agent Status Display Styles (within #main-section .main-bottom-area) --- */
+/* --- Agent Status Display Styles (Unchanged) --- */
 .agent-status-item { margin-bottom: 5px; padding: 4px 6px; border-radius: 4px; border: 1px solid transparent; border-left: 3px solid transparent; transition: background-color 0.3s ease; background-color: var(--bg-color-tertiary); color: var(--text-color-primary); }
-.agent-status-item strong { color: var(--text-color-primary); }
-.agent-status-item .agent-model { font-size: 0.9em; color: var(--text-color-secondary); margin-left: 2px; margin-right: 5px; }
-.agent-status-item .agent-status { font-weight: bold; padding: 1px 5px; border-radius: 3px; color: white; margin-left: 5px; float: right; }
-.agent-status-item.status-idle { border-left-color: var(--text-color-muted); }
-.agent-status-item.status-idle .agent-status { background-color: var(--text-color-muted); color: var(--bg-color-primary); }
-.agent-status-item.status-processing { border-left-color: var(--accent-color-1); }
-.agent-status-item.status-processing .agent-status { background-color: var(--accent-color-1); }
-.agent-status-item.status-awaiting_tool_result { border-left-color: var(--accent-color-orange); }
-.agent-status-item.status-awaiting_tool_result .agent-status { background-color: var(--accent-color-orange); }
-.agent-status-item.status-executing_tool { border-left-color: var(--accent-color-yellow); }
-.agent-status-item.status-executing_tool .agent-status { background-color: var(--accent-color-yellow); color: var(--bg-color-primary); }
-.agent-status-item.status-error { border-left-color: var(--accent-color-red); }
-.agent-status-item.status-error .agent-status { background-color: var(--accent-color-red); }
-.agent-status-item.status-awaiting_user_override { border-left-color: var(--accent-color-magenta); }
-.agent-status-item.status-awaiting_user_override .agent-status { background-color: var(--accent-color-magenta); }
-.agent-status-item.status-unknown { border-left-color: var(--text-color-secondary); }
-.agent-status-item.status-unknown .agent-status { background-color: var(--text-color-secondary); color: var(--bg-color-primary); }
+.agent-status-item strong { color: var(--text-color-primary); } .agent-status-item .agent-model { font-size: 0.9em; color: var(--text-color-secondary); margin-left: 2px; margin-right: 5px; } .agent-status-item .agent-status { font-weight: bold; padding: 1px 5px; border-radius: 3px; color: white; margin-left: 5px; float: right; }
+.agent-status-item.status-idle { border-left-color: var(--text-color-muted); } .agent-status-item.status-idle .agent-status { background-color: var(--text-color-muted); color: var(--bg-color-primary); }
+.agent-status-item.status-processing { border-left-color: var(--accent-color-1); } .agent-status-item.status-processing .agent-status { background-color: var(--accent-color-1); }
+.agent-status-item.status-awaiting_tool_result { border-left-color: var(--accent-color-orange); } .agent-status-item.status-awaiting_tool_result .agent-status { background-color: var(--accent-color-orange); }
+.agent-status-item.status-executing_tool { border-left-color: var(--accent-color-yellow); } .agent-status-item.status-executing_tool .agent-status { background-color: var(--accent-color-yellow); color: var(--bg-color-primary); }
+.agent-status-item.status-error { border-left-color: var(--accent-color-red); } .agent-status-item.status-error .agent-status { background-color: var(--accent-color-red); }
+.agent-status-item.status-awaiting_user_override { border-left-color: var(--accent-color-magenta); } .agent-status-item.status-awaiting_user_override .agent-status { background-color: var(--accent-color-magenta); }
+.agent-status-item.status-unknown { border-left-color: var(--text-color-secondary); } .agent-status-item.status-unknown .agent-status { background-color: var(--text-color-secondary); color: var(--bg-color-primary); }
 
 /* Placeholder style */
 .status-placeholder { color: var(--text-color-muted); font-style: italic; display: block; padding: 10px; text-align: center; }
@@ -274,25 +171,17 @@ body {
 /* --- Modal Styles (Unchanged) --- */
 .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: var(--modal-bg); }
 .modal-content { background-color: var(--modal-content-bg); color: var(--text-color-primary); margin: 8% auto; padding: 25px; border: 1px solid var(--modal-border-color); width: 85%; max-width: 550px; border-radius: 8px; position: relative; box-shadow: 0 5px 15px rgba(0,0,0,0.5); }
-.close-button { color: var(--text-color-secondary); position: absolute; top: 10px; right: 15px; font-size: 28px; font-weight: bold; }
-.close-button:hover, .close-button:focus { color: var(--text-color-primary); text-decoration: none; cursor: pointer; }
+.close-button { color: var(--text-color-secondary); position: absolute; top: 10px; right: 15px; font-size: 28px; font-weight: bold; } .close-button:hover, .close-button:focus { color: var(--text-color-primary); text-decoration: none; cursor: pointer; }
 .modal-content h3 { margin-top: 0; color: var(--text-color-primary); border-bottom: 1px solid var(--border-color); padding-bottom: 10px; }
 #agent-form label, #override-form label { display: block; margin-top: 12px; margin-bottom: 4px; font-weight: bold; font-size: 0.9em; color: var(--text-color-secondary); }
 #agent-form input[type="text"], #agent-form input[type="number"], #agent-form select, #agent-form textarea, #override-form input[type="text"], #override-form select { width: 100%; padding: 9px; border: 1px solid var(--modal-input-border); background-color: var(--modal-input-bg); color: var(--text-color-primary); border-radius: 4px; box-sizing: border-box; font-size: 0.95em; }
 #agent-form textarea { resize: vertical; min-height: 70px; }
-.modal-actions { margin-top: 25px; text-align: right; }
-.modal-actions button { padding: 10px 18px; border: none; border-radius: 4px; cursor: pointer; margin-left: 10px; font-weight: bold; }
-.modal-actions button[type="submit"] { background-color: var(--accent-color-1); color: white; }
-.modal-actions button[type="submit"]:hover { background-color: var(--button-hover-bg); }
-.modal-actions button[type="button"] { background-color: var(--text-color-muted); color: var(--text-color-primary); }
-.modal-actions button[type="button"]:hover { background-color: var(--text-color-secondary); }
+.modal-actions { margin-top: 25px; text-align: right; } .modal-actions button { padding: 10px 18px; border: none; border-radius: 4px; cursor: pointer; margin-left: 10px; font-weight: bold; }
+.modal-actions button[type="submit"] { background-color: var(--accent-color-1); color: white; } .modal-actions button[type="submit"]:hover { background-color: var(--button-hover-bg); }
+.modal-actions button[type="button"] { background-color: var(--text-color-muted); color: var(--text-color-primary); } .modal-actions button[type="button"]:hover { background-color: var(--text-color-secondary); }
 .restart-note { margin-top: 15px; font-size: 0.85em; color: var(--accent-color-red); text-align: center; font-style: italic; }
-#override-form p { margin-bottom: 10px; line-height: 1.4; }
-#override-form code { background-color: var(--bg-color-primary); padding: 2px 5px; border-radius: 3px; font-family: monospace; font-size: 0.9em; color: var(--error-text); display: block; white-space: pre-wrap; max-height: 100px; overflow-y: auto; border: 1px solid var(--border-color); }
+#override-form p { margin-bottom: 10px; line-height: 1.4; } #override-form code { background-color: var(--bg-color-primary); padding: 2px 5px; border-radius: 3px; font-family: monospace; font-size: 0.9em; color: var(--error-text); display: block; white-space: pre-wrap; max-height: 100px; overflow-y: auto; border: 1px solid var(--border-color); }
 
-/* --- Scrollbar Styling --- */
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: var(--scrollbar-track-bg); border-radius: 4px; }
-::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb-bg); border-radius: 4px; border: 2px solid var(--scrollbar-track-bg); }
-::-webkit-scrollbar-thumb:hover { background-color: var(--scrollbar-thumb-hover-bg); }
+/* --- Scrollbar Styling (Unchanged) --- */
+::-webkit-scrollbar { width: 8px; height: 8px; } ::-webkit-scrollbar-track { background: var(--scrollbar-track-bg); border-radius: 4px; } ::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb-bg); border-radius: 4px; border: 2px solid var(--scrollbar-track-bg); } ::-webkit-scrollbar-thumb:hover { background-color: var(--scrollbar-thumb-hover-bg); }
 * { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb-bg) var(--scrollbar-track-bg); }
