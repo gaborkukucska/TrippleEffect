@@ -15,7 +15,7 @@ let touchCurrentX = 0;
 let isSwiping = false;
 let swipeThreshold = 50; // Minimum pixels to register as a swipe
 
-// --- DOM Elements (Ensure all necessary elements are selected) ---
+// --- DOM Elements ---
 const conversationArea = document.getElementById('conversation-area');
 const systemLogArea = document.getElementById('system-log-area');
 const messageInput = document.getElementById('message-input');
@@ -42,14 +42,19 @@ document.addEventListener('DOMContentLoaded', () => {
         alert("UI Error: Could not initialize page layout. Please check the HTML structure.");
         return;
     }
-    console.log(`Found ${numPages} pages.`);
-    setupWebSocket();
-    setupEventListeners();
-    displayAgentConfigurations(); // Initial load attempt for config page content
-    updatePageTransform(); // Set initial page position visually
+    if (numPages > 0) {
+         console.log(`Found ${numPages} pages.`);
+         setupWebSocket();
+         setupEventListeners();
+         displayAgentConfigurations(); // Initial load attempt for config page content
+         updatePageTransform(false); // Set initial page position visually WITHOUT transition
+    } else {
+        console.error("Initialization Error: No elements with class 'page' found.");
+    }
 });
 
 // --- WebSocket Setup ---
+// (WebSocket setup functions remain unchanged from the previous version)
 function setupWebSocket() {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
@@ -95,6 +100,7 @@ function setupWebSocket() {
 }
 
 // --- WebSocket Message Handling ---
+// (handleWebSocketMessage function remains unchanged from the previous version)
 function handleWebSocketMessage(data) {
     addRawLogEntry(data); // Log raw data for debugging
 
@@ -152,23 +158,16 @@ function handleWebSocketMessage(data) {
 }
 
 function requestInitialAgentStatus() {
-    console.log("Requesting initial agent status...");
-    // Backend needs to handle a message like { "type": "get_initial_status" }
-    // and send back 'agent_status_update' messages for all current agents.
-    // if (ws && ws.readyState === WebSocket.OPEN) {
-    //     ws.send(JSON.stringify({ type: "get_initial_status" }));
-    // }
+    console.log("Requesting initial agent status (needs backend implementation)...");
 }
 function requestAgentStatus(agentId) {
-    console.log(`Requesting status update for agent ${agentId}...`);
-    // Backend needs to handle { "type": "get_agent_status", "agent_id": "..." }
-    // if (ws && ws.readyState === WebSocket.OPEN) {
-    //     ws.send(JSON.stringify({ type: "get_agent_status", agent_id: agentId }));
-    // }
+    console.log(`Requesting status update for agent ${agentId} (needs backend implementation)...`);
 }
 
 // --- UI Update Functions ---
-/** Helper to add a message div to a specific area */
+// (addMessage, appendAgentResponseChunk, finalizeAgentResponse, updateLogStatus,
+//  updateAgentStatusUI, addOrUpdateAgentStatusEntry, removeAgentStatusEntry, addRawLogEntry
+//  remain unchanged from the previous version)
 function addMessage(areaId, text, type = 'status', agentId = null) {
     const area = document.getElementById(areaId);
     if (!area) return; // Silently return if area doesn't exist
@@ -195,12 +194,12 @@ function addMessage(areaId, text, type = 'status', agentId = null) {
 
     area.appendChild(messageDiv);
     // Scroll to bottom only if the area is likely visible (heuristic: check if parent page is active)
-    if(area.closest('.page')?.style.display !== 'none') { // Basic check, might need refinement
+    // A more robust check might involve IntersectionObserver if needed
+    if(area.closest('.page')?.style.display !== 'none') { // Basic check
         area.scrollTop = area.scrollHeight;
     }
 }
 
-/** Handles streaming chunks for agent responses */
 function appendAgentResponseChunk(agentId, chunk) {
     const area = conversationArea;
     if (!area) return;
@@ -222,7 +221,6 @@ function appendAgentResponseChunk(agentId, chunk) {
     area.scrollTop = area.scrollHeight; // Always scroll conversation area
 }
 
-/** Marks an agent's response as complete */
 function finalizeAgentResponse(agentId, finalContent) {
     const area = conversationArea;
     if (!area) return;
@@ -231,12 +229,12 @@ function finalizeAgentResponse(agentId, finalContent) {
     if (agentMsgDiv) {
         agentMsgDiv.classList.remove('incomplete');
     } else if (finalContent) {
+        // Ensure final content is displayed correctly (handling potential missed chunks)
         addMessage('conversation-area', `Agent @${agentId}:\n${finalContent}`, 'agent_response', agentId);
     }
     area.scrollTop = area.scrollHeight; // Always scroll conversation area
 }
 
-/** Updates the status text in the system log area */
 function updateLogStatus(message, isError = false) {
     const area = systemLogArea;
     if (!area) return;
@@ -254,7 +252,6 @@ function updateLogStatus(message, isError = false) {
     }
 }
 
-/** Updates the dedicated Agent Status list UI */
 function updateAgentStatusUI(agentId, statusData) {
     if (!agentStatusContent) return; // Target element for agent status
     const placeholder = agentStatusContent.querySelector('.status-placeholder');
@@ -262,7 +259,6 @@ function updateAgentStatusUI(agentId, statusData) {
     addOrUpdateAgentStatusEntry(agentId, statusData);
 }
 
-/** Adds or updates a single agent's entry in the status list */
 function addOrUpdateAgentStatusEntry(agentId, statusData) {
      if (!agentStatusContent) return;
      let itemDiv = agentStatusContent.querySelector(`.agent-status-item[data-agent-id="${agentId}"]`);
@@ -295,7 +291,6 @@ function addOrUpdateAgentStatusEntry(agentId, statusData) {
      itemDiv.className = `agent-status-item status-${status}`;
 }
 
-/** Removes an agent's entry from the status list */
 function removeAgentStatusEntry(agentId) {
     if (!agentStatusContent) return;
     const itemDiv = agentStatusContent.querySelector(`.agent-status-item[data-agent-id="${agentId}"]`);
@@ -306,18 +301,16 @@ function removeAgentStatusEntry(agentId) {
     }
 }
 
-/** Adds raw log entry to system log (for debugging) */
 function addRawLogEntry(data) {
     try {
-        // Avoid logging excessively large data
         const logText = JSON.stringify(data);
-        // console.debug("Raw WS Data:", logText.substring(0, 500) + (logText.length > 500 ? '...' : ''));
-    } catch (e) {
-        console.warn("Could not stringify raw WS data:", data);
-    }
+         console.debug("Raw WS Data:", logText.substring(0, 500) + (logText.length > 500 ? '...' : '')); // Log limited data
+    } catch (e) { console.warn("Could not stringify raw WS data:", data); }
 }
 
+
 // --- Event Listeners ---
+// (setupEventListeners function remains largely unchanged, ensure all elements exist check)
 function setupEventListeners() {
     // Ensure elements exist before adding listeners
     sendButton?.addEventListener('click', sendMessage);
@@ -327,7 +320,7 @@ function setupEventListeners() {
     attachFileButton?.addEventListener('click', () => fileInput?.click());
     fileInput?.addEventListener('change', handleFileSelect);
     addAgentButton?.addEventListener('click', () => openModal('agent-modal'));
-    refreshConfigButton?.addEventListener('click', displayAgentConfigurations); // Use function now
+    refreshConfigButton?.addEventListener('click', displayAgentConfigurations); // Refresh list instead of page reload
     agentForm?.addEventListener('submit', handleSaveAgent);
     overrideForm?.addEventListener('submit', handleSubmitOverride);
 
@@ -336,74 +329,97 @@ function setupEventListeners() {
         pageContainer.addEventListener('touchstart', handleTouchStart, { passive: false });
         pageContainer.addEventListener('touchmove', handleTouchMove, { passive: false });
         pageContainer.addEventListener('touchend', handleTouchEnd);
-        pageContainer.addEventListener('touchcancel', handleTouchEnd);
-        console.log("Swipe event listeners added.");
-    } else { console.error("Page container not found!"); }
+        pageContainer.addEventListener('touchcancel', handleTouchEnd); // Treat cancel like end
+        console.log("Swipe event listeners added to page container.");
+    } else { console.error("Page container not found for swipe listeners!"); }
 
-     // Keyboard listeners
+     // Keyboard listeners (ensure target check)
      document.addEventListener('keydown', (e) => {
         const targetTagName = document.activeElement?.tagName.toLowerCase();
         const isModalOpen = agentModal?.style.display !== 'none' || overrideModal?.style.display !== 'none';
         const isInputFocused = ['textarea', 'input', 'select'].includes(targetTagName);
-        if (isModalOpen || isInputFocused) return;
+        if (isModalOpen || isInputFocused) return; // Ignore if modal open or input focused
 
         if (e.key === 'ArrowLeft' && currentPageIndex > 0) {
             console.log("Key Left -> Previous Page");
             currentPageIndex--;
-            pageContainer.style.transition = 'transform 0.3s ease-in-out';
-            updatePageTransform();
+            updatePageTransform(); // Use transition defined in updatePageTransform
         } else if (e.key === 'ArrowRight' && currentPageIndex < numPages - 1) {
              console.log("Key Right -> Next Page");
             currentPageIndex++;
-            pageContainer.style.transition = 'transform 0.3s ease-in-out';
-            updatePageTransform();
+            updatePageTransform(); // Use transition defined in updatePageTransform
         }
     });
 }
 
 // --- Send Message Functionality ---
+// (sendMessage function remains unchanged)
 function sendMessage() {
-    const messageText = messageInput?.value.trim() ?? '';
+    const messageText = messageInput?.value.trim() ?? ''; // Nullish coalescing for safety
+
     if (!messageText && !currentFile) return;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-        addMessage('system-log-area', '[System Error] WebSocket not connected.', 'error'); return;
+        addMessage('system-log-area', '[System Error] WebSocket is not connected.', 'error');
+        return;
     }
-    const messageToSend = { type: currentFile ? 'user_message_with_file' : 'user_message', text: messageText };
-    if (currentFile) { messageToSend.filename = currentFile.name; messageToSend.file_content = currentFile.content; }
+
+    const messageToSend = {
+        type: currentFile ? 'user_message_with_file' : 'user_message',
+        text: messageText,
+    };
+    if (currentFile) {
+        messageToSend.filename = currentFile.name;
+        messageToSend.file_content = currentFile.content;
+    }
+
     const displayMessage = currentFile ? `[File: ${currentFile.name}]\n${messageText}` : messageText;
     addMessage('conversation-area', displayMessage, 'user');
+
     ws.send(JSON.stringify(messageToSend));
+
     if(messageInput) messageInput.value = '';
     clearFileInput();
 }
 
+
 // --- File Handling ---
+// (handleFileSelect, displayFileInfo, clearFileInput remain unchanged)
 function handleFileSelect(event) {
     const file = event.target.files[0];
     if (!file) { clearFileInput(); return; }
     const allowedTypes = ['text/plain', 'text/markdown', 'text/csv', 'text/html', 'text/css', 'application/javascript', 'application/json', 'application/x-yaml', 'application/yaml'];
-    const allowedExtensions = ['.txt', '.md', '.py', '.js', '.html', '.css', '.json', '.yaml', '.yml', '.csv', '.log'];
+    const allowedExtensions = ['.txt', '.md', '.py', '.js', '.html', '.css', '.json', '.yaml', '.yml', '.csv', '.log']; // Added .log
     const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
     if (!allowedTypes.includes(file.type) && !allowedExtensions.includes(fileExtension)) {
-        alert(`Unsupported file type: ${file.type || fileExtension}. Upload text-based files.`);
+        alert(`Unsupported file type: ${file.type || fileExtension}. Please upload a text-based file.`);
         clearFileInput(); return;
     }
-    const maxSize = 1 * 1024 * 1024;
+    const maxSize = 1 * 1024 * 1024; // 1MB
     if (file.size > maxSize) {
-        alert(`File too large (${(file.size / 1024 / 1024).toFixed(2)} MB). Max 1 MB.`);
+        alert(`File is too large (${(file.size / 1024 / 1024).toFixed(2)} MB). Max 1 MB.`);
         clearFileInput(); return;
     }
     const reader = new FileReader();
-    reader.onload = (e) => { currentFile = { name: file.name, content: e.target.result, size: file.size, type: file.type }; displayFileInfo(); }
-    reader.onerror = (e) => { console.error("File reading error:", e); alert("Error reading file."); clearFileInput(); }
+    reader.onload = function(e) {
+        currentFile = { name: file.name, content: e.target.result, size: file.size, type: file.type };
+        displayFileInfo();
+    }
+    reader.onerror = function(e) {
+        console.error("File reading error:", e); alert("Error reading file."); clearFileInput();
+    }
     reader.readAsText(file);
 }
 
 function displayFileInfo() {
     if (!fileInfoArea) return;
     if (currentFile) {
-        fileInfoArea.innerHTML = `<span>📎 ${currentFile.name} (${(currentFile.size / 1024).toFixed(1)} KB)</span><button onclick="clearFileInput()" title="Remove file">×</button>`;
-    } else { fileInfoArea.innerHTML = ''; }
+        fileInfoArea.innerHTML = `
+            <span>📎 ${currentFile.name} (${(currentFile.size / 1024).toFixed(1)} KB)</span>
+            <button onclick="clearFileInput()" title="Remove file">×</button>
+        `;
+    } else {
+        fileInfoArea.innerHTML = '';
+    }
 }
 
 function clearFileInput() {
@@ -414,67 +430,88 @@ function clearFileInput() {
 
 // --- Swipe Navigation Handlers ---
 function handleTouchStart(event) {
-    const targetTagName = event.target.tagName.toLowerCase();
+    // More robust check if the touch is inside an interactive element or modal
+    const target = event.target;
+    const isInteractive = target.closest('button, input, textarea, select, a, .modal-content');
     const isModalOpen = agentModal?.style.display !== 'none' || overrideModal?.style.display !== 'none';
-    // Allow swipe only if target isn't interactive or modal isn't open
-    if (['textarea', 'input', 'button', 'select', 'a', 'label'].includes(targetTagName) || isModalOpen || event.target.closest('.modal-content')) {
-        isSwiping = false; return; // Exit if interaction needed
+
+    if (isInteractive || isModalOpen) {
+        isSwiping = false; // Ensure swiping doesn't start
+        console.log(`Swipe ignored (target: ${target.tagName}, modalOpen: ${isModalOpen})`);
+        return;
     }
+
     touchStartX = event.touches[0].clientX;
     touchCurrentX = touchStartX;
     isSwiping = true;
-    pageContainer.style.transition = 'none'; // Disable transition for direct feedback
+    // Disable transition only when actively swiping
+    if (pageContainer) pageContainer.style.transition = 'none';
     console.log(`TouchStart: startX=${touchStartX}`);
 }
 
 function handleTouchMove(event) {
-    if (!isSwiping) return;
+    if (!isSwiping) return; // Exit if not currently swiping
+
     touchCurrentX = event.touches[0].clientX;
     const diffX = touchCurrentX - touchStartX;
 
-    // Prevent vertical scrolling *during* horizontal swipe
-    if (Math.abs(diffX) > 10) { // Only prevent if moving horizontally enough
+    // Prevent vertical scroll ONLY if horizontal movement is dominant
+    // This is a simple heuristic, might need refinement based on behavior
+    // Consider touchStart Y vs current Y if more complex scroll prevention needed
+    if (Math.abs(diffX) > 10) { // Threshold to detect horizontal intent
        event.preventDefault();
     }
 
-    const baseTranslateX = -currentPageIndex * 100; // Base offset in vw
-    pageContainer.style.transform = `translateX(calc(${baseTranslateX}vw + ${diffX}px))`;
+    // Calculate the intermediate transform based on current index and drag difference
+    // Use percentages for translation relative to the container width
+    const baseTranslateXPercent = -currentPageIndex * 100;
+    if (pageContainer) {
+         pageContainer.style.transform = `translateX(calc(${baseTranslateXPercent}% + ${diffX}px))`;
+    }
+    // console.log(`TouchMove: diffX=${diffX}`); // Avoid excessive logging here
 }
 
 function handleTouchEnd(event) {
-    if (!isSwiping) return;
+    if (!isSwiping) return; // Exit if swipe didn't start properly
     isSwiping = false; // Mark swiping as finished
 
     const diffX = touchCurrentX - touchStartX;
     console.log(`TouchEnd: diffX=${diffX}, threshold=${swipeThreshold}`);
 
-    // Re-enable smooth transition for snapping
-    pageContainer.style.transition = 'transform 0.3s ease-in-out';
+    let finalPageIndex = currentPageIndex; // Start with current index
 
-    let newPageIndex = currentPageIndex; // Keep track of intended index
     // Determine if swipe was significant enough to change page
     if (Math.abs(diffX) > swipeThreshold) {
         if (diffX < 0 && currentPageIndex < numPages - 1) { // Swipe Left
-            newPageIndex++; console.log("Swipe Left detected.");
+            finalPageIndex++; console.log("Swipe Left detected. New Index:", finalPageIndex);
         } else if (diffX > 0 && currentPageIndex > 0) { // Swipe Right
-            newPageIndex--; console.log("Swipe Right detected.");
-        } else { console.log("Swipe detected but at page bounds."); }
-    } else { console.log("Swipe distance below threshold."); }
+            finalPageIndex--; console.log("Swipe Right detected. New Index:", finalPageIndex);
+        } else { console.log("Swipe threshold met but at page boundary."); }
+    } else { console.log("Swipe distance below threshold. Snapping back."); }
 
-    currentPageIndex = newPageIndex; // Update the global index
-    updatePageTransform(); // Animate to the final calculated page position
+    currentPageIndex = finalPageIndex; // Update the global index
+    updatePageTransform(true); // Animate to the final calculated page position WITH transition
 }
 
-function updatePageTransform() {
+// --- MODIFIED updatePageTransform ---
+function updatePageTransform(useTransition = true) { // Added flag to control transition
     if (pageContainer) {
-        const newTranslateX = -currentPageIndex * 100;
-        console.log(`Updating transform: Index=${currentPageIndex}, TranslateX=${newTranslateX}vw`);
-        pageContainer.style.transform = `translateX(${newTranslateX}vw)`;
+        // Use percentage for translation based on index
+        const newTranslateXPercent = -currentPageIndex * 100;
+        console.log(`Updating transform: Index=${currentPageIndex}, TranslateX=${newTranslateXPercent}%`);
+
+        // Apply or remove transition based on flag
+        pageContainer.style.transition = useTransition ? 'transform 0.3s ease-in-out' : 'none';
+
+        pageContainer.style.transform = `translateX(${newTranslateXPercent}%)`;
+    } else {
+        console.error("pageContainer not found in updatePageTransform!");
     }
 }
 
 
 // --- Configuration Management UI ---
+// (displayAgentConfigurations, handleSaveAgent, handleDeleteAgent remain unchanged)
 async function displayAgentConfigurations() {
     // Check if the config content area exists in the DOM
     if (!configContent) {
@@ -581,7 +618,9 @@ async function handleDeleteAgent(agentId) {
     }
 }
 
+
 // --- Modal Handling ---
+// (openModal, closeModal, showOverrideModal, handleSubmitOverride remain unchanged)
 async function openModal(modalId, editId = null) {
     const modal = document.getElementById(modalId);
     if (!modal) { console.error(`Modal with ID ${modalId} not found.`); return; }
