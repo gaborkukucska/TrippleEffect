@@ -7,8 +7,7 @@ let contentWrapper = null;
 let swipeSections = null;
 let numSections = 0;
 
-// State Variables - Index is managed by app.js now via getter/setter
-// let currentSectionIndex = 0; // REMOVED - Use getter/setter from app.js
+// State Variables - Index is managed by app.js via getter/setter
 let touchStartX = 0;
 let touchStartY = 0;
 let touchCurrentX = 0;
@@ -16,30 +15,28 @@ let isSwiping = false;
 let horizontalSwipeConfirmed = false;
 const swipeThreshold = 50;
 
-// --- Add getter/setter provided by app.js ---
+// --- Getter/Setter Callbacks provided by app.js ---
 let getCurrentSectionIndexCallback = () => 0;
 let setCurrentSectionIndexCallback = (index) => {};
-// --- End added variables ---
+// --- End Callbacks ---
 
 /**
  * Initializes swipe module.
- * @param {HTMLElement} wrapper - The main content wrapper element.
- * @param {NodeList} sections - The NodeList of swipeable sections.
- * @param {function} getIndexFunc - Function from app.js to get current index.
- * @param {function} setIndexFunc - Function from app.js to set current index.
+ * @param {HTMLElement} wrapper
+ * @param {NodeList} sections
+ * @param {function} getIndexFunc
+ * @param {function} setIndexFunc
  */
-export function initSwipe(wrapper, sections, getIndexFunc, setIndexFunc) { // Added getter/setter args
+export function initSwipe(wrapper, sections, getIndexFunc, setIndexFunc) {
     contentWrapper = wrapper;
     swipeSections = sections;
     numSections = sections.length;
-    getCurrentSectionIndexCallback = getIndexFunc; // Store the getter
-    setCurrentSectionIndexCallback = setIndexFunc; // Store the setter
+    getCurrentSectionIndexCallback = getIndexFunc;
+    setCurrentSectionIndexCallback = setIndexFunc;
     console.log(`Swipe module initialized with ${numSections} sections.`);
-    // Set initial transform without transition using the getter
-    updateContentWrapperTransform(getCurrentSectionIndexCallback(), false);
+    updateContentWrapperTransform(getCurrentSectionIndexCallback(), false); // Initial set without transition
 }
 
-// Removed setCurrentSectionIndex and getCurrentSectionIndex exports as state is managed by app.js
 
 /**
  * TouchStart event handler.
@@ -63,7 +60,7 @@ export function handleTouchStart(event) {
         touchCurrentX = touchStartX;
         isSwiping = true;
         horizontalSwipeConfirmed = false;
-        contentWrapper.style.transition = 'none';
+        contentWrapper.style.transition = 'none'; // Disable transition during drag
         console.log(`TouchStart: startX=${touchStartX.toFixed(0)}`);
     } catch (e) { console.error("Error in touchstart:", e); isSwiping = false; }
 }
@@ -81,58 +78,71 @@ export function handleTouchMove(event) {
         const diffY = currentY - touchStartY;
 
         if (!horizontalSwipeConfirmed) {
-            if (Math.abs(diffX) > Math.abs(diffY) + 5) {
+            if (Math.abs(diffX) > Math.abs(diffY) + 5) { // Horizontal dominant
                 horizontalSwipeConfirmed = true; console.log("Horizontal swipe confirmed.");
-            } else if (Math.abs(diffY) > Math.abs(diffX) + 5) {
+            } else if (Math.abs(diffY) > Math.abs(diffX) + 5) { // Vertical dominant
                 isSwiping = false; console.log("Vertical scroll detected, canceling swipe."); return;
             }
         }
         if (horizontalSwipeConfirmed) {
-            event.preventDefault();
-            const currentIdx = getCurrentSectionIndexCallback(); // Get current index
+            event.preventDefault(); // Prevent scroll ONLY when confirmed horizontal
+            const currentIdx = getCurrentSectionIndexCallback();
             const baseTranslateXPercent = -currentIdx * 100;
+            // Apply temporary transform during move
             contentWrapper.style.transform = `translateX(calc(${baseTranslateXPercent}% + ${diffX}px))`;
         }
     } catch (e) { console.error("Error in touchmove:", e); isSwiping = false; }
 }
 
 /**
- * TouchEnd event handler.
+ * TouchEnd event handler - **REFINED LOGIC**
  * @param {TouchEvent} event
  */
 export function handleTouchEnd(event) {
-    if (!isSwiping || !contentWrapper) return;
-    const wasHorizontal = horizontalSwipeConfirmed;
+    // Ensure swipe started and wrapper exists
+    if (!isSwiping || !contentWrapper) {
+        // Reset just in case, though should already be false if swipe was cancelled
+        isSwiping = false;
+        horizontalSwipeConfirmed = false;
+        return;
+    }
+
+    const wasHorizontal = horizontalSwipeConfirmed; // Store confirmation state
+    // --- Reset flags immediately ---
     isSwiping = false;
     horizontalSwipeConfirmed = false;
+    // --- Re-enable smooth transition for the snap/slide ---
+    contentWrapper.style.transition = 'transform 0.3s ease-in-out';
 
     let currentIdx = getCurrentSectionIndexCallback(); // Get index BEFORE potential change
-    let finalSectionIndex = currentIdx; // Start with current index
+    let targetIndex = currentIdx; // Target index defaults to current index (snap back)
 
     if (wasHorizontal) {
         const diffX = touchCurrentX - touchStartX;
         console.log(`TouchEnd (H): Index BEFORE=${currentIdx}, diffX=${diffX.toFixed(0)}, thres=${swipeThreshold}`);
 
+        // Determine if swipe was significant enough to change section
         if (Math.abs(diffX) > swipeThreshold) {
-            if (diffX < 0 && currentIdx < numSections - 1) { // Swipe Left
-                finalSectionIndex++; console.log("Swipe Left -> Proposed Index:", finalSectionIndex);
-            } else if (diffX > 0 && currentIdx > 0) { // Swipe Right
-                finalSectionIndex--; console.log("Swipe Right -> Proposed Index:", finalSectionIndex);
-            } else { console.log("Swipe threshold met but at boundary."); }
-        } else { console.log("Swipe distance below threshold."); }
+            if (diffX < 0) { // Swipe Left
+                targetIndex = Math.min(currentIdx + 1, numSections - 1); // Go to next, but clamp at max index
+                console.log(`Swipe Left -> Target Index: ${targetIndex}`);
+            } else if (diffX > 0) { // Swipe Right
+                targetIndex = Math.max(currentIdx - 1, 0); // Go to previous, but clamp at min index (0)
+                console.log(`Swipe Right -> Target Index: ${targetIndex}`);
+            }
+        } else {
+            console.log("Swipe distance below threshold. Snapping back.");
+            // Target index remains currentIdx
+        }
     } else {
          console.log("TouchEnd: No horizontal swipe confirmed. Snapping back.");
+         // Target index remains currentIdx
     }
 
-    // Clamp index just in case
-    finalSectionIndex = Math.max(0, Math.min(numSections - 1, finalSectionIndex));
-
-    // Update index in main app.js state using the callback
-    setCurrentSectionIndexCallback(finalSectionIndex);
-    console.log(`TouchEnd: Set main index to: ${finalSectionIndex}`);
-
-    // Trigger the visual update using the *final* index
-    updateContentWrapperTransform(finalSectionIndex, true);
+    // --- Update state in app.js and apply final transform ---
+    console.log(`TouchEnd: Setting final index to: ${targetIndex}`);
+    setCurrentSectionIndexCallback(targetIndex); // Update the state managed by app.js
+    updateContentWrapperTransform(targetIndex, true); // Apply the final transform WITH transition
 }
 
 
@@ -142,21 +152,17 @@ export function handleTouchEnd(event) {
  * @param {boolean} [useTransition=true]
  */
 export function updateContentWrapperTransform(index, useTransition = true) {
-    if (contentWrapper && typeof index === 'number' && index >= 0 && index < numSections) {
-        const newTranslateXPercent = -index * 100;
-        console.log(`Updating transform: Target Index=${index}, TranslateX=${newTranslateXPercent}% (transition: ${useTransition})`);
+    // Clamp index just to be safe, although handleTouchEnd should already do it
+    const clampedIndex = Math.max(0, Math.min(numSections - 1, index));
+
+    if (contentWrapper && typeof clampedIndex === 'number') {
+        const newTranslateXPercent = -clampedIndex * 100;
+        console.log(`---> Applying transform: Index=${clampedIndex}, TranslateX=${newTranslateXPercent}% (transition: ${useTransition})`);
+        // Set transition property explicitly BEFORE changing transform if requested
         contentWrapper.style.transition = useTransition ? 'transform 0.3s ease-in-out' : 'none';
         contentWrapper.style.transform = `translateX(${newTranslateXPercent}%)`;
     } else {
-        console.error(`Invalid call to updateContentWrapperTransform: Index=${index}, Wrapper=${!!contentWrapper}`);
-        // As a fallback, ensure it snaps back to the current official index if call is bad
-        if(contentWrapper) {
-             const fallbackIndex = getCurrentSectionIndexCallback();
-             const fallbackTranslate = -fallbackIndex * 100;
-             console.warn(`Fallback: Snapping to index ${fallbackIndex} (${fallbackTranslate}%)`);
-             contentWrapper.style.transition = 'transform 0.3s ease-in-out'; // Ensure transition for snap back
-             contentWrapper.style.transform = `translateX(${fallbackTranslate}%)`;
-        }
+        console.error(`Invalid call to updateContentWrapperTransform: Index=${index}, Clamped=${clampedIndex}, Wrapper=${!!contentWrapper}`);
     }
 }
 
@@ -172,17 +178,20 @@ export function addKeyboardNavListeners(getIndex, setIndex) {
         const isInputFocused = ['textarea', 'input', 'select'].includes(targetTagName);
         if (isModalOpen || isInputFocused) return;
 
-        let currentIndex = getIndex(); // Get current index
+        let currentIndex = getIndex();
+        let newIndex = currentIndex; // Start with current
 
         if (e.key === 'ArrowLeft' && currentIndex > 0) {
-            const newIndex = currentIndex - 1;
+            newIndex = currentIndex - 1;
             console.log(`Key Left -> New Index: ${newIndex}`);
-            setIndex(newIndex); // Update state
-            updateContentWrapperTransform(newIndex, true); // Update view
         } else if (e.key === 'ArrowRight' && currentIndex < numSections - 1) {
-            const newIndex = currentIndex + 1;
+            newIndex = currentIndex + 1;
              console.log(`Key Right -> New Index: ${newIndex}`);
-            setIndex(newIndex); // Update state
+        }
+
+        // If index changed, update state and view
+        if (newIndex !== currentIndex) {
+            setIndex(newIndex); // Update state in app.js
             updateContentWrapperTransform(newIndex, true); // Update view
         }
     });
