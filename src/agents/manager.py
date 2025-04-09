@@ -289,7 +289,19 @@ class AgentManager:
         temperature = agent_config_data.get("temperature", settings.DEFAULT_TEMPERATURE)
         # Separate provider connection args from other agent config
         allowed_provider_keys = ['api_key', 'base_url', 'referer']
-        provider_specific_kwargs = {k: v for k, v in agent_config_data.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona'] + allowed_provider_keys}
+        # Explicitly define keys to exclude from provider kwargs
+        agent_config_keys_to_exclude = [
+            'provider', 'model', 'system_prompt', 'temperature', 'persona',
+            # Also exclude the context keys we pass for tools
+            'project_name', 'session_name'
+        ] + allowed_provider_keys # Include keys handled directly
+
+        # Filter kwargs passed to the provider instance
+        provider_specific_kwargs = {
+            k: v for k, v in agent_config_data.items()
+            if k not in agent_config_keys_to_exclude # Exclude the defined keys
+        }
+        
         # Explicitly add referer if present
         if agent_config_data.get("referer"):
              provider_specific_kwargs["referer"] = agent_config_data["referer"]
