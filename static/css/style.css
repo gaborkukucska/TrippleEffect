@@ -208,16 +208,17 @@ body {
 
 /* --- Message Area General Styling --- */
 .message-area {
-    flex-grow: 1; /* Take available space */
-    overflow-y: auto; /* Allow scrolling */
-    border: 1px solid var(--border-color);
-    padding: 10px;
     background-color: var(--bg-color-tertiary);
-    display: flex;
-    flex-direction: column;
+    overflow-y: auto; /* Allow vertical scrolling */
+    flex-grow: 1; /* Allow it to take available space */
+    display: flex; /* Use flexbox for children */
+    flex-direction: column; /* Stack messages vertically */
+    padding: 10px;
+    border: 1px solid var(--border-color);
     border-radius: 4px;
-    min-height: 100px; /* Minimum height for visibility */
+    min-height: 100px; /* Minimum height */
 }
+
 #chat-view .conversation-area {
     margin-bottom: 0; /* Override margin if needed specifically */
 }
@@ -243,6 +244,7 @@ body {
     align-self: flex-start; /* Default alignment for agent messages */
     display: flex;
     flex-direction: row; /* Default for logs, user messages */
+    flex-shrink: 0;
 }
 /* Agent responses in conversation view stack label and content */
 .conversation-area .message.agent_response {
