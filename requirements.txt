@@ -7,3 +7,5 @@ python-dotenv
 aiohttp
 openai
 PyYAML
+duckduckgo-search # Added for DDG tool
+PyGithub         # Added for GitHub tool
