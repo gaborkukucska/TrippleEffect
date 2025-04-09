@@ -1,24 +1,53 @@
 # START OF FILE src/main.py
 import uvicorn
-from fastapi import FastAPI, Request # Added Request
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from pathlib import Path
 import os
 from dotenv import load_dotenv
 import logging
+import logging.handlers # Added for FileHandler
 import asyncio
-from typing import Optional # *** ADDED THIS IMPORT ***
+from typing import Optional
 
-# Load environment variables from .env file FIRST
-dotenv_path = Path(__file__).resolve().parent.parent / '.env'
+# --- Base Directory ---
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# --- Load Environment Variables ---
+dotenv_path = BASE_DIR / '.env'
 load_dotenv(dotenv_path=dotenv_path)
-print(f"Attempted to load .env file from: {dotenv_path}")
+print(f"Attempted to load .env file from: {dotenv_path}") # Keep initial print
 
-# Configure logging early
-# Use uvicorn's logging configuration by default when run via uvicorn
-# logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("uvicorn.error") # Use uvicorn's logger for consistency
+# --- Configure Logging ---
+LOG_DIR = BASE_DIR / "logs"
+LOG_DIR.mkdir(exist_ok=True) # Ensure logs directory exists
+LOG_FILE = LOG_DIR / "app.log"
+
+# Configure root logger
+log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+log_level = logging.INFO # Default level
+
+# Basic config sets up default stream handler (console)
+logging.basicConfig(level=log_level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# Create file handler
+# Use RotatingFileHandler for production to manage log size
+# file_handler = logging.handlers.RotatingFileHandler(LOG_FILE, maxBytes=10*1024*1024, backupCount=5) # 10MB per file, 5 backups
+# For simplicity now, use basic FileHandler
+file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
+file_handler.setFormatter(log_formatter)
+file_handler.setLevel(log_level)
+
+# Add file handler to the root logger
+logging.getLogger().addHandler(file_handler)
+
+# Get logger for this module *after* basicConfig
+logger = logging.getLogger(__name__)
+logger.info("--- Application Logging Initialized (Console & File) ---")
+logger.info(f"Log file: {LOG_FILE}")
+# --- End Logging Configuration ---
+
 
 # Import the routers and the setup function for AgentManager injection
 from src.api import http_routes, websocket_manager
@@ -27,19 +56,17 @@ from src.api import http_routes, websocket_manager
 from src.agents.manager import AgentManager
 
 # --- Global placeholder for the manager ---
-# We create it synchronously but initialize agents async in lifespan
 agent_manager_instance: Optional[AgentManager] = None
 
 # --- Define Lifespan Events ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global agent_manager_instance
-    # Code here runs on startup BEFORE requests are accepted
     logger.info("Application startup sequence initiated...")
 
     # --- Instantiate Agent Manager (Synchronous Part) ---
     logger.info("Instantiating AgentManager...")
-    agent_manager_instance = AgentManager() # Create the single instance
+    agent_manager_instance = AgentManager()
     logger.info("AgentManager instantiated.")
 
     # --- Store instance in app.state for dependency injection ---
@@ -53,15 +80,11 @@ async def lifespan(app: FastAPI):
     # --- Initialize bootstrap agents ASYNCHRONOUSLY ---
     logger.info("Lifespan: Initializing bootstrap agents...")
     try:
-        # Run the async initialization method on the created instance
         init_task = asyncio.create_task(agent_manager_instance.initialize_bootstrap_agents())
-        # Wait for bootstrap agents to be ready before yielding
         await init_task
         logger.info("Lifespan: Bootstrap agent initialization task completed.")
     except Exception as e:
         logger.critical(f"Lifespan: CRITICAL ERROR during bootstrap agent initialization: {e}", exc_info=True)
-        # Decide if startup should halt - for now, log critical error and continue
-        # raise RuntimeError("Bootstrap agent initialization failed.") from e
     # --- End bootstrap initialization ---
 
     logger.info("Application startup complete. Ready to accept requests.")
@@ -69,26 +92,23 @@ async def lifespan(app: FastAPI):
 
     # Code here runs on shutdown
     logger.info("Application shutdown sequence initiated...")
-    if app.state.agent_manager: # Use the instance from app state
+    if app.state.agent_manager:
         try:
-            await app.state.agent_manager.cleanup_providers() # Call the cleanup method
+            await app.state.agent_manager.cleanup_providers()
             logger.info("Lifespan: Provider cleanup finished.")
         except Exception as e:
             logger.error(f"Lifespan: Error during provider cleanup: {e}", exc_info=True)
     else:
         logger.warning("Lifespan: AgentManager instance not found in app.state during shutdown.")
-    logger.info("Application shutdown complete.")
+    logger.info("--- Application Shutdown Complete ---") # Added separator
 
-
-# Define base directory relative to this file's location
-BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Create the FastAPI application instance, including the lifespan context manager
 logger.info("Creating FastAPI app instance...")
 app = FastAPI(
     title="TrippleEffect",
-    version="0.3.0", # Incremented version
-    lifespan=lifespan # Register the lifespan handler
+    version="0.3.0",
+    lifespan=lifespan
 )
 logger.info("FastAPI app instance created with lifespan handler.")
 
@@ -117,16 +137,14 @@ except Exception as e:
 
 # Configuration for running the app with uvicorn directly
 if __name__ == "__main__":
-    # This block is primarily for direct execution `python -m src.main`
-    # When run by uvicorn command line, the lifespan handles initialization
     logger.info("Starting Uvicorn server directly...")
-    # uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, log_level="info")
-    # Correct way to run with reload from script using uvicorn programmatic API:
+    # Note: Uvicorn might slightly alter logging format when run this way,
+    # but basicConfig ensures handlers are set up.
     uvicorn.run(
-        "src.main:app", # app object location
+        "src.main:app",
         host="0.0.0.0",
         port=8000,
         reload=True,
-        reload_dirs=[str(BASE_DIR / "src")], # Specify dirs to watch
-        log_level="info"
+        reload_dirs=[str(BASE_DIR / "src")],
+        log_level="info" # Uvicorn's log level setting
     )
