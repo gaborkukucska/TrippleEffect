@@ -12,7 +12,7 @@ from src.agents.core import AGENT_STATUS_IDLE # Import status constant
 
 # Type hinting for AgentManager and StateManager
 if TYPE_CHECKING:
-    from src.agents.manager import AgentManager
+    from src.agents.manager import AgentManager, BOOTSTRAP_AGENT_ID # Import BOOTSTRAP_AGENT_ID for check
     from src.agents.state_manager import AgentStateManager
     # If needed: from src.agents.core import MessageDict
 
@@ -36,7 +36,7 @@ class SessionManager:
         self._state_manager = state_manager
         logger.info("SessionManager initialized.")
 
-    # --- *** Updated save_session with enhanced logging *** ---
+    # --- Save Session Function (with enhanced logging) ---
     async def save_session(self, project_name: str, session_name: Optional[str] = None) -> Tuple[bool, str]:
         """Saves the current state including dynamic agent configs and histories."""
         if not project_name:
@@ -102,11 +102,6 @@ class SessionManager:
         logger.info(f"Data gathering complete. Found {len(all_agent_ids_found)} total agents.")
         logger.info(f"Found {len(dynamic_agent_ids_found)} dynamic agents to save config for: {dynamic_agent_ids_found}")
         logger.info(f"Saving {len(session_data['dynamic_agents_config'])} dynamic configs and {len(session_data['agent_histories'])} histories.")
-        # Optionally log the entire structure before saving (can be very verbose)
-        # try:
-        #     logger.debug(f"Full session_data before save:\n{json.dumps(session_data, indent=2)}")
-        # except Exception as json_e:
-        #     logger.error(f"Could not serialize full session_data for debug log: {json_e}")
         # --- End Enhanced Logging ---
 
         # Save to file asynchronously
@@ -126,12 +121,14 @@ class SessionManager:
         except Exception as e:
             logger.error(f"Error saving session file to {session_file_path}: {e}", exc_info=True)
             return False, f"Error saving session file: {e}"
-    # --- *** End updated save_session *** ---
 
 
-    # --- *** Updated load_session with enhanced logging and corrected structure *** ---
+    # --- *** Load Session Function with Debug Logging *** ---
     async def load_session(self, project_name: str, session_name: str) -> Tuple[bool, str]:
         """Loads dynamic agents, teams, and histories from a saved session file."""
+        # Import BOOTSTRAP_AGENT_ID here if not already imported at module level
+        from src.agents.manager import BOOTSTRAP_AGENT_ID
+
         session_file_path = settings.PROJECTS_BASE_DIR / project_name / session_name / "agent_session_data.json"
         logger.info(f"Attempting to load session from: {session_file_path}")
         if not session_file_path.is_file():
@@ -162,6 +159,9 @@ class SessionManager:
             dynamic_agents_to_delete = [aid for aid in current_agent_ids if aid not in self._manager.bootstrap_agents]
             logger.info(f"Clearing current dynamic state. Agents managed: {current_agent_ids}. Dynamic to delete: {dynamic_agents_to_delete}")
 
+            # *** LOG POINT 1: Check agents before dynamic deletion ***
+            logger.info(f"LOAD_DEBUG (Before Dynamic Deletion): Agents keys = {list(self._manager.agents.keys())}")
+
             delete_tasks = [self._manager.delete_agent_instance(aid) for aid in dynamic_agents_to_delete]
             delete_results = await asyncio.gather(*delete_tasks, return_exceptions=True)
             successful_deletions = 0
@@ -175,6 +175,9 @@ class SessionManager:
                       logger.error(f"Failed to delete agent {dynamic_agents_to_delete[i]} during load: {error_msg}")
             logger.info(f"Successfully deleted {successful_deletions}/{len(dynamic_agents_to_delete)} dynamic agents.")
 
+            # *** LOG POINT 2: Check agents after dynamic deletion ***
+            logger.info(f"LOAD_DEBUG (After Dynamic Deletion): Agents keys = {list(self._manager.agents.keys())}")
+
             self._state_manager.clear_state()
             bootstrap_agents_present = []
             for boot_id in self._manager.bootstrap_agents:
@@ -184,6 +187,9 @@ class SessionManager:
                 else:
                      logger.error(f"Bootstrap agent '{boot_id}' not found in manager's registry during history reset phase of load!")
             logger.info(f"Cleared team state and reset histories for present bootstrap agents: {bootstrap_agents_present}")
+
+            # *** LOG POINT 3: Check agents after history reset ***
+            logger.info(f"LOAD_DEBUG (After History Reset): Agents keys = {list(self._manager.agents.keys())}")
             # --- End Clearing ---
 
             # Load teams and mappings into StateManager using the data loaded earlier
@@ -231,6 +237,9 @@ class SessionManager:
             if failed_creations:
                 logger.warning(f"Failed to recreate the following agents: {', '.join(failed_creations)}")
 
+            # *** LOG POINT 4: Check agents after dynamic agent recreation ***
+            logger.info(f"LOAD_DEBUG (After Dynamic Recreation): Agents keys = {list(self._manager.agents.keys())}")
+
             # Restore histories for ALL agents now present
             loaded_history_count = 0
             agents_with_loaded_history = []
@@ -254,20 +263,23 @@ class SessionManager:
 
             logger.info(f"Loaded histories for {loaded_history_count} agents: {agents_with_loaded_history}")
 
+            # *** LOG POINT 5: Check agents after history loading ***
+            logger.info(f"LOAD_DEBUG (After History Loading): Agents keys = {list(self._manager.agents.keys())}")
+
             # Update manager's tracked state
             self._manager.current_project, self._manager.current_session = project_name, session_name
 
             # Send full state update to UI
             all_current_agent_ids = list(self._manager.agents.keys())
             logger.info(f"Pushing final status updates to UI for agents: {all_current_agent_ids}")
+            # *** LOG POINT 6: Check agents just before final status update ***
+            logger.info(f"LOAD_DEBUG (Before Final Status Push): Agents keys = {list(self._manager.agents.keys())}")
             status_update_tasks = [self._manager.push_agent_status_update(aid) for aid in all_current_agent_ids]
             await asyncio.gather(*status_update_tasks)
 
             # Construct final status message
             load_message = f"Session '{session_name}' loaded. {successful_creations} dynamic agents recreated."
             if failed_creations: load_message += f" Failed to recreate {len(failed_creations)} agents."
-            # Use BOOTSTRAP_AGENT_ID constant
-            from src.agents.manager import BOOTSTRAP_AGENT_ID # Import locally if not already available
             if BOOTSTRAP_AGENT_ID not in self._manager.agents:
                  load_message += " CRITICAL WARNING: Admin AI instance seems to be missing after load!"
                  logger.critical("Admin AI instance missing after session load completed!")
@@ -280,10 +292,12 @@ class SessionManager:
                  "session": session_name,
                  "message": load_message
              })
+            # *** LOG POINT 7: Check agents right before returning ***
+            logger.info(f"LOAD_DEBUG (End of Load Function): Agents keys = {list(self._manager.agents.keys())}")
             logger.info(f"Session load process complete for '{project_name}/{session_name}'.")
             return True, load_message
 
-        # --- Correctly indented except blocks ---
+        # Correctly indented except blocks
         except json.JSONDecodeError as e:
             logger.error(f"JSON decode error loading session file {session_file_path}: {e}", exc_info=True)
             return False, "Invalid session file format (JSON decode error)."
