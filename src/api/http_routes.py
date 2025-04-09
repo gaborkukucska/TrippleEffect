@@ -218,24 +218,36 @@ async def list_projects():
         raise HTTPException(status_code=500, detail=f"Failed to list projects: {e}")
 
 
+# Replace the existing list_sessions function with this one:
 @router.get("/api/projects/{project_name}/sessions", response_model=List[SessionInfo])
 async def list_sessions(project_name: str):
     """ Lists available sessions within a specific project directory. """
     sessions = []
     project_dir = settings.PROJECTS_BASE_DIR / project_name
     if not project_dir.is_dir():
+        # Use raise HTTPException for API errors
         raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found.")
     try:
         for item in project_dir.iterdir():
-            session_file = item / "agent_histories.json"
-            if item.is_dir() and not item.name.startswith('.') and session_file.is_file():
-                sessions.append(SessionInfo(project_name=project_name, session_name=item.name))
-            elif item.is_dir() and not item.name.startswith('.'):
-                 logger.warning(f"Directory '{item.name}' in project '{project_name}' exists but missing 'agent_histories.json', not listed as session.")
+            # Check if it's a directory and not hidden
+            if item.is_dir() and not item.name.startswith('.'):
+                # --- *** CORRECTED FILENAME CHECK *** ---
+                # Look for the correct session data file name
+                session_file = item / "agent_session_data.json"
+                # --- *** END CORRECTION *** ---
+
+                if session_file.is_file():
+                    # If the correct session file exists, list it
+                    sessions.append(SessionInfo(project_name=project_name, session_name=item.name))
+                else:
+                    # Log if a directory exists but doesn't contain the expected file
+                    logger.warning(f"Directory '{item.name}' in project '{project_name}' exists but missing '{session_file.name}', not listed as session.")
         return sessions
     except Exception as e:
         logger.error(f"Error listing sessions in {project_dir}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to list sessions for project '{project_name}': {e}")
+
+# --- Make sure the rest of src/api/http_routes.py remains the same ---
 
 @router.post("/api/projects/{project_name}/sessions", response_model=GeneralResponse, status_code=http_status.HTTP_201_CREATED)
 async def save_current_session(
