@@ -8,6 +8,7 @@ import os
 from dotenv import load_dotenv
 import logging
 import asyncio
+from typing import Optional # *** ADDED THIS IMPORT ***
 
 # Load environment variables from .env file FIRST
 dotenv_path = Path(__file__).resolve().parent.parent / '.env'
