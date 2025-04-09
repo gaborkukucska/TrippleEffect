@@ -135,8 +135,10 @@ function setupWebSocket() {
     };
 }
 
+// Replace the existing handleWebSocketMessage function with this one:
 function handleWebSocketMessage(data) {
     const agentId = data.agent_id || 'system'; // Default to system if no agent_id
+    let messageText = ''; // Define messageText outside switch for broader use
 
     switch (data.type) {
         case 'response_chunk':
@@ -147,60 +149,85 @@ function handleWebSocketMessage(data) {
             break;
         case 'status':
         case 'system_event': // Treat system events like status messages for logging
-            const messageText = data.content || data.message || 'Status update';
+            messageText = data.content || data.message || 'Status update'; // Assign here
             addMessage('system-log-area', `[${agentId}] ${messageText}`, 'status');
             // Update agent status list if it's an agent-specific status message
-             if (data.type === 'status' && data.agent_id && data.content?.startsWith("Configuration updated")) {
-                 // Trigger a full status refresh if config changed? Maybe not needed if backend sends update.
-             }
-             // Display session load/save messages in the session view status area
-             if (data.type === 'system_event' && (data.event === 'session_loaded' || data.event === 'session_saved')) {
-                  displaySessionStatus(messageText, false);
-             }
+            // (Example: if config updated via override, backend might need to send full status)
+            // if (data.type === 'status' && data.agent_id && messageText.includes("Configuration updated")) { }
+
+            // Display session load/save messages in the session view status area too
+            if (data.type === 'system_event' && (data.event === 'session_loaded' || data.event === 'session_saved')) {
+                 displaySessionStatus(messageText, false); // Show success in session view
+            }
             break;
         case 'error':
-            addMessage('system-log-area', `[ERROR - ${agentId}] ${data.content}`, 'error');
+            messageText = data.content || 'Unknown error occurred.'; // Assign here
+            addMessage('system-log-area', `[ERROR - ${agentId}] ${messageText}`, 'error');
             if(data.agent_id) {
-                updateAgentStatusUI(agentId, { status: 'error' });
+                updateAgentStatusUI(agentId, { status: 'error' }); // Update agent status badge
             }
+            // Display session load/save errors in the session view status area too
+             if (messageText.toLowerCase().includes('session')) {
+                 displaySessionStatus(messageText, true); // Show error in session view
+             }
             break;
         case 'agent_status_update':
             updateAgentStatusUI(data.agent_id, data.status);
+            // Optionally add a minimal log entry for status changes if desired
+            // addMessage('system-log-area', `[System] Status update for ${data.agent_id}: ${data.status?.status}`, 'status');
             break;
         case 'agent_added':
-            console.log("Agent Added Event:", data);
-            addMessage('system-log-area', `[System] Agent Added: ${data.agent_id} (Persona: ${data.config?.persona || 'N/A'}, Team: ${data.team || 'N/A'})`, 'status log-agent-message');
+            console.log("Agent Added Event:", data); // Keep console log
+            // Format a user-friendly message for the system log
+            messageText = `Agent Added: ${data.agent_id} (Persona: ${data.config?.persona || 'N/A'}, Model: ${data.config?.model || 'N/A'}, Team: ${data.team || 'N/A'})`;
+            addMessage('system-log-area', `[System] ${messageText}`, 'status log-agent-message');
+            // Update the agent status UI list
             addOrUpdateAgentStatusEntry(data.agent_id, {
                 persona: data.config?.persona,
                 model: data.config?.model,
                 provider: data.config?.provider,
-                status: 'idle',
+                status: 'idle', // Assume idle initially
                 team: data.team || 'N/A'
             });
             break;
         case 'agent_deleted':
-             console.log("Agent Deleted Event:", data);
-            addMessage('system-log-area', `[System] Agent Deleted: ${data.agent_id}`, 'status log-agent-message');
+            console.log("Agent Deleted Event:", data); // Keep console log
+            // Format a user-friendly message for the system log
+            messageText = `Agent Deleted: ${data.agent_id}`;
+            addMessage('system-log-area', `[System] ${messageText}`, 'status log-agent-message');
+            // Remove from the agent status UI list
             removeAgentStatusEntry(data.agent_id);
             break;
+        // --- *** NEW HANDLERS *** ---
          case 'team_created':
-             addMessage('system-log-area', `[System] Team Created: ${data.team_id}`, 'status log-agent-message');
+             console.log("Team Created Event:", data); // Keep console log
+             messageText = `Team Created: ${data.team_id}`;
+             addMessage('system-log-area', `[System] ${messageText}`, 'status log-agent-message');
+             // Future: Update any team-specific UI elements if added
              break;
          case 'team_deleted':
-             addMessage('system-log-area', `[System] Team Deleted: ${data.team_id}`, 'status log-agent-message');
+             console.log("Team Deleted Event:", data); // Keep console log
+             messageText = `Team Deleted: ${data.team_id}`;
+             addMessage('system-log-area', `[System] ${messageText}`, 'status log-agent-message');
+             // Future: Update any team-specific UI elements
              break;
          case 'agent_moved_team':
-             addMessage('system-log-area', `[System] Agent ${data.agent_id} moved to Team: ${data.new_team_id || 'None'} (from ${data.old_team_id || 'None'})`, 'status log-agent-message');
+             console.log("Agent Moved Team Event:", data); // Keep console log
+             messageText = `Agent ${data.agent_id} moved to Team: ${data.new_team_id || 'None'} (from ${data.old_team_id || 'None'})`;
+             addMessage('system-log-area', `[System] ${messageText}`, 'status log-agent-message');
+             // Agent status update should handle the visual change in the list via addOrUpdateAgentStatusEntry
              break;
+        // --- *** END NEW HANDLERS *** ---
         case 'request_user_override':
             showOverrideModal(data);
             break;
         default:
-            addMessage('system-log-area', `Unknown message type: ${data.type} from ${agentId}`, 'status');
-            console.warn("Received unknown WebSocket message type:", data);
+            // Log unknown types more gracefully
+            messageText = `Unknown message type received: ${data.type}`;
+            addMessage('system-log-area', `[System WARN] ${messageText}`, 'status'); // Log as status, not error
+            console.warn("Received unknown WebSocket message type:", data); // Keep console warning
     }
 }
-
 
 // --- UI Update Functions ---
 // (updateLogStatus, addMessage, appendAgentResponseChunk, finalizeAgentResponse - unchanged)
