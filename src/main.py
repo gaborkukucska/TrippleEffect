@@ -1,13 +1,13 @@
 # START OF FILE src/main.py
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request # Added Request
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from pathlib import Path
 import os
 from dotenv import load_dotenv
-import logging # Added logging
-import asyncio # Added asyncio for gather
+import logging
+import asyncio
 
 # Load environment variables from .env file FIRST
 dotenv_path = Path(__file__).resolve().parent.parent / '.env'
@@ -15,38 +15,45 @@ load_dotenv(dotenv_path=dotenv_path)
 print(f"Attempted to load .env file from: {dotenv_path}")
 
 # Configure logging early
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# Use uvicorn's logging configuration by default when run via uvicorn
+# logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("uvicorn.error") # Use uvicorn's logger for consistency
 
 # Import the routers and the setup function for AgentManager injection
-# Ensure these imports don't cause circular dependencies now
 from src.api import http_routes, websocket_manager
 
 # Import the AgentManager class
 from src.agents.manager import AgentManager
 
-# --- Instantiate Agent Manager (Synchronous Part) ---
-# NOTE: Settings must be loaded before this if Manager uses settings in __init__
-logger.info("Instantiating AgentManager (sync part)...")
-agent_manager = AgentManager() # Initialization is now synchronous
-logger.info("AgentManager instantiated.")
-
-# --- Inject Agent Manager into WebSocket Manager ---
-# This needs agent_manager to exist first
-websocket_manager.set_agent_manager(agent_manager)
-logger.info("AgentManager instance injected into WebSocketManager.")
-
+# --- Global placeholder for the manager ---
+# We create it synchronously but initialize agents async in lifespan
+agent_manager_instance: Optional[AgentManager] = None
 
 # --- Define Lifespan Events ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global agent_manager_instance
     # Code here runs on startup BEFORE requests are accepted
     logger.info("Application startup sequence initiated...")
+
+    # --- Instantiate Agent Manager (Synchronous Part) ---
+    logger.info("Instantiating AgentManager...")
+    agent_manager_instance = AgentManager() # Create the single instance
+    logger.info("AgentManager instantiated.")
+
+    # --- Store instance in app.state for dependency injection ---
+    app.state.agent_manager = agent_manager_instance
+    logger.info("AgentManager instance stored in app.state.")
+
+    # --- Inject Agent Manager into WebSocket Manager ---
+    websocket_manager.set_agent_manager(agent_manager_instance)
+    logger.info("AgentManager instance injected into WebSocketManager.")
+
     # --- Initialize bootstrap agents ASYNCHRONOUSLY ---
     logger.info("Lifespan: Initializing bootstrap agents...")
     try:
-        # Run the async initialization method
-        init_task = asyncio.create_task(agent_manager.initialize_bootstrap_agents())
+        # Run the async initialization method on the created instance
+        init_task = asyncio.create_task(agent_manager_instance.initialize_bootstrap_agents())
         # Wait for bootstrap agents to be ready before yielding
         await init_task
         logger.info("Lifespan: Bootstrap agent initialization task completed.")
@@ -61,11 +68,14 @@ async def lifespan(app: FastAPI):
 
     # Code here runs on shutdown
     logger.info("Application shutdown sequence initiated...")
-    try:
-        await agent_manager.cleanup_providers() # Call the cleanup method
-        logger.info("Lifespan: Provider cleanup finished.")
-    except Exception as e:
-        logger.error(f"Lifespan: Error during provider cleanup: {e}", exc_info=True)
+    if app.state.agent_manager: # Use the instance from app state
+        try:
+            await app.state.agent_manager.cleanup_providers() # Call the cleanup method
+            logger.info("Lifespan: Provider cleanup finished.")
+        except Exception as e:
+            logger.error(f"Lifespan: Error during provider cleanup: {e}", exc_info=True)
+    else:
+        logger.warning("Lifespan: AgentManager instance not found in app.state during shutdown.")
     logger.info("Application shutdown complete.")
 
 
@@ -106,6 +116,16 @@ except Exception as e:
 
 # Configuration for running the app with uvicorn directly
 if __name__ == "__main__":
-    logger.info("Starting Uvicorn server...")
-    # Use app_dir='src' to ensure imports work correctly when running 'python -m src.main' from root
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, app_dir="src", log_level="info")
+    # This block is primarily for direct execution `python -m src.main`
+    # When run by uvicorn command line, the lifespan handles initialization
+    logger.info("Starting Uvicorn server directly...")
+    # uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, log_level="info")
+    # Correct way to run with reload from script using uvicorn programmatic API:
+    uvicorn.run(
+        "src.main:app", # app object location
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        reload_dirs=[str(BASE_DIR / "src")], # Specify dirs to watch
+        log_level="info"
+    )
