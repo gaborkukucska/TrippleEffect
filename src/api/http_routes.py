@@ -1,9 +1,9 @@
 # START OF FILE src/api/http_routes.py
-from fastapi import APIRouter, Request, HTTPException, status as http_status, Depends # Added Depends
+from fastapi import APIRouter, Request, HTTPException, status as http_status, Depends # Added Request, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any, TYPE_CHECKING # Added Dict, Any, TYPE_CHECKING
+from typing import List, Optional, Dict, Any, TYPE_CHECKING
 from pathlib import Path
 import logging
 import os # For listing directories
@@ -15,13 +15,9 @@ from src.config.settings import settings
 # Import the ConfigManager singleton instance for agent config CRUD
 from src.config.config_manager import config_manager
 
-# --- Remove direct import of agent_manager from main ---
-# from src.main import agent_manager
-
 # --- Type Hinting for AgentManager ---
 if TYPE_CHECKING:
     from src.agents.manager import AgentManager
-
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +26,7 @@ TEMPLATE_DIR = Path(__file__).resolve().parent.parent.parent / "templates"
 
 # Check if template directory exists
 if not TEMPLATE_DIR.exists():
-    print(f"Warning: Templates directory not found at {TEMPLATE_DIR}")
+    logger.warning(f"Templates directory not found at {TEMPLATE_DIR}") # Use logger
 
 # Initialize Jinja2Templates
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
@@ -38,67 +34,42 @@ templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 # Create an API router instance
 router = APIRouter()
 
-# --- Dependency Function to get AgentManager ---
-def get_agent_manager_dependency() -> 'AgentManager':
-    """FastAPI dependency to get the global AgentManager instance."""
-    # Import locally to avoid top-level circular import
-    from src.main import agent_manager
-    if agent_manager is None:
-        # This should ideally not happen if main.py initializes correctly
-        raise RuntimeError("AgentManager instance has not been initialized in main.py")
-    return agent_manager
+# --- *** MODIFIED Dependency Function to get AgentManager *** ---
+def get_agent_manager_dependency(request: Request) -> 'AgentManager':
+    """FastAPI dependency to get the AgentManager instance from app.state."""
+    # Retrieve the manager instance stored in app.state by the lifespan startup event
+    manager = getattr(request.app.state, 'agent_manager', None)
+    if manager is None:
+        # This should not happen if lifespan completes successfully
+        logger.critical("CRITICAL ERROR: AgentManager instance not found in request.app.state!")
+        raise HTTPException(status_code=500, detail="Internal Server Error: Agent Manager not initialized")
+    # logger.debug(f"Dependency: Returning AgentManager instance from app.state: {id(manager)}") # Optional: Debug instance ID
+    return manager
+# --- *** END MODIFICATION *** ---
 
-# --- Pydantic Models (remain the same) ---
 
+# --- Pydantic Models ---
 class AgentInfo(BaseModel):
-    """Model to represent basic agent information for the UI."""
     agent_id: str
     provider: str
     model: str
     persona: str
 
 class GeneralResponse(BaseModel):
-    """ Simple success/error response model. """
     success: bool
     message: str
     details: Optional[str] = None
 
 class SessionInfo(BaseModel):
-    """ Model for session information. """
     project_name: str
     session_name: str
 
 class ProjectInfo(BaseModel):
-    """ Model for project information. """
     project_name: str
     sessions: Optional[List[str]] = None
 
 class SaveSessionInput(BaseModel):
-    """ Optional input for saving session (allows specifying name). """
     session_name: Optional[str] = Field(None, description="Optional name for the session. If omitted, a timestamp-based name is generated.")
-
-
-# --- HTTP Routes ---
-
-@router.get("/", response_class=HTMLResponse)
-async def get_index_page(request: Request):
-    """ Serves the main index.html page. """
-    try:
-        template_path = TEMPLATE_DIR / "index.html"
-        if not template_path.is_file():
-             logger.error(f"Template file index.html not found at {template_path}")
-             raise FileNotFoundError("index.html template not found.")
-        return templates.TemplateResponse("index.html", {"request": request})
-    except FileNotFoundError as e:
-         logger.error(f"Error serving index page: {e}")
-         error_html = "<html><body><h1>Internal Server Error</h1><p>Could not load the main application page. Template file missing.</p></body></html>"
-         return HTMLResponse(content=error_html, status_code=500)
-    except Exception as e:
-        logger.error(f"Error rendering template index.html: {e}", exc_info=True)
-        error_html = "<html><body><h1>Internal Server Error</h1><p>An unexpected error occurred while loading the page.</p></body></html>"
-        return HTMLResponse(content=error_html, status_code=500)
-
-# --- Agent Config CRUD API Endpoints (remain the same logic) ---
 
 class AgentConfigInput(BaseModel):
     provider: str = Field(..., description="Provider name ('openai', 'ollama', 'openrouter', etc.)")
@@ -111,6 +82,29 @@ class AgentConfigInput(BaseModel):
 class AgentConfigCreate(BaseModel):
     agent_id: str = Field(..., description="Unique identifier for the agent (e.g., 'coder_v2'). Cannot contain spaces or special characters.", pattern=r"^[a-zA-Z0-9_-]+$")
     config: AgentConfigInput = Field(..., description="The configuration settings for the agent.")
+
+
+# --- HTTP Routes ---
+
+@router.get("/", response_class=HTMLResponse)
+async def get_index_page(request: Request):
+    """ Serves the main index.html page. """
+    try:
+        template_path = TEMPLATE_DIR / "index.html"
+        if not template_path.is_file():
+             logger.error(f"Template file index.html not found at {template_path}")
+             # Return a simple HTML error page if template is missing
+             error_html = "<html><body><h1>Internal Server Error</h1><p>Could not load the main application page. Template file missing.</p></body></html>"
+             return HTMLResponse(content=error_html, status_code=500)
+        # Pass the request object to the template context
+        return templates.TemplateResponse("index.html", {"request": request})
+    except Exception as e:
+        # Catch potential errors during template rendering
+        logger.error(f"Error rendering template index.html: {e}", exc_info=True)
+        error_html = "<html><body><h1>Internal Server Error</h1><p>An unexpected error occurred while loading the page.</p></body></html>"
+        return HTMLResponse(content=error_html, status_code=500)
+
+# --- Agent Config CRUD API Endpoints (using ConfigManager, no AgentManager needed) ---
 
 @router.get("/api/config/agents", response_model=List[AgentInfo])
 async def get_agent_configurations():
@@ -198,7 +192,7 @@ async def delete_agent_configuration(agent_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to delete agent configuration: {e}")
 
 
-# --- Project/Session Management API Endpoints ---
+# --- Project/Session Management API Endpoints (Requires AgentManager) ---
 
 @router.get("/api/projects", response_model=List[ProjectInfo])
 async def list_projects():
@@ -218,24 +212,19 @@ async def list_projects():
         raise HTTPException(status_code=500, detail=f"Failed to list projects: {e}")
 
 
-# Replace the existing list_sessions function with this one:
 @router.get("/api/projects/{project_name}/sessions", response_model=List[SessionInfo])
 async def list_sessions(project_name: str):
-    """ Lists available sessions within a specific project directory. """
+    """ Lists available sessions within a specific project directory by checking for agent_session_data.json. """
     sessions = []
     project_dir = settings.PROJECTS_BASE_DIR / project_name
     if not project_dir.is_dir():
-        # Use raise HTTPException for API errors
         raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found.")
     try:
         for item in project_dir.iterdir():
             # Check if it's a directory and not hidden
             if item.is_dir() and not item.name.startswith('.'):
-                # --- *** CORRECTED FILENAME CHECK *** ---
                 # Look for the correct session data file name
-                session_file = item / "agent_session_data.json"
-                # --- *** END CORRECTION *** ---
-
+                session_file = item / "agent_session_data.json" # Correct filename
                 if session_file.is_file():
                     # If the correct session file exists, list it
                     sessions.append(SessionInfo(project_name=project_name, session_name=item.name))
@@ -247,23 +236,22 @@ async def list_sessions(project_name: str):
         logger.error(f"Error listing sessions in {project_dir}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to list sessions for project '{project_name}': {e}")
 
-# --- Make sure the rest of src/api/http_routes.py remains the same ---
-
 @router.post("/api/projects/{project_name}/sessions", response_model=GeneralResponse, status_code=http_status.HTTP_201_CREATED)
 async def save_current_session(
     project_name: str,
     session_input: Optional[SaveSessionInput] = None,
-    # --- Inject AgentManager using dependency ---
+    # --- Inject AgentManager using the modified dependency ---
     manager: 'AgentManager' = Depends(get_agent_manager_dependency)
 ):
-    """ Saves the current state (agent histories) as a new session in the specified project. """
+    """ Saves the current state (agents, histories, teams) as a new session. """
     session_name_to_save = session_input.session_name if session_input else None
     try:
-        # --- Use the injected manager instance ---
+        # Use the injected manager instance (retrieved from app.state)
         success, message = await manager.save_session(project_name, session_name_to_save)
         if success:
             return GeneralResponse(success=True, message=message)
         else:
+            # Use 400 Bad Request for save failures reported by the manager
             raise HTTPException(status_code=400, detail=message)
     except Exception as e:
         logger.error(f"Unexpected error saving session for project '{project_name}': {e}", exc_info=True)
@@ -273,29 +261,24 @@ async def save_current_session(
 async def load_specific_session(
     project_name: str,
     session_name: str,
-    # --- Inject AgentManager using dependency ---
+    # --- Inject AgentManager using the modified dependency ---
     manager: 'AgentManager' = Depends(get_agent_manager_dependency)
 ):
-    """ Loads the specified session, replacing current agent histories. """
+    """ Loads the specified session, replacing current dynamic agents and histories. """
     try:
-        # --- Use the injected manager instance ---
+        # Use the injected manager instance (retrieved from app.state)
         success, message = await manager.load_session(project_name, session_name)
         if success:
-            # --- Call send_to_ui (assuming it's made public) ---
-            await manager.send_to_ui({
-                "type": "system_event",
-                "event": "session_loaded",
-                "project": project_name,
-                "session": session_name,
-                "message": message
-            })
+            # UI notification is handled by SessionManager sending a WebSocket message
             return GeneralResponse(success=True, message=message)
         else:
             if "not found" in message.lower():
                  raise HTTPException(status_code=404, detail=message)
-            else:
+            else: # Use 400 for other load failures reported by manager
                  raise HTTPException(status_code=400, detail=message)
-    except HTTPException as http_exc: raise http_exc
+    except HTTPException as http_exc:
+         # Re-raise HTTPExceptions directly
+         raise http_exc
     except Exception as e:
         logger.error(f"Unexpected error loading session '{session_name}' for project '{project_name}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Unexpected error loading session: {e}")
