@@ -92,7 +92,7 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 *   `src/agents/session_manager.py::SessionManager` (Class) - Handles saving/loading of session state (dynamic agents, histories, teams).
 *   `src/agents/session_manager.py::SessionManager.__init__(manager: 'AgentManager', state_manager: 'AgentStateManager')` - Initializes with references to AgentManager and StateManager.
 *   `src/agents/session_manager.py::SessionManager.save_session(project_name: str, session_name: Optional[str] = None)` -> `Tuple[bool, str]` (Async) - Gathers state from AgentManager/StateManager, saves to `agent_session_data.json`. **Logs details of saved data.** Notifies UI. Updates manager's current project/session.
-*   `src/agents/session_manager.py::SessionManager.load_session(project_name: str, session_name: str)` -> `Tuple[bool, str]` (Async) - Loads state from `agent_session_data.json`. **Logs details of loaded data.** Clears dynamic state via AgentManager/StateManager, recreates agents via AgentManager, loads histories, updates manager's current project/session. Notifies UI. **Ensures bootstrap agents are preserved.**
+*   `src/agents/session_manager.py::SessionManager.load_session(project_name: str, session_name: str)` -> `Tuple[bool, str]` (Async) - Loads state from `agent_session_data.json`. **Logs details of loaded data and agent presence at various stages.** Clears dynamic state via AgentManager/StateManager, recreates agents via AgentManager, loads histories, updates manager's current project/session. Notifies UI. **Ensures bootstrap agents are preserved.**
 
 ## **Agent Manager (Coordinator) (`src/agents/`)**
 
@@ -178,8 +178,6 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 *   `static/js/app.js::DOMContentLoaded Listener` - Entry point. Gets DOM elements, initializes WebSocket connection (`setupWebSocket`), sets up event listeners (`setupEventListeners`), loads initial config display (`displayAgentConfigurations`), **loads initial project list (`loadProjects`)**. Handles initialization errors.
 *   `static/js/app.js::setupWebSocket()` - Establishes and manages the WebSocket connection lifecycle (open, message, error, close) with automatic reconnection logic. Assigns global `ws` instance.
 *   `static/js/app.js::handleWebSocketMessage(data)` - Central handler for incoming WebSocket messages. Parses message, determines type, and calls appropriate UI update or modal functions. **Handles `agent_added`, `agent_deleted`, `agent_status_update`.** (Team messages logged for now).
-*   `static/js/app.js::requestInitialAgentStatus()` - Placeholder to request full status on connect (requires backend implementation).
-*   `static/js/app.js::requestAgentStatus(agentId)` - Placeholder to request status for a specific agent (requires backend implementation).
 *   `static/js/app.js::addMessage(areaId, text, type, agentId)` - Adds a formatted message div to the specified message area (conversation or system log), handles timestamp for logs, scrolls the area.
 *   `static/js/app.js::appendAgentResponseChunk(agentId, chunk)` - Appends streaming text chunks to an agent's response message in the conversation area. Creates the message div if needed. Scrolls area.
 *   `static/js/app.js::finalizeAgentResponse(agentId, finalContent)` - Marks an agent's streaming response as complete. Adds full message if no chunks were received. Scrolls area.
