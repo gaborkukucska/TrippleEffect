@@ -9,12 +9,15 @@
     <meta name="color-scheme" content="dark">
     <meta name="theme-color" content="#1a1a1a">
     <!-- Add link to a potential icon library like Font Awesome if desired later -->
+    <!-- Example: <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"> -->
 </head>
 <body>
     <!-- Main Application Container -->
     <div id="app-container">
 
         <!-- View Panels (Only one visible at a time) -->
+
+        <!-- Chat & Agents View -->
         <div id="chat-view" class="view-panel active">
              <div class="view-header"><h1>Chat & Agents</h1></div>
              <div class="view-content">
@@ -30,11 +33,11 @@
                               <textarea id="message-input" placeholder="Enter your task here..."></textarea>
                               <div class="input-controls">
                                   <input type="file" id="file-input" accept=".txt,.py,.js,.html,.css,.md,.json,.yaml,.csv,.log" style="display: none;">
-                                  <button id="attach-file-button" title="Attach text file">📎</button>
+                                  <button id="attach-file-button" title="Attach text file">📎</button> <!-- Use emoji or icon -->
                                   <button id="send-button">Send</button>
                               </div>
                           </div>
-                          <div id="file-info-area" class="file-info-area"></div>
+                          <div id="file-info-area" class="file-info-area" style="display: none;"></div>
                      </div>
                      <div class="agent-status-container">
                           <h2>Active Agents</h2>
@@ -46,6 +49,7 @@
              </div>
         </div>
 
+        <!-- System Logs View -->
         <div id="logs-view" class="view-panel">
              <div class="view-header"><h1>System Logs</h1></div>
              <div class="view-content">
@@ -56,6 +60,7 @@
             </div>
         </div>
 
+        <!-- Configuration View -->
         <div id="config-view" class="view-panel">
              <div class="view-header"><h1>Configuration</h1></div>
              <div class="view-content">
@@ -63,7 +68,7 @@
                      <div class="config-header">
                          <h2>Static Config</h2>
                          <div>
-                             <button id="refresh-config-button" class="config-action-button refresh-button" title="Refresh Config List">🔄</button>
+                             <button id="refresh-config-button" class="config-action-button refresh-button" title="Refresh Config List">🔄</button> <!-- Use emoji or icon -->
                              <button id="add-agent-button" class="config-action-button add-button" title="Add New Static Agent">+</button>
                          </div>
                      </div>
@@ -75,21 +80,62 @@
             </div>
         </div>
 
-        <!-- Bottom Navigation Bar -->
+        <!-- *** NEW: Session Management View *** -->
+        <div id="session-view" class="view-panel">
+            <div class="view-header"><h1>Project & Session</h1></div>
+            <div class="view-content session-management-area"> <!-- Add specific class -->
+                <div class="session-section">
+                    <h3>Load Session</h3>
+                    <label for="project-select">Select Project:</label>
+                    <select id="project-select" name="project_select">
+                        <option value="">-- Select Project --</option>
+                        <!-- Options populated by JS -->
+                    </select>
+                    <label for="session-select">Select Session:</label>
+                    <select id="session-select" name="session_select" disabled>
+                        <option value="">-- Select Project First --</option>
+                        <!-- Options populated by JS -->
+                    </select>
+                    <button id="load-session-button" disabled>Load Selected Session</button>
+                </div>
+
+                <div class="session-section">
+                    <h3>Save Current Session</h3>
+                    <label for="save-project-name">Project Name:</label>
+                    <input type="text" id="save-project-name" name="save_project_name" placeholder="Enter new or existing project name" required>
+                    <label for="save-session-name">Session Name (Optional):</label>
+                    <input type="text" id="save-session-name" name="save_session_name" placeholder="Leave blank for timestamp name">
+                    <button id="save-session-button">Save Current Session</button>
+                </div>
+
+                <div id="session-status-message" class="session-status">
+                    <!-- Status messages from save/load operations will appear here -->
+                </div>
+            </div>
+        </div>
+        <!-- *** END NEW SESSION VIEW *** -->
+
+
+        <!-- Bottom Navigation Bar (Add Session Button) -->
         <nav id="bottom-nav">
-            <button data-view="chat-view" class="nav-button active" title="Chat">💬</button>
-            <button data-view="logs-view" class="nav-button" title="Logs">📋</button>
-            <button data-view="config-view" class="nav-button" title="Config">⚙️</button>
+            <button data-view="chat-view" class="nav-button active" title="Chat">💬</button> <!-- Use emoji or icon -->
+            <button data-view="logs-view" class="nav-button" title="Logs">📋</button> <!-- Use emoji or icon -->
+            <!-- *** NEW SESSION BUTTON *** -->
+            <button data-view="session-view" class="nav-button" title="Project/Session">💾</button> <!-- Use emoji or icon -->
+            <button data-view="config-view" class="nav-button" title="Config">⚙️</button> <!-- Use emoji or icon -->
         </nav>
 
     </div> <!-- /#app-container -->
 
     <!-- Modals remain global -->
-    <!-- (Modal HTML unchanged) -->
-    <div id="agent-modal" class="modal" style="display: none;"> <div class="modal-content"> <span class="close-button" onclick="closeModal('agent-modal')">×</span> <h3 id="modal-title">Add Agent</h3> <form id="agent-form"> <input type="hidden" id="edit-agent-id" value=""> <label for="agent-id">Agent ID:</label> <input type="text" id="agent-id" name="agent_id" required pattern="^[a-zA-Z0-9_-]+$" title="Alphanumeric, underscores, hyphens only"> <label for="persona">Persona:</label> <input type="text" id="persona" name="persona"> <label for="provider">Provider:</label> <select id="provider" name="provider" required> <option value="openrouter">OpenRouter</option> <option value="ollama">Ollama</option> <option value="openai">OpenAI</option> </select> <label for="model">Model:</label> <input type="text" id="model" name="model" required> <label for="temperature">Temperature:</label> <input type="number" id="temperature" name="temperature" step="0.1" min="0" max="2.0" value="0.7"> <label for="system_prompt">System Prompt:</label> <textarea id="system_prompt" name="system_prompt" rows="4"></textarea> <div class="modal-actions"> <button type="submit" id="save-agent-button">Save Agent</button> <button type="button" onclick="closeModal('agent-modal')">Cancel</button> </div> <p class="restart-note">Note: Static config changes require application restart.</p> </form> </div> </div>
-    <div id="override-modal" class="modal" style="display: none;"> <div class="modal-content"> <span class="close-button" onclick="closeModal('override-modal')">×</span> <h3 id="override-modal-title">Agent Override Required</h3> <p id="override-message">Agent '[Persona]' ([Agent ID]) failed.</p> <p><strong>Last Error:</strong> <code id="override-last-error">[Error Details]</code></p> <form id="override-form"> <input type="hidden" id="override-agent-id" value=""> <label for="override-provider">New Provider:</label> <select id="override-provider" name="new_provider" required> <option value="openrouter">OpenRouter</option> <option value="ollama">Ollama</option> <option value="openai">OpenAI</option> </select> <label for="override-model">New Model:</label> <input type="text" id="override-model" name="new_model" required placeholder="Enter new model name"> <div class="modal-actions"> <button type="submit" id="submit-override-button">Apply & Retry</button> <button type="button" onclick="closeModal('override-modal')">Cancel</button> </div> </form> </div> </div>
+    <div id="agent-modal" class="modal" style="display: none;">
+         <div class="modal-content"> <span class="close-button" onclick="closeModal('agent-modal')">×</span> <h3 id="modal-title">Add Agent</h3> <form id="agent-form"> <input type="hidden" id="edit-agent-id" value=""> <label for="agent-id">Agent ID:</label> <input type="text" id="agent-id" name="agent_id" required pattern="^[a-zA-Z0-9_-]+$" title="Alphanumeric, underscores, hyphens only"> <label for="persona">Persona:</label> <input type="text" id="persona" name="persona"> <label for="provider">Provider:</label> <select id="provider" name="provider" required> <option value="openrouter">OpenRouter</option> <option value="ollama">Ollama</option> <option value="openai">OpenAI</option> </select> <label for="model">Model:</label> <input type="text" id="model" name="model" required> <label for="temperature">Temperature:</label> <input type="number" id="temperature" name="temperature" step="0.1" min="0" max="2.0" value="0.7"> <label for="system_prompt">System Prompt:</label> <textarea id="system_prompt" name="system_prompt" rows="4"></textarea> <div class="modal-actions"> <button type="submit" id="save-agent-button">Save Agent</button> <button type="button" onclick="closeModal('agent-modal')">Cancel</button> </div> <p class="restart-note">Note: Static config changes require application restart.</p> </form> </div>
+    </div>
+    <div id="override-modal" class="modal" style="display: none;">
+        <div class="modal-content"> <span class="close-button" onclick="closeModal('override-modal')">×</span> <h3 id="override-modal-title">Agent Override Required</h3> <p id="override-message">Agent '[Persona]' ([Agent ID]) failed.</p> <p><strong>Last Error:</strong> <code id="override-last-error">[Error Details]</code></p> <form id="override-form"> <input type="hidden" id="override-agent-id" value=""> <label for="override-provider">New Provider:</label> <select id="override-provider" name="new_provider" required> <option value="openrouter">OpenRouter</option> <option value="ollama">Ollama</option> <option value="openai">OpenAI</option> </select> <label for="override-model">New Model:</label> <input type="text" id="override-model" name="new_model" required placeholder="Enter new model name"> <div class="modal-actions"> <button type="submit" id="submit-override-button">Apply & Retry</button> <button type="button" onclick="closeModal('override-modal')">Cancel</button> </div> </form> </div>
+    </div>
 
-    <!-- Main script - can be module or regular, we'll use module for consistency -->
+    <!-- Main script -->
     <script type="module" src="/static/js/app.js"></script>
 </body>
 </html>
