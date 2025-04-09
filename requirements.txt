@@ -1,11 +1,14 @@
 # START OF FILE requirements.txt
 fastapi
-uvicorn # Changed from uvicorn[standard] to avoid uvloop compilation issues
+uvicorn
 websockets
 jinja2
 python-dotenv
 aiohttp
 openai
 PyYAML
-duckduckgo-search # Added for DDG tool
-PyGithub         # Added for GitHub tool
+# duckduckgo-search # Removed due to build issues
+# PyGithub         # Removed due to build issues
+lxml             # Keep (built successfully)
+pynacl           # Keep (built successfully)
+beautifulsoup4   # Added for Web Search HTML scraping
