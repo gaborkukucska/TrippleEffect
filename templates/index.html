@@ -8,7 +8,6 @@
     <link href="/static/css/style.css" rel="stylesheet">
     <meta name="color-scheme" content="dark">
     <meta name="theme-color" content="#1a1a1a">
-    <!-- Add link to a potential icon library like Font Awesome if desired later -->
     <!-- Example: <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"> -->
 </head>
 <body>
@@ -80,18 +79,20 @@
             </div>
         </div>
 
-        <!-- *** NEW: Session Management View *** -->
+        <!-- *** Session Management View *** -->
         <div id="session-view" class="view-panel">
             <div class="view-header"><h1>Project & Session</h1></div>
             <div class="view-content session-management-area"> <!-- Add specific class -->
                 <div class="session-section">
                     <h3>Load Session</h3>
                     <label for="project-select">Select Project:</label>
+                    <!-- Ensure ID is exactly "project-select" -->
                     <select id="project-select" name="project_select">
                         <option value="">-- Select Project --</option>
                         <!-- Options populated by JS -->
                     </select>
                     <label for="session-select">Select Session:</label>
+                    <!-- Ensure ID is exactly "session-select" -->
                     <select id="session-select" name="session_select" disabled>
                         <option value="">-- Select Project First --</option>
                         <!-- Options populated by JS -->
@@ -113,14 +114,14 @@
                 </div>
             </div>
         </div>
-        <!-- *** END NEW SESSION VIEW *** -->
+        <!-- *** END SESSION VIEW *** -->
 
 
         <!-- Bottom Navigation Bar (Add Session Button) -->
         <nav id="bottom-nav">
             <button data-view="chat-view" class="nav-button active" title="Chat">💬</button> <!-- Use emoji or icon -->
             <button data-view="logs-view" class="nav-button" title="Logs">📋</button> <!-- Use emoji or icon -->
-            <!-- *** NEW SESSION BUTTON *** -->
+            <!-- *** SESSION BUTTON *** -->
             <button data-view="session-view" class="nav-button" title="Project/Session">💾</button> <!-- Use emoji or icon -->
             <button data-view="config-view" class="nav-button" title="Config">⚙️</button> <!-- Use emoji or icon -->
         </nav>
