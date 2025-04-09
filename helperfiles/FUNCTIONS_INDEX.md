@@ -9,8 +9,8 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 
 ## **Application Entry Point (`src/main.py`)**
 
-*   `src/main.py::lifespan(app: FastAPI)` (async context manager) - Manages application startup and shutdown events. Initializes bootstrap agents via `agent_manager.initialize_bootstrap_agents()` on startup and calls `agent_manager.cleanup_providers()` on shutdown.
-*   `src/main.py` (Script execution block) - Initializes FastAPI app with lifespan, loads .env, instantiates `AgentManager`, `StateManager`, `SessionManager`, injects AgentManager into `WebSocketManager`, mounts static files, includes routers, runs Uvicorn server.
+*   `src/main.py::lifespan(app: FastAPI)` (async context manager) - Manages application startup and shutdown. Instantiates the single `AgentManager`, stores it in `app.state.agent_manager`, injects it into `WebSocketManager`, asynchronously initializes bootstrap agents via `agent_manager.initialize_bootstrap_agents()` on startup, and calls `agent_manager.cleanup_providers()` on shutdown.
+*   `src/main.py` (Script execution block) - Loads .env, **configures logging (console & timestamped file)**, creates FastAPI app with lifespan, mounts static files, includes routers, runs Uvicorn server. **AgentManager instance is created and managed within the `lifespan` context.**
 
 ## **Configuration (`src/config/`)**
 
@@ -43,22 +43,22 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 ## **API Routes (`src/api/`)**
 
 *   **Pydantic Models (`src/api/http_routes.py`)**: `AgentInfo`, `GeneralResponse`, `SessionInfo`, `ProjectInfo`, `SaveSessionInput`, `AgentConfigInput`, `AgentConfigCreate`.
-*   `src/api/http_routes.py::get_agent_manager_dependency()` -> `'AgentManager'` - FastAPI dependency to inject `AgentManager`.
+*   `src/api/http_routes.py::get_agent_manager_dependency(request: Request)` -> `'AgentManager'` - **FastAPI dependency retrieves the shared AgentManager instance from `request.app.state`.**
 *   `src/api/http_routes.py::get_index_page(request: Request)` (Async) - Serves `index.html`.
 *   `src/api/http_routes.py::get_agent_configurations()` -> `List[AgentInfo]` (Async) - (`GET /api/config/agents`) Retrieves basic info for STATIC agents listed in `config.yaml` via `ConfigManager`.
 *   `src/api/http_routes.py::create_agent_configuration(agent_data: AgentConfigCreate)` -> `GeneralResponse` (Async) - (`POST /api/config/agents`) Adds STATIC agent to `config.yaml` via `ConfigManager`. Requires restart.
 *   `src/api/http_routes.py::update_agent_configuration(agent_id: str, agent_config_data: AgentConfigInput)` -> `GeneralResponse` (Async) - (`PUT /api/config/agents/{agent_id}`) Updates STATIC agent in `config.yaml` via `ConfigManager`. Requires restart.
 *   `src/api/http_routes.py::delete_agent_configuration(agent_id: str)` -> `GeneralResponse` (Async) - (`DELETE /api/config/agents/{agent_id}`) Removes STATIC agent from `config.yaml` via `ConfigManager`. Requires restart.
 *   `src/api/http_routes.py::list_projects()` -> `List[ProjectInfo]` (Async) - (`GET /api/projects`) Lists project directories.
-*   `src/api/http_routes.py::list_sessions(project_name: str)` -> `List[SessionInfo]` (Async) - (`GET /api/projects/{project_name}/sessions`) Lists session directories.
-*   `src/api/http_routes.py::save_current_session(project_name: str, session_input: Optional[SaveSessionInput], manager: 'AgentManager')` -> `GeneralResponse` (Async) - (`POST /api/projects/{project_name}/sessions`) Saves current state via `AgentManager.save_session()`.
-*   `src/api/http_routes.py::load_specific_session(project_name: str, session_name: str, manager: 'AgentManager')` -> `GeneralResponse` (Async) - (`POST /api/projects/{project_name}/sessions/{session_name}/load`) Loads saved state via `AgentManager.load_session()`.
+*   `src/api/http_routes.py::list_sessions(project_name: str)` -> `List[SessionInfo]` (Async) - (`GET /api/projects/{project_name}/sessions`) **Lists session directories by checking for `agent_session_data.json`.**
+*   `src/api/http_routes.py::save_current_session(project_name: str, session_input: Optional[SaveSessionInput], manager: 'AgentManager')` -> `GeneralResponse` (Async) - (`POST /api/projects/{project_name}/sessions`) Saves current state via injected `AgentManager.save_session()`.
+*   `src/api/http_routes.py::load_specific_session(project_name: str, session_name: str, manager: 'AgentManager')` -> `GeneralResponse` (Async) - (`POST /api/projects/{project_name}/sessions/{session_name}/load`) Loads saved state via injected `AgentManager.load_session()`.
 
 ## **WebSocket Management (`src/api/`)**
 
-*   `src/api/websocket_manager.py::set_agent_manager(manager: 'AgentManager')` - Module-level injection of `AgentManager`.
+*   `src/api/websocket_manager.py::set_agent_manager(manager: 'AgentManager')` - Module-level injection of the shared `AgentManager` instance from `main.py`.
 *   `src/api/websocket_manager.py::broadcast(message: str)` (Async) - Sends message to all active WebSocket connections.
-*   `src/api/websocket_manager.py::websocket_endpoint(websocket: WebSocket)` (Async) - Handler for `/ws`. Manages connection lifecycle, receives messages, routes user messages/overrides to `agent_manager_instance`.
+*   `src/api/websocket_manager.py::websocket_endpoint(websocket: WebSocket)` (Async) - Handler for `/ws`. Manages connection lifecycle, receives messages, routes user messages/overrides to the shared `agent_manager_instance`.
 
 ## **Agent Core (`src/agents/`)**
 
@@ -91,8 +91,8 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 
 *   `src/agents/session_manager.py::SessionManager` (Class) - Handles saving/loading of session state (dynamic agents, histories, teams).
 *   `src/agents/session_manager.py::SessionManager.__init__(manager: 'AgentManager', state_manager: 'AgentStateManager')` - Initializes with references to AgentManager and StateManager.
-*   `src/agents/session_manager.py::SessionManager.save_session(project_name: str, session_name: Optional[str] = None)` -> `Tuple[bool, str]` (Async) - Gathers state from AgentManager/StateManager, saves to JSON file. Notifies UI. Updates manager's current project/session.
-*   `src/agents/session_manager.py::SessionManager.load_session(project_name: str, session_name: str)` -> `Tuple[bool, str]` (Async) - Loads state from JSON, clears dynamic state via AgentManager/StateManager, recreates agents via AgentManager, loads histories, updates manager's current project/session. Notifies UI.
+*   `src/agents/session_manager.py::SessionManager.save_session(project_name: str, session_name: Optional[str] = None)` -> `Tuple[bool, str]` (Async) - Gathers state from AgentManager/StateManager, saves to `agent_session_data.json`. **Logs details of saved data.** Notifies UI. Updates manager's current project/session.
+*   `src/agents/session_manager.py::SessionManager.load_session(project_name: str, session_name: str)` -> `Tuple[bool, str]` (Async) - Loads state from `agent_session_data.json`. **Logs details of loaded data.** Clears dynamic state via AgentManager/StateManager, recreates agents via AgentManager, loads histories, updates manager's current project/session. Notifies UI. **Ensures bootstrap agents are preserved.**
 
 ## **Agent Manager (Coordinator) (`src/agents/`)**
 
@@ -104,12 +104,12 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 *   `src/agents/manager.py::AgentManager.create_agent_instance(...)` -> `Tuple[bool, str, Optional[str]]` (Async) - Public method for dynamic agent creation (called by `_handle_manage_team_action`). Calls `_create_agent_internal`, notifies UI.
 *   `src/agents/manager.py::AgentManager.delete_agent_instance(agent_id: str)` -> `Tuple[bool, str]` (Async) - Removes agent from `self.agents`, delegates team state cleanup to `StateManager`, closes provider. Notifies UI. Handles bootstrap agent check.
 *   `src/agents/manager.py::AgentManager._generate_unique_agent_id(prefix="agent")` -> `str` - **(Internal)** Generates unique agent ID.
-*   `src/agents/manager.py::AgentManager.handle_user_message(message: str, client_id: Optional[str] = None)` (Async) - Routes user message to Admin AI, starts its `_handle_agent_generator`. Checks agent status.
+*   `src/agents/manager.py::AgentManager.handle_user_message(message: str, client_id: Optional[str] = None)` (Async) - Routes user message to Admin AI, starts its `_handle_agent_generator`. Checks agent status. Handles case where Admin AI is missing.
 *   `src/agents/manager.py::AgentManager.handle_user_override(override_data: Dict[str, Any])` (Async) - Handles config override for a stuck agent, recreates provider, restarts generator loop.
 *   `src/agents/manager.py::AgentManager._handle_agent_generator(agent: Agent, retry_count: int = 0)` (Async Internal) - Manages agent's `process_message` generator loop. Handles events (`response_chunk`, `status`, `error`, `final_response`, `tool_requests`). Handles stream errors with retry logic & user override request. Executes tools sequentially (`ManageTeamTool` first). Processes manager feedback, appends to history. Reactivates agent if needed based on feedback or queued messages.
 *   `src/agents/manager.py::AgentManager._handle_manage_team_action(action: Optional[str], params: Dict[str, Any])` -> `Tuple[bool, str, Optional[Any]]` (Async Internal) - Dispatches `ManageTeamTool` actions. Calls `create_agent_instance`, `delete_agent_instance` locally. Delegates team state actions to `StateManager`. Calls `_update_agent_prompt_team_id`. Gets list data from `StateManager`.
 *   `src/agents/manager.py::AgentManager._update_agent_prompt_team_id(agent_id: str, new_team_id: Optional[str])` (Async Internal) - Updates the agent's internal prompt state (in memory & history) after team assignment changes.
-*   `src/agents/manager.py::AgentManager._route_and_activate_agent_message(sender_id: str, target_id: str, message_content: str)` -> `Optional[asyncio.Task]` (Async Internal) - Routes message via `SendMessageTool`. Checks team state via `StateManager`. Appends to target history, activates target if idle (or queues if busy/awaiting override).
+*   `src/agents/manager.py::AgentManager._route_and_activate_agent_message(sender_id: str, target_id: str, message_content: str)` -> `Optional[asyncio.Task]` (Async Internal) - Routes message via `SendMessageTool`. Checks target existence & team state. **Appends feedback to sender if target is invalid.** Appends to target history, activates target if idle (or queues if busy/awaiting override).
 *   `src/agents/manager.py::AgentManager._execute_single_tool(agent: Agent, call_id: str, tool_name: str, tool_args: Dict[str, Any])` -> `Optional[Dict]` (Async Internal) - Executes tool via `ToolExecutor`. Returns result dict.
 *   `src/agents/manager.py::AgentManager._failed_tool_result(call_id: Optional[str], tool_name: Optional[str])` -> `Optional[ToolResultDict]` (Async Helper) - Returns formatted error result dict for failed tool dispatch.
 *   `src/agents/manager.py::AgentManager.push_agent_status_update(agent_id: str)` (Async Helper) - Gets agent state (incl. team from `StateManager`), sends to UI.
@@ -175,9 +175,9 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 
 ## **Frontend Logic (`static/js/app.js`)**
 
-*   `static/js/app.js::DOMContentLoaded Listener` - Entry point. Gets DOM elements, initializes WebSocket connection (`setupWebSocket`), sets up event listeners (`setupEventListeners`), loads initial config display (`displayAgentConfigurations`). Handles initialization errors.
+*   `static/js/app.js::DOMContentLoaded Listener` - Entry point. Gets DOM elements, initializes WebSocket connection (`setupWebSocket`), sets up event listeners (`setupEventListeners`), loads initial config display (`displayAgentConfigurations`), **loads initial project list (`loadProjects`)**. Handles initialization errors.
 *   `static/js/app.js::setupWebSocket()` - Establishes and manages the WebSocket connection lifecycle (open, message, error, close) with automatic reconnection logic. Assigns global `ws` instance.
-*   `static/js/app.js::handleWebSocketMessage(data)` - Central handler for incoming WebSocket messages. Parses message, determines type, and calls appropriate UI update or modal functions.
+*   `static/js/app.js::handleWebSocketMessage(data)` - Central handler for incoming WebSocket messages. Parses message, determines type, and calls appropriate UI update or modal functions. **Handles `agent_added`, `agent_deleted`, `agent_status_update`.** (Team messages logged for now).
 *   `static/js/app.js::requestInitialAgentStatus()` - Placeholder to request full status on connect (requires backend implementation).
 *   `static/js/app.js::requestAgentStatus(agentId)` - Placeholder to request status for a specific agent (requires backend implementation).
 *   `static/js/app.js::addMessage(areaId, text, type, agentId)` - Adds a formatted message div to the specified message area (conversation or system log), handles timestamp for logs, scrolls the area.
@@ -185,11 +185,11 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 *   `static/js/app.js::finalizeAgentResponse(agentId, finalContent)` - Marks an agent's streaming response as complete. Adds full message if no chunks were received. Scrolls area.
 *   `static/js/app.js::updateLogStatus(message, isError)` - Updates the connection status message shown in the system log area.
 *   `static/js/app.js::updateAgentStatusUI(agentId, statusData)` - Entry point to update the Agent Status list. Calls `addOrUpdateAgentStatusEntry`.
-*   `static/js/app.js::addOrUpdateAgentStatusEntry(agentId, statusData)` - Adds or updates a specific agent's display item in the status list UI.
+*   `static/js/app.js::addOrUpdateAgentStatusEntry(agentId, statusData)` - Adds or updates a specific agent's display item in the status list UI. **Includes team display.**
 *   `static/js/app.js::removeAgentStatusEntry(agentId)` - Removes an agent's display item from the status list UI.
 *   `static/js/app.js::addRawLogEntry(data)` - Logs raw received WebSocket data to the browser console for debugging.
-*   `static/js/app.js::setupEventListeners()` - Attaches event listeners for send button, message input (Enter key), file attachment, config buttons, modal forms, bottom navigation buttons, and global modal closing.
-*   `static/js/app.js::showView(viewId)` - Handles bottom navigation clicks. Hides all `.view-panel` elements, shows the target panel, and updates the active state of navigation buttons.
+*   `static/js/app.js::setupEventListeners()` - Attaches event listeners for send button, message input (Enter key), file attachment, config buttons, modal forms, bottom navigation buttons, **session management elements**, and global modal closing.
+*   `static/js/app.js::showView(viewId)` - Handles bottom navigation clicks. Hides all `.view-panel` elements, shows the target panel, and updates the active state of navigation buttons. **Refreshes project list when showing session view.**
 *   `static/js/app.js::handleSendMessage()` - Gathers text from input and file data (if attached), checks WebSocket connection, formats message object, calls `addMessage` for user prompt, sends message via `ws.send()`, clears input/file.
 *   `static/js/app.js::handleFileSelect(event)` - Handles file input change event, validates file type/size, reads file content using FileReader, stores file info/content in global variables.
 *   `static/js/app.js::displayFileInfo()` - Updates the UI element to show attached file name and size, or clears it.
@@ -201,7 +201,12 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 *   `static/js/app.js::closeModal(modalId)` - Hides the specified modal and resets its form.
 *   `static/js/app.js::showOverrideModal(data)` - Pre-fills and opens the agent override modal based on data received from backend.
 *   `static/js/app.js::handleSubmitOverride(event)` - Handles submission of the agent override modal form. Sends `submit_user_override` message via WebSocket.
+*   `static/js/app.js::loadProjects()` - Fetches project list from API and populates project dropdown.
+*   `static/js/app.js::loadSessions(projectName)` - Fetches session list for a project and populates session dropdown.
+*   `static/js/app.js::handleLoadSession()` - Handles click on 'Load Session' button, calls API endpoint. Includes null checks for UI elements.
+*   `static/js/app.js::handleSaveSession()` - Handles click on 'Save Session' button, calls API endpoint.
+*   `static/js/app.js::displaySessionStatus(message, isError)` - Shows success/error messages in the session view.
 
 ---
 
-*Note: Functions previously listed under separate JS modules (`config.js`, `modal.js`, etc.) are now integrated into `static/js/app.js`.*
+*Note: Functions previously listed under separate JS modules are integrated into `static/js/app.js`.*
