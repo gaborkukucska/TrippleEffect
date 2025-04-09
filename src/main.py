@@ -7,9 +7,10 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 import logging
-import logging.handlers # Added for FileHandler
+import logging.handlers
 import asyncio
 from typing import Optional
+import time # *** ADDED for timestamp ***
 
 # --- Base Directory ---
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -22,30 +23,40 @@ print(f"Attempted to load .env file from: {dotenv_path}") # Keep initial print
 # --- Configure Logging ---
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True) # Ensure logs directory exists
-LOG_FILE = LOG_DIR / "app.log"
+
+# *** Generate timestamp for log filename ***
+timestamp = time.strftime("%Y%m%d_%H%M%S")
+LOG_FILE = LOG_DIR / f"app_{timestamp}.log"
+# *** End timestamp generation ***
 
 # Configure root logger
 log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 log_level = logging.INFO # Default level
 
 # Basic config sets up default stream handler (console)
-logging.basicConfig(level=log_level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Set force=True if using reload to potentially avoid issues with handlers persisting across reloads
+logging.basicConfig(level=log_level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', force=True)
 
-# Create file handler
-# Use RotatingFileHandler for production to manage log size
-# file_handler = logging.handlers.RotatingFileHandler(LOG_FILE, maxBytes=10*1024*1024, backupCount=5) # 10MB per file, 5 backups
-# For simplicity now, use basic FileHandler
+# Create unique file handler for this run
+# Using basic FileHandler for now. Consider RotatingFileHandler for long-running processes.
 file_handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
 file_handler.setFormatter(log_formatter)
 file_handler.setLevel(log_level)
 
-# Add file handler to the root logger
-logging.getLogger().addHandler(file_handler)
+# Get the root logger and add the file handler
+# Avoid adding duplicate handlers if basicConfig already added one implicitly
+root_logger = logging.getLogger()
+# Check if a FileHandler for the *same file* already exists (less likely now with timestamps)
+# if not any(isinstance(h, logging.FileHandler) and h.baseFilename == str(LOG_FILE) for h in root_logger.handlers):
+#     root_logger.addHandler(file_handler)
+# Simpler approach: just add it. basicConfig usually just adds StreamHandler.
+root_logger.addHandler(file_handler)
 
-# Get logger for this module *after* basicConfig
+
+# Get logger for this module *after* setup
 logger = logging.getLogger(__name__)
-logger.info("--- Application Logging Initialized (Console & File) ---")
-logger.info(f"Log file: {LOG_FILE}")
+logger.info(f"--- Application Logging Initialized (Console & File: {LOG_FILE.name}) ---")
+# logger.info(f"Log file: {LOG_FILE}") # Redundant with above
 # --- End Logging Configuration ---
 
 
@@ -100,7 +111,7 @@ async def lifespan(app: FastAPI):
             logger.error(f"Lifespan: Error during provider cleanup: {e}", exc_info=True)
     else:
         logger.warning("Lifespan: AgentManager instance not found in app.state during shutdown.")
-    logger.info("--- Application Shutdown Complete ---") # Added separator
+    logger.info("--- Application Shutdown Complete ---")
 
 
 # Create the FastAPI application instance, including the lifespan context manager
@@ -138,13 +149,11 @@ except Exception as e:
 # Configuration for running the app with uvicorn directly
 if __name__ == "__main__":
     logger.info("Starting Uvicorn server directly...")
-    # Note: Uvicorn might slightly alter logging format when run this way,
-    # but basicConfig ensures handlers are set up.
     uvicorn.run(
         "src.main:app",
         host="0.0.0.0",
         port=8000,
         reload=True,
         reload_dirs=[str(BASE_DIR / "src")],
-        log_level="info" # Uvicorn's log level setting
+        log_level="info"
     )
