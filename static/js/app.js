@@ -691,9 +691,18 @@ async function loadSessions(projectName) {
     }
 }
 
+// --- *** Replace existing handleLoadSession function with this one *** ---
 async function handleLoadSession() {
-    const projectName = projectSelect?.value;
-    const sessionName = sessionSelect?.value;
+    // --- Add null checks for the select elements ---
+    if (!projectSelect || !sessionSelect) {
+         console.error("Load Session Error: Project or Session select element not found in DOM.");
+         displaySessionStatus("Error: UI elements missing. Cannot load session.", true);
+         return;
+    }
+    // --- End null checks ---
+
+    const projectName = projectSelect.value; // Now safe to access .value
+    const sessionName = sessionSelect.value; // Now safe to access .value
 
     if (!projectName || !sessionName) {
         displaySessionStatus("Error: Please select both a project and a session to load.", true);
@@ -702,7 +711,7 @@ async function handleLoadSession() {
 
     console.log(`Requesting load for: ${projectName}/${sessionName}`);
     displaySessionStatus(`Loading session '${sessionName}'...`, false);
-    loadSessionButton.disabled = true; // Disable button during load
+    if (loadSessionButton) loadSessionButton.disabled = true; // Disable button during load
 
     try {
         const response = await fetch(`/api/projects/${projectName}/sessions/${sessionName}/load`, {
@@ -715,19 +724,26 @@ async function handleLoadSession() {
             // Backend sends success message via WebSocket ('system_event'),
             // so we just clear the local status or show the message briefly
             displaySessionStatus(result.message, false);
-             // Optional: Switch back to chat view after successful load?
-             // showView('chat-view');
+            // Add a system log message as well for clarity
+            addMessage('system-log-area', `[System] Session '${sessionName}' from project '${projectName}' loaded successfully.`, 'status');
+            // Optional: Switch back to chat view after successful load?
+            // showView('chat-view');
         } else {
-            throw new Error(result.detail || `Failed to load session '${sessionName}'.`);
+            // Use the detailed error message from the backend result if available
+            throw new Error(result.detail || `Failed to load session '${sessionName}'. Status: ${response.status}`);
         }
     } catch (error) {
         console.error("Error loading session:", error);
         displaySessionStatus(`Error loading session: ${error.message}`, true);
+        addMessage('system-log-area', `Error loading session: ${error.message}`, 'error'); // Log error
     } finally {
-        // Re-enable button if a session is still selected
-        loadSessionButton.disabled = !sessionSelect?.value;
+        // Re-enable button only if a session is still selected
+        if (loadSessionButton && sessionSelect) {
+             loadSessionButton.disabled = !sessionSelect.value;
+        }
     }
 }
+// --- *** End replacement section *** ---
 
 async function handleSaveSession() {
     const projectName = saveProjectNameInput?.value.trim();
