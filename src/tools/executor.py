@@ -1,70 +1,105 @@
 # START OF FILE src/tools/executor.py
 import json
-import re # Keep re for potential future use, though less critical now
+import re
+import importlib # For dynamic imports
+import inspect   # For inspecting modules/classes
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Type
-import xml.etree.ElementTree as ET # Use ElementTree for robust parsing
-import html # For unescaping potentially escaped values in XML
+import xml.etree.ElementTree as ET
+import html
 import logging
 
-# Import BaseTool and specific tools
+# Import BaseTool ONLY (specific tools are now discovered)
 from src.tools.base import BaseTool
-from src.tools.file_system import FileSystemTool
-from src.tools.send_message import SendMessageTool
+# Need ManageTeamTool name for special result handling
 from src.tools.manage_team import ManageTeamTool
-from src.tools.web_search import WebSearchTool # *** ADD THIS IMPORT ***
-# Import GitHubTool later when we create it
 
 logger = logging.getLogger(__name__)
 
 class ToolExecutor:
     """
     Manages and executes available tools for agents.
-    - Registers tools.
+    - Dynamically discovers tools in the 'src/tools' directory.
     - Provides schemas/descriptions of available tools in XML format for prompts.
     - Executes the requested tool based on parsed name and arguments.
     """
 
-    # --- Tool Registration ---
-    AVAILABLE_TOOL_CLASSES: List[Type[BaseTool]] = [
-        FileSystemTool,
-        SendMessageTool,
-        ManageTeamTool,
-        WebSearchTool, # *** ADD WebSearchTool HERE ***
-        # Add GitHubTool later
-    ]
+    # --- Tool Registration (Dynamic Discovery) ---
+    # AVAILABLE_TOOL_CLASSES list is REMOVED
 
     def __init__(self):
-        """Initializes the ToolExecutor and registers available tools."""
+        """Initializes the ToolExecutor and dynamically discovers/registers available tools."""
         self.tools: Dict[str, BaseTool] = {}
-        self._register_available_tools()
-        logger.info(f"ToolExecutor initialized with tools: {list(self.tools.keys())}") # Use logger
+        self._register_available_tools() # Call the dynamic registration method
+        # Log confirmation after registration attempts
+        if not self.tools:
+             logger.warning("ToolExecutor initialized, but no tools were discovered or registered.")
+        else:
+             logger.info(f"ToolExecutor initialized with dynamically discovered tools: {list(self.tools.keys())}")
 
     def _register_available_tools(self):
-        """Instantiates and registers tools defined in AVAILABLE_TOOL_CLASSES."""
-        logger.info("Registering available tools...") # Use logger
-        for tool_cls in self.AVAILABLE_TOOL_CLASSES:
+        """Dynamically scans the 'src/tools' directory, imports modules,
+           and registers classes inheriting from BaseTool."""
+        logger.info("Dynamically discovering and registering tools...")
+        tools_dir = Path(__file__).parent # Directory of this file (src/tools)
+        package_name = "src.tools"       # Base package for imports
+
+        for filepath in tools_dir.glob("*.py"):
+            module_name_local = filepath.stem # e.g., "web_search"
+
+            # Skip special files
+            if module_name_local.startswith("_") or module_name_local == "base":
+                logger.debug(f"Skipping module: {module_name_local}")
+                continue
+
+            module_name_full = f"{package_name}.{module_name_local}"
+            logger.debug(f"Attempting to import module: {module_name_full}")
+
             try:
-                instance = tool_cls()
-                if instance.name in self.tools:
-                    logger.warning(f"Tool name conflict. '{instance.name}' already registered. Overwriting.")
-                self.tools[instance.name] = instance
-                logger.info(f"  Registered tool: {instance.name}")
+                # Dynamically import the module
+                module = importlib.import_module(module_name_full)
+
+                # Inspect the imported module for classes
+                for name, cls in inspect.getmembers(module, inspect.isclass):
+                    # Check conditions:
+                    # 1. Is it a subclass of BaseTool?
+                    # 2. Is it NOT BaseTool itself?
+                    # 3. Was the class *defined* in this specific module (not imported)?
+                    if (issubclass(cls, BaseTool) and
+                            cls is not BaseTool and
+                            cls.__module__ == module_name_full):
+
+                        logger.debug(f"  Found potential tool class: {name} in {module_name_full}")
+                        try:
+                            # Instantiate the tool class
+                            instance = cls()
+                            # Check for name conflicts before registering
+                            if instance.name in self.tools:
+                                logger.warning(f"  Tool name conflict: '{instance.name}' from {module_name_full} already registered (likely from {self.tools[instance.name].__class__.__module__}). Overwriting.")
+                            self.tools[instance.name] = instance
+                            logger.info(f"  Registered tool: '{instance.name}' (from {module_name_local}.py)")
+                        except Exception as e:
+                            logger.error(f"  Error instantiating tool class {cls.__name__} from {module_name_full}: {e}", exc_info=True)
+
+            except ImportError as e:
+                logger.error(f"Error importing module {module_name_full}: {e}", exc_info=True)
             except Exception as e:
-                logger.error(f"Error instantiating or registering tool {tool_cls.__name__}: {e}", exc_info=True)
+                logger.error(f"Unexpected error processing module {module_name_full}: {e}", exc_info=True)
+
+        # Log is now done in __init__ after this method completes
+
 
     def register_tool(self, tool_instance: BaseTool):
-        """Manually registers a tool instance."""
+        """Manually registers a tool instance (useful for testing or non-standard tools)."""
         if not isinstance(tool_instance, BaseTool):
             logger.error(f"Error: Cannot register object of type {type(tool_instance)}. Must be subclass of BaseTool.")
             return
         if tool_instance.name in self.tools:
-            logger.warning(f"Tool name conflict. '{tool_instance.name}' already registered. Overwriting.")
+            logger.warning(f"Tool name conflict during manual registration: '{tool_instance.name}' already registered. Overwriting.")
         self.tools[tool_instance.name] = tool_instance
         logger.info(f"Manually registered tool: {tool_instance.name}")
 
-    # --- Tool Schema/Discovery ---
-
+    # --- Tool Schema/Discovery (Unchanged) ---
     def get_formatted_tool_descriptions_xml(self) -> str:
         """
         Formats tool schemas into an XML string suitable for LLM prompts.
@@ -74,27 +109,19 @@ class ToolExecutor:
             return "<!-- No tools available -->"
 
         root = ET.Element("tools")
-        # Updated introductory text slightly
         root.text = "\nYou have access to the following tools. Use the specified XML format to call them. ONLY ONE tool call per response message, placed at the very end.\n"
-
-        # Sort tools alphabetically by name for consistent prompt output
         sorted_tool_names = sorted(self.tools.keys())
 
         for tool_name in sorted_tool_names:
             tool = self.tools[tool_name]
-            # Use the tool's get_schema() method which reads current attributes
             schema = tool.get_schema()
             tool_element = ET.SubElement(root, "tool")
-
             name_el = ET.SubElement(tool_element, "name")
             name_el.text = schema['name']
-
             desc_el = ET.SubElement(tool_element, "description")
-            desc_el.text = schema['description'].strip() # Trim whitespace
-
+            desc_el.text = schema['description'].strip()
             params_el = ET.SubElement(tool_element, "parameters")
             if schema['parameters']:
-                 # Sort parameters for consistency within the tool definition
                  sorted_params = sorted(schema['parameters'], key=lambda p: p['name'])
                  for param_data in sorted_params:
                      param_el = ET.SubElement(params_el, "parameter")
@@ -103,35 +130,26 @@ class ToolExecutor:
                      param_type = ET.SubElement(param_el, "type")
                      param_type.text = param_data['type']
                      param_req = ET.SubElement(param_el, "required")
-                     param_req.text = str(param_data.get('required', True)).lower() # Default to true if missing
+                     param_req.text = str(param_data.get('required', True)).lower()
                      param_desc = ET.SubElement(param_el, "description")
-                     # Ensure description is read from the CURRENT schema data
-                     param_desc.text = param_data['description'].strip() # Trim whitespace
+                     param_desc.text = param_data['description'].strip()
             else:
-                 # Indicate no parameters clearly
                  params_el.text = "<!-- This tool takes no parameters -->"
-
-            # Add XML Usage Example
             usage_el = ET.SubElement(tool_element, "usage_example")
             usage_str = f"\n<{schema['name']}>\n"
             if schema['parameters']:
-                 # Use the same sorted list for the example
                  sorted_params_usage = sorted(schema['parameters'], key=lambda p: p['name'])
                  for param_data in sorted_params_usage:
-                    # Add placeholder value based on type for clarity
                     placeholder = "..."
                     if param_data['type'] == 'integer': placeholder = "123"
                     elif param_data['type'] == 'boolean': placeholder = "true"
                     elif param_data['type'] == 'float': placeholder = "1.23"
                     usage_str += f"  <{param_data['name']}>{placeholder}</{param_data['name']}>\n"
             else:
-                 usage_str += f"  <!-- No parameters needed -->\n" # Adjust example text
+                 usage_str += f"  <!-- No parameters needed -->\n"
             usage_str += f"</{schema['name']}>\n"
-            # Use CDATA to prevent XML parsing issues with the example content
             usage_el.text = f"<![CDATA[{usage_str}]]>"
 
-
-        # Add general XML tool use instructions outside the loop (slight wording tweak)
         instructions_el = ET.SubElement(root, "general_instructions")
         instructions_el.text = (
             "\nTool Call Format Guidance:\n"
@@ -141,41 +159,34 @@ class ToolExecutor:
             "4. Place the entire XML block at the **very end** of your response message.\n"
             "5. Do not include any text after the closing tool tag."
         )
-
-        # Pretty print the XML for readability in logs/debugging
         try:
              ET.indent(root, space="  ")
              xml_string = ET.tostring(root, encoding='unicode', method='xml')
-        except Exception: # Fallback if indent fails
+        except Exception:
              xml_string = ET.tostring(root, encoding='unicode', method='xml')
-
-
-        # Combine with Markdown heading (optional, depends if LLM prefers it)
-        # final_description = "# Tools Description (XML Format)\n\n" + xml_string
-        final_description = xml_string # Return raw XML for now
-        # logger.debug(f"Generated Tool Descriptions XML:\n{final_description}") # Optional: Log generated XML
+        final_description = xml_string
         return final_description
 
 
-    # --- Tool Execution (No changes needed here) ---
+    # --- Tool Execution (Unchanged) ---
     async def execute_tool(
         self,
         agent_id: str,
         agent_sandbox_path: Path,
         tool_name: str,
-        tool_args: Dict[str, Any] # Arguments are pre-parsed by Agent Core
+        tool_args: Dict[str, Any]
     ) -> Any:
         """
         Executes the specified tool with the given arguments. Arguments are pre-parsed.
         Validates arguments against the tool's schema.
-        Removes agent_id and agent_sandbox_path from args before passing via kwargs.
         Returns raw dictionary result for ManageTeamTool, otherwise ensures string result.
         """
         tool = self.tools.get(tool_name)
         if not tool:
             error_msg = f"Error: Tool '{tool_name}' not found."
             logger.error(error_msg)
-            if tool_name == ManageTeamTool.name:
+            # Special handling for ManageTeamTool error format
+            if tool_name == ManageTeamTool.name: # Compare with imported name
                 return {"status": "error", "action": tool_args.get("action"), "message": error_msg}
             else:
                 return error_msg
@@ -198,15 +209,15 @@ class ToolExecutor:
             if missing_required:
                 error_msg = f"Error: Tool '{tool_name}' execution failed. Missing required parameters: {', '.join(missing_required)}"
                 logger.error(error_msg)
-                if tool_name == ManageTeamTool.name:
+                if tool_name == ManageTeamTool.name: # Compare with imported name
                     return {"status": "error", "action": tool_args.get("action"), "message": error_msg}
                 else:
                     return error_msg
 
             # Prepare kwargs for tool execution
             kwargs_for_tool = validated_args.copy()
-            kwargs_for_tool.pop('agent_id', None) # Already passed directly
-            kwargs_for_tool.pop('agent_sandbox_path', None) # Already passed directly
+            kwargs_for_tool.pop('agent_id', None)
+            kwargs_for_tool.pop('agent_sandbox_path', None)
 
             # Execute tool
             result = await tool.execute(
@@ -216,14 +227,13 @@ class ToolExecutor:
             )
 
             # Handle Result Formatting
-            if tool_name == ManageTeamTool.name:
+            if tool_name == ManageTeamTool.name: # Compare with imported name
                  if not isinstance(result, dict):
                       logger.error(f"ManageTeamTool execution returned unexpected type: {type(result)}. Expected dict.")
                       return {"status": "error", "action": tool_args.get("action"), "message": f"Internal Error: ManageTeamTool returned unexpected type {type(result)}."}
                  logger.info(f"Executor: Tool '{tool_name}' execution returned result: {result}")
-                 return result # Return the dict directly
+                 return result
             else:
-                 # For other tools, ensure result is string
                  if not isinstance(result, str):
                      try: result_str = json.dumps(result, indent=2)
                      except TypeError: result_str = str(result)
@@ -235,7 +245,7 @@ class ToolExecutor:
         except Exception as e:
             error_msg = f"Executor: Error executing tool '{tool_name}': {type(e).__name__} - {e}"
             logger.error(error_msg, exc_info=True)
-            if tool_name == ManageTeamTool.name:
+            if tool_name == ManageTeamTool.name: # Compare with imported name
                  return {"status": "error", "action": tool_args.get("action"), "message": error_msg}
             else:
                  return error_msg
