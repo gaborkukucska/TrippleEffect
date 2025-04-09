@@ -1,17 +1,15 @@
 # START OF FILE src/tools/executor.py
 import json
 import re
-import importlib # For dynamic imports
-import inspect   # For inspecting modules/classes
+import importlib
+import inspect
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Type
 import xml.etree.ElementTree as ET
 import html
 import logging
 
-# Import BaseTool ONLY (specific tools are now discovered)
 from src.tools.base import BaseTool
-# Need ManageTeamTool name for special result handling
 from src.tools.manage_team import ManageTeamTool
 
 logger = logging.getLogger(__name__)
@@ -21,17 +19,13 @@ class ToolExecutor:
     Manages and executes available tools for agents.
     - Dynamically discovers tools in the 'src/tools' directory.
     - Provides schemas/descriptions of available tools in XML format for prompts.
-    - Executes the requested tool based on parsed name and arguments.
+    - Executes the requested tool, passing necessary context (agent ID, sandbox, project, session).
     """
-
-    # --- Tool Registration (Dynamic Discovery) ---
-    # AVAILABLE_TOOL_CLASSES list is REMOVED
 
     def __init__(self):
         """Initializes the ToolExecutor and dynamically discovers/registers available tools."""
         self.tools: Dict[str, BaseTool] = {}
-        self._register_available_tools() # Call the dynamic registration method
-        # Log confirmation after registration attempts
+        self._register_available_tools()
         if not self.tools:
              logger.warning("ToolExecutor initialized, but no tools were discovered or registered.")
         else:
@@ -41,13 +35,11 @@ class ToolExecutor:
         """Dynamically scans the 'src/tools' directory, imports modules,
            and registers classes inheriting from BaseTool."""
         logger.info("Dynamically discovering and registering tools...")
-        tools_dir = Path(__file__).parent # Directory of this file (src/tools)
-        package_name = "src.tools"       # Base package for imports
+        tools_dir = Path(__file__).parent
+        package_name = "src.tools"
 
         for filepath in tools_dir.glob("*.py"):
-            module_name_local = filepath.stem # e.g., "web_search"
-
-            # Skip special files
+            module_name_local = filepath.stem
             if module_name_local.startswith("_") or module_name_local == "base":
                 logger.debug(f"Skipping module: {module_name_local}")
                 continue
@@ -56,41 +48,28 @@ class ToolExecutor:
             logger.debug(f"Attempting to import module: {module_name_full}")
 
             try:
-                # Dynamically import the module
                 module = importlib.import_module(module_name_full)
-
-                # Inspect the imported module for classes
                 for name, cls in inspect.getmembers(module, inspect.isclass):
-                    # Check conditions:
-                    # 1. Is it a subclass of BaseTool?
-                    # 2. Is it NOT BaseTool itself?
-                    # 3. Was the class *defined* in this specific module (not imported)?
                     if (issubclass(cls, BaseTool) and
                             cls is not BaseTool and
                             cls.__module__ == module_name_full):
-
                         logger.debug(f"  Found potential tool class: {name} in {module_name_full}")
                         try:
-                            # Instantiate the tool class
                             instance = cls()
-                            # Check for name conflicts before registering
                             if instance.name in self.tools:
-                                logger.warning(f"  Tool name conflict: '{instance.name}' from {module_name_full} already registered (likely from {self.tools[instance.name].__class__.__module__}). Overwriting.")
+                                logger.warning(f"  Tool name conflict: '{instance.name}' from {module_name_full} already registered. Overwriting.")
                             self.tools[instance.name] = instance
                             logger.info(f"  Registered tool: '{instance.name}' (from {module_name_local}.py)")
                         except Exception as e:
                             logger.error(f"  Error instantiating tool class {cls.__name__} from {module_name_full}: {e}", exc_info=True)
-
             except ImportError as e:
                 logger.error(f"Error importing module {module_name_full}: {e}", exc_info=True)
             except Exception as e:
                 logger.error(f"Unexpected error processing module {module_name_full}: {e}", exc_info=True)
 
-        # Log is now done in __init__ after this method completes
-
 
     def register_tool(self, tool_instance: BaseTool):
-        """Manually registers a tool instance (useful for testing or non-standard tools)."""
+        """Manually registers a tool instance."""
         if not isinstance(tool_instance, BaseTool):
             logger.error(f"Error: Cannot register object of type {type(tool_instance)}. Must be subclass of BaseTool.")
             return
@@ -101,17 +80,12 @@ class ToolExecutor:
 
     # --- Tool Schema/Discovery (Unchanged) ---
     def get_formatted_tool_descriptions_xml(self) -> str:
-        """
-        Formats tool schemas into an XML string suitable for LLM prompts.
-        Reflects the latest parameter descriptions from tool classes.
-        """
+        # (Code remains exactly the same as the previous version)
         if not self.tools:
             return "<!-- No tools available -->"
-
         root = ET.Element("tools")
         root.text = "\nYou have access to the following tools. Use the specified XML format to call them. ONLY ONE tool call per response message, placed at the very end.\n"
         sorted_tool_names = sorted(self.tools.keys())
-
         for tool_name in sorted_tool_names:
             tool = self.tools[tool_name]
             schema = tool.get_schema()
@@ -149,7 +123,6 @@ class ToolExecutor:
                  usage_str += f"  <!-- No parameters needed -->\n"
             usage_str += f"</{schema['name']}>\n"
             usage_el.text = f"<![CDATA[{usage_str}]]>"
-
         instructions_el = ET.SubElement(root, "general_instructions")
         instructions_el.text = (
             "\nTool Call Format Guidance:\n"
@@ -168,32 +141,45 @@ class ToolExecutor:
         return final_description
 
 
-    # --- Tool Execution (Unchanged) ---
+    # --- *** MODIFIED Tool Execution *** ---
     async def execute_tool(
         self,
         agent_id: str,
         agent_sandbox_path: Path,
         tool_name: str,
-        tool_args: Dict[str, Any]
+        tool_args: Dict[str, Any], # Arguments are pre-parsed by Agent Core
+        project_name: Optional[str] = None, # Added context
+        session_name: Optional[str] = None  # Added context
     ) -> Any:
         """
-        Executes the specified tool with the given arguments. Arguments are pre-parsed.
-        Validates arguments against the tool's schema.
+        Executes the specified tool with the given arguments and context.
+        Arguments are pre-parsed. Validates arguments against the tool's schema.
+        Passes context (project/session) to the tool's execute method.
         Returns raw dictionary result for ManageTeamTool, otherwise ensures string result.
+
+        Args:
+            agent_id: The ID of the agent initiating the call.
+            agent_sandbox_path: The sandbox path for the agent.
+            tool_name: The name of the tool to execute.
+            tool_args: The pre-parsed arguments dictionary for the tool.
+            project_name: Current project context.
+            session_name: Current session context.
+
+        Returns:
+            Any: The result of the tool execution.
         """
         tool = self.tools.get(tool_name)
         if not tool:
             error_msg = f"Error: Tool '{tool_name}' not found."
             logger.error(error_msg)
-            # Special handling for ManageTeamTool error format
-            if tool_name == ManageTeamTool.name: # Compare with imported name
+            if tool_name == ManageTeamTool.name:
                 return {"status": "error", "action": tool_args.get("action"), "message": error_msg}
             else:
                 return error_msg
 
-        logger.info(f"Executor: Executing tool '{tool_name}' for agent '{agent_id}' with raw args: {tool_args}")
+        logger.info(f"Executor: Executing tool '{tool_name}' for agent '{agent_id}' with args: {tool_args} (Project: {project_name}, Session: {session_name})")
         try:
-            # Argument Validation
+            # Argument Validation (using tool.get_schema())
             schema = tool.get_schema()
             validated_args = {}
             missing_required = []
@@ -201,6 +187,7 @@ class ToolExecutor:
                 for param_info in schema['parameters']:
                     param_name = param_info['name']
                     is_required = param_info.get('required', True)
+
                     if param_name in tool_args:
                         validated_args[param_name] = tool_args[param_name]
                     elif is_required:
@@ -209,31 +196,37 @@ class ToolExecutor:
             if missing_required:
                 error_msg = f"Error: Tool '{tool_name}' execution failed. Missing required parameters: {', '.join(missing_required)}"
                 logger.error(error_msg)
-                if tool_name == ManageTeamTool.name: # Compare with imported name
+                if tool_name == ManageTeamTool.name:
                     return {"status": "error", "action": tool_args.get("action"), "message": error_msg}
                 else:
                     return error_msg
 
-            # Prepare kwargs for tool execution
+            # Prepare kwargs for tool execution (validated tool-specific args)
             kwargs_for_tool = validated_args.copy()
+            # Remove context args if they happen to be in kwargs (they are passed directly)
             kwargs_for_tool.pop('agent_id', None)
             kwargs_for_tool.pop('agent_sandbox_path', None)
+            kwargs_for_tool.pop('project_name', None)
+            kwargs_for_tool.pop('session_name', None)
 
-            # Execute tool
+            # Execute with validated arguments and context
             result = await tool.execute(
                 agent_id=agent_id,
                 agent_sandbox_path=agent_sandbox_path,
-                **kwargs_for_tool
+                project_name=project_name, # Pass context
+                session_name=session_name, # Pass context
+                **kwargs_for_tool # Pass the validated tool-specific args
             )
 
             # Handle Result Formatting
-            if tool_name == ManageTeamTool.name: # Compare with imported name
+            if tool_name == ManageTeamTool.name:
                  if not isinstance(result, dict):
                       logger.error(f"ManageTeamTool execution returned unexpected type: {type(result)}. Expected dict.")
                       return {"status": "error", "action": tool_args.get("action"), "message": f"Internal Error: ManageTeamTool returned unexpected type {type(result)}."}
                  logger.info(f"Executor: Tool '{tool_name}' execution returned result: {result}")
-                 return result
+                 return result # Return the dict directly
             else:
+                 # For other tools, ensure result is string
                  if not isinstance(result, str):
                      try: result_str = json.dumps(result, indent=2)
                      except TypeError: result_str = str(result)
@@ -245,7 +238,8 @@ class ToolExecutor:
         except Exception as e:
             error_msg = f"Executor: Error executing tool '{tool_name}': {type(e).__name__} - {e}"
             logger.error(error_msg, exc_info=True)
-            if tool_name == ManageTeamTool.name: # Compare with imported name
+            if tool_name == ManageTeamTool.name:
                  return {"status": "error", "action": tool_args.get("action"), "message": error_msg}
             else:
                  return error_msg
+    # --- *** END MODIFIED EXECUTION *** ---
