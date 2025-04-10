@@ -49,14 +49,10 @@
 
 **Out of Scope (Deferred to Future Phases 11+):**
 
-*   Google LLM Provider.
-*   ConfigTool (Replaced by dynamic management).
-*   Dynamic changes via `config.yaml` (post-startup).
 *   Dynamic LLM Provider *Type* Management.
 *   **Advanced Collaboration:** Complex delegation, conflict resolution, hierarchy, synchronous operations.
 *   **Advanced Admin AI Intelligence:** Planning refinement based on failures, long-term memory (outside basic session state), **implicit state awareness via system updates**.
 *   **Resource limiting** for dynamic agents.
-*   **Admin AI direct access to other agent sandboxes**.
 *   **Formal Project/Task Management System:** Defining tasks, sub-tasks, dependencies beyond simple delegation.
 *   **Database/Vector Store:** For shared project knowledge base, advanced long-term memory, sophisticated state management.
 *   Multi-Team Projects.
@@ -189,7 +185,7 @@ graph TD
 **Phase 1-9 (Completed)**
 *   [X] Core Backend, Agent Core, Multi-Agent Basics, Config Loading, Sandboxing, Basic Tools, LLM Abstraction, UI Enhancements, XML Tool Calling, Static Agent Config UI, Dynamic Agent Management V2 & Refactoring, Provider Error Handling, Session Persistence Logic.
 
-**Phase 10: Collaboration Polish & UI Enhancements (Mostly Completed)**
+**Phase 10: Collaboration Polish & UI Enhancements (Current / Mostly Completed)**
 *   **Goal:** Ensure agents reliably report back results, refine basic collaboration flows, implement dynamic UI updates for state changes, add session management UI, and add basic logging.
 *   [X] **Workflow Testing & Prompt Refinement:**
     *   [X] Improved `SendMessageTool` robustness (target validation, sender feedback).
@@ -206,7 +202,7 @@ graph TD
     *   [ ] Configure more advanced logging (levels, rotation). *(Deferred)*
     *   [ ] Add basic authentication middleware/dependency. *(Deferred)*
 
-**Phase 11: UI/UX Refinements & Advanced Features Prep (Current / Next)**
+**Phase 11: UI/UX Refinements & Advanced Features Prep (Next)**
 *   **Goal:** Fix remaining UI quirks (chat scroll, log display), refine Admin AI prompts based on observed errors, potentially add basic auth, and prepare for more advanced features.
 *   [ ] **UI Fixes:**
     *   [ ] Fix chat area scrolling in `style.css`.
