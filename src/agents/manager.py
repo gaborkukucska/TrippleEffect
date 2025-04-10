@@ -82,10 +82,14 @@ Your Assigned Team ID: `{team_id}`
 --- End Standard Protocol ---
 """
 
-# --- Specific Operational Instructions for Admin AI ---
+# --- Specific Operational Instructions for Admin AI (with ID/Team info) ---
 ADMIN_AI_OPERATIONAL_INSTRUCTIONS = """
 
 --- Admin AI Core Operational Workflow ---
+**Your Identity:**
+*   Your Agent ID: `admin_ai`
+*   Your Assigned Team ID: `N/A` (You manage teams, you aren't assigned to one)
+
 **Your core function is to ORCHESTRATE and DELEGATE, not perform tasks directly.**
 
 **Mandatory Workflow:**
@@ -97,15 +101,15 @@ ADMIN_AI_OPERATIONAL_INSTRUCTIONS = """
     *   **(a) Check State:** Use `ManageTeamTool` (`list_teams`, `list_agents`). Get existing agent IDs if needed.
     *   **(b) Create Team(s):** Use `ManageTeamTool` (`action: create_team`).
     *   **(c) Create Agents Sequentially:** Use `ManageTeamTool` (`action: create_agent`). Specify `provider`, `model`, `persona`, role-specific `system_prompt`, `team_id`. Ensure the agent's `system_prompt` instructs it to report back to you (`admin_ai`) via `send_message`. **Wait** for feedback with `created_agent_id`. Store IDs.
-    *   **(d) Kick-off Tasks:** Use `send_message` targeting the correct `created_agent_id`. **Explicitly state where input data is** (e.g., "Use the research provided by agent [ID]" or "Use the code in this message"). Reiterate the need to report back to `admin_ai` via `send_message`.
+    *   **(d) Kick-off Tasks:** Use `send_message` targeting the correct `created_agent_id`. **Explicitly state where input data is** (e.g., "Use the research report provided by agent [ID]" or "Use the code in this message"). Reiterate the need to report back to `admin_ai` via `send_message`.
 4.  **Coordinate & Monitor:**
     *   Monitor incoming messages.
-    *   **Relay necessary information between agents explicitly** using `send_message` if your plan requires it.
+    *   **If an agent needs information from another agent's output that you have received, relay the relevant information explicitly** using `send_message` if your plan requires it.
     *   Provide clarification if agents are stuck.
     *   **Do NOT perform agents' tasks.** Ask agents for file content via `send_message` if they only provide a path. Use *your* `file_system` only as a last resort.
 5.  **Synthesize & Report to User:** Compile final results for the human user.
 6.  **Clean Up:** After delivering the final result:
-    *   **(a) Identify Agents/Teams:** Use `ManageTeamTool` (`action: list_agents`) if needed to get exact `agent_id`s.
+    *   **(a) Identify Agents/Teams:** Use `ManageTeamTool` (`action: list_agents`) if necessary to get exact `agent_id`s.
     *   **(b) Delete Agents:** Use `ManageTeamTool` (`action: delete_agent`) with the **specific `agent_id`** for each dynamic agent.
     *   **(c) Delete Team(s):** Use `ManageTeamTool` (`action: delete_team`) with the `team_id` *after* agents are deleted.
 
@@ -114,7 +118,6 @@ ADMIN_AI_OPERATIONAL_INSTRUCTIONS = """
 *   Check the standard tool descriptions provided separately for details on `file_system`, `web_search`, `github_tool`.
 --- End Admin AI Core Operational Workflow ---
 """
-# --- *** END NEW CONSTANT *** ---
 
 class AgentManager:
     """
@@ -198,25 +201,25 @@ class AgentManager:
                 logger.error(f"--- Cannot initialize bootstrap agent '{agent_id}': Provider '{provider_name}' is not configured in .env. Skipping. ---")
                 continue
 
-            # --- Special Handling for Admin AI Prompt ---
-            # Inject allowed models list and standard framework instructions
+            # --- (The STANDARD_FRAMEWORK_INSTRUCTIONS constant and AgentManager class remain the same) ---# --- *** MODIFIED Admin AI Prompt Injection *** ---
             if agent_id == BOOTSTRAP_AGENT_ID:
-                original_prompt = agent_config_data.get("system_prompt", "")
+                # Get the user-defined part from config.yaml
+                user_defined_prompt = agent_config_data.get("system_prompt", "")
                 # Create a copy to avoid modifying the original settings dict
                 agent_config_data = agent_config_data.copy()
-                standard_info = STANDARD_FRAMEWORK_INSTRUCTIONS.format(
-                    agent_id=BOOTSTRAP_AGENT_ID,
-                    team_id="N/A", # Admin AI doesn't belong to a dynamic team
-                    tool_descriptions_xml=self.tool_descriptions_xml
-                )
-                # Combine original prompt, allowed models, and standard instructions
+                # Prepare the parts to be injected
+                admin_operational_info = ADMIN_AI_OPERATIONAL_INSTRUCTIONS # Get the new constant
+                # Format the generic part just with tools for AdminAI
+                admin_standard_info_part = generic_standard_info # Use the pre-formatted generic part
+                # Combine: User Prompt + Operational Workflow + Generic Tool Info + Allowed Models
                 agent_config_data["system_prompt"] = (
-                    original_prompt + "\n\n" +
-                    formatted_allowed_models + "\n\n" +
-                    standard_info
+                    f"--- Primary Goal/Persona ---\n{user_defined_prompt}\n\n"
+                    f"{admin_operational_info}\n\n" # Add the operational workflow
+                    f"{admin_standard_info_part}\n\n" # Add the generic tool descriptions part
+                    f"---\n{formatted_allowed_models}\n---" # Add allowed models separately at the end
                 )
-                logger.info(f"Injected allowed models list AND standard instructions into '{BOOTSTRAP_AGENT_ID}' system prompt.")
-            # --- End Admin AI Prompt Handling ---
+                logger.info(f"Combined user prompt, operational instructions, standard instructions, and allowed models for '{BOOTSTRAP_AGENT_ID}' system prompt.")
+            # --- *** END MODIFIED Injection *** ---
 
             # Create an async task for agent creation
             tasks.append(self._create_agent_internal(
