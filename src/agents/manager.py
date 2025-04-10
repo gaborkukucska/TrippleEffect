@@ -820,7 +820,7 @@ class AgentManager:
                         for call in calls_to_execute:
                             call_id = call['id']; tool_name = call['name']; tool_args = call['arguments']
                             # Execute the single tool via executor
-                            result = await self._execute_single_tool(agent, call_id, tool_name, tool_args)
+                            result = await self._execute_single_tool(agent, call_id, tool_name, tool_args, project_name=self.current_project, session_name=self.current_session)
 
                             if result:
                                 # --- Add Raw Tool Result to History ---
@@ -1177,8 +1177,7 @@ class AgentManager:
             await self.send_to_ui({ "type": "status", "agent_id": target_id, "content": f"Message received from @{sender_id}, queued." })
             return None # No activation task created
 
-
-    async def _execute_single_tool(self, agent: Agent, call_id: str, tool_name: str, tool_args: Dict[str, Any]) -> Optional[Dict]:
+    async def _execute_single_tool(self, agent: Agent, call_id: str, tool_name: str, tool_args: Dict[str, Any], project_name: Optional[str] = None, session_name: Optional[str] = None) -> Optional[Dict]:
         """Executes a single tool call via the ToolExecutor."""
         if not self.tool_executor:
             logger.error("ToolExecutor unavailable. Cannot execute tool.")
