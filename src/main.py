@@ -49,7 +49,7 @@ from src.api import http_routes, websocket_manager
 # Import the AgentManager class
 from src.agents.manager import AgentManager
 
-# --- *** NEW: Import ModelRegistry instance *** ---
+# Import ModelRegistry instance
 from src.config.settings import model_registry, settings # Import settings too if needed elsewhere
 
 # --- Global placeholder for the manager ---
@@ -74,19 +74,21 @@ async def lifespan(app: FastAPI):
     websocket_manager.set_agent_manager(agent_manager_instance)
     logger.info("AgentManager instance injected into WebSocketManager.")
 
-    # --- *** NEW: Discover Available Models *** ---
-    logger.info("Lifespan: Discovering available LLM models...")
+    # --- Discover Reachable Providers and Available Models ---
+    # --- *** MODIFIED: Call new discovery method *** ---
+    logger.info("Lifespan: Discovering reachable providers and available models...")
     try:
         # Use the imported model_registry instance
-        discovery_task = asyncio.create_task(model_registry.discover_models())
+        discovery_task = asyncio.create_task(model_registry.discover_models_and_providers()) # Call the new method
         await discovery_task
-        logger.info("Lifespan: Model discovery task completed.")
+        logger.info("Lifespan: Provider and model discovery task completed.")
     except Exception as e:
-        logger.error(f"Lifespan: Error during model discovery: {e}", exc_info=True)
+        logger.error(f"Lifespan: Error during provider/model discovery: {e}", exc_info=True)
         # Application can continue, but model availability might be limited
-    # --- *** END NEW *** ---
+    # --- *** END MODIFICATION *** ---
 
     # --- Initialize bootstrap agents ASYNCHRONOUSLY ---
+    # (This now happens AFTER provider/model discovery)
     logger.info("Lifespan: Initializing bootstrap agents...")
     try:
         init_task = asyncio.create_task(agent_manager_instance.initialize_bootstrap_agents())
@@ -115,7 +117,7 @@ async def lifespan(app: FastAPI):
 logger.info("Creating FastAPI app instance...")
 app = FastAPI(
     title="TrippleEffect",
-    version="2.12", # Update version
+    version="2.13", # Update version
     lifespan=lifespan
 )
 logger.info("FastAPI app instance created with lifespan handler.")
