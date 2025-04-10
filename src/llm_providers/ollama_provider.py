@@ -21,6 +21,8 @@ RETRYABLE_OLLAMA_EXCEPTIONS = (
 
 # Default Ollama API endpoint
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
+# Define a longer read timeout specifically for waiting for stream chunks
+STREAM_READ_TIMEOUT_SECONDS = 600 # 10 minutes - adjust if needed
 
 class OllamaProvider(BaseLLMProvider):
     """
@@ -28,7 +30,7 @@ class OllamaProvider(BaseLLMProvider):
     Uses aiohttp to stream raw text completions from the Ollama API.
     Tool handling is done by the Agent Core via XML parsing.
     Includes enhanced handling for errors occurring during stream processing.
-    *** Modified to enable TCP Keep-Alive. ***
+    *** Reverted TCP Keep-Alive attempt due to incompatibility. Increased stream read timeout. ***
     """
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, **kwargs):
@@ -39,50 +41,40 @@ class OllamaProvider(BaseLLMProvider):
 
         self._session_kwargs = kwargs
         self._session: Optional[aiohttp.ClientSession] = None
-        self._connector: Optional[aiohttp.TCPConnector] = None # Store connector separately
+        # Connector removed for now, session will manage its own default connector
+        # self._connector: Optional[aiohttp.TCPConnector] = None
         logger.info(f"OllamaProvider initialized. Base URL: {self.base_url}. Tool support via XML parsing by Agent.")
 
     async def _get_session(self) -> aiohttp.ClientSession:
-        """Creates or returns an existing aiohttp ClientSession with TCP Keep-Alive enabled."""
+        """Creates or returns an existing aiohttp ClientSession."""
         if self._session is None or self._session.closed:
-            # Set a default timeout if not provided in kwargs
-            timeout_seconds = self._session_kwargs.pop('timeout', 300) # Remove timeout if present, handle manually
-            timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+            # Set a default overall timeout, but also a separate longer read timeout for streaming
+            total_timeout_seconds = self._session_kwargs.pop('timeout', 300) # 5 minutes total
+            # sock_read is specifically for time waiting to read data from the socket
+            timeout = aiohttp.ClientTimeout(
+                total=total_timeout_seconds,
+                sock_read=STREAM_READ_TIMEOUT_SECONDS
+            )
             # Store remaining kwargs for session creation
             remaining_kwargs = self._session_kwargs
 
-            # --- *** NEW: Configure TCPConnector with Keep-Alive *** ---
-            # Check if a connector already exists and is usable
-            if self._connector is None or self._connector.closed:
-                logger.info("OllamaProvider: Creating new TCPConnector with enable_tcp_keepalive=True")
-                self._connector = aiohttp.TCPConnector(
-                    enable_tcp_keepalive=True,
-                    # Optionally add keepalive_timeout if needed, but start with just enabling it
-                    # keepalive_timeout=60 # e.g., send keepalive probes every 60 seconds
-                    limit_per_host=0 # Set appropriate connection pool limit if needed
-                )
-            # --- *** END NEW *** ---
-
+            # Session will create its own default connector
             self._session = aiohttp.ClientSession(
                 timeout=timeout,
-                connector=self._connector, # Use the configured connector
-                connector_owner=False, # Important: Prevent session from closing the shared connector
+                # connector=self._connector, # Removed connector
+                # connector_owner=False, # Removed connector_owner
                 **remaining_kwargs
                 )
-            logger.info(f"OllamaProvider: Created new aiohttp session with timeout {timeout_seconds}s and TCP Keep-Alive enabled.")
+            logger.info(f"OllamaProvider: Created new aiohttp session. Total Timeout: {total_timeout_seconds}s, Stream Read Timeout: {STREAM_READ_TIMEOUT_SECONDS}s.")
         return self._session
 
     async def close_session(self):
-        """Closes the aiohttp session AND the connector if they exist."""
+        """Closes the aiohttp session if it exists."""
         if self._session and not self._session.closed:
             await self._session.close()
             self._session = None
             logger.info("OllamaProvider: Closed aiohttp session.")
-        # Also close the connector when the provider is done
-        if self._connector and not self._connector.closed:
-            await self._connector.close()
-            self._connector = None
-            logger.info("OllamaProvider: Closed TCPConnector.")
+        # No connector to close explicitly anymore
 
     # --- stream_completion remains the same as the previous version ---
     async def stream_completion(
@@ -116,8 +108,9 @@ class OllamaProvider(BaseLLMProvider):
             response = None
             try:
                  logger.info(f"OllamaProvider making API call (Attempt {attempt + 1}/{MAX_RETRIES + 1}).")
-                 # Use a timeout directly on the post request as well
-                 async with session.post(chat_endpoint, json=payload, timeout=aiohttp.ClientTimeout(total=300)) as resp:
+                 # Explicitly use the session's overall timeout for the initial POST request connection phase
+                 # The longer sock_read timeout will apply during response.content iteration
+                 async with session.post(chat_endpoint, json=payload) as resp:
                     response_status = resp.status
                     response_text = "" # Reset response text for this attempt
                     if response_status >= 400: response_text = await resp.text() # Read only on error
@@ -169,7 +162,7 @@ class OllamaProvider(BaseLLMProvider):
         chunks_received = 0 # Add counter for debugging
         try:
             # *** TRY/EXCEPT AROUND STREAM ITERATION ***
-            async for line in response.content:
+            async for line in response.content: # This loop will use the sock_read timeout
                 if line:
                     chunks_received += 1
                     # logger.debug(f"OllamaProvider: Received stream line {chunks_received}") # Optional: Verbose logging
@@ -226,8 +219,9 @@ class OllamaProvider(BaseLLMProvider):
              logger.error(f"Ollama stream connection error (Response): {response_err.status} {response_err.message}", exc_info=True)
              yield {"type": "error", "content": f"[OllamaProvider Error]: Stream connection error ({response_err.status}) - {response_err.message}"}
         except asyncio.TimeoutError as timeout_err: # Catch explicit timeout during stream
-             logger.error(f"Ollama stream timeout error: {timeout_err}", exc_info=True)
-             yield {"type": "error", "content": f"[OllamaProvider Error]: Stream timed out - {timeout_err}"}
+             # Check if this timeout occurred during sock_read
+             logger.error(f"Ollama stream timeout error (Likely waiting for chunk > {STREAM_READ_TIMEOUT_SECONDS}s): {timeout_err}", exc_info=True)
+             yield {"type": "error", "content": f"[OllamaProvider Error]: Stream timed out waiting for data - {timeout_err}"}
         except Exception as e:
              # Catch any other unexpected errors during stream processing
              # Specifically log if it's the ClientConnectionError we saw before
@@ -243,8 +237,8 @@ class OllamaProvider(BaseLLMProvider):
 
     def __repr__(self) -> str:
         session_status = "closed" if self._session is None or self._session.closed else "open"
-        connector_status = "closed" if self._connector is None or self._connector.closed else "open"
-        return f"<{self.__class__.__name__}(base_url='{self.base_url}', session='{session_status}', connector='{connector_status}')>"
+        # No connector status to report now
+        return f"<{self.__class__.__name__}(base_url='{self.base_url}', session='{session_status}')>"
 
     async def __aenter__(self):
         await self._get_session()
