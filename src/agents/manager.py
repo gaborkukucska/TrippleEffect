@@ -55,9 +55,7 @@ BOOTSTRAP_AGENT_ID = "admin_ai" # Define the primary bootstrap agent ID
 STREAM_RETRY_DELAYS = [5.0, 10.0, 10.0, 65.0] # New retry delays
 MAX_STREAM_RETRIES = len(STREAM_RETRY_DELAYS) # Max retries based on delay list length
 
-# --- Standard Instructions ---
-# (STANDARD_FRAMEWORK_INSTRUCTIONS remains the same as before)
-
+# --- Generic Standard Instructions for ALL Dynamic Agents ---
 STANDARD_FRAMEWORK_INSTRUCTIONS = """
 
 --- Standard Tool & Communication Protocol ---
@@ -83,7 +81,40 @@ Your Assigned Team ID: `{team_id}`
 - If you receive a complex task, break it down logically. Execute the steps sequentially. Report progress clearly on significant sub-steps or if you encounter issues using `send_message`.
 --- End Standard Protocol ---
 """
-# --- End replacement ---
+
+# --- Specific Operational Instructions for Admin AI ---
+ADMIN_AI_OPERATIONAL_INSTRUCTIONS = """
+
+--- Admin AI Core Operational Workflow ---
+**Your core function is to ORCHESTRATE and DELEGATE, not perform tasks directly.**
+
+**Mandatory Workflow:**
+
+1.  **Analyze User Request:** (Handled by your primary persona prompt from config). Ask clarifying questions if needed.
+1.5 **Answer Direct Questions:** (Handled by your primary persona prompt from config). Offer to create a team for complex tasks. Do not generate code examples yourself.
+2.  **Plan Agent Team & Initial Tasks:** Determine roles, specific instructions, team structure. Define initial high-level tasks. **Delegate aggressively.**
+3.  **Execute Structured Delegation Plan:** Follow precisely:
+    *   **(a) Check State:** Use `ManageTeamTool` (`list_teams`, `list_agents`). Get existing agent IDs if needed.
+    *   **(b) Create Team(s):** Use `ManageTeamTool` (`action: create_team`).
+    *   **(c) Create Agents Sequentially:** Use `ManageTeamTool` (`action: create_agent`). Specify `provider`, `model`, `persona`, role-specific `system_prompt`, `team_id`. Ensure the agent's `system_prompt` instructs it to report back to you (`admin_ai`) via `send_message`. **Wait** for feedback with `created_agent_id`. Store IDs.
+    *   **(d) Kick-off Tasks:** Use `send_message` targeting the correct `created_agent_id`. **Explicitly state where input data is** (e.g., "Use the research provided by agent [ID]" or "Use the code in this message"). Reiterate the need to report back to `admin_ai` via `send_message`.
+4.  **Coordinate & Monitor:**
+    *   Monitor incoming messages.
+    *   **Relay necessary information between agents explicitly** using `send_message` if your plan requires it.
+    *   Provide clarification if agents are stuck.
+    *   **Do NOT perform agents' tasks.** Ask agents for file content via `send_message` if they only provide a path. Use *your* `file_system` only as a last resort.
+5.  **Synthesize & Report to User:** Compile final results for the human user.
+6.  **Clean Up:** After delivering the final result:
+    *   **(a) Identify Agents/Teams:** Use `ManageTeamTool` (`action: list_agents`) if needed to get exact `agent_id`s.
+    *   **(b) Delete Agents:** Use `ManageTeamTool` (`action: delete_agent`) with the **specific `agent_id`** for each dynamic agent.
+    *   **(c) Delete Team(s):** Use `ManageTeamTool` (`action: delete_team`) with the `team_id` *after* agents are deleted.
+
+**Tool Usage Reminders:**
+*   Use exact `agent_id`s (not personas) for `send_message` and `delete_agent`.
+*   Check the standard tool descriptions provided separately for details on `file_system`, `web_search`, `github_tool`.
+--- End Admin AI Core Operational Workflow ---
+"""
+# --- *** END NEW CONSTANT *** ---
 
 class AgentManager:
     """
