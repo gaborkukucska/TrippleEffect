@@ -165,7 +165,7 @@ class AgentManager:
              logger.info(f"Ensured projects directory exists at: {settings.PROJECTS_BASE_DIR}")
         except Exception as e:
              logger.error(f"Error creating projects directory at {settings.PROJECTS_BASE_DIR}: {e}", exc_info=True)
-
+    
     # --- Agent Initialization ---
     async def initialize_bootstrap_agents(self):
         """Loads and initializes agents defined as 'bootstrap' in the configuration."""
@@ -185,6 +185,18 @@ class AgentManager:
 
         tasks = []
         formatted_allowed_models = settings.get_formatted_allowed_models()
+
+        # --- *** CORRECTED: Define generic_standard_info BEFORE the loop *** ---
+        # Prepare generic instructions part (tools description) ONCE
+        generic_standard_info = STANDARD_FRAMEWORK_INSTRUCTIONS.format(
+                agent_id='{agent_id}', # Placeholders - will be removed below
+                team_id='{team_id}',   # Placeholders - will be removed below
+                tool_descriptions_xml=self.tool_descriptions_xml
+            )
+        # Remove the generic placeholder lines as they aren't needed for AdminAI context specifically
+        generic_standard_info = generic_standard_info.replace("Your Agent ID: {agent_id}\n", "")
+        generic_standard_info = generic_standard_info.replace("Your Assigned Team ID: {team_id}\n", "")
+        # --- *** END CORRECTION *** ---
 
         # Iterate through agent configurations loaded from settings
         for agent_conf_entry in agent_configs_list:
@@ -267,6 +279,15 @@ class AgentManager:
         logger.info(f"Finished async bootstrap agent initialization. Active bootstrap agents: {successful_ids}")
         if BOOTSTRAP_AGENT_ID not in self.agents:
              logger.critical(f"CRITICAL: Admin AI ('{BOOTSTRAP_AGENT_ID}') failed to initialize!")
+
+
+
+
+
+
+
+
+
 
     # --- Agent Creation Core Logic ---
     async def _create_agent_internal(
