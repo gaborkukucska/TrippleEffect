@@ -67,53 +67,42 @@ class AgentManager:
     Automatically creates a default project/session context on first user message if none exists.
     """
     def __init__(self, websocket_manager: Optional[Any] = None):
-        # --- Initialize State ---
+        # (Initialization code remains the same...)
         self.bootstrap_agents: List[str] = []
         self.agents: Dict[str, Agent] = {}
         self.send_to_ui_func = broadcast
-
-        # --- Initialize Core Components ---
         logger.info("Instantiating ToolExecutor...")
         self.tool_executor = ToolExecutor()
         logger.info("ToolExecutor instantiated.")
         self.tool_descriptions_xml = self.tool_executor.get_formatted_tool_descriptions_xml()
         logger.info("Generated XML tool descriptions for prompts.")
-
         logger.info("Instantiating AgentStateManager...")
         self.state_manager = AgentStateManager(self)
         logger.info("AgentStateManager instantiated.")
-
         logger.info("Instantiating SessionManager...")
         self.session_manager = SessionManager(self, self.state_manager)
         logger.info("SessionManager instantiated.")
-
-        # --- Instantiate Interaction Handler ---
         logger.info("Instantiating AgentInteractionHandler...")
-        self.interaction_handler = AgentInteractionHandler(self) # Pass self
+        self.interaction_handler = AgentInteractionHandler(self)
         logger.info("AgentInteractionHandler instantiated.")
-        # Flag dictionary for interaction handler to signal reactivation needs
         self.reactivate_agent_flags: Dict[str, bool] = {}
-
-        # --- Session Tracking ---
         self.current_project: Optional[str] = None
         self.current_session: Optional[str] = None
-
-        # --- Ensure Directories ---
         self._ensure_projects_dir()
-
         logger.info("AgentManager initialized synchronously. Bootstrap agents will be loaded asynchronously.")
 
+
     def _ensure_projects_dir(self):
-        """Ensures the base directory for projects exists."""
+        # (Code remains the same...)
         try:
              settings.PROJECTS_BASE_DIR.mkdir(parents=True, exist_ok=True)
              logger.info(f"Ensured projects directory exists at: {settings.PROJECTS_BASE_DIR}")
         except Exception as e:
              logger.error(f"Error creating projects directory at {settings.PROJECTS_BASE_DIR}: {e}", exc_info=True)
 
+
     async def initialize_bootstrap_agents(self):
-        """Loads bootstrap agents, constructing Admin AI prompt using utils."""
-        # (Code remains the same as previous correct version)
+        # (Code remains the same...)
         logger.info("Initializing bootstrap agents asynchronously...")
         agent_configs_list = settings.AGENT_CONFIGURATIONS
         if not agent_configs_list: logger.warning("No bootstrap agent configurations found."); return
@@ -174,6 +163,7 @@ class AgentManager:
         if BOOTSTRAP_AGENT_ID not in self.agents:
              logger.critical(f"CRITICAL: Admin AI ('{BOOTSTRAP_AGENT_ID}') failed to initialize!")
 
+
     async def _create_agent_internal(
         self,
         agent_id_requested: Optional[str],
@@ -182,8 +172,7 @@ class AgentManager:
         team_id: Optional[str] = None,
         loading_from_session: bool = False
         ) -> Tuple[bool, str, Optional[str]]:
-        """Internal core logic for creating agents. Constructs prompts using utils."""
-        # (Code remains the same as previous correct version)
+        # (Code remains the same...)
         agent_id: Optional[str] = None
         if agent_id_requested and agent_id_requested in self.agents: msg = f"Agent ID '{agent_id_requested}' already exists."; logger.error(msg); return False, msg, None
         elif agent_id_requested: agent_id = agent_id_requested
@@ -252,6 +241,7 @@ class AgentManager:
         message = f"Agent '{agent_id}' created successfully." + team_add_msg_suffix
         return True, message, agent_id
 
+
     async def create_agent_instance(
         self, agent_id_requested: Optional[str], provider: str, model: str, system_prompt: str, persona: str,
         team_id: Optional[str] = None, temperature: Optional[float] = None, **kwargs
@@ -268,12 +258,13 @@ class AgentManager:
         success, message, created_agent_id = await self._create_agent_internal(
             agent_id_requested=agent_id_requested, agent_config_data=agent_config_data, is_bootstrap=False, team_id=team_id, loading_from_session=False
         )
-        if success and created_agent_id: # Notify UI on success
+        if success and created_agent_id:
             agent = self.agents.get(created_agent_id); team = self.state_manager.get_agent_team(created_agent_id)
             config_ui = agent.agent_config.get("config", {}) if agent else {}
             await self.send_to_ui({"type": "agent_added", "agent_id": created_agent_id, "config": config_ui, "team": team})
             await self.push_agent_status_update(created_agent_id)
         return success, message, created_agent_id
+
 
     async def delete_agent_instance(self, agent_id: str) -> Tuple[bool, str]:
         """Removes dynamic agent, cleans up, updates state."""
@@ -290,6 +281,7 @@ class AgentManager:
         await self.send_to_ui({"type": "agent_deleted", "agent_id": agent_id})
         return True, message
 
+
     def _generate_unique_agent_id(self, prefix="agent") -> str:
         """Generates unique agent ID."""
         # (Code remains the same)
@@ -300,6 +292,7 @@ class AgentManager:
             if new_id not in self.agents: return new_id
             time.sleep(0.001)
             timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4]
+
 
     async def handle_user_message(self, message: str, client_id: Optional[str] = None):
         """
@@ -340,6 +333,7 @@ class AgentManager:
             logger.info(f"Admin AI busy ({admin_agent.status}). Message queued."); admin_agent.message_history.append({"role": "user", "content": message})
             await self.push_agent_status_update(admin_agent.agent_id); await self.send_to_ui({ "type": "status", "agent_id": admin_agent.agent_id, "content": f"Admin AI busy ({admin_agent.status}). Queued." })
 
+
     async def handle_user_override(self, override_data: Dict[str, Any]):
         """Handles user override for a stuck agent."""
         # (Code remains the same)
@@ -368,28 +362,27 @@ class AgentManager:
             logger.info(f"Override applied for '{agent_id}'. Restarting cycle.")
             agent.set_status(AGENT_STATUS_IDLE)
             await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Override applied. Retrying with {new_provider_name}/{new_model}."})
-            asyncio.create_task(self._handle_agent_generator(agent, 0)) # Restart with retry count 0
+            asyncio.create_task(self._handle_agent_generator(agent, 0))
         except Exception as e:
             logger.error(f"Error applying override for '{agent_id}': {e}", exc_info=True)
-            agent.provider_name = old_provider_name; agent.model = old_model; agent.llm_provider = old_provider_instance # Revert
+            agent.provider_name = old_provider_name; agent.model = old_model; agent.llm_provider = old_provider_instance
             if hasattr(agent, 'agent_config') and "config" in agent.agent_config: agent.agent_config["config"].update({"provider": old_provider_name, "model": old_model})
-            agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE) # Stay in override state
+            agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE)
             await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": f"Failed to apply override: {e}. Try again."})
 
+    # --- *** MODIFIED _handle_agent_generator *** ---
     async def _handle_agent_generator(self, agent: Agent, retry_count: int = 0):
         """
         Manages agent's process_message generator loop. Handles events, errors, retries,
-        and delegates tool execution/handling to AgentInteractionHandler.
-        Passes project/session context for tool execution.
-        Uses reactivate_agent_flags for reactivation signals.
+        delegates tool execution/handling, passes context, and handles reactivation.
         """
-        # (Code remains the same as previous version)
         agent_id = agent.agent_id
         logger.info(f"Starting generator handling for Agent '{agent_id}' (Retry: {retry_count}).")
         agent_generator: Optional[AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]] = None
         manager_action_feedback: List[Dict] = []
         current_cycle_error = False; is_stream_related_error = False; last_error_content = ""
         history_len_before = len(agent.message_history)
+        executed_tool_successfully_this_cycle = False # Track if any tool ran
 
         try:
             agent_generator = agent.process_message()
@@ -402,7 +395,7 @@ class AgentManager:
                 if event_type in ["response_chunk", "status", "final_response"]:
                     if "agent_id" not in event: event["agent_id"] = agent_id
                     await self.send_to_ui(event)
-                    if event_type == "final_response": # Append final assistant message to history
+                    if event_type == "final_response":
                         final_content = event.get("content")
                         if final_content and (not agent.message_history or agent.message_history[-1].get("content") != final_content or agent.message_history[-1].get("role") != "assistant"):
                              agent.message_history.append({"role": "assistant", "content": final_content})
@@ -410,10 +403,10 @@ class AgentManager:
                     last_error_content = event.get("content", "[Agent Error]")
                     logger.error(f"Agent '{agent_id}' reported error: {last_error_content}")
                     is_stream_related_error = any(ind in last_error_content for ind in ["Error processing stream", "APIError during stream", "decode stream chunk", "Stream connection", "Provider returned error", "connection/timeout", "Status 429", "RateLimitError", "Status 500", "Status 503"])
-                    if not is_stream_related_error: # Handle non-stream errors immediately
+                    if not is_stream_related_error:
                         if "agent_id" not in event: event["agent_id"] = agent_id
                         await self.send_to_ui(event); agent.set_status(AGENT_STATUS_ERROR)
-                    current_cycle_error = True; break # Break loop on any error
+                    current_cycle_error = True; break
                 elif event_type == "tool_requests":
                     all_tool_calls: List[Dict] = event.get("calls", [])
                     if not all_tool_calls: continue
@@ -437,6 +430,8 @@ class AgentManager:
                     calls_to_execute = mgmt_calls + other_calls
                     activation_tasks = []
                     manager_action_feedback = []
+                    # Reset flag for this batch of tool calls
+                    executed_tool_successfully_this_cycle = False
                     if calls_to_execute:
                         logger.info(f"Executing {len(calls_to_execute)} tool(s) sequentially for '{agent_id}'.")
                         await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Executing {len(calls_to_execute)} tool(s)..."})
@@ -452,6 +447,12 @@ class AgentManager:
                                 tool_msg: MessageDict = {"role": "tool", "tool_call_id": call_id, "content": str(raw_content_hist)}
                                 if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("tool_call_id") != call_id:
                                      agent.message_history.append(tool_msg)
+
+                                # Check if the tool execution itself was successful (not just returned something)
+                                # A simple check: assume success if content doesn't start with common error indicators
+                                tool_exec_success = not str(raw_content_hist).strip().startswith(("Error:", "[ToolExec Error:", "[Manager Error:"))
+                                if tool_exec_success:
+                                    executed_tool_successfully_this_cycle = True # Mark success
 
                                 raw_tool_output = result.get("_raw_result")
                                 if tool_name == ManageTeamTool.name:
@@ -486,7 +487,14 @@ class AgentManager:
                                  fb_msg: MessageDict = {"role": "tool", "tool_call_id": fb['call_id'], "content": fb_content}
                                  if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("content") != fb_content:
                                       agent.message_history.append(fb_msg); feedback_appended = True
-                             if feedback_appended: self.reactivate_agent_flags[agent_id] = True
+                             if feedback_appended: self.reactivate_agent_flags[agent_id] = True # Signal reactivation
+
+                        # --- ** NEW: Reactivate after successful standard tool calls ** ---
+                        if executed_tool_successfully_this_cycle and not manager_action_feedback:
+                             logger.debug(f"Successful standard tool execution detected for '{agent_id}'. Setting reactivation flag.")
+                             self.reactivate_agent_flags[agent_id] = True
+                        # --- ** END NEW ** ---
+
                 else: logger.warning(f"Unknown event type '{event_type}' from '{agent_id}'.")
 
         except Exception as e:
@@ -494,17 +502,9 @@ class AgentManager:
              last_error_content = f"[Manager Error: Unexpected error in generator handler - {e}]"
              await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": last_error_content})
         finally:
-            # --- Corrected Generator Cleanup ---
-            if agent_generator:
-                try:
-                    await agent_generator.aclose()
-                    logger.debug(f"Closed generator for '{agent_id}'.")
-                except Exception as close_err:
-                    logger.error(f"Error closing generator for '{agent_id}': {close_err}", exc_info=True)
-            # --- End Correction ---
+            if agent_generator: try: await agent_generator.aclose() except Exception as close_err: logger.error(f"Error closing generator for '{agent_id}': {close_err}", exc_info=True)
 
-            # --- Retry / Override / Reactivation Logic ---
-            # (Logic remains the same as previous correct version)
+            # --- Retry / Override / Reactivation Logic (Remains the same) ---
             if current_cycle_error and is_stream_related_error and retry_count < MAX_STREAM_RETRIES:
                 retry_delay = STREAM_RETRY_DELAYS[retry_count]; logger.warning(f"Stream error for '{agent_id}'. Retrying in {retry_delay:.1f}s ({retry_count + 1}/{MAX_STREAM_RETRIES})...")
                 await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Provider issue... Retrying (Attempt {retry_count + 1}/{MAX_STREAM_RETRIES}, delay {retry_delay}s)..."})
@@ -534,9 +534,9 @@ class AgentManager:
             log_level = logging.ERROR if agent.status in [AGENT_STATUS_ERROR, AGENT_STATUS_AWAITING_USER_OVERRIDE] else logging.INFO
             logger.log(log_level, f"Manager finished cycle for Agent '{agent_id}'. Final status: {agent.status}")
 
+    # --- Other methods remain the same ---
 
     async def push_agent_status_update(self, agent_id: str):
-        """Gets agent state and sends update to UI."""
         # (Code remains the same)
         agent = self.agents.get(agent_id)
         if agent: state = agent.get_state(); state["team"] = self.state_manager.get_agent_team(agent_id)
@@ -544,18 +544,15 @@ class AgentManager:
         await self.send_to_ui({"type": "agent_status_update", "agent_id": agent_id, "status": state})
 
     async def send_to_ui(self, message_data: Dict[str, Any]):
-        """Sends JSON data to UI via WebSocket broadcast."""
         # (Code remains the same)
         if not self.send_to_ui_func: logger.warning("UI broadcast func not set."); return
         try: await self.send_to_ui_func(json.dumps(message_data))
         except Exception as e: logger.error(f"Error sending to UI: {e}. Data: {message_data}", exc_info=True)
 
     def get_agent_status(self) -> Dict[str, Dict[str, Any]]:
-        """Gets snapshot of current agent statuses."""
         # (Code remains the same)
         return {aid: (ag.get_state() | {"team": self.state_manager.get_agent_team(aid)}) for aid, ag in self.agents.items()}
 
-    # --- Session Persistence (Delegated) ---
     async def save_session(self, project_name: str, session_name: Optional[str] = None) -> Tuple[bool, str]:
         # (Code remains the same)
         logger.info(f"Delegating save_session for '{project_name}'...")
@@ -566,9 +563,7 @@ class AgentManager:
         logger.info(f"Delegating load_session for '{project_name}/{session_name}'...")
         return await self.session_manager.load_session(project_name, session_name)
 
-    # --- Cleanup ---
     async def cleanup_providers(self):
-        """Closes sessions for unique active LLM providers."""
         # (Code remains the same)
         logger.info("Cleaning up LLM providers...");
         active_providers = {agent.llm_provider for agent in self.agents.values() if agent.llm_provider}
@@ -581,9 +576,7 @@ class AgentManager:
         try: await provider.close_session(); logger.info(f"Closed session for {provider!r}")
         except Exception as e: logger.error(f"Error closing session for {provider!r}: {e}", exc_info=True)
 
-    # --- Sync Helper for Listing Agents (Used by Interaction Handler) ---
     def get_agent_info_list_sync(self, filter_team_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Gets basic info list for agents, optionally filtered by team."""
         # (Code remains the same)
         info_list = []
         for agent_id, agent in self.agents.items():
