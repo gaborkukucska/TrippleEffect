@@ -1,7 +1,7 @@
 <!-- # START OF FILE helperfiles/PROJECT_PLAN.md -->
 # Project Plan: TrippleEffect
 
-**Version:** 2.11 <!-- Updated Version -->
+**Version:** 2.12 <!-- Updated Version -->
 **Date:** 2025-04-10 <!-- Updated Date -->
 
 ## 1. Project Goals
@@ -14,26 +14,28 @@
 *   Implement **session persistence**, capturing the state, histories, and **configurations of dynamically created agents** for reloading. *(Completed)*
 *   Utilize `config.yaml` primarily for bootstrapping the `Admin AI` and defining **allowed models/providers** for dynamic agent creation. *(Completed)*
 *   Implement **provider availability checks** based on `.env` configuration and **automatic retries with user override** for temporary stream errors. *(Completed)*
-*   Refactor core manager logic into `AgentManager`, `AgentStateManager`, `SessionManager`, **`AgentInteractionHandler`**, and utility modules (`prompt_utils`). *(Completed in Phase 11)*
+*   Refactor core manager logic into `AgentManager`, `AgentStateManager`, `SessionManager`, **`AgentInteractionHandler`**, **`AgentCycleHandler`**, and utility modules (`prompt_utils`). *(Completed in Phase 11)*
 *   Implement a **Human User Interface** that dynamically reflects the current agent/team structure (via WebSockets), manages Projects/Sessions, and allows user intervention on persistent errors (e.g., Provider/Model override). *(Completed)*
 *   Utilize the **XML-based tool calling mechanism** for all agent actions, supporting **sequential execution of multiple tool calls** within a single agent turn. *(Completed)*
 *   Allow agents to utilize tools within sandboxed environments (`scope: private`) or a **shared project workspace (`scope: shared`), passing necessary context.** *(Completed in Phase 11)*
-*   *(Future Goals)* Implement automatic project/session context setting on first interaction. Enhance Admin AI planning, resource management (agent limits), advanced collaboration patterns, dynamic provider management, GeUI, multi-modal inputs, voice control, **implicit Admin AI status updates**, **direct Admin AI sandbox access (read-only initially)**, **formal project/task management**, **database/vector store for shared project memory and Admin AI long-term memory**.
+*   Implement **automatic project/session context setting** on first interaction. *(Completed in Phase 11)*
+*   *(Future Goals)* Enhance Admin AI planning, resource management (agent limits), advanced collaboration patterns, dynamic provider management, GeUI, multi-modal inputs, voice control, **implicit Admin AI status updates**, **direct Admin AI sandbox access (read-only initially)**, **formal project/task management**, **database/vector store for shared project memory and Admin AI long-term memory**.
 
 ## 2. Scope
 
-**In Scope (Completed up to Phase 11 & Planned for Future):**
+**In Scope (Completed up to Phase 11):**
 
 *   **Core Backend:** FastAPI application, WebSocket management, asynchronous task handling. *(Completed)*
 *   **Agent Core:** Agent class definition, state management, **parsing multiple XML tool calls**. *(Completed)*
 *   **Admin AI Agent:** Primary user request handler, plans tasks, uses `ManageTeamTool` and `SendMessageTool`. Defined in `config.yaml`. *(Completed)*
-*   **Agent Manager (`AgentManager`):** Central orchestrator, manages agent lifecycle, **delegates tool execution/handling to InteractionHandler**, routes messages, handles errors/retries, uses State/Session managers. *(Refactored in P11)*
-*   **Agent Interaction Handler (`AgentInteractionHandler`):** Handles ManageTeam/SendMessage signals, executes tools **passing project/session context**. *(Created in P11)*
+*   **Agent Manager (`AgentManager`):** Central coordinator, manages agent lifecycle, **delegates execution cycle to CycleHandler**, manages project/session context, uses State/Session managers. *(Refactored in P11)*
+*   **Agent Cycle Handler (`AgentCycleHandler`):** Runs agent execution loop, handles events, retries/overrides (via Manager), tool execution (via InteractionHandler), reactivation logic. *(Created in P11)*
+*   **Agent Interaction Handler (`AgentInteractionHandler`):** Processes ManageTeam/SendMessage signals, executes tools **passing project/session context**. *(Created in P11)*
 *   **Agent Prompt Utils (`prompt_utils.py`):** Holds prompt constants and helpers. *(Created in P11)*
 *   **Agent State Manager (`AgentStateManager`):** Manages team structures and agent-to-team mappings *in memory*. *(Completed)*
 *   **Agent Session Manager (`SessionManager`):** Handles saving and loading of application state (dynamic agents, histories, teams) to/from JSON files. *(Completed)*
 *   **Dynamic Agent/Team Management:** In-memory CRUD via Admin AI and `AgentStateManager`. *(Completed)*
-*   **Tooling:** `BaseTool`, `ToolExecutor`, `FileSystemTool` (with shared scope fix), `SendMessageTool` (robust), `ManageTeamTool` (robust), `GitHubTool`, `WebSearchTool`. *(FileSystemTool fixed in P11)*
+*   **Tooling:** `BaseTool`, `ToolExecutor`, `FileSystemTool` (with shared scope fix), `SendMessageTool` (robust), `ManageTeamTool` (robust), `GitHubTool` (robust), `WebSearchTool`. *(Fixed/Enhanced in P11)*
 *   **Configuration (`config.yaml`):** Defines `admin_ai`, defines `allowed_sub_agent_models`. *(Completed)*
 *   **Settings (`settings.py`):** Loads bootstrap config, `allowed_sub_agent_models`, checks provider config. *(Completed)*
 *   **Session Persistence:** Saving/Loading full state including dynamic agent configs, histories, teams. *(Completed)*
@@ -48,10 +50,10 @@
 *   **LLM Integration:** OpenRouter, Ollama, OpenAI providers with stream error handling and retry/override. *(Completed)*
 *   **Helper Files:** Maintenance of `PROJECT_PLAN.md` and `FUNCTIONS_INDEX.md`. *(Ongoing)*
 *   **Logging:** Basic console and timestamped file logging. *(Completed)*
+*   **Automatic Context:** Default project/session context created on first user message. *(Completed in P11)*
 
-**Out of Scope (Deferred to Future Phases 11+):**
+**Out of Scope (Deferred to Future Phases 12+):**
 
-*   **(Phase 11 Goal):** Implement automatic project/session context setting on first interaction.
 *   Dynamic LLM Provider *Type* Management.
 *   **Advanced Collaboration:** Complex delegation, conflict resolution, hierarchy, synchronous operations.
 *   **Advanced Admin AI Intelligence:** Planning refinement based on failures, long-term memory (outside basic session state), **implicit state awareness via system updates**.
@@ -98,14 +100,15 @@ graph TD
     subgraph Backend
         FASTAPI["🚀 FastAPI Backend <br>+ Session API ✅<br>+ Project API ✅<br>+ Config API ✅"]
         WS_MANAGER["🔌 WebSocket Manager <br>+ Handles State Updates ✅<br>+ Handles Override Handling ✅"]
-        AGENT_MANAGER["🧑‍💼 Agent Manager <br>(Orchestrator)<br>+ Agent Create/Delete ✅<br>+ Handles Agent Generators ✅<br>+ Stream Error Retries/Override ✅<br>+ Injects Prompts (via Utils) ✅<br>+ Delegates to State/Session Mgrs ✅<br>+ **Delegates Interactions (Tool Exec, Msg Route) to InteractionHandler ✅** <br>+ Manages Shared Instance ✅<br>+ Tracks Project/Session ✅"]
-        INTERACTION_HANDLER["🤝 Interaction Handler<br>+ Processes ManageTeam Signals ✅<br>+ Routes Msgs (via State Mgr) ✅<br>+ Executes Tools (via Executor, **passes context**) ✅"]
+        AGENT_MANAGER["🧑‍💼 Agent Manager <br>(Coordinator)<br>+ Agent Create/Delete ✅<br>+ Injects Prompts (via Utils) ✅<br>+ Delegates to State/Session Mgrs ✅<br>+ **Delegates Cycle Execution to CycleHandler ✅** <br>+ Manages Shared Instance ✅<br>+ **Tracks & Sets Default Project/Session ✅**"]
+        CYCLE_HANDLER["🔄 Agent Cycle Handler<br>+ Runs Agent.process_message Loop ✅<br>+ Handles Events (Chunk, Final, Error) ✅<br>+ Handles Retries/Override Requests (via Mgr) ✅<br>+ Delegates Tool Exec (via InteractionHandler) ✅<br>+ Handles Reactivation Logic ✅"]
+        INTERACTION_HANDLER["🤝 Interaction Handler<br>+ Processes ManageTeam Signals ✅<br>+ Routes Msgs (via State Mgr) ✅<br>+ Executes Tools (via Executor, passes context) ✅"]
         STATE_MANAGER["📝 AgentStateManager <br>(Manages Teams State) ✅"]
         SESSION_MANAGER["💾 SessionManager <br>(Handles Save/Load Logic) ✅<br>(Logs Save/Load Details) ✅"]
 
         subgraph Agents ["Bootstrap & Dynamic Agents"]
             direction LR
-             ADMIN_AI["🤖 Admin AI Agent <br>(Loaded from Config)<br>Receives Allowed Models ✅<br>Receives Standard Instr ✅<br>Uses ManageTeamTool<br>Uses SendMessageTool"]
+             ADMIN_AI["🤖 Admin AI Agent <br>(Loaded from Config)<br>Receives Allowed Models ✅<br>Receives Combined Prompt ✅"]
             DYNAMIC_AGENT_1["🤖 Dynamic Agent 1<br>(Created by Manager)<br>Receives Injected Prompt ✅<br>Uses Tools, Reports Back ✅"]
             DYNAMIC_AGENT_N["🤖 Dynamic Agent N<br>(Created by Manager)"]
         end
@@ -117,11 +120,11 @@ graph TD
          end
 
          subgraph Tools
-             TOOL_EXECUTOR["🛠️ Tool Executor<br>+ XML Desc Gen ✅<br>+ **Receives Project/Session Context ✅**"]
-             TOOL_FS["📄 FileSystem Tool ✅<br>+ **Uses Context for Shared Scope ✅**"]
+             TOOL_EXECUTOR["🛠️ Tool Executor<br>+ XML Desc Gen ✅<br>+ Receives Project/Session Context ✅"]
+             TOOL_FS["📄 FileSystem Tool ✅<br>+ Uses Context for Shared Scope ✅"]
              TOOL_SENDMSG["🗣️ SendMessageTool ✅<br>Signals InteractionHandler"]
              TOOL_MANAGE_TEAM["🛠️ ManageTeamTool ✅<br>Signals InteractionHandler"]
-             TOOL_GITHUB["🐙 GitHub Tool ✅"]
+             TOOL_GITHUB["🐙 GitHub Tool ✅<br>+ User/Auth Endpoint Logic ✅"]
              TOOL_WEBSEARCH["🌐 Web Search Tool ✅"]
          end
 
@@ -143,57 +146,52 @@ graph TD
     Frontend -- HTTP (API Calls, Session Mgmt, Config) --> FASTAPI;
     Frontend -- WebSocket (Receives updates, Sends Msgs/Overrides) --> WS_MANAGER;
 
-    FASTAPI -- Manages --> AGENT_MANAGER; # App startup context via app.state
-    FASTAPI -- "Gets Manager via Depends()" --> AGENT_MANAGER; # Route dependency
+    FASTAPI -- Manages --> AGENT_MANAGER;
+    FASTAPI -- "Gets Manager via Depends()" --> AGENT_MANAGER;
 
     WS_MANAGER -- Forwards Msgs / Sends UI Updates / Requests Override --> Frontend;
-    WS_MANAGER -- Forwards User Msgs & Overrides --> AGENT_MANAGER; # Uses shared instance
+    WS_MANAGER -- Forwards User Msgs & Overrides --> AGENT_MANAGER;
 
-    AGENT_MANAGER -- "Loads Bootstrap Agent(s)" --> CONFIG_YAML;
-    AGENT_MANAGER -- "Uses Settings For Checks" --> DOT_ENV; # Via Settings
-    AGENT_MANAGER -- "Instantiates/Reuses/Cleans" --> LLM_Providers;
-    AGENT_MANAGER -- "Creates/Deletes/Manages Instances" --> Agents;
+    AGENT_MANAGER -- Instantiates/Uses --> LLM_Providers;
+    AGENT_MANAGER -- Creates/Deletes/Manages Instances --> Agents;
     AGENT_MANAGER -- "Injects Standard Context into Prompts" --> Agents; # Using prompt_utils
     AGENT_MANAGER -- Delegates State Ops --> STATE_MANAGER;
     AGENT_MANAGER -- Delegates Session Ops --> SESSION_MANAGER;
-    AGENT_MANAGER -- Handles User Override --> Agents;
-    AGENT_MANAGER -- "Handles Tool Call Event from Generator" --> INTERACTION_HANDLER;
-    AGENT_MANAGER -- "Passes Project/Session Context" --> INTERACTION_HANDLER;
+    AGENT_MANAGER -- Handles User Override --> CYCLE_HANDLER; # Schedules retry
+    AGENT_MANAGER -- Instantiates --> CYCLE_HANDLER;
     AGENT_MANAGER -- Instantiates --> INTERACTION_HANDLER;
+    AGENT_MANAGER -- "Schedules Agent Cycle" --> CYCLE_HANDLER;
 
-    INTERACTION_HANDLER -- "Uses AgentManager for agent ops" --> AGENT_MANAGER;
-    INTERACTION_HANDLER -- "Uses StateManager for checks" --> STATE_MANAGER;
-    INTERACTION_HANDLER -- "Calls Tool Executor" --> TOOL_EXECUTOR;
-    INTERACTION_HANDLER -- Routes Tool Results Back --> AGENT_MANAGER; # Via feedback mechanism
+    CYCLE_HANDLER -- Uses --> AGENT_MANAGER; # For state, UI updates, override req
+    CYCLE_HANDLER -- Uses --> INTERACTION_HANDLER; # To execute tools
+    CYCLE_HANDLER -- Runs --> Agents; # Calls agent.process_message
 
-    STATE_MANAGER -- Manages --> "[Team State Dictionaries]"; # Conceptual State
-    SESSION_MANAGER -- Uses --> STATE_MANAGER; # To get/set state
-    SESSION_MANAGER -- Uses --> AGENT_MANAGER; # To get agent configs/histories
+    INTERACTION_HANDLER -- Uses --> AGENT_MANAGER; # For agent ops, state
+    INTERACTION_HANDLER -- Uses --> STATE_MANAGER; # For checks
+    INTERACTION_HANDLER -- Uses --> TOOL_EXECUTOR; # Calls execute_tool
+
+    STATE_MANAGER -- Manages --> "[Team State Dictionaries]";
+    SESSION_MANAGER -- Uses --> STATE_MANAGER;
+    SESSION_MANAGER -- Uses --> AGENT_MANAGER;
     SESSION_MANAGER -- Reads/Writes --> PROJECT_SESSIONS;
 
-    ADMIN_AI -- "Uses Tools" --> INTERACTION_HANDLER; # Via manager
+    ADMIN_AI -- "Uses Tools" --> CYCLE_HANDLER; # Via manager scheduling
     ADMIN_AI -- "Uses Provider" --> LLM_Providers;
-    ADMIN_AI -- "Streams Text" --> AGENT_MANAGER;
+    ADMIN_AI -- "Streams Text" --> CYCLE_HANDLER; # Runs generator
 
-    DYNAMIC_AGENT_1 -- "Uses Tools based on Injected Info" --> INTERACTION_HANDLER; # Via manager
+    DYNAMIC_AGENT_1 -- "Uses Tools" --> CYCLE_HANDLER; # Via manager scheduling
     DYNAMIC_AGENT_1 -- "Uses Provider" --> LLM_Providers;
-    DYNAMIC_AGENT_1 -- "Streams Text" --> AGENT_MANAGER;
-    DYNAMIC_AGENT_1 -- "Sends Result Message" --> TOOL_SENDMSG; # Signals handler
+    DYNAMIC_AGENT_1 -- "Streams Text" --> CYCLE_HANDLER; # Runs generator
 
-    TOOL_EXECUTOR -- Executes --> TOOL_FS;
-    TOOL_EXECUTOR -- Executes --> TOOL_SENDMSG;
-    TOOL_EXECUTOR -- Executes --> TOOL_MANAGE_TEAM;
-    TOOL_EXECUTOR -- Executes --> TOOL_GITHUB;
-    TOOL_EXECUTOR -- Executes --> TOOL_WEBSEARCH;
+    TOOL_EXECUTOR -- Executes --> Tools;
 
     TOOL_FS -- Reads/Writes --> SANDBOXES;
-    TOOL_FS -- Reads/Writes --> SHARED_WORKSPACE; # Uses project/session context
+    TOOL_FS -- Reads/Writes --> SHARED_WORKSPACE;
 
     PROVIDER_OR -- Interacts --> LLM_API_SVC;
     PROVIDER_OLLAMA -- Interacts --> OLLAMA_SVC;
     PROVIDER_OPENAI -- Interacts --> LLM_API_SVC;
 
-    %% Logging Connection - Conceptual
     Backend -- "Writes Logs" --> LOG_FILES;
 
 ```
@@ -203,34 +201,37 @@ graph TD
 **Phase 1-10 (Completed)**
 *   [X] Core Backend, Agent Core, Multi-Agent Basics, Config Loading, Sandboxing, Basic Tools, LLM Abstraction, UI Enhancements, XML Tool Calling, Static Agent Config UI, Dynamic Agent Management V2 & Refactoring, Provider Error Handling, Session Persistence Logic, UI State/Session Management, Basic Logging.
 
-**Phase 11: Agent Manager Refactoring & Context Fix (Current / Mostly Completed)**
-*   **Goal:** Refactor the large `AgentManager` into smaller, focused components (`InteractionHandler`, `prompt_utils`). Fix the passing of project/session context to tools (specifically `FileSystemTool` for shared scope). Refine Admin AI cleanup instructions.
+**Phase 11: Agent Manager Refactoring & Core Fixes (Completed)**
+*   **Goal:** Refactor the `AgentManager`, fix project/session context passing, ensure basic tool reactivation, fix GitHub tool endpoint logic, refine Admin AI prompts.
 *   [X] **Refactoring:**
-    *   [X] Created `src/agents/prompt_utils.py` and moved prompt constants/helpers.
-    *   [X] Created `src/agents/interaction_handler.py` and moved tool execution/handling logic.
-    *   [X] Updated `src/agents/manager.py` to delegate interactions and use utils.
-*   [X] **Context Fix:**
-    *   [X] Modified `AgentInteractionHandler.execute_single_tool` to accept and pass context.
-    *   [X] Modified `ToolExecutor.execute_tool` to accept and pass context to `BaseTool.execute`.
-    *   [X] Modified `BaseTool.execute` signature to include context parameters.
-    *   [X] Modified `FileSystemTool.execute` to use context for shared scope path.
-    *   [X] Modified `AgentManager._handle_agent_generator` to pass `current_project`/`current_session` to the interaction handler.
+    *   [X] Created `src/agents/prompt_utils.py`.
+    *   [X] Created `src/agents/interaction_handler.py`.
+    *   [X] Created `src/agents/cycle_handler.py`.
+    *   [X] Updated `src/agents/manager.py` to delegate cycle execution.
+*   [X] **Context & File System Fixes:**
+    *   [X] Ensured project/session context passed to tools (`InteractionHandler`, `ToolExecutor`, `BaseTool`, `FileSystemTool`).
+    *   [X] Implemented automatic default project/session context setting in `AgentManager.handle_user_message`.
+*   [X] **Tool Reactivation:** Added logic in `AgentCycleHandler` to reactivate agent after successful standard tool execution.
+*   [X] **GitHub Tool Fix:** Corrected endpoint logic in `GitHubTool.execute` for `list_repos`.
 *   [X] **Prompt Refinement:**
-    *   [X] Updated `ADMIN_AI_OPERATIONAL_INSTRUCTIONS` in `prompt_utils.py` for clearer `delete_agent` instructions.
+    *   [X] Updated `ADMIN_AI_OPERATIONAL_INSTRUCTIONS` for clearer `delete_agent` and delegation instructions, integrated tool list.
+    *   [X] Simplified Admin AI prompt assembly in `AgentManager`.
 *   [X] **Helper File Updates:**
     *   [X] Updated `FUNCTIONS_INDEX.md`.
     *   [X] Updated `PROJECT_PLAN.md`.
-*   [ ] **Next Step:** Implement automatic project/session context setting on first user interaction in `AgentManager.handle_user_message`.
 
-**Phase 12: Auto Context & UI/UX Refinements (Next)**
-*   **Goal:** Implement auto-setting of project/session context. Fix remaining UI quirks (chat scroll, log display). Refine Admin AI prompts based on observed errors. Potentially add basic auth.
-*   [ ] **Auto Context:** Modify `AgentManager.handle_user_message` to create/save a default project/session on first message if context is `None`.
+**Phase 12: UI/UX Refinements & Testing (Next)**
+*   **Goal:** Fix remaining UI quirks (chat scroll, log display). Test core workflows (delegation, file saving, communication, cleanup). Address any observed LLM prompt adherence issues. Potentially add basic auth.
 *   [ ] **UI Fixes:**
     *   [ ] Fix chat area scrolling in `style.css`.
-    *   [ ] Add handlers for remaining WS message types (`team_created`, `team_deleted`, `agent_moved_team`) in `app.js` to show informative logs instead of raw data errors.
-*   [ ] **Admin AI Prompt Tuning:** Review `admin_ai` prompt usage after recent changes, particularly cleanup steps.
+    *   [ ] Add handlers for remaining WS message types (`team_created`, `team_deleted`, `agent_moved_team`, `system_event`) in `app.js` to show informative logs/messages instead of raw data errors.
+*   [ ] **Workflow Testing:**
+    *   [ ] Test Snake Game creation (delegation, multi-file save to shared, reporting).
+    *   [ ] Test GitHub Repo Listing (delegation, tool use, reporting).
+    *   [ ] Test basic multi-agent communication (e.g., Request -> Response).
+    *   [ ] Test Admin AI cleanup logic (using correct IDs).
+*   [ ] **Admin AI Prompt Tuning:** Review Admin AI behavior during tests and refine prompts in `prompt_utils.py` or `config.yaml` if needed for better delegation/cleanup adherence.
 *   [ ] **Basic Authentication:** Implement simple API key or basic auth protection for API/WebSocket. *(Stretch goal)*
-*   [ ] **Workflow Testing:** Perform end-to-end tests of collaborative tasks involving shared file scope.
 *   [ ] **Error Handling:** Review error messages sent to UI for clarity.
 
 **Future Phases (13+) (High-Level)**
@@ -238,4 +239,4 @@ graph TD
 *   **Phase 14: Formal Project Management & Knowledge Base.** (Project/Task structure, DB/Vector Store integration, agent KB tools).
 *   **Phase 15+:** Resource Management, Advanced Collaboration (Hierarchy, Conflict Resolution), Multi-Team Projects, GeUI, Advanced I/O, etc.
 
-**Phase 17: Create Project Plan for Next Iteration:** Re-evaluate and plan.
+**Phase 18: Create Project Plan for Next Iteration:** Re-evaluate and plan.
