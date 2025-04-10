@@ -56,6 +56,8 @@ STREAM_RETRY_DELAYS = [5.0, 10.0, 10.0, 65.0] # New retry delays
 MAX_STREAM_RETRIES = len(STREAM_RETRY_DELAYS) # Max retries based on delay list length
 
 # --- Generic Standard Instructions for ALL Dynamic Agents ---
+# These instructions are injected by the framework (_create_agent_internal)
+# into the system prompt of every dynamically created agent.
 STANDARD_FRAMEWORK_INSTRUCTIONS = """
 
 --- Standard Tool & Communication Protocol ---
@@ -75,7 +77,11 @@ Your Assigned Team ID: `{team_id}`
 - **CRITICAL: Report Results:** When you complete a task assigned by the Admin AI or another agent, your **FINAL action MUST** be to use the `<send_message>` tool to send your results (e.g., generated code, analysis summary, file path/content, or confirmation) back to the **requesting agent** (usually `admin_ai`). Failure to report back will stall the process.
 
 **File System:**
-- Use the `<file_system>` tool with the appropriate `scope` ('private' or 'shared') to read/write/list files. All paths are relative to the scope's root. If you write a file, you **must** still report completion and the filename/path back to the requester using `send_message`.
+- Use the `<file_system>` tool with the appropriate `scope` ('private' or 'shared') as instructed by the Admin AI. The `scope` determines where the file operation takes place.
+- **`scope: private`**: Your personal sandbox. Use this for temporary files or work specific only to you. Path is relative to your agent's private directory.
+- **`scope: shared`**: The shared workspace for the current project/session. Use this if the file needs to be accessed by other agents or the user. Path is relative to the session's shared directory.
+- All paths provided (e.g., in `filename` or `path`) MUST be relative within the specified scope.
+- If you write a file, you **must** still report completion, the filename/path, and **the scope used** (`private` or `shared`) back to the requester using `send_message`.
 
 **Task Management:**
 - If you receive a complex task, break it down logically. Execute the steps sequentially. Report progress clearly on significant sub-steps or if you encounter issues using `send_message`.
@@ -83,6 +89,8 @@ Your Assigned Team ID: `{team_id}`
 """
 
 # --- Specific Operational Instructions for Admin AI (with ID/Team info) ---
+# These instructions are injected by the framework (initialize_bootstrap_agents)
+# into the system prompt of the Admin AI, combined with its config.yaml prompt.
 ADMIN_AI_OPERATIONAL_INSTRUCTIONS = """
 
 --- Admin AI Core Operational Workflow ---
@@ -97,24 +105,26 @@ ADMIN_AI_OPERATIONAL_INSTRUCTIONS = """
 1.  **Analyze User Request:** (Handled by your primary persona prompt from config). Ask clarifying questions if needed.
 1.5 **Answer Direct Questions:** (Handled by your primary persona prompt from config). Offer to create a team for complex tasks. Do not generate code examples yourself.
 2.  **Plan Agent Team & Initial Tasks:** Determine roles, specific instructions, team structure. Define initial high-level tasks. **Delegate aggressively.**
+    *   **File Saving Scope Planning:** When defining agent instructions (`system_prompt` for `create_agent`), explicitly decide if the final output file should be `private` (agent's own sandbox) or `shared` (project session workspace). Instruct the agent accordingly to use the correct `scope` parameter with the `file_system` tool (e.g., "...save the final report using `file_system` with `scope: shared` and filename `report.md`..."). Shared scope is generally preferred for final deliverables.
 3.  **Execute Structured Delegation Plan:** Follow precisely:
     *   **(a) Check State:** Use `ManageTeamTool` (`list_teams`, `list_agents`). Get existing agent IDs if needed.
     *   **(b) Create Team(s):** Use `ManageTeamTool` (`action: create_team`).
-    *   **(c) Create Agents Sequentially:** Use `ManageTeamTool` (`action: create_agent`). Specify `provider`, `model`, `persona`, role-specific `system_prompt`, `team_id`. Ensure the agent's `system_prompt` instructs it to report back to you (`admin_ai`) via `send_message`. **Wait** for feedback with `created_agent_id`. Store IDs.
+    *   **(c) Create Agents Sequentially:** Use `ManageTeamTool` (`action: create_agent`). Specify `provider`, `model`, `persona`, role-specific `system_prompt` (including file scope instructions), `team_id`. Ensure the agent's `system_prompt` instructs it to report back to you (`admin_ai`) via `send_message`. **Wait** for feedback with `created_agent_id`. Store IDs.
     *   **(d) Kick-off Tasks:** Use `send_message` targeting the correct `created_agent_id`. **Explicitly state where input data is** (e.g., "Use the research report provided by agent [ID]" or "Use the code in this message"). Reiterate the need to report back to `admin_ai` via `send_message`.
 4.  **Coordinate & Monitor:**
     *   Monitor incoming messages.
     *   **If an agent needs information from another agent's output that you have received, relay the relevant information explicitly** using `send_message` if your plan requires it.
     *   Provide clarification if agents are stuck.
-    *   **Do NOT perform agents' tasks.** Ask agents for file content via `send_message` if they only provide a path. Use *your* `file_system` only as a last resort.
-5.  **Synthesize & Report to User:** Compile final results for the human user.
+    *   **Do NOT perform agents' tasks.** If an agent reports saving a file, ask them for the content and the scope (`private` or `shared`) via `send_message`. Use *your* `file_system` tool only as a last resort, specifying the correct scope and exact path.
+5.  **Synthesize & Report to User:** Compile final results. Clearly state where final files were saved (e.g., "The report 'final_summary.md' is saved in the shared workspace for this session.").
 6.  **Clean Up:** After delivering the final result:
-    *   **(a) Identify Agents/Teams:** Use `ManageTeamTool` (`action: list_agents`) if necessary to get exact `agent_id`s.
-    *   **(b) Delete Agents:** Use `ManageTeamTool` (`action: delete_agent`) with the **specific `agent_id`** for each dynamic agent.
-    *   **(c) Delete Team(s):** Use `ManageTeamTool` (`action: delete_team`) with the `team_id` *after* agents are deleted.
+    *   **(a) Identify Agents/Teams:** Use `ManageTeamTool` with `action: list_agents` to get the **exact `agent_id` values** (e.g., `agent_17..._xyz`) of all dynamic agents created for the task. Store these IDs accurately.
+    *   **(b) Delete Agents:** Delete **each dynamic agent individually** using `ManageTeamTool` with `action: delete_agent` and the **specific `agent_id` obtained in step (a) or from creation feedback.** **CRITICAL: You MUST provide the specific ID (like `agent_17..._xyz`) in the `agent_id` parameter. DO NOT use the agent's persona name.** Failure to use the correct ID will result in an error.
+    *   **(c) Delete Team(s):** Once ALL agents in a team are confirmed deleted (check with `list_agents` if needed), delete the team using `ManageTeamTool` with `action: delete_team` and the correct `team_id`. **Ensure the team is empty before attempting deletion.**
 
 **Tool Usage Reminders:**
-*   Use exact `agent_id`s (not personas) for `send_message` and `delete_agent`.
+*   Use exact `agent_id`s (not personas) for `send_message` and **especially for `delete_agent`**.
+*   Instruct agents clearly on whether to use `scope: private` or `scope: shared` for the `file_system` tool based on your plan.
 *   Check the standard tool descriptions provided separately for details on `file_system`, `web_search`, `github_tool`.
 --- End Admin AI Core Operational Workflow ---
 """
@@ -213,25 +223,27 @@ class AgentManager:
                 logger.error(f"--- Cannot initialize bootstrap agent '{agent_id}': Provider '{provider_name}' is not configured in .env. Skipping. ---")
                 continue
 
-            # --- (The STANDARD_FRAMEWORK_INSTRUCTIONS constant and AgentManager class remain the same) ---# --- *** MODIFIED Admin AI Prompt Injection *** ---
+            # --- (The STANDARD_FRAMEWORK_INSTRUCTIONS constant and AgentManager class remain the same) ---
+            # *** CONSTRUCT ADMIN AI PROMPT ***
             if agent_id == BOOTSTRAP_AGENT_ID:
-                # Get the user-defined part from config.yaml
+                # The final prompt combines:
+                # 1. User-defined persona/goal (from config.yaml)
                 user_defined_prompt = agent_config_data.get("system_prompt", "")
-                # Create a copy to avoid modifying the original settings dict
+                # 1.5 Create a copy to avoid modifying the original settings dict
                 agent_config_data = agent_config_data.copy()
-                # Prepare the parts to be injected
+                # 2. Specific operational workflow (ADMIN_AI_OPERATIONAL_INSTRUCTIONS constant)
                 admin_operational_info = ADMIN_AI_OPERATIONAL_INSTRUCTIONS # Get the new constant
-                # Format the generic part just with tools for AdminAI
+                # 3. Generic tool descriptions (derived from STANDARD_FRAMEWORK_INSTRUCTIONS constant)
                 admin_standard_info_part = generic_standard_info # Use the pre-formatted generic part
-                # Combine: User Prompt + Operational Workflow + Generic Tool Info + Allowed Models
+                # 4. Allowed models list for dynamic agents (from settings)
                 agent_config_data["system_prompt"] = (
                     f"--- Primary Goal/Persona ---\n{user_defined_prompt}\n\n"
                     f"{admin_operational_info}\n\n" # Add the operational workflow
                     f"{admin_standard_info_part}\n\n" # Add the generic tool descriptions part
                     f"---\n{formatted_allowed_models}\n---" # Add allowed models separately at the end
                 )
-                logger.info(f"Combined user prompt, operational instructions, standard instructions, and allowed models for '{BOOTSTRAP_AGENT_ID}' system prompt.")
-            # --- *** END MODIFIED Injection *** ---
+                logger.info(f"Assembled final prompt for '{BOOTSTRAP_AGENT_ID}': Combined config.yaml prompt + Operational Instructions + Tool Descriptions + Allowed Models.")
+            # --- *** END Injection *** ---
 
             # Create an async task for agent creation
             tasks.append(self._create_agent_internal(
@@ -279,15 +291,6 @@ class AgentManager:
         logger.info(f"Finished async bootstrap agent initialization. Active bootstrap agents: {successful_ids}")
         if BOOTSTRAP_AGENT_ID not in self.agents:
              logger.critical(f"CRITICAL: Admin AI ('{BOOTSTRAP_AGENT_ID}') failed to initialize!")
-
-
-
-
-
-
-
-
-
 
     # --- Agent Creation Core Logic ---
     async def _create_agent_internal(
@@ -369,16 +372,22 @@ class AgentManager:
         # 5. Construct Final System Prompt
         final_system_prompt = role_specific_prompt # Start with the provided role-specific part
 
-        # Inject standard instructions ONLY for dynamic agents NOT being loaded from session
+        # *** DYNAMIC AGENT PROMPT ASSEMBLY ***
+        # Inject standard framework instructions ONLY for dynamic agents NOT being loaded from session
         if not loading_from_session and not is_bootstrap:
+             logger.debug(f"Constructing final prompt for dynamic agent '{agent_id}'...")
+             # Format the STANDARD_FRAMEWORK_INSTRUCTIONS with this agent's details
              standard_info = STANDARD_FRAMEWORK_INSTRUCTIONS.format(
                  agent_id=agent_id,
                  team_id=team_id or "N/A", # Show N/A if no team initially
                  tool_descriptions_xml=self.tool_descriptions_xml
              )
-             # Prepend standard instructions to the role-specific prompt
+             # Prepend standard instructions to the role-specific prompt provided by Admin AI
+             # The Admin AI provides the part describing the agent's specific task/role.
+             # The framework provides the standard capabilities (tools, comms, file system scopes).
              final_system_prompt = standard_info + "\n\n--- Your Specific Role & Task ---\n" + role_specific_prompt
              logger.debug(f"Injected standard framework instructions for dynamic agent '{agent_id}'.")
+            # *** END DYNAMIC AGENT PROMPT ASSEMBLY ***
         elif loading_from_session:
              # Use the prompt exactly as loaded from session data
              final_system_prompt = agent_config_data.get("system_prompt", role_specific_prompt) # Should exist in loaded data
@@ -557,7 +566,6 @@ class AgentManager:
             time.sleep(0.001)
             timestamp = int(time.time() * 1000)
             short_uuid = uuid.uuid4().hex[:4]
-
 
     # --- Message Handling ---
     async def handle_user_message(self, message: str, client_id: Optional[str] = None):
@@ -1183,16 +1191,18 @@ class AgentManager:
         raw_result: Optional[Any] = None
         result_content: str = "[Tool Execution Error: Unknown]"
         try:
-            logger.debug(f"Executing tool '{tool_name}' (ID: {call_id}) for '{agent.agent_id}'")
-            # Call the executor, which handles validation and execution
+            logger.debug(f"Executing tool '{tool_name}' (ID: {call_id}) for '{agent.agent_id}' with context Project: {project_name}, Session: {session_name}")
+            # --- Pass context arguments to executor ---
             raw_result = await self.tool_executor.execute_tool(
                 agent.agent_id,
                 agent.sandbox_path,
                 tool_name,
-                tool_args
+                tool_args,
+                project_name=project_name, # Pass context
+                session_name=session_name  # Pass context
             )
             logger.debug(f"Tool '{tool_name}' completed execution.")
-
+            # --- END Context Passing ---
             # Format result for history: ManageTeamTool returns dict, others return string
             if tool_name == ManageTeamTool.name:
                 result_content = raw_result.get("message", str(raw_result)) # Use message or stringify dict
