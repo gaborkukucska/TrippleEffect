@@ -2,34 +2,32 @@
 # Configuration for TrippleEffect Bootstrap Agents.
 
 # This file defines essential bootstrap agents (like Admin AI).
-# Dynamic agents are created in memory by the Admin AI via the ManageTeamTool.
-# Available models for dynamic agents are now discovered automatically based on
-# configured providers (.env) and the MODEL_TIER environment variable.
+# The framework will automatically discover reachable providers and available models
+# at startup based on your .env configuration and the MODEL_TIER setting.
 
-# --- Allowed Sub Agent Models (DEPRECATED - REMOVED) ---
-# This section is no longer used. Model availability is determined dynamically.
+# --- Automatic Model Selection Notes ---
+# - Admin AI: If provider/model below are commented out or invalid, the framework
+#   will attempt to select the best available model automatically based on a
+#   preferred list (see agent_manager.py) and discovered models. Check startup
+#   logs to see which model was selected.
+# - Dynamic Agents: Created agents use models validated against the discovered list.
 
 # --- Bootstrap Agent Configurations ---
 agents:
   - agent_id: "admin_ai" # The central coordinator agent
     config:
-      # --- Select the PROVIDER and specific MODEL for the Admin AI ---
-      # Ensure this provider is configured in .env
-      # Ensure this model is suitable for complex planning and orchestration.
-      # Example using OpenRouter (ensure OPENROUTER_API_KEY is set in .env):
-      provider: "openrouter"
-      model: "google/gemini-flash-1.5:free" # Or another capable model like "anthropic/claude-3-opus" etc.
+      # --- Provider & Model (Optional Override) ---
+      # If you want to FORCE Admin AI to use a specific provider/model,
+      # uncomment and set these lines. Ensure the provider is configured
+      # in .env and the model is available/discoverable.
+      # Otherwise, leave commented out for automatic selection.
+      # provider: "openrouter"
+      # model: "google/gemini-flash-1.5:free"
 
-      # Example using Ollama (ensure OLLAMA_BASE_URL is set and server is running):
-      # provider: "ollama"
-      # model: "llama3" # Or your preferred local planning model
-
-      # Example using OpenAI (ensure OPENAI_API_KEY is set):
-      # provider: "openai"
-      # model: "gpt-4o"
-
+      # --- Admin AI Persona & Instructions ---
       # Define the high-level goal/persona here.
-      # The detailed operational workflow, tool usage, and AVAILABLE model list are injected by the framework (AgentManager).
+      # The detailed operational workflow, tool usage, and the list of *actually available*
+      # models will be automatically injected into the prompt by the framework.
       system_prompt: |
         You are the Admin AI, the central coordinator and **primary user interface** for the TrippleEffect multi-agent system.
         Your primary function is to understand user requests, devise a plan involving a team of specialized agents, create those agents *using only the available models listed below*, delegate tasks to them, monitor their progress, synthesize their results, and report the final outcome to the user.
@@ -37,13 +35,13 @@ agents:
         Delegate tasks aggressively; do not perform research, writing, coding, etc., yourself.
         Follow the structured workflow and tool usage protocols provided by the framework.
       temperature: 0.6 # Balanced temperature for planning and control
-      persona: "Admin AI (@admin_ai)"
+      persona: "Admin AI (@admin_ai)" # Display name
 
   # --- Add more bootstrap agents here if needed ---
-  # Example: A Monitoring Agent (though this might be better as a dynamic agent)
-  # - agent_id: "monitor_agent"
+  # Example:
+  # - agent_id: "backup_monitor"
   #   config:
-  #     provider: "ollama"
-  #     model: "mistral"
-  #     system_prompt: "You monitor agent activity and report anomalies."
-  #     persona: "Monitor (@monitor)"
+  #     provider: "ollama" # Specify provider/model if auto-select isn't desired
+  #     model: "tinyllama"
+  #     system_prompt: "You periodically check system status."
+  #     persona: "Backup Monitor (@monitor)"
