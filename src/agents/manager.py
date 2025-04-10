@@ -113,6 +113,7 @@ class AgentManager:
 
     async def initialize_bootstrap_agents(self):
         """Loads bootstrap agents, constructing Admin AI prompt using utils."""
+        # (Code remains the same as previous correct version)
         logger.info("Initializing bootstrap agents asynchronously...")
         agent_configs_list = settings.AGENT_CONFIGURATIONS
         if not agent_configs_list: logger.warning("No bootstrap agent configurations found."); return
@@ -124,9 +125,6 @@ class AgentManager:
         tasks = []
         formatted_allowed_models = settings.get_formatted_allowed_models()
 
-        # --- Simplified Admin AI Prompt Assembly ---
-        # tool_descriptions_xml is already generated in __init__
-
         for agent_conf_entry in agent_configs_list:
             agent_id = agent_conf_entry.get("agent_id")
             if not agent_id: logger.warning("Skipping bootstrap agent due to missing 'agent_id'."); continue
@@ -136,24 +134,20 @@ class AgentManager:
             if not settings.is_provider_configured(provider_name):
                 logger.error(f"Cannot initialize '{agent_id}': Provider '{provider_name}' not configured. Skipping."); continue
 
-            # Create mutable copy
             final_agent_config_data = agent_config_data.copy()
 
-            # **Assemble Admin AI Prompt using Updated Constants from prompt_utils**
             if agent_id == BOOTSTRAP_AGENT_ID:
                 user_defined_prompt = final_agent_config_data.get("system_prompt", "")
-                # Combine user prompt, operational workflow (which includes tool desc placeholder), and allowed models
-                # Format the operational instructions with the actual tool descriptions
                 operational_instructions = ADMIN_AI_OPERATIONAL_INSTRUCTIONS.format(
                     tool_descriptions_xml=self.tool_descriptions_xml
                 )
                 final_agent_config_data["system_prompt"] = (
                     f"--- Primary Goal/Persona ---\n{user_defined_prompt}\n\n"
-                    f"{operational_instructions}\n\n" # Use formatted instructions
+                    f"{operational_instructions}\n\n"
                     f"---\n{formatted_allowed_models}\n---"
                 )
                 logger.info(f"Assembled final prompt for '{BOOTSTRAP_AGENT_ID}' using updated prompt_utils.")
-            else: # For other bootstrap agents, use config prompt directly
+            else:
                 logger.info(f"Using system prompt from config for bootstrap agent '{agent_id}'.")
 
             tasks.append(self._create_agent_internal(
@@ -164,9 +158,8 @@ class AgentManager:
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
         successful_ids = []
-        # Process results (logic remains the same)
         for i, result in enumerate(results):
-             agent_id_log = f"unknown_{i}"; # Placeholder mapping
+             agent_id_log = f"unknown_{i}";
              if isinstance(result, tuple) and result[0]:
                  created_agent_id = result[2]
                  if created_agent_id:
@@ -190,7 +183,7 @@ class AgentManager:
         loading_from_session: bool = False
         ) -> Tuple[bool, str, Optional[str]]:
         """Internal core logic for creating agents. Constructs prompts using utils."""
-        # 1. Determine Agent ID (Code remains the same)
+        # (Code remains the same as previous correct version)
         agent_id: Optional[str] = None
         if agent_id_requested and agent_id_requested in self.agents: msg = f"Agent ID '{agent_id_requested}' already exists."; logger.error(msg); return False, msg, None
         elif agent_id_requested: agent_id = agent_id_requested
@@ -198,12 +191,11 @@ class AgentManager:
         if not agent_id: return False, "Failed to determine Agent ID.", None
         logger.debug(f"Creating agent '{agent_id}' (Bootstrap: {is_bootstrap}, SessionLoad: {loading_from_session}, Team: {team_id})")
 
-        # 2. Extract Config & Validate Provider/Model (Code remains the same)
         provider_name = agent_config_data.get("provider", settings.DEFAULT_AGENT_PROVIDER)
         model = agent_config_data.get("model", settings.DEFAULT_AGENT_MODEL)
         persona = agent_config_data.get("persona", settings.DEFAULT_PERSONA)
         if not settings.is_provider_configured(provider_name): msg = f"Provider '{provider_name}' not configured."; logger.error(msg); return False, msg, None
-        if not is_bootstrap and not loading_from_session: # Validate dynamic agent model
+        if not is_bootstrap and not loading_from_session:
             allowed_models = settings.ALLOWED_SUB_AGENT_MODELS.get(provider_name)
             valid_allowed = [m for m in (allowed_models or []) if m and m.strip()]
             if not valid_allowed or model not in valid_allowed:
@@ -211,7 +203,6 @@ class AgentManager:
                  msg = f"Model '{model}' not allowed for '{provider_name}'. Allowed: [{allowed_str}]"; logger.error(msg); return False, msg, None
             logger.info(f"Dynamic agent model validated: '{provider_name}/{model}'.")
 
-        # 3. Extract other config details (Code remains the same)
         role_specific_prompt = agent_config_data.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
         temperature = agent_config_data.get("temperature", settings.DEFAULT_TEMPERATURE)
         allowed_provider_keys = ['api_key', 'base_url', 'referer']
@@ -219,22 +210,19 @@ class AgentManager:
         provider_specific_kwargs = {k: v for k, v in agent_config_data.items() if k not in agent_config_keys_to_exclude}
         if agent_config_data.get("referer"): provider_specific_kwargs["referer"] = agent_config_data["referer"]
 
-        # 4. **Construct Final System Prompt using prompt_utils**
         final_system_prompt = role_specific_prompt
-        if not loading_from_session and not is_bootstrap: # Dynamic agent creation
+        if not loading_from_session and not is_bootstrap:
              logger.debug(f"Constructing final prompt for dynamic agent '{agent_id}' using prompt_utils...")
-             standard_info = STANDARD_FRAMEWORK_INSTRUCTIONS.format( # Use constant from prompt_utils
+             standard_info = STANDARD_FRAMEWORK_INSTRUCTIONS.format(
                  agent_id=agent_id, team_id=team_id or "N/A", tool_descriptions_xml=self.tool_descriptions_xml
              )
              final_system_prompt = standard_info + "\n\n--- Your Specific Role & Task ---\n" + role_specific_prompt
              logger.info(f"Injected standard framework instructions for dynamic agent '{agent_id}'.")
         elif loading_from_session: final_system_prompt = agent_config_data.get("system_prompt", role_specific_prompt)
-        elif is_bootstrap: final_system_prompt = agent_config_data.get("system_prompt", final_system_prompt) # Already assembled in initialize_bootstrap_agents
+        elif is_bootstrap: final_system_prompt = agent_config_data.get("system_prompt", final_system_prompt)
 
-        # 5. Store final config entry (Code remains the same)
         final_agent_config_entry = { "agent_id": agent_id, "config": { "provider": provider_name, "model": model, "system_prompt": final_system_prompt, "persona": persona, "temperature": temperature, **provider_specific_kwargs } }
 
-        # 6. Instantiate LLM Provider (Code remains the same)
         ProviderClass = PROVIDER_CLASS_MAP.get(provider_name)
         if not ProviderClass: msg = f"Unknown provider '{provider_name}'"; logger.error(msg); return False, msg, None
         base_provider_config = settings.get_provider_config(provider_name)
@@ -245,27 +233,22 @@ class AgentManager:
         except Exception as e: msg = f"Provider instantiation failed: {e}"; logger.error(msg, exc_info=True); return False, msg, None
         logger.info(f"  Instantiated provider {ProviderClass.__name__} for '{agent_id}'.")
 
-        # 7. Instantiate Agent Object (Code remains the same)
         try: agent = Agent(agent_config=final_agent_config_entry, llm_provider=llm_provider_instance, manager=self)
         except Exception as e: msg = f"Agent instantiation failed: {e}"; logger.error(msg, exc_info=True); await self._close_provider_safe(llm_provider_instance); return False, msg, None
         logger.info(f"  Instantiated Agent object for '{agent_id}'.")
 
-        # 8. Ensure Sandbox (Code remains the same)
         try: await asyncio.to_thread(agent.ensure_sandbox_exists)
         except Exception as e: logger.error(f"  Error ensuring sandbox for '{agent_id}': {e}", exc_info=True)
 
-        # 9. Add to registry (Code remains the same)
         self.agents[agent_id] = agent
         logger.debug(f"Agent '{agent_id}' added to self.agents dictionary.")
 
-        # 10. Assign to Team State via StateManager (Code remains the same)
         team_add_msg_suffix = ""
         if team_id:
             team_add_success, team_add_msg = await self.state_manager.add_agent_to_team(agent_id, team_id)
             if team_add_success: logger.info(f"Agent '{agent_id}' state added to team '{team_id}'.")
             else: team_add_msg_suffix = f" (Warning adding to team state: {team_add_msg})"
 
-        # 11. Return Success
         message = f"Agent '{agent_id}' created successfully." + team_add_msg_suffix
         return True, message, agent_id
 
@@ -323,7 +306,7 @@ class AgentManager:
         Routes user message to Admin AI.
         Ensures a default project/session context exists before proceeding.
         """
-        # (Code remains the same - includes auto-context creation)
+        # (Code remains the same)
         logger.info(f"Received user message for Admin AI: '{message[:100]}...'")
         if self.current_project is None:
             logger.info("No active project/session context found. Creating default context...")
@@ -400,7 +383,7 @@ class AgentManager:
         Passes project/session context for tool execution.
         Uses reactivate_agent_flags for reactivation signals.
         """
-        # (Code remains the same - including context passing to InteractionHandler)
+        # (Code remains the same as previous version)
         agent_id = agent.agent_id
         logger.info(f"Starting generator handling for Agent '{agent_id}' (Retry: {retry_count}).")
         agent_generator: Optional[AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]] = None
@@ -511,8 +494,17 @@ class AgentManager:
              last_error_content = f"[Manager Error: Unexpected error in generator handler - {e}]"
              await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": last_error_content})
         finally:
-            if agent_generator: try: await agent_generator.aclose() except Exception as close_err: logger.error(f"Error closing generator for '{agent_id}': {close_err}", exc_info=True)
+            # --- Corrected Generator Cleanup ---
+            if agent_generator:
+                try:
+                    await agent_generator.aclose()
+                    logger.debug(f"Closed generator for '{agent_id}'.")
+                except Exception as close_err:
+                    logger.error(f"Error closing generator for '{agent_id}': {close_err}", exc_info=True)
+            # --- End Correction ---
 
+            # --- Retry / Override / Reactivation Logic ---
+            # (Logic remains the same as previous correct version)
             if current_cycle_error and is_stream_related_error and retry_count < MAX_STREAM_RETRIES:
                 retry_delay = STREAM_RETRY_DELAYS[retry_count]; logger.warning(f"Stream error for '{agent_id}'. Retrying in {retry_delay:.1f}s ({retry_count + 1}/{MAX_STREAM_RETRIES})...")
                 await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Provider issue... Retrying (Attempt {retry_count + 1}/{MAX_STREAM_RETRIES}, delay {retry_delay}s)..."})
