@@ -57,28 +57,33 @@ MAX_STREAM_RETRIES = len(STREAM_RETRY_DELAYS) # Max retries based on delay list 
 
 # --- Standard Instructions ---
 # (STANDARD_FRAMEWORK_INSTRUCTIONS remains the same as before)
+
 STANDARD_FRAMEWORK_INSTRUCTIONS = """
 
 --- Standard Tool & Communication Protocol ---
 Your Agent ID: `{agent_id}`
 Your Assigned Team ID: `{team_id}`
 
-You have access to the following tools. Use the specified XML format precisely when you need to use a tool. Only use ONE tool call per response message, placed at the very end.
+**Context Awareness:** Before using tools (like web_search or asking teammates), carefully review the information already provided in your system prompt, the current conversation history, and any content included in the message assigning your task. Use the available information first.
+
+**Tool Usage:** You have access to the following tools. Use the specified XML format precisely. Only use ONE tool call per response message, placed at the very end.
 
 {tool_descriptions_xml}
 
 **Communication:**
-- Use the `<send_message>` tool to communicate ONLY with other agents *within your team* or the Admin AI (`admin_ai`). Specify the exact `target_agent_id` and `message_content`.
+- Use the `<send_message>` tool to communicate ONLY with other agents *within your team* or the Admin AI (`admin_ai`).
+- **CRITICAL:** Specify the exact `target_agent_id` (e.g., `agent_17..._xyz` or `admin_ai`). **DO NOT use agent personas (like 'Researcher') as the target_agent_id.** Use the IDs provided in team lists or feedback messages.
 - Respond to messages directed to you ([From @...]).
-- **CRITICAL: Report Results:** When you complete a task assigned by the Admin AI or another agent, your **FINAL action MUST** be to use the `<send_message>` tool to send your results (e.g., generated code, analysis summary, file content, or confirmation of file save with path) back to the **requesting agent** (usually `admin_ai`). **Failure to report back will stall the entire process.**
+- **CRITICAL: Report Results:** When you complete a task assigned by the Admin AI or another agent, your **FINAL action MUST** be to use the `<send_message>` tool to send your results (e.g., generated code, analysis summary, file path/content, or confirmation) back to the **requesting agent** (usually `admin_ai`). Failure to report back will stall the process.
 
 **File System:**
-- Use the `<file_system>` tool to read/write/list files *only within your own sandbox*. All paths are relative to your sandbox root. If you write a file, you **must** still report completion and the filename/path back to the requester using `send_message`.
+- Use the `<file_system>` tool with the appropriate `scope` ('private' or 'shared') to read/write/list files. All paths are relative to the scope's root. If you write a file, you **must** still report completion and the filename/path back to the requester using `send_message`.
 
 **Task Management:**
 - If you receive a complex task, break it down logically. Execute the steps sequentially. Report progress clearly on significant sub-steps or if you encounter issues using `send_message`.
 --- End Standard Protocol ---
 """
+# --- End replacement ---
 
 class AgentManager:
     """
