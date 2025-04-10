@@ -68,7 +68,7 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 *   `src/agents/core.py::Agent.set_manager(manager: 'AgentManager')` - Sets manager reference.
 *   `src/agents/core.py::Agent.ensure_sandbox_exists()` -> `bool` - Creates agent's sandbox directory.
 *   `src/agents/core.py::Agent._find_and_parse_tool_calls()` -> `List[Tuple[str, Dict[str, Any], Tuple[int, int]]]` - **(Internal)** Finds and parses *all* valid XML tool calls (raw or fenced) in the text buffer.
-*   `src/agents/core.py::Agent.process_message()` -> `AsyncGenerator[Dict, None]` (Async) - Core logic. Calls provider `stream_completion`, yields events (`response_chunk`, `tool_requests`, `final_response`, `error`). Manager handles history and tool results.
+*   `src/agents/core.py::Agent.process_message()` -> `AsyncGenerator[Dict, None]` (Async) - Core logic. Calls provider `stream_completion`, yields events (`response_chunk`, `tool_requests`, `final_response`, `error`). CycleHandler handles history and tool results.
 *   `src/agents/core.py::Agent.get_state()` -> `Dict[str, Any]` - Returns current agent state dictionary.
 *   `src/agents/core.py::Agent.clear_history()` - Clears message history, resets with system prompt.
 
@@ -97,7 +97,7 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 ## **Agent Prompt Utilities (`src/agents/`)**
 
 *   `src/agents/prompt_utils.py::STANDARD_FRAMEWORK_INSTRUCTIONS` (Constant str) - Template string containing standard instructions (tools, comms, ID, team, task breakdown, file system scopes) injected into dynamic agents.
-*   `src/agents/prompt_utils.py::ADMIN_AI_OPERATIONAL_INSTRUCTIONS` (Constant str) - Template string containing specific workflow/tool usage instructions for Admin AI (including refined cleanup steps).
+*   `src/agents/prompt_utils.py::ADMIN_AI_OPERATIONAL_INSTRUCTIONS` (Constant str) - Template string containing specific workflow/tool usage instructions for Admin AI (including refined cleanup steps **and integrated tool descriptions placeholder**).
 *   `src/agents/prompt_utils.py::update_agent_prompt_team_id(manager: 'AgentManager', agent_id: str, new_team_id: Optional[str])` (Async) - Updates the agent's internal prompt state (in memory & history) after team assignment changes.
 
 ## **Agent Interaction Handler (`src/agents/`)**
@@ -105,23 +105,30 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 *   `src/agents/interaction_handler.py::AgentInteractionHandler` (Class) - Handles processing specific tool interactions and execution logic, using AgentManager context.
 *   `src/agents/interaction_handler.py::AgentInteractionHandler.__init__(manager: 'AgentManager')` - Initializes with reference to AgentManager.
 *   `src/agents/interaction_handler.py::AgentInteractionHandler.handle_manage_team_action(action: Optional[str], params: Dict[str, Any], calling_agent_id: str)` -> `Tuple[bool, str, Optional[Any]]` (Async) - Processes validated `ManageTeamTool` signals (create/delete agent/team, list, etc.), calling manager methods. Returns feedback for caller.
-*   `src/agents/interaction_handler.py::AgentInteractionHandler.route_and_activate_agent_message(sender_id: str, target_id: str, message_content: str)` -> `Optional[asyncio.Task]` (Async) - Routes messages via `SendMessageTool` signal. Checks target/team policy. Appends feedback to sender on failure (and signals reactivation). Appends message to target history and activates target agent if idle.
+*   `src/agents/interaction_handler.py::AgentInteractionHandler.route_and_activate_agent_message(sender_id: str, target_id: str, message_content: str)` -> `Optional[asyncio.Task]` (Async) - Routes messages via `SendMessageTool` signal. Checks target/team policy. Appends feedback to sender on failure. Appends message to target history and **schedules target agent cycle** via manager if idle.
 *   `src/agents/interaction_handler.py::AgentInteractionHandler.execute_single_tool(agent: Agent, call_id: str, tool_name: str, tool_args: Dict[str, Any], project_name: Optional[str], session_name: Optional[str])` -> `Optional[Dict]` (Async) - Executes a single validated tool call via `ToolExecutor`, **passing project/session context**. Formats results (raw dict for ManageTeam, string for others). Sets agent status.
 *   `src/agents/interaction_handler.py::AgentInteractionHandler.failed_tool_result(call_id: Optional[str], tool_name: Optional[str])` -> `Optional[ToolResultDict]` (Async Helper) - Generates formatted error result dict for failed tool dispatch.
 
+## **Agent Cycle Handler (`src/agents/`)**
+
+*   `src/agents/cycle_handler.py::AgentCycleHandler` (Class) - Handles the execution cycle of a single agent's turn.
+*   `src/agents/cycle_handler.py::AgentCycleHandler.__init__(manager: 'AgentManager', interaction_handler: 'AgentInteractionHandler')` - Initializes with references to AgentManager and InteractionHandler.
+*   `src/agents/cycle_handler.py::AgentCycleHandler.run_cycle(agent: Agent, retry_count: int = 0)` (Async) - Manages agent's `process_message` generator loop. Handles events (`response_chunk`, `status`, `error`, `final_response`, `tool_requests`). Handles stream errors with retry logic & user override request via manager. **Delegates tool execution to `InteractionHandler`**. Processes manager feedback, appends to history. **Schedules reactivation** via manager if needed based on tool success or queued messages.
+
 ## **Agent Manager (Coordinator) (`src/agents/`)**
 
-*   `src/agents/manager.py::AgentManager` (Class) - Central coordinator. Manages agent instances, orchestrates task execution **via InteractionHandler**, delegates state/session management, handles errors/retries.
-*   `src/agents/manager.py::AgentManager.__init__(websocket_manager: Optional[Any] = None)` - Initializes self, `ToolExecutor`, `AgentStateManager`, `SessionManager`, **and `AgentInteractionHandler`**. Gets tool descriptions. Ensures projects dir.
+*   `src/agents/manager.py::AgentManager` (Class) - Central coordinator. Manages agent instances, overall state (project/session), **delegates task execution cycles to `AgentCycleHandler`**, delegates state/session management, handles high-level error/override flow.
+*   `src/agents/manager.py::AgentManager.__init__(websocket_manager: Optional[Any] = None)` - Initializes self, `ToolExecutor`, `AgentStateManager`, `SessionManager`, `AgentInteractionHandler`, **and `AgentCycleHandler`**. Gets tool descriptions. Ensures projects dir.
 *   `src/agents/manager.py::AgentManager._ensure_projects_dir()` - **(Internal)** Creates base project directory.
 *   `src/agents/manager.py::AgentManager.initialize_bootstrap_agents()` (Async) - Loads bootstrap agents from `settings`, **constructs prompts using `prompt_utils`**, calls `_create_agent_internal`.
 *   `src/agents/manager.py::AgentManager._create_agent_internal(...)` -> `Tuple[bool, str, Optional[str]]` (Async Internal) - Core logic: Validates provider config & allowed model, **constructs final prompt using `prompt_utils`**, instantiates Provider & Agent, ensures sandbox, adds agent to `self.agents`, delegates team state update to `StateManager`.
 *   `src/agents/manager.py::AgentManager.create_agent_instance(...)` -> `Tuple[bool, str, Optional[str]]` (Async) - Public method for dynamic agent creation (called by `InteractionHandler`). Calls `_create_agent_internal`, notifies UI.
 *   `src/agents/manager.py::AgentManager.delete_agent_instance(agent_id: str)` -> `Tuple[bool, str]` (Async) - Removes agent from `self.agents`, delegates team state cleanup to `StateManager`, closes provider. Notifies UI. Handles bootstrap agent check.
 *   `src/agents/manager.py::AgentManager._generate_unique_agent_id(prefix="agent")` -> `str` - **(Internal)** Generates unique agent ID.
-*   `src/agents/manager.py::AgentManager.handle_user_message(message: str, client_id: Optional[str] = None)` (Async) - Routes user message to Admin AI, starts its `_handle_agent_generator`. Checks agent status. Handles case where Admin AI is missing. **(Will be modified for auto-session-context).**
-*   `src/agents/manager.py::AgentManager.handle_user_override(override_data: Dict[str, Any])` (Async) - Handles config override for a stuck agent, recreates provider, restarts generator loop.
-*   `src/agents/manager.py::AgentManager._handle_agent_generator(agent: Agent, retry_count: int = 0)` (Async Internal) - Manages agent's `process_message` generator loop. Handles events (`response_chunk`, `status`, `error`, `final_response`, `tool_requests`). Handles stream errors with retry logic & user override request. **Delegates tool execution to `InteractionHandler`, passing project/session context**. Processes manager feedback, appends to history. Reactivates agent if needed based on feedback signal (`reactivate_agent_flags`) or queued messages.
+*   `src/agents/manager.py::AgentManager.schedule_cycle(agent: Agent, retry_count: int = 0)` (Async) - **Schedules the agent's execution cycle via the `AgentCycleHandler`**.
+*   `src/agents/manager.py::AgentManager.handle_user_message(message: str, client_id: Optional[str] = None)` (Async) - Routes user message to Admin AI, **ensures default project/session context**, **schedules Admin AI cycle** via `schedule_cycle`. Checks agent status. Handles case where Admin AI is missing.
+*   `src/agents/manager.py::AgentManager.handle_user_override(override_data: Dict[str, Any])` (Async) - Handles config override for a stuck agent, recreates provider, **schedules agent cycle** via `schedule_cycle`.
+*   `src/agents/manager.py::AgentManager.request_user_override(agent_id: str, last_error: str)` (Async) - **Sends request for user override to the UI** (called by `CycleHandler`).
 *   `src/agents/manager.py::AgentManager.push_agent_status_update(agent_id: str)` (Async Helper) - Gets agent state (incl. team from `StateManager`), sends to UI.
 *   `src/agents/manager.py::AgentManager.send_to_ui(message_data: Dict[str, Any])` (Async Helper) - Sends JSON data to UI via `broadcast`.
 *   `src/agents/manager.py::AgentManager.get_agent_status()` -> `Dict[str, Dict[str, Any]]` - **(Synchronous)** Gets snapshot of current agent statuses (incl. team from `StateManager`).
@@ -155,7 +162,7 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 
 *   `src/tools/base.py::ToolParameter` (Pydantic Class) - Defines tool parameters.
 *   `src/tools/base.py::BaseTool` (ABC) - Abstract base class for tools. Defines `name`, `description`, `parameters`.
-*   `src/tools/base.py::BaseTool.execute(agent_id: str, agent_sandbox_path: Path, project_name: Optional[str], session_name: Optional[str], **kwargs: Any)` (Abstract Async) - Core execution logic signature, **now includes project/session context**.
+*   `src/tools/base.py::BaseTool.execute(agent_id: str, agent_sandbox_path: Path, project_name: Optional[str], session_name: Optional[str], **kwargs: Any)` (Abstract Async) - Core execution logic signature, **includes project/session context**.
 *   `src/tools/base.py::BaseTool.get_schema()` -> `Dict` - Returns tool schema dictionary.
 
 ## **Tool Executor (`src/tools/`)**
@@ -177,9 +184,9 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
     *   `src/tools/file_system.py::FileSystemTool._write_file(...)` (Async Internal) - Writes file.
     *   `src/tools/file_system.py::FileSystemTool._list_directory(...)` (Async Internal) - Lists directory.
 *   **GitHub (`github_tool.py`)**
-    *   `src/tools/github_tool.py::GitHubTool(BaseTool)` - Interacts with GitHub API.
+    *   `src/tools/github_tool.py::GitHubTool(BaseTool)` - Interacts with GitHub API. **Uses correct endpoints for user/auth repo listing.**
     *   `src/tools/github_tool.py::GitHubTool.__init__()` - Checks for GitHub token.
-    *   `src/tools/github_tool.py::GitHubTool._make_github_request(...)` (Async Internal) - Helper for API calls.
+    *   `src/tools/github_tool.py::GitHubTool._make_github_request(...)` (Async Internal) - Helper for API calls with error handling.
     *   `src/tools/github_tool.py::GitHubTool.execute(...)` (Async) - Executes list/read actions.
 *   **ManageTeam (`manage_team.py`)**
     *   `src/tools/manage_team.py::ManageTeamTool(BaseTool)` - Signals AgentManager (via InteractionHandler) for agent/team management.
