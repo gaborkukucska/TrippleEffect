@@ -1,11 +1,59 @@
 # START OF FILE src/agents/manager.py
 import asyncio
-# ... (other imports remain the same) ...
+from typing import Dict, Any, Optional, List, AsyncGenerator, Tuple
+import json
+import os
+import traceback
+import time
+import logging # <<<--- ADDED THIS LINE
+import uuid # For generating agent IDs
+import re # For replacing team ID in prompts
+
+# Import Agent class, Status constants, and BaseLLMProvider types
+from src.agents.core import (
+    Agent, AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING,
+    AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_AWAITING_TOOL,
+    AGENT_STATUS_ERROR, AGENT_STATUS_AWAITING_USER_OVERRIDE
+)
+from src.llm_providers.base import BaseLLMProvider, ToolResultDict, MessageDict
+
+# Import settings instance, BASE_DIR, and default values
+from src.config.settings import settings, BASE_DIR # Import settings
+
+# Import WebSocket broadcast function
+from src.api.websocket_manager import broadcast
+
+# Import ToolExecutor and Tool base class/types
+from src.tools.executor import ToolExecutor
+from src.tools.manage_team import ManageTeamTool
+from src.tools.send_message import SendMessageTool # Need this for tool name check
+from src.tools.file_system import FileSystemTool # Need this for tool name check
+
+# Import Provider classes
+from src.llm_providers.openai_provider import OpenAIProvider
+from src.llm_providers.ollama_provider import OllamaProvider
+from src.llm_providers.openrouter_provider import OpenRouterProvider
+
+# --- Import the new Managers ---
+from src.agents.state_manager import AgentStateManager
+from src.agents.session_manager import SessionManager
+
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# ... (PROVIDER_CLASS_MAP, BOOTSTRAP_AGENT_ID, STREAM_RETRY_DELAYS, MAX_STREAM_RETRIES remain the same) ...
+# Mapping from provider name string to provider class
+PROVIDER_CLASS_MAP: Dict[str, type[BaseLLMProvider]] = {
+    "openai": OpenAIProvider,
+    "ollama": OllamaProvider,
+    "openrouter": OpenRouterProvider,
+}
+
+# --- Constants ---
+BOOTSTRAP_AGENT_ID = "admin_ai" # Define the primary bootstrap agent ID
+# Define the retry delays and calculate max retries
+STREAM_RETRY_DELAYS = [5.0, 10.0, 10.0, 65.0] # New retry delays
+MAX_STREAM_RETRIES = len(STREAM_RETRY_DELAYS) # Max retries based on delay list length
 
 # --- Generic Standard Instructions for ALL Dynamic Agents ---
 # These instructions are injected by the framework (_create_agent_internal)
@@ -57,7 +105,7 @@ ADMIN_AI_OPERATIONAL_INSTRUCTIONS = """
 1.  **Analyze User Request:** (Handled by your primary persona prompt from config). Ask clarifying questions if needed.
 1.5 **Answer Direct Questions:** (Handled by your primary persona prompt from config). Offer to create a team for complex tasks. Do not generate code examples yourself.
 2.  **Plan Agent Team & Initial Tasks:** Determine roles, specific instructions, team structure. Define initial high-level tasks. **Delegate aggressively.**
-    *   **File Saving Scope Planning:** When defining agent instructions (`system_prompt` for `create_agent`), explicitly decide if the final output file should be `private` or `shared`. Instruct the agent accordingly to use the correct `scope` parameter with the `file_system` tool. Shared scope is generally preferred for final deliverables.
+    *   **File Saving Scope Planning:** When defining agent instructions (`system_prompt` for `create_agent`), explicitly decide if the final output file should be `private` (agent's own sandbox) or `shared` (project session workspace). Instruct the agent accordingly to use the correct `scope` parameter with the `file_system` tool (e.g., "...save the final report using `file_system` with `scope: shared` and filename `report.md`..."). Shared scope is generally preferred for final deliverables.
 3.  **Execute Structured Delegation Plan:** Follow precisely:
     *   **(a) Check State:** Use `ManageTeamTool` (`list_teams`, `list_agents`). Get existing agent IDs if needed.
     *   **(b) Create Team(s):** Use `ManageTeamTool` (`action: create_team`, providing `team_id`).
@@ -71,9 +119,9 @@ ADMIN_AI_OPERATIONAL_INSTRUCTIONS = """
     *   **DO NOT proceed** to synthesis or cleanup until you have received confirmation messages (via `send_message`) from **ALL** agents that their assigned tasks are complete.
 5.  **Synthesize & Report to User:** **ONLY AFTER** confirming all delegated tasks are complete, compile results. Clearly state where final files were saved.
 6.  **Clean Up:** **ONLY AFTER** delivering the final result to the user:
-    *   **(a) Identify Agents/Teams:** Use `ManageTeamTool` with `action: list_agents` **immediately before deletion** to get the **current list and exact `agent_id` values** (e.g., `agent_17..._xyz`) of all dynamic agents created for the completed task.
-    *   **(b) Delete Agents:** Delete **each dynamic agent individually** using `ManageTeamTool` with `action: delete_agent` and the **specific `agent_id` obtained in step (a).** **CRITICAL: You MUST provide the specific ID (like `agent_17..._xyz`) in the `agent_id` parameter. DO NOT use the agent's persona name.**
-    *   **(c) Delete Team(s):** **AFTER** confirming **ALL** agents in a team are deleted (verify with `list_agents` again if needed), delete the team using `ManageTeamTool` with `action: delete_team` and the correct `team_id`.
+    *   **(a) Identify Agents/Teams:** Use `ManageTeamTool` with `action: list_agents` **immediately before deletion** to get the **current list and exact `agent_id` values** (e.g., `agent_17..._xyz`) of all dynamic agents created for the completed task. Store these IDs accurately.
+    *   **(b) Delete Agents:** Delete **each dynamic agent individually** using `ManageTeamTool` with `action: delete_agent` and the **specific `agent_id` obtained in step (a).** **CRITICAL: You MUST provide the specific ID (like `agent_17..._xyz`) in the `agent_id` parameter. DO NOT use the agent's persona name.** Failure to use the correct ID will result in an error.
+    *   **(c) Delete Team(s):** **AFTER** confirming **ALL** agents in a team are deleted (verify with `list_agents` again if needed), delete the team using `ManageTeamTool` with `action: delete_team` and the correct `team_id`. **Ensure the team is empty before attempting deletion.**
 
 **Tool Usage Reminders:**
 *   Use exact `agent_id`s (obtained from `list_agents` or creation feedback) for `send_message` and **especially for `delete_agent`**. Double-check IDs before use.
@@ -82,7 +130,7 @@ ADMIN_AI_OPERATIONAL_INSTRUCTIONS = """
 --- End Admin AI Core Operational Workflow ---
 """
 
-# ... (Rest of AgentManager class remains the same as the version you provided last) ...
+# ... (Rest of the AgentManager class code is identical to the previous correct version) ...
 
 class AgentManager:
     """
@@ -130,10 +178,13 @@ class AgentManager:
              logger.info(f"Ensured projects directory exists at: {settings.PROJECTS_BASE_DIR}")
         except Exception as e:
              logger.error(f"Error creating projects directory at {settings.PROJECTS_BASE_DIR}: {e}", exc_info=True)
-    
+
     # --- Agent Initialization ---
     async def initialize_bootstrap_agents(self):
-        """Loads and initializes agents defined as 'bootstrap' in the configuration."""
+        """
+        Loads and initializes agents defined as 'bootstrap' in the configuration.
+        Injects specific operational instructions and tool descriptions into the Admin AI's prompt.
+        """
         logger.info("Initializing bootstrap agents asynchronously...")
         agent_configs_list = settings.AGENT_CONFIGURATIONS
         if not agent_configs_list:
@@ -151,17 +202,18 @@ class AgentManager:
         tasks = []
         formatted_allowed_models = settings.get_formatted_allowed_models()
 
-        # --- *** CORRECTED: Define generic_standard_info BEFORE the loop *** ---
-        # Prepare generic instructions part (tools description) ONCE
-        generic_standard_info = STANDARD_FRAMEWORK_INSTRUCTIONS.format(
-                agent_id='{agent_id}', # Placeholders - will be removed below
-                team_id='{team_id}',   # Placeholders - will be removed below
-                tool_descriptions_xml=self.tool_descriptions_xml
+        # --- Prepare the generic tool descriptions part ONCE ---
+        # This part is derived from STANDARD_FRAMEWORK_INSTRUCTIONS but only includes the tool schema.
+        # It's injected into BOTH Admin AI and dynamic agents.
+        generic_standard_info_part = STANDARD_FRAMEWORK_INSTRUCTIONS.format(
+                agent_id='{agent_id}', # Placeholders - will be removed/replaced below
+                team_id='{team_id}',   # Placeholders - will be removed/replaced below
+                tool_descriptions_xml=self.tool_descriptions_xml # Actual tool descriptions
             )
-        # Remove the generic placeholder lines as they aren't needed for AdminAI context specifically
-        generic_standard_info = generic_standard_info.replace("Your Agent ID: {agent_id}\n", "")
-        generic_standard_info = generic_standard_info.replace("Your Assigned Team ID: {team_id}\n", "")
-        # --- *** END CORRECTION *** ---
+        # Remove the generic ID/Team lines for the part used by Admin AI, as it has its own section
+        generic_standard_info_part_for_admin = generic_standard_info_part.replace("Your Agent ID: {agent_id}\n", "")
+        generic_standard_info_part_for_admin = generic_standard_info_part_for_admin.replace("Your Assigned Team ID: {team_id}\n", "")
+        # --- END Tool Description Prep ---
 
         # Iterate through agent configurations loaded from settings
         for agent_conf_entry in agent_configs_list:
@@ -196,7 +248,7 @@ class AgentManager:
                 final_agent_config_data["system_prompt"] = (
                     f"--- Primary Goal/Persona ---\n{user_defined_prompt}\n\n"
                     f"{ADMIN_AI_OPERATIONAL_INSTRUCTIONS}\n\n" # Add the operational workflow
-                    f"{generic_standard_info}\n\n" # Add the generic tool descriptions part
+                    f"{generic_standard_info_part_for_admin}\n\n" # Add the generic tool descriptions part
                     f"---\n{formatted_allowed_models}\n---" # Add allowed models separately at the end
                 )
                 logger.info(f"Assembled final prompt for '{BOOTSTRAP_AGENT_ID}': Combined config.yaml prompt + Operational Instructions + Tool Descriptions + Allowed Models.")
@@ -763,8 +815,8 @@ class AgentManager:
             logger.log(log_level, f"Manager finished handling generator cycle for Agent '{agent_id}'. Final status: {agent.status}")
 
     # --- Tool Execution & Management ---
+    # (No changes needed in _handle_manage_team_action, _update_agent_prompt_team_id)
     async def _handle_manage_team_action(self, action: Optional[str], params: Dict[str, Any]) -> Tuple[bool, str, Optional[Any]]:
-        """Dispatches ManageTeamTool actions to internal methods or StateManager."""
         if not action: return False, "No action specified.", None
         success, message, result_data = False, "Unknown action or error.", None
         try:
@@ -773,21 +825,16 @@ class AgentManager:
             provider = params.get("provider"); model = params.get("model")
             system_prompt = params.get("system_prompt"); persona = params.get("persona")
             temperature = params.get("temperature")
-            # Collect any extra kwargs not explicitly handled
             known_args = ['action', 'agent_id', 'team_id', 'provider', 'model', 'system_prompt', 'persona', 'temperature']
             extra_kwargs = {k: v for k, v in params.items() if k not in known_args}
 
-            # --- Dispatch based on action ---
             if action == "create_agent":
-                success, message, created_agent_id = await self.create_agent_instance(
-                    agent_id, provider, model, system_prompt, persona, team_id, temperature, **extra_kwargs
-                )
+                success, message, created_agent_id = await self.create_agent_instance( agent_id, provider, model, system_prompt, persona, team_id, temperature, **extra_kwargs )
                 if success and created_agent_id:
-                    # Return data useful for Admin AI (e.g., the created ID)
                     result_data = { "created_agent_id": created_agent_id, "persona": persona, "provider": provider, "model": model, "team_id": team_id }
-                    message = f"Agent '{persona}' created successfully with ID '{created_agent_id}'." # More informative message
+                    message = f"Agent '{persona}' created successfully with ID '{created_agent_id}'."
             elif action == "delete_agent":
-                 success, message = await self.delete_agent_instance(agent_id)
+                 success, message = await self.delete_agent_instance(agent_id) # Agent ID validation happens here and in tool
             elif action == "create_team":
                  success, message = await self.state_manager.create_new_team(team_id)
                  if success: result_data = {"created_team_id": team_id}
@@ -795,21 +842,24 @@ class AgentManager:
                  success, message = await self.state_manager.delete_existing_team(team_id)
             elif action == "add_agent_to_team":
                  success, message = await self.state_manager.add_agent_to_team(agent_id, team_id)
-                 if success: await self._update_agent_prompt_team_id(agent_id, team_id) # Update live prompt state
+                 if success: await self._update_agent_prompt_team_id(agent_id, team_id)
             elif action == "remove_agent_from_team":
                  success, message = await self.state_manager.remove_agent_from_team(agent_id, team_id)
-                 if success: await self._update_agent_prompt_team_id(agent_id, None) # Update live prompt state
+                 if success: await self._update_agent_prompt_team_id(agent_id, None)
             elif action == "list_agents":
-                 filter_team_id = params.get("team_id"); # Optional filter
+                 filter_team_id = params.get("team_id");
                  result_data = self.get_agent_info_list_sync(filter_team_id=filter_team_id)
                  success = True; count = len(result_data)
                  message = f"Found {count} agent(s)"
                  if filter_team_id: message += f" in team '{filter_team_id}'."
                  else: message += " in total."
+                 # Ensure result_data is serializable (it should be list of dicts)
+                 try: json.dumps(result_data)
+                 except TypeError: logger.error("list_agents result_data not JSON serializable"); result_data = [{"error": "data not serializable"}]
+
             elif action == "list_teams":
                  result_data = self.state_manager.get_team_info_dict(); success = True; message = f"Found {len(result_data)} team(s)."
-            else:
-                 message = f"Unrecognized action: {action}"; logger.warning(message)
+            else: message = f"Unrecognized action: {action}"; logger.warning(message)
 
             logger.info(f"ManageTeamTool action '{action}' result: Success={success}, Message='{message}'")
             return success, message, result_data
@@ -819,133 +869,79 @@ class AgentManager:
              return False, message, None
 
     async def _update_agent_prompt_team_id(self, agent_id: str, new_team_id: Optional[str]):
-        """Updates the team ID within an agent's live system prompt state (in memory)."""
         agent = self.agents.get(agent_id)
-        # Only update dynamic agents, not bootstrap ones
         if agent and not (agent_id in self.bootstrap_agents):
             try:
-                # Use regex to replace the team ID line safely, handling potential variations
                 team_line_regex = r"(Your Assigned Team ID:).*"
-                new_team_line = rf"\1 {new_team_id or 'N/A'}" # Use N/A if team ID is None
-
-                # Update the agent's live system prompt attribute
+                new_team_line = rf"\1 {new_team_id or 'N/A'}"
                 agent.final_system_prompt = re.sub(team_line_regex, new_team_line, agent.final_system_prompt)
-
-                # Update the prompt within the stored agent_config dictionary (used for saving)
-                if hasattr(agent, 'agent_config') and isinstance(agent.agent_config, dict) and "config" in agent.agent_config:
+                if hasattr(agent, 'agent_config') and "config" in agent.agent_config:
                      agent.agent_config["config"]["system_prompt"] = agent.final_system_prompt
-
-                # Update the prompt in the agent's active message history (if present)
                 if agent.message_history and agent.message_history[0]["role"] == "system":
                     agent.message_history[0]["content"] = agent.final_system_prompt
-
                 logger.info(f"Updated team ID ({new_team_id or 'N/A'}) in live prompt state for dynamic agent '{agent_id}'.")
             except Exception as e:
                  logger.error(f"Error updating system prompt state for agent '{agent_id}' after team change: {e}", exc_info=True)
 
-
-    # --- *** MODIFIED Message Routing *** ---
+    # --- Message Routing (No changes needed) ---
     async def _route_and_activate_agent_message(self, sender_id: str, target_id: str, message_content: str) -> Optional[asyncio.Task]:
-        """
-        Routes a message between agents using SendMessageTool.
-        Checks target existence and team membership rules.
-        Appends message to target history and activates target if idle.
-        Appends feedback to SENDER history if target does not exist.
-
-        Args:
-            sender_id: ID of the sending agent.
-            target_id: ID of the target agent.
-            message_content: The content of the message.
-
-        Returns:
-            Optional[asyncio.Task]: An asyncio Task if the target agent was activated, otherwise None.
-        """
         sender_agent = self.agents.get(sender_id)
         target_agent = self.agents.get(target_id)
+        if not sender_agent: logger.error(f"SendMsg route error: Sender '{sender_id}' not found."); return None
 
-        # --- Check Sender Existence ---
-        if not sender_agent:
-            logger.error(f"SendMsg route error: Sender '{sender_id}' not found. Cannot route message or provide feedback.")
-            return None # Cannot proceed
-
-        # --- Check Target Existence ---
         if not target_agent:
             error_msg = f"Failed to send message: Target agent '{target_id}' not found."
             logger.error(f"SendMsg route error from '{sender_id}': {error_msg}")
-            # --- Add Feedback to Sender History ---
-            feedback_message: MessageDict = {
-                "role": "tool",
-                "tool_call_id": f"send_message_failed_{target_id}", # Use a descriptive pseudo-ID
-                "content": f"[Manager Feedback for SendMessage]: {error_msg}"
-            }
+            feedback_message: MessageDict = { "role": "tool", "tool_call_id": f"send_message_failed_{target_id}", "content": f"[Manager Feedback for SendMessage]: {error_msg}" }
             sender_agent.message_history.append(feedback_message)
             logger.debug(f"Appended 'target not found' feedback to sender '{sender_id}' history.")
-            # --- End Feedback ---
-            return None # Indicate routing failed, no activation task
+            return None
 
-        # --- Communication Rules Check (Team Membership) ---
         sender_team = self.state_manager.get_agent_team(sender_id)
         target_team = self.state_manager.get_agent_team(target_id)
-        allowed = False
-
-        if sender_id == BOOTSTRAP_AGENT_ID: # Admin AI can send to anyone
-            allowed = True
-            logger.info(f"Admin AI ('{sender_id}') sending message to '{target_id}'.")
-        elif target_id == BOOTSTRAP_AGENT_ID: # Anyone can send to Admin AI
-             allowed = True
-             logger.info(f"Agent '{sender_id}' sending message to Admin AI ('{target_id}').")
-        elif sender_team and sender_team == target_team: # Agents in the same team can communicate
-            allowed = True
-            logger.info(f"Routing message from '{sender_id}' to '{target_id}' within team '{target_team}'.")
+        allowed = (sender_id == BOOTSTRAP_AGENT_ID or target_id == BOOTSTRAP_AGENT_ID or (sender_team and sender_team == target_team))
 
         if not allowed:
-            # --- Add Feedback to Sender History ---
-            error_msg = f"Message blocked: Sender '{sender_id}' (Team: {sender_team or 'N/A'}) cannot send to Target '{target_id}' (Team: {target_team or 'N/A'}). Communication restricted to teammates or Admin AI."
+            error_msg = f"Message blocked: Sender '{sender_id}' (Team: {sender_team or 'N/A'}) cannot send to Target '{target_id}' (Team: {target_team or 'N/A'})."
             logger.warning(error_msg)
-            feedback_message: MessageDict = {
-                "role": "tool",
-                "tool_call_id": f"send_message_failed_{target_id}",
-                "content": f"[Manager Feedback for SendMessage]: {error_msg}"
-            }
+            feedback_message: MessageDict = { "role": "tool", "tool_call_id": f"send_message_failed_{target_id}", "content": f"[Manager Feedback for SendMessage]: {error_msg}" }
             sender_agent.message_history.append(feedback_message)
             logger.debug(f"Appended 'communication blocked' feedback to sender '{sender_id}' history.")
-            # --- End Feedback ---
-            return None # Indicate routing failed
+            return None
 
-        # --- Proceed with Message Routing and Activation ---
-        formatted_message: MessageDict = {
-            "role": "user", # Treat incoming agent messages like user messages for the recipient
-            "content": f"[From @{sender_id}]: {message_content}"
-        }
-        # Append to the target agent's history
+        formatted_message: MessageDict = { "role": "user", "content": f"[From @{sender_id}]: {message_content}" }
         target_agent.message_history.append(formatted_message)
         logger.debug(f"Appended message from '{sender_id}' to history of '{target_id}'.")
 
-        # Activate target agent only if it's currently idle
         if target_agent.status == AGENT_STATUS_IDLE:
             logger.info(f"Target '{target_id}' is IDLE. Activating...");
-            # Return the task so the caller can potentially await it
-            return asyncio.create_task(self._handle_agent_generator(target_agent, 0)) # Reset retry count
-        # Handle case where target is awaiting override - queue message but don't activate
+            return asyncio.create_task(self._handle_agent_generator(target_agent, 0))
         elif target_agent.status == AGENT_STATUS_AWAITING_USER_OVERRIDE:
              logger.info(f"Target '{target_id}' is {AGENT_STATUS_AWAITING_USER_OVERRIDE}. Message queued, not activating.")
              await self.send_to_ui({ "type": "status", "agent_id": target_id, "content": f"Message received from @{sender_id}, queued (awaiting user override)." })
              return None
-        else: # Target is busy (processing, executing tool, etc.)
-            logger.info(f"Target '{target_id}' not IDLE (Status: {target_agent.status}). Message queued in history.")
+        else:
+            logger.info(f"Target '{target_id}' not IDLE (Status: {target_agent.status}). Message queued.")
             await self.send_to_ui({ "type": "status", "agent_id": target_id, "content": f"Message received from @{sender_id}, queued." })
-            return None # No activation task created
+            return None
 
-    async def _execute_single_tool(self, agent: Agent, call_id: str, tool_name: str, tool_args: Dict[str, Any], project_name: Optional[str] = None, session_name: Optional[str] = None) -> Optional[Dict]:
-        """Executes a single tool call via the ToolExecutor."""
+    # --- Corrected Tool Execution ---
+    async def _execute_single_tool(
+        self,
+        agent: Agent,
+        call_id: str,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        project_name: Optional[str] = None, # Added context param
+        session_name: Optional[str] = None  # Added context param
+        ) -> Optional[Dict]:
+        """Executes a single tool call via the ToolExecutor, passing context."""
         if not self.tool_executor:
             logger.error("ToolExecutor unavailable. Cannot execute tool.")
             return {"call_id": call_id, "content": "[ToolExec Error: ToolExecutor unavailable]", "_raw_result": None}
 
-        # Set agent status to executing tool
         tool_info = {"name": tool_name, "call_id": call_id}
         agent.set_status(AGENT_STATUS_EXECUTING_TOOL, tool_info=tool_info)
-
         raw_result: Optional[Any] = None
         result_content: str = "[Tool Execution Error: Unknown]"
         try:
@@ -986,84 +982,57 @@ class AgentManager:
         return {"call_id": call_id, "content": result_content, "_raw_result": raw_result}
 
 
+    # --- Failed Tool Result (No changes needed) ---
     async def _failed_tool_result(self, call_id: Optional[str], tool_name: Optional[str]) -> Optional[ToolResultDict]:
-        """Creates a standard error dictionary for failed tool dispatch/parsing."""
         error_content = f"[ToolExec Error: Failed dispatch for '{tool_name or 'unknown'}'. Invalid format or arguments.]"
         final_call_id = call_id or f"invalid_call_{int(time.time())}"
         return {"call_id": final_call_id, "content": error_content, "_raw_result": {"status": "error", "message": error_content}}
 
 
     # --- UI Updates and Status ---
+    # (No changes needed in push_agent_status_update, send_to_ui, get_agent_status)
     async def push_agent_status_update(self, agent_id: str):
-        """Sends the current status of a specific agent to the UI."""
         agent = self.agents.get(agent_id)
         if agent:
-            state = agent.get_state() # Get base state from agent
-            state["team"] = self.state_manager.get_agent_team(agent_id) # Add team info from StateManager
-            await self.send_to_ui({
-                "type": "agent_status_update",
-                "agent_id": agent_id,
-                "status": state # Send combined state
-            })
-        else:
-            logger.warning(f"Cannot push status update for unknown agent: {agent_id}")
+            state = agent.get_state(); state["team"] = self.state_manager.get_agent_team(agent_id)
+            await self.send_to_ui({ "type": "agent_status_update", "agent_id": agent_id, "status": state })
+        else: logger.warning(f"Cannot push status update for unknown agent: {agent_id}")
 
     async def send_to_ui(self, message_data: Dict[str, Any]):
-        """Sends a JSON message to all connected UI clients via the broadcast function."""
-        if not self.send_to_ui_func:
-            logger.warning("UI broadcast function not configured. Cannot send message.")
-            return
-        try:
-            await self.send_to_ui_func(json.dumps(message_data))
-        except TypeError as e:
-            logger.error(f"JSON serialization error sending to UI: {e}. Data: {message_data}", exc_info=True)
-        except Exception as e:
-            logger.error(f"Error sending message to UI: {e}", exc_info=True)
+        if not self.send_to_ui_func: logger.warning("UI broadcast function not configured."); return
+        try: await self.send_to_ui_func(json.dumps(message_data))
+        except TypeError as e: logger.error(f"JSON serialization error sending to UI: {e}. Data: {message_data}", exc_info=True)
+        except Exception as e: logger.error(f"Error sending message to UI: {e}", exc_info=True)
 
     def get_agent_status(self) -> Dict[str, Dict[str, Any]]:
-        """Synchronously gets a snapshot of all current agent statuses, including team info."""
         statuses = {}
         for agent_id, agent in self.agents.items():
-             state = agent.get_state()
-             state["team"] = self.state_manager.get_agent_team(agent_id) # Add team info
+             state = agent.get_state(); state["team"] = self.state_manager.get_agent_team(agent_id)
              statuses[agent_id] = state
         return statuses
 
-
     # --- Session Persistence (Delegated) ---
+    # (No changes needed in save_session, load_session)
     async def save_session(self, project_name: str, session_name: Optional[str] = None) -> Tuple[bool, str]:
-        """Delegates saving the current session state to the SessionManager."""
         logger.info(f"Delegating save_session call for project '{project_name}'...")
         return await self.session_manager.save_session(project_name, session_name)
 
     async def load_session(self, project_name: str, session_name: str) -> Tuple[bool, str]:
-        """Delegates loading a session state to the SessionManager."""
         logger.info(f"Delegating load_session call for project '{project_name}', session '{session_name}'...")
         return await self.session_manager.load_session(project_name, session_name)
 
 
     # --- Cleanup ---
+    # (No changes needed in cleanup_providers, _close_provider_safe)
     async def cleanup_providers(self):
-        """Cleans up resources used by LLM providers (e.g., closes network sessions)."""
         logger.info("Cleaning up LLM providers...");
-        # Use a set to find unique provider instances currently in use
         active_providers = {agent.llm_provider for agent in self.agents.values() if agent.llm_provider}
         logger.info(f"Found {len(active_providers)} unique provider instances to clean up.")
-        # Create tasks to close sessions safely
-        tasks = [
-            asyncio.create_task(self._close_provider_safe(provider))
-            for provider in active_providers
-            # Check if provider has the async close_session method
-            if hasattr(provider, 'close_session') and asyncio.iscoroutinefunction(provider.close_session)
-        ]
-        if tasks:
-            await asyncio.gather(*tasks)
-            logger.info("LLM Provider cleanup tasks completed.")
-        else:
-            logger.info("No provider cleanup tasks were necessary.")
+        tasks = [ asyncio.create_task(self._close_provider_safe(provider)) for provider in active_providers if hasattr(provider, 'close_session') and asyncio.iscoroutinefunction(provider.close_session) ]
+        if tasks: await asyncio.gather(*tasks); logger.info("LLM Provider cleanup tasks completed.")
+        else: logger.info("No provider cleanup tasks were necessary.")
 
     async def _close_provider_safe(self, provider: BaseLLMProvider):
-        """Safely attempts to call the close_session method on a provider instance."""
         try:
             logger.info(f"Attempting to close session for provider: {provider!r}")
             await provider.close_session()
@@ -1072,23 +1041,13 @@ class AgentManager:
             logger.error(f"Error closing session for provider {provider!r}: {e}", exc_info=True)
 
     # --- Sync Helper for Listing Agents (Used by ManageTeamTool Handler) ---
+    # (No changes needed in get_agent_info_list_sync)
     def get_agent_info_list_sync(self, filter_team_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Synchronously gets basic info list for agents, optionally filtered by team."""
         info_list = []
         for agent_id, agent in self.agents.items():
              current_team = self.state_manager.get_agent_team(agent_id)
-             # Apply filter if provided
-             if filter_team_id is not None and current_team != filter_team_id:
-                 continue
-             # Get basic state and add team info
+             if filter_team_id is not None and current_team != filter_team_id: continue
              state = agent.get_state()
-             info = {
-                 "agent_id": agent_id,
-                 "persona": state.get("persona"),
-                 "provider": state.get("provider"),
-                 "model": state.get("model"),
-                 "status": state.get("status"),
-                 "team": current_team
-             }
+             info = { "agent_id": agent_id, "persona": state.get("persona"), "provider": state.get("provider"), "model": state.get("model"), "status": state.get("status"), "team": current_team }
              info_list.append(info)
         return info_list
