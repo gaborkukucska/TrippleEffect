@@ -85,10 +85,12 @@ class ManageTeamTool(BaseTool):
         # Add other relevant agent config params if needed (e.g., "extra_args" as JSON string?)
     ]
 
+# Replace the existing execute method:
     async def execute(self, agent_id: str, agent_sandbox_path: Path, **kwargs: Any) -> Any:
         """
         Validates parameters for the requested management action.
-        Returns a structured dictionary signaling the AgentManager to perform the action.
+        Returns a structured dictionary signaling the AgentManager to perform the action,
+        OR returns a specific error message if required parameters for delete/remove are missing.
 
         Args:
             agent_id (str): The ID of the agent calling the tool (usually admin_ai).
@@ -111,35 +113,55 @@ class ManageTeamTool(BaseTool):
 
         # --- Parameter Validation based on Action ---
         required_params = []
+        agent_id_param = params.get("agent_id") # Get agent_id specifically for checks
+        team_id_param = params.get("team_id")   # Get team_id specifically for checks
+
         if action == "create_agent":
-            required_params = ["provider", "model", "system_prompt", "persona"] # agent_id/team_id are optional
+            required_params = ["provider", "model", "system_prompt", "persona"]
         elif action == "delete_agent":
             required_params = ["agent_id"]
+            # *** ADDED SPECIFIC CHECK ***
+            if not agent_id_param:
+                 error_msg = "Error: Missing required 'agent_id' parameter for 'delete_agent'. Use 'list_agents' first if you don't have the exact ID."
+                 logger.error(f"{agent_id} failed delete_agent call: {error_msg}")
+                 return {"status": "error", "action": action, "message": error_msg}
+            # *** END SPECIFIC CHECK ***
         elif action == "create_team":
             required_params = ["team_id"]
         elif action == "delete_team":
             required_params = ["team_id"]
+            # Optional: Add check if team_id is missing? Assumed present by logic flow.
         elif action == "add_agent_to_team":
             required_params = ["agent_id", "team_id"]
+            # Optional: Add checks if agent_id or team_id are missing?
         elif action == "remove_agent_from_team":
             required_params = ["agent_id", "team_id"]
-        # list_agents, list_teams have no required params (team_id is optional for list_agents)
+             # *** ADDED SPECIFIC CHECK ***
+            if not agent_id_param:
+                 error_msg = "Error: Missing required 'agent_id' parameter for 'remove_agent_from_team'."
+                 logger.error(f"{agent_id} failed remove_agent_from_team call: {error_msg}")
+                 return {"status": "error", "action": action, "message": error_msg}
+            if not team_id_param:
+                 error_msg = "Error: Missing required 'team_id' parameter for 'remove_agent_from_team'."
+                 logger.error(f"{agent_id} failed remove_agent_from_team call: {error_msg}")
+                 return {"status": "error", "action": action, "message": error_msg}
+            # *** END SPECIFIC CHECK ***
 
+        # Generic check for other required params (like for create_agent)
         missing = [p for p in required_params if p not in params or not params[p]]
         if missing:
+            # This check might be redundant now for delete/remove, but keep for create_agent etc.
             error_msg = f"Error: Missing required parameters for action '{action}': {', '.join(missing)}."
             logger.error(error_msg)
             return {"status": "error", "action": action, "message": error_msg}
 
-        # Optional: Add more specific validation (e.g., check agent_id format?)
 
         # If validation passes, return success signal for AgentManager
         success_msg = f"Request for action '{action}' validated. Signaling manager to proceed."
         logger.info(success_msg)
-        # The 'params' dictionary already contains all kwargs, including the optional team_id for list_agents
         return {
             "status": "success",
             "action": action,
-            "params": params, # Pass all provided params (including optional ones) to manager
-            "message": success_msg # This becomes the tool result for the Admin AI's history
+            "params": params, # Pass all original params
+            "message": success_msg
         }
