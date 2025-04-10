@@ -502,7 +502,14 @@ class AgentManager:
              last_error_content = f"[Manager Error: Unexpected error in generator handler - {e}]"
              await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": last_error_content})
         finally:
-            if agent_generator: try: await agent_generator.aclose() except Exception: pass
+            # --- Corrected Generator Cleanup ---
+            if agent_generator:
+                try:
+                    await agent_generator.aclose()
+                    logger.debug(f"Closed generator for '{agent_id}'.")
+                except Exception as close_err:
+                    logger.error(f"Error closing generator for '{agent_id}': {close_err}", exc_info=True)
+            # --- End Correction ---
 
             # --- Retry / Override / Reactivation Logic ---
             if current_cycle_error and is_stream_related_error and retry_count < MAX_STREAM_RETRIES:
