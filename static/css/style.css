@@ -103,7 +103,7 @@ body {
     flex-grow: 1; /* Takes remaining space below header */
     padding: 10px;
     overflow-y: auto; /* THIS is where the main content scrolling happens */
-    overflow-x: hidden;
+    /* overflow-x: hidden; */
     display: flex;
     flex-direction: column;
     min-height: 0; /* Flexbox fix */
@@ -119,7 +119,7 @@ body {
 #chat-view .chat-area-container {
     flex-grow: 1;
     min-height: 150px; /* Ensure minimum height for chat */
-    overflow: hidden; /* Let message-area handle scroll */
+    /* overflow: hidden; */
     display: flex;
     margin-bottom: 10px;
 }
