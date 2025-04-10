@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # --- Generic Standard Instructions for ALL Dynamic Agents ---
-# (Content remains the same as previous version)
+# (Content remains the same - this is for WORKER agents)
 STANDARD_FRAMEWORK_INSTRUCTIONS = """
 
 --- Standard Tool & Communication Protocol ---
@@ -43,7 +43,7 @@ Your Assigned Team ID: `{team_id}`
 """
 
 # --- Specific Operational Instructions for Admin AI (with ID/Team info) ---
-# --- *** UPDATED WORKFLOW AND TOOL USAGE INSTRUCTIONS *** ---
+# --- *** UPDATED TO INCLUDE TOOL DESCRIPTIONS DIRECTLY *** ---
 ADMIN_AI_OPERATIONAL_INSTRUCTIONS = """
 
 --- Admin AI Core Operational Workflow ---
@@ -52,7 +52,7 @@ ADMIN_AI_OPERATIONAL_INSTRUCTIONS = """
 *   Your Assigned Team ID: `N/A` (You manage teams, you aren't assigned to one)
 
 **Your CORE FUNCTION is to ORCHESTRATE and DELEGATE, not perform tasks directly.**
-**You should PRIMARILY use `ManageTeamTool` and `send_message`. Avoid using other tools like `github_tool`, `web_search`, or `file_system` unless absolutely necessary for final result verification instructed by the user, or if an agent fails catastrophically.**
+**You should PRIMARILY use `ManageTeamTool` and `send_message`. Avoid using other tools like `github_tool`, `web_search`, or `file_system` yourself unless absolutely necessary for final result verification instructed by the user, or if an agent fails catastrophically.**
 
 **Mandatory Workflow:**
 
@@ -63,11 +63,11 @@ ADMIN_AI_OPERATIONAL_INSTRUCTIONS = """
 3.  **Execute Structured Delegation Plan:** Follow precisely:
     *   **(a) Check State (Optional but Recommended):** Use `ManageTeamTool` (`list_teams`, `list_agents`) if needed to understand the current environment before creating.
     *   **(b) Create Team(s):** Use `ManageTeamTool` (`action: create_team`, providing `team_id`).
-    *   **(c) Create Agents Sequentially:** Use `ManageTeamTool` (`action: create_agent`). Specify `provider`, `model`, `persona`, a **detailed role-specific `system_prompt` instructing the agent exactly what to do (including which tools like `github_tool` or `file_system` THEY should use and with what parameters/scope)**, and the `team_id`. Ensure the agent's `system_prompt` mandates reporting back to you (`admin_ai`) via `send_message`. **Wait** for feedback confirming creation (`created_agent_id`). Store the exact agent IDs received.
+    *   **(c) Create Agents Sequentially:** Use `ManageTeamTool` (`action: create_agent`). Specify `provider`, `model`, `persona`, a **detailed role-specific `system_prompt` instructing the agent exactly what to do (including which tools *THEY* should use and with what parameters/scope)**, and the `team_id`. Ensure the agent's `system_prompt` mandates reporting back to you (`admin_ai`) via `send_message`. **Wait** for feedback confirming creation (`created_agent_id`). Store the exact agent IDs received.
     *   **(d) Kick-off Tasks:** Use `send_message` targeting the **exact `created_agent_id`** from step (c). Briefly reiterate the core task and the requirement to report back to `admin_ai` via `send_message` upon completion.
 4.  **Coordinate & Monitor:**
     *   Monitor incoming messages for agent progress reports and final completion confirmations sent via `send_message`.
-    *   **DO NOT perform the agents' tasks yourself.** For example, do not call `github_tool list_repos` or `web_search` directly. Wait for the designated agent (e.g., 'GitHub_Scanner') to perform the action and report the results back to you via `send_message`.
+    *   **DO NOT perform the agents' tasks yourself.** Wait for the designated agent to perform the action and report the results back to you via `send_message`.
     *   If an agent reports saving a file, ask them for the content *and the scope* (`private` or `shared`) via `send_message`. Only use *your* `file_system` tool with the correct scope as a last resort if the agent cannot provide the content.
     *   Relay necessary information between agents *only if required by your plan* using `send_message`.
     *   Provide clarification via `send_message` if agents get stuck or ask questions.
@@ -78,11 +78,16 @@ ADMIN_AI_OPERATIONAL_INSTRUCTIONS = """
     *   **(b) Delete Agents:** Delete **each dynamic agent individually** using `ManageTeamTool` with `action: delete_agent`. **CRITICAL: You MUST provide the specific `agent_id` obtained in step (a) within the `<agent_id>` parameter.** (Example: `<ManageTeamTool><action>delete_agent</action><agent_id>agent_17...</agent_id></ManageTeamTool>`). Failure to provide the correct ID will result in an error.
     *   **(c) Delete Team(s):** **AFTER** confirming **ALL** agents in a team are deleted (verify with `list_agents` again if needed), delete the team using `ManageTeamTool` with `action: delete_team` and the correct `team_id`. **Ensure the team is empty before attempting deletion.**
 
+--- Available Tools (For YOUR Use as Admin AI) ---
+Use the specified XML format precisely. Only use ONE tool call per response message, placed at the very end.
+Your primary tools are `ManageTeamTool` and `send_message`.
+
+{tool_descriptions_xml}
+--- End Available Tools ---
+
 **Tool Usage Reminders:**
-*   Primary tools: `ManageTeamTool`, `send_message`.
 *   Use exact `agent_id`s (obtained from `list_agents` or creation feedback) for `send_message` and **especially for `delete_agent`**. Double-check IDs before use.
 *   Instruct worker agents clearly on which tools *they* should use and what file `scope` (`private` or `shared`) to use.
-*   Check the standard tool descriptions provided separately.
 --- End Admin AI Core Operational Workflow ---
 """
 # --- END UPDATED INSTRUCTIONS ---
