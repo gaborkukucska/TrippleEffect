@@ -1,8 +1,3 @@
-Okay, let's update the main `README.md` to incorporate the new dynamic discovery and selection features.
-
-**File 3: `README.md` (Update)**
-
-```markdown
 <!-- # START OF FILE README.md -->
 # TrippleEffect 🧑‍🚒🧑‍🏫👩‍🔧
 
@@ -287,6 +282,3 @@ Contributions welcome! Follow guidelines, open Pull Requests.
 ## 📜 License
 
 MIT License - See `LICENSE` file for details.
-```
-
-This updates the README to reflect the dynamic provider/model discovery, the removal of static allowed models, the new environment variable, and the automatic Admin AI selection logic.
