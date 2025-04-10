@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional, List, AsyncGenerator, Tuple
 import json
 import os
 import traceback
-import time
+import time # Needed for default session name timestamp
 import logging
 import uuid
 
@@ -57,12 +57,14 @@ PROVIDER_CLASS_MAP: Dict[str, type[BaseLLMProvider]] = {
 BOOTSTRAP_AGENT_ID = "admin_ai" # Define the primary bootstrap agent ID
 STREAM_RETRY_DELAYS = [5.0, 10.0, 10.0, 65.0] # Retry delays
 MAX_STREAM_RETRIES = len(STREAM_RETRY_DELAYS) # Max retries
+DEFAULT_PROJECT_NAME = "DefaultProject" # Name for auto-created project
 
 class AgentManager:
     """
     Main coordinator for agents. Manages agent lifecycle, orchestrates task execution
     via interaction handler, delegates state/session management, handles errors/retries.
     Injects standard framework instructions into dynamic agents and Admin AI.
+    Automatically creates a default project/session context on first user message if none exists.
     """
     def __init__(self, websocket_manager: Optional[Any] = None):
         # --- Initialize State ---
@@ -315,12 +317,43 @@ class AgentManager:
             time.sleep(0.001)
             timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4]
 
+    # --- *** MODIFIED handle_user_message *** ---
     async def handle_user_message(self, message: str, client_id: Optional[str] = None):
-        """Routes user message to Admin AI."""
+        """
+        Routes user message to Admin AI.
+        Ensures a default project/session context exists before proceeding.
+        """
         logger.info(f"Received user message for Admin AI: '{message[:100]}...'")
+
+        # --- Auto-create default project/session context if none exists ---
+        if self.current_project is None:
+            logger.info("No active project/session context found. Creating default context...")
+            default_project = DEFAULT_PROJECT_NAME
+            default_session = time.strftime("%Y%m%d_%H%M%S")
+            try:
+                # Call save_session which delegates to SessionManager
+                # This creates directories and sets self.current_project/session
+                success, save_msg = await self.save_session(default_project, default_session)
+                if success:
+                    logger.info(f"Auto-created and saved default session: '{default_project}/{default_session}'")
+                    await self.send_to_ui({"type": "status", "agent_id": "manager", "content": f"Created default session: {default_project}/{default_session}"})
+                else:
+                    # Log error but try to continue; shared scope tools will fail later
+                    logger.error(f"Failed to auto-save default session '{default_project}/{default_session}': {save_msg}")
+                    await self.send_to_ui({"type": "error", "agent_id": "manager", "content": f"Failed to create default session: {save_msg}"})
+            except Exception as e:
+                # Catch unexpected errors during auto-save
+                logger.error(f"Unexpected error during default session auto-save: {e}", exc_info=True)
+                await self.send_to_ui({"type": "error", "agent_id": "manager", "content": f"Error creating default session: {e}"})
+        # --- End auto-create ---
+
         admin_agent = self.agents.get(BOOTSTRAP_AGENT_ID)
         if not admin_agent:
-            logger.error(f"Admin AI ('{BOOTSTRAP_AGENT_ID}') not found. Cannot process message."); return
+            logger.error(f"Admin AI ('{BOOTSTRAP_AGENT_ID}') not found. Cannot process message.")
+            await self.send_to_ui({"type": "error", "agent_id": "manager", "content": "Admin AI unavailable."})
+            return
+
+        # Delegate message to Admin AI (existing logic)
         if admin_agent.status == AGENT_STATUS_IDLE:
             logger.info(f"Delegating message to '{BOOTSTRAP_AGENT_ID}'.")
             admin_agent.message_history.append({"role": "user", "content": message})
@@ -330,6 +363,7 @@ class AgentManager:
         else:
             logger.info(f"Admin AI busy ({admin_agent.status}). Message queued."); admin_agent.message_history.append({"role": "user", "content": message})
             await self.push_agent_status_update(admin_agent.agent_id); await self.send_to_ui({ "type": "status", "agent_id": admin_agent.agent_id, "content": f"Admin AI busy ({admin_agent.status}). Queued." })
+    # --- *** END MODIFICATION *** ---
 
     async def handle_user_override(self, override_data: Dict[str, Any]):
         """Handles user override for a stuck agent."""
@@ -537,6 +571,8 @@ class AgentManager:
                  if final_status not in [AGENT_STATUS_IDLE, AGENT_STATUS_ERROR, AGENT_STATUS_AWAITING_USER_OVERRIDE, AGENT_STATUS_AWAITING_TOOL]:
                       logger.warning(f"Agent '{agent_id}' ended in unexpected state '{final_status}'. Setting IDLE.")
                       agent.set_status(AGENT_STATUS_IDLE)
+                 # Always push status unless reactivating (even if IDLE)
+                 # Consider removing this extra push if UI updates correctly otherwise
                  await self.push_agent_status_update(agent_id)
 
             log_level = logging.ERROR if agent.status in [AGENT_STATUS_ERROR, AGENT_STATUS_AWAITING_USER_OVERRIDE] else logging.INFO
