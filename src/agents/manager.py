@@ -7,6 +7,7 @@ import traceback
 import time # Needed for default session name timestamp
 import logging
 import uuid
+import fnmatch # For pattern matching preferred models
 
 # Import Agent class, Status constants, and BaseLLMProvider types
 from src.agents.core import (
@@ -16,7 +17,7 @@ from src.agents.core import (
 )
 from src.llm_providers.base import BaseLLMProvider, ToolResultDict, MessageDict
 
-# --- *** MODIFIED: Import settings AND model_registry *** ---
+# Import settings AND model_registry
 from src.config.settings import settings, model_registry
 
 # Import WebSocket broadcast function
@@ -31,7 +32,7 @@ from src.tools.send_message import SendMessageTool
 from src.llm_providers.openai_provider import OpenAIProvider
 from src.llm_providers.ollama_provider import OllamaProvider
 from src.llm_providers.openrouter_provider import OpenRouterProvider
-# --- *** TODO: Add LiteLLMProvider when implemented *** ---
+# TODO: Add LiteLLMProvider when implemented
 # from src.llm_providers.litellm_provider import LiteLLMProvider
 
 # Import the component managers and utils
@@ -54,7 +55,7 @@ PROVIDER_CLASS_MAP: Dict[str, type[BaseLLMProvider]] = {
     "openai": OpenAIProvider,
     "ollama": OllamaProvider,
     "openrouter": OpenRouterProvider,
-    # --- *** TODO: Add LiteLLMProvider when implemented *** ---
+    # TODO: Add LiteLLMProvider when implemented
     # "litellm": LiteLLMProvider,
 }
 
@@ -64,49 +65,72 @@ STREAM_RETRY_DELAYS = [5.0, 10.0, 10.0, 65.0]
 MAX_STREAM_RETRIES = len(STREAM_RETRY_DELAYS)
 DEFAULT_PROJECT_NAME = "DefaultProject"
 
+# --- *** NEW: Preferred Admin AI Model Patterns (Prioritized) *** ---
+# List of patterns (using fnmatch syntax) for capable orchestration models.
+# Order matters - first match found in available models will be used.
+# Include provider prefix if needed for uniqueness (e.g., for OpenRouter).
+# Examples: Add high-capability models first. Adjust based on your available models.
+PREFERRED_ADMIN_MODELS = [
+    # High-end Proprietary (if available & tier allows)
+    "anthropic/claude-3-opus*",
+    "openai/gpt-4o*",
+    "google/gemini-2.5-pro*",
+    # High-end Open Source (Local or via OR)
+    "llama3:70b*", # Ollama or LiteLLM
+    "command-r-plus*", # OpenRouter Cohere
+    "qwen/qwen2-72b-instruct*", # OpenRouter Qwen
+    # Mid-range / Fallback (adjust as needed)
+    "anthropic/claude-3-sonnet*",
+    "google/gemini-pro*",
+    "llama3*", # Ollama or LiteLLM (8B)
+    "mistralai/mixtral-8x7b*",
+    "mistralai/mistral-large*",
+    "*wizardlm2*",
+    "*deepseek-coder*", # Sometimes good at following instructions
+    # Free Tier / Last Resort
+    "google/gemini-flash*",
+    "*", # Wildcard as absolute fallback (will pick first available)
+]
+# --- *** END NEW *** ---
+
+
 class AgentManager:
     """
     Main coordinator for agents. Manages agent instances, overall state (project/session),
     delegates task execution cycles to AgentCycleHandler, delegates state/session management,
     and handles high-level application flow like overrides and UI communication.
     Uses ModelRegistry for validating available models for dynamic agents.
+    *** Automatically selects Admin AI model if not explicitly specified/available in config. ***
     """
     def __init__(self, websocket_manager: Optional[Any] = None):
-        # --- Initialize State ---
+        # (Initialization remains the same)
         self.bootstrap_agents: List[str] = []
         self.agents: Dict[str, Agent] = {}
         self.send_to_ui_func = broadcast
         self.current_project: Optional[str] = None
         self.current_session: Optional[str] = None
-
-        # --- Initialize Core Components ---
         logger.info("Instantiating ToolExecutor...")
         self.tool_executor = ToolExecutor()
         logger.info("ToolExecutor instantiated.")
         self.tool_descriptions_xml = self.tool_executor.get_formatted_tool_descriptions_xml()
         logger.info("Generated XML tool descriptions for prompts.")
-
         logger.info("Instantiating AgentStateManager...")
         self.state_manager = AgentStateManager(self)
         logger.info("AgentStateManager instantiated.")
-
         logger.info("Instantiating SessionManager...")
         self.session_manager = SessionManager(self, self.state_manager)
         logger.info("SessionManager instantiated.")
-
         logger.info("Instantiating AgentInteractionHandler...")
         self.interaction_handler = AgentInteractionHandler(self)
         logger.info("AgentInteractionHandler instantiated.")
-
         logger.info("Instantiating AgentCycleHandler...")
         self.cycle_handler = AgentCycleHandler(self, self.interaction_handler)
         logger.info("AgentCycleHandler instantiated.")
-
         self._ensure_projects_dir()
         logger.info("AgentManager initialized synchronously. Bootstrap agents and model discovery run asynchronously.")
 
     def _ensure_projects_dir(self):
-        """Ensures the base directory for projects exists."""
+        # (Remains the same)
         try:
              settings.PROJECTS_BASE_DIR.mkdir(parents=True, exist_ok=True)
              logger.info(f"Ensured projects directory exists at: {settings.PROJECTS_BASE_DIR}")
@@ -116,7 +140,9 @@ class AgentManager:
     # --- Agent Initialization ---
     async def initialize_bootstrap_agents(self):
         """
-        Loads bootstrap agents, constructing Admin AI prompt using utils.
+        Loads bootstrap agents.
+        *** For Admin AI: Attempts to use config.yaml model if available,
+        otherwise automatically selects a suitable available model. ***
         Injects the list of currently AVAILABLE models into the Admin AI prompt.
         """
         logger.info("Initializing bootstrap agents asynchronously...")
@@ -128,62 +154,134 @@ class AgentManager:
         except Exception as e: logger.error(f"Error creating main sandbox directory: {e}")
 
         tasks = []
-        # --- *** MODIFIED: Get available models list from registry *** ---
         formatted_available_models = model_registry.get_formatted_available_models()
         logger.debug("Retrieved formatted available models for Admin AI prompt.")
-        # --- *** END MODIFICATION *** ---
+
+        # --- *** Get prioritized list of all available models *** ---
+        # This list respects local preference implicitly via model_registry implementation
+        all_available_models_flat: List[str] = model_registry.get_available_models_list()
+        # --- *** END *** ---
 
         for agent_conf_entry in agent_configs_list:
             agent_id = agent_conf_entry.get("agent_id")
             if not agent_id: logger.warning("Skipping bootstrap agent due to missing 'agent_id'."); continue
 
             agent_config_data = agent_conf_entry.get("config", {})
-            provider_name = agent_config_data.get("provider", settings.DEFAULT_AGENT_PROVIDER)
+            # Copy original config to modify without affecting settings object
+            final_agent_config_data = agent_config_data.copy()
 
-            # Check if provider itself is configured (URL/Key)
-            if not settings.is_provider_configured(provider_name):
-                logger.error(f"Cannot initialize '{agent_id}': Provider '{provider_name}' not configured in .env. Skipping.")
+            # --- *** Admin AI Auto-Selection Logic *** ---
+            selected_admin_provider = final_agent_config_data.get("provider", settings.DEFAULT_AGENT_PROVIDER)
+            selected_admin_model = final_agent_config_data.get("model", settings.DEFAULT_AGENT_MODEL)
+            selection_method = "config.yaml" # Assume using config initially
+
+            if agent_id == BOOTSTRAP_AGENT_ID:
+                logger.info(f"Processing Admin AI ({BOOTSTRAP_AGENT_ID}) configuration...")
+                config_provider = final_agent_config_data.get("provider")
+                config_model = final_agent_config_data.get("model")
+
+                use_config_value = False
+                if config_provider and config_model:
+                    logger.info(f"Admin AI defined in config.yaml: {config_provider}/{config_model}")
+                    if not settings.is_provider_configured(config_provider):
+                         logger.warning(f"Provider '{config_provider}' specified for Admin AI in config is not configured in .env. Ignoring.")
+                    elif not model_registry.is_model_available(config_provider, config_model):
+                         logger.warning(f"Model '{config_model}' specified for Admin AI in config is not available via registry. Ignoring.")
+                    else:
+                         logger.info(f"Using Admin AI provider/model specified in config.yaml: {config_provider}/{config_model}")
+                         use_config_value = True
+                         # Keep selected_admin_provider/model as they are from config
+                else:
+                     logger.info("Admin AI provider/model not fully specified in config.yaml. Attempting automatic selection...")
+
+                if not use_config_value:
+                    selection_method = "automatic"
+                    selected_admin_provider = None
+                    selected_admin_model = None
+                    logger.info(f"Attempting automatic Admin AI model selection. Preferred patterns: {PREFERRED_ADMIN_MODELS}")
+                    logger.debug(f"Full available models list (prioritized): {all_available_models_flat}")
+
+                    # Iterate through preferred patterns
+                    for pattern in PREFERRED_ADMIN_MODELS:
+                        found_match = False
+                        # Check available models against the current pattern
+                        for model_id_full in all_available_models_flat:
+                             # Extract provider (handle cases like ollama where provider isn't in ID)
+                             provider_guess = "unknown"
+                             if "/" in model_id_full:
+                                 provider_guess = model_id_full.split('/')[0]
+                             elif any(model_id_full == m.get('id') for m in model_registry.available_models.get('ollama', [])):
+                                 provider_guess = 'ollama'
+                             elif any(model_id_full == m.get('id') for m in model_registry.available_models.get('litellm', [])):
+                                 provider_guess = 'litellm'
+
+                             # Match using fnmatch (allows wildcards) against the full ID
+                             if fnmatch.fnmatch(model_id_full, pattern):
+                                 # Check if the guessed provider is actually configured
+                                 if settings.is_provider_configured(provider_guess):
+                                     selected_admin_provider = provider_guess
+                                     selected_admin_model = model_id_full
+                                     logger.info(f"Auto-selected Admin AI model based on pattern '{pattern}': {selected_admin_provider}/{selected_admin_model}")
+                                     found_match = True
+                                     break # Stop checking models for this pattern
+                                 # else: logger.debug(f"Pattern '{pattern}' matched '{model_id_full}', but provider '{provider_guess}' is not configured.")
+                        if found_match:
+                            break # Stop checking patterns
+
+                    if not selected_admin_model:
+                        logger.error("Could not automatically select any available/configured model for Admin AI! Check .env configurations and model discovery logs.")
+                        # Cannot proceed without a model for Admin AI
+                        continue # Skip Admin AI creation
+
+                    # Update the config data we'll use for creation
+                    final_agent_config_data["provider"] = selected_admin_provider
+                    final_agent_config_data["model"] = selected_admin_model
+            # --- *** END Admin AI Auto-Selection Logic *** ---
+
+            # General check if the *selected* provider is configured (redundant but safe)
+            final_provider = final_agent_config_data.get("provider")
+            if not settings.is_provider_configured(final_provider):
+                logger.error(f"Cannot initialize '{agent_id}': Selected provider '{final_provider}' is not configured in .env. Skipping.")
                 continue
 
-            # --- *** NEW: Check if the *specific model* for bootstrap agent is available *** ---
-            # Bootstrap agents are slightly special, we might want them to run even if their
-            # specific model wasn't discovered (e.g., OpenAI with no discovery).
-            # Let's WARN but allow it to proceed if the provider is configured.
-            bootstrap_model = agent_config_data.get("model", settings.DEFAULT_AGENT_MODEL)
-            if not model_registry.is_model_available(provider_name, bootstrap_model):
-                 logger.warning(f"Bootstrap agent '{agent_id}' uses model '{bootstrap_model}' for provider '{provider_name}', which was not found in the list of discovered/available models. Attempting to use anyway...")
-            # --- *** END NEW *** ---
-
-            final_agent_config_data = agent_config_data.copy()
+            # Check if the *selected* model is available (mainly for non-admin bootstrap agents)
+            final_model = final_agent_config_data.get("model")
+            if not is_bootstrap or agent_id != BOOTSTRAP_AGENT_ID: # Check availability for non-admin bootstrap too
+                 if final_provider and final_model and not model_registry.is_model_available(final_provider, final_model):
+                     logger.warning(f"Bootstrap agent '{agent_id}' uses model '{final_model}' for provider '{final_provider}', which was not found in the list of discovered/available models. Attempting to use anyway...")
 
             # Inject operational instructions and AVAILABLE model list into Admin AI prompt
             if agent_id == BOOTSTRAP_AGENT_ID:
-                user_defined_prompt = final_agent_config_data.get("system_prompt", "")
+                user_defined_prompt = agent_config_data.get("system_prompt", "") # Use original config for base prompt
                 operational_instructions = ADMIN_AI_OPERATIONAL_INSTRUCTIONS.format(
                     tool_descriptions_xml=self.tool_descriptions_xml
                 )
-                # --- *** MODIFIED: Use formatted_available_models *** ---
-                final_agent_config_data["system_prompt"] = (
+                final_agent_config_data["system_prompt"] = ( # Modify the final config data
                     f"--- Primary Goal/Persona ---\n{user_defined_prompt}\n\n"
                     f"{operational_instructions}\n\n"
                     f"---\n{formatted_available_models}\n---" # Inject available models list
                 )
-                logger.info(f"Assembled final prompt for '{BOOTSTRAP_AGENT_ID}' including available model list.")
-                # --- *** END MODIFICATION *** ---
+                logger.info(f"Assembled final prompt for '{BOOTSTRAP_AGENT_ID}' (using {selection_method} selection: {selected_admin_provider}/{selected_admin_model}) including available model list.")
             else:
                 # For other bootstrap agents, just use their defined prompt
                 logger.info(f"Using system prompt from config for bootstrap agent '{agent_id}'.")
 
+            # Create the agent using the potentially modified final_agent_config_data
             tasks.append(self._create_agent_internal(
                 agent_id_requested=agent_id,
-                agent_config_data=final_agent_config_data,
+                agent_config_data=final_agent_config_data, # Use the potentially updated config
                 is_bootstrap=True
             ))
 
+        # (Rest of the method remains the same)
         results = await asyncio.gather(*tasks, return_exceptions=True)
         successful_ids = []
         for i, result in enumerate(results):
-             agent_id_log = agent_configs_list[i].get("agent_id") if i < len(agent_configs_list) else f"unknown_{i}";
+             # Need to carefully get the original agent_id attempted for logging
+             original_agent_id_attempted = "unknown"
+             if i < len(agent_configs_list) and isinstance(agent_configs_list[i], dict):
+                 original_agent_id_attempted = agent_configs_list[i].get("agent_id", f"unknown_index_{i}")
+
              if isinstance(result, tuple) and result[0]:
                  created_agent_id = result[2]
                  if created_agent_id:
@@ -191,14 +289,17 @@ class AgentManager:
                      self.bootstrap_agents.append(created_agent_id)
                      successful_ids.append(created_agent_id)
                      logger.info(f"--- Bootstrap agent '{created_agent_id}' initialized. ---")
-                 else: logger.error(f"--- Failed bootstrap init '{agent_id_log}': {result[1]} ---")
+                 else: # Should not happen if success is True
+                      logger.error(f"--- Failed bootstrap init '{original_agent_id_attempted}': {result[1]} (Success reported but no ID?) ---")
              elif isinstance(result, Exception):
-                 logger.error(f"--- Failed bootstrap init '{agent_id_log}': {result} ---", exc_info=result)
-             else: logger.error(f"--- Failed bootstrap init '{agent_id_log}': {result} ---")
+                 logger.error(f"--- Failed bootstrap init '{original_agent_id_attempted}': {result} ---", exc_info=result)
+             else: # Failure tuple
+                  error_msg = result[1] if isinstance(result, tuple) else str(result)
+                  logger.error(f"--- Failed bootstrap init '{original_agent_id_attempted}': {error_msg} ---")
 
         logger.info(f"Finished bootstrap initialization. Active: {successful_ids}")
         if BOOTSTRAP_AGENT_ID not in self.agents:
-             logger.critical(f"CRITICAL: Admin AI ('{BOOTSTRAP_AGENT_ID}') failed to initialize!")
+             logger.critical(f"CRITICAL: Admin AI ('{BOOTSTRAP_AGENT_ID}') failed to initialize! Check previous errors.")
 
 
     async def _create_agent_internal(
@@ -239,8 +340,7 @@ class AgentManager:
             logger.error(msg)
             return False, msg, None
 
-        # --- *** MODIFIED: Validate model availability using ModelRegistry *** ---
-        # Apply this check ONLY for NEWLY created DYNAMIC agents
+        # Validate model availability using ModelRegistry for NEW DYNAMIC agents
         if not is_bootstrap and not loading_from_session:
             if not model_registry.is_model_available(provider_name, model):
                  available_list_str = ", ".join(model_registry.get_available_models_list(provider=provider_name))
@@ -250,7 +350,6 @@ class AgentManager:
                  return False, msg, None
             else:
                  logger.info(f"Dynamic agent model validated via ModelRegistry: '{provider_name}/{model}'.")
-        # --- *** END MODIFICATION *** ---
 
         # Prepare Prompt
         role_specific_prompt = agent_config_data.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
@@ -263,26 +362,18 @@ class AgentManager:
              )
              final_system_prompt = standard_info + "\n\n--- Your Specific Role & Task ---\n" + role_specific_prompt
              logger.info(f"Injected standard framework instructions for dynamic agent '{agent_id}'.")
-        # For bootstrap or loaded agents, use the prompt as provided/loaded
-        elif loading_from_session:
-             final_system_prompt = agent_config_data.get("system_prompt", role_specific_prompt)
-             logger.debug(f"Using loaded system prompt for agent '{agent_id}'.")
-        elif is_bootstrap:
-             final_system_prompt = agent_config_data.get("system_prompt", final_system_prompt) # Already constructed in initialize_bootstrap_agents
-             logger.debug(f"Using pre-constructed system prompt for bootstrap agent '{agent_id}'.")
+        elif loading_from_session or is_bootstrap:
+             final_system_prompt = agent_config_data.get("system_prompt", role_specific_prompt) # Use provided prompt
+             logger.debug(f"Using provided system prompt for {'loaded' if loading_from_session else 'bootstrap'} agent '{agent_id}'.")
 
         # Prepare Provider Configuration
         temperature = agent_config_data.get("temperature", settings.DEFAULT_TEMPERATURE)
         allowed_provider_keys = ['api_key', 'base_url', 'referer']
         agent_config_keys_to_exclude = ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'project_name', 'session_name'] + allowed_provider_keys
         provider_specific_kwargs = {k: v for k, v in agent_config_data.items() if k not in agent_config_keys_to_exclude}
-        # Get base provider config (key/url/referer) from settings
         base_provider_config = settings.get_provider_config(provider_name)
-        # Combine base config with any overrides from agent_config_data and provider_specific_kwargs
         final_provider_args = {**base_provider_config, **provider_specific_kwargs}
-        # Ensure no None values are passed if the provider doesn't expect them
         final_provider_args = {k: v for k, v in final_provider_args.items() if v is not None}
-
 
         # Prepare final full config entry for the agent instance
         final_agent_config_entry = {
@@ -296,16 +387,14 @@ class AgentManager:
         # Instantiate Provider
         ProviderClass = PROVIDER_CLASS_MAP.get(provider_name)
         if not ProviderClass:
-            # --- *** TODO: Add check/warning for LiteLLM once provider exists *** ---
+            # TODO: Add check/warning for LiteLLM once provider exists
             if provider_name == "litellm":
                  msg = f"LiteLLM provider support is not yet fully implemented."
                  logger.error(msg)
                  return False, msg, None
-            # --- *** END TODO *** ---
             msg = f"Unknown provider type '{provider_name}' specified in config or PROVIDER_CLASS_MAP."
             logger.error(msg)
             return False, msg, None
-
         try:
             llm_provider_instance = ProviderClass(**final_provider_args)
         except Exception as e:
@@ -320,7 +409,7 @@ class AgentManager:
         except Exception as e:
             msg = f"Agent instantiation failed: {e}"
             logger.error(msg, exc_info=True)
-            await self._close_provider_safe(llm_provider_instance) # Cleanup provider if agent fails
+            await self._close_provider_safe(llm_provider_instance)
             return False, msg, None
         logger.info(f"  Instantiated Agent object for '{agent_id}'.")
 
@@ -329,7 +418,6 @@ class AgentManager:
             await asyncio.to_thread(agent.ensure_sandbox_exists)
         except Exception as e:
             logger.error(f"  Error ensuring sandbox for '{agent_id}': {e}", exc_info=True)
-            # Non-fatal, agent might still work without file system access
 
         # Add agent to registry
         self.agents[agent_id] = agent
@@ -342,21 +430,18 @@ class AgentManager:
             if team_add_success:
                 logger.info(f"Agent '{agent_id}' state added to team '{team_id}'.")
             else:
-                # Log warning but don't fail the agent creation
                 team_add_msg_suffix = f" (Warning adding to team state: {team_add_msg})"
                 logger.warning(f"Agent '{agent_id}': {team_add_msg_suffix}")
 
         message = f"Agent '{agent_id}' ({persona}) created successfully." + team_add_msg_suffix
         return True, message, agent_id
 
-    # --- Other methods (create_agent_instance, delete_agent_instance, _generate_unique_agent_id, etc.) remain the same ---
-    # --- No changes needed in them as they call _create_agent_internal which now has the validation ---
+    # --- (The rest of AgentManager remains unchanged) ---
 
     async def create_agent_instance(
         self, agent_id_requested: Optional[str], provider: str, model: str, system_prompt: str, persona: str,
         team_id: Optional[str] = None, temperature: Optional[float] = None, **kwargs
         ) -> Tuple[bool, str, Optional[str]]:
-        """Public method for dynamic agents. Calls internal logic & notifies UI."""
         # (Code remains the same)
         if not all([provider, model, system_prompt, persona]): return False, "Missing required args.", None
         agent_config_data = {"provider": provider, "model": model, "system_prompt": system_prompt, "persona": persona}
@@ -375,14 +460,11 @@ class AgentManager:
             await self.push_agent_status_update(created_agent_id)
         return success, message, created_agent_id
 
-
     async def delete_agent_instance(self, agent_id: str) -> Tuple[bool, str]:
-        """Removes dynamic agent, cleans up, updates state."""
         # (Code remains the same)
         if not agent_id: return False, "Agent ID empty."
         if agent_id not in self.agents: return False, f"Agent '{agent_id}' not found."
         if agent_id in self.bootstrap_agents: return False, f"Cannot delete bootstrap agent '{agent_id}'."
-
         agent_instance = self.agents.pop(agent_id)
         self.state_manager.remove_agent_from_all_teams_state(agent_id)
         await self._close_provider_safe(agent_instance.llm_provider)
@@ -391,54 +473,36 @@ class AgentManager:
         await self.send_to_ui({"type": "agent_deleted", "agent_id": agent_id})
         return True, message
 
-
     def _generate_unique_agent_id(self, prefix="agent") -> str:
-        """Generates unique agent ID."""
         # (Code remains the same)
-        timestamp = int(time.time() * 1000)
-        short_uuid = uuid.uuid4().hex[:4]
+        timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4]
         while True:
             new_id = f"{prefix}_{timestamp}_{short_uuid}".replace(":", "_")
             if new_id not in self.agents: return new_id
-            time.sleep(0.001)
-            timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4]
-
-    # --- Agent Scheduling and Interaction ---
+            time.sleep(0.001); timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4]
 
     async def schedule_cycle(self, agent: Agent, retry_count: int = 0):
-        """Schedules the agent's execution cycle via the AgentCycleHandler."""
         # (Code remains the same)
-        if not agent:
-             logger.error("Schedule cycle called with invalid Agent object.")
-             return
+        if not agent: logger.error("Schedule cycle called with invalid Agent object."); return
         logger.debug(f"Manager: Scheduling cycle for agent '{agent.agent_id}' (Retry: {retry_count}).")
         asyncio.create_task(self.cycle_handler.run_cycle(agent, retry_count))
 
-
     async def handle_user_message(self, message: str, client_id: Optional[str] = None):
-        """
-        Routes user message to Admin AI after ensuring context.
-        Uses schedule_cycle to start the Admin AI.
-        """
         # (Code remains the same)
         logger.info(f"Manager: Received user message for Admin AI: '{message[:100]}...'")
         if self.current_project is None:
             logger.info("Manager: No active project/session context found. Creating default context...")
-            default_project = DEFAULT_PROJECT_NAME
-            default_session = time.strftime("%Y%m%d_%H%M%S")
+            default_project = DEFAULT_PROJECT_NAME; default_session = time.strftime("%Y%m%d_%H%M%S")
             try:
                 success, save_msg = await self.save_session(default_project, default_session)
                 if success: logger.info(f"Manager: Auto-created session: '{default_project}/{default_session}'")
                 else: logger.error(f"Manager: Failed to auto-save default session: {save_msg}")
             except Exception as e: logger.error(f"Manager: Error during default session auto-save: {e}", exc_info=True)
             await self.send_to_ui({"type": "status", "agent_id": "manager", "content": f"Context set to default: {default_project}/{default_session}" if success else f"Failed to create default context: {save_msg}"})
-
         admin_agent = self.agents.get(BOOTSTRAP_AGENT_ID)
         if not admin_agent:
             logger.error(f"Manager: Admin AI ('{BOOTSTRAP_AGENT_ID}') not found. Cannot process message.")
-            await self.send_to_ui({"type": "error", "agent_id": "manager", "content": "Admin AI unavailable."})
-            return
-
+            await self.send_to_ui({"type": "error", "agent_id": "manager", "content": "Admin AI unavailable."}); return
         if admin_agent.status == AGENT_STATUS_IDLE:
             logger.info(f"Manager: Delegating message to '{BOOTSTRAP_AGENT_ID}' and scheduling cycle.")
             admin_agent.message_history.append({"role": "user", "content": message})
@@ -449,35 +513,22 @@ class AgentManager:
             logger.info(f"Manager: Admin AI busy ({admin_agent.status}). Message queued."); admin_agent.message_history.append({"role": "user", "content": message})
             await self.push_agent_status_update(admin_agent.agent_id); await self.send_to_ui({ "type": "status", "agent_id": admin_agent.agent_id, "content": f"Admin AI busy ({admin_agent.status}). Queued." })
 
-
     async def handle_user_override(self, override_data: Dict[str, Any]):
-        """Handles user override, schedules the agent cycle on success."""
-        # (Code remains the same)
+        # (Code remains the same - validation uses registry now)
         agent_id = override_data.get("agent_id"); new_provider_name = override_data.get("new_provider"); new_model = override_data.get("new_model")
         if not all([agent_id, new_provider_name, new_model]): logger.error(f"Invalid override data: {override_data}"); return
-        agent = self.agents.get(agent_id)
+        agent = self.agents.get(agent_id);
         if not agent: logger.error(f"Override error: Agent '{agent_id}' not found."); return
         if agent.status != AGENT_STATUS_AWAITING_USER_OVERRIDE: logger.warning(f"Override for '{agent_id}' ignored (Status: {agent.status})."); return
-
         logger.info(f"Manager: Applying user override for '{agent_id}'. New: {new_provider_name}/{new_model}")
-
-        # --- *** NEW: Validate override model availability *** ---
         if not model_registry.is_model_available(new_provider_name, new_model):
-             available_list_str = ", ".join(model_registry.get_available_models_list(provider=new_provider_name))
-             if not available_list_str: available_list_str = "(None discovered/available)"
-             error_msg = f"Override failed: Model '{new_model}' is not available for provider '{new_provider_name}'. Available: [{available_list_str}]"
-             logger.error(error_msg)
-             await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": error_msg})
-             # Keep agent awaiting override
-             agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE)
-             return
-        # --- *** END NEW *** ---
-
+             available_list_str = ", ".join(model_registry.get_available_models_list(provider=new_provider_name)); available_list_str = available_list_str or "(None discovered/available)"
+             error_msg = f"Override failed: Model '{new_model}' is not available for provider '{new_provider_name}'. Available: [{available_list_str}]"; logger.error(error_msg)
+             await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": error_msg}); agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE); return
         ProviderClass = PROVIDER_CLASS_MAP.get(new_provider_name)
         if not ProviderClass or not settings.is_provider_configured(new_provider_name):
             error_msg = f"Override failed: Provider '{new_provider_name}' unknown/unconfigured."; logger.error(error_msg)
             await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": error_msg}); return
-
         old_provider_instance = agent.llm_provider; old_provider_name = agent.provider_name; old_model = agent.model
         try:
             agent.provider_name = new_provider_name; agent.model = new_model
@@ -485,44 +536,25 @@ class AgentManager:
             base_provider_config = settings.get_provider_config(new_provider_name)
             provider_kwargs = {k: v for k, v in agent.agent_config.get("config", {}).items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'api_key', 'base_url', 'referer']}
             final_provider_args = {**base_provider_config, **provider_kwargs}; final_provider_args = {k: v for k, v in final_provider_args.items() if v is not None}
-            new_provider_instance = ProviderClass(**final_provider_args)
-            agent.llm_provider = new_provider_instance
-            await self._close_provider_safe(old_provider_instance)
-
-            logger.info(f"Manager: Override applied for '{agent_id}'. Scheduling cycle.")
-            agent.set_status(AGENT_STATUS_IDLE)
-            await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Override applied. Retrying with {new_provider_name}/{new_model}."})
+            new_provider_instance = ProviderClass(**final_provider_args); agent.llm_provider = new_provider_instance
+            await self._close_provider_safe(old_provider_instance); logger.info(f"Manager: Override applied for '{agent_id}'. Scheduling cycle.")
+            agent.set_status(AGENT_STATUS_IDLE); await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Override applied. Retrying with {new_provider_name}/{new_model}."})
             await self.schedule_cycle(agent, 0)
         except Exception as e:
             logger.error(f"Manager: Error applying override for '{agent_id}': {e}", exc_info=True)
             agent.provider_name = old_provider_name; agent.model = old_model; agent.llm_provider = old_provider_instance
             if hasattr(agent, 'agent_config') and "config" in agent.agent_config: agent.agent_config["config"].update({"provider": old_provider_name, "model": old_model})
-            agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE)
-            await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": f"Failed to apply override: {e}. Try again."})
-
+            agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE); await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": f"Failed to apply override: {e}. Try again."})
 
     async def request_user_override(self, agent_id: str, last_error: str):
-        """Called by CycleHandler to request user override via UI."""
         # (Code remains the same)
         agent = self.agents.get(agent_id)
         if agent:
             logger.info(f"Manager: Sending user override request to UI for agent '{agent_id}'.")
-            await self.send_to_ui({
-                "type": "request_user_override",
-                "agent_id": agent_id,
-                "persona": agent.persona,
-                "current_provider": agent.provider_name,
-                "current_model": agent.model,
-                "last_error": last_error,
-                "message": f"Agent '{agent.persona}' failed after retries. Provide alternative or try again."
-            })
-        else:
-            logger.error(f"Manager: Cannot request override for non-existent agent '{agent_id}'.")
+            await self.send_to_ui({"type": "request_user_override", "agent_id": agent_id, "persona": agent.persona, "current_provider": agent.provider_name, "current_model": agent.model, "last_error": last_error, "message": f"Agent '{agent.persona}' failed after retries. Provide alternative or try again."})
+        else: logger.error(f"Manager: Cannot request override for non-existent agent '{agent_id}'.")
 
-
-    # --- UI Updates ---
     async def push_agent_status_update(self, agent_id: str):
-        """Gets agent state and sends update to UI."""
         # (Code remains the same)
         agent = self.agents.get(agent_id)
         if agent: state = agent.get_state(); state["team"] = self.state_manager.get_agent_team(agent_id)
@@ -530,18 +562,15 @@ class AgentManager:
         await self.send_to_ui({"type": "agent_status_update", "agent_id": agent_id, "status": state})
 
     async def send_to_ui(self, message_data: Dict[str, Any]):
-        """Sends JSON data to UI via WebSocket broadcast."""
         # (Code remains the same)
         if not self.send_to_ui_func: logger.warning("UI broadcast func not set."); return
         try: await self.send_to_ui_func(json.dumps(message_data))
         except Exception as e: logger.error(f"Error sending to UI: {e}. Data: {message_data}", exc_info=True)
 
     def get_agent_status(self) -> Dict[str, Dict[str, Any]]:
-        """Gets snapshot of current agent statuses."""
         # (Code remains the same)
         return {aid: (ag.get_state() | {"team": self.state_manager.get_agent_team(aid)}) for aid, ag in self.agents.items()}
 
-    # --- Session Persistence (Delegated) ---
     async def save_session(self, project_name: str, session_name: Optional[str] = None) -> Tuple[bool, str]:
         # (Code remains the same)
         logger.info(f"Manager: Delegating save_session for '{project_name}'...")
@@ -552,9 +581,7 @@ class AgentManager:
         logger.info(f"Manager: Delegating load_session for '{project_name}/{session_name}'...")
         return await self.session_manager.load_session(project_name, session_name)
 
-    # --- Cleanup ---
     async def cleanup_providers(self):
-        """Closes sessions for unique active LLM providers."""
         # (Code remains the same)
         logger.info("Manager: Cleaning up LLM providers...");
         active_providers = {agent.llm_provider for agent in self.agents.values() if agent.llm_provider}
@@ -567,15 +594,12 @@ class AgentManager:
         try: await provider.close_session(); logger.info(f"Manager: Closed session for {provider!r}")
         except Exception as e: logger.error(f"Manager: Error closing session for {provider!r}: {e}", exc_info=True)
 
-    # --- Sync Helper for Listing Agents (Used by Interaction Handler) ---
     def get_agent_info_list_sync(self, filter_team_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Gets basic info list for agents, optionally filtered by team."""
         # (Code remains the same)
         info_list = []
         for agent_id, agent in self.agents.items():
              current_team = self.state_manager.get_agent_team(agent_id)
              if filter_team_id is not None and current_team != filter_team_id: continue
-             state = agent.get_state()
-             info = {"agent_id": agent_id, "persona": state.get("persona"), "provider": state.get("provider"), "model": state.get("model"), "status": state.get("status"), "team": current_team}
+             state = agent.get_state(); info = {"agent_id": agent_id, "persona": state.get("persona"), "provider": state.get("provider"), "model": state.get("model"), "status": state.get("status"), "team": current_team}
              info_list.append(info)
         return info_list
