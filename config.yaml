@@ -1,42 +1,49 @@
 # START OF FILE config.yaml
-# Configuration for TrippleEffect Bootstrap Agents and Dynamic Agent Constraints
+# Configuration for TrippleEffect Bootstrap Agents.
 
-# This file defines essential bootstrap agents (like Admin AI) and sets
-# constraints (allowed models) for dynamically created agents.
-# The Admin AI's specific operational workflow and standard tool/communication
-# protocols are injected by the framework (AgentManager) during initialization.
-# Dynamic agents and teams are managed in memory by the AgentManager.
+# This file defines essential bootstrap agents (like Admin AI).
+# Dynamic agents are created in memory by the Admin AI via the ManageTeamTool.
+# Available models for dynamic agents are now discovered automatically based on
+# configured providers (.env) and the MODEL_TIER environment variable.
 
-# --- Constraints for Dynamic Agent Creation ---
-allowed_sub_agent_models:
-  # Define allowed models per provider for agents created by ManageTeamTool
-  openrouter:
-    # Add capable models (check OpenRouter for current free/paid options)
-    - "google/gemini-2.5-pro-exp-03-25:free"
-    - "qwen/qwen2.5-vl-72b-instruct:free"
-    - "deepseek/deepseek-chat-v3-0324:free"
-    - "meta-llama/llama-4-maverick:free"
-  ollama:
-    # Add local Ollama models you have pulled, e.g., "llama3", "mistral"
-    - ""
-    - ""
-  openai:
-    # Add OpenAI models if configured, e.g., "gpt-4o", "gpt-3.5-turbo"
-    - ""
+# --- Allowed Sub Agent Models (DEPRECATED - REMOVED) ---
+# This section is no longer used. Model availability is determined dynamically.
 
 # --- Bootstrap Agent Configurations ---
 agents:
   - agent_id: "admin_ai" # The central coordinator agent
     config:
-      provider: "openrouter" # Use a highly capable provider/model for planning
-      model: "google/gemini-2.5-pro-exp-03-25:free" # Needs good instruction following & planning
+      # --- Select the PROVIDER and specific MODEL for the Admin AI ---
+      # Ensure this provider is configured in .env
+      # Ensure this model is suitable for complex planning and orchestration.
+      # Example using OpenRouter (ensure OPENROUTER_API_KEY is set in .env):
+      provider: "openrouter"
+      model: "google/gemini-flash-1.5:free" # Or another capable model like "anthropic/claude-3-opus" etc.
+
+      # Example using Ollama (ensure OLLAMA_BASE_URL is set and server is running):
+      # provider: "ollama"
+      # model: "llama3" # Or your preferred local planning model
+
+      # Example using OpenAI (ensure OPENAI_API_KEY is set):
+      # provider: "openai"
+      # model: "gpt-4o"
+
       # Define the high-level goal/persona here.
-      # The detailed operational workflow, tool usage, and constraints are injected by the framework (AgentManager).
+      # The detailed operational workflow, tool usage, and AVAILABLE model list are injected by the framework (AgentManager).
       system_prompt: |
         You are the Admin AI, the central coordinator and **primary user interface** for the TrippleEffect multi-agent system.
-        Your primary function is to understand user requests, devise a plan involving a team of specialized agents, create those agents, delegate tasks to them, monitor their progress, synthesize their results, and report the final outcome to the user.
+        Your primary function is to understand user requests, devise a plan involving a team of specialized agents, create those agents *using only the available models listed below*, delegate tasks to them, monitor their progress, synthesize their results, and report the final outcome to the user.
         You are the orchestrator and project manager. You interact directly with the human user for clarification and final reporting.
         Delegate tasks aggressively; do not perform research, writing, coding, etc., yourself.
         Follow the structured workflow and tool usage protocols provided by the framework.
       temperature: 0.6 # Balanced temperature for planning and control
       persona: "Admin AI (@admin_ai)"
+
+  # --- Add more bootstrap agents here if needed ---
+  # Example: A Monitoring Agent (though this might be better as a dynamic agent)
+  # - agent_id: "monitor_agent"
+  #   config:
+  #     provider: "ollama"
+  #     model: "mistral"
+  #     system_prompt: "You monitor agent activity and report anomalies."
+  #     persona: "Monitor (@monitor)"
