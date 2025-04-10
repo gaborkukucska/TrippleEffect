@@ -22,10 +22,10 @@ class GitHubTool(BaseTool):
     Requires a GITHUB_ACCESS_TOKEN with 'repo' scope in the .env file.
     """
     name: str = "github_tool"
-    description: str = ( # Modify this description
+    description: str = ( # Modified description
         "Accesses GitHub repositories using the REST API and a Personal Access Token (PAT). "
-        "This is the primary tool for interacting with GitHub content. " # Added hint
-        "Allows listing accessible repositories ('list_repos'), listing files/directories in a repo path ('list_files'), "
+        "This is the primary tool for interacting with GitHub content. "
+        "Allows listing repositories ('list_repos' for a user or the authenticated user), listing files/directories in a repo path ('list_files'), "
         "and reading the content of a specific file ('read_file'). "
         "Requires GITHUB_ACCESS_TOKEN with 'repo' scope to be set in the environment."
     )
@@ -39,7 +39,8 @@ class GitHubTool(BaseTool):
         ToolParameter(
             name="repo_full_name",
             type="string",
-            description="The full name of the repository (e.g., 'username/repo-name'). Required for 'list_files' and 'read_file'.",
+            # Modified description for clarity
+            description="The full name of the target repository (e.g., 'username/repo-name'). Required for 'list_files' and 'read_file'. For 'list_repos', if provided, it specifies the user whose public repos to list (e.g., 'username'). If omitted for 'list_repos', lists repos accessible by the token.",
             required=False,
         ),
         ToolParameter(
@@ -67,7 +68,7 @@ class GitHubTool(BaseTool):
 
     async def _make_github_request(self, method: str, endpoint: str, params: Optional[Dict] = None) -> Optional[Any]:
         """ Helper function to make authenticated requests to the GitHub API. """
-        if not self.token: return None
+        if not self.token: return None # Added early exit if no token
 
         url = f"{GITHUB_API_BASE_URL}{endpoint}"
         headers = {
@@ -75,6 +76,7 @@ class GitHubTool(BaseTool):
             "Authorization": f"Bearer {self.token}",
             "X-GitHub-Api-Version": "2022-11-28"
         }
+        logger.debug(f"Making GitHub request: {method} {url} Params: {params}") # Log request details
         try:
             async with aiohttp.ClientSession(headers=headers) as session:
                 async with session.request(method, url, params=params, timeout=20) as response:
@@ -85,107 +87,161 @@ class GitHubTool(BaseTool):
                         except: reset_str = reset_time
                         logger.debug(f"GitHub Rate Limit: {remaining} remaining. Resets at {reset_str}")
 
+                    # Check status code BEFORE attempting to read body
                     if response.status >= 400:
-                         error_message = await response.text() # Get raw text first
-                         error_data = {}
+                         error_message = f"GitHub API Error {response.status}"
+                         error_details = ""
                          try:
-                             error_data = await response.json() # Try to parse JSON
-                             error_message = error_data.get("message", error_message) # Use JSON message if available
-                         except (json.JSONDecodeError, aiohttp.ContentTypeError):
-                              logger.warning(f"Could not parse GitHub error response as JSON for status {response.status}")
-                              # Keep the raw text as error_message
+                             # Attempt to read details, but don't fail if it doesn't work
+                             error_body = await response.text()
+                             try:
+                                 error_data = json.loads(error_body)
+                                 error_details = error_data.get("message", error_body)
+                             except json.JSONDecodeError:
+                                 error_details = error_body[:500] # Show start of raw body on JSON error
+                             error_message += f": {error_details}"
+                         except Exception as read_err:
+                             logger.warning(f"Could not read error body for status {response.status}: {read_err}")
 
-                         logger.error(f"GitHub API Error {response.status} for {method} {endpoint}: {error_message}")
+                         logger.error(f"GitHub API Error: Status {response.status} for {method} {endpoint}. Message: {error_details}")
                          if response.status == 404:
-                             raise FileNotFoundError(f"GitHub resource not found ({endpoint}): {error_message}")
+                             raise FileNotFoundError(f"GitHub resource not found ({method} {endpoint}): {error_details}")
+                         elif response.status == 403: # Forbidden, often rate limit or permissions
+                              raise PermissionError(f"GitHub API Forbidden (403) for {method} {endpoint}. Check token permissions or rate limits. Message: {error_details}")
                          else:
-                             raise Exception(f"GitHub API Error {response.status}: {error_message}")
+                             raise Exception(f"GitHub API Error {response.status} for {method} {endpoint}: {error_details}")
 
                     # Handle potentially empty successful responses (e.g., 204 No Content)
                     if response.status == 204:
-                         return None # Or return an empty dict/list based on context? None is safer.
+                         return None
 
                     # Attempt to parse JSON for successful responses
                     try:
                          return await response.json()
-                    except (json.JSONDecodeError, aiohttp.ContentTypeError):
-                         logger.error(f"Could not parse successful GitHub response as JSON for {method} {endpoint} (Status: {response.status})")
-                         # Decide what to return: None, empty dict, or raise error?
-                         # Returning None might be safest if JSON is expected.
-                         return None
+                    except (json.JSONDecodeError, aiohttp.ContentTypeError) as json_err:
+                         logger.error(f"Could not parse successful GitHub response as JSON for {method} {endpoint} (Status: {response.status}): {json_err}")
+                         # Read raw text as fallback? Or return None/Error?
+                         raw_text = await response.text()
+                         logger.warning(f"Raw response text (first 500 chars): {raw_text[:500]}")
+                         # Decide what to return: Raising an error might be better if JSON is expected
+                         raise ValueError(f"Expected JSON response but received non-JSON content (Status: {response.status})")
 
-        except FileNotFoundError as e:
-            raise e
+        except FileNotFoundError as e: raise e # Re-raise specific errors
+        except PermissionError as e: raise e # Re-raise specific errors
         except aiohttp.ClientError as e:
             logger.error(f"HTTP Client Error making GitHub request to {url}: {e}")
             raise Exception(f"Network error accessing GitHub API: {e}") from e
         except asyncio.TimeoutError:
             logger.error(f"Timeout error making GitHub request to {url}")
             raise Exception("Timeout connecting to GitHub API.") from e
-        except Exception as e:
-            if not isinstance(e, FileNotFoundError):
+        except Exception as e: # Catch other unexpected errors
+             if not isinstance(e, (FileNotFoundError, PermissionError, ValueError)): # Don't re-wrap known errors
                  logger.error(f"Unexpected error during GitHub request to {url}: {e}", exc_info=True)
                  raise Exception(f"Unexpected error during GitHub API request: {type(e).__name__}") from e
-            else:
-                 raise e
+             else:
+                 raise e # Re-raise known/expected errors
 
-
-    async def execute(self, agent_id: str, agent_sandbox_path: Path, **kwargs: Any) -> Any:
+    # --- MODIFIED execute method ---
+    async def execute(
+        self,
+        agent_id: str,
+        agent_sandbox_path: Path,
+        project_name: Optional[str] = None, # Context args now expected by BaseTool
+        session_name: Optional[str] = None,
+        **kwargs: Any
+        ) -> Any:
         """
         Executes the GitHub operation based on the provided action.
+        Uses correct endpoints for listing user repos vs. authenticated user repos.
         """
         if not self.token:
             return "Error: GitHubTool cannot execute because GITHUB_ACCESS_TOKEN is not configured correctly."
 
         action = kwargs.get("action")
-        repo_full_name = kwargs.get("repo_full_name")
+        # repo_full_name can now mean 'username/repo' OR just 'username' for list_repos
+        repo_full_name_or_username = kwargs.get("repo_full_name")
         path = kwargs.get("path", "/")
         ref = kwargs.get("branch_or_ref")
 
-        logger.info(f"Agent {agent_id} attempting GitHub action '{action}' (Repo: {repo_full_name}, Path: {path}, Ref: {ref})")
+        logger.info(f"Agent {agent_id} attempting GitHub action '{action}' (Target: {repo_full_name_or_username}, Path: {path}, Ref: {ref})")
 
         if not action or action not in ["list_repos", "list_files", "read_file"]:
             return f"Error: Invalid or missing 'action'. Must be 'list_repos', 'list_files', or 'read_file'."
 
         try:
             if action == "list_repos":
-                repo_data = await self._make_github_request("GET", "/user/repos", params={"type": "all", "per_page": 100})
+                endpoint = "/user/repos" # Default: lists repos accessible by the token
+                list_target_user = None
+                # Check if repo_full_name_or_username looks like just a username
+                if repo_full_name_or_username and '/' not in repo_full_name_or_username:
+                    list_target_user = repo_full_name_or_username
+                    endpoint = f"/users/{list_target_user}/repos" # Switch endpoint for specific user
+                    logger.info(f"Listing public repos for user: {list_target_user}")
+                elif repo_full_name_or_username:
+                     # If it contains '/', assume it's intended for user but might be mistyped
+                     parts = repo_full_name_or_username.split('/', 1)
+                     list_target_user = parts[0]
+                     endpoint = f"/users/{list_target_user}/repos"
+                     logger.warning(f"Parameter 'repo_full_name' contained '/', interpreting '{list_target_user}' as the target user for listing public repos.")
+                else:
+                    logger.info("Listing repositories accessible by the authenticated user token.")
+
+                # Set common parameters for listing repos
+                params = {"type": "all", "per_page": 100} # Get up to 100
+
+                repo_data = await self._make_github_request("GET", endpoint, params=params)
+
                 if not repo_data or not isinstance(repo_data, list):
-                    return "No repositories found or accessible, or error retrieving list."
-                repo_names = [repo.get("full_name") for repo in repo_data if repo.get("full_name")]
-                if not repo_names:
-                    return "No repositories found or accessible with the provided token."
-                return f"Accessible Repositories (first {len(repo_names)}):\n- " + "\n- ".join(repo_names)
+                    target_desc = f"user '{list_target_user}'" if list_target_user else "authenticated user"
+                    return f"No repositories found or accessible for {target_desc}, or error retrieving list."
 
-            if not repo_full_name:
-                return f"Error: 'repo_full_name' (e.g., 'username/repo-name') is required for action '{action}'."
+                repo_details = []
+                for repo in repo_data:
+                     full_name = repo.get("full_name")
+                     description = repo.get("description") or "No description." # Add description
+                     if full_name:
+                         repo_details.append(f"*   **[{full_name}](https://github.com/{full_name}):** {description}")
 
-            repo_endpoint_base = f"/repos/{repo_full_name}"
+                if not repo_details:
+                    target_desc = f"user '{list_target_user}'" if list_target_user else "authenticated user"
+                    return f"No repositories found or accessible for {target_desc} with the provided token."
+
+                target_desc_title = f" for {list_target_user}" if list_target_user else " Accessible by Token"
+                return f"Repositories{target_desc_title} (first {len(repo_details)}):\n\n" + "\n".join(repo_details)
+
+            # --- Actions requiring repo_full_name ('username/repo') ---
+            if not repo_full_name_or_username or '/' not in repo_full_name_or_username:
+                return f"Error: 'repo_full_name' in the format 'username/repo-name' is required for action '{action}'."
+
+            repo_endpoint_base = f"/repos/{repo_full_name_or_username}" # Use the full name
 
             if action == "list_files":
-                list_path = path.lstrip('/')
+                list_path = path.lstrip('/') # Ensure path doesn't start with / for endpoint
                 endpoint = f"{repo_endpoint_base}/contents/{list_path}"
                 params = {"ref": ref} if ref else {}
                 try:
                     contents_data = await self._make_github_request("GET", endpoint, params=params)
                     if not contents_data:
-                        return f"Path '{path}' in repository '{repo_full_name}' (ref: {ref or 'default'}) not found or is empty."
-                    if isinstance(contents_data, list):
-                        file_list = [f"- {item.get('name')} ({item.get('type')})" for item in sorted(contents_data, key=lambda x: (x.get('type','z'), x.get('name','')))]
+                        return f"Path '{path}' in repository '{repo_full_name_or_username}' (ref: {ref or 'default'}) not found or is empty."
+                    if isinstance(contents_data, list): # It's a directory listing
+                        # Sort by type (dirs first) then name
+                        items = sorted(contents_data, key=lambda x: (x.get('type', 'z'), x.get('name', '')))
+                        file_list = [f"- {item.get('name')} ({item.get('type')})" for item in items]
                         if not file_list:
-                             return f"Directory '{path}' in repository '{repo_full_name}' (ref: {ref or 'default'}) is empty."
+                             return f"Directory '{path}' in repository '{repo_full_name_or_username}' (ref: {ref or 'default'}) is empty."
                         ref_display = ref or 'default branch'
-                        return f"Contents of '{repo_full_name}' at path '{path}' (ref: {ref_display}):\n" + "\n".join(file_list)
-                    elif isinstance(contents_data, dict) and contents_data.get("type") == "file":
+                        return f"Contents of '{repo_full_name_or_username}' at path '{path}' (ref: {ref_display}):\n" + "\n".join(file_list)
+                    elif isinstance(contents_data, dict) and contents_data.get("type") == "file": # It's a single file
                         return f"Path '{path}' points to a single file: {contents_data.get('name')}. Use 'read_file' action to get content."
-                    else:
-                         return f"Unexpected response format when listing path '{path}' in repository '{repo_full_name}'."
+                    else: # Unexpected format
+                         logger.warning(f"Unexpected response format when listing {endpoint}: {contents_data}")
+                         return f"Unexpected response format when listing path '{path}' in repository '{repo_full_name_or_username}'."
                 except FileNotFoundError:
-                     return f"Error: Path '{path}' not found in repository '{repo_full_name}' (ref: {ref or 'default'})."
+                     return f"Error: Path '{path}' not found in repository '{repo_full_name_or_username}' (ref: {ref or 'default'})."
 
             elif action == "read_file":
                 if not path or path == '/':
-                     return f"Error: 'path' specifying a valid file is required for action 'read_file'."
+                     return f"Error: A specific file 'path' is required for action 'read_file'."
                 read_path = path.lstrip('/')
                 endpoint = f"{repo_endpoint_base}/contents/{read_path}"
                 params = {"ref": ref} if ref else {}
@@ -193,33 +249,56 @@ class GitHubTool(BaseTool):
                     file_data = await self._make_github_request("GET", endpoint, params=params)
                     if not isinstance(file_data, dict) or file_data.get("type") != "file":
                         type_found = file_data.get("type", "unknown") if isinstance(file_data, dict) else "unexpected format"
-                        return f"Error: Path '{path}' in repository '{repo_full_name}' is not a file (type: {type_found})."
+                        return f"Error: Path '{path}' in repository '{repo_full_name_or_username}' is not a file (type: {type_found})."
+
                     content_base64 = file_data.get("content")
+                    file_size = file_data.get("size", 0)
+
                     if content_base64 is None:
-                        return f"Error: Could not retrieve content for file '{path}' (maybe it's too large or binary?)."
+                        download_url = file_data.get("download_url")
+                        if download_url:
+                             # Attempt to download if content is missing (e.g., large file)
+                             logger.warning(f"File content missing for '{path}', attempting download from {download_url} (Size: {file_size} bytes)")
+                             # Simple download attempt, might need more robust handling for huge files
+                             MAX_DOWNLOAD_SIZE = 1 * 1024 * 1024 # 1 MB limit for direct download
+                             if file_size > MAX_DOWNLOAD_SIZE:
+                                 return f"Error: File '{path}' is too large ({file_size} bytes) to download directly."
+                             async with aiohttp.ClientSession() as dl_session: # No auth needed for download_url
+                                 async with dl_session.get(download_url, timeout=30) as dl_response:
+                                     if dl_response.status == 200:
+                                          content_bytes = await dl_response.read()
+                                          # Fall through to decode logic
+                                     else:
+                                          return f"Error: Could not retrieve content for file '{path}'. Download failed (Status: {dl_response.status})."
+                        else:
+                            return f"Error: Could not retrieve content for file '{path}'. No content or download URL found."
+                    else:
+                        # Decode base64 content
+                         content_bytes = base64.b64decode(content_base64.replace('\n', ''))
+
+                    # Decode bytes to string
                     try:
-                        content_bytes = base64.b64decode(content_base64.replace('\n', ''))
                         decoded_content = content_bytes.decode('utf-8')
-                    except (base64.binascii.Error, UnicodeDecodeError) as decode_err:
-                         logger.warning(f"Failed to decode content of '{path}' from repo '{repo_full_name}': {decode_err}")
-                         return f"Error: Failed to decode file content for '{path}'. It might be binary or corrupted."
-                    logger.info(f"Successfully read file '{path}' from repo '{repo_full_name}' for agent {agent_id}.")
-                    MAX_FILE_READ_SIZE = 50 * 1024
-                    if len(decoded_content) > MAX_FILE_READ_SIZE:
-                         logger.warning(f"Read large file '{path}' from GitHub ({len(decoded_content)} bytes), truncating.")
-                         return f"Content of '{repo_full_name}/{path}' (ref: {ref or 'default'}) [TRUNCATED]:\n\n{decoded_content[:MAX_FILE_READ_SIZE]}\n\n[... File content truncated due to size limit ...]"
+                    except UnicodeDecodeError:
+                         logger.warning(f"Failed to decode UTF-8 content of '{path}' from repo '{repo_full_name_or_username}'. Assuming binary.")
+                         return f"Note: Content of '{path}' could not be decoded as UTF-8 text. It might be a binary file."
+
+                    logger.info(f"Successfully read file '{path}' from repo '{repo_full_name_or_username}' for agent {agent_id}.")
+
+                    # Truncate large files
+                    MAX_FILE_READ_CHARS = 50000 # Limit characters instead of bytes
+                    if len(decoded_content) > MAX_FILE_READ_CHARS:
+                         logger.warning(f"Read large file '{path}' from GitHub ({len(decoded_content)} chars), truncating.")
+                         return f"Content of '{repo_full_name_or_username}/{path}' (ref: {ref or 'default'}) [TRUNCATED]:\n\n{decoded_content[:MAX_FILE_READ_CHARS]}\n\n[... File content truncated due to size limit ({MAX_FILE_READ_CHARS} chars) ...]"
                     else:
                         ref_display = ref or 'default branch'
-                        return f"Content of '{repo_full_name}/{path}' (ref: {ref_display}):\n\n{decoded_content}"
+                        return f"Content of '{repo_full_name_or_username}/{path}' (ref: {ref_display}):\n\n{decoded_content}"
                 except FileNotFoundError:
-                     return f"Error: File path '{path}' not found in repository '{repo_full_name}' (ref: {ref or 'default'})."
+                     return f"Error: File path '{path}' not found in repository '{repo_full_name_or_username}' (ref: {ref or 'default'})."
 
+        except (FileNotFoundError, PermissionError) as known_err:
+            logger.warning(f"GitHub tool execution failed for agent {agent_id}: {known_err}")
+            return str(known_err) # Return the specific error message
         except Exception as e:
             logger.error(f"Unexpected error executing GitHub tool ({action}) for agent {agent_id}: {e}", exc_info=True)
-            # Check if the error was FileNotFoundError re-raised from the helper
-            if isinstance(e, FileNotFoundError):
-                 # Return the specific FileNotFoundError message
-                 return str(e)
-            else:
-                # Return a generic error message for other exceptions
-                return f"Error executing GitHub tool ({action}): {type(e).__name__} - {e}"
+            return f"Error executing GitHub tool ({action}): {type(e).__name__} - {e}"
