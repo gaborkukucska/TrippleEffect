@@ -75,9 +75,11 @@ MAX_FAILOVER_ATTEMPTS = 3
 
 
 class AgentManager:
-    """ AgentManager Class Definition """
+    """
+    Main coordinator for agents. Includes automatic failover logic
+    for persistent provider/model errors during agent cycles.
+    """
     def __init__(self, websocket_manager: Optional[Any] = None):
-        # (Initialization remains the same)
         self.bootstrap_agents: List[str] = []
         self.agents: Dict[str, Agent] = {}
         self.send_to_ui_func = broadcast
@@ -94,12 +96,10 @@ class AgentManager:
         logger.info("AgentManager initialized synchronously. Bootstrap agents and model discovery run asynchronously.")
 
     def _ensure_projects_dir(self):
-        # (Remains the same)
         try: settings.PROJECTS_BASE_DIR.mkdir(parents=True, exist_ok=True); logger.info(f"Ensured projects directory exists at: {settings.PROJECTS_BASE_DIR}")
         except Exception as e: logger.error(f"Error creating projects directory at {settings.PROJECTS_BASE_DIR}: {e}", exc_info=True)
 
     async def initialize_bootstrap_agents(self):
-        # (Remains the same as the last corrected version)
         logger.info("Initializing bootstrap agents asynchronously...")
         agent_configs_list = settings.AGENT_CONFIGURATIONS
         if not agent_configs_list: logger.warning("No bootstrap agent configurations found."); return
@@ -155,7 +155,6 @@ class AgentManager:
         if BOOTSTRAP_AGENT_ID not in self.agents: logger.critical(f"CRITICAL: Admin AI ('{BOOTSTRAP_AGENT_ID}') failed to initialize! Check previous errors.")
 
     async def _create_agent_internal( self, agent_id_requested: Optional[str], agent_config_data: Dict[str, Any], is_bootstrap: bool = False, team_id: Optional[str] = None, loading_from_session: bool = False ) -> Tuple[bool, str, Optional[str]]:
-        # (Remains the same as the last corrected version)
         agent_id: Optional[str] = None;
         if agent_id_requested and agent_id_requested in self.agents: msg = f"Agent ID '{agent_id_requested}' already exists."; logger.error(msg); return False, msg, None
         elif agent_id_requested: agent_id = agent_id_requested
@@ -201,14 +200,25 @@ class AgentManager:
         return True, message, agent_id
 
     async def create_agent_instance( self, agent_id_requested: Optional[str], provider: str, model: str, system_prompt: str, persona: str, team_id: Optional[str] = None, temperature: Optional[float] = None, **kwargs ) -> Tuple[bool, str, Optional[str]]:
-        # (Remains the same as the last corrected version)
-        if not all([provider, model, system_prompt, persona]): return False, "Missing required args.", None; agent_config_data = {"provider": provider, "model": model, "system_prompt": system_prompt, "persona": persona};
-        if temperature is not None: agent_config_data["temperature"] = temperature; known_args = ['action', 'agent_id', 'team_id', 'provider', 'model', 'system_prompt', 'persona', 'temperature']; extra_kwargs = {k: v for k, v in kwargs.items() if k not in known_args and k not in ['project_name', 'session_name']}; agent_config_data.update(extra_kwargs); success, message, created_agent_id = await self._create_agent_internal(agent_id_requested=agent_id_requested, agent_config_data=agent_config_data, is_bootstrap=False, team_id=team_id, loading_from_session=False)
-        if success and created_agent_id: agent = self.agents.get(created_agent_id); team = self.state_manager.get_agent_team(created_agent_id); config_ui = agent.agent_config.get("config", {}) if agent else {}; await self.send_to_ui({"type": "agent_added", "agent_id": created_agent_id, "config": config_ui, "team": team}); await self.push_agent_status_update(created_agent_id);
+        """ Public method for dynamic agents. """
+        if not all([provider, model, system_prompt, persona]): return False, "Missing required args.", None
+        agent_config_data = {"provider": provider, "model": model, "system_prompt": system_prompt, "persona": persona}
+        if temperature is not None: agent_config_data["temperature"] = temperature
+        known_args = ['action', 'agent_id', 'team_id', 'provider', 'model', 'system_prompt', 'persona', 'temperature']
+        extra_kwargs = {k: v for k, v in kwargs.items() if k not in known_args and k not in ['project_name', 'session_name']}
+        agent_config_data.update(extra_kwargs)
+        success, message, created_agent_id = await self._create_agent_internal(
+            agent_id_requested=agent_id_requested, agent_config_data=agent_config_data, is_bootstrap=False, team_id=team_id, loading_from_session=False
+        )
+        if success and created_agent_id:
+            agent = self.agents.get(created_agent_id); team = self.state_manager.get_agent_team(created_agent_id)
+            config_ui = agent.agent_config.get("config", {}) if agent else {}
+            await self.send_to_ui({"type": "agent_added", "agent_id": created_agent_id, "config": config_ui, "team": team})
+            await self.push_agent_status_update(created_agent_id)
         return success, message, created_agent_id
 
     async def delete_agent_instance(self, agent_id: str) -> Tuple[bool, str]:
-        # (Remains the same as the last corrected version)
+        """Removes dynamic agent, cleans up, updates state."""
         if not agent_id: return False, "Agent ID empty."
         if agent_id not in self.agents: return False, f"Agent '{agent_id}' not found."
         if agent_id in self.bootstrap_agents: return False, f"Cannot delete bootstrap agent '{agent_id}'."
@@ -220,38 +230,58 @@ class AgentManager:
         await self.send_to_ui({"type": "agent_deleted", "agent_id": agent_id})
         return True, message
 
-    # --- *** CORRECTED _generate_unique_agent_id *** ---
     def _generate_unique_agent_id(self, prefix="agent") -> str:
         """Generates unique agent ID."""
-        timestamp = int(time.time() * 1000)
-        short_uuid = uuid.uuid4().hex[:4]
+        timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4];
         while True:
-            new_id = f"{prefix}_{timestamp}_{short_uuid}".replace(":", "_")
+            new_id = f"{prefix}_{timestamp}_{short_uuid}".replace(":", "_");
             if new_id not in self.agents:
                 return new_id
-            # Indentation of the following lines was wrong before
-            time.sleep(0.001)
-            timestamp = int(time.time() * 1000)
-            short_uuid = uuid.uuid4().hex[:4]
-    # --- *** END CORRECTION *** ---
+            time.sleep(0.001); timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4]
 
     async def schedule_cycle(self, agent: Agent, retry_count: int = 0):
-        # (Remains the same)
-        if not agent: logger.error("Schedule cycle called with invalid Agent object."); return; logger.debug(f"Manager: Scheduling cycle for agent '{agent.agent_id}' (Retry: {retry_count})."); asyncio.create_task(self.cycle_handler.run_cycle(agent, retry_count))
+        """Schedules the agent's execution cycle via the AgentCycleHandler."""
+        if not agent: logger.error("Schedule cycle called with invalid Agent object."); return
+        logger.debug(f"Manager: Scheduling cycle for agent '{agent.agent_id}' (Retry: {retry_count}).")
+        asyncio.create_task(self.cycle_handler.run_cycle(agent, retry_count))
 
     async def handle_user_message(self, message: str, client_id: Optional[str] = None):
-        # (Remains the same)
-        logger.info(f"Manager: Received user message for Admin AI: '{message[:100]}...'");
-        if self.current_project is None: logger.info("Manager: No active project/session context found. Creating default context..."); default_project = DEFAULT_PROJECT_NAME; default_session = time.strftime("%Y%m%d_%H%M%S");
-            try: success, save_msg = await self.save_session(default_project, default_session);
-                if success: logger.info(f"Manager: Auto-created session: '{default_project}/{default_session}'"); else: logger.error(f"Manager: Failed to auto-save default session: {save_msg}");
-            except Exception as e: logger.error(f"Manager: Error during default session auto-save: {e}", exc_info=True);
-            await self.send_to_ui({"type": "status", "agent_id": "manager", "content": f"Context set to default: {default_project}/{default_session}" if success else f"Failed to create default context: {save_msg}"});
-        admin_agent = self.agents.get(BOOTSTRAP_AGENT_ID);
-        if not admin_agent: logger.error(f"Manager: Admin AI ('{BOOTSTRAP_AGENT_ID}') not found. Cannot process message."); await self.send_to_ui({"type": "error", "agent_id": "manager", "content": "Admin AI unavailable."}); return;
-        if admin_agent.status == AGENT_STATUS_IDLE: logger.info(f"Manager: Delegating message to '{BOOTSTRAP_AGENT_ID}' and scheduling cycle."); admin_agent.message_history.append({"role": "user", "content": message}); await self.schedule_cycle(admin_agent, 0);
-        elif admin_agent.status == AGENT_STATUS_AWAITING_USER_OVERRIDE: logger.warning(f"Manager: Admin AI ({admin_agent.status}) awaiting override. Message ignored."); await self.send_to_ui({ "type": "status", "agent_id": admin_agent.agent_id, "content": "Admin AI waiting..." });
-        else: logger.info(f"Manager: Admin AI busy ({admin_agent.status}). Message queued."); admin_agent.message_history.append({"role": "user", "content": message}); await self.push_agent_status_update(admin_agent.agent_id); await self.send_to_ui({ "type": "status", "agent_id": admin_agent.agent_id, "content": f"Admin AI busy ({admin_agent.status}). Queued." })
+        """Routes user message to Admin AI after ensuring context."""
+        logger.info(f"Manager: Received user message for Admin AI: '{message[:100]}...'")
+        # --- *** CORRECTED INDENTATION FOR CONTEXT CREATION *** ---
+        if self.current_project is None:
+            logger.info("Manager: No active project/session context found. Creating default context...")
+            default_project = DEFAULT_PROJECT_NAME
+            default_session = time.strftime("%Y%m%d_%H%M%S")
+            success = False # Default to failure
+            save_msg = "Initialization error" # Default message
+            try:
+                # Ensure this block is indented correctly under the 'if'
+                success, save_msg = await self.save_session(default_project, default_session)
+                if success:
+                    logger.info(f"Manager: Auto-created session: '{default_project}/{default_session}'")
+                else:
+                    logger.error(f"Manager: Failed to auto-save default session: {save_msg}")
+            except Exception as e:
+                # Ensure this block is indented correctly under the 'try'
+                logger.error(f"Manager: Error during default session auto-save: {e}", exc_info=True)
+                save_msg = f"Error during auto-save: {e}"
+            # Ensure this await is indented correctly under the 'if' (same level as logger.info)
+            await self.send_to_ui({"type": "status", "agent_id": "manager", "content": f"Context set to default: {default_project}/{default_session}" if success else f"Failed to create default context: {save_msg}"})
+        # --- *** END CORRECTION *** ---
+
+        admin_agent = self.agents.get(BOOTSTRAP_AGENT_ID)
+        if not admin_agent:
+            logger.error(f"Manager: Admin AI ('{BOOTSTRAP_AGENT_ID}') not found. Cannot process message.")
+            await self.send_to_ui({"type": "error", "agent_id": "manager", "content": "Admin AI unavailable."}); return
+        if admin_agent.status == AGENT_STATUS_IDLE:
+            logger.info(f"Manager: Delegating message to '{BOOTSTRAP_AGENT_ID}' and scheduling cycle.")
+            admin_agent.message_history.append({"role": "user", "content": message}); await self.schedule_cycle(admin_agent, 0)
+        elif admin_agent.status == AGENT_STATUS_AWAITING_USER_OVERRIDE:
+             logger.warning(f"Manager: Admin AI ({admin_agent.status}) awaiting override. Message ignored."); await self.send_to_ui({ "type": "status", "agent_id": admin_agent.agent_id, "content": "Admin AI waiting..." })
+        else:
+            logger.info(f"Manager: Admin AI busy ({admin_agent.status}). Message queued."); admin_agent.message_history.append({"role": "user", "content": message}); await self.push_agent_status_update(admin_agent.agent_id); await self.send_to_ui({ "type": "status", "agent_id": admin_agent.agent_id, "content": f"Admin AI busy ({admin_agent.status}). Queued." })
+
 
     async def handle_user_override(self, override_data: Dict[str, Any]):
         # (Remains the same)
