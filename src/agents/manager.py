@@ -44,7 +44,9 @@ from src.agents.prompt_utils import (
     ADMIN_AI_OPERATIONAL_INSTRUCTIONS,
     update_agent_prompt_team_id
 )
+# --- *** Import Performance Tracker *** ---
 from src.agents.performance_tracker import ModelPerformanceTracker
+# --- *** END Import *** ---
 
 from pathlib import Path
 
@@ -107,9 +109,11 @@ class AgentManager:
         logger.info("Instantiating AgentCycleHandler...")
         self.cycle_handler = AgentCycleHandler(self, self.interaction_handler)
         logger.info("AgentCycleHandler instantiated.")
+        # --- Instantiate Performance Tracker ---
         logger.info("Instantiating ModelPerformanceTracker...")
         self.performance_tracker = ModelPerformanceTracker()
         logger.info("ModelPerformanceTracker instantiated and metrics loaded.")
+        # --- End Instantiate ---
         self._ensure_projects_dir()
         logger.info("AgentManager initialized synchronously. Bootstrap agents and model discovery run asynchronously.")
 
@@ -177,8 +181,8 @@ class AgentManager:
             final_provider = final_agent_config_data.get("provider")
             if not settings.is_provider_configured(final_provider): logger.error(f"Cannot initialize '{agent_id}': Selected provider '{final_provider}' is not configured in .env. Skipping."); continue
 
-            # --- *** REMOVED FAULTY CHECK (was here) *** ---
-            # final_model = final_agent_config_data.get("model") # <-- No longer needed here
+            # --- *** REMOVED FAULTY CHECK *** ---
+            # The check for 'is_bootstrap' was here and was incorrect. Removed.
 
             # Inject operational instructions and AVAILABLE model list into Admin AI prompt
             if agent_id == BOOTSTRAP_AGENT_ID:
@@ -310,6 +314,8 @@ class AgentManager:
         while True: new_id = f"{prefix}_{timestamp}_{short_uuid}".replace(":", "_");
             if new_id not in self.agents: return new_id; time.sleep(0.001); timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4]
 
+    # --- Agent Scheduling and Interaction ---
+
     async def schedule_cycle(self, agent: Agent, retry_count: int = 0):
         """Schedules the agent's execution cycle via the AgentCycleHandler."""
         if not agent: logger.error("Schedule cycle called with invalid Agent object."); return
@@ -411,6 +417,7 @@ class AgentManager:
         logger.info("Manager: Cleaning up LLM providers and saving metrics...");
         active_providers = {agent.llm_provider for agent in self.agents.values() if agent.llm_provider}
         provider_tasks = [asyncio.create_task(self._close_provider_safe(p)) for p in active_providers if hasattr(p, 'close_session')]
+        # Save performance metrics on shutdown
         metrics_save_task = asyncio.create_task(self.performance_tracker.save_metrics())
         all_cleanup_tasks = provider_tasks + [metrics_save_task]
         if all_cleanup_tasks: await asyncio.gather(*all_cleanup_tasks); logger.info("Manager: Provider cleanup and metrics saving complete.")
