@@ -64,14 +64,14 @@ BOOTSTRAP_AGENT_ID = "admin_ai"
 STREAM_RETRY_DELAYS = [5.0, 10.0, 10.0, 65.0]
 MAX_STREAM_RETRIES = len(STREAM_RETRY_DELAYS)
 DEFAULT_PROJECT_NAME = "DefaultProject"
-PREFERRED_ADMIN_MODELS = [
+PREFERRED_ADMIN_MODELS = [ # For initial Admin AI selection only
     "anthropic/claude-3-opus*", "openai/gpt-4o*", "google/gemini-2.5-pro*",
     "llama3:70b*", "command-r-plus*", "qwen/qwen2-72b-instruct*",
     "anthropic/claude-3-sonnet*", "google/gemini-pro*", "llama3*",
     "mistralai/mixtral-8x7b*", "mistralai/mistral-large*", "*wizardlm2*",
     "*deepseek-coder*", "google/gemini-flash*", "*"
 ]
-MAX_FAILOVER_ATTEMPTS = 3
+MAX_FAILOVER_ATTEMPTS = 3 # Limit distinct models tried per cycle attempt
 
 
 class AgentManager:
@@ -154,7 +154,9 @@ class AgentManager:
         logger.info(f"Finished bootstrap initialization. Active: {successful_ids}")
         if BOOTSTRAP_AGENT_ID not in self.agents: logger.critical(f"CRITICAL: Admin AI ('{BOOTSTRAP_AGENT_ID}') failed to initialize! Check previous errors.")
 
+
     async def _create_agent_internal( self, agent_id_requested: Optional[str], agent_config_data: Dict[str, Any], is_bootstrap: bool = False, team_id: Optional[str] = None, loading_from_session: bool = False ) -> Tuple[bool, str, Optional[str]]:
+        """ Internal core logic for creating agents. """
         agent_id: Optional[str] = None;
         if agent_id_requested and agent_id_requested in self.agents: msg = f"Agent ID '{agent_id_requested}' already exists."; logger.error(msg); return False, msg, None
         elif agent_id_requested: agent_id = agent_id_requested
@@ -219,9 +221,12 @@ class AgentManager:
 
     async def delete_agent_instance(self, agent_id: str) -> Tuple[bool, str]:
         """Removes dynamic agent, cleans up, updates state."""
-        if not agent_id: return False, "Agent ID empty."
-        if agent_id not in self.agents: return False, f"Agent '{agent_id}' not found."
-        if agent_id in self.bootstrap_agents: return False, f"Cannot delete bootstrap agent '{agent_id}'."
+        if not agent_id:
+            return False, "Agent ID empty."
+        if agent_id not in self.agents:
+            return False, f"Agent '{agent_id}' not found."
+        if agent_id in self.bootstrap_agents:
+            return False, f"Cannot delete bootstrap agent '{agent_id}'."
         agent_instance = self.agents.pop(agent_id)
         self.state_manager.remove_agent_from_all_teams_state(agent_id)
         await self._close_provider_safe(agent_instance.llm_provider)
@@ -237,7 +242,10 @@ class AgentManager:
             new_id = f"{prefix}_{timestamp}_{short_uuid}".replace(":", "_");
             if new_id not in self.agents:
                 return new_id
-            time.sleep(0.001); timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4]
+            # Correctly indented block for regeneration
+            time.sleep(0.001)
+            timestamp = int(time.time() * 1000)
+            short_uuid = uuid.uuid4().hex[:4]
 
     async def schedule_cycle(self, agent: Agent, retry_count: int = 0):
         """Schedules the agent's execution cycle via the AgentCycleHandler."""
@@ -248,27 +256,25 @@ class AgentManager:
     async def handle_user_message(self, message: str, client_id: Optional[str] = None):
         """Routes user message to Admin AI after ensuring context."""
         logger.info(f"Manager: Received user message for Admin AI: '{message[:100]}...'")
-        # --- *** CORRECTED INDENTATION FOR CONTEXT CREATION *** ---
+        # --- Corrected Indentation ---
         if self.current_project is None:
             logger.info("Manager: No active project/session context found. Creating default context...")
             default_project = DEFAULT_PROJECT_NAME
             default_session = time.strftime("%Y%m%d_%H%M%S")
-            success = False # Default to failure
-            save_msg = "Initialization error" # Default message
+            success = False # Default
+            save_msg = "Initialization error" # Default
             try:
-                # Ensure this block is indented correctly under the 'if'
                 success, save_msg = await self.save_session(default_project, default_session)
                 if success:
                     logger.info(f"Manager: Auto-created session: '{default_project}/{default_session}'")
                 else:
                     logger.error(f"Manager: Failed to auto-save default session: {save_msg}")
             except Exception as e:
-                # Ensure this block is indented correctly under the 'try'
                 logger.error(f"Manager: Error during default session auto-save: {e}", exc_info=True)
                 save_msg = f"Error during auto-save: {e}"
-            # Ensure this await is indented correctly under the 'if' (same level as logger.info)
+            # This is now correctly indented
             await self.send_to_ui({"type": "status", "agent_id": "manager", "content": f"Context set to default: {default_project}/{default_session}" if success else f"Failed to create default context: {save_msg}"})
-        # --- *** END CORRECTION *** ---
+        # --- End Correction ---
 
         admin_agent = self.agents.get(BOOTSTRAP_AGENT_ID)
         if not admin_agent:
@@ -320,9 +326,14 @@ class AgentManager:
         if not agent: logger.error(f"Failover Error: Agent '{agent_id}' not found."); return;
         logger.warning(f"Agent '{agent_id}' failover process initiated due to error: {last_error}"); await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Attempting automatic failover due to error..."})
         failed_models_this_cycle = getattr(agent, '_failed_models_this_cycle', set())
+        original_provider = agent.provider_name; original_model = agent.model
+        if len(failed_models_this_cycle) >= MAX_FAILOVER_ATTEMPTS: logger.error(f"Agent '{agent_id}': Max failover attempts ({MAX_FAILOVER_ATTEMPTS}) reached for this cycle. Requesting user override."); agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE);
+            if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear(); await self.request_user_override(agent_id, f"[Failover Limit Reached after {len(failed_models_this_cycle)} models tried] Last error: {last_error}"); return;
         next_provider, next_model = self._select_next_available_model(failed_models_this_cycle)
         if next_provider and next_model:
-            if len(failed_models_this_cycle) >= MAX_FAILOVER_ATTEMPTS: logger.error(f"Agent '{agent_id}': Max failover attempts ({MAX_FAILOVER_ATTEMPTS}) reached for this cycle. Requesting user override."); agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE); await self.request_user_override(agent_id, f"[Failover Limit Reached after {len(failed_models_this_cycle)} models tried] Last error: {last_error}"); return;
+            selected_full_id = f"{next_provider}/{next_model}" if next_provider in ["ollama", "litellm"] else next_model; original_full_id = f"{original_provider}/{original_model}" if original_provider in ["ollama", "litellm"] else original_model
+            if selected_full_id == original_full_id and len(failed_models_this_cycle) > 1: logger.error(f"Agent '{agent_id}': Failover selected the same model ({selected_full_id}) that likely just failed. This indicates a persistent issue (e.g., rate limit) or lack of other options. Requesting user override."); agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE);
+                if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear(); await self.request_user_override(agent_id, f"[Failover stuck on model {selected_full_id}] Last error: {last_error}"); return;
             logger.info(f"Agent '{agent_id}': Failing over to model: {next_provider}/{next_model}"); await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Failover: Switching to {next_provider}/{next_model}"})
             old_provider_instance = agent.llm_provider
             try:
@@ -334,39 +345,42 @@ class AgentManager:
                 if not NewProviderClass: raise ValueError(f"Provider class not found for {next_provider}")
                 new_provider_instance = NewProviderClass(**final_provider_args); agent.llm_provider = new_provider_instance; await self._close_provider_safe(old_provider_instance)
                 agent.set_status(AGENT_STATUS_IDLE); await self.schedule_cycle(agent, 0); logger.info(f"Agent '{agent_id}' failover successful. Rescheduled cycle with new model.")
-            except Exception as failover_err: logger.error(f"Agent '{agent_id}': Error during failover switch to {next_provider}/{next_model}: {failover_err}", exc_info=True); agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE); await self.request_user_override(agent_id, f"[Failover attempt failed: {failover_err}] Last operational error: {last_error}")
+            except Exception as failover_err: logger.error(f"Agent '{agent_id}': Error during failover switch to {next_provider}/{next_model}: {failover_err}", exc_info=True);
+                if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.add(selected_full_id);
+                agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE); await self.request_user_override(agent_id, f"[Failover attempt failed: {failover_err}] Last operational error: {last_error}")
         else:
             logger.error(f"Agent '{agent_id}': No alternative models available to failover to after trying {len(failed_models_this_cycle)} model(s). Requesting user override.")
             agent.set_status(AGENT_STATUS_AWAITING_USER_OVERRIDE)
+            if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear()
             await self.request_user_override(agent_id, f"[No more models to try after failover] Last error: {last_error}")
 
     def _select_next_available_model(self, already_failed: Set[str]) -> Tuple[Optional[str], Optional[str]]:
         # (Remains the same)
         logger.debug(f"Selecting next model. Already failed: {already_failed}")
-        available_models_dict = model_registry.get_available_models_dict()
-        current_model_tier = settings.MODEL_TIER
-        # Tier 1: Local Providers
-        for provider in ["ollama", "litellm"]:
-            if provider in available_models_dict:
-                sorted_local_models = sorted([m.get('id') for m in available_models_dict[provider] if m.get('id')])
-                for model_id in sorted_local_models:
-                    check_id = f"{provider}/{model_id}"
-                    if check_id not in already_failed: logger.info(f"Next model selected (Local): {provider}/{model_id}"); return provider, model_id
-        # Tier 2: Free Remote Models
-        if current_model_tier != "PAID_ONLY":
-             for provider in ["openrouter"]:
-                  if provider in available_models_dict:
-                       sorted_free_models = sorted([m.get('id') for m in available_models_dict[provider] if m.get('id') and ':free' in m.get('id','').lower()])
-                       for model_id in sorted_free_models:
-                            if model_id not in already_failed: logger.info(f"Next model selected (Free Remote): {model_id}"); derived_provider = model_registry.find_provider_for_model(model_id) or provider; return derived_provider, model_id
-        # Tier 3: Paid Remote Models
-        if current_model_tier == "ALL":
-             for provider in ["openrouter", "openai"]:
-                  if provider in available_models_dict:
-                       sorted_paid_models = sorted([m.get('id') for m in available_models_dict[provider] if m.get('id') and ':free' not in m.get('id','').lower()])
-                       for model_id in sorted_paid_models:
-                            if model_id not in already_failed: logger.info(f"Next model selected (Paid Remote): {model_id}"); derived_provider = model_registry.find_provider_for_model(model_id) or provider; return derived_provider, model_id
-        logger.warning("Could not find any suitable alternative model for failover.")
+        available_models_dict = model_registry.get_available_models_dict(); current_model_tier = settings.MODEL_TIER
+        provider_tier_order = [("Local (Configured)", ["ollama", "litellm"], True), ("Local (Discovered)", ["ollama", "litellm"], False), ("Remote Free", ["openrouter"], True), ("Remote Paid", ["openrouter", "openai"], True)]
+        for tier_name, providers_in_tier, check_configured_url_only in provider_tier_order:
+             if "Free" in tier_name and current_model_tier == "PAID_ONLY": continue
+             if "Paid" in tier_name and current_model_tier == "FREE": continue
+             logger.debug(f"Checking Tier: {tier_name}")
+             for provider in providers_in_tier:
+                 is_reachable = provider in model_registry._reachable_providers
+                 if check_configured_url_only and provider not in model_registry._reachable_providers:
+                     if not settings.is_provider_configured(provider): continue
+                 models_list = available_models_dict.get(provider, [])
+                 if not models_list:
+                      if not check_configured_url_only and not settings.is_provider_configured(provider): continue
+                      logger.debug(f"No available models listed for provider '{provider}' in registry."); continue
+                 is_free_tier = ":free" in tier_name.lower()
+                 sorted_model_ids = sorted([m.get('id') for m in models_list if m.get('id')])
+                 for model_id in sorted_model_ids:
+                     is_model_free = ":free" in model_id.lower()
+                     if is_free_tier and not is_model_free: continue
+                     if "Paid" in tier_name and is_model_free: continue
+                     full_check_id = model_id;
+                     if provider in ["ollama", "litellm"]: full_check_id = f"{provider}/{model_id}"
+                     if full_check_id not in already_failed: logger.info(f"Next model selected ({tier_name}): {provider}/{model_id}"); return provider, model_id
+        logger.warning(f"Could not find any suitable alternative model for failover that hasn't already failed ({already_failed}).")
         return None, None
 
     async def push_agent_status_update(self, agent_id: str):
