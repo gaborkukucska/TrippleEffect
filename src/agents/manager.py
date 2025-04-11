@@ -18,7 +18,7 @@ from src.agents.core import (
 from src.llm_providers.base import BaseLLMProvider, ToolResultDict, MessageDict
 
 # Import settings AND model_registry
-from src.config.settings import settings, model_registry
+from src.config.settings import settings, model_registry, BASE_DIR
 
 # Import WebSocket broadcast function
 from src.api.websocket_manager import broadcast
