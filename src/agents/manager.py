@@ -17,7 +17,7 @@ from src.agents.core import (
 )
 from src.llm_providers.base import BaseLLMProvider, ToolResultDict, MessageDict
 
-# --- *** MODIFIED: Import settings, model_registry, AND BASE_DIR *** ---
+# Import settings, model_registry, AND BASE_DIR
 from src.config.settings import settings, model_registry, BASE_DIR
 
 # Import WebSocket broadcast function
@@ -44,9 +44,7 @@ from src.agents.prompt_utils import (
     ADMIN_AI_OPERATIONAL_INSTRUCTIONS,
     update_agent_prompt_team_id
 )
-# --- *** Import Performance Tracker *** ---
 from src.agents.performance_tracker import ModelPerformanceTracker
-# --- *** END Import *** ---
 
 from pathlib import Path
 
@@ -109,18 +107,15 @@ class AgentManager:
         logger.info("Instantiating AgentCycleHandler...")
         self.cycle_handler = AgentCycleHandler(self, self.interaction_handler)
         logger.info("AgentCycleHandler instantiated.")
-        # --- Instantiate Performance Tracker ---
         logger.info("Instantiating ModelPerformanceTracker...")
         self.performance_tracker = ModelPerformanceTracker()
         logger.info("ModelPerformanceTracker instantiated and metrics loaded.")
-        # --- End Instantiate ---
         self._ensure_projects_dir()
         logger.info("AgentManager initialized synchronously. Bootstrap agents and model discovery run asynchronously.")
 
     def _ensure_projects_dir(self):
         """Ensures the base directory for projects exists."""
         try:
-             # Use PROJECTS_BASE_DIR from settings object
              settings.PROJECTS_BASE_DIR.mkdir(parents=True, exist_ok=True)
              logger.info(f"Ensured projects directory exists at: {settings.PROJECTS_BASE_DIR}")
         except Exception as e:
@@ -129,16 +124,12 @@ class AgentManager:
     # --- Agent Initialization ---
     async def initialize_bootstrap_agents(self):
         """
-        Loads bootstrap agents.
-        For Admin AI: Attempts to use config.yaml model if available,
-        otherwise automatically selects a suitable available model.
-        Injects the list of currently AVAILABLE models into the Admin AI prompt.
+        Loads bootstrap agents. Correctly handles Admin AI auto-selection.
         """
         logger.info("Initializing bootstrap agents asynchronously...")
         agent_configs_list = settings.AGENT_CONFIGURATIONS
         if not agent_configs_list: logger.warning("No bootstrap agent configurations found."); return
 
-        # Use imported BASE_DIR
         main_sandbox_dir = BASE_DIR / "sandboxes"
         try: await asyncio.to_thread(main_sandbox_dir.mkdir, parents=True, exist_ok=True)
         except Exception as e: logger.error(f"Error creating main sandbox directory: {e}")
@@ -181,10 +172,8 @@ class AgentManager:
             final_provider = final_agent_config_data.get("provider")
             if not settings.is_provider_configured(final_provider): logger.error(f"Cannot initialize '{agent_id}': Selected provider '{final_provider}' is not configured in .env. Skipping."); continue
 
-            # --- *** REMOVED FAULTY CHECK *** ---
-            # The check for 'is_bootstrap' was here and was incorrect. Removed.
+            # No check needed here anymore, validation happens in _create_agent_internal
 
-            # Inject operational instructions and AVAILABLE model list into Admin AI prompt
             if agent_id == BOOTSTRAP_AGENT_ID:
                 user_defined_prompt = agent_config_data.get("system_prompt", ""); operational_instructions = ADMIN_AI_OPERATIONAL_INSTRUCTIONS.format(tool_descriptions_xml=self.tool_descriptions_xml)
                 final_agent_config_data["system_prompt"] = (f"--- Primary Goal/Persona ---\n{user_defined_prompt}\n\n{operational_instructions}\n\n---\n{formatted_available_models}\n---")
@@ -193,7 +182,6 @@ class AgentManager:
 
             tasks.append(self._create_agent_internal(agent_id_requested=agent_id, agent_config_data=final_agent_config_data, is_bootstrap=True))
 
-        # Process results
         results = await asyncio.gather(*tasks, return_exceptions=True); successful_ids = []
         for i, result in enumerate(results):
              original_agent_id_attempted = agent_configs_list[i].get("agent_id", f"unknown_index_{i}") if i < len(agent_configs_list) and isinstance(agent_configs_list[i], dict) else f"unknown_index_{i}"
@@ -219,7 +207,6 @@ class AgentManager:
         Internal core logic for creating agents. Constructs prompts using utils.
         Validates model availability using ModelRegistry for dynamic agents.
         """
-        # Determine Agent ID
         agent_id: Optional[str] = None;
         if agent_id_requested and agent_id_requested in self.agents: msg = f"Agent ID '{agent_id_requested}' already exists."; logger.error(msg); return False, msg, None
         elif agent_id_requested: agent_id = agent_id_requested
@@ -228,26 +215,21 @@ class AgentManager:
         logger.debug(f"Creating agent '{agent_id}' (Bootstrap: {is_bootstrap}, SessionLoad: {loading_from_session}, Team: {team_id})")
         provider_name = agent_config_data.get("provider", settings.DEFAULT_AGENT_PROVIDER); model = agent_config_data.get("model", settings.DEFAULT_AGENT_MODEL); persona = agent_config_data.get("persona", settings.DEFAULT_PERSONA)
         if not settings.is_provider_configured(provider_name): msg = f"Provider '{provider_name}' not configured in .env settings."; logger.error(msg); return False, msg, None
-        # Validate model availability for NEW DYNAMIC agents
         if not is_bootstrap and not loading_from_session:
             if not model_registry.is_model_available(provider_name, model):
                  available_list_str = ", ".join(model_registry.get_available_models_list(provider=provider_name)); available_list_str = available_list_str or "(None discovered/available)"
                  msg = f"Model '{model}' is not available for provider '{provider_name}' based on discovery and tier settings. Available for '{provider_name}': [{available_list_str}]"; logger.error(msg); return False, msg, None
             else: logger.info(f"Dynamic agent model validated via ModelRegistry: '{provider_name}/{model}'.")
-        # Prepare Prompt
         role_specific_prompt = agent_config_data.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT); final_system_prompt = role_specific_prompt
         if not loading_from_session and not is_bootstrap:
              logger.debug(f"Constructing final prompt for dynamic agent '{agent_id}' using prompt_utils...")
              standard_info = STANDARD_FRAMEWORK_INSTRUCTIONS.format(agent_id=agent_id, team_id=team_id or "N/A", tool_descriptions_xml=self.tool_descriptions_xml)
              final_system_prompt = standard_info + "\n\n--- Your Specific Role & Task ---\n" + role_specific_prompt; logger.info(f"Injected standard framework instructions for dynamic agent '{agent_id}'.")
         elif loading_from_session or is_bootstrap: final_system_prompt = agent_config_data.get("system_prompt", role_specific_prompt); logger.debug(f"Using provided system prompt for {'loaded' if loading_from_session else 'bootstrap'} agent '{agent_id}'.")
-        # Prepare Provider Config
         temperature = agent_config_data.get("temperature", settings.DEFAULT_TEMPERATURE); allowed_provider_keys = ['api_key', 'base_url', 'referer']; agent_config_keys_to_exclude = ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'project_name', 'session_name'] + allowed_provider_keys
         provider_specific_kwargs = {k: v for k, v in agent_config_data.items() if k not in agent_config_keys_to_exclude}; base_provider_config = settings.get_provider_config(provider_name)
         final_provider_args = {**base_provider_config, **provider_specific_kwargs}; final_provider_args = {k: v for k, v in final_provider_args.items() if v is not None}
-        # Final config entry for agent instance
         final_agent_config_entry = {"agent_id": agent_id, "config": {"provider": provider_name, "model": model, "system_prompt": final_system_prompt, "persona": persona, "temperature": temperature, **provider_specific_kwargs}}
-        # Instantiate Provider
         ProviderClass = PROVIDER_CLASS_MAP.get(provider_name)
         if not ProviderClass:
             if provider_name == "litellm": msg = f"LiteLLM provider support is not yet fully implemented."; logger.error(msg); return False, msg, None
@@ -255,14 +237,11 @@ class AgentManager:
         try: llm_provider_instance = ProviderClass(**final_provider_args)
         except Exception as e: msg = f"Provider instantiation failed for {provider_name}: {e}"; logger.error(msg, exc_info=True); return False, msg, None
         logger.info(f"  Instantiated provider {ProviderClass.__name__} for '{agent_id}'.")
-        # Instantiate Agent
         try: agent = Agent(agent_config=final_agent_config_entry, llm_provider=llm_provider_instance, manager=self)
         except Exception as e: msg = f"Agent instantiation failed: {e}"; logger.error(msg, exc_info=True); await self._close_provider_safe(llm_provider_instance); return False, msg, None
         logger.info(f"  Instantiated Agent object for '{agent_id}'.")
-        # Ensure Sandbox
         try: await asyncio.to_thread(agent.ensure_sandbox_exists)
         except Exception as e: logger.error(f"  Error ensuring sandbox for '{agent_id}': {e}", exc_info=True)
-        # Add to registry and team state
         self.agents[agent_id] = agent; logger.debug(f"Agent '{agent_id}' added to self.agents dictionary.")
         team_add_msg_suffix = ""
         if team_id:
@@ -308,13 +287,20 @@ class AgentManager:
         return True, message
 
 
+    # --- *** CORRECTED INDENTATION *** ---
     def _generate_unique_agent_id(self, prefix="agent") -> str:
         """Generates unique agent ID."""
-        timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4];
-        while True: new_id = f"{prefix}_{timestamp}_{short_uuid}".replace(":", "_");
-            if new_id not in self.agents: return new_id; time.sleep(0.001); timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4]
-
-    # --- Agent Scheduling and Interaction ---
+        timestamp = int(time.time() * 1000)
+        short_uuid = uuid.uuid4().hex[:4]
+        while True:
+            new_id = f"{prefix}_{timestamp}_{short_uuid}".replace(":", "_")
+            if new_id not in self.agents:
+                return new_id
+            # Regenerate components if ID exists and loop again
+            time.sleep(0.001) # Small delay to ensure timestamp changes
+            timestamp = int(time.time() * 1000)
+            short_uuid = uuid.uuid4().hex[:4]
+    # --- *** END CORRECTION *** ---
 
     async def schedule_cycle(self, agent: Agent, retry_count: int = 0):
         """Schedules the agent's execution cycle via the AgentCycleHandler."""
@@ -417,7 +403,6 @@ class AgentManager:
         logger.info("Manager: Cleaning up LLM providers and saving metrics...");
         active_providers = {agent.llm_provider for agent in self.agents.values() if agent.llm_provider}
         provider_tasks = [asyncio.create_task(self._close_provider_safe(p)) for p in active_providers if hasattr(p, 'close_session')]
-        # Save performance metrics on shutdown
         metrics_save_task = asyncio.create_task(self.performance_tracker.save_metrics())
         all_cleanup_tasks = provider_tasks + [metrics_save_task]
         if all_cleanup_tasks: await asyncio.gather(*all_cleanup_tasks); logger.info("Manager: Provider cleanup and metrics saving complete.")
