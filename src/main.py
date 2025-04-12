@@ -46,11 +46,12 @@ logger.info(f"--- Application Logging Initialized (Console & File: {LOG_FILE.nam
 # Import the routers and the setup function for AgentManager injection
 from src.api import http_routes, websocket_manager
 
-# Import the AgentManager class
+# --- Import the refactored AgentManager class ---
 from src.agents.manager import AgentManager
+# --- End Import ---
 
 # Import ModelRegistry instance
-from src.config.settings import model_registry, settings # Import settings too if needed elsewhere
+from src.config.settings import model_registry, settings
 
 # --- Global placeholder for the manager ---
 agent_manager_instance: Optional[AgentManager] = None
@@ -61,36 +62,28 @@ async def lifespan(app: FastAPI):
     global agent_manager_instance
     logger.info("Application startup sequence initiated...")
 
-    # --- Instantiate Agent Manager (Synchronous Part) ---
     logger.info("Instantiating AgentManager...")
-    agent_manager_instance = AgentManager()
+    agent_manager_instance = AgentManager() # Initialization logic is now within AgentManager.__init__
     logger.info("AgentManager instantiated.")
 
-    # --- Store instance in app.state for dependency injection ---
     app.state.agent_manager = agent_manager_instance
     logger.info("AgentManager instance stored in app.state.")
 
-    # --- Inject Agent Manager into WebSocket Manager ---
     websocket_manager.set_agent_manager(agent_manager_instance)
     logger.info("AgentManager instance injected into WebSocketManager.")
 
-    # --- Discover Reachable Providers and Available Models ---
-    # --- *** MODIFIED: Call new discovery method *** ---
     logger.info("Lifespan: Discovering reachable providers and available models...")
     try:
-        # Use the imported model_registry instance
-        discovery_task = asyncio.create_task(model_registry.discover_models_and_providers()) # Call the new method
-        await discovery_task
-        logger.info("Lifespan: Provider and model discovery task completed.")
+        # Discovery is handled by ModelRegistry instance
+        await model_registry.discover_models_and_providers()
+        logger.info("Lifespan: Provider and model discovery completed.")
     except Exception as e:
         logger.error(f"Lifespan: Error during provider/model discovery: {e}", exc_info=True)
-        # Application can continue, but model availability might be limited
-    # --- *** END MODIFICATION *** ---
 
-    # --- Initialize bootstrap agents ASYNCHRONOUSLY ---
-    # (This now happens AFTER provider/model discovery)
+    # Use the initialized manager instance to initialize bootstrap agents
     logger.info("Lifespan: Initializing bootstrap agents...")
     try:
+        # Delegate to the manager instance's method
         init_task = asyncio.create_task(agent_manager_instance.initialize_bootstrap_agents())
         await init_task
         logger.info("Lifespan: Bootstrap agent initialization task completed.")
@@ -100,7 +93,6 @@ async def lifespan(app: FastAPI):
     logger.info("Application startup complete. Ready to accept requests.")
     yield # Application runs here
 
-    # Code here runs on shutdown
     logger.info("Application shutdown sequence initiated...")
     if app.state.agent_manager:
         try:
@@ -113,11 +105,11 @@ async def lifespan(app: FastAPI):
     logger.info("--- Application Shutdown Complete ---")
 
 
-# Create the FastAPI application instance, including the lifespan context manager
+# Create the FastAPI application instance
 logger.info("Creating FastAPI app instance...")
 app = FastAPI(
     title="TrippleEffect",
-    version="2.13", # Update version
+    version="2.14", # Update version
     lifespan=lifespan
 )
 logger.info("FastAPI app instance created with lifespan handler.")
