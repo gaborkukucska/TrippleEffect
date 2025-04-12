@@ -1,13 +1,22 @@
 # START OF FILE src/agents/manager.py
 import asyncio
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Set # Added Set
 import json
-import logging
+import os # For path manipulation if needed
+import traceback
 import time
+import logging
+import uuid
+import fnmatch
+import copy
 
 # Import Agent class, Status constants, and BaseLLMProvider types
-from src.agents.core import Agent, AGENT_STATUS_IDLE
-from src.llm_providers.base import BaseLLMProvider
+from src.agents.core import (
+    Agent, AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING,
+    AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_AWAITING_TOOL,
+    AGENT_STATUS_ERROR
+)
+from src.llm_providers.base import BaseLLMProvider, ToolResultDict, MessageDict
 
 # Import settings, model_registry, AND BASE_DIR
 from src.config.settings import settings, model_registry, BASE_DIR
@@ -27,20 +36,22 @@ from src.llm_providers.openrouter_provider import OpenRouterProvider
 from src.agents.state_manager import AgentStateManager
 from src.agents.session_manager import SessionManager
 from src.agents.interaction_handler import AgentInteractionHandler
-from src.agents.cycle_handler import AgentCycleHandler, MAX_FAILOVER_ATTEMPTS # Import constant
+from src.agents.cycle_handler import AgentCycleHandler, MAX_FAILOVER_ATTEMPTS
 from src.agents.performance_tracker import ModelPerformanceTracker
 from src.agents.provider_key_manager import ProviderKeyManager
 
-# --- Import the new refactored modules ---
-# Correctly import the specific functions needed
+# --- Import the refactored module functions ---
 from src.agents.agent_lifecycle import initialize_bootstrap_agents, create_agent_instance, delete_agent_instance
-# --- *** Ensure this import is correct *** ---
-from src.agents.failover_handler import handle_agent_model_failover
+# --- Ensure failover handler is imported correctly ---
+from src.agents.failover_handler import handle_agent_model_failover, _select_next_failover_model
 # --- End Import ---
+
+
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Constants - Can likely be moved or sourced centrally later
+# Constants
 BOOTSTRAP_AGENT_ID = "admin_ai"
 DEFAULT_PROJECT_NAME = "DefaultProject"
 
@@ -51,9 +62,9 @@ class AgentManager:
     to specialized handlers/modules.
     """
     def __init__(self, websocket_manager: Optional[Any] = None):
-        self.bootstrap_agents: List[str] = [] # Track IDs of bootstrap agents
-        self.agents: Dict[str, Agent] = {}   # Registry of active agent instances
-        self.send_to_ui_func = broadcast     # Function to send updates to UI
+        self.bootstrap_agents: List[str] = []
+        self.agents: Dict[str, Agent] = {}
+        self.send_to_ui_func = broadcast
         self.current_project: Optional[str] = None
         self.current_session: Optional[str] = None
         logger.info("Instantiating ProviderKeyManager...")
@@ -90,13 +101,13 @@ class AgentManager:
 
     # --- Initialization and Lifecycle ---
     async def initialize_bootstrap_agents(self):
-        await initialize_bootstrap_agents(self) # Call imported function
+        await initialize_bootstrap_agents(self)
 
     async def create_agent_instance( self, agent_id_requested: Optional[str], provider: str, model: str, system_prompt: str, persona: str, team_id: Optional[str] = None, temperature: Optional[float] = None, **kwargs ) -> Tuple[bool, str, Optional[str]]:
-        return await create_agent_instance(self, agent_id_requested, provider, model, system_prompt, persona, team_id, temperature, **kwargs) # Call imported function
+        return await create_agent_instance(self, agent_id_requested, provider, model, system_prompt, persona, team_id, temperature, **kwargs)
 
     async def delete_agent_instance(self, agent_id: str) -> Tuple[bool, str]:
-        return await delete_agent_instance(self, agent_id) # Call imported function
+        return await delete_agent_instance(self, agent_id)
 
     # --- Message Handling and Execution ---
     async def schedule_cycle(self, agent: Agent, retry_count: int = 0):
@@ -123,6 +134,7 @@ class AgentManager:
     async def handle_agent_model_failover(self, agent_id: str, last_error: str):
         """ Delegates failover handling to the imported failover handler function. """
         # --- Call the correctly imported function ---
+        # The function handle_agent_model_failover is imported from failover_handler.py
         await handle_agent_model_failover(self, agent_id, last_error)
         # --- End Correction ---
 
