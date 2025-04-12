@@ -19,12 +19,10 @@
 *   Implement provider availability checks and **automatic retries** for transient errors. *(Completed)*
 *   **Implement automatic model/provider failover** for agents experiencing persistent errors during generation, following preference tiers (Local -> Free -> Paid). *(Completed in P13)*
 *   **Implement basic performance metric tracking** (success rate, latency) per model, persisting data. *(Completed in P13)*
-*   **Remove user override mechanism**, relying on automatic failover up to a limit, then setting agent to ERROR state. *(Completed in P13)*
-*   Refactor core manager logic into specialized classes. *(Completed in P11)*
 *   Implement a **Human User Interface** reflecting system state. *(Simplified in P13)*
 *   Utilize **XML-based tool calling** with **sequential execution**. *(Completed)*
 *   Allow tool use in sandboxed or shared workspaces. *(Completed in P11)*
-*   Implement **automatic project/session context setting**. *(Completed in P11)*
+*   Implement **automatic project/session context setting**. *(Partially Iompleted in P11)*
 *   **(Future Goals)** Enhance Admin AI planning, **use tracked performance metrics for ranking and automatic model selection** (for Admin AI and dynamic agents), implement new Admin AI tools (category selection, qualitative feedback), resource management, advanced collaboration patterns, database integration, formal project/task management.
 
 ## 2. Scope
@@ -39,7 +37,6 @@
 *   **Automatic Admin AI Model Selection:** Based on discovery/preferences. *(Completed in P12)*
 *   **Performance Tracking (`ModelPerformanceTracker`):** Tracks success/failure/duration per model, saves to JSON. *(Completed in P13)*
 *   **Automatic Agent Failover:** Agent switches provider/model on persistent errors based on tiers (Local->Free->Paid), up to `MAX_FAILOVER_ATTEMPTS`. *(Completed in P13)*
-*   **User Override Removal:** No more modal prompt for user intervention on errors. *(Completed in P13)*
 *   **Dynamic Agent/Team Management:** In-memory CRUD. *(Completed)*
 *   **Tooling:** Core tools implemented. *(Completed)*
 *   **Configuration:** `config.yaml` (Admin AI optional), `.env` (keys, URLs, tier). *(Completed)*
@@ -49,7 +46,6 @@
 *   **Sandboxing & Shared Workspace:** Implemented. *(Completed)*
 *   **LLM Integration:** OpenRouter, Ollama, OpenAI providers with retries/failover. *(Completed)*
 *   **Helper Files & Logging:** Maintained. *(Ongoing)*
-*   **Automatic Context:** Implemented. *(Completed)*
 
 **Out of Scope (Deferred to Future Phases 14+):**
 
@@ -69,9 +65,27 @@
 *   Automated testing suite.
 *   UI Refinements (Chat scrolling, WS message handling).
 
-## 3. Technology Stack
+## 💻 Technology Stack
 
-*   (No changes here)
+*   **Backend:** Python 3.9+, FastAPI, Uvicorn
+*   **Asynchronous Operations:** `asyncio`
+*   **WebSockets:** `websockets` library integrated with FastAPI
+*   **LLM Interaction:**
+    *   `openai` library (for OpenAI & OpenRouter providers)
+    *   `aiohttp` (for Ollama provider and internal HTTP requests)
+*   **Frontend:** HTML5, CSS3, Vanilla JavaScript
+*   **Configuration:**
+    *   YAML (`PyYAML`) for bootstrap agent definitions (`config.yaml`)
+    *   `.env` files (`python-dotenv`) for secrets, URLs, and settings like `MODEL_TIER`
+*   **Model Discovery & Management:** Custom `ModelRegistry` class
+*   **Performance Tracking:** Custom `ModelPerformanceTracker` class (saving to JSON)
+*   **Data Handling/Validation:** Pydantic (primarily via FastAPI)
+*   **File System Interaction:** Python's built-in `pathlib` and `os` modules
+*   **XML Parsing:** Standard library `re` (Regex) and `html` (for unescaping)
+*   **Logging:** Standard library `logging` module
+*   **HTTP Requests (Internal):** `aiohttp` (used within `ModelRegistry`, `GitHubTool`, `WebSearchTool`)
+*   **HTML Parsing (Tools):** `BeautifulSoup4` (`bs4`) (used within `WebSearchTool`)
+*   **File Persistence:** Standard library `json` module (for session state and performance metrics)
 
 ## 4. Proposed Architecture Refinement (Conceptual - Post Phase 13)
 
