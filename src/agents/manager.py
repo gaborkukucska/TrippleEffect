@@ -106,7 +106,6 @@ class AgentManager:
         except Exception as e: logger.error(f"Error creating projects directory at {settings.PROJECTS_BASE_DIR}: {e}", exc_info=True)
 
     async def initialize_bootstrap_agents(self):
-        # (No changes needed in this method)
         logger.info("Initializing bootstrap agents asynchronously...")
         agent_configs_list = settings.AGENT_CONFIGURATIONS
         if not agent_configs_list: logger.warning("No bootstrap agent configurations found."); return
@@ -175,7 +174,7 @@ class AgentManager:
 
 
     async def _create_agent_internal( self, agent_id_requested: Optional[str], agent_config_data: Dict[str, Any], is_bootstrap: bool = False, team_id: Optional[str] = None, loading_from_session: bool = False ) -> Tuple[bool, str, Optional[str]]:
-        # (Logic remains the same, including call to await self.key_manager.get_active_key_config)
+        # (No changes needed)
         agent_id: Optional[str] = None;
         if agent_id_requested and agent_id_requested in self.agents: msg = f"Agent ID '{agent_id_requested}' already exists."; logger.error(msg); return False, msg, None
         elif agent_id_requested: agent_id = agent_id_requested
@@ -311,7 +310,7 @@ class AgentManager:
 
         original_provider = agent.provider_name
         original_model = agent.model
-        original_model_key = f"{original_provider}/{original_model}"
+        original_model_key = f"{original_provider}/{original_model}" # Used for logging and failover tracking
         logger.warning(f"Agent '{agent_id}' failover process initiated for '{original_model_key}' due to error: {last_error}")
         await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Failover initiated for {original_model_key} due to error..."})
 
@@ -325,9 +324,12 @@ class AgentManager:
                 await self.key_manager.quarantine_key(original_provider, failed_key_value)
             else: logger.warning(f"Could not determine specific API key used by failed provider instance for {original_provider} on agent {agent_id}. Cannot quarantine specific key.")
 
-        if original_provider not in ["ollama", "litellm"] and failed_key_value:
+        # --- Attempt Key Cycling FIRST (for the *same* provider) ---
+        if original_provider not in ["ollama", "litellm"] and failed_key_value: # Only cycle if a key failed
             logger.info(f"Attempting key cycling for provider '{original_provider}' on agent '{agent_id}'...")
+            # Use await here as get_active_key_config is now async
             next_key_config = await self.key_manager.get_active_key_config(original_provider)
+
             if next_key_config and next_key_config.get('api_key') != failed_key_value:
                 new_key_value = next_key_config.get('api_key')
                 logger.info(f"Found new active key for provider '{original_provider}'. Retrying model '{original_model}' with new key.")
@@ -342,12 +344,13 @@ class AgentManager:
                     new_provider_instance = ProviderClass(**final_provider_args)
                     agent.llm_provider = new_provider_instance
                     await self._close_provider_safe(old_provider_instance)
-                    agent.set_status(AGENT_STATUS_IDLE); await self.schedule_cycle(agent, 0)
+                    agent.set_status(AGENT_STATUS_IDLE); await self.schedule_cycle(agent, 0) # Reset retry count for new key
                     logger.info(f"Agent '{agent_id}' successfully switched key for provider '{original_provider}'. Rescheduled cycle for model '{original_model}'.")
-                    return
+                    return # Exit failover process, retry with new key handles it
                 except Exception as key_cycle_err: logger.error(f"Agent '{agent_id}': Error during key cycling switch for provider '{original_provider}': {key_cycle_err}", exc_info=True)
             else: logger.info(f"No other non-quarantined keys available for provider '{original_provider}'. Proceeding to model/provider failover.")
 
+        # --- Model/Provider Failover (if key cycling failed or not applicable) ---
         if len(failed_models_this_cycle) >= MAX_FAILOVER_ATTEMPTS:
             fail_reason = f"[Failover Limit Reached after {len(failed_models_this_cycle)} models/keys tried] Last error on {original_model_key}: {last_error}"
             logger.error(f"Agent '{agent_id}': Max failover attempts ({MAX_FAILOVER_ATTEMPTS}) reached for this task sequence. Setting to ERROR.")
@@ -358,13 +361,14 @@ class AgentManager:
         next_provider, next_model = await self._select_next_failover_model(agent, failed_models_this_cycle)
 
         if next_provider and next_model:
-            next_model_key = f"{next_provider}/{next_model}"
+            next_model_key = f"{next_provider}/{next_model}" # Use full key for logging
             logger.info(f"Agent '{agent_id}': Failing over from '{original_model_key}' to model: {next_model_key}")
             await self.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Failover: Switching to {next_provider}/{next_model}"})
             old_provider_instance = agent.llm_provider
             try:
                 if next_provider in ["ollama", "litellm"]: provider_config = settings.get_provider_config(next_provider)
                 else:
+                    # Use await here
                     provider_config = await self.key_manager.get_active_key_config(next_provider)
                     if provider_config is None: raise ValueError(f"Could not get active key config for selected failover provider {next_provider}")
                 agent.provider_name = next_provider; agent.model = next_model;
@@ -378,12 +382,12 @@ class AgentManager:
                 new_provider_instance = NewProviderClass(**final_provider_args);
                 agent.llm_provider = new_provider_instance;
                 await self._close_provider_safe(old_provider_instance);
-                agent.set_status(AGENT_STATUS_IDLE); await self.schedule_cycle(agent, 0);
+                agent.set_status(AGENT_STATUS_IDLE); await self.schedule_cycle(agent, 0); # Reset retry count for new model
                 logger.info(f"Agent '{agent_id}' failover successful to {next_model_key}. Rescheduled cycle.");
             except Exception as failover_err:
                 fail_reason = f"[Failover attempt failed during switch to {next_model_key}: {failover_err}] Last operational error: {last_error}"
                 logger.error(f"Agent '{agent_id}': Error during failover switch to {next_model_key}: {failover_err}", exc_info=True)
-                if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.add(next_model_key)
+                if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.add(next_model_key) # Mark the target model as failed too
                 logger.error(f"Agent '{agent_id}': Failover switch failed. Setting agent to permanent ERROR state for this task sequence.")
                 agent.set_status(AGENT_STATUS_ERROR); await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": fail_reason})
                 if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear();
@@ -393,7 +397,7 @@ class AgentManager:
             agent.set_status(AGENT_STATUS_ERROR); await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": fail_reason})
             if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear();
 
-    # --- Make the selection logic async ---
+    # --- Ensure this is async def ---
     async def _select_next_failover_model(self, agent: Agent, already_failed: Set[str]) -> Tuple[Optional[str], Optional[str]]:
         """ (Async) Selects the next available model for failover, prioritizing local providers and checking key availability. """
         logger.debug(f"Selecting next failover model for agent '{agent.agent_id}'. Current: {agent.provider_name}/{agent.model}. Already failed this sequence: {already_failed}")
@@ -425,7 +429,7 @@ class AgentManager:
             for model_info in models_list:
                 model_id = model_info.get("id")
                 if not model_id: continue
-                failover_key = f"{provider}/{model_id}"
+                failover_key = f"{provider}/{model_id}" # Use provider/model for external key too
                 if failover_key in already_failed: continue
                 is_free = ":free" in model_id.lower() if provider == "openrouter" else False
                 if is_free: free_models.append((provider, model_id))
