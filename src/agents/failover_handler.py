@@ -1,187 +1,216 @@
-# START OF FILE src/agents/interaction_handler.py
+# START OF FILE src/agents/failover_handler.py
 import asyncio
-import json
+from typing import Dict, Any, Optional, List, Tuple, Set
 import logging
-from typing import TYPE_CHECKING, Dict, Any, Optional, List, Tuple
+import time # Added back for logging expiry time
 
-# Import base types and tools
-from src.llm_providers.base import ToolResultDict, MessageDict
-from src.tools.manage_team import ManageTeamTool
-from src.tools.send_message import SendMessageTool
+# Import necessary components from other modules
+from src.agents.core import Agent, AGENT_STATUS_IDLE, AGENT_STATUS_ERROR
+from src.llm_providers.base import BaseLLMProvider
+from src.config.settings import settings, model_registry
+from src.agents.cycle_handler import MAX_FAILOVER_ATTEMPTS # Import constant
 
-# Import helper for prompt update
-from src.agents.prompt_utils import update_agent_prompt_team_id
-
-# --- Import agent_lifecycle instead of directly calling manager.create/delete ---
-from src.agents import agent_lifecycle
-# --- End Import ---
-
-# Type hinting for AgentManager and Agent
+# Import PROVIDER_CLASS_MAP from the refactored manager (or define it here)
+# Using TYPE_CHECKING to avoid circular imports at runtime
+from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from src.agents.manager import AgentManager, BOOTSTRAP_AGENT_ID
-    from src.agents.core import Agent
+    from src.agents.manager import AgentManager # Ensure this import is correct
+
+# Re-define PROVIDER_CLASS_MAP here or import from manager if structure allows
+from src.llm_providers.openai_provider import OpenAIProvider
+from src.llm_providers.ollama_provider import OllamaProvider
+from src.llm_providers.openrouter_provider import OpenRouterProvider
+
+PROVIDER_CLASS_MAP: Dict[str, type[BaseLLMProvider]] = {
+    "openai": OpenAIProvider,
+    "ollama": OllamaProvider,
+    "openrouter": OpenRouterProvider,
+    # TODO: Add LiteLLMProvider when implemented
+}
 
 logger = logging.getLogger(__name__)
 
-class AgentInteractionHandler:
+
+# --- This is the function that needs to be correctly defined ---
+async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, last_error: str):
     """
-    Handles the processing of specific tool interactions and execution of tools,
-    requiring context from the AgentManager. Uses agent_lifecycle module for C/D ops.
+    Handles the failover process for an agent after retries/key cycling failed.
+    Selects the next best model, switches the provider instance, and reschedules.
+
+    Args:
+        manager: The AgentManager instance.
+        agent_id: The ID of the agent requiring failover.
+        last_error: The description of the last error encountered.
     """
-    def __init__(self, manager: 'AgentManager'):
-        self._manager = manager
-        logger.info("AgentInteractionHandler initialized.")
+    agent = manager.agents.get(agent_id)
+    if not agent:
+        logger.error(f"Failover Error: Agent '{agent_id}' not found during failover attempt.")
+        return
 
-    async def handle_manage_team_action(
-        self,
-        action: Optional[str],
-        params: Dict[str, Any],
-        calling_agent_id: str
-        ) -> Tuple[bool, str, Optional[Any]]:
-        """
-        Processes validated ManageTeamTool actions. Uses agent_lifecycle for C/D.
-        """
-        if not action:
-            return False, "No action specified.", None
+    original_provider = agent.provider_name
+    original_model = agent.model
+    original_model_key = f"{original_provider}/{original_model}"
+    logger.warning(f"Failover Handler: Initiating model/provider switch for '{original_model_key}' on agent '{agent_id}' due to error: {last_error}")
+    await manager.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Attempting model/provider failover for {original_model_key}..."})
 
-        success, message, result_data = False, "Unknown action or error.", None
-        try:
-            logger.debug(f"InteractionHandler: Processing ManageTeam action '{action}' from agent '{calling_agent_id}' with params: {params}")
-            agent_id_param = params.get("agent_id"); team_id = params.get("team_id")
-            provider = params.get("provider"); model = params.get("model")
-            system_prompt = params.get("system_prompt"); persona = params.get("persona")
-            temperature = params.get("temperature")
-            known_args = ['action', 'agent_id', 'team_id', 'provider', 'model', 'system_prompt', 'persona', 'temperature']
-            # Filter out context keys passed by executor if present
-            extra_kwargs = {k: v for k, v in params.items() if k not in known_args and k not in ['project_name', 'session_name']}
+    failed_models_this_cycle = getattr(agent, '_failed_models_this_cycle', set())
 
-            if action == "create_agent":
-                # --- Delegate to agent_lifecycle ---
-                success, message, created_agent_id = await agent_lifecycle.create_agent_instance(
-                    self._manager, agent_id_requested=agent_id_param, provider=provider, model=model,
-                    system_prompt=system_prompt, persona=persona, team_id=team_id,
-                    temperature=temperature, **extra_kwargs
-                )
-                # --- End Delegate ---
-                if success and created_agent_id:
-                    result_data = { "created_agent_id": created_agent_id, "persona": persona, "provider": provider, "model": model, "team_id": team_id }
-                    # Message is already set by create_agent_instance
-            elif action == "delete_agent":
-                 # --- Delegate to agent_lifecycle ---
-                 success, message = await agent_lifecycle.delete_agent_instance(self._manager, agent_id_param)
-                 # --- End Delegate ---
-            elif action == "create_team":
-                 success, message = await self._manager.state_manager.create_new_team(team_id)
-                 if success: result_data = {"created_team_id": team_id}
-            elif action == "delete_team":
-                 success, message = await self._manager.state_manager.delete_existing_team(team_id)
-            elif action == "add_agent_to_team":
-                 success, message = await self._manager.state_manager.add_agent_to_team(agent_id_param, team_id)
-                 if success: await update_agent_prompt_team_id(self._manager, agent_id_param, team_id)
-            elif action == "remove_agent_from_team":
-                 success, message = await self._manager.state_manager.remove_agent_from_team(agent_id_param, team_id)
-                 if success: await update_agent_prompt_team_id(self._manager, agent_id_param, None)
-            elif action == "list_agents":
-                 filter_team_id = params.get("team_id");
-                 result_data = self._manager.get_agent_info_list_sync(filter_team_id=filter_team_id)
-                 success = True; count = len(result_data)
-                 message = f"Found {count} agent(s)"
-                 if filter_team_id: message += f" in team '{filter_team_id}'."
-                 else: message += " in total."
-                 try: json.dumps(result_data) # Check serializability
-                 except TypeError: logger.error("list_agents result_data not JSON serializable"); result_data = [{"error": "data not serializable"}]
-            elif action == "list_teams":
-                 result_data = self._manager.state_manager.get_team_info_dict(); success = True; message = f"Found {len(result_data)} team(s)."
-            else: message = f"Unrecognized action: {action}"; logger.warning(message)
+    # --- Quarantine the failed key (if applicable) ---
+    # Note: Key cycling logic moved here from manager.py
+    failed_key_value: Optional[str] = None
+    key_cycled = False # Flag to track if we successfully cycled a key
+    if original_provider not in ["ollama", "litellm"]:
+        # Attempt to get the key used from the provider instance
+        if hasattr(agent.llm_provider, 'api_key') and isinstance(agent.llm_provider.api_key, str):
+            failed_key_value = agent.llm_provider.api_key
+            await manager.key_manager.quarantine_key(original_provider, failed_key_value)
 
-            logger.info(f"InteractionHandler: ManageTeamTool action '{action}' processed. Success={success}, Message='{message}'")
-            return success, message, result_data
-        except Exception as e:
-             message = f"InteractionHandler Error processing ManageTeamTool action '{action}': {e}"
-             logger.error(message, exc_info=True)
-             return False, message, None
+            # Attempt Key Cycling *before* checking failover limit or selecting new model
+            logger.info(f"Failover Handler: Attempting key cycling for provider '{original_provider}' on agent '{agent_id}'...")
+            next_key_config = await manager.key_manager.get_active_key_config(original_provider)
 
-    async def route_and_activate_agent_message( self, sender_id: str, target_id: str, message_content: str ) -> Optional[asyncio.Task]:
-        """ Routes a message between agents and activates the target if idle. """
-        # (No changes needed in this method)
-        from src.agents.manager import BOOTSTRAP_AGENT_ID
-
-        sender_agent = self._manager.agents.get(sender_id)
-        target_agent = self._manager.agents.get(target_id)
-
-        if not sender_agent:
-            logger.error(f"InteractionHandler SendMsg route error: Sender '{sender_id}' not found."); return None
-        if not target_agent:
-            error_msg = f"Failed to send message: Target agent '{target_id}' not found."
-            logger.error(f"InteractionHandler SendMsg route error from '{sender_id}': {error_msg}")
-            feedback_message: MessageDict = { "role": "tool", "tool_call_id": f"send_message_failed_{target_id}", "content": f"[Manager Feedback for SendMessage]: {error_msg}" }
-            sender_agent.message_history.append(feedback_message)
-            logger.debug(f"InteractionHandler: Appended 'target not found' feedback to sender '{sender_id}' history.")
-            return None
-
-        sender_team = self._manager.state_manager.get_agent_team(sender_id)
-        target_team = self._manager.state_manager.get_agent_team(target_id)
-        allowed = (sender_id == BOOTSTRAP_AGENT_ID or target_id == BOOTSTRAP_AGENT_ID or (sender_team and sender_team == target_team))
-
-        if not allowed:
-            error_msg = f"Message blocked: Sender '{sender_id}' (Team: {sender_team or 'N/A'}) cannot send to Target '{target_id}' (Team: {target_team or 'N/A'})."
-            logger.warning(f"InteractionHandler: {error_msg}")
-            feedback_message: MessageDict = { "role": "tool", "tool_call_id": f"send_message_failed_{target_id}", "content": f"[Manager Feedback for SendMessage]: {error_msg}" }
-            sender_agent.message_history.append(feedback_message)
-            logger.debug(f"InteractionHandler: Appended 'communication blocked' feedback to sender '{sender_id}' history.")
-            return None
-
-        formatted_message: MessageDict = { "role": "user", "content": f"[From @{sender_id}]: {message_content}" }
-        target_agent.message_history.append(formatted_message)
-        logger.debug(f"InteractionHandler: Appended message from '{sender_id}' to history of '{target_id}'.")
-
-        # Use manager's schedule method to activate
-        if target_agent.status == AGENT_STATUS_IDLE:
-            logger.info(f"InteractionHandler: Target '{target_id}' is IDLE. Scheduling cycle...");
-            return await self._manager.schedule_cycle(target_agent, 0)
-        # Removed AWAITING_USER_OVERRIDE check
-        else:
-            logger.info(f"InteractionHandler: Target '{target_id}' not IDLE (Status: {target_agent.status}). Message queued.")
-            await self._manager.send_to_ui({ "type": "status", "agent_id": target_id, "content": f"Message received from @{sender_id}, queued." })
-            return None
-
-
-    async def execute_single_tool( self, agent: 'Agent', call_id: str, tool_name: str, tool_args: Dict[str, Any], project_name: Optional[str], session_name: Optional[str] ) -> Optional[Dict]:
-        """ Executes a single tool call via the ToolExecutor. """
-        # (No changes needed in this method)
-        if not self._manager.tool_executor:
-            logger.error("InteractionHandler: ToolExecutor unavailable. Cannot execute tool.")
-            return {"call_id": call_id, "content": "[ToolExec Error: ToolExecutor unavailable]", "_raw_result": None}
-
-        tool_info = {"name": tool_name, "call_id": call_id}
-        agent.set_status("executing_tool", tool_info=tool_info)
-        raw_result: Optional[Any] = None
-        result_content: str = "[Tool Execution Error: Unknown]"
-
-        try:
-            logger.debug(f"InteractionHandler: Executing tool '{tool_name}' (ID: {call_id}) for '{agent.agent_id}' with context Project: {project_name}, Session: {session_name}")
-            raw_result = await self._manager.tool_executor.execute_tool(
-                agent.agent_id, agent.sandbox_path, tool_name, tool_args,
-                project_name=project_name, session_name=session_name
-            )
-            logger.debug(f"InteractionHandler: Tool '{tool_name}' completed execution.")
-            if tool_name == ManageTeamTool.name: result_content = raw_result.get("message", str(raw_result)) if isinstance(raw_result, dict) else str(raw_result)
-            elif isinstance(raw_result, str): result_content = raw_result
+            if next_key_config and next_key_config.get('api_key') != failed_key_value:
+                new_key_value = next_key_config.get('api_key')
+                logger.info(f"Failover Handler: Found new active key for provider '{original_provider}'. Retrying model '{original_model}' with new key.")
+                await manager.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Failover: Trying next API key for {original_provider}..."})
+                old_provider_instance = agent.llm_provider
+                try:
+                    provider_kwargs = {k: v for k, v in agent.agent_config.get("config", {}).items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'api_key', 'base_url', 'referer']}
+                    final_provider_args = {**next_key_config, **provider_kwargs}
+                    final_provider_args = {k: v for k, v in final_provider_args.items() if v is not None}
+                    ProviderClass = PROVIDER_CLASS_MAP.get(original_provider)
+                    if not ProviderClass: raise ValueError(f"Provider class not found for {original_provider}")
+                    new_provider_instance = ProviderClass(**final_provider_args)
+                    agent.llm_provider = new_provider_instance
+                    await manager._close_provider_safe(old_provider_instance) # Use manager's helper
+                    agent.set_status(AGENT_STATUS_IDLE)
+                    await manager.schedule_cycle(agent, 0) # Reset retry count for new key
+                    logger.info(f"Failover Handler: Agent '{agent_id}' successfully switched key for provider '{original_provider}'. Rescheduled cycle for model '{original_model}'.")
+                    key_cycled = True # Mark that key cycling was successful
+                    # return # Exit failover process, retry with new key handles it - ** DO NOT RETURN YET, let failover limit check run **
+                except Exception as key_cycle_err:
+                     logger.error(f"Failover Handler: Agent '{agent_id}': Error during key cycling switch for provider '{original_provider}': {key_cycle_err}", exc_info=True)
+                     # Fall through to model/provider failover if key cycling instantiation fails
             else:
-                 try: result_content = json.dumps(raw_result, indent=2)
-                 except TypeError: result_content = str(raw_result)
-        except Exception as e:
-            error_msg = f"InteractionHandler: Error executing tool '{tool_name}': {type(e).__name__} - {e}"
-            logger.error(error_msg, exc_info=True); result_content = f"[ToolExec Error: {error_msg}]"; raw_result = None
-        finally:
-            if agent.status == "executing_tool" and agent.current_tool_info and agent.current_tool_info.get("call_id") == call_id:
-                agent.set_status("processing")
-        return {"call_id": call_id, "content": result_content, "_raw_result": raw_result}
+                logger.info(f"Failover Handler: No other non-quarantined keys available for provider '{original_provider}'. Proceeding to model/provider failover.")
+        else:
+             logger.debug(f"Failover Handler: Skipping key cycling for local provider '{original_provider}' or could not determine failed key.")
+    # --- End Key Cycling Attempt ---
 
 
-    async def failed_tool_result(self, call_id: Optional[str], tool_name: Optional[str]) -> Optional[ToolResultDict]:
-        """ Generates error result for failed tool dispatch/validation. """
-        # (No changes needed in this method)
-        error_content = f"[ToolExec Error: Failed dispatch for '{tool_name or 'unknown'}'. Invalid format or arguments.]"
-        final_call_id = call_id or f"invalid_call_{int(time.time())}"
-        return {"call_id": final_call_id, "content": error_content, "_raw_result": {"status": "error", "message": error_content}}
+    # --- Model/Provider Failover (Proceed if key cycling didn't happen or wasn't applicable) ---
+    if not key_cycled:
+        # Check overall failover attempt limit ONLY if we didn't successfully cycle a key
+        if len(failed_models_this_cycle) >= MAX_FAILOVER_ATTEMPTS:
+            fail_reason = f"[Failover Limit Reached after {len(failed_models_this_cycle)} models/keys tried] Last error on {original_model_key}: {last_error}"
+            logger.error(f"Agent '{agent_id}': Max failover attempts ({MAX_FAILOVER_ATTEMPTS}) reached for this task sequence. Setting to ERROR.")
+            agent.set_status(AGENT_STATUS_ERROR); await manager.send_to_ui({"type": "error", "agent_id": agent_id, "content": fail_reason})
+            if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear(); return
+
+        # Select the next model/provider
+        next_provider, next_model = await _select_next_failover_model(manager, agent, failed_models_this_cycle)
+
+        if next_provider and next_model:
+            next_model_key = f"{next_provider}/{next_model}"
+            logger.info(f"Failover Handler: Failing over '{agent_id}' from '{original_model_key}' to model: {next_model_key}")
+            await manager.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Failover: Switching to {next_provider}/{next_model}"})
+            old_provider_instance = agent.llm_provider
+            try:
+                if next_provider in ["ollama", "litellm"]: provider_config = settings.get_provider_config(next_provider)
+                else:
+                    provider_config = await manager.key_manager.get_active_key_config(next_provider)
+                    if provider_config is None: raise ValueError(f"Could not get active key config for selected failover provider {next_provider}")
+                agent.provider_name = next_provider; agent.model = next_model;
+                if hasattr(agent, 'agent_config') and isinstance(agent.agent_config, dict) and "config" in agent.agent_config and isinstance(agent.agent_config["config"], dict):
+                    agent.agent_config["config"].update({"provider": next_provider, "model": next_model});
+                provider_kwargs = {k: v for k, v in agent.agent_config.get("config", {}).items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'api_key', 'base_url', 'referer']}
+                final_provider_args = {**provider_config, **provider_kwargs};
+                final_provider_args = {k: v for k, v in final_provider_args.items() if v is not None};
+                NewProviderClass = PROVIDER_CLASS_MAP.get(next_provider);
+                if not NewProviderClass: raise ValueError(f"Provider class not found for {next_provider}");
+                new_provider_instance = NewProviderClass(**final_provider_args);
+                agent.llm_provider = new_provider_instance;
+                await manager._close_provider_safe(old_provider_instance); # Use manager's helper
+                agent.set_status(AGENT_STATUS_IDLE); await manager.schedule_cycle(agent, 0); # Use manager's schedule method
+                logger.info(f"Failover Handler: Agent '{agent_id}' failover successful to {next_model_key}. Rescheduled cycle.");
+            except Exception as failover_err:
+                fail_reason = f"[Failover attempt failed during switch to {next_model_key}: {failover_err}] Last operational error: {last_error}"
+                logger.error(f"Failover Handler: Error during failover switch for '{agent_id}' to {next_model_key}: {failover_err}", exc_info=True)
+                if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.add(next_model_key)
+                logger.error(f"Failover Handler: Agent '{agent_id}' failover switch failed. Setting agent to permanent ERROR state for this task sequence.")
+                agent.set_status(AGENT_STATUS_ERROR); await manager.send_to_ui({"type": "error", "agent_id": agent_id, "content": fail_reason})
+                if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear();
+        else:
+            # No alternative model found after checking local and available external
+            fail_reason = f"[No alternative models found after {len(failed_models_this_cycle)} failover attempts] Last error on {original_model_key}: {last_error}"
+            logger.error(f"Failover Handler: No alternative models available for '{agent_id}' after trying {len(failed_models_this_cycle)} model(s)/key(s). Setting agent to permanent ERROR state.")
+            agent.set_status(AGENT_STATUS_ERROR); await manager.send_to_ui({"type": "error", "agent_id": agent_id, "content": fail_reason})
+            if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear();
+
+
+async def _select_next_failover_model(manager: 'AgentManager', agent: Agent, already_failed: Set[str]) -> Tuple[Optional[str], Optional[str]]:
+    """
+    (Async) Selects the next available model for failover, prioritizing local providers
+    and checking remote provider key availability. Skips models already failed in this sequence.
+    """
+    logger.debug(f"Failover Selection: Selecting next model for agent '{agent.agent_id}'. Current: {agent.provider_name}/{agent.model}. Failed this sequence: {already_failed}")
+
+    available_models_dict = model_registry.get_available_models_dict()
+    current_model_tier = settings.MODEL_TIER
+
+    # --- 1. Try Local Providers First ---
+    local_providers = ["ollama", "litellm"]
+    logger.debug(f"Failover Selection: Checking local providers: {local_providers}")
+    for provider in local_providers:
+        if provider in model_registry._reachable_providers and provider in available_models_dict:
+            models_list = available_models_dict.get(provider, [])
+            sorted_model_ids = sorted([m.get('id') for m in models_list if m.get('id')])
+            for model_id in sorted_model_ids:
+                failover_key = f"{provider}/{model_id}" # Use full key for tracking
+                if failover_key not in already_failed:
+                    logger.info(f"Failover Selection: Found next model (Local): {provider}/{model_id}")
+                    return provider, model_id
+            # else: logger.debug(f"Failover Selection: Local provider '{provider}' has models, but all have failed in this sequence.")
+        # else: logger.debug(f"Failover Selection: Local provider '{provider}' not reachable or has no models.")
+
+
+    # --- 2. Try External Providers (Respecting Tier and Key Availability) ---
+    external_providers = ["openrouter", "openai"] # Add others if needed
+    free_models: List[Tuple[str, str]] = []
+    paid_models: List[Tuple[str, str]] = []
+    available_external_providers = []
+
+    for provider in external_providers:
+        if provider in model_registry._reachable_providers and provider in available_models_dict:
+            is_depleted = await manager.key_manager.is_provider_depleted(provider) # Use await
+            if not is_depleted:
+                available_external_providers.append(provider)
+            else:
+                logger.warning(f"Failover Selection: Skipping external provider '{provider}': all keys quarantined.")
+
+    for provider in available_external_providers:
+        models_list = available_models_dict.get(provider, [])
+        for model_info in models_list:
+            model_id = model_info.get("id")
+            if not model_id: continue
+            failover_key = f"{provider}/{model_id}" # Use provider/model key
+            if failover_key in already_failed: continue
+            is_free = ":free" in model_id.lower() if provider == "openrouter" else False
+            if is_free: free_models.append((provider, model_id))
+            else: paid_models.append((provider, model_id))
+
+    free_models.sort(key=lambda x: x[1]); paid_models.sort(key=lambda x: x[1])
+    logger.debug(f"Failover Selection: Checking available/non-depleted external providers. Free: {len(free_models)}. Paid: {len(paid_models)}. Tier: {current_model_tier}")
+
+    if current_model_tier != "PAID_ONLY":
+        logger.debug("Failover Selection: Checking available Free external models...")
+        for provider, model_id in free_models:
+             logger.info(f"Failover Selection: Found next model (External Free): {provider}/{model_id}"); return provider, model_id
+
+    if current_model_tier != "FREE":
+        logger.debug("Failover Selection: Checking available Paid external models...")
+        for provider, model_id in paid_models:
+            logger.info(f"Failover Selection: Found next model (External Paid): {provider}/{model_id}"); return provider, model_id
+
+    logger.warning(f"Failover Selection: Could not find any suitable alternative model for agent '{agent.agent_id}' that hasn't already failed ({already_failed}).")
+    return None, None
