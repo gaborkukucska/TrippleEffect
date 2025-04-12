@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 import logging
 import json
+import re # Import regex for key matching
 
 # Define base directory relative to this file's location
 BASE_DIR = Path(__file__).resolve().parent.parent.parent # Define BASE_DIR here for module scope
@@ -35,8 +36,7 @@ except ImportError as e:
      config_manager = DummyConfigManager()
 
 
-# --- *** Import ModelRegistry *class* only *** ---
-# We will instantiate it AFTER Settings is defined.
+# Import ModelRegistry class only
 try:
     from src.config.model_registry import ModelRegistry as ModelRegistryClass # Rename to avoid name clash
     print("Successfully imported ModelRegistry class.")
@@ -62,25 +62,55 @@ logger = logging.getLogger(__name__)
 class Settings:
     """
     Holds application settings, loaded from environment variables and config.yaml.
-    Manages API keys, base URLs, default agent parameters, initial agent configs.
+    Manages API keys (supporting multiple keys per provider), base URLs,
+    default agent parameters, initial agent configs.
     Uses ConfigManager to load configurations synchronously at startup.
     ModelRegistry is instantiated *after* settings are loaded.
     Provides checks for provider configuration status.
     """
     def __init__(self):
-        # --- Provider Configuration (from .env) ---
-        self.OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY")
+        # --- Provider URLs and Referer (from .env) ---
+        # These remain singular as they usually apply per provider setup
         self.OPENAI_BASE_URL: Optional[str] = os.getenv("OPENAI_BASE_URL")
-        self.OPENROUTER_API_KEY: Optional[str] = os.getenv("OPENROUTER_API_KEY")
         self.OPENROUTER_BASE_URL: Optional[str] = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
         self.OPENROUTER_REFERER: Optional[str] = os.getenv("OPENROUTER_REFERER")
         self.OLLAMA_BASE_URL: Optional[str] = os.getenv("OLLAMA_BASE_URL") # Allow None, discovery will try localhost
         self.LITELLM_BASE_URL: Optional[str] = os.getenv("LITELLM_BASE_URL") # Allow None, discovery will try localhost
-        self.LITELLM_API_KEY: Optional[str] = os.getenv("LITELLM_API_KEY")
-        # Add other provider keys/URLs here...
-        self.ANTHROPIC_API_KEY: Optional[str] = os.getenv("ANTHROPIC_API_KEY")
-        self.GOOGLE_API_KEY: Optional[str] = os.getenv("GOOGLE_API_KEY")
-        self.DEEPSEEK_API_KEY: Optional[str] = os.getenv("DEEPSEEK_API_KEY")
+        # Add other provider base URLs here if needed...
+
+        # --- *** Load Multiple API Keys *** ---
+        self.PROVIDER_API_KEYS: Dict[str, List[str]] = {}
+        provider_key_pattern = re.compile(r"^([A-Z_]+)_API_KEY(?:_(\d+))?$")
+        known_provider_env_prefixes = [
+            "OPENAI", "OPENROUTER", "LITELLM", "ANTHROPIC", "GOOGLE", "DEEPSEEK" # Add more as needed
+        ]
+
+        logger.info("Scanning environment variables for API keys...")
+        for key, value in os.environ.items():
+            match = provider_key_pattern.match(key)
+            if match and value:
+                provider_prefix = match.group(1)
+                key_index_str = match.group(2) # Optional numeric suffix
+
+                # Normalize provider name (e.g., OPENROUTER -> openrouter)
+                normalized_provider = provider_prefix.lower()
+
+                # Ensure it's one of the known prefixes we handle
+                if provider_prefix in known_provider_env_prefixes:
+                    if normalized_provider not in self.PROVIDER_API_KEYS:
+                        self.PROVIDER_API_KEYS[normalized_provider] = []
+
+                    # Store keys in order: base key first, then indexed keys
+                    key_entry = {"key": value, "index": int(key_index_str) if key_index_str else -1} # -1 for base key
+
+                    # Simple append for now, ProviderKeyManager can handle sorting if needed
+                    self.PROVIDER_API_KEYS[normalized_provider].append(value)
+                    logger.debug(f"Found API key for provider '{normalized_provider}' (Index: {key_entry['index']})")
+
+        # Log summary of keys found
+        for provider, keys in self.PROVIDER_API_KEYS.items():
+             logger.info(f"Loaded {len(keys)} API key(s) for provider: {provider}")
+        # --- *** End API Key Loading *** ---
 
         # --- Model Tier ---
         self.MODEL_TIER: str = os.getenv("MODEL_TIER", "ALL").upper()
@@ -114,9 +144,10 @@ class Settings:
             logger.error("Config format error: 'agents' key is not a list. Resetting to empty.")
             self.AGENT_CONFIGURATIONS = []
 
+        # Deprecated: Static team config is no longer primary way
         self.TEAMS_CONFIG: Dict[str, List[str]] = raw_config_data.get("teams", {})
         if self.TEAMS_CONFIG:
-            logger.warning("Config Warning: Static 'teams' definition found in config.yaml. This section is deprecated.")
+            logger.warning("Config Warning: Static 'teams' definition found in config.yaml. This section is deprecated and ignored by AgentManager.")
 
         # --- Log Loaded Config Summary ---
         if not self.AGENT_CONFIGURATIONS: print("Warning: No bootstrap agent configurations loaded.")
@@ -124,7 +155,7 @@ class Settings:
         print(f"Model Tier setting: {self.MODEL_TIER}")
 
         self._ensure_projects_dir()
-        self._check_required_keys()
+        self._check_required_keys() # Run check after loading everything
 
     def _ensure_projects_dir(self):
         """Creates the base directory for storing project/session data if it doesn't exist."""
@@ -135,10 +166,8 @@ class Settings:
              print(f"Error creating projects directory at {self.PROJECTS_BASE_DIR}: {e}")
 
     def _check_required_keys(self):
-        """Checks if necessary API keys/URLs are set based on intent to use providers."""
-        # Identify providers intended for use (bootstrap, defaults, or just check all known)
-        # Let's check all known providers for simplicity now.
-        known_providers = ["openai", "openrouter", "ollama", "litellm", "anthropic", "google", "deepseek"] # Add others
+        """Checks provider configuration status based on found keys/URLs."""
+        # Identify providers intended for use (bootstrap, defaults)
         providers_used_in_bootstrap = {self.DEFAULT_AGENT_PROVIDER}
         if isinstance(self.AGENT_CONFIGURATIONS, list):
              for agent_conf_entry in self.AGENT_CONFIGURATIONS:
@@ -146,56 +175,71 @@ class Settings:
                  if provider: providers_used_in_bootstrap.add(provider)
 
         print("-" * 30); print("Provider Configuration Check:")
-        for provider in known_providers:
+        all_known_providers = set(self.PROVIDER_API_KEYS.keys()) | {"ollama", "litellm"} # Include local
+
+        for provider in sorted(list(all_known_providers)):
              is_configured = self.is_provider_configured(provider)
              is_used = provider in providers_used_in_bootstrap
-             if is_configured:
-                 config_details = self.get_provider_config(provider)
-                 detail_str = ", ".join(f"{k}: Set" for k, v in config_details.items() if v) # Show which parts are set
-                 if not detail_str: detail_str = "URL Set" if provider in ["ollama", "litellm"] else "Key Set" # Fallback for local
-                 print(f"✅ {provider.capitalize()}: Configured ({detail_str})")
-             elif is_used:
-                 print(f"⚠️ WARNING: {provider.capitalize()} used by bootstrap/default but not fully configured in .env.")
-             # else: print(f"ℹ️ INFO: {provider.capitalize()} not configured and not explicitly used by bootstrap agents.") # Optional: Too verbose?
+             num_keys = len(self.PROVIDER_API_KEYS.get(provider, []))
 
-        # Specific checks
-        if self.is_provider_configured("openrouter"):
-            final_referer = self.OPENROUTER_REFERER or "http://localhost:8000/TrippleEffect"
-            if not self.OPENROUTER_REFERER: print("  - OpenRouter Referer: Not set, using default.")
-            else: print(f"  - OpenRouter Referer: {final_referer}")
+             if is_configured:
+                 config_details = self.get_provider_config(provider) # Gets non-key details
+                 detail_parts = []
+                 if provider in ["ollama", "litellm"]:
+                     if config_details.get('base_url'): detail_parts.append("URL Set")
+                     else: detail_parts.append("URL Not Set (will use defaults/discovery)")
+                 else: # Keyed providers
+                     detail_parts.append(f"{num_keys} Key(s)")
+                     if config_details.get('base_url'): detail_parts.append("Base URL Set")
+                     if config_details.get('referer'): detail_parts.append("Referer Set")
+                 print(f"✅ {provider.capitalize()}: Configured ({', '.join(detail_parts)})")
+             elif is_used:
+                 # Used by bootstrap/default but has no keys or URL
+                 print(f"⚠️ WARNING: {provider.capitalize()} used by bootstrap/default but NOT configured in .env.")
+             else:
+                 # Not configured and not explicitly used (might still be discovered if local)
+                 print(f"ℹ️ INFO: {provider.capitalize()} not configured and not explicitly used by bootstrap agents.")
+
+        # Specific tool checks
         if self.GITHUB_ACCESS_TOKEN: print("✅ GitHub Access Token: Found (for GitHub tool)")
-        else: print("ℹ️ INFO: GITHUB_ACCESS_TOKEN not set. GitHub tool will not function.")
+        else: print("ℹ️ INFO: GITHUB_ACCESS_TOKEN not set. GitHub tool may not function fully.")
         print("-" * 30)
 
     def get_provider_config(self, provider_name: str) -> Dict[str, Any]:
-        """ Gets the relevant API key, base URL, and referer for a given provider name. """
+        """
+        Gets the NON-KEY configuration (base_url, referer) for a provider.
+        Keys are managed and added by the ProviderKeyManager.
+        """
         config = {}
         provider_name = provider_name.lower()
-        if provider_name == "openai": config = {'api_key': self.OPENAI_API_KEY, 'base_url': self.OPENAI_BASE_URL}
+        # Retrieve URLs/Referer, but NOT keys here
+        if provider_name == "openai": config['base_url'] = self.OPENAI_BASE_URL
         elif provider_name == "openrouter":
-             referer = self.OPENROUTER_REFERER or "http://localhost:8000/TrippleEffect"; config = {'api_key': self.OPENROUTER_API_KEY, 'base_url': self.OPENROUTER_BASE_URL, 'referer': referer}
-        elif provider_name == "ollama": config = {'api_key': None, 'base_url': self.OLLAMA_BASE_URL}
-        elif provider_name == "litellm": config = {'api_key': self.LITELLM_API_KEY, 'base_url': self.LITELLM_BASE_URL}
-        elif provider_name == "anthropic": config = {'api_key': self.ANTHROPIC_API_KEY} # Base URL often default
-        elif provider_name == "google": config = {'api_key': self.GOOGLE_API_KEY} # Base URL often default
-        elif provider_name == "deepseek": config = {'api_key': self.DEEPSEEK_API_KEY} # Base URL often default
+             referer = self.OPENROUTER_REFERER or f"http://localhost:8000/{settings.DEFAULT_PERSONA}" # Use default persona in fallback referer
+             config['base_url'] = self.OPENROUTER_BASE_URL
+             config['referer'] = referer
+        elif provider_name == "ollama": config['base_url'] = self.OLLAMA_BASE_URL
+        elif provider_name == "litellm": config['base_url'] = self.LITELLM_BASE_URL
+        # Add other providers' base URLs here if needed
         else:
-             if provider_name: logger.warning(f"Requested provider config for unknown provider '{provider_name}'")
-        return {k: v for k, v in config.items() if v is not None} # Filter out None values
+             if provider_name: logger.debug(f"Requested base provider config for potentially unknown provider '{provider_name}'")
+
+        # Filter out None values before returning
+        return {k: v for k, v in config.items() if v is not None}
 
     def is_provider_configured(self, provider_name: str) -> bool:
-        """ Checks if a provider has its essential configuration set in .env. """
+        """
+        Checks if a provider has its essential configuration set in .env
+        (either keys for remote providers or a base URL for local ones).
+        """
         provider_name = provider_name.lower()
-        if provider_name == "openai": return bool(self.OPENAI_API_KEY)
-        elif provider_name == "openrouter": return bool(self.OPENROUTER_API_KEY)
-        elif provider_name == "ollama": return bool(self.OLLAMA_BASE_URL) # Only need URL, discovery checks reachability
-        elif provider_name == "litellm": return bool(self.LITELLM_BASE_URL) # Only need URL, discovery checks reachability
-        elif provider_name == "anthropic": return bool(self.ANTHROPIC_API_KEY)
-        elif provider_name == "google": return bool(self.GOOGLE_API_KEY)
-        elif provider_name == "deepseek": return bool(self.DEEPSEEK_API_KEY)
+        # Local providers: considered configured if URL is explicitly set OR they are discoverable (handled by registry)
+        # For this check, let's just see if URL is set. Registry check handles actual reachability.
+        if provider_name == "ollama": return bool(self.OLLAMA_BASE_URL)
+        elif provider_name == "litellm": return bool(self.LITELLM_BASE_URL)
+        # Remote providers: considered configured if at least one API key is found
         else:
-             # if provider_name: logger.warning(f"Checking configuration for unknown provider: {provider_name}")
-             return False
+             return provider_name in self.PROVIDER_API_KEYS and bool(self.PROVIDER_API_KEYS[provider_name])
 
     def get_agent_config_by_id(self, agent_id: str) -> Optional[Dict[str, Any]]:
         """Retrieves a specific bootstrap agent's configuration dictionary by its ID."""
@@ -213,7 +257,7 @@ class Settings:
 # --- Create Singleton Instances ---
 settings = Settings()
 
-# --- *** Instantiate ModelRegistry *after* settings is created *** ---
+# --- Instantiate ModelRegistry *after* settings is created *** ---
 # Pass the created settings instance to the registry constructor
 model_registry = _ModelRegistry(settings)
 print("Instantiated ModelRegistry singleton.")
