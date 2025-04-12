@@ -32,8 +32,9 @@ from src.agents.performance_tracker import ModelPerformanceTracker
 from src.agents.provider_key_manager import ProviderKeyManager
 
 # --- Import the new refactored modules ---
-from src.agents import agent_lifecycle
-from src.agents import failover_handler
+# Import the functions directly now
+from src.agents.agent_lifecycle import initialize_bootstrap_agents, create_agent_instance, delete_agent_instance
+from src.agents.failover_handler import handle_agent_model_failover as handle_failover # Import the function
 # --- End Import ---
 
 logger = logging.getLogger(__name__)
@@ -99,15 +100,18 @@ class AgentManager:
 
     async def initialize_bootstrap_agents(self):
         """ Delegates bootstrap agent initialization to the lifecycle handler. """
-        await agent_lifecycle.initialize_bootstrap_agents(self)
+        # Call the imported function directly
+        await initialize_bootstrap_agents(self)
 
     async def create_agent_instance( self, agent_id_requested: Optional[str], provider: str, model: str, system_prompt: str, persona: str, team_id: Optional[str] = None, temperature: Optional[float] = None, **kwargs ) -> Tuple[bool, str, Optional[str]]:
         """ Delegates dynamic agent creation to the lifecycle handler. """
-        return await agent_lifecycle.create_agent_instance(self, agent_id_requested, provider, model, system_prompt, persona, team_id, temperature, **kwargs)
+        # Call the imported function directly
+        return await create_agent_instance(self, agent_id_requested, provider, model, system_prompt, persona, team_id, temperature, **kwargs)
 
     async def delete_agent_instance(self, agent_id: str) -> Tuple[bool, str]:
         """ Delegates agent deletion to the lifecycle handler. """
-        return await agent_lifecycle.delete_agent_instance(self, agent_id)
+        # Call the imported function directly
+        return await delete_agent_instance(self, agent_id)
 
     # --- Message Handling and Execution ---
 
@@ -117,14 +121,12 @@ class AgentManager:
             logger.error("Schedule cycle called with invalid Agent object.")
             return
         logger.debug(f"Manager: Scheduling cycle for agent '{agent.agent_id}' (Retry: {retry_count}).")
-        # Delegate to the cycle handler instance
         asyncio.create_task(self.cycle_handler.run_cycle(agent, retry_count))
 
     async def handle_user_message(self, message: str, client_id: Optional[str] = None):
         """ Handles incoming messages from the user, routing them to the Admin AI. """
         logger.info(f"Manager: Received user message for Admin AI: '{message[:100]}...'");
         if self.current_project is None:
-            # Auto-create default project/session if none exists
             logger.info("Manager: No active project/session context found. Creating default context...")
             default_project = DEFAULT_PROJECT_NAME
             default_session = time.strftime("%Y%m%d_%H%M%S")
@@ -144,12 +146,11 @@ class AgentManager:
             await self.send_to_ui({"type": "error", "agent_id": "manager", "content": "Admin AI unavailable."})
             return
 
-        # Route message to Admin AI
         if admin_agent.status == AGENT_STATUS_IDLE:
             logger.info(f"Manager: Delegating message to '{BOOTSTRAP_AGENT_ID}' and scheduling cycle.")
             admin_agent.message_history.append({"role": "user", "content": message})
-            await self.schedule_cycle(admin_agent, 0) # Start with retry_count 0
-        else: # Busy or Error
+            await self.schedule_cycle(admin_agent, 0)
+        else:
             logger.info(f"Manager: Admin AI busy ({admin_agent.status}). Message queued.")
             admin_agent.message_history.append({"role": "user", "content": message})
             await self.push_agent_status_update(admin_agent.agent_id)
@@ -158,8 +159,10 @@ class AgentManager:
     # --- Failover Handling (Delegation) ---
 
     async def handle_agent_model_failover(self, agent_id: str, last_error: str):
-        """ Delegates failover handling to the failover handler module. """
-        await failover_handler.handle_agent_model_failover(self, agent_id, last_error)
+        """ Delegates failover handling to the failover handler function. """
+        # --- CORRECTED CALL: Call the imported function directly ---
+        await handle_failover(self, agent_id, last_error)
+        # --- END CORRECTION ---
 
     # --- UI Communication ---
 
@@ -170,10 +173,8 @@ class AgentManager:
             state = agent.get_state()
             state["team"] = self.state_manager.get_agent_team(agent_id)
         else:
-            # Handle case where agent might have been deleted just before update
             state = {"status": "deleted", "team": None}
             logger.warning(f"Cannot push status update for unknown/deleted agent: {agent_id}")
-
         await self.send_to_ui({"type": "agent_status_update", "agent_id": agent_id, "status": state})
 
     async def send_to_ui(self, message_data: Dict[str, Any]):
@@ -203,7 +204,6 @@ class AgentManager:
     async def load_session(self, project_name: str, session_name: str) -> Tuple[bool, str]:
         """ Delegates loading a session state. """
         logger.info(f"Manager: Delegating load_session for '{project_name}/{session_name}'...")
-        # Pass self (manager instance) to load_session as it needs access to agent creation etc.
         return await self.session_manager.load_session(project_name, session_name)
 
     def get_agent_info_list_sync(self, filter_team_id: Optional[str] = None) -> List[Dict[str, Any]]:
