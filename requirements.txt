@@ -6,7 +6,7 @@ jinja2
 python-dotenv
 aiohttp
 openai
-PyYAML
+PyYAML           # Added YAML dependency
 # duckduckgo-search # Removed due to build issues
 # PyGithub         # Removed due to build issues
 lxml             # Keep (built successfully)
