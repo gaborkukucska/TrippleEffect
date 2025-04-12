@@ -106,7 +106,7 @@ class AgentManager:
         except Exception as e: logger.error(f"Error creating projects directory at {settings.PROJECTS_BASE_DIR}: {e}", exc_info=True)
 
     async def initialize_bootstrap_agents(self):
-        # (Logic remains the same, including calls to await self.key_manager.is_provider_depleted)
+        # (No changes needed in this method)
         logger.info("Initializing bootstrap agents asynchronously...")
         agent_configs_list = settings.AGENT_CONFIGURATIONS
         if not agent_configs_list: logger.warning("No bootstrap agent configurations found."); return
@@ -303,9 +303,9 @@ class AgentManager:
             logger.info(f"Manager: Admin AI busy ({admin_agent.status}). Message queued."); admin_agent.message_history.append({"role": "user", "content": message}); await self.push_agent_status_update(admin_agent.agent_id); await self.send_to_ui({ "type": "status", "agent_id": admin_agent.agent_id, "content": f"Admin AI busy ({admin_agent.status}). Queued." })
 
 
+    # --- Make handle_agent_model_failover async ---
     async def handle_agent_model_failover(self, agent_id: str, last_error: str):
         """ Handles failover: quarantines key, cycles keys, selects next model, respecting limits/availability. """
-        # --- Make the call to _select_next_failover_model awaitable ---
         agent = self.agents.get(agent_id)
         if not agent: logger.error(f"Failover Error: Agent '{agent_id}' not found."); return
 
@@ -321,6 +321,7 @@ class AgentManager:
         if original_provider not in ["ollama", "litellm"]:
             if hasattr(agent.llm_provider, 'api_key') and isinstance(agent.llm_provider.api_key, str):
                 failed_key_value = agent.llm_provider.api_key
+                # Use await here as quarantine_key is now async
                 await self.key_manager.quarantine_key(original_provider, failed_key_value)
             else: logger.warning(f"Could not determine specific API key used by failed provider instance for {original_provider} on agent {agent_id}. Cannot quarantine specific key.")
 
@@ -355,7 +356,6 @@ class AgentManager:
 
         # --- Await the async selection method ---
         next_provider, next_model = await self._select_next_failover_model(agent, failed_models_this_cycle)
-        # --- End Await ---
 
         if next_provider and next_model:
             next_model_key = f"{next_provider}/{next_model}"
@@ -393,10 +393,9 @@ class AgentManager:
             agent.set_status(AGENT_STATUS_ERROR); await self.send_to_ui({"type": "error", "agent_id": agent_id, "content": fail_reason})
             if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear();
 
-
     # --- Make the selection logic async ---
     async def _select_next_failover_model(self, agent: Agent, already_failed: Set[str]) -> Tuple[Optional[str], Optional[str]]:
-        """ (Async) Selects the next available model for failover, prioritizing local providers. """
+        """ (Async) Selects the next available model for failover, prioritizing local providers and checking key availability. """
         logger.debug(f"Selecting next failover model for agent '{agent.agent_id}'. Current: {agent.provider_name}/{agent.model}. Already failed this sequence: {already_failed}")
         available_models_dict = model_registry.get_available_models_dict()
         current_model_tier = settings.MODEL_TIER
