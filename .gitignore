@@ -1,0 +1,21 @@
+# ignore git
+.git/
+
+# Python cache files
+__pycache__/
+
+# Environment variables - contains sensitive secrets
+.env
+
+# Local or environment-specific configuration
+config.yaml
+
+# Venv folders
+.venv/
+
+# other
+data/
+logs/
+projects/
+sandboxes/
+security/
