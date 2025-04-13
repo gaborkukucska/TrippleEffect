@@ -10,6 +10,9 @@ import re # Import regex for key matching
 # Define base directory relative to this file's location
 BASE_DIR = Path(__file__).resolve().parent.parent.parent # Define BASE_DIR here for module scope
 
+# Define path to the prompts file
+PROMPTS_FILE_PATH = BASE_DIR / 'prompts.json'
+
 # Explicitly load .env file from the project root directory
 dotenv_path = BASE_DIR / '.env'
 if dotenv_path.exists():
@@ -61,61 +64,47 @@ logger = logging.getLogger(__name__)
 
 class Settings:
     """
-    Holds application settings, loaded from environment variables and config.yaml.
+    Holds application settings, loaded from environment variables, config.yaml, and prompts.json.
     Manages API keys (supporting multiple keys per provider), base URLs,
-    default agent parameters, initial agent configs.
+    default agent parameters, initial agent configs, and standard prompts.
     Uses ConfigManager to load configurations synchronously at startup.
     ModelRegistry is instantiated *after* settings are loaded.
     Provides checks for provider configuration status.
     """
     def __init__(self):
         # --- Provider URLs and Referer (from .env) ---
-        # These remain singular as they usually apply per provider setup
         self.OPENAI_BASE_URL: Optional[str] = os.getenv("OPENAI_BASE_URL")
         self.OPENROUTER_BASE_URL: Optional[str] = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
         self.OPENROUTER_REFERER: Optional[str] = os.getenv("OPENROUTER_REFERER")
         self.OLLAMA_BASE_URL: Optional[str] = os.getenv("OLLAMA_BASE_URL") # Allow None, discovery will try localhost
         self.LITELLM_BASE_URL: Optional[str] = os.getenv("LITELLM_BASE_URL") # Allow None, discovery will try localhost
-        # Add other provider base URLs here if needed...
 
-        # --- *** Load Multiple API Keys *** ---
+        # --- Load Multiple API Keys ---
         self.PROVIDER_API_KEYS: Dict[str, List[str]] = {}
         provider_key_pattern = re.compile(r"^([A-Z_]+)_API_KEY(?:_(\d+))?$")
         known_provider_env_prefixes = [
             "OPENAI", "OPENROUTER", "LITELLM", "ANTHROPIC", "GOOGLE", "DEEPSEEK" # Add more as needed
         ]
-
         logger.info("Scanning environment variables for API keys...")
         for key, value in os.environ.items():
             match = provider_key_pattern.match(key)
             if match and value:
                 provider_prefix = match.group(1)
-                key_index_str = match.group(2) # Optional numeric suffix
-
-                # Normalize provider name (e.g., OPENROUTER -> openrouter)
+                key_index_str = match.group(2)
                 normalized_provider = provider_prefix.lower()
-
-                # Ensure it's one of the known prefixes we handle
                 if provider_prefix in known_provider_env_prefixes:
                     if normalized_provider not in self.PROVIDER_API_KEYS:
                         self.PROVIDER_API_KEYS[normalized_provider] = []
-
-                    # Store keys in order: base key first, then indexed keys
-                    key_entry = {"key": value, "index": int(key_index_str) if key_index_str else -1} # -1 for base key
-
-                    # Simple append for now, ProviderKeyManager can handle sorting if needed
                     self.PROVIDER_API_KEYS[normalized_provider].append(value)
-                    logger.debug(f"Found API key for provider '{normalized_provider}' (Index: {key_entry['index']})")
-
-        # Log summary of keys found
+                    key_index = int(key_index_str) if key_index_str else -1
+                    logger.debug(f"Found API key for provider '{normalized_provider}' (Index: {key_index})")
         for provider, keys in self.PROVIDER_API_KEYS.items():
              logger.info(f"Loaded {len(keys)} API key(s) for provider: {provider}")
-        # --- *** End API Key Loading *** ---
 
         # --- Model Tier ---
         self.MODEL_TIER: str = os.getenv("MODEL_TIER", "ALL").upper()
         if self.MODEL_TIER not in ["FREE", "ALL"]:
-             print(f"Warning: Invalid MODEL_TIER '{self.MODEL_TIER}'. Defaulting to 'ALL'.")
+             logger.warning(f"Warning: Invalid MODEL_TIER '{self.MODEL_TIER}'. Defaulting to 'ALL'.")
              self.MODEL_TIER = "ALL"
 
         # --- Project/Session Configuration (from .env) ---
@@ -124,12 +113,16 @@ class Settings:
         # --- Tool Configuration (from .env) ---
         self.GITHUB_ACCESS_TOKEN: Optional[str] = os.getenv("GITHUB_ACCESS_TOKEN")
 
-        # --- Default Agent Configuration (from .env) ---
+        # --- Load Prompts from JSON ---
+        self._load_prompts_from_json() # Call the new method
+
+        # --- Default Agent Configuration (use values from prompts.json or .env as fallback) ---
         self.DEFAULT_AGENT_PROVIDER: str = os.getenv("DEFAULT_AGENT_PROVIDER", "openrouter")
         self.DEFAULT_AGENT_MODEL: str = os.getenv("DEFAULT_AGENT_MODEL", "google/gemini-flash-1.5:free")
-        self.DEFAULT_SYSTEM_PROMPT: str = os.getenv("DEFAULT_SYSTEM_PROMPT", "You are a helpful assistant.")
+        # Get defaults from loaded prompts, fallback to env/hardcoded if JSON load failed
+        self.DEFAULT_SYSTEM_PROMPT: str = self.PROMPTS.get("default_system_prompt", os.getenv("DEFAULT_SYSTEM_PROMPT", "You are a helpful assistant."))
         self.DEFAULT_TEMPERATURE: float = float(os.getenv("DEFAULT_TEMPERATURE", 0.7))
-        self.DEFAULT_PERSONA: str = os.getenv("DEFAULT_PERSONA", "Assistant Agent")
+        self.DEFAULT_PERSONA: str = self.PROMPTS.get("default_agent_persona", os.getenv("DEFAULT_PERSONA", "Assistant Agent"))
 
         # --- Load Initial Configurations using ConfigManager ---
         raw_config_data: Dict[str, Any] = {}
@@ -157,53 +150,87 @@ class Settings:
         self._ensure_projects_dir()
         self._check_required_keys() # Run check after loading everything
 
+
+    def _load_prompts_from_json(self):
+        """Loads prompt templates from prompts.json."""
+        # Default prompts in case file loading fails
+        default_prompts = {
+            "standard_framework_instructions": "--- Standard Tool & Communication Protocol ---\nYour Agent ID: `{agent_id}`\nYour Assigned Team ID: `{team_id}`\n{tool_descriptions_xml}\n--- End Standard Protocol ---",
+            "admin_ai_operational_instructions": "--- Admin AI Core Operational Workflow ---\n{tool_descriptions_xml}\n--- End Admin AI Core Operational Workflow ---",
+            "default_system_prompt": "You are a helpful assistant.",
+            "default_agent_persona": "Assistant Agent"
+        }
+        try:
+            if PROMPTS_FILE_PATH.exists():
+                 with open(PROMPTS_FILE_PATH, 'r', encoding='utf-8') as f:
+                     loaded_prompts = json.load(f)
+                     # Basic validation
+                     if isinstance(loaded_prompts, dict) and \
+                        "standard_framework_instructions" in loaded_prompts and \
+                        "admin_ai_operational_instructions" in loaded_prompts and \
+                        "default_system_prompt" in loaded_prompts and \
+                        "default_agent_persona" in loaded_prompts:
+                          self.PROMPTS = loaded_prompts
+                          logger.info(f"Successfully loaded prompts from {PROMPTS_FILE_PATH}.")
+                     else:
+                          logger.error(f"Invalid structure in {PROMPTS_FILE_PATH}. Using default prompts.")
+                          self.PROMPTS = default_prompts
+            else:
+                 logger.warning(f"Prompts file not found at {PROMPTS_FILE_PATH}. Using default prompts.")
+                 self.PROMPTS = default_prompts
+        except json.JSONDecodeError as e:
+            logger.error(f"Error decoding JSON from {PROMPTS_FILE_PATH}: {e}. Using default prompts.")
+            self.PROMPTS = default_prompts
+        except Exception as e:
+            logger.error(f"Error loading prompts file {PROMPTS_FILE_PATH}: {e}. Using default prompts.", exc_info=True)
+            self.PROMPTS = default_prompts
+
+
     def _ensure_projects_dir(self):
         """Creates the base directory for storing project/session data if it doesn't exist."""
         try:
              self.PROJECTS_BASE_DIR.mkdir(parents=True, exist_ok=True)
-             print(f"Ensured projects directory exists at: {self.PROJECTS_BASE_DIR}")
+             logger.info(f"Ensured projects directory exists at: {self.PROJECTS_BASE_DIR}")
         except Exception as e:
-             print(f"Error creating projects directory at {self.PROJECTS_BASE_DIR}: {e}")
+             logger.error(f"Error creating projects directory at {self.PROJECTS_BASE_DIR}: {e}")
+
 
     def _check_required_keys(self):
         """Checks provider configuration status based on found keys/URLs."""
-        # Identify providers intended for use (bootstrap, defaults)
         providers_used_in_bootstrap = {self.DEFAULT_AGENT_PROVIDER}
         if isinstance(self.AGENT_CONFIGURATIONS, list):
              for agent_conf_entry in self.AGENT_CONFIGURATIONS:
                  provider = agent_conf_entry.get("config", {}).get("provider")
                  if provider: providers_used_in_bootstrap.add(provider)
 
-        print("-" * 30); print("Provider Configuration Check:")
-        all_known_providers = set(self.PROVIDER_API_KEYS.keys()) | {"ollama", "litellm"} # Include local
+        print("-" * 30); logger.info("Provider Configuration Check:")
+        all_known_providers = set(self.PROVIDER_API_KEYS.keys()) | {"ollama", "litellm"}
 
         for provider in sorted(list(all_known_providers)):
              is_configured = self.is_provider_configured(provider)
              is_used = provider in providers_used_in_bootstrap
              num_keys = len(self.PROVIDER_API_KEYS.get(provider, []))
+             config_details = self.get_provider_config(provider)
+             detail_parts = []
 
              if is_configured:
-                 config_details = self.get_provider_config(provider) # Gets non-key details
-                 detail_parts = []
                  if provider in ["ollama", "litellm"]:
                      if config_details.get('base_url'): detail_parts.append("URL Set")
                      else: detail_parts.append("URL Not Set (will use defaults/discovery)")
-                 else: # Keyed providers
+                 else:
                      detail_parts.append(f"{num_keys} Key(s)")
                      if config_details.get('base_url'): detail_parts.append("Base URL Set")
                      if config_details.get('referer'): detail_parts.append("Referer Set")
-                 print(f"✅ {provider.capitalize()}: Configured ({', '.join(detail_parts)})")
+                 logger.info(f"✅ {provider.capitalize()}: Configured ({', '.join(detail_parts)})")
              elif is_used:
-                 # Used by bootstrap/default but has no keys or URL
-                 print(f"⚠️ WARNING: {provider.capitalize()} used by bootstrap/default but NOT configured in .env.")
+                 logger.warning(f"⚠️ WARNING: {provider.capitalize()} used by bootstrap/default but NOT configured in .env.")
              else:
-                 # Not configured and not explicitly used (might still be discovered if local)
-                 print(f"ℹ️ INFO: {provider.capitalize()} not configured and not explicitly used by bootstrap agents.")
+                 logger.info(f"ℹ️ INFO: {provider.capitalize()} not configured and not explicitly used by bootstrap agents.")
 
-        # Specific tool checks
-        if self.GITHUB_ACCESS_TOKEN: print("✅ GitHub Access Token: Found (for GitHub tool)")
-        else: print("ℹ️ INFO: GITHUB_ACCESS_TOKEN not set. GitHub tool may not function fully.")
+        if self.GITHUB_ACCESS_TOKEN: logger.info("✅ GitHub Access Token: Found (for GitHub tool)")
+        else: logger.info("ℹ️ INFO: GITHUB_ACCESS_TOKEN not set. GitHub tool may not function fully.")
         print("-" * 30)
+
 
     def get_provider_config(self, provider_name: str) -> Dict[str, Any]:
         """
@@ -212,20 +239,19 @@ class Settings:
         """
         config = {}
         provider_name = provider_name.lower()
-        # Retrieve URLs/Referer, but NOT keys here
         if provider_name == "openai": config['base_url'] = self.OPENAI_BASE_URL
         elif provider_name == "openrouter":
-             referer = self.OPENROUTER_REFERER or f"http://localhost:8000/{settings.DEFAULT_PERSONA}" # Use default persona in fallback referer
+             # Use the default persona loaded from prompts.json or fallback
+             referer = self.OPENROUTER_REFERER or f"http://localhost:8000/{self.DEFAULT_PERSONA}"
              config['base_url'] = self.OPENROUTER_BASE_URL
              config['referer'] = referer
         elif provider_name == "ollama": config['base_url'] = self.OLLAMA_BASE_URL
         elif provider_name == "litellm": config['base_url'] = self.LITELLM_BASE_URL
-        # Add other providers' base URLs here if needed
         else:
              if provider_name: logger.debug(f"Requested base provider config for potentially unknown provider '{provider_name}'")
 
-        # Filter out None values before returning
         return {k: v for k, v in config.items() if v is not None}
+
 
     def is_provider_configured(self, provider_name: str) -> bool:
         """
@@ -233,13 +259,11 @@ class Settings:
         (either keys for remote providers or a base URL for local ones).
         """
         provider_name = provider_name.lower()
-        # Local providers: considered configured if URL is explicitly set OR they are discoverable (handled by registry)
-        # For this check, let's just see if URL is set. Registry check handles actual reachability.
         if provider_name == "ollama": return bool(self.OLLAMA_BASE_URL)
         elif provider_name == "litellm": return bool(self.LITELLM_BASE_URL)
-        # Remote providers: considered configured if at least one API key is found
         else:
              return provider_name in self.PROVIDER_API_KEYS and bool(self.PROVIDER_API_KEYS[provider_name])
+
 
     def get_agent_config_by_id(self, agent_id: str) -> Optional[Dict[str, Any]]:
         """Retrieves a specific bootstrap agent's configuration dictionary by its ID."""
@@ -249,16 +273,17 @@ class Settings:
                      return agent_conf_entry.get('config', {})
         return None
 
+
     def get_formatted_allowed_models(self) -> str:
         """ Delegates to ModelRegistry. Requires discover_models() to have been run. """
-        global model_registry # Access the global instance
+        global model_registry
         return model_registry.get_formatted_available_models()
+
 
 # --- Create Singleton Instances ---
 settings = Settings()
 
 # --- Instantiate ModelRegistry *after* settings is created *** ---
-# Pass the created settings instance to the registry constructor
 model_registry = _ModelRegistry(settings)
 print("Instantiated ModelRegistry singleton.")
 # --- *** END INSTANTIATION *** ---
