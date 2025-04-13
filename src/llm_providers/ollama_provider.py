@@ -21,8 +21,8 @@ RETRYABLE_OLLAMA_EXCEPTIONS = (
 
 # Default Ollama API endpoint
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
-# Define a longer read timeout specifically for waiting for stream chunks
-STREAM_READ_TIMEOUT_SECONDS = 600 # 10 minutes - adjust if needed
+# Default timeout for initial connection/request (not stream reading)
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 300 # 5 minutes
 
 class OllamaProvider(BaseLLMProvider):
     """
@@ -30,7 +30,7 @@ class OllamaProvider(BaseLLMProvider):
     Uses aiohttp to stream raw text completions from the Ollama API.
     Tool handling is done by the Agent Core via XML parsing.
     Includes enhanced handling for errors occurring during stream processing.
-    *** Reverted TCP Keep-Alive attempt due to incompatibility. Increased stream read timeout. ***
+    Uses default aiohttp timeouts.
     """
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, **kwargs):
@@ -39,33 +39,21 @@ class OllamaProvider(BaseLLMProvider):
         if api_key:
             logger.warning("OllamaProvider Warning: API key provided but not used by standard Ollama.")
 
-        self._session_kwargs = kwargs
+        self._session_kwargs = kwargs # Store extra kwargs for session creation
         self._session: Optional[aiohttp.ClientSession] = None
-        # Connector removed for now, session will manage its own default connector
-        # self._connector: Optional[aiohttp.TCPConnector] = None
         logger.info(f"OllamaProvider initialized. Base URL: {self.base_url}. Tool support via XML parsing by Agent.")
 
     async def _get_session(self) -> aiohttp.ClientSession:
-        """Creates or returns an existing aiohttp ClientSession."""
+        """Creates or returns an existing aiohttp ClientSession using default timeouts."""
         if self._session is None or self._session.closed:
-            # Set a default overall timeout, but also a separate longer read timeout for streaming
-            total_timeout_seconds = self._session_kwargs.pop('timeout', 300) # 5 minutes total
-            # sock_read is specifically for time waiting to read data from the socket
-            timeout = aiohttp.ClientTimeout(
-                total=total_timeout_seconds,
-                sock_read=STREAM_READ_TIMEOUT_SECONDS
-            )
-            # Store remaining kwargs for session creation
-            remaining_kwargs = self._session_kwargs
-
-            # Session will create its own default connector
+            # Use default timeouts by not specifying a ClientTimeout object
+            # Timeout for initial connection/request can be passed via kwargs if needed
+            # but defaults are usually generous.
             self._session = aiohttp.ClientSession(
-                timeout=timeout,
-                # connector=self._connector, # Removed connector
-                # connector_owner=False, # Removed connector_owner
-                **remaining_kwargs
+                # Let aiohttp handle default timeouts
+                **self._session_kwargs
                 )
-            logger.info(f"OllamaProvider: Created new aiohttp session. Total Timeout: {total_timeout_seconds}s, Stream Read Timeout: {STREAM_READ_TIMEOUT_SECONDS}s.")
+            logger.info("OllamaProvider: Created new aiohttp session (using default timeouts).")
         return self._session
 
     async def close_session(self):
@@ -74,9 +62,7 @@ class OllamaProvider(BaseLLMProvider):
             await self._session.close()
             self._session = None
             logger.info("OllamaProvider: Closed aiohttp session.")
-        # No connector to close explicitly anymore
 
-    # --- stream_completion remains the same as the previous version ---
     async def stream_completion(
         self,
         messages: List[MessageDict],
@@ -102,15 +88,15 @@ class OllamaProvider(BaseLLMProvider):
         yield {"type": "status", "content": f"Contacting Ollama model '{model}'..."}
 
         response = None; last_exception = None; response_status = 0; response_text = ""
+        request_timeout = self._session_kwargs.get('timeout', DEFAULT_REQUEST_TIMEOUT_SECONDS) # Use specified or default
 
         # --- Retry Loop for Initial API Call ---
         for attempt in range(MAX_RETRIES + 1):
             response = None
             try:
                  logger.info(f"OllamaProvider making API call (Attempt {attempt + 1}/{MAX_RETRIES + 1}).")
-                 # Explicitly use the session's overall timeout for the initial POST request connection phase
-                 # The longer sock_read timeout will apply during response.content iteration
-                 async with session.post(chat_endpoint, json=payload) as resp:
+                 # Use the request_timeout for the POST operation
+                 async with session.post(chat_endpoint, json=payload, timeout=request_timeout) as resp:
                     response_status = resp.status
                     response_text = "" # Reset response text for this attempt
                     if response_status >= 400: response_text = await resp.text() # Read only on error
@@ -159,85 +145,70 @@ class OllamaProvider(BaseLLMProvider):
 
         # --- Process the Successful Stream ---
         stream_error_occurred = False
-        chunks_received = 0 # Add counter for debugging
+        chunks_received = 0
         try:
-            # *** TRY/EXCEPT AROUND STREAM ITERATION ***
-            async for line in response.content: # This loop will use the sock_read timeout
+            # Use response.content directly which should use default stream timeouts
+            async for line in response.content:
                 if line:
                     chunks_received += 1
-                    # logger.debug(f"OllamaProvider: Received stream line {chunks_received}") # Optional: Verbose logging
                     decoded_line = ""
                     try:
-                        # Decode and parse JSON chunk
                         decoded_line = line.decode('utf-8')
                         chunk_data = json.loads(decoded_line)
 
-                        # Check for explicit error field from Ollama
                         if chunk_data.get("error"):
                             error_msg = chunk_data["error"]
                             logger.error(f"Received error in Ollama stream: {error_msg}")
                             yield {"type": "error", "content": f"[OllamaProvider Error]: {error_msg}"}
-                            stream_error_occurred = True; break # Exit loop on stream error
+                            stream_error_occurred = True; break
 
-                        # Process message content chunk
                         message_chunk = chunk_data.get("message")
                         if message_chunk and isinstance(message_chunk, dict):
                             content_chunk = message_chunk.get("content")
                             if content_chunk:
                                 yield {"type": "response_chunk", "content": content_chunk}
 
-                        # Check for stream completion
                         if chunk_data.get("done", False):
                             if not stream_error_occurred:
                                 logger.debug(f"Received done=true from stream for model {model}. Chunks processed: {chunks_received}")
                                 total_duration = chunk_data.get("total_duration")
                                 if total_duration: yield {"type": "status", "content": f"Ollama turn finished ({total_duration / 1e9:.2f}s)."}
-                            break # Exit loop on done=true
+                            break
 
                     except json.JSONDecodeError:
                         logger.error(f"Failed to decode JSON line from Ollama stream: {decoded_line}")
                         yield {"type": "error", "content": "[OllamaProvider Error]: Failed to decode stream chunk."}
-                        stream_error_occurred = True; break # Exit loop on decode error
+                        stream_error_occurred = True; break
                     except Exception as e:
-                        # Log other chunk processing errors
                         logger.error(f"Error processing Ollama stream line: {e}", exc_info=True)
                         logger.error(f"Problematic line (decoded): {decoded_line}")
                         yield {"type": "error", "content": f"[OllamaProvider Error]: Error processing stream chunk - {type(e).__name__}"}
-                        stream_error_occurred = True; break # Exit loop on other chunk error
-
-            # *** END TRY/EXCEPT FOR STREAM ITERATION ***
+                        stream_error_occurred = True; break
 
             if stream_error_occurred:
                 logger.error(f"Exiting Ollama stream processing due to error encountered after receiving {chunks_received} chunk(s).")
 
         except aiohttp.ClientPayloadError as payload_err:
-             # Handle errors related to reading the response payload
              logger.error(f"Ollama stream connection error (Payload): {payload_err}", exc_info=True)
              yield {"type": "error", "content": f"[OllamaProvider Error]: Stream connection error (Payload) - {payload_err}"}
         except aiohttp.ClientResponseError as response_err:
-             # Handle client response errors during streaming
              logger.error(f"Ollama stream connection error (Response): {response_err.status} {response_err.message}", exc_info=True)
              yield {"type": "error", "content": f"[OllamaProvider Error]: Stream connection error ({response_err.status}) - {response_err.message}"}
         except asyncio.TimeoutError as timeout_err: # Catch explicit timeout during stream
-             # Check if this timeout occurred during sock_read
-             logger.error(f"Ollama stream timeout error (Likely waiting for chunk > {STREAM_READ_TIMEOUT_SECONDS}s): {timeout_err}", exc_info=True)
+             logger.error(f"Ollama stream timeout error (Default aiohttp timeouts): {timeout_err}", exc_info=True)
              yield {"type": "error", "content": f"[OllamaProvider Error]: Stream timed out waiting for data - {timeout_err}"}
+        except aiohttp.ClientConnectionError as conn_err: # Catch specific connection errors during stream
+             logger.error(f"Ollama stream processing failed with ClientConnectionError: {conn_err}. Chunks received: {chunks_received}", exc_info=True)
+             yield {"type": "error", "content": f"[OllamaProvider Error]: Connection closed during stream - {conn_err}"}
         except Exception as e:
-             # Catch any other unexpected errors during stream processing
-             # Specifically log if it's the ClientConnectionError we saw before
-             if isinstance(e, aiohttp.ClientConnectionError):
-                  logger.error(f"Ollama stream processing failed with ClientConnectionError: {e}. Chunks received: {chunks_received}", exc_info=True)
-                  yield {"type": "error", "content": f"[OllamaProvider Error]: Connection closed during stream - {e}"}
-             else:
-                  logger.exception(f"Unexpected Error processing Ollama stream: {type(e).__name__} - {e}")
-                  yield {"type": "error", "content": f"[OllamaProvider Error]: Unexpected Stream processing error - {type(e).__name__}"}
+             logger.exception(f"Unexpected Error processing Ollama stream: {type(e).__name__} - {e}")
+             yield {"type": "error", "content": f"[OllamaProvider Error]: Unexpected Stream processing error - {type(e).__name__}"}
 
         logger.info(f"OllamaProvider: stream_completion finished for model {model}.")
 
 
     def __repr__(self) -> str:
         session_status = "closed" if self._session is None or self._session.closed else "open"
-        # No connector status to report now
         return f"<{self.__class__.__name__}(base_url='{self.base_url}', session='{session_status}')>"
 
     async def __aenter__(self):
