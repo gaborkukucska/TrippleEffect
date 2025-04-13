@@ -9,11 +9,17 @@ import fnmatch
 # Import necessary components from other modules
 from src.agents.core import Agent
 from src.llm_providers.base import BaseLLMProvider
+# Import settings and model_registry, BASE_DIR
 from src.config.settings import settings, model_registry, BASE_DIR
-from src.agents.prompt_utils import (
-    STANDARD_FRAMEWORK_INSTRUCTIONS,
-    ADMIN_AI_OPERATIONAL_INSTRUCTIONS
-)
+
+# --- REMOVED Prompt Imports ---
+# Prompts are now accessed via settings.PROMPTS
+# from src.agents.prompt_utils import (
+#     STANDARD_FRAMEWORK_INSTRUCTIONS,
+#     ADMIN_AI_OPERATIONAL_INSTRUCTIONS
+# )
+# --- END REMOVAL ---
+
 # Import PROVIDER_CLASS_MAP and BOOTSTRAP_AGENT_ID from the refactored manager
 # Avoid circular import using TYPE_CHECKING
 from typing import TYPE_CHECKING
@@ -117,7 +123,6 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
                             model_id_to_store = model_id_full_or_suffix
 
                             if not settings.is_provider_configured(provider_guess): continue
-                            # Use await here for the async check
                             if provider_guess not in ["ollama", "litellm"] and await manager.key_manager.is_provider_depleted(provider_guess): continue
 
                             if fnmatch.fnmatch(match_candidate, pattern):
@@ -132,7 +137,7 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
 
                 if not selected_admin_model:
                     logger.error("Lifecycle: Could not automatically select any available/configured/non-depleted model for Admin AI! Check .env configurations and model discovery logs.")
-                    continue # Skip this agent if selection fails
+                    continue
                 final_agent_config_data["provider"] = selected_admin_provider
                 final_agent_config_data["model"] = selected_admin_model
         # --- End Admin AI Auto-Selection Logic ---
@@ -142,7 +147,6 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
         if not final_provider or not settings.is_provider_configured(final_provider):
             logger.error(f"Lifecycle: Cannot initialize '{agent_id}': Final provider '{final_provider}' is not configured in .env. Skipping.")
             continue
-        # Use await here for the async check
         if final_provider not in ["ollama", "litellm"] and await manager.key_manager.is_provider_depleted(final_provider):
             logger.error(f"Lifecycle: Cannot initialize '{agent_id}': All keys for selected provider '{final_provider}' are quarantined. Skipping.")
             continue
@@ -150,8 +154,12 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
 
         # Inject Admin AI operational instructions
         if agent_id == BOOTSTRAP_AGENT_ID:
+            # Get the base persona/goal from the config.yaml
             user_defined_prompt = agent_config_data.get("system_prompt", "")
-            operational_instructions = ADMIN_AI_OPERATIONAL_INSTRUCTIONS.format(tool_descriptions_xml=manager.tool_descriptions_xml)
+            # --- Retrieve operational instructions from settings ---
+            admin_ops_template = settings.PROMPTS.get("admin_ai_operational_instructions", "--- Admin Ops Instructions Missing ---")
+            operational_instructions = admin_ops_template.format(tool_descriptions_xml=manager.tool_descriptions_xml)
+            # --- End Retrieval ---
             final_agent_config_data["system_prompt"] = (
                 f"--- Primary Goal/Persona ---\n{user_defined_prompt}\n\n"
                 f"{operational_instructions}\n\n"
@@ -159,6 +167,7 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
             )
             logger.info(f"Lifecycle: Assembled final prompt for '{BOOTSTRAP_AGENT_ID}' (using {selection_method} selection: {selected_admin_provider}/{selected_admin_model}) including available model list.")
         else:
+            # For other bootstrap agents, just use the prompt as defined in config.yaml
             logger.info(f"Lifecycle: Using system prompt from config for bootstrap agent '{agent_id}'.")
 
         # Schedule agent creation task
@@ -168,8 +177,6 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
     results = await asyncio.gather(*tasks, return_exceptions=True)
     successful_ids = []
     for i, result in enumerate(results):
-        # Need a reliable way to get the attempted ID if gather returns exceptions
-        # This part is a bit fragile if agent_configs_list order != tasks order
         try:
              original_agent_id_attempted = agent_configs_list[i].get("agent_id", f"unknown_index_{i}") if i < len(agent_configs_list) and isinstance(agent_configs_list[i], dict) else f"unknown_index_{i}"
              if isinstance(result, tuple) and result[0]:
@@ -189,7 +196,6 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
              logger.error(f"Lifecycle: Error matching result to original agent config at index {i}.")
         except Exception as gather_err:
              logger.error(f"Lifecycle: Unexpected error processing bootstrap results: {gather_err}", exc_info=True)
-
 
     logger.info(f"Lifecycle: Finished bootstrap initialization. Active: {successful_ids}")
     if BOOTSTRAP_AGENT_ID not in manager.agents:
@@ -222,7 +228,6 @@ async def _create_agent_internal( manager: 'AgentManager', agent_id_requested: O
         msg = f"Lifecycle: Provider '{provider_name}' not configured in .env settings."
         logger.error(msg)
         return False, msg, None
-    # Use await here
     if provider_name not in ["ollama", "litellm"] and await manager.key_manager.is_provider_depleted(provider_name):
         msg = f"Lifecycle: Cannot create agent with provider '{provider_name}': All API keys are currently quarantined."
         logger.error(msg)
@@ -243,14 +248,19 @@ async def _create_agent_internal( manager: 'AgentManager', agent_id_requested: O
     final_system_prompt = role_specific_prompt
     if not loading_from_session and not is_bootstrap:
         logger.debug(f"Lifecycle: Constructing final prompt for dynamic agent '{agent_id}'...")
-        standard_info = STANDARD_FRAMEWORK_INSTRUCTIONS.format(
+        # --- Retrieve standard instructions from settings ---
+        standard_info_template = settings.PROMPTS.get("standard_framework_instructions", "--- Standard Instructions Missing ---")
+        standard_info = standard_info_template.format(
             agent_id=agent_id,
             team_id=team_id or "N/A",
-            tool_descriptions_xml=manager.tool_descriptions_xml # Access via manager
+            tool_descriptions_xml=manager.tool_descriptions_xml
         )
+        # --- End Retrieval ---
         final_system_prompt = standard_info + "\n\n--- Your Specific Role & Task ---\n" + role_specific_prompt
         logger.info(f"Lifecycle: Injected standard framework instructions for dynamic agent '{agent_id}'.")
     elif loading_from_session or is_bootstrap:
+        # Use the prompt directly as loaded/provided for bootstrap or session load
+        # It already includes operational instructions for Admin AI, or was loaded with context for dynamic agents
         final_system_prompt = agent_config_data.get("system_prompt", role_specific_prompt)
         logger.debug(f"Lifecycle: Using provided system prompt for {'loaded' if loading_from_session else 'bootstrap'} agent '{agent_id}'.")
 
@@ -259,7 +269,6 @@ async def _create_agent_internal( manager: 'AgentManager', agent_id_requested: O
     if provider_name in ["ollama", "litellm"]: # Local providers
         final_provider_args = settings.get_provider_config(provider_name)
     else: # Remote providers - get config with active key
-        # Use await here
         final_provider_args = await manager.key_manager.get_active_key_config(provider_name)
         if final_provider_args is None:
             msg = f"Lifecycle: Failed to get active API key configuration for provider '{provider_name}'. All keys might be quarantined."
@@ -275,12 +284,13 @@ async def _create_agent_internal( manager: 'AgentManager', agent_id_requested: O
     final_provider_args = {k: v for k, v in final_provider_args.items() if v is not None}
 
     # Create final agent config entry for storage/state
+    # CRITICAL: Ensure final_system_prompt is stored here
     final_agent_config_entry = {
         "agent_id": agent_id,
         "config": {
             "provider": provider_name,
             "model": model,
-            "system_prompt": final_system_prompt,
+            "system_prompt": final_system_prompt, # Store the assembled prompt
             "persona": persona,
             "temperature": temperature,
             **provider_specific_kwargs
@@ -302,11 +312,11 @@ async def _create_agent_internal( manager: 'AgentManager', agent_id_requested: O
 
     # Instantiate Agent
     try:
-        agent = Agent(agent_config=final_agent_config_entry, llm_provider=llm_provider_instance, manager=manager) # Pass manager instance
+        # Agent.__init__ uses the 'system_prompt' from the config passed
+        agent = Agent(agent_config=final_agent_config_entry, llm_provider=llm_provider_instance, manager=manager)
     except Exception as e:
         msg = f"Lifecycle: Agent instantiation failed: {e}"
         logger.error(msg, exc_info=True)
-        # Use manager's helper to close provider
         await manager._close_provider_safe(llm_provider_instance)
         return False, msg, None
     logger.info(f"  Lifecycle: Instantiated Agent object for '{agent_id}'.")
@@ -321,7 +331,6 @@ async def _create_agent_internal( manager: 'AgentManager', agent_id_requested: O
 
     team_add_msg_suffix = ""
     if team_id:
-        # Use manager's state manager
         team_add_success, team_add_msg = await manager.state_manager.add_agent_to_team(agent_id, team_id)
         if team_add_success:
             logger.info(f"Lifecycle: Agent '{agent_id}' state added to team '{team_id}'.")
@@ -343,13 +352,12 @@ async def create_agent_instance( manager: 'AgentManager', agent_id_requested: Op
     }
     if temperature is not None: agent_config_data["temperature"] = temperature
 
-    # Filter out known args not part of provider_specific_kwargs
     known_args = ['action', 'agent_id', 'team_id', 'provider', 'model', 'system_prompt', 'persona', 'temperature', 'project_name', 'session_name']
     extra_kwargs = {k: v for k, v in kwargs.items() if k not in known_args}
     agent_config_data.update(extra_kwargs)
 
     success, message, created_agent_id = await _create_agent_internal(
-        manager, # Pass manager instance
+        manager,
         agent_id_requested=agent_id_requested,
         agent_config_data=agent_config_data,
         is_bootstrap=False,
@@ -358,11 +366,9 @@ async def create_agent_instance( manager: 'AgentManager', agent_id_requested: Op
     )
 
     if success and created_agent_id:
-        # Send UI update after successful creation
         agent = manager.agents.get(created_agent_id)
         team = manager.state_manager.get_agent_team(created_agent_id)
         config_ui = agent.agent_config.get("config", {}) if agent else {}
-        # Use manager's send_to_ui
         await manager.send_to_ui({
             "type": "agent_added", "agent_id": created_agent_id, "config": config_ui, "team": team
         })
@@ -382,13 +388,9 @@ async def delete_agent_instance(manager: 'AgentManager', agent_id: str) -> Tuple
 
     agent_instance = manager.agents.pop(agent_id)
     manager.state_manager.remove_agent_from_all_teams_state(agent_id)
-
-    # Use manager's helper to close provider
     await manager._close_provider_safe(agent_instance.llm_provider)
-
     message = f"Agent '{agent_id}' deleted."
     logger.info(f"Lifecycle: {message}")
-    # Use manager's send_to_ui
     await manager.send_to_ui({"type": "agent_deleted", "agent_id": agent_id})
     return True, message
 
@@ -399,10 +401,8 @@ def _generate_unique_agent_id(manager: 'AgentManager', prefix="agent") -> str:
     short_uuid = uuid.uuid4().hex[:4]
     while True:
         new_id = f"{prefix}_{timestamp}_{short_uuid}".replace(":", "_")
-        # Check against manager's agent dict
         if new_id not in manager.agents:
             return new_id
-        # Small delay and retry if collision (highly unlikely)
         time.sleep(0.001)
         timestamp = int(time.time() * 1000)
         short_uuid = uuid.uuid4().hex[:4]
