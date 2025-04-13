@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # --- Generic Standard Instructions for ALL Dynamic Agents ---
-# --- *** UPDATED FINAL STEP INSTRUCTION *** ---
+# --- *** ADDED FINAL STEP "STOP" INSTRUCTION *** ---
 STANDARD_FRAMEWORK_INSTRUCTIONS = """
 
 --- Standard Tool & Communication Protocol ---
@@ -28,7 +28,7 @@ Your Assigned Team ID: `{team_id}`
 - Use the `<send_message>` tool to communicate ONLY with other agents *within your team* or the Admin AI (`admin_ai`).
 - **CRITICAL:** Specify the exact `target_agent_id` (e.g., `agent_17..._xyz` or `admin_ai`). **DO NOT use agent personas (like 'Researcher') as the target_agent_id.** Use the IDs provided in team lists or feedback messages.
 - Respond to messages directed to you ([From @...]).
-- **MANDATORY FINAL STEP & STOP:** After completing **ALL** parts of your assigned task (including any file writing), your **VERY LAST ACTION** in that turn **MUST** be to use the `<send_message>` tool to report your completion and results (e.g., summary, analysis, confirmation of file write including filename and scope) back to the **agent who assigned you the task** (this is usually `admin_ai`, check the initial task message). **CRITICAL: AFTER sending this final confirmation message, YOU MUST STOP. Do NOT output any further text, reasoning, or tool calls in subsequent turns unless you receive a NEW instruction or question.**
+- **MANDATORY FINAL STEP & STOP:** After completing **ALL** parts of your assigned task (including any file writing), your **VERY LAST ACTION** in that turn **MUST** be to use the `<send_message>` tool to report your completion and results (e.g., summary, analysis, confirmation of file write including filename and scope) back to the **agent who assigned you the task** (this is usually `admin_ai`, check the initial task message). **CRITICAL: AFTER sending this final confirmation message, YOU MUST STOP. Do NOT output any further text, reasoning, or tool calls in that response or subsequent turns unless you receive a NEW instruction or question.**
 
 **File System:**
 - Use the `<file_system>` tool with the appropriate `scope` ('private' or 'shared') as instructed by the Admin AI. The `scope` determines where the file operation takes place.
@@ -45,7 +45,7 @@ Your Assigned Team ID: `{team_id}`
 
 
 # --- Specific Operational Instructions for Admin AI (with ID/Team info) ---
-# --- *** UPDATED KICKOFF INSTRUCTION *** ---
+# (No changes needed here for this fix)
 ADMIN_AI_OPERATIONAL_INSTRUCTIONS = """
 
 --- Admin AI Core Operational Workflow ---
@@ -75,7 +75,8 @@ ADMIN_AI_OPERATIONAL_INSTRUCTIONS = """
     *   Provide clarification via `send_message` if agents get stuck.
     *   **DO NOT proceed** to synthesis or cleanup until you have received confirmation messages (via `send_message`) from **ALL** required agents.
 5.  **Synthesize & Report to User:** **ONLY AFTER** confirming all tasks are complete, compile the results reported by the agents. Present the final answer, stating where files were saved.
-6.  **Clean Up:** **ONLY AFTER** delivering the final result:
+6.  **Wait User Feedback:** Wait for the user to check the quality of the finished work and give you their feedback.
+7.  **IF Clean Up is Requested:** IF the user requests a Clean Up and **ONLY AFTER** delivering the final result:
     *   **(a) Identify Agents:** Use `ManageTeamTool` with `action: list_agents` **immediately before deletion** to get the **current list and exact `agent_id` values**.
     *   **(b) Delete Agents:** Delete **each dynamic agent individually** using `ManageTeamTool` with `action: delete_agent` and the **specific `agent_id` obtained in step (a).**
     *   **(c) Delete Team(s):** **AFTER** confirming **ALL** agents in a team are deleted, delete the team using `ManageTeamTool` with `action: delete_team` and the correct `team_id`.
@@ -92,11 +93,10 @@ Your primary tools are `ManageTeamTool` and `send_message`.
 *   Instruct worker agents clearly on which tools *they* should use and what file `scope` (`private` or `shared`) to use.
 --- End Admin AI Core Operational Workflow ---
 """
-# --- END UPDATED ADMIN INSTRUCTIONS ---
 
-# --- update_agent_prompt_team_id Function (Content remains the same) ---
+
 async def update_agent_prompt_team_id(manager: 'AgentManager', agent_id: str, new_team_id: Optional[str]):
-    # (Code remains the same)
+    # (No changes needed here)
     agent = manager.agents.get(agent_id)
     if agent and not (agent_id in manager.bootstrap_agents):
         try:
@@ -106,10 +106,8 @@ async def update_agent_prompt_team_id(manager: 'AgentManager', agent_id: str, ne
             if hasattr(agent, 'agent_config') and isinstance(agent.agent_config, dict) and "config" in agent.agent_config:
                 if isinstance(agent.agent_config["config"], dict):
                     agent.agent_config["config"]["system_prompt"] = agent.final_system_prompt
-                else:
-                    logger.warning(f"Cannot update team ID in agent_config for '{agent_id}': 'config' value is not a dictionary.")
+                else: logger.warning(f"Cannot update team ID in agent_config for '{agent_id}': 'config' value is not a dictionary.")
             if agent.message_history and agent.message_history[0]["role"] == "system":
                 agent.message_history[0]["content"] = agent.final_system_prompt
             logger.info(f"Updated team ID ({new_team_id or 'N/A'}) in live prompt state for dynamic agent '{agent_id}'.")
-        except Exception as e:
-            logger.error(f"Error updating system prompt state for agent '{agent_id}' after team change: {e}", exc_info=True)
+        except Exception as e: logger.error(f"Error updating system prompt state for agent '{agent_id}' after team change: {e}", exc_info=True)
