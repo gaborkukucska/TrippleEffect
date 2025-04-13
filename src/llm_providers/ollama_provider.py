@@ -21,15 +21,15 @@ RETRYABLE_OLLAMA_EXCEPTIONS = (
 
 # Default Ollama API endpoint
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
-# Default timeout for the single non-streaming request
-DEFAULT_REQUEST_TIMEOUT_SECONDS = 600 # 10 minutes (increase for non-streaming)
+# Default timeout for initial connection/request
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 600 # 10 minutes (Increased for potentially long non-streaming responses)
 
 class OllamaProvider(BaseLLMProvider):
     """
     LLM Provider implementation for local Ollama models with retry mechanism.
-    Uses aiohttp to fetch the full completion in a single request (non-streaming).
-    Tool handling is done by the Agent Core via XML parsing of the full response.
-    Includes enhanced handling for errors. Uses JSON format.
+    Uses aiohttp. Can operate in streaming or non-streaming mode.
+    Tool handling is done by the Agent Core via XML parsing.
+    Includes enhanced handling for errors.
     """
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, **kwargs):
@@ -38,9 +38,13 @@ class OllamaProvider(BaseLLMProvider):
         if api_key:
             logger.warning("OllamaProvider Warning: API key provided but not used by standard Ollama.")
 
-        self._session_kwargs = kwargs # Store extra kwargs for session creation
+        # Determine mode based on kwargs or default to streaming
+        self.streaming_mode = kwargs.pop('stream', True) # Default to stream=True if not specified
+
+        self._session_kwargs = kwargs # Store remaining extra kwargs for session creation
         self._session: Optional[aiohttp.ClientSession] = None
-        logger.info(f"OllamaProvider initialized. Base URL: {self.base_url}. **Mode: Non-Streaming**. Tool support via XML parsing by Agent.") # Updated log
+        mode_str = "Streaming" if self.streaming_mode else "Non-Streaming"
+        logger.info(f"OllamaProvider initialized. Base URL: {self.base_url}. Mode: {mode_str}. Tool support via XML parsing by Agent.")
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """Creates or returns an existing aiohttp ClientSession using default timeouts."""
@@ -56,7 +60,7 @@ class OllamaProvider(BaseLLMProvider):
             self._session = None
             logger.info("OllamaProvider: Closed aiohttp session.")
 
-    async def stream_completion( # Keep signature, but behavior changes
+    async def stream_completion(
         self,
         messages: List[MessageDict],
         model: str,
@@ -67,8 +71,8 @@ class OllamaProvider(BaseLLMProvider):
         **kwargs
     ) -> AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]:
         """
-        Fetches the full completion from Ollama in a single request (non-streaming JSON mode).
-        Yields the result as a single chunk or final response.
+        Gets completion from Ollama. Operates in streaming or non-streaming mode.
+        In non-streaming mode, yields a single 'response_chunk' with the full content.
         """
         session = await self._get_session()
         chat_endpoint = f"{self.base_url}/api/chat"
@@ -76,124 +80,187 @@ class OllamaProvider(BaseLLMProvider):
         if tools or tool_choice:
             logger.warning(f"OllamaProvider received tools/tool_choice arguments, but they will be ignored.")
 
-        # --- Payload for Non-Streaming JSON Mode ---
+        # Set payload based on streaming_mode
         payload = {
             "model": model,
             "messages": messages,
-            "stream": False, # <<< Set stream to false
-            "format": "json", # <<< Request JSON format
+            "stream": self.streaming_mode, # Use the instance attribute
+            "format": "json", # Request JSON format in both modes for consistency
             "options": {"temperature": temperature, **kwargs}
         }
-        # --- End Modification ---
 
         if max_tokens is not None: payload["options"]["num_predict"] = max_tokens
         payload["options"] = {k: v for k, v in payload["options"].items() if v is not None}
 
-        logger.info(f"OllamaProvider preparing request. Model: {model}, Stream: False, Format: json, Options: {payload.get('options')}. Tools ignored.")
-        yield {"type": "status", "content": f"Contacting Ollama model '{model}' (non-streaming)..."}
+        mode_log = "Streaming" if self.streaming_mode else "Non-Streaming"
+        logger.info(f"OllamaProvider preparing request ({mode_log}). Model: {model}, Format: json, Options: {payload.get('options')}.")
+        yield {"type": "status", "content": f"Contacting Ollama model '{model}' ({mode_log})..."}
 
-        response_data = None; last_exception = None; response_status = 0
-        # Increase timeout for non-streaming potentially long requests
-        request_timeout = self._session_kwargs.get('timeout', DEFAULT_REQUEST_TIMEOUT_SECONDS)
+        response = None; last_exception = None; response_status = 0; response_text = ""
+        # Adjust timeout based on mode - longer for non-streaming
+        request_timeout = self._session_kwargs.get('timeout', DEFAULT_REQUEST_TIMEOUT_SECONDS if not self.streaming_mode else 300)
 
-        # --- Retry Loop for the Single API Call ---
+        # --- Retry Loop for API Call ---
         for attempt in range(MAX_RETRIES + 1):
-            response_data = None # Reset data for this attempt
+            response = None
             try:
                  logger.info(f"OllamaProvider making API call (Attempt {attempt + 1}/{MAX_RETRIES + 1}). Timeout: {request_timeout}s")
-                 # Use timeout for the entire request/response cycle
                  async with session.post(chat_endpoint, json=payload, timeout=request_timeout) as resp:
                     response_status = resp.status
+                    response_text = ""
+                    # Read error body immediately if status indicates failure
+                    if response_status >= 400:
+                        response_text = await resp.text()
+                        logger.debug(f"Ollama API returned error status {response_status}. Body: {response_text[:500]}...")
+
                     if response_status == 200:
-                        logger.info(f"API call successful (Status {response_status}) on attempt {attempt + 1}.")
-                        response_data = await resp.json() # Get the full JSON response
-                        last_exception = None
-                        break # Exit retry loop on success
-                    else:
-                        # Handle API errors (retry 5xx, fail on 4xx)
-                        error_text = await resp.text()
-                        last_exception = ValueError(f"Ollama API Error {response_status}: {error_text[:200]}")
-                        logger.warning(f"Ollama API Error on attempt {attempt + 1}: Status {response_status}, Response: {error_text[:200]}...")
-                        if response_status >= 500 and attempt < MAX_RETRIES:
+                         logger.info(f"API call successful (Status {response_status}) on attempt {attempt + 1}.")
+                         last_exception = None
+                         response = resp # Store the response object for processing below
+                         break
+                    elif response_status >= 500:
+                         last_exception = ValueError(f"Ollama API Error {response_status}")
+                         logger.warning(f"Ollama API Error on attempt {attempt + 1}: Status {response_status}, Response: {response_text[:200]}...")
+                         if attempt < MAX_RETRIES:
                              logger.info(f"Status {response_status} >= 500. Waiting {RETRY_DELAY_SECONDS}s before retrying...")
                              await asyncio.sleep(RETRY_DELAY_SECONDS); continue
-                        else: # 4xx or max retries for 5xx
-                            logger.error(f"Non-retryable Ollama API error ({response_status}) or max retries reached.")
-                            yield {"type": "error", "content": f"[OllamaProvider Error]: Status {response_status} - {error_text[:100]}"}
-                            return
-
+                         else: # Max retries reached for 5xx
+                             logger.error(f"Max retries ({MAX_RETRIES}) reached after status {response_status}.")
+                             yield {"type": "error", "content": f"[OllamaProvider Error]: Max retries. Last error: Status {response_status} - {response_text[:100]}"}
+                             return
+                    else: # 4xx errors (non-retryable)
+                        logger.error(f"Ollama API Client Error: Status {response_status}, Response: {response_text[:200]}")
+                        yield {"type": "error", "content": f"[OllamaProvider Error]: Client Error {response_status} - {response_text[:100]}"}
+                        return
             except RETRYABLE_OLLAMA_EXCEPTIONS as e:
                 last_exception = e; logger.warning(f"Retryable connection/timeout error on attempt {attempt + 1}/{MAX_RETRIES + 1}: {type(e).__name__} - {e}")
                 if attempt < MAX_RETRIES:
                     logger.info(f"Waiting {RETRY_DELAY_SECONDS}s before retrying...")
                     await asyncio.sleep(RETRY_DELAY_SECONDS); continue
-                else:
+                else: # Max retries reached for retryable exceptions
                     logger.error(f"Max retries ({MAX_RETRIES}) reached after {type(e).__name__}.")
                     yield {"type": "error", "content": f"[OllamaProvider Error]: Max retries reached after connection/timeout error. Last: {type(e).__name__}"}
                     return
-            except aiohttp.ContentTypeError as e: # Catch error if response isn't valid JSON
-                 last_exception = e
-                 logger.error(f"Ollama response was not valid JSON on attempt {attempt + 1}. Error: {e}")
-                 # Read text for debugging if possible
-                 try: error_text = await resp.text()
-                 except: error_text = "[Could not read response text]"
-                 logger.error(f"Raw response text (first 500 chars): {error_text[:500]}")
-                 # Treat as fatal error after first attempt, or retry if configured? Let's treat as fatal for now.
-                 yield {"type": "error", "content": f"[OllamaProvider Error]: Invalid JSON response received. Status: {response_status}."}
-                 return
-            except Exception as e:
+            except Exception as e: # Catch unexpected errors during the request phase
                 last_exception = e; logger.exception(f"Unexpected Error during Ollama API call attempt {attempt + 1}: {type(e).__name__} - {e}")
                 if attempt < MAX_RETRIES:
                     logger.info(f"Waiting {RETRY_DELAY_SECONDS}s before retrying...")
                     await asyncio.sleep(RETRY_DELAY_SECONDS); continue
-                else:
+                else: # Max retries reached for unexpected errors
                     logger.error(f"Max retries ({MAX_RETRIES}) reached after unexpected error.")
                     yield {"type": "error", "content": f"[OllamaProvider Error]: Unexpected Error after retries - {type(e).__name__}"}
                     return
 
         # --- Check if API call failed after all retries ---
-        if response_data is None:
+        if response is None or response.status != 200:
             logger.error(f"Ollama API call failed after all retries. Last status: {response_status}. Last exception: {type(last_exception).__name__ if last_exception else 'N/A'}")
             err_content = f"[OllamaProvider Error]: API call failed after {MAX_RETRIES} retries. Status: {response_status}. Error: {type(last_exception).__name__ if last_exception else 'Failed Request'}"
             yield {"type": "error", "content": err_content}; return
 
-        # --- Process the Successful Full Response ---
+        # --- Process the Response (Streaming or Non-Streaming) ---
         try:
-            if response_data.get("error"):
-                error_msg = response_data["error"]
-                logger.error(f"Ollama API returned an error in the response body: {error_msg}")
-                yield {"type": "error", "content": f"[OllamaProvider Error]: {error_msg}"}
-                return
+            if self.streaming_mode:
+                # --- Process Streaming Response ---
+                stream_error_occurred = False
+                chunks_received = 0
+                async for line in response.content: # Default stream timeouts apply here
+                    if line:
+                        chunks_received += 1
+                        decoded_line = ""
+                        try:
+                            decoded_line = line.decode('utf-8')
+                            chunk_data = json.loads(decoded_line)
 
-            message_data = response_data.get("message")
-            full_content = ""
-            if message_data and isinstance(message_data, dict):
-                full_content = message_data.get("content", "")
+                            if chunk_data.get("error"):
+                                error_msg = chunk_data["error"]
+                                logger.error(f"Received error in Ollama stream: {error_msg}")
+                                yield {"type": "error", "content": f"[OllamaProvider Error]: {error_msg}"}
+                                stream_error_occurred = True; break
 
-            if not full_content:
-                 logger.warning(f"Ollama response successful, but no message content found. Response keys: {response_data.keys()}")
-                 # Yield nothing or an empty final response? Let's yield empty final response.
-                 yield {"type": "final_response", "content": ""}
+                            message_chunk = chunk_data.get("message")
+                            if message_chunk and isinstance(message_chunk, dict):
+                                content_chunk = message_chunk.get("content")
+                                if content_chunk:
+                                    yield {"type": "response_chunk", "content": content_chunk}
+
+                            if chunk_data.get("done", False):
+                                if not stream_error_occurred:
+                                    logger.debug(f"Received done=true from stream for model {model}. Chunks processed: {chunks_received}")
+                                    total_duration = chunk_data.get("total_duration")
+                                    if total_duration: yield {"type": "status", "content": f"Ollama turn finished ({total_duration / 1e9:.2f}s)."}
+                                break
+
+                        except json.JSONDecodeError:
+                            logger.error(f"Failed to decode JSON line from Ollama stream: {decoded_line}")
+                            yield {"type": "error", "content": "[OllamaProvider Error]: Failed to decode stream chunk."}
+                            stream_error_occurred = True; break
+                        except Exception as e:
+                            logger.error(f"Error processing Ollama stream line: {e}", exc_info=True)
+                            logger.error(f"Problematic line (decoded): {decoded_line}")
+                            yield {"type": "error", "content": f"[OllamaProvider Error]: Error processing stream chunk - {type(e).__name__}"}
+                            stream_error_occurred = True; break
+
+                if stream_error_occurred:
+                    logger.error(f"Exiting Ollama stream processing due to error encountered after receiving {chunks_received} chunk(s).")
+
             else:
-                 # Yield the full content as a single chunk (or final_response)
-                 logger.debug(f"Ollama non-streaming request successful. Yielding full content (length: {len(full_content)}).")
-                 yield {"type": "final_response", "content": full_content} # Use final_response type
+                # --- Process Non-Streaming Response ---
+                logger.debug("Processing non-streaming response...")
+                try:
+                    response_data = await response.json()
+                    if response_data.get("error"):
+                         error_msg = response_data["error"]
+                         logger.error(f"Received error in Ollama non-streaming response: {error_msg}")
+                         yield {"type": "error", "content": f"[OllamaProvider Error]: {error_msg}"}
+                    elif response_data.get("message") and isinstance(response_data["message"], dict):
+                        full_content = response_data["message"].get("content")
+                        if full_content:
+                            logger.info(f"Received non-streaming response content (length: {len(full_content)}). Yielding as single chunk.")
+                            yield {"type": "response_chunk", "content": full_content}
+                        else:
+                             logger.warning("Non-streaming response message content was empty.")
+                        # Yield final status based on non-streaming response data
+                        if response_data.get("done", False):
+                            total_duration = response_data.get("total_duration")
+                            if total_duration: yield {"type": "status", "content": f"Ollama turn finished ({total_duration / 1e9:.2f}s)."}
+                        else:
+                             logger.warning("Non-streaming response did not include done=true.")
+                    else:
+                         logger.error(f"Unexpected non-streaming response structure: {response_data}")
+                         yield {"type": "error", "content": "[OllamaProvider Error]: Unexpected non-streaming response structure."}
 
-            # Optionally yield status based on stats
-            total_duration = response_data.get("total_duration")
-            if total_duration:
-                yield {"type": "status", "content": f"Ollama turn finished ({total_duration / 1e9:.2f}s)."}
+                except json.JSONDecodeError:
+                     raw_text = await response.text()
+                     logger.error(f"Failed to decode non-streaming JSON response from Ollama. Raw text: {raw_text[:500]}...")
+                     yield {"type": "error", "content": "[OllamaProvider Error]: Failed to decode non-streaming response."}
+                except Exception as e:
+                     logger.error(f"Error processing non-streaming response: {e}", exc_info=True)
+                     yield {"type": "error", "content": f"[OllamaProvider Error]: Error processing non-streaming response - {type(e).__name__}"}
 
+        # --- Catch errors during stream/response processing ---
+        except aiohttp.ClientPayloadError as payload_err:
+             logger.error(f"Ollama connection error (Payload): {payload_err}", exc_info=True)
+             yield {"type": "error", "content": f"[OllamaProvider Error]: Stream connection error (Payload) - {payload_err}"}
+        except aiohttp.ClientResponseError as response_err:
+             logger.error(f"Ollama connection error (Response): {response_err.status} {response_err.message}", exc_info=True)
+             yield {"type": "error", "content": f"[OllamaProvider Error]: Stream connection error ({response_err.status}) - {response_err.message}"}
+        except asyncio.TimeoutError as timeout_err:
+             logger.error(f"Ollama timeout error: {timeout_err}", exc_info=True)
+             yield {"type": "error", "content": f"[OllamaProvider Error]: Timed out waiting for data - {timeout_err}"}
+        except aiohttp.ClientConnectionError as conn_err:
+             logger.error(f"Ollama processing failed with ClientConnectionError: {conn_err}", exc_info=True)
+             yield {"type": "error", "content": f"[OllamaProvider Error]: Connection closed during processing - {conn_err}"}
         except Exception as e:
-             logger.exception(f"Unexpected Error processing Ollama full response: {type(e).__name__} - {e}")
-             yield {"type": "error", "content": f"[OllamaProvider Error]: Unexpected error processing response - {type(e).__name__}"}
+             logger.exception(f"Unexpected Error processing Ollama response: {type(e).__name__} - {e}")
+             yield {"type": "error", "content": f"[OllamaProvider Error]: Unexpected processing error - {type(e).__name__}"}
 
-        logger.info(f"OllamaProvider: stream_completion (non-streaming mode) finished for model {model}.")
+        logger.info(f"OllamaProvider: stream_completion finished for model {model}.")
 
 
     def __repr__(self) -> str:
         session_status = "closed" if self._session is None or self._session.closed else "open"
-        return f"<{self.__class__.__name__}(base_url='{self.base_url}', session='{session_status}', mode='non-streaming')>" # Indicate mode
+        mode = "streaming" if self.streaming_mode else "non-streaming"
+        return f"<{self.__class__.__name__}(base_url='{self.base_url}', session='{session_status}', mode='{mode}')>"
 
     async def __aenter__(self):
         await self._get_session()
