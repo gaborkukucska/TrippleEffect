@@ -30,7 +30,7 @@ class OllamaProvider(BaseLLMProvider):
     Uses aiohttp to stream raw text completions from the Ollama API.
     Tool handling is done by the Agent Core via XML parsing.
     Includes enhanced handling for errors occurring during stream processing.
-    Uses default aiohttp timeouts.
+    Uses default aiohttp timeouts. Explicitly requests JSON format in stream chunks.
     """
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, **kwargs):
@@ -46,13 +46,7 @@ class OllamaProvider(BaseLLMProvider):
     async def _get_session(self) -> aiohttp.ClientSession:
         """Creates or returns an existing aiohttp ClientSession using default timeouts."""
         if self._session is None or self._session.closed:
-            # Use default timeouts by not specifying a ClientTimeout object
-            # Timeout for initial connection/request can be passed via kwargs if needed
-            # but defaults are usually generous.
-            self._session = aiohttp.ClientSession(
-                # Let aiohttp handle default timeouts
-                **self._session_kwargs
-                )
+            self._session = aiohttp.ClientSession(**self._session_kwargs)
             logger.info("OllamaProvider: Created new aiohttp session (using default timeouts).")
         return self._session
 
@@ -80,11 +74,20 @@ class OllamaProvider(BaseLLMProvider):
         if tools or tool_choice:
             logger.warning(f"OllamaProvider received tools/tool_choice arguments, but they will be ignored.")
 
-        payload = { "model": model, "messages": messages, "stream": True, "options": {"temperature": temperature, **kwargs} }
+        # --- MODIFIED PAYLOAD ---
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            "format": "json", # <<< Explicitly request JSON format
+            "options": {"temperature": temperature, **kwargs}
+        }
+        # --- END MODIFICATION ---
+
         if max_tokens is not None: payload["options"]["num_predict"] = max_tokens
         payload["options"] = {k: v for k, v in payload["options"].items() if v is not None}
 
-        logger.info(f"OllamaProvider preparing request. Model: {model}. Options: {payload.get('options')}. Tools ignored.")
+        logger.info(f"OllamaProvider preparing request. Model: {model}, Format: json, Options: {payload.get('options')}. Tools ignored.")
         yield {"type": "status", "content": f"Contacting Ollama model '{model}'..."}
 
         response = None; last_exception = None; response_status = 0; response_text = ""
@@ -95,11 +98,10 @@ class OllamaProvider(BaseLLMProvider):
             response = None
             try:
                  logger.info(f"OllamaProvider making API call (Attempt {attempt + 1}/{MAX_RETRIES + 1}).")
-                 # Use the request_timeout for the POST operation
                  async with session.post(chat_endpoint, json=payload, timeout=request_timeout) as resp:
                     response_status = resp.status
-                    response_text = "" # Reset response text for this attempt
-                    if response_status >= 400: response_text = await resp.text() # Read only on error
+                    response_text = ""
+                    if response_status >= 400: response_text = await resp.text()
 
                     if response_status == 200:
                          logger.info(f"API call successful (Status {response_status}) on attempt {attempt + 1}.")
@@ -146,8 +148,8 @@ class OllamaProvider(BaseLLMProvider):
         # --- Process the Successful Stream ---
         stream_error_occurred = False
         chunks_received = 0
+        accumulated_json_string = "" # Buffer for potentially fragmented JSON within message.content
         try:
-            # Use response.content directly which should use default stream timeouts
             async for line in response.content:
                 if line:
                     chunks_received += 1
@@ -166,16 +168,30 @@ class OllamaProvider(BaseLLMProvider):
                         if message_chunk and isinstance(message_chunk, dict):
                             content_chunk = message_chunk.get("content")
                             if content_chunk:
+                                # Since format=json was requested, content_chunk *itself* might be JSON string.
+                                # We still just pass it raw for now, Agent Core handles XML parsing.
                                 yield {"type": "response_chunk", "content": content_chunk}
+                                # We could *try* parsing content_chunk as JSON here if needed later,
+                                # but for now, just yield the text content.
+                                # accumulated_json_string += content_chunk # Accumulate if needed
 
                         if chunk_data.get("done", False):
                             if not stream_error_occurred:
                                 logger.debug(f"Received done=true from stream for model {model}. Chunks processed: {chunks_received}")
                                 total_duration = chunk_data.get("total_duration")
                                 if total_duration: yield {"type": "status", "content": f"Ollama turn finished ({total_duration / 1e9:.2f}s)."}
+                                # --- Optional: Final check if accumulated string is valid JSON ---
+                                # if accumulated_json_string:
+                                #    try:
+                                #        final_json = json.loads(accumulated_json_string)
+                                #        logger.debug("Successfully parsed accumulated JSON content at end of stream.")
+                                #    except json.JSONDecodeError:
+                                #        logger.warning(f"Accumulated content at end of stream was not valid JSON: {accumulated_json_string[:100]}...")
                             break
 
                     except json.JSONDecodeError:
+                        # This error is now less likely for the *outer* structure, but might occur
+                        # if the model generates invalid JSON *within* message.content when format=json is used.
                         logger.error(f"Failed to decode JSON line from Ollama stream: {decoded_line}")
                         yield {"type": "error", "content": "[OllamaProvider Error]: Failed to decode stream chunk."}
                         stream_error_occurred = True; break
@@ -194,10 +210,10 @@ class OllamaProvider(BaseLLMProvider):
         except aiohttp.ClientResponseError as response_err:
              logger.error(f"Ollama stream connection error (Response): {response_err.status} {response_err.message}", exc_info=True)
              yield {"type": "error", "content": f"[OllamaProvider Error]: Stream connection error ({response_err.status}) - {response_err.message}"}
-        except asyncio.TimeoutError as timeout_err: # Catch explicit timeout during stream
+        except asyncio.TimeoutError as timeout_err:
              logger.error(f"Ollama stream timeout error (Default aiohttp timeouts): {timeout_err}", exc_info=True)
              yield {"type": "error", "content": f"[OllamaProvider Error]: Stream timed out waiting for data - {timeout_err}"}
-        except aiohttp.ClientConnectionError as conn_err: # Catch specific connection errors during stream
+        except aiohttp.ClientConnectionError as conn_err:
              logger.error(f"Ollama stream processing failed with ClientConnectionError: {conn_err}. Chunks received: {chunks_received}", exc_info=True)
              yield {"type": "error", "content": f"[OllamaProvider Error]: Connection closed during stream - {conn_err}"}
         except Exception as e:
