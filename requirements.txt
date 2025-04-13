@@ -4,11 +4,12 @@ uvicorn
 websockets
 jinja2
 python-dotenv
-aiohttp
+# aiohttp # Keep if other providers use it, remove if not
+httpx[http2] # Add httpx, http2 optional but good
 openai
-PyYAML           # Added YAML dependency
-# duckduckgo-search # Removed due to build issues
-# PyGithub         # Removed due to build issues
-lxml             # Keep (built successfully)
-pynacl           # Keep (built successfully)
-beautifulsoup4   # Added for Web Search HTML scraping
+PyYAML
+# duckduckgo-search
+# PyGithub
+lxml
+pynacl
+beautifulsoup4
