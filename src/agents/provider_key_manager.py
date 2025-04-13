@@ -77,7 +77,7 @@ class ProviderKeyManager:
     async def save_quarantine_state(self):
         """Asynchronously saves the current quarantine state to the JSON file."""
         async with self._lock:
-            self._unquarantine_expired_keys_sync()
+            self._unquarantine_expired_keys_sync() # Clean up just before saving
             logger.info(f"Saving quarantine state ({len(self._quarantined_keys)} entries) to: {QUARANTINE_FILE_PATH}")
             temp_file_path = None
             try:
@@ -88,51 +88,54 @@ class ProviderKeyManager:
                 temp_file_path = Path(temp_path_str)
                 def write_json_sync():
                     with os.fdopen(temp_fd, 'w', encoding='utf-8') as f:
+                        # Use cleaned keys from the dictionary directly
                         json.dump(self._quarantined_keys, f, indent=2)
                 await asyncio.to_thread(write_json_sync)
                 await asyncio.to_thread(os.replace, temp_file_path, QUARANTINE_FILE_PATH)
                 logger.info(f"Successfully saved quarantine state to {QUARANTINE_FILE_PATH}")
+                temp_file_path = None # Avoid deletion in finally
             except Exception as e:
                 logger.error(f"Error saving quarantine state file {QUARANTINE_FILE_PATH}: {e}", exc_info=True)
-                if temp_file_path and temp_file_path.exists():
+                if temp_file_path and await asyncio.to_thread(temp_file_path.exists):
                     try: await asyncio.to_thread(os.remove, temp_file_path)
                     except Exception as rm_err: logger.error(f"Error removing temporary quarantine file {temp_file_path}: {rm_err}")
 
+
     def _unquarantine_expired_keys_sync(self):
-        """Removes expired entries from the quarantine dictionary."""
+        """Removes expired entries from the quarantine dictionary. Assumes lock is held or called during init."""
         current_time = time.time()
+        # Use list comprehension for potentially faster creation of keys to delete
         expired_keys = [key for key, expiry in self._quarantined_keys.items() if expiry <= current_time]
         if expired_keys:
+            deleted_count = 0
             for key in expired_keys:
-                del self._quarantined_keys[key]
-            logger.info(f"Unquarantined expired keys: {expired_keys}")
+                # Ensure key exists before trying to delete (important if called concurrently without lock, though not the case here)
+                if key in self._quarantined_keys:
+                    del self._quarantined_keys[key]
+                    deleted_count += 1
+            if deleted_count > 0:
+                logger.info(f"Unquarantined {deleted_count} expired key(s): {expired_keys}")
+
 
     def _get_clean_key_value(self, key_value: Optional[str]) -> Optional[str]:
         """Helper to clean potential whitespace or unwanted chars from key."""
-        if key_value is None:
-            return None
-        # Strip whitespace and common erroneous trailing chars
-        # Adjust the characters in the strip set if needed
+        if key_value is None: return None
         return key_value.strip().rstrip('>')
 
     def _is_key_quarantined(self, provider: str, key_value: str) -> bool:
         """Checks if a specific key for a provider is currently quarantined."""
         cleaned_key = self._get_clean_key_value(key_value)
-        if not cleaned_key: return False # Invalid key cannot be quarantined
+        if not cleaned_key: return False
 
-        quarantine_key = f"{provider}/{cleaned_key}" # Use cleaned key for lookup
+        quarantine_key = f"{provider}/{cleaned_key}"
         expiry = self._quarantined_keys.get(quarantine_key)
-        if expiry is None:
-            return False
+        if expiry is None: return False
+
         if expiry <= time.time():
-            logger.info(f"Found expired quarantine for '{quarantine_key}'. Removing.")
-            # Need to acquire lock to modify shared state safely if called outside locked context
-            # Since this is currently called under lock, direct modification is okay.
-            # If called elsewhere, use: async with self._lock: del self._quarantined_keys[quarantine_key]
-            if quarantine_key in self._quarantined_keys: # Check existence before deleting
-                del self._quarantined_keys[quarantine_key]
+            # logger.info(f"Found expired quarantine for '{quarantine_key}'. Removing.") # Moved logging to unquarantine func
+            # This function is read-only check, actual removal done by _unquarantine_expired_keys_sync
             return False
-        return True
+        return True # Still valid and quarantined
 
     async def get_active_key_config(self, provider: str) -> Optional[Dict[str, Any]]:
         """ Gets config for the next available, non-quarantined key. """
@@ -149,13 +152,11 @@ class ProviderKeyManager:
             for i in range(num_keys):
                 current_index = (start_index + i) % num_keys
                 key_value = keys[current_index]
-                # Use the internal check which now uses cleaned keys for lookup
-                if not self._is_key_quarantined(provider, key_value):
+                if not self._is_key_quarantined(provider, key_value): # Uses cleaned key for check
                     self._current_key_index[provider] = (current_index + 1) % num_keys
                     logger.info(f"Providing active key (Index {current_index}) for provider '{provider}'.")
                     base_config = self._settings.get_provider_config(provider)
-                    # Use the *original* key_value from the list, not the cleaned one, for the actual API call
-                    base_config['api_key'] = key_value
+                    base_config['api_key'] = key_value # Use original key value
                     return base_config
                 else:
                     logger.warning(f"Key (Index {current_index}) for provider '{provider}' is currently quarantined. Trying next.")
@@ -164,23 +165,19 @@ class ProviderKeyManager:
 
     async def quarantine_key(self, provider: str, key_value: Optional[str], duration_seconds: int = 86400):
         """ Marks a specific key for a provider as quarantined. """
-        # --- Clean the key value BEFORE creating the dictionary key ---
         cleaned_key = self._get_clean_key_value(key_value)
         if not cleaned_key:
             logger.debug(f"Attempted to quarantine key for provider '{provider}' but key_value was None or invalid after cleaning.")
             return
-        # --- End Cleaning ---
 
         async with self._lock:
-            # --- Use the CLEANED key to form the dictionary key ---
             quarantine_dict_key = f"{provider}/{cleaned_key}"
             expiry_time = time.time() + duration_seconds
             self._quarantined_keys[quarantine_dict_key] = expiry_time
-            # Log using the cleaned key's last 4 chars for confirmation
             logger.warning(f"Quarantining key ending with '...{cleaned_key[-4:]}' for provider '{provider}' until {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expiry_time))}.")
-            # Trigger save - consider making this less frequent if performance is an issue
-            # asyncio.create_task(self.save_quarantine_state()) # Can cause issues if loop closes too fast
-            await self.save_quarantine_state() # Safer to await under lock if needed immediately
+            # --- REMOVED await self.save_quarantine_state() ---
+            # Let cleanup handle saving on shutdown or implement periodic saving elsewhere if needed
+
 
     async def is_provider_depleted(self, provider: str) -> bool:
         """ Checks if all configured keys for a provider are quarantined. """
@@ -189,7 +186,6 @@ class ProviderKeyManager:
             keys = self._provider_keys.get(provider)
             if not keys: return True
             for key_value in keys:
-                # Use the internal check which now cleans keys
-                if not self._is_key_quarantined(provider, key_value):
+                if not self._is_key_quarantined(provider, key_value): # Uses cleaned key for check
                     return False
             return True
