@@ -4,10 +4,10 @@ uvicorn
 websockets
 jinja2
 python-dotenv
-# aiohttp # Keep if other providers use it, remove if not
-httpx[http2] # Add httpx, http2 optional but good
-openai
+openai>=1.10.0 # Ensure you have a recent version
 PyYAML
+# httpx # Remove if not needed elsewhere
+# aiohttp # Remove if not needed elsewhere
 # duckduckgo-search
 # PyGithub
 lxml
