@@ -24,7 +24,7 @@ DEFAULT_CONNECT_TIMEOUT = 15.0
 DEFAULT_READ_TIMEOUT = 300.0
 DEFAULT_TOTAL_TIMEOUT = 600.0
 
-# Known valid Ollama options
+# Known valid Ollama options (Unchanged)
 KNOWN_OLLAMA_OPTIONS = {
     "mirostat", "mirostat_eta", "mirostat_tau", "num_ctx", "num_gpu", "num_thread",
     "num_keep", "seed", "num_predict", "repeat_last_n", "repeat_penalty",
@@ -38,22 +38,23 @@ class OllamaProvider(BaseLLMProvider):
     """
     LLM Provider implementation for local Ollama models using httpx.
     Handles streaming by reading raw bytes and splitting by newline.
-    Explicitly forces HTTP/1.1 transport.
+    Uses simplified headers and explicit HTTP/1.1.
     """
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, **kwargs):
+        # (init remains the same)
         self.base_url = (base_url or DEFAULT_OLLAMA_BASE_URL).rstrip('/')
         if api_key: logger.warning("OllamaProvider Warning: API key provided but not used.")
         self.streaming_mode = kwargs.pop('stream', True)
         self._session_timeout_config = kwargs.pop('timeout', None)
-        self._client_kwargs = kwargs # Store remaining kwargs
+        self._client_kwargs = kwargs
         self._client: Optional[httpx.AsyncClient] = None
         mode_str = "Streaming" if self.streaming_mode else "Non-Streaming"
         logger.info(f"OllamaProvider initialized with httpx. Base URL: {self.base_url}. Mode: {mode_str}.")
 
     async def _get_client(self) -> httpx.AsyncClient:
+        # (Timeout logic remains the same)
         if self._client is None or self._client.is_closed:
-            # Configure timeout (same as before)
             if isinstance(self._session_timeout_config, httpx.Timeout):
                 timeout = self._session_timeout_config
             elif isinstance(self._session_timeout_config, (int, float)):
@@ -64,21 +65,28 @@ class OllamaProvider(BaseLLMProvider):
                 timeout = httpx.Timeout(DEFAULT_TOTAL_TIMEOUT, connect=DEFAULT_CONNECT_TIMEOUT, read=DEFAULT_READ_TIMEOUT)
                 if self._session_timeout_config is not None: logger.warning(f"Invalid timeout config '{self._session_timeout_config}', using defaults.")
 
-            # *** Force HTTP/1.1 using transport ***
-            transport = httpx.AsyncHTTPTransport(http1=True, retries=0) # Force HTTP/1.1, disable transport retries
+            # Force HTTP/1.1 using transport
+            transport = httpx.AsyncHTTPTransport(http1=True, retries=0)
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
                 timeout=timeout,
-                transport=transport, # Use the custom transport
-                http1=True,  # Redundant with transport but doesn't hurt
-                http2=False, # Explicitly disable HTTP/2 negotiation
+                transport=transport,
+                http1=True,
+                http2=False,
+                # ** Remove default headers that might interfere **
+                headers={ # Start with minimal headers
+                    'Accept': 'application/json, text/event-stream', # Accept stream and json
+                    'Content-Type': 'application/json', # Explicitly set content type
+                    # 'User-Agent': 'TrippleEffect/1.0 httpx/...' # Optional: Set a custom user agent
+                    # DO NOT set Accept-Encoding or Connection: keep-alive (let httpx handle connection)
+                },
                 **self._client_kwargs
             )
-            logger.info(f"OllamaProvider: Created new httpx client (Explicitly Forced HTTP/1.1 via Transport). Timeout: {timeout}")
+            logger.info(f"OllamaProvider: Created new httpx client (Forced HTTP/1.1 via Transport, Minimal Headers). Timeout: {timeout}")
         return self._client
 
     async def close_session(self):
-        # Close client (which now owns transport)
+        # (remains the same)
         if self._client and not self._client.is_closed:
             await self._client.aclose(); self._client = None; logger.info("OllamaProvider: Closed httpx client.")
 
@@ -122,7 +130,9 @@ class OllamaProvider(BaseLLMProvider):
             last_exception = None; response = None; stream_context = None
             try:
                  logger.info(f"OllamaProvider making API call (Attempt {attempt + 1}/{MAX_RETRIES + 1}).")
-                 stream_context = client.stream("POST", chat_endpoint, json=payload)
+                 # *** Ensure payload is encoded correctly (httpx usually handles this with json=) ***
+                 # headers_for_request = {'Content-Type': 'application/json'} # Let client defaults handle Accept etc.
+                 stream_context = client.stream("POST", chat_endpoint, json=payload) # Removed custom headers here
                  async with stream_context as resp:
                     response_status = resp.status_code
                     if response_status >= 400:
@@ -140,6 +150,7 @@ class OllamaProvider(BaseLLMProvider):
                     else: # Status 200
                         logger.info(f"API call headers OK (Status 200) attempt {attempt + 1}. Start stream.")
                         response = resp; break # Exit retry loop successfully
+            # ... (Exception handling for retry loop remains the same) ...
             except RETRYABLE_HTTPX_EXCEPTIONS as e:
                 last_exception = e; logger.warning(f"Retryable httpx error attempt {attempt + 1}/{MAX_RETRIES + 1}: {type(e).__name__} - {e}")
                 if attempt < MAX_RETRIES: logger.info(f"Waiting {RETRY_DELAY_SECONDS}s..."); await asyncio.sleep(RETRY_DELAY_SECONDS); continue
@@ -152,21 +163,22 @@ class OllamaProvider(BaseLLMProvider):
                  if response is None and stream_context is not None and hasattr(stream_context, 'aclose'): await stream_context.aclose()
 
         if response is None: # Check if request failed after all retries
-            logger.error(f"Ollama API request failed. Last exception: {type(last_exception).__name__ if last_exception else 'N/A'}")
-            err_content = f"[Ollama Error]: API request failed after {MAX_RETRIES} retries. Error: {type(last_exception).__name__ if last_exception else 'Request Failed'}"
-            yield {"type": "error", "content": err_content}; return
+             logger.error(f"Ollama API request failed. Last exception: {type(last_exception).__name__ if last_exception else 'N/A'}")
+             err_content = f"[Ollama Error]: API request failed after {MAX_RETRIES} retries. Error: {type(last_exception).__name__ if last_exception else 'Request Failed'}"
+             yield {"type": "error", "content": err_content}; return
 
-        # --- Process the Successful Response Stream ---
+        # --- Process the Successful Response Stream (Using aiter_raw and buffering - Unchanged) ---
         byte_buffer = b""
         processed_lines = 0
         stream_error_occurred = False
         try:
             if self.streaming_mode:
                 logger.debug("Starting streaming loop using response.aiter_raw()...")
-                async for chunk in response.aiter_raw(): # Iterate raw bytes
+                async for chunk in response.aiter_raw():
+                    # ... (buffering and JSON parsing logic remains the same as previous version) ...
                     if not chunk: continue
                     byte_buffer += chunk
-                    while True: # Process complete lines
+                    while True:
                         newline_pos = byte_buffer.find(b'\n')
                         if newline_pos == -1: break
                         json_line = byte_buffer[:newline_pos]; byte_buffer = byte_buffer[newline_pos + 1:]
@@ -187,7 +199,8 @@ class OllamaProvider(BaseLLMProvider):
                 logger.debug(f"Finished streaming loop (aiter_raw). Lines: {processed_lines}. Error: {stream_error_occurred}")
                 if stream_error_occurred: return
 
-                if byte_buffer.strip(): # Process final part
+                # Process final buffer part (Unchanged)
+                if byte_buffer.strip():
                      logger.warning(f"Processing remaining buffer: {byte_buffer[:200]}...")
                      try:
                          chunk_data = json.loads(byte_buffer.decode('utf-8'))
