@@ -38,7 +38,7 @@ class OllamaProvider(BaseLLMProvider):
     """
     LLM Provider implementation for local Ollama models using httpx.
     Handles streaming by reading raw bytes and splitting by newline.
-    Corrected syntax error in final buffer processing.
+    Includes delay before stream read as a potential fix.
     """
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, **kwargs):
@@ -131,8 +131,8 @@ class OllamaProvider(BaseLLMProvider):
                              logger.error(f"Ollama API Client Error: Status {response_status}, Resp: {response_text[:200]}"); yield {"type": "error", "content": f"[OllamaProvider Error]: Client Error {response_status} - {response_text[:100]}"}; return
                     else: # Status 200
                         logger.info(f"API call headers OK (Status 200) on attempt {attempt + 1}. Starting stream processing...")
-                        response = resp # Assign response ONLY on success
-                        break # Exit retry loop successfully
+                        response = resp # Assign response
+                        break # Exit retry loop
             except RETRYABLE_HTTPX_EXCEPTIONS as e:
                 last_exception = e; logger.warning(f"Retryable httpx error attempt {attempt + 1}/{MAX_RETRIES + 1}: {type(e).__name__} - {e}")
                 if attempt < MAX_RETRIES: logger.info(f"Waiting {RETRY_DELAY_SECONDS}s..."); await asyncio.sleep(RETRY_DELAY_SECONDS); continue
@@ -141,15 +141,13 @@ class OllamaProvider(BaseLLMProvider):
                 last_exception = e; logger.exception(f"Unexpected Error API call attempt {attempt + 1}: {type(e).__name__} - {e}")
                 if attempt < MAX_RETRIES: logger.info(f"Waiting {RETRY_DELAY_SECONDS}s..."); await asyncio.sleep(RETRY_DELAY_SECONDS); continue
                 else: logger.error(f"Max retries ({MAX_RETRIES}) after unexpected error."); yield {"type": "error", "content": f"[OllamaProvider Error]: Unexpected Error after retries - {type(e).__name__}"}; return
-            finally:
-                 # Close context ONLY if we are continuing/returning due to error *before* assigning response
-                 if response is None and stream_context is not None and hasattr(stream_context, 'aclose'):
-                     await stream_context.aclose()
+            # Context manager handles closing if exception occurs inside 'async with'
 
-
-        if response is None: # Check if request failed after all retries
+        if response is None:
             logger.error(f"Ollama API request failed after all retries. Last exception: {type(last_exception).__name__ if last_exception else 'N/A'}")
             err_content = f"[OllamaProvider Error]: API request failed after {MAX_RETRIES} retries. Error: {type(last_exception).__name__ if last_exception else 'Request Failed'}"
+            # Ensure context is closed if it exists and wasn't closed by the loop exiting
+            if stream_context is not None and hasattr(stream_context, 'aclose'): await stream_context.aclose()
             yield {"type": "error", "content": err_content}; return
 
         # --- Process the Successful Response Stream ---
@@ -159,10 +157,15 @@ class OllamaProvider(BaseLLMProvider):
         try:
             if self.streaming_mode:
                 logger.debug("Starting streaming response processing loop using response.aiter_raw()...")
-                async for chunk in response.aiter_raw(): # Iterate using assigned response
+                # --- Add a small delay before starting iteration ---
+                await asyncio.sleep(0.1) # Wait 100ms - ADJUST IF NEEDED
+                logger.debug("Delay complete, proceeding with aiter_raw...")
+                # --- End delay ---
+
+                async for chunk in response.aiter_raw():
                     if not chunk: continue
                     byte_buffer += chunk
-                    while True:
+                    while True: # Process complete lines
                         newline_pos = byte_buffer.find(b'\n')
                         if newline_pos == -1: break
                         json_line = byte_buffer[:newline_pos]; byte_buffer = byte_buffer[newline_pos + 1:]
@@ -182,23 +185,22 @@ class OllamaProvider(BaseLLMProvider):
 
                 logger.debug(f"Finished streaming loop (aiter_raw). Lines: {processed_lines}. Error: {stream_error_occurred}")
                 if stream_error_occurred: return
-
-                # --- Process final buffer part (with restored except block) ---
-                if byte_buffer.strip():
-                     logger.warning(f"Processing remaining buffer after loop: {byte_buffer[:200]}...")
-                     try: # <<< TRY block needs an except
-                         chunk_data = json.loads(byte_buffer.decode('utf-8'))
-                         if chunk_data.get("done", False): logger.debug("Processed final 'done' object from buffer.")
-                         else: logger.warning("Final buffer content wasn't a 'done' object.")
-                     except Exception as final_e: # <<< RESTORED EXCEPT BLOCK
-                         logger.error(f"Could not parse final buffer: {final_e}")
-                # --- End final buffer processing ---
+                if byte_buffer.strip(): # Process final part
+                     logger.warning(f"Processing remaining buffer: {byte_buffer[:200]}...")
+                     try: chunk_data = json.loads(byte_buffer.decode('utf-8'));
+                     if chunk_data.get("done", False): logger.debug("Processed final 'done' from buffer.")
+                     else: logger.warning("Final buffer not 'done' obj.")
+                     except Exception as final_e: logger.error(f"Could not parse final buffer: {final_e}")
 
             else: # Non-Streaming (Unchanged)
                  # ... (non-streaming logic remains the same) ...
                  logger.debug("Processing non-streaming response...")
                  try:
-                     full_response_text = await response.aread(); response_data = json.loads(full_response_text.decode('utf-8'))
+                     # Need to ensure response is read within its original context or after it's closed
+                     # Since 'response' here is from the successful retry loop's context manager exit,
+                     # we need to read it *before* the stream_completion function exits fully.
+                     full_response_text = await response.aread()
+                     response_data = json.loads(full_response_text.decode('utf-8'))
                      if response_data.get("error"): error_msg = response_data["error"]; logger.error(f"Ollama non-streaming error: {error_msg}"); yield {"type": "error", "content": f"[OllamaProvider Error]: {error_msg}"}
                      elif response_data.get("message") and isinstance(response_data["message"], dict):
                          full_content = response_data["message"].get("content");
@@ -208,32 +210,29 @@ class OllamaProvider(BaseLLMProvider):
                          if total_duration: yield {"type": "status", "content": f"Ollama turn finished ({total_duration / 1e9:.2f}s)."}
                          else: logger.warning("Non-streaming missing done=true.")
                      else: logger.error(f"Unexpected non-streaming structure: {response_data}"); yield {"type": "error", "content": "[OllamaProvider Error]: Unexpected non-streaming structure."}
-                 except json.JSONDecodeError: logger.error(f"Failed non-streaming JSON decode. Raw text unavailable as it was already read."); yield {"type": "error", "content": "[OllamaProvider Error]: Failed non-streaming decode."} # Cannot log raw_text here easily
+                 except json.JSONDecodeError: logger.error(f"Failed non-streaming JSON decode. Raw text unavailable if already read?"); yield {"type": "error", "content": "[OllamaProvider Error]: Failed non-streaming decode."}
                  except Exception as e: logger.error(f"Error processing non-streaming: {e}", exc_info=True); yield {"type": "error", "content": f"[OllamaProvider Error]: Non-streaming processing error - {type(e).__name__}"}
 
-        # --- Catch exceptions DURING stream processing (Unchanged) ---
+        # --- Catch exceptions DURING stream processing ---
         except httpx.StreamClosed as stream_closed_err: logger.error(f"Ollama httpx stream closed unexpectedly: {stream_closed_err}", exc_info=True); yield {"type": "error", "content": f"[OllamaProvider Error]: Stream closed unexpectedly - {stream_closed_err}"}
         except httpx.ReadTimeout as timeout_err: logger.error(f"Ollama httpx timeout during stream read (read={client.timeout.read}s): {timeout_err}", exc_info=False); yield {"type": "error", "content": f"[OllamaProvider Error]: Timeout waiting for stream data (read={client.timeout.read}s)"}
         except httpx.RemoteProtocolError as proto_err: logger.error(f"Ollama processing failed with RemoteProtocolError: {proto_err}", exc_info=True); yield {"type": "error", "content": f"[OllamaProvider Error]: Connection closed unexpectedly - {proto_err}"}
         except httpx.NetworkError as net_err: logger.error(f"Ollama processing failed with NetworkError: {net_err}", exc_info=True); yield {"type": "error", "content": f"[OllamaProvider Error]: Network error during stream - {net_err}"}
         except Exception as e: logger.exception(f"Unexpected Error processing Ollama response stream: {type(e).__name__} - {e}"); yield {"type": "error", "content": f"[OllamaProvider Error]: Unexpected stream processing error - {type(e).__name__}"}
-        # --- End stream processing error handling ---
 
+        # --- Final Logging ---
         if not stream_error_occurred: logger.info(f"OllamaProvider: stream_completion finished cleanly for model {model}.")
         else: logger.warning(f"OllamaProvider: stream_completion finished for model {model}, but error encountered.")
 
-
+    # __repr__, __aenter__, __aexit__ remain the same
     def __repr__(self) -> str:
-        # (Unchanged)
         client_status = "closed" if self._client is None or self._client.is_closed else "open"
         mode = "streaming" if self.streaming_mode else "non-streaming"
         return f"<{self.__class__.__name__}(base_url='{self.base_url}', client='{client_status}', mode='{mode}')>"
 
     async def __aenter__(self):
-        # (Unchanged)
         await self._get_client()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        # (Unchanged)
         await self.close_session()
