@@ -37,8 +37,7 @@ KNOWN_OLLAMA_OPTIONS = {
 class OllamaProvider(BaseLLMProvider):
     """
     LLM Provider implementation for local Ollama models using httpx.
-    Handles streaming by reading raw bytes and splitting by newline.
-    Corrected SyntaxError in final buffer processing.
+    Handles streaming using response.aiter_bytes() and manual buffering.
     """
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, **kwargs):
@@ -123,6 +122,7 @@ class OllamaProvider(BaseLLMProvider):
                  async with stream_context as resp:
                     response_status = resp.status_code
                     if response_status >= 400:
+                         # ... (Error handling for non-200 status remains the same) ...
                          response_text = "";
                          try: error_bytes = await resp.aread(); response_text = error_bytes.decode('utf-8', errors='ignore')
                          except Exception as read_err: logger.warning(f"Could not read error body status {response_status}: {read_err}"); response_text = f"(Read err: {read_err})"
@@ -140,7 +140,7 @@ class OllamaProvider(BaseLLMProvider):
             except RETRYABLE_HTTPX_EXCEPTIONS as e:
                 last_exception = e; logger.warning(f"Retryable httpx error attempt {attempt + 1}/{MAX_RETRIES + 1}: {type(e).__name__} - {e}")
                 if attempt < MAX_RETRIES: logger.info(f"Waiting {RETRY_DELAY_SECONDS}s..."); await asyncio.sleep(RETRY_DELAY_SECONDS); continue
-                else: logger.error(f"Max retries ({MAX_RETRIES}) reached after {type(e).__name__}."); yield {"type": "error", "content": f"[Ollama Error]: Max retries after connection/timeout. Last: {e}"}; return
+                else: logger.error(f"Max retries ({MAX_RETRIES}) after {type(e).__name__}."); yield {"type": "error", "content": f"[Ollama Error]: Max retries after connection/timeout. Last: {e}"}; return
             except Exception as e:
                 last_exception = e; logger.exception(f"Unexpected Error API call attempt {attempt + 1}: {type(e).__name__} - {e}")
                 if attempt < MAX_RETRIES: logger.info(f"Waiting {RETRY_DELAY_SECONDS}s..."); await asyncio.sleep(RETRY_DELAY_SECONDS); continue
@@ -149,9 +149,9 @@ class OllamaProvider(BaseLLMProvider):
                  if response is None and stream_context is not None and hasattr(stream_context, 'aclose'): await stream_context.aclose()
 
         if response is None: # Check if request failed after all retries
-            logger.error(f"Ollama API request failed. Last exception: {type(last_exception).__name__ if last_exception else 'N/A'}")
-            err_content = f"[Ollama Error]: API request failed after {MAX_RETRIES} retries. Error: {type(last_exception).__name__ if last_exception else 'Request Failed'}"
-            yield {"type": "error", "content": err_content}; return
+             logger.error(f"Ollama API request failed. Last exception: {type(last_exception).__name__ if last_exception else 'N/A'}")
+             err_content = f"[Ollama Error]: API request failed after {MAX_RETRIES} retries. Error: {type(last_exception).__name__ if last_exception else 'Request Failed'}"
+             yield {"type": "error", "content": err_content}; return
 
         # --- Process the Successful Response Stream ---
         byte_buffer = b""
@@ -159,9 +159,11 @@ class OllamaProvider(BaseLLMProvider):
         stream_error_occurred = False
         try:
             if self.streaming_mode:
-                logger.debug("Starting streaming loop using response.aiter_raw()...")
-                async for chunk in response.aiter_raw(): # Iterate raw bytes
+                logger.debug("Starting streaming loop using response.aiter_bytes()...")
+                # *** Use aiter_bytes instead of aiter_raw ***
+                async for chunk in response.aiter_bytes():
                     if not chunk: continue
+                    # logger.log(logging.DEBUG - 1, f"Raw chunk received (len={len(chunk)}): {chunk[:100]}...")
                     byte_buffer += chunk
                     while True: # Process complete lines
                         newline_pos = byte_buffer.find(b'\n')
@@ -181,26 +183,26 @@ class OllamaProvider(BaseLLMProvider):
                         except Exception as e: logger.error(f"Error processing line {processed_lines}: {e}", exc_info=True); logger.error(f"Problem line: {decoded_line[:500]}"); yield {"type": "error", "content": f"[Ollama Error]: Stream error - {type(e).__name__}"}; stream_error_occurred = True; break
                     if stream_error_occurred: break # Break outer async for
 
-                logger.debug(f"Finished streaming loop (aiter_raw). Lines: {processed_lines}. Error: {stream_error_occurred}")
+                logger.debug(f"Finished streaming loop (aiter_bytes). Lines: {processed_lines}. Error: {stream_error_occurred}")
                 if stream_error_occurred: return
 
-                # --- Process final buffer part (with CORRECTED except block) ---
+                # Process final buffer part (Unchanged)
                 if byte_buffer.strip():
                      logger.warning(f"Processing remaining buffer: {byte_buffer[:200]}...")
-                     try: # <<< TRY block for final parse
-                         chunk_data = json.loads(byte_buffer.decode('utf-8'))
-                         if chunk_data.get("done", False): logger.debug("Processed final 'done' from buffer.")
-                         elif chunk_data.get("message", {}).get("content"): logger.warning("Final buffer contained message content."); yield {"type": "response_chunk", "content": chunk_data["message"]["content"]}
-                         else: logger.warning("Final buffer content wasn't a 'done' object or message.")
-                     except Exception as final_e: # <<< CORRECTED EXCEPT BLOCK
-                         logger.error(f"Could not parse final buffer: {final_e}")
-                # --- End final buffer processing ---
+                     try: chunk_data = json.loads(byte_buffer.decode('utf-8'));
+                     if chunk_data.get("done", False): logger.debug("Processed final 'done'.")
+                     elif chunk_data.get("message", {}).get("content"): logger.warning("Final buffer has msg content."); yield {"type": "response_chunk", "content": chunk_data["message"]["content"]}
+                     else: logger.warning("Final buffer not 'done' or message.")
+                     except Exception as final_e: logger.error(f"Could not parse final buffer: {final_e}")
 
             else: # Non-Streaming
-                 # (Non-streaming logic remains the same)
+                 # ... (non-streaming logic remains the same) ...
                  logger.debug("Processing non-streaming response...")
                  try:
-                     full_response_text = await response.aread(); response_data = json.loads(full_response_text.decode('utf-8'))
+                     # Read full body *after* stream context is done
+                     await response.aread()
+                     response_data = json.loads(response.text)
+
                      if response_data.get("error"): error_msg = response_data["error"]; logger.error(f"Ollama non-streaming error: {error_msg}"); yield {"type": "error", "content": f"[Ollama Error]: {error_msg}"}
                      elif response_data.get("message") and isinstance(response_data["message"], dict):
                          full_content = response_data["message"].get("content");
@@ -210,7 +212,7 @@ class OllamaProvider(BaseLLMProvider):
                          if total_duration: yield {"type": "status", "content": f"Ollama turn finished ({total_duration / 1e9:.2f}s)."}
                          else: logger.warning("Non-streaming missing done=true.")
                      else: logger.error(f"Unexpected non-streaming structure: {response_data}"); yield {"type": "error", "content": "[Ollama Error]: Unexpected non-streaming structure."}
-                 except json.JSONDecodeError: logger.error(f"Failed non-streaming JSON decode. Raw text unavailable."); yield {"type": "error", "content": "[Ollama Error]: Failed non-streaming decode."}
+                 except json.JSONDecodeError: logger.error(f"Failed non-streaming JSON decode. Raw: {response.text[:500]}..."); yield {"type": "error", "content": "[Ollama Error]: Failed non-streaming decode."}
                  except Exception as e: logger.error(f"Error processing non-streaming: {e}", exc_info=True); yield {"type": "error", "content": f"[Ollama Error]: Non-streaming processing error - {type(e).__name__}"}
 
         # --- Catch exceptions DURING stream processing (Unchanged) ---
@@ -220,6 +222,7 @@ class OllamaProvider(BaseLLMProvider):
         except httpx.NetworkError as net_err: logger.error(f"Ollama processing failed with NetworkError: {net_err}", exc_info=True); yield {"type": "error", "content": f"[Ollama Error]: Network error during stream - {net_err}"}
         except Exception as e: logger.exception(f"Unexpected Error processing Ollama response stream: {type(e).__name__} - {e}"); yield {"type": "error", "content": f"[Ollama Error]: Unexpected stream processing error - {type(e).__name__}"}
 
+        # Log final completion status
         if not stream_error_occurred: logger.info(f"OllamaProvider: stream_completion finished cleanly for model {model}.")
         else: logger.warning(f"OllamaProvider: stream_completion finished for model {model}, but error encountered.")
 
