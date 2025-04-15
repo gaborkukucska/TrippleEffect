@@ -22,30 +22,34 @@ RETRYABLE_EXCEPTIONS = (
 
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 
-# Known valid Ollama options
-KNOWN_OLLAMA_OPTIONS = {
+# Known valid Ollama options that map somewhat to OpenAI or are common
+# We will pass these directly as keyword arguments if present.
+# Others might be ignored by the OpenAI client library but hopefully passed to Ollama.
+KNOWN_OLLAMA_PARAMS_FOR_OPENAI_LIB = {
+    # Standard OpenAI params
+    "temperature", "max_tokens", "top_p", "stop", "seed",
+    "presence_penalty", "frequency_penalty",
+    # Ollama specific ones we hope get passed through/mapped
     "mirostat", "mirostat_eta", "mirostat_tau", "num_ctx", "num_gpu", "num_thread",
-    "num_keep", "seed", "num_predict", "repeat_last_n", "repeat_penalty",
-    "temperature", "tfs_z", "top_k", "top_p", "min_p", "use_mmap", "use_mlock",
+    "num_keep", "num_predict", "repeat_last_n", "repeat_penalty",
+    "tfs_z", "top_k", "min_p", "use_mmap", "use_mlock",
     "numa", "num_batch", "main_gpu", "low_vram", "f16_kv", "logits_all",
-    "vocab_only", "stop", "presence_penalty", "frequency_penalty", "penalize_newline",
-    "typical_p"
+    "vocab_only", "penalize_newline", "typical_p"
 }
 
 
 class OllamaProvider(BaseLLMProvider):
     """
     LLM Provider implementation for local Ollama models using the openai library.
-    Assumes Ollama API endpoint compatibility. Corrected syntax error in error handling.
+    Passes known Ollama options directly as keyword arguments.
     """
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, **kwargs):
-        """
-        Initializes the client using the openai library, targeting the Ollama endpoint.
-        """
+        # (init remains the same)
         self.base_url = (base_url or DEFAULT_OLLAMA_BASE_URL).rstrip('/')
         self.api_key = api_key if api_key is not None else "ollama"
-        valid_client_kwargs = {k: v for k, v in kwargs.items() if k not in KNOWN_OLLAMA_OPTIONS}
+        # Filter client init kwargs only (remove known API params)
+        valid_client_kwargs = {k: v for k, v in kwargs.items() if k not in KNOWN_OLLAMA_PARAMS_FOR_OPENAI_LIB}
 
         try:
             self._openai_client = openai.AsyncOpenAI(
@@ -53,8 +57,8 @@ class OllamaProvider(BaseLLMProvider):
                 max_retries=0, **valid_client_kwargs )
             logger.info(f"OllamaProvider initialized using 'openai' library. Target Base URL: {self.base_url}")
         except Exception as e:
-            logger.error(f"Error initializing OpenAI client for Ollama endpoint: {e}", exc_info=True)
-            raise ValueError(f"Failed to initialize OpenAI client for Ollama endpoint: {e}") from e
+            logger.error(f"Error initializing OpenAI client for Ollama: {e}", exc_info=True)
+            raise ValueError(f"Failed to initialize OpenAI client for Ollama: {e}") from e
 
     async def stream_completion(
         self,
@@ -64,22 +68,33 @@ class OllamaProvider(BaseLLMProvider):
         max_tokens: Optional[int] = None,
         tools: Optional[List[ToolDict]] = None,
         tool_choice: Optional[str] = None,
-        **kwargs
+        **kwargs # All other potential Ollama options passed here
     ) -> AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]:
-        """ Streams text completion using the openai library against the Ollama endpoint. """
 
-        logger.info(f"Starting stream_completion with Ollama model {model}. History length: {len(messages)}.")
+        logger.info(f"Starting stream_completion with Ollama model {model}. History: {len(messages)}.")
         if tools or tool_choice: logger.warning(f"OllamaProvider ignoring tools/tool_choice.")
 
-        # Filter kwargs for Ollama 'options'
-        ollama_options = {k: v for k, v in kwargs.items() if k in KNOWN_OLLAMA_OPTIONS and v is not None}
-        ollama_options["temperature"] = temperature
-        if max_tokens is not None: ollama_options["num_predict"] = max_tokens
-        ignored_options = {k: v for k, v in kwargs.items() if k not in KNOWN_OLLAMA_OPTIONS}
-        if ignored_options: logger.warning(f"OllamaProvider ignoring unknown options: {ignored_options}")
+        # --- Prepare api_params correctly for openai library ---
+        # Start with standard params
+        api_params = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True,
+        }
+        # Map max_tokens to num_predict if provided
+        if max_tokens is not None:
+            api_params["num_predict"] = max_tokens # Use Ollama's param name
 
-        # Prepare main payload
-        api_params = { "model": model, "messages": messages, "temperature": temperature, "stream": True, **({"options": ollama_options} if ollama_options else {}) }
+        # Add other known Ollama parameters passed in kwargs directly
+        known_ollama_kwargs = {k: v for k, v in kwargs.items() if k in KNOWN_OLLAMA_PARAMS_FOR_OPENAI_LIB and v is not None}
+        api_params.update(known_ollama_kwargs)
+
+        # Log ignored parameters
+        ignored_kwargs = {k:v for k, v in kwargs.items() if k not in KNOWN_OLLAMA_PARAMS_FOR_OPENAI_LIB}
+        if ignored_kwargs:
+            logger.warning(f"OllamaProvider ignoring unknown/non-mappable kwargs: {ignored_kwargs}")
+
         log_params = {k: v for k, v in api_params.items() if k != 'messages'}
         logger.debug(f"OllamaProvider API call params (using openai lib): {log_params}")
 
@@ -89,9 +104,11 @@ class OllamaProvider(BaseLLMProvider):
         for attempt in range(MAX_RETRIES + 1):
             try:
                 logger.info(f"OllamaProvider making API call (Attempt {attempt + 1}/{MAX_RETRIES + 1}).")
+                # *** Call create WITHOUT the incorrect 'options' kwarg ***
                 response_stream = await self._openai_client.chat.completions.create(**api_params)
                 logger.info(f"API call successful on attempt {attempt + 1}.")
                 last_exception = None; break # Exit retry loop
+            # ... (Exception handling remains the same as previous openai lib version) ...
             except RETRYABLE_EXCEPTIONS as e:
                 last_exception = e; logger.warning(f"Retryable error attempt {attempt + 1}/{MAX_RETRIES + 1}: {type(e).__name__} - {e}")
                 if attempt < MAX_RETRIES: logger.info(f"Waiting {RETRY_DELAY_SECONDS}s..."); await asyncio.sleep(RETRY_DELAY_SECONDS); continue
@@ -102,41 +119,21 @@ class OllamaProvider(BaseLLMProvider):
                 else:
                     logger.error(f"Non-retryable API Status Error ({e.status_code}) or max retries reached.")
                     user_message = f"[Ollama Error]: API Status {e.status_code}";
-                    # *** Corrected Inner Try/Except Block Indentation ***
-                    try:
-                        body_dict = json.loads(e.body) if isinstance(e.body, str) else (e.body if isinstance(e.body, dict) else {})
-                        error_detail = body_dict.get('error')
-                        # Check if error_detail itself is a dict with a message
-                        if isinstance(error_detail, dict):
-                             error_detail = error_detail.get('message')
-                        # Now check if we have a string to append
-                        if error_detail and isinstance(error_detail, str): # Ensure it's a string
-                            user_message += f" - {error_detail[:100]}"
-                    except Exception:
-                        pass # Ignore parsing errors silently
-                    # *** End Correction ***
-                    yield {"type": "error", "content": user_message}
-                    return
+                    try: body_dict = json.loads(e.body) if isinstance(e.body, str) else (e.body if isinstance(e.body, dict) else {}); error_detail = body_dict.get('error'); if isinstance(error_detail, dict): error_detail = error_detail.get('message'); if error_detail and isinstance(error_detail, str): user_message += f" - {error_detail[:100]}"
+                    except Exception: pass
+                    yield {"type": "error", "content": user_message}; return
             except (openai.AuthenticationError, openai.BadRequestError, openai.PermissionDeniedError, openai.NotFoundError) as e:
                  error_type_name = type(e).__name__; status_code = getattr(e, 'status_code', 'N/A'); error_body = getattr(e, 'body', 'N/A')
                  logger.error(f"Non-retryable Ollama API client error: {error_type_name} (Status: {status_code}), Body: {error_body}")
                  user_message = f"[Ollama Error]: Client Error ({error_type_name})"
-                 # *** Corrected Inner Try/Except Block Indentation ***
-                 try:
-                     body_dict = json.loads(error_body) if isinstance(error_body, str) else (error_body if isinstance(error_body, dict) else {})
-                     error_detail = body_dict.get('error')
-                     if isinstance(error_detail, dict):
-                          error_detail = error_detail.get('message')
-                     if error_detail and isinstance(error_detail, str):
-                          user_message += f" - {error_detail[:100]}"
-                 except Exception:
-                     pass # Ignore parsing errors silently
-                 # *** End Correction ***
+                 try: body_dict = json.loads(error_body) if isinstance(error_body, str) else (error_body if isinstance(error_body, dict) else {}); error_detail = body_dict.get('error'); if isinstance(error_detail, dict): error_detail = error_detail.get('message'); if error_detail and isinstance(error_detail, str): user_message += f" - {error_detail[:100]}"
+                 except Exception: pass
                  yield {"type": "error", "content": user_message}; return
             except Exception as e: # General catch-all
                 last_exception = e; logger.exception(f"Unexpected Error API call attempt {attempt + 1}: {type(e).__name__} - {e}")
                 if attempt < MAX_RETRIES: logger.info(f"Waiting {RETRY_DELAY_SECONDS}s..."); await asyncio.sleep(RETRY_DELAY_SECONDS); continue
                 else: logger.error(f"Max retries ({MAX_RETRIES}) after unexpected error."); yield {"type": "error", "content": f"[Ollama Error]: Unexpected Error after retries - {type(e).__name__}"}; return
+
 
         if response_stream is None:
              logger.error("API call failed after all retries, response_stream is None.")
@@ -144,7 +141,7 @@ class OllamaProvider(BaseLLMProvider):
              if last_exception: err_msg += f" Last error: {type(last_exception).__name__}"
              yield {"type": "error", "content": err_msg}; return
 
-        # --- Process the Stream ---
+        # --- Process the Stream (using openai library's stream handling) ---
         try:
             finish_reason = None
             async for chunk in response_stream:
@@ -154,7 +151,6 @@ class OllamaProvider(BaseLLMProvider):
                      if chunk.choices and chunk.choices[0].finish_reason: finish_reason = chunk.choices[0].finish_reason
                      if not delta: continue
                      if delta.content: yield {"type": "response_chunk", "content": delta.content}
-                     # Ignore delta.tool_calls for Ollama
                 except Exception as chunk_proc_err:
                      logger.error(f"Error processing Ollama chunk: {chunk_proc_err}", exc_info=True)
                      try: raw_chunk_data_for_log = chunk.model_dump_json(); logger.error(f"Raw chunk error: {raw_chunk_data_for_log}")
@@ -162,8 +158,10 @@ class OllamaProvider(BaseLLMProvider):
                      yield {"type": "error", "content": f"[Ollama Error]: Chunk processing error - {type(chunk_proc_err).__name__}"}; return
 
             logger.debug(f"Ollama stream finished. Finish reason: {finish_reason}")
+            # Yield final status based on finish reason
             if finish_reason == 'length': yield {"type": "status", "content": "Ollama turn finished (max_tokens limit reached)."}
             elif finish_reason == 'stop': yield {"type": "status", "content": "Ollama turn finished (stop sequence)."}
+            # Note: We don't get the detailed stats like duration from the openai stream easily
 
         except openai.APIError as stream_api_err:
             logger.error(f"Ollama APIError during stream: {stream_api_err}", exc_info=True)
