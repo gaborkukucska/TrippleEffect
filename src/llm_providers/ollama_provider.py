@@ -1,9 +1,8 @@
 # START OF FILE src/llm_providers/ollama_provider.py
-import openai # Use the official openai library
+import httpx
 import json
 import asyncio
 import logging
-import time
 from typing import List, Dict, Any, Optional, AsyncGenerator
 
 from .base import BaseLLMProvider, MessageDict, ToolDict, ToolResultDict
@@ -13,44 +12,79 @@ logger = logging.getLogger(__name__)
 # Retry Configuration
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 5.0
-RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504]
-RETRYABLE_EXCEPTIONS = (
-    openai.APIConnectionError,
-    openai.APITimeoutError,
-    openai.RateLimitError
+RETRYABLE_HTTPX_EXCEPTIONS = (
+    httpx.NetworkError,
+    httpx.TimeoutException,
+    httpx.RemoteProtocolError,
 )
+RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504]
 
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
+DEFAULT_CONNECT_TIMEOUT = 15.0
+DEFAULT_READ_TIMEOUT = 300.0
+DEFAULT_TOTAL_TIMEOUT = 600.0
 
 # Known valid Ollama options
-KNOWN_OLLAMA_PARAMS_FOR_OPENAI_LIB = {
-    "temperature", "max_tokens", "top_p", "stop", "seed",
-    "presence_penalty", "frequency_penalty",
+KNOWN_OLLAMA_OPTIONS = {
     "mirostat", "mirostat_eta", "mirostat_tau", "num_ctx", "num_gpu", "num_thread",
-    "num_keep", "num_predict", "repeat_last_n", "repeat_penalty",
-    "tfs_z", "top_k", "min_p", "use_mmap", "use_mlock",
+    "num_keep", "seed", "num_predict", "repeat_last_n", "repeat_penalty",
+    "temperature", "tfs_z", "top_k", "top_p", "min_p", "use_mmap", "use_mlock",
     "numa", "num_batch", "main_gpu", "low_vram", "f16_kv", "logits_all",
-    "vocab_only", "penalize_newline", "typical_p"
+    "vocab_only", "stop", "presence_penalty", "frequency_penalty", "penalize_newline",
+    "typical_p"
 }
-
 
 class OllamaProvider(BaseLLMProvider):
     """
-    LLM Provider implementation for local Ollama models using the openai library.
-    Passes known Ollama options directly as keyword arguments.
-    Corrected syntax errors in exception handling.
+    LLM Provider implementation for local Ollama models using httpx.
+    Handles streaming by reading raw bytes and splitting by newline.
+    Uses simplified headers and explicit HTTP/1.1. Tries Connection: close.
     """
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, **kwargs):
-        # (init remains the same)
         self.base_url = (base_url or DEFAULT_OLLAMA_BASE_URL).rstrip('/')
-        self.api_key = api_key if api_key is not None else "ollama"
-        valid_client_kwargs = {k: v for k, v in kwargs.items() if k not in KNOWN_OLLAMA_PARAMS_FOR_OPENAI_LIB}
-        try:
-            self._openai_client = openai.AsyncOpenAI(api_key=self.api_key, base_url=self.base_url, max_retries=0, **valid_client_kwargs )
-            logger.info(f"OllamaProvider initialized using 'openai' library. Target Base URL: {self.base_url}")
-        except Exception as e:
-            logger.error(f"Error initializing OpenAI client for Ollama: {e}", exc_info=True); raise ValueError(f"Failed to initialize OpenAI client for Ollama: {e}") from e
+        if api_key: logger.warning("OllamaProvider Warning: API key provided but not used.")
+        self.streaming_mode = kwargs.pop('stream', True)
+        self._session_timeout_config = kwargs.pop('timeout', None)
+        self._client_kwargs = kwargs
+        self._client: Optional[httpx.AsyncClient] = None
+        mode_str = "Streaming" if self.streaming_mode else "Non-Streaming"
+        logger.info(f"OllamaProvider initialized with httpx. Base URL: {self.base_url}. Mode: {mode_str}.")
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            # Configure timeout
+            if isinstance(self._session_timeout_config, httpx.Timeout):
+                timeout = self._session_timeout_config
+            elif isinstance(self._session_timeout_config, (int, float)):
+                timeout_total = float(self._session_timeout_config)
+                timeout = httpx.Timeout(timeout_total, connect=DEFAULT_CONNECT_TIMEOUT, read=DEFAULT_READ_TIMEOUT)
+                logger.warning(f"Using provided single timeout value ({timeout.total}s) for total, explicit defaults for connect/read.")
+            else:
+                timeout = httpx.Timeout(DEFAULT_TOTAL_TIMEOUT, connect=DEFAULT_CONNECT_TIMEOUT, read=DEFAULT_READ_TIMEOUT)
+                if self._session_timeout_config is not None: logger.warning(f"Invalid timeout config '{self._session_timeout_config}', using defaults.")
+
+            # Force HTTP/1.1 transport
+            transport = httpx.AsyncHTTPTransport(http1=True, retries=0)
+            self._client = httpx.AsyncClient(
+                base_url=self.base_url,
+                timeout=timeout,
+                transport=transport,
+                http1=True, http2=False,
+                headers={
+                    'Accept': 'application/json, text/event-stream',
+                    'Content-Type': 'application/json',
+                    # *** Add Connection: close header ***
+                    'Connection': 'close',
+                },
+                **self._client_kwargs
+            )
+            logger.info(f"OllamaProvider: Created new httpx client (Forced HTTP/1.1, Connection: close). Timeout: {timeout}")
+        return self._client
+
+    async def close_session(self):
+        if self._client and not self._client.is_closed:
+            await self._client.aclose(); self._client = None; logger.info("OllamaProvider: Closed httpx client.")
 
     async def stream_completion(
         self,
@@ -63,116 +97,155 @@ class OllamaProvider(BaseLLMProvider):
         **kwargs
     ) -> AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]:
 
-        logger.info(f"Starting stream_completion with Ollama model {model}. History length: {len(messages)}.")
+        client = await self._get_client()
+        # *** Use the CORRECT Ollama endpoint ***
+        chat_endpoint = "/api/chat"
+
         if tools or tool_choice: logger.warning(f"OllamaProvider ignoring tools/tool_choice.")
 
-        # Prepare api_params (same as before)
-        ollama_options = {k: v for k, v in kwargs.items() if k in KNOWN_OLLAMA_PARAMS_FOR_OPENAI_LIB and v is not None}
-        ollama_options["temperature"] = temperature
-        if max_tokens is not None: ollama_options["num_predict"] = max_tokens
-        ignored_kwargs = {k:v for k, v in kwargs.items() if k not in KNOWN_OLLAMA_PARAMS_FOR_OPENAI_LIB}
-        if ignored_kwargs: logger.warning(f"OllamaProvider ignoring unknown/non-mappable kwargs: {ignored_kwargs}")
-        api_params = { "model": model, "messages": messages, "temperature": temperature, "stream": True, **ollama_options } # Use filtered options directly
-        log_params = {k: v for k, v in api_params.items() if k != 'messages'}
-        logger.debug(f"OllamaProvider API call params (using openai lib): {log_params}")
+        # Filter options
+        raw_options = {"temperature": temperature, **kwargs}
+        valid_options = {k: v for k, v in raw_options.items() if k in KNOWN_OLLAMA_OPTIONS and v is not None}
+        if max_tokens is not None: valid_options["num_predict"] = max_tokens
+        ignored_options = {k: v for k, v in raw_options.items() if k not in KNOWN_OLLAMA_OPTIONS}
+        if ignored_options: logger.warning(f"OllamaProvider ignoring unknown options: {ignored_options}")
 
-        response_stream = None; last_exception = None
+        payload = { "model": model, "messages": messages, "stream": self.streaming_mode, "format": "json", "options": valid_options }
+        if not payload["options"]: del payload["options"]
 
-        # --- Retry Loop for Initial API Call ---
+        mode_log = "Streaming" if self.streaming_mode else "Non-Streaming"
+        options_log = payload.get('options', '{}')
+        logger.info(f"OllamaProvider preparing request ({mode_log}). Model: {model}, Endpoint: {chat_endpoint}, Options: {options_log}.")
+        yield {"type": "status", "content": f"Contacting Ollama model '{model}' ({mode_log})..."}
+
+        last_exception = None
+        response: Optional[httpx.Response] = None
+        stream_context = None
+
+        # --- Retry Loop for Initial API Request ---
         for attempt in range(MAX_RETRIES + 1):
+            last_exception = None; response = None; stream_context = None
             try:
-                logger.info(f"OllamaProvider making API call (Attempt {attempt + 1}/{MAX_RETRIES + 1}).")
-                response_stream = await self._openai_client.chat.completions.create(**api_params)
-                logger.info(f"API call successful on attempt {attempt + 1}.")
-                last_exception = None; break
-            except RETRYABLE_EXCEPTIONS as e:
-                last_exception = e; logger.warning(f"Retryable error attempt {attempt + 1}/{MAX_RETRIES + 1}: {type(e).__name__} - {e}")
+                 logger.info(f"OllamaProvider making API call (Attempt {attempt + 1}/{MAX_RETRIES + 1}).")
+                 # *** Request the CORRECT endpoint ***
+                 stream_context = client.stream("POST", chat_endpoint, json=payload)
+                 async with stream_context as resp:
+                    response_status = resp.status_code
+                    if response_status >= 400:
+                         response_text = "";
+                         try: error_bytes = await resp.aread(); response_text = error_bytes.decode('utf-8', errors='ignore')
+                         except Exception as read_err: logger.warning(f"Could not read error body status {response_status}: {read_err}"); response_text = f"(Read err: {read_err})"
+                         logger.debug(f"Ollama API error status {response_status}. Body: {response_text[:500]}...")
+                         if response_status in RETRYABLE_STATUS_CODES or response_status >= 500:
+                             last_exception = httpx.HTTPStatusError(f"Status {response_status}", request=resp.request, response=resp)
+                             logger.warning(f"Ollama API Error attempt {attempt + 1}: Status {response_status}, Resp: {response_text[:200]}...")
+                             if attempt < MAX_RETRIES: logger.info(f"Status {response_status} retryable. Wait {RETRY_DELAY_SECONDS}s..."); await asyncio.sleep(RETRY_DELAY_SECONDS); continue
+                             else: logger.error(f"Max retries ({MAX_RETRIES}) after status {response_status}."); yield {"type": "error", "content": f"[Ollama Error]: Max retries. Last: Status {response_status} - {response_text[:100]}"}; return
+                         else: # Non-retryable 4xx
+                             logger.error(f"Ollama API Client Error: Status {response_status}, Resp: {response_text[:200]}"); yield {"type": "error", "content": f"[Ollama Error]: Client Error {response_status} - {response_text[:100]}"}; return
+                    else: # Status 200
+                        logger.info(f"API call headers OK (Status 200) attempt {attempt + 1}. Start stream.")
+                        response = resp; break # Exit retry loop successfully
+            except RETRYABLE_HTTPX_EXCEPTIONS as e:
+                last_exception = e; logger.warning(f"Retryable httpx error attempt {attempt + 1}/{MAX_RETRIES + 1}: {type(e).__name__} - {e}")
                 if attempt < MAX_RETRIES: logger.info(f"Waiting {RETRY_DELAY_SECONDS}s..."); await asyncio.sleep(RETRY_DELAY_SECONDS); continue
-                else: logger.error(f"Max retries ({MAX_RETRIES}) after retryable error."); yield {"type": "error", "content": f"[Ollama Error]: Max retries. Last: {type(e).__name__}"}; return
-            except openai.APIStatusError as e:
-                last_exception = e; logger.warning(f"API Status Error attempt {attempt + 1}/{MAX_RETRIES + 1}: Status={e.status_code}, Body={e.body}")
-                if (e.status_code in RETRYABLE_STATUS_CODES or e.status_code >= 500) and attempt < MAX_RETRIES: logger.info(f"Status {e.status_code} retryable. Wait {RETRY_DELAY_SECONDS}s..."); await asyncio.sleep(RETRY_DELAY_SECONDS); continue
-                else:
-                    logger.error(f"Non-retryable API Status Error ({e.status_code}) or max retries reached.")
-                    user_message = f"[Ollama Error]: API Status {e.status_code}";
-                    # *** CORRECTED Inner Try/Except Block Indentation ***
-                    try:
-                        body_dict = {}
-                        if isinstance(e.body, str): body_dict = json.loads(e.body)
-                        elif isinstance(e.body, dict): body_dict = e.body
-                        error_detail = body_dict.get('error')
-                        if isinstance(error_detail, dict): error_detail = error_detail.get('message')
-                        if error_detail and isinstance(error_detail, str): user_message += f" - {error_detail[:100]}"
-                    except Exception: pass
-                    # *** End Correction ***
-                    yield {"type": "error", "content": user_message}; return
-            except (openai.AuthenticationError, openai.BadRequestError, openai.PermissionDeniedError, openai.NotFoundError) as e:
-                 error_type_name = type(e).__name__; status_code = getattr(e, 'status_code', 'N/A'); error_body = getattr(e, 'body', 'N/A')
-                 logger.error(f"Non-retryable Ollama API client error: {error_type_name} (Status: {status_code}), Body: {error_body}")
-                 user_message = f"[Ollama Error]: Client Error ({error_type_name})"
-                 # *** CORRECTED Inner Try/Except Block Indentation ***
-                 try:
-                     body_dict = {}
-                     if isinstance(error_body, str): body_dict = json.loads(error_body)
-                     elif isinstance(error_body, dict): body_dict = error_body
-                     error_detail = body_dict.get('error')
-                     if isinstance(error_detail, dict): error_detail = error_detail.get('message')
-                     if error_detail and isinstance(error_detail, str): user_message += f" - {error_detail[:100]}"
-                 except Exception: pass
-                 # *** End Correction ***
-                 yield {"type": "error", "content": user_message}; return
-            except Exception as e: # General catch-all
+                else: logger.error(f"Max retries ({MAX_RETRIES}) reached after {type(e).__name__}."); yield {"type": "error", "content": f"[Ollama Error]: Max retries after connection/timeout. Last: {e}"}; return
+            except Exception as e:
                 last_exception = e; logger.exception(f"Unexpected Error API call attempt {attempt + 1}: {type(e).__name__} - {e}")
                 if attempt < MAX_RETRIES: logger.info(f"Waiting {RETRY_DELAY_SECONDS}s..."); await asyncio.sleep(RETRY_DELAY_SECONDS); continue
                 else: logger.error(f"Max retries ({MAX_RETRIES}) after unexpected error."); yield {"type": "error", "content": f"[Ollama Error]: Unexpected Error after retries - {type(e).__name__}"}; return
+            finally:
+                 if response is None and stream_context is not None and hasattr(stream_context, 'aclose'): await stream_context.aclose()
 
-        if response_stream is None:
-             logger.error("API call failed after all retries, response_stream is None."); err_msg = f"[Ollama Error]: API call failed after {MAX_RETRIES} retries."
-             if last_exception: err_msg += f" Last error: {type(last_exception).__name__}"
-             yield {"type": "error", "content": err_msg}; return
+        if response is None: # Check if request failed after all retries
+             logger.error(f"Ollama API request failed. Last exception: {type(last_exception).__name__ if last_exception else 'N/A'}")
+             err_content = f"[Ollama Error]: API request failed after {MAX_RETRIES} retries. Error: {type(last_exception).__name__ if last_exception else 'Request Failed'}"
+             yield {"type": "error", "content": err_content}; return
 
-        # --- Process the Stream ---
+        # --- Process the Successful Response Stream ---
+        byte_buffer = b""
+        processed_lines = 0
+        stream_error_occurred = False
         try:
-            finish_reason = None
-            async for chunk in response_stream:
-                # (Stream processing logic remains the same)
-                raw_chunk_data_for_log = None
-                try:
-                     delta = chunk.choices[0].delta if chunk.choices else None
-                     if chunk.choices and chunk.choices[0].finish_reason: finish_reason = chunk.choices[0].finish_reason
-                     if not delta: continue
-                     if delta.content: yield {"type": "response_chunk", "content": delta.content}
-                except Exception as chunk_proc_err:
-                     logger.error(f"Error processing Ollama chunk: {chunk_proc_err}", exc_info=True)
-                     try: raw_chunk_data_for_log = chunk.model_dump_json(); logger.error(f"Raw chunk error: {raw_chunk_data_for_log}")
-                     except Exception: pass
-                     yield {"type": "error", "content": f"[Ollama Error]: Chunk processing error - {type(chunk_proc_err).__name__}"}; return
+            if self.streaming_mode:
+                logger.debug("Starting streaming loop using response.aiter_raw()...")
+                async for chunk in response.aiter_raw():
+                    # (Buffering and JSON parsing logic remains the same)
+                    if not chunk: continue
+                    byte_buffer += chunk
+                    while True:
+                        newline_pos = byte_buffer.find(b'\n')
+                        if newline_pos == -1: break
+                        json_line = byte_buffer[:newline_pos]; byte_buffer = byte_buffer[newline_pos + 1:]
+                        if not json_line.strip(): continue
+                        processed_lines += 1; decoded_line = ""
+                        try:
+                            decoded_line = json_line.decode('utf-8'); chunk_data = json.loads(decoded_line)
+                            if chunk_data.get("error"): error_msg = chunk_data["error"]; logger.error(f"Ollama stream error: {error_msg}"); yield {"type": "error", "content": f"[Ollama Error]: {error_msg}"}; stream_error_occurred = True; break
+                            message_chunk = chunk_data.get("message");
+                            if message_chunk and isinstance(message_chunk, dict): content_chunk = message_chunk.get("content");
+                            if content_chunk: yield {"type": "response_chunk", "content": content_chunk}
+                            if chunk_data.get("done", False): logger.debug(f"Received done=true. Line: {processed_lines}"); total_duration = chunk_data.get("total_duration");
+                            if total_duration: yield {"type": "status", "content": f"Ollama turn finished ({total_duration / 1e9:.2f}s)."}
+                        except json.JSONDecodeError: logger.error(f"JSONDecodeError line {processed_lines}: {decoded_line[:500]}..."); yield {"type": "error", "content": "[Ollama Error]: Failed stream JSON decode."}; stream_error_occurred = True; break
+                        except Exception as e: logger.error(f"Error processing line {processed_lines}: {e}", exc_info=True); logger.error(f"Problem line: {decoded_line[:500]}"); yield {"type": "error", "content": f"[Ollama Error]: Stream error - {type(e).__name__}"}; stream_error_occurred = True; break
+                    if stream_error_occurred: break # Break outer async for
 
-            logger.debug(f"Ollama stream finished. Finish reason: {finish_reason}")
-            if finish_reason == 'length': yield {"type": "status", "content": "Ollama turn finished (max_tokens limit reached)."}
-            elif finish_reason == 'stop': yield {"type": "status", "content": "Ollama turn finished (stop sequence)."}
+                logger.debug(f"Finished streaming loop (aiter_raw). Lines: {processed_lines}. Error: {stream_error_occurred}")
+                if stream_error_occurred: return
 
-        except openai.APIError as stream_api_err:
-             logger.error(f"Ollama APIError during stream: {stream_api_err}", exc_info=True)
-             try: logger.error(f"APIError details: Status={stream_api_err.status_code}, Body={stream_api_err.body}")
-             except Exception: pass
-             yield {"type": "error", "content": f"[Ollama Error]: APIError during stream - {stream_api_err}"}
-        except Exception as stream_err:
-             logger.exception(f"Unexpected Error processing Ollama stream: {stream_err}")
-             yield {"type": "error", "content": f"[Ollama Error]: Unexpected stream error - {type(stream_err).__name__}"}
+                # Process final buffer part (with corrected except block)
+                if byte_buffer.strip():
+                     logger.warning(f"Processing remaining buffer: {byte_buffer[:200]}...")
+                     try:
+                         chunk_data = json.loads(byte_buffer.decode('utf-8'))
+                         if chunk_data.get("done", False): logger.debug("Processed final 'done'.")
+                         elif chunk_data.get("message", {}).get("content"): logger.warning("Final buffer has msg content."); yield {"type": "response_chunk", "content": chunk_data["message"]["content"]}
+                         else: logger.warning("Final buffer not 'done' or message.")
+                     except Exception as final_e: logger.error(f"Could not parse final buffer: {final_e}")
 
-        logger.info(f"OllamaProvider: stream_completion finished for model {model}.")
+            else: # Non-Streaming
+                 # ... (non-streaming logic remains the same) ...
+                 logger.debug("Processing non-streaming response...")
+                 try:
+                     # Ensure response is fully read before context manager exits
+                     await response.aread() # Read the full response body first
+                     response_data = json.loads(response.text) # Now parse from response.text
+
+                     if response_data.get("error"): error_msg = response_data["error"]; logger.error(f"Ollama non-streaming error: {error_msg}"); yield {"type": "error", "content": f"[Ollama Error]: {error_msg}"}
+                     elif response_data.get("message") and isinstance(response_data["message"], dict):
+                         full_content = response_data["message"].get("content");
+                         if full_content: logger.info(f"Non-streaming len: {len(full_content)}"); yield {"type": "response_chunk", "content": full_content}
+                         else: logger.warning("Non-streaming message content empty.")
+                         if response_data.get("done", False): total_duration = response_data.get("total_duration");
+                         if total_duration: yield {"type": "status", "content": f"Ollama turn finished ({total_duration / 1e9:.2f}s)."}
+                         else: logger.warning("Non-streaming missing done=true.")
+                     else: logger.error(f"Unexpected non-streaming structure: {response_data}"); yield {"type": "error", "content": "[Ollama Error]: Unexpected non-streaming structure."}
+                 except json.JSONDecodeError: logger.error(f"Failed non-streaming JSON decode. Raw: {response.text[:500]}..."); yield {"type": "error", "content": "[Ollama Error]: Failed non-streaming decode."}
+                 except Exception as e: logger.error(f"Error processing non-streaming: {e}", exc_info=True); yield {"type": "error", "content": f"[Ollama Error]: Non-streaming processing error - {type(e).__name__}"}
+
+        # --- Catch exceptions DURING stream processing (Unchanged) ---
+        except httpx.StreamClosed as stream_closed_err: logger.error(f"Ollama httpx stream closed unexpectedly: {stream_closed_err}", exc_info=True); yield {"type": "error", "content": f"[Ollama Error]: Stream closed unexpectedly - {stream_closed_err}"}
+        except httpx.ReadTimeout as timeout_err: logger.error(f"Ollama httpx timeout during stream read (read={client.timeout.read}s): {timeout_err}", exc_info=False); yield {"type": "error", "content": f"[Ollama Error]: Timeout waiting for stream data (read={client.timeout.read}s)"}
+        except httpx.RemoteProtocolError as proto_err: logger.error(f"Ollama processing failed with RemoteProtocolError: {proto_err}", exc_info=True); yield {"type": "error", "content": f"[Ollama Error]: Connection closed unexpectedly - {proto_err}"}
+        except httpx.NetworkError as net_err: logger.error(f"Ollama processing failed with NetworkError: {net_err}", exc_info=True); yield {"type": "error", "content": f"[Ollama Error]: Network error during stream - {net_err}"}
+        except Exception as e: logger.exception(f"Unexpected Error processing Ollama response stream: {type(e).__name__} - {e}"); yield {"type": "error", "content": f"[Ollama Error]: Unexpected stream processing error - {type(e).__name__}"}
+
+        if not stream_error_occurred: logger.info(f"OllamaProvider: stream_completion finished cleanly for model {model}.")
+        else: logger.warning(f"OllamaProvider: stream_completion finished for model {model}, but error encountered.")
 
 
     def __repr__(self) -> str:
-        return f"<{self.__class__.__name__}(base_url='{self.base_url}', client_initialized={bool(self._openai_client)})>"
-
-    async def close_session(self):
-        logger.debug("OpenAI AsyncClient does not require explicit session closing.")
-        pass
+        # (Unchanged)
+        client_status = "closed" if self._client is None or self._client.is_closed else "open"
+        mode = "streaming" if self.streaming_mode else "non-streaming"
+        return f"<{self.__class__.__name__}(base_url='{self.base_url}', client='{client_status}', mode='{mode}')>"
 
     async def __aenter__(self):
+        # (Unchanged)
+        await self._get_client()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        # (Unchanged)
         await self.close_session()
