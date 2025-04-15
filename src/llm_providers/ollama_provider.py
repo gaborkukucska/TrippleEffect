@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 # Retry Configuration
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 5.0
-RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504] # Added 500
+RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504]
 RETRYABLE_EXCEPTIONS = (
     openai.APIConnectionError,
     openai.APITimeoutError,
@@ -36,13 +36,12 @@ KNOWN_OLLAMA_OPTIONS = {
 class OllamaProvider(BaseLLMProvider):
     """
     LLM Provider implementation for local Ollama models using the openai library.
-    Assumes Ollama API endpoint compatibility. Corrected syntax error.
+    Assumes Ollama API endpoint compatibility. Corrected syntax error in error handling.
     """
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, **kwargs):
         """
         Initializes the client using the openai library, targeting the Ollama endpoint.
-        API key is typically not needed ('ollama' often used as placeholder).
         """
         self.base_url = (base_url or DEFAULT_OLLAMA_BASE_URL).rstrip('/')
         self.api_key = api_key if api_key is not None else "ollama"
@@ -102,28 +101,39 @@ class OllamaProvider(BaseLLMProvider):
                 if (e.status_code in RETRYABLE_STATUS_CODES or e.status_code >= 500) and attempt < MAX_RETRIES: logger.info(f"Status {e.status_code} retryable. Wait {RETRY_DELAY_SECONDS}s..."); await asyncio.sleep(RETRY_DELAY_SECONDS); continue
                 else:
                     logger.error(f"Non-retryable API Status Error ({e.status_code}) or max retries reached.")
-                    user_message = f"[Ollama Error]: API Status {e.status_code}"
-                    # *** Corrected Indentation Here ***
+                    user_message = f"[Ollama Error]: API Status {e.status_code}";
+                    # *** Corrected Inner Try/Except Block Indentation ***
                     try:
                         body_dict = json.loads(e.body) if isinstance(e.body, str) else (e.body if isinstance(e.body, dict) else {})
-                        error_detail = body_dict.get('error') # Ollama often just has {'error': 'message'}
-                        if isinstance(error_detail, dict): # Sometimes it might be nested
-                            error_detail = error_detail.get('message')
-                        if error_detail:
-                            user_message += f" - {str(error_detail)[:100]}"
+                        error_detail = body_dict.get('error')
+                        # Check if error_detail itself is a dict with a message
+                        if isinstance(error_detail, dict):
+                             error_detail = error_detail.get('message')
+                        # Now check if we have a string to append
+                        if error_detail and isinstance(error_detail, str): # Ensure it's a string
+                            user_message += f" - {error_detail[:100]}"
                     except Exception:
-                        pass # Ignore parsing errors if body isn't helpful JSON
-                    # *** End Corrected Indentation ***
+                        pass # Ignore parsing errors silently
+                    # *** End Correction ***
                     yield {"type": "error", "content": user_message}
-                    return # Exit after non-retryable error
+                    return
             except (openai.AuthenticationError, openai.BadRequestError, openai.PermissionDeniedError, openai.NotFoundError) as e:
                  error_type_name = type(e).__name__; status_code = getattr(e, 'status_code', 'N/A'); error_body = getattr(e, 'body', 'N/A')
                  logger.error(f"Non-retryable Ollama API client error: {error_type_name} (Status: {status_code}), Body: {error_body}")
                  user_message = f"[Ollama Error]: Client Error ({error_type_name})"
-                 try: body_dict = json.loads(error_body) if isinstance(error_body, str) else (error_body if isinstance(error_body, dict) else {}); error_detail = body_dict.get('error'); if error_detail: user_message += f" - {str(error_detail)[:100]}"
-                 except Exception: pass
+                 # *** Corrected Inner Try/Except Block Indentation ***
+                 try:
+                     body_dict = json.loads(error_body) if isinstance(error_body, str) else (error_body if isinstance(error_body, dict) else {})
+                     error_detail = body_dict.get('error')
+                     if isinstance(error_detail, dict):
+                          error_detail = error_detail.get('message')
+                     if error_detail and isinstance(error_detail, str):
+                          user_message += f" - {error_detail[:100]}"
+                 except Exception:
+                     pass # Ignore parsing errors silently
+                 # *** End Correction ***
                  yield {"type": "error", "content": user_message}; return
-            except Exception as e:
+            except Exception as e: # General catch-all
                 last_exception = e; logger.exception(f"Unexpected Error API call attempt {attempt + 1}: {type(e).__name__} - {e}")
                 if attempt < MAX_RETRIES: logger.info(f"Waiting {RETRY_DELAY_SECONDS}s..."); await asyncio.sleep(RETRY_DELAY_SECONDS); continue
                 else: logger.error(f"Max retries ({MAX_RETRIES}) after unexpected error."); yield {"type": "error", "content": f"[Ollama Error]: Unexpected Error after retries - {type(e).__name__}"}; return
@@ -144,7 +154,7 @@ class OllamaProvider(BaseLLMProvider):
                      if chunk.choices and chunk.choices[0].finish_reason: finish_reason = chunk.choices[0].finish_reason
                      if not delta: continue
                      if delta.content: yield {"type": "response_chunk", "content": delta.content}
-                     # Ignore delta.tool_calls for Ollama via this lib
+                     # Ignore delta.tool_calls for Ollama
                 except Exception as chunk_proc_err:
                      logger.error(f"Error processing Ollama chunk: {chunk_proc_err}", exc_info=True)
                      try: raw_chunk_data_for_log = chunk.model_dump_json(); logger.error(f"Raw chunk error: {raw_chunk_data_for_log}")
@@ -152,12 +162,8 @@ class OllamaProvider(BaseLLMProvider):
                      yield {"type": "error", "content": f"[Ollama Error]: Chunk processing error - {type(chunk_proc_err).__name__}"}; return
 
             logger.debug(f"Ollama stream finished. Finish reason: {finish_reason}")
-            # Check if the overall stream ended because of a length limit
-            if finish_reason == 'length':
-                 yield {"type": "status", "content": "Ollama turn finished (max_tokens limit reached)."}
-            elif finish_reason == 'stop':
-                 yield {"type": "status", "content": "Ollama turn finished (stop sequence)."}
-            # Note: Ollama's 'done' stats are not directly available via openai lib stream chunks
+            if finish_reason == 'length': yield {"type": "status", "content": "Ollama turn finished (max_tokens limit reached)."}
+            elif finish_reason == 'stop': yield {"type": "status", "content": "Ollama turn finished (stop sequence)."}
 
         except openai.APIError as stream_api_err:
             logger.error(f"Ollama APIError during stream: {stream_api_err}", exc_info=True)
