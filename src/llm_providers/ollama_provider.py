@@ -1,5 +1,5 @@
 # START OF FILE src/llm_providers/ollama_provider.py
-import httpx
+import httpx # Reverted to httpx
 import json
 import asyncio
 import logging
@@ -38,7 +38,7 @@ class OllamaProvider(BaseLLMProvider):
     """
     LLM Provider implementation for local Ollama models using httpx.
     Handles streaming by reading raw bytes and splitting by newline.
-    Uses simplified headers and explicit HTTP/1.1. Tries Connection: close.
+    Uses simplified headers, explicit HTTP/1.1, and Connection: close.
     """
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, **kwargs):
@@ -46,7 +46,7 @@ class OllamaProvider(BaseLLMProvider):
         if api_key: logger.warning("OllamaProvider Warning: API key provided but not used.")
         self.streaming_mode = kwargs.pop('stream', True)
         self._session_timeout_config = kwargs.pop('timeout', None)
-        self._client_kwargs = kwargs
+        self._client_kwargs = kwargs # Store remaining kwargs
         self._client: Optional[httpx.AsyncClient] = None
         mode_str = "Streaming" if self.streaming_mode else "Non-Streaming"
         logger.info(f"OllamaProvider initialized with httpx. Base URL: {self.base_url}. Mode: {mode_str}.")
@@ -70,19 +70,20 @@ class OllamaProvider(BaseLLMProvider):
                 base_url=self.base_url,
                 timeout=timeout,
                 transport=transport,
-                http1=True, http2=False,
-                headers={
+                http1=True, # Explicitly prefer HTTP/1.1
+                http2=False,# Explicitly disable HTTP/2 negotiation
+                headers={ # Minimal headers + Connection: close
                     'Accept': 'application/json, text/event-stream',
                     'Content-Type': 'application/json',
-                    # *** Add Connection: close header ***
-                    'Connection': 'close',
+                    'Connection': 'close', # Explicitly ask to close connection
                 },
                 **self._client_kwargs
             )
-            logger.info(f"OllamaProvider: Created new httpx client (Forced HTTP/1.1, Connection: close). Timeout: {timeout}")
+            logger.info(f"OllamaProvider: Created new httpx client (Forced HTTP/1.1 via Transport, Connection: close). Timeout: {timeout}")
         return self._client
 
     async def close_session(self):
+        # (remains the same)
         if self._client and not self._client.is_closed:
             await self._client.aclose(); self._client = None; logger.info("OllamaProvider: Closed httpx client.")
 
@@ -98,12 +99,11 @@ class OllamaProvider(BaseLLMProvider):
     ) -> AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]:
 
         client = await self._get_client()
-        # *** Use the CORRECT Ollama endpoint ***
-        chat_endpoint = "/api/chat"
+        chat_endpoint = "/api/chat" # Correct Ollama endpoint
 
         if tools or tool_choice: logger.warning(f"OllamaProvider ignoring tools/tool_choice.")
 
-        # Filter options
+        # Filter options (Unchanged)
         raw_options = {"temperature": temperature, **kwargs}
         valid_options = {k: v for k, v in raw_options.items() if k in KNOWN_OLLAMA_OPTIONS and v is not None}
         if max_tokens is not None: valid_options["num_predict"] = max_tokens
@@ -122,12 +122,12 @@ class OllamaProvider(BaseLLMProvider):
         response: Optional[httpx.Response] = None
         stream_context = None
 
-        # --- Retry Loop for Initial API Request ---
+        # --- Retry Loop for Initial API Request (Unchanged) ---
         for attempt in range(MAX_RETRIES + 1):
+            # ... (Retry logic remains the same) ...
             last_exception = None; response = None; stream_context = None
             try:
                  logger.info(f"OllamaProvider making API call (Attempt {attempt + 1}/{MAX_RETRIES + 1}).")
-                 # *** Request the CORRECT endpoint ***
                  stream_context = client.stream("POST", chat_endpoint, json=payload)
                  async with stream_context as resp:
                     response_status = resp.status_code
@@ -169,11 +169,10 @@ class OllamaProvider(BaseLLMProvider):
         try:
             if self.streaming_mode:
                 logger.debug("Starting streaming loop using response.aiter_raw()...")
-                async for chunk in response.aiter_raw():
-                    # (Buffering and JSON parsing logic remains the same)
+                async for chunk in response.aiter_raw(): # Iterate raw bytes
                     if not chunk: continue
                     byte_buffer += chunk
-                    while True:
+                    while True: # Process complete lines
                         newline_pos = byte_buffer.find(b'\n')
                         if newline_pos == -1: break
                         json_line = byte_buffer[:newline_pos]; byte_buffer = byte_buffer[newline_pos + 1:]
@@ -197,21 +196,19 @@ class OllamaProvider(BaseLLMProvider):
                 # Process final buffer part (with corrected except block)
                 if byte_buffer.strip():
                      logger.warning(f"Processing remaining buffer: {byte_buffer[:200]}...")
-                     try:
+                     try: # <<< TRY block for final parse
                          chunk_data = json.loads(byte_buffer.decode('utf-8'))
                          if chunk_data.get("done", False): logger.debug("Processed final 'done'.")
                          elif chunk_data.get("message", {}).get("content"): logger.warning("Final buffer has msg content."); yield {"type": "response_chunk", "content": chunk_data["message"]["content"]}
                          else: logger.warning("Final buffer not 'done' or message.")
-                     except Exception as final_e: logger.error(f"Could not parse final buffer: {final_e}")
+                     except Exception as final_e: # <<< Correct except for the try
+                         logger.error(f"Could not parse final buffer: {final_e}")
 
             else: # Non-Streaming
-                 # ... (non-streaming logic remains the same) ...
+                 # (Non-streaming logic remains the same)
                  logger.debug("Processing non-streaming response...")
                  try:
-                     # Ensure response is fully read before context manager exits
-                     await response.aread() # Read the full response body first
-                     response_data = json.loads(response.text) # Now parse from response.text
-
+                     await response.aread(); response_data = json.loads(response.text)
                      if response_data.get("error"): error_msg = response_data["error"]; logger.error(f"Ollama non-streaming error: {error_msg}"); yield {"type": "error", "content": f"[Ollama Error]: {error_msg}"}
                      elif response_data.get("message") and isinstance(response_data["message"], dict):
                          full_content = response_data["message"].get("content");
@@ -248,4 +245,4 @@ class OllamaProvider(BaseLLMProvider):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         # (Unchanged)
-        await self.close_session() 
+        await self.close_session()
