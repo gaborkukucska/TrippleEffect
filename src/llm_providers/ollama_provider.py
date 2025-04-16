@@ -248,4 +248,4 @@ class OllamaProvider(BaseLLMProvider):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         # (Unchanged)
-        await self.close_session()
+        await self.close_session() 
