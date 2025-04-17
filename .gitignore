@@ -19,4 +19,4 @@ logs/
 projects/
 sandboxes/
 security/
-node_modules/
+ollama-proxy/node_modules/
