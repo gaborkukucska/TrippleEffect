@@ -21,8 +21,8 @@ RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504]
 
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 DEFAULT_CONNECT_TIMEOUT = 15.0
-DEFAULT_READ_TIMEOUT = 300.0
-DEFAULT_TOTAL_TIMEOUT = 600.0
+DEFAULT_READ_TIMEOUT = 1200.0  # Increased read timeout
+DEFAULT_TOTAL_TIMEOUT = 1800.0  # Increased total timeout
 
 # Known valid Ollama options
 KNOWN_OLLAMA_OPTIONS = {
@@ -176,28 +176,35 @@ class OllamaProvider(BaseLLMProvider):
         stream_error_occurred = False
         try:
             if self.streaming_mode:
-                logger.debug("Starting streaming loop using response.aiter_raw()...")
-                # Read all content at once instead of line-by-line
-                content = await response.aread()
-                try:
-                    # Handle as single JSON object for non-streaming
-                    if not self.streaming_mode:
-                        chunk_data = json.loads(content)
-                    else:
-                        # Handle as ndjson stream
-                        for line in content.splitlines():
-                            if not line.strip():
-                                continue
-                            chunk_data = json.loads(line)
-                            if chunk_data.get("error"): error_msg = chunk_data["error"]; logger.error(f"Ollama stream error: {error_msg}"); yield {"type": "error", "content": f"[Ollama Error]: {error_msg}"}; stream_error_occurred = True; break
-                            message_chunk = chunk_data.get("message");
-                            if message_chunk and isinstance(message_chunk, dict): content_chunk = message_chunk.get("content");
-                            if content_chunk: yield {"type": "response_chunk", "content": content_chunk}
-                            if chunk_data.get("done", False): logger.debug(f"Received done=true. Line: {processed_lines}"); total_duration = chunk_data.get("total_duration");
-                            if total_duration: yield {"type": "status", "content": f"Ollama turn finished ({total_duration / 1e9:.2f}s)."}
-                        except json.JSONDecodeError: logger.error(f"JSONDecodeError line {processed_lines}: {decoded_line[:500]}..."); yield {"type": "error", "content": "[Ollama Error]: Failed stream JSON decode."}; stream_error_occurred = True; break
-                        except Exception as e: logger.error(f"Error processing line {processed_lines}: {e}", exc_info=True); logger.error(f"Problem line: {decoded_line[:500]}"); yield {"type": "error", "content": f"[Ollama Error]: Stream error - {type(e).__name__}"}; stream_error_occurred = True; break
-                    if stream_error_occurred: break # Break outer async for
+                logger.debug("Starting streaming using response.aiter_lines()")
+                async for line in response.aiter_lines():
+                    if not line.strip():
+                        continue
+                    try:
+                        chunk_data = json.loads(line)
+                        if chunk_data.get("error"):
+                            error_msg = chunk_data["error"]
+                            logger.error(f"Ollama stream error: {error_msg}")
+                            yield {"type": "error", "content": f"[Ollama Error]: {error_msg}"}
+                            return
+                        
+                        if content_chunk := chunk_data.get("message", {}).get("content"):
+                            yield {"type": "response_chunk", "content": content_chunk}
+                        
+                        if chunk_data.get("done", False):
+                            total_duration = chunk_data.get("total_duration")
+                            logger.debug(f"Received done=true. Total duration: {total_duration}ns")
+                            if total_duration:
+                                yield {"type": "status", "content": f"Ollama turn finished ({total_duration / 1e9:.2f}s)"}
+                            return
+                    except json.JSONDecodeError as e:
+                        logger.error(f"JSONDecodeError: {e} - Line: {line[:200]}")
+                        yield {"type": "error", "content": "Invalid JSON response"}
+                        return
+                    except Exception as e:
+                        logger.error(f"Stream processing error: {str(e)}")
+                        yield {"type": "error", "content": f"Stream error: {str(e)}"}
+                        return
 
                 logger.debug(f"Finished streaming loop (aiter_raw). Lines: {processed_lines}. Error: {stream_error_occurred}")
                 if stream_error_occurred: return
