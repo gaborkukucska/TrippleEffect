@@ -7,7 +7,7 @@ python-dotenv
 openai>=1.10.0 # Ensure you have a recent version
 PyYAML
 # httpx # Remove if not needed elsewhere
-# aiohttp # Remove if not needed elsewhere
+aiohttp
 # duckduckgo-search
 # PyGithub
 lxml

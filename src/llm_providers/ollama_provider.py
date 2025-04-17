@@ -65,17 +65,24 @@ class OllamaProvider(BaseLLMProvider):
                 if self._session_timeout_config is not None: logger.warning(f"Invalid timeout config '{self._session_timeout_config}', using defaults.")
 
             # Force HTTP/1.1 transport
-            transport = httpx.AsyncHTTPTransport(http1=True, retries=0)
+            transport = httpx.AsyncHTTPTransport(
+                http1=True,
+                retries=2,
+                limits=httpx.Limits(
+                    max_keepalive_connections=5,
+                    keepalive_expiry=30
+                )
+            )
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
                 timeout=timeout,
                 transport=transport,
                 http1=True, # Explicitly prefer HTTP/1.1
                 http2=False,# Explicitly disable HTTP/2 negotiation
-                headers={ # Minimal headers + Connection: close
+                headers={
                     'Accept': 'application/json, text/event-stream',
                     'Content-Type': 'application/json',
-                    'Connection': 'close', # Explicitly ask to close connection
+                    'Connection': 'keep-alive'
                 },
                 **self._client_kwargs
             )
@@ -110,8 +117,7 @@ class OllamaProvider(BaseLLMProvider):
         ignored_options = {k: v for k, v in raw_options.items() if k not in KNOWN_OLLAMA_OPTIONS}
         if ignored_options: logger.warning(f"OllamaProvider ignoring unknown options: {ignored_options}")
 
-        payload = { "model": model, "messages": messages, "stream": self.streaming_mode, "format": "json", "options": valid_options }
-        if not payload["options"]: del payload["options"]
+        payload = { "model": model, "messages": messages, "stream": self.streaming_mode, **valid_options }
 
         mode_log = "Streaming" if self.streaming_mode else "Non-Streaming"
         options_log = payload.get('options', '{}')
@@ -130,6 +136,8 @@ class OllamaProvider(BaseLLMProvider):
                  logger.info(f"OllamaProvider making API call (Attempt {attempt + 1}/{MAX_RETRIES + 1}).")
                  stream_context = client.stream("POST", chat_endpoint, json=payload)
                  async with stream_context as resp:
+                    logger.info(f"Request headers: {dict(resp.request.headers)}")
+                    logger.info(f"Response headers: {dict(resp.headers)}")
                     response_status = resp.status_code
                     if response_status >= 400:
                          response_text = "";
@@ -169,17 +177,18 @@ class OllamaProvider(BaseLLMProvider):
         try:
             if self.streaming_mode:
                 logger.debug("Starting streaming loop using response.aiter_raw()...")
-                async for chunk in response.aiter_raw(): # Iterate raw bytes
-                    if not chunk: continue
-                    byte_buffer += chunk
-                    while True: # Process complete lines
-                        newline_pos = byte_buffer.find(b'\n')
-                        if newline_pos == -1: break
-                        json_line = byte_buffer[:newline_pos]; byte_buffer = byte_buffer[newline_pos + 1:]
-                        if not json_line.strip(): continue
-                        processed_lines += 1; decoded_line = ""
-                        try:
-                            decoded_line = json_line.decode('utf-8'); chunk_data = json.loads(decoded_line)
+                # Read all content at once instead of line-by-line
+                content = await response.aread()
+                try:
+                    # Handle as single JSON object for non-streaming
+                    if not self.streaming_mode:
+                        chunk_data = json.loads(content)
+                    else:
+                        # Handle as ndjson stream
+                        for line in content.splitlines():
+                            if not line.strip():
+                                continue
+                            chunk_data = json.loads(line)
                             if chunk_data.get("error"): error_msg = chunk_data["error"]; logger.error(f"Ollama stream error: {error_msg}"); yield {"type": "error", "content": f"[Ollama Error]: {error_msg}"}; stream_error_occurred = True; break
                             message_chunk = chunk_data.get("message");
                             if message_chunk and isinstance(message_chunk, dict): content_chunk = message_chunk.get("content");
