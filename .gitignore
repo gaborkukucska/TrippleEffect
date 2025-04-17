@@ -19,3 +19,4 @@ logs/
 projects/
 sandboxes/
 security/
+node_modules/
