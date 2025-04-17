@@ -67,10 +67,11 @@ class OllamaProvider(BaseLLMProvider):
             # Force HTTP/1.1 transport
             transport = httpx.AsyncHTTPTransport(
                 http1=True,
-                retries=2,
+                retries=3,
                 limits=httpx.Limits(
-                    max_keepalive_connections=5,
-                    keepalive_expiry=30
+                    max_keepalive_connections=10,
+                    keepalive_expiry=60,
+                    max_connections=100
                 )
             )
             self._client = httpx.AsyncClient(
@@ -238,7 +239,20 @@ class OllamaProvider(BaseLLMProvider):
                  except Exception as e: logger.error(f"Error processing non-streaming: {e}", exc_info=True); yield {"type": "error", "content": f"[Ollama Error]: Non-streaming processing error - {type(e).__name__}"}
 
         # --- Catch exceptions DURING stream processing (Unchanged) ---
-        except httpx.StreamClosed as stream_closed_err: logger.error(f"Ollama httpx stream closed unexpectedly: {stream_closed_err}", exc_info=True); yield {"type": "error", "content": f"[Ollama Error]: Stream closed unexpectedly - {stream_closed_err}"}
+        except httpx.StreamClosed as stream_closed_err:
+            logger.warning(f"Stream closed, attempting recovery: {stream_closed_err}")
+            try:
+                # Check if response has unread data
+                if response and not response.is_closed:
+                    final_data = await response.aread()
+                    if final_data:
+                        logger.info(f"Processing final {len(final_data)} bytes after stream closure")
+                        yield {"type": "response_chunk", "content": final_data.decode('utf-8')}
+            except Exception as e:
+                logger.error(f"Error during stream recovery: {e}")
+            finally:
+                yield {"type": "error", "content": f"[Ollama Error]: Connection closed - {str(stream_closed_err)}"}
+                await self.close_session()  # Reset connection
         except httpx.ReadTimeout as timeout_err: logger.error(f"Ollama httpx timeout during stream read (read={client.timeout.read}s): {timeout_err}", exc_info=False); yield {"type": "error", "content": f"[Ollama Error]: Timeout waiting for stream data (read={client.timeout.read}s)"}
         except httpx.RemoteProtocolError as proto_err: logger.error(f"Ollama processing failed with RemoteProtocolError: {proto_err}", exc_info=True); yield {"type": "error", "content": f"[Ollama Error]: Connection closed unexpectedly - {proto_err}"}
         except httpx.NetworkError as net_err: logger.error(f"Ollama processing failed with NetworkError: {net_err}", exc_info=True); yield {"type": "error", "content": f"[Ollama Error]: Network error during stream - {net_err}"}
