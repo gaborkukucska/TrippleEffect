@@ -55,6 +55,18 @@ PREFERRED_ADMIN_MODELS = [
     "*", # Fallback to any available model
 ]
 
+# --- ADDED: KNOWN_OLLAMA_OPTIONS ---
+# Known valid Ollama options (from ollama_provider.py, needed for filtering kwargs)
+KNOWN_OLLAMA_OPTIONS = {
+    "mirostat", "mirostat_eta", "mirostat_tau", "num_ctx", "num_gpu", "num_thread",
+    "num_keep", "seed", "num_predict", "repeat_last_n", "repeat_penalty",
+    "temperature", "tfs_z", "top_k", "top_p", "min_p", "use_mmap", "use_mlock",
+    "numa", "num_batch", "main_gpu", "low_vram", "f16_kv", "logits_all",
+    "vocab_only", "stop", "presence_penalty", "frequency_penalty", "penalize_newline",
+    "typical_p"
+}
+# --- END ADD ---
+
 
 async def initialize_bootstrap_agents(manager: 'AgentManager'):
     """ Initializes bootstrap agents defined in settings. """
@@ -167,19 +179,12 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
         if agent_id == BOOTSTRAP_AGENT_ID:
             user_defined_prompt = agent_config_data.get("system_prompt", "")
             admin_ops_template = settings.PROMPTS.get("admin_ai_operational_instructions", "--- Admin Ops Instructions Missing ---")
-            # Choose description format based on provider and use string replacement
-            if final_provider == "ollama":
-                tool_desc = manager.tool_descriptions_json
-                # Replace the JSON placeholder
-                operational_instructions = admin_ops_template.replace("{tool_descriptions_json}", tool_desc)
-                # Also remove the XML placeholder if it exists, just in case
-                operational_instructions = operational_instructions.replace("{tool_descriptions_xml}", "")
-            else: # Default to XML for others
-                tool_desc = manager.tool_descriptions_xml
-                # Replace the XML placeholder
-                operational_instructions = admin_ops_template.replace("{tool_descriptions_xml}", tool_desc)
-                 # Also remove the JSON placeholder if it exists, just in case
-                operational_instructions = operational_instructions.replace("{tool_descriptions_json}", "")
+            # --- REVERTED: Always use XML ---
+            tool_desc = manager.tool_descriptions_xml # Always use XML now
+            operational_instructions = admin_ops_template.replace("{tool_descriptions_xml}", tool_desc)
+            # Remove the JSON placeholder if it exists, just in case
+            operational_instructions = operational_instructions.replace("{tool_descriptions_json}", "")
+            # --- END REVERT ---
 
             final_agent_config_data["system_prompt"] = (
                 f"--- Primary Goal/Persona ---\n{user_defined_prompt}\n\n"
@@ -289,27 +294,22 @@ async def _create_agent_internal(
     if not loading_from_session and not is_bootstrap:
         logger.debug(f"Lifecycle: Constructing final prompt for dynamic agent '{agent_id}'...")
         standard_info_template = settings.PROMPTS.get("standard_framework_instructions", "--- Standard Instructions Missing ---")
-        # Choose description format based on provider
-        if provider_name == "ollama":
-            # Choose description format based on provider and use string replacement
-            if provider_name == "ollama":
-                tool_desc = manager.tool_descriptions_json
-                standard_info = standard_info_template.replace("{tool_descriptions_json}", tool_desc)
-                standard_info = standard_info.replace("{tool_descriptions_xml}", "") # Remove other placeholder
-            else: # Default to XML
-                tool_desc = manager.tool_descriptions_xml
-                standard_info = standard_info_template.replace("{tool_descriptions_xml}", tool_desc)
-                standard_info = standard_info.replace("{tool_descriptions_json}", "") # Remove other placeholder
+        # --- REVERTED: Always use XML tool description ---
+        tool_desc = manager.tool_descriptions_xml # Always use XML now
+        standard_info = standard_info_template.replace("{tool_descriptions_xml}", tool_desc)
+        # Remove the JSON placeholder if it exists, just in case
+        standard_info = standard_info.replace("{tool_descriptions_json}", "")
+        # --- END REVERT ---
 
-            # Inject agent_id and team_id using .format (these are simple placeholders)
-            try:
-                 standard_info = standard_info.format(agent_id=agent_id, team_id=team_id or "N/A")
-            except KeyError as fmt_err:
-                 logger.error(f"Failed to format agent_id/team_id into standard instructions: {fmt_err}")
-                 # Proceed with potentially unformatted standard_info
+        # Inject agent_id and team_id using .format (these are simple placeholders)
+        try:
+             standard_info = standard_info.format(agent_id=agent_id, team_id=team_id or "N/A")
+        except KeyError as fmt_err:
+             logger.error(f"Failed to format agent_id/team_id into standard instructions: {fmt_err}")
+             # Proceed with potentially unformatted standard_info
 
-            final_system_prompt = standard_info + "\n\n--- Your Specific Role & Task ---\n" + role_specific_prompt
-            logger.info(f"Lifecycle: Injected standard framework instructions for dynamic agent '{agent_id}'.")
+        final_system_prompt = standard_info + "\n\n--- Your Specific Role & Task ---\n" + role_specific_prompt
+        logger.info(f"Lifecycle: Injected standard framework instructions (XML format) for dynamic agent '{agent_id}'.")
     elif loading_from_session:
          # For loaded sessions, just use the stored prompt directly
          final_system_prompt = agent_config_data.get("system_prompt", role_specific_prompt)
@@ -325,6 +325,7 @@ async def _create_agent_internal(
     if provider_name in ["ollama", "litellm"]:
         final_provider_args = settings.get_provider_config(provider_name)
         # Include the dummy 'ollama' key if using the openai lib for Ollama
+        # Check if OllamaProvider is the one from agent_lifecycle, not a potential old one
         if provider_name == 'ollama' and PROVIDER_CLASS_MAP.get(provider_name) == OllamaProvider:
              final_provider_args['api_key'] = 'ollama'
     else: # Remote providers
@@ -334,12 +335,13 @@ async def _create_agent_internal(
         api_key_used = final_provider_args.get('api_key') # Store the key
 
 
-    # Add agent-specific kwargs (filter known options if using Ollama via openai lib)
+    # Add agent-specific kwargs
     temperature = agent_config_data.get("temperature", settings.DEFAULT_TEMPERATURE)
     allowed_provider_keys = ['api_key', 'base_url', 'referer']
     agent_config_keys_to_exclude = ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'project_name', 'session_name'] + allowed_provider_keys
 
     # Separate kwargs for client init vs. API call options
+    # Use KNOWN_OLLAMA_OPTIONS here
     client_init_kwargs = {k: v for k, v in agent_config_data.items() if k not in agent_config_keys_to_exclude and k not in KNOWN_OLLAMA_OPTIONS}
     api_call_options = {k: v for k, v in agent_config_data.items() if k not in agent_config_keys_to_exclude and k in KNOWN_OLLAMA_OPTIONS}
 
@@ -445,6 +447,7 @@ async def delete_agent_instance(manager: 'AgentManager', agent_id: str) -> Tuple
     return True, message
 
 
+# --- MODIFIED: Moved from manager.py ---
 def _generate_unique_agent_id(manager: 'AgentManager', prefix="agent") -> str:
     """ Generates a unique agent ID. """
     # (Logic remains the same)
@@ -453,3 +456,4 @@ def _generate_unique_agent_id(manager: 'AgentManager', prefix="agent") -> str:
         new_id = f"{prefix}_{timestamp}_{short_uuid}".replace(":", "_")
         if new_id not in manager.agents: return new_id
         time.sleep(0.001); timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4]
+# --- END MOVE ---
