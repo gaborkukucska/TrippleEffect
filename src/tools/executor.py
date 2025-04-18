@@ -18,7 +18,7 @@ class ToolExecutor:
     """
     Manages and executes available tools for agents.
     - Dynamically discovers tools in the 'src/tools' directory.
-    - Provides schemas/descriptions of available tools in XML format for prompts.
+    - Provides schemas/descriptions of available tools in XML or JSON format for prompts.
     - Executes the requested tool, passing necessary context (agent ID, sandbox, project, session).
     """
 
@@ -78,9 +78,8 @@ class ToolExecutor:
         self.tools[tool_instance.name] = tool_instance
         logger.info(f"Manually registered tool: {tool_instance.name}")
 
-    # --- Tool Schema/Discovery (Unchanged) ---
     def get_formatted_tool_descriptions_xml(self) -> str:
-        # (Code remains exactly the same as the previous version)
+        """Generates an XML string describing available tools and their parameters."""
         if not self.tools:
             return "<!-- No tools available -->"
         root = ET.Element("tools")
@@ -133,15 +132,66 @@ class ToolExecutor:
             "5. Do not include any text after the closing tool tag."
         )
         try:
+             # Attempt to indent for readability
              ET.indent(root, space="  ")
              xml_string = ET.tostring(root, encoding='unicode', method='xml')
         except Exception:
+             # Fallback if indent fails (e.g., older Python versions)
              xml_string = ET.tostring(root, encoding='unicode', method='xml')
         final_description = xml_string
         return final_description
 
+    def get_formatted_tool_descriptions_json(self) -> str:
+        """Generates a JSON string describing available tools and their parameters."""
+        if not self.tools:
+            return json.dumps({"tools": [], "error": "No tools available"}, indent=2)
 
-    # --- *** MODIFIED Tool Execution *** ---
+        tool_list = []
+        sorted_tool_names = sorted(self.tools.keys())
+        for tool_name in sorted_tool_names:
+            tool = self.tools[tool_name]
+            schema = tool.get_schema()
+            tool_info = {
+                "name": schema['name'],
+                "description": schema['description'].strip(),
+                "parameters": []
+            }
+            if schema['parameters']:
+                sorted_params = sorted(schema['parameters'], key=lambda p: p['name'])
+                for param_data in sorted_params:
+                    tool_info["parameters"].append({
+                        "name": param_data['name'],
+                        "type": param_data['type'],
+                        "required": param_data.get('required', True),
+                        "description": param_data['description'].strip()
+                    })
+            tool_list.append(tool_info)
+
+        # Add general instructions within the JSON structure
+        instructions = (
+            "Tool Call Format Guidance:\n"
+            "1. Enclose your SINGLE tool call in a ```json ... ``` code block.\n"
+            "2. The JSON object must have a 'tool_name' key and a 'parameters' key.\n"
+            "3. 'parameters' should be an object containing parameter names and values.\n"
+            "4. Place the entire JSON block at the **very end** of your response message.\n"
+            "5. Do not include any text after the closing ```."
+        )
+
+        final_json_structure = {
+            "available_tools": tool_list,
+            "general_instructions": instructions
+        }
+
+        try:
+            # Use ensure_ascii=False for better readability if non-ASCII chars are present
+            json_string = json.dumps(final_json_structure, indent=2, ensure_ascii=False)
+            return json_string
+        except Exception as e:
+            logger.error(f"Error formatting tool descriptions as JSON: {e}", exc_info=True)
+            # Fallback JSON
+            return json.dumps({"tools": [], "error": f"Failed to format tools: {e}"}, indent=2)
+
+
     async def execute_tool(
         self,
         agent_id: str,
@@ -242,4 +292,3 @@ class ToolExecutor:
                  return {"status": "error", "action": tool_args.get("action"), "message": error_msg}
             else:
                  return error_msg
-    # --- *** END MODIFIED EXECUTION *** ---

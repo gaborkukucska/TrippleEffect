@@ -76,8 +76,13 @@ class Settings:
         self.OPENAI_BASE_URL: Optional[str] = os.getenv("OPENAI_BASE_URL")
         self.OPENROUTER_BASE_URL: Optional[str] = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
         self.OPENROUTER_REFERER: Optional[str] = os.getenv("OPENROUTER_REFERER")
-        self.OLLAMA_BASE_URL: Optional[str] = os.getenv("OLLAMA_BASE_URL") # Allow None, discovery will try localhost
+        self.OLLAMA_BASE_URL: Optional[str] = os.getenv("OLLAMA_BASE_URL") # Allow None, discovery will try localhost. Overridden by proxy if enabled.
         self.LITELLM_BASE_URL: Optional[str] = os.getenv("LITELLM_BASE_URL") # Allow None, discovery will try localhost
+
+        # --- Ollama Proxy Settings (from .env) ---
+        self.USE_OLLAMA_PROXY: bool = os.getenv("USE_OLLAMA_PROXY", "false").lower() == "true"
+        self.OLLAMA_PROXY_PORT: int = int(os.getenv("OLLAMA_PROXY_PORT", "3000"))
+        # OLLAMA_PROXY_TARGET_URL is used by the proxy itself, not directly by Python settings
 
         # --- Load Multiple API Keys ---
         self.PROVIDER_API_KEYS: Dict[str, List[str]] = {}
@@ -214,10 +219,17 @@ class Settings:
              detail_parts = []
 
              if is_configured:
-                 if provider in ["ollama", "litellm"]:
+                 if provider == "ollama":
+                     if self.USE_OLLAMA_PROXY:
+                         detail_parts.append(f"Proxy Enabled (Port: {self.OLLAMA_PROXY_PORT})")
+                     elif config_details.get('base_url'):
+                         detail_parts.append("Direct URL Set")
+                     else:
+                         detail_parts.append("Direct URL Not Set (will use defaults/discovery)")
+                 elif provider == "litellm":
                      if config_details.get('base_url'): detail_parts.append("URL Set")
                      else: detail_parts.append("URL Not Set (will use defaults/discovery)")
-                 else:
+                 else: # Remote providers
                      detail_parts.append(f"{num_keys} Key(s)")
                      if config_details.get('base_url'): detail_parts.append("Base URL Set")
                      if config_details.get('referer'): detail_parts.append("Referer Set")
@@ -245,9 +257,14 @@ class Settings:
              referer = self.OPENROUTER_REFERER or f"http://localhost:8000/{self.DEFAULT_PERSONA}"
              config['base_url'] = self.OPENROUTER_BASE_URL
              config['referer'] = referer
-        elif provider_name == "ollama": config['base_url'] = self.OLLAMA_BASE_URL
+        elif provider_name == "ollama":
+            # The provider itself will decide whether to use the proxy URL or the direct URL
+            # based on self.USE_OLLAMA_PROXY. We provide the direct URL here for reference/discovery.
+            # Do NOT pass use_proxy or proxy_port here, as they are not valid aiohttp session args.
+            config['base_url'] = self.OLLAMA_BASE_URL
         elif provider_name == "litellm": config['base_url'] = self.LITELLM_BASE_URL
         else:
+             # For other providers, potentially add specific non-key configs if needed
              if provider_name: logger.debug(f"Requested base provider config for potentially unknown provider '{provider_name}'")
 
         return {k: v for k, v in config.items() if v is not None}
@@ -259,9 +276,10 @@ class Settings:
         (either keys for remote providers or a base URL for local ones).
         """
         provider_name = provider_name.lower()
-        if provider_name == "ollama": return bool(self.OLLAMA_BASE_URL)
+        # Ollama is considered configured if the proxy is enabled OR a direct URL is set
+        if provider_name == "ollama": return self.USE_OLLAMA_PROXY or bool(self.OLLAMA_BASE_URL)
         elif provider_name == "litellm": return bool(self.LITELLM_BASE_URL)
-        else:
+        else: # Remote providers need keys
              return provider_name in self.PROVIDER_API_KEYS and bool(self.PROVIDER_API_KEYS[provider_name])
 
 

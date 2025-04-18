@@ -126,9 +126,27 @@ class ModelRegistry:
 
 
     async def _check_local_provider_prioritized(self, provider_name: str, env_url: Optional[str], default_port: int):
-        """ Checks local provider reachability in order: .env URL -> localhost -> common IPs. """
-        # (Logic remains the same as previous version)
+        """
+        Checks local provider reachability.
+        For Ollama: If proxy is enabled, checks ONLY the proxy URL. Otherwise, checks .env -> localhost -> common IPs.
+        For others: Checks .env -> localhost -> common IPs.
+        """
         logger.debug(f"Starting prioritized reachability check for {provider_name}...")
+
+        # --- Special Handling for Ollama Proxy ---
+        if provider_name == "ollama" and self.settings.USE_OLLAMA_PROXY:
+            proxy_port = self.settings.OLLAMA_PROXY_PORT
+            proxy_url = f"http://localhost:{proxy_port}"
+            logger.debug(f"Ollama proxy is enabled. Checking ONLY proxy URL: {proxy_url}")
+            if await self._check_single_local_url("ollama", proxy_url, "proxy"):
+                self._reachable_providers["ollama"] = proxy_url
+                logger.info(f"Found reachable Ollama via enabled proxy: {proxy_url}")
+                return # Found via proxy, stop checking
+            else:
+                logger.warning(f"Ollama proxy enabled in settings but NOT reachable at {proxy_url}. Ollama will be unavailable.")
+                return # Proxy enabled but unreachable, do not fall back to direct checks
+
+        # --- Standard Check Logic (for non-Ollama or Ollama with proxy disabled) ---
         if env_url:
             env_url_base = env_url.rstrip('/')
             logger.debug(f"Checking {provider_name} using URL from .env: {env_url_base}")
@@ -136,12 +154,14 @@ class ModelRegistry:
                 self._reachable_providers[provider_name] = env_url_base
                 logger.info(f"Found reachable {provider_name} via .env URL: {env_url_base}")
                 return
+
         localhost_url = f"http://localhost:{default_port}"
         logger.debug(f"Checking {provider_name} using default localhost URL: {localhost_url}")
         if await self._check_single_local_url(provider_name, localhost_url, "localhost default"):
             self._reachable_providers[provider_name] = localhost_url
             logger.info(f"Found reachable {provider_name} via localhost default: {localhost_url}")
             return
+
         logger.debug(f"Checking {provider_name} using common local IPs: {COMMON_LOCAL_IPS_TO_CHECK}")
         for ip in COMMON_LOCAL_IPS_TO_CHECK:
             common_ip_url = f"http://{ip}:{default_port}"
@@ -149,18 +169,31 @@ class ModelRegistry:
                 self._reachable_providers[provider_name] = common_ip_url
                 logger.info(f"Found reachable {provider_name} via network guess: {common_ip_url}")
                 return
-        logger.info(f"{provider_name} was not found reachable via .env, localhost, or common local IPs.")
+
+        logger.info(f"{provider_name} was not found reachable via checked methods.")
 
 
     async def _check_single_local_url(self, provider_name: str, base_url: str, source_description: str) -> bool:
         """ Checks reachability for a single local provider URL. """
-        # (Logic remains the same as previous version)
-        health_endpoint = "/" if provider_name == "ollama" else "/health"
+        # If checking the proxy itself, just check for 200 OK on root path.
+        # Otherwise, use provider-specific health endpoint and content check.
+        if source_description == "proxy":
+            health_endpoint = "/" # Proxy's root endpoint
+            content_check_required = False
+        else:
+            health_endpoint = "/" if provider_name == "ollama" else "/health"
+            content_check_required = True
+
         full_check_url = f"{base_url}{health_endpoint}"
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(full_check_url, timeout=5) as response:
                     if response.status == 200:
+                        # If it's the proxy check, 200 OK is enough
+                        if not content_check_required:
+                            logger.debug(f"Successfully reached proxy via {source_description} at: {base_url}"); return True
+
+                        # For direct checks, validate content
                         text_content = await response.text()
                         is_valid = False
                         if provider_name == "ollama" and "Ollama is running" in text_content: is_valid = True
@@ -168,14 +201,21 @@ class ModelRegistry:
                             if "healthy" in text_content.lower(): is_valid = True
                             else:
                                 try:
+                                    # Try parsing as JSON as a fallback check for some LiteLLM versions
                                     json_resp = await response.json(content_type=None)
                                     if isinstance(json_resp, dict): is_valid = True
                                 except (json.JSONDecodeError, aiohttp.ContentTypeError, aiohttp.ClientResponseError): is_valid = False
-                        if is_valid: logger.debug(f"Successfully reached {provider_name} via {source_description} at: {base_url}"); return True
-                        else: logger.debug(f"{provider_name} found at {base_url} ({source_description}) but health check response was unexpected."); return False
-                    else: logger.debug(f"Failed to reach {provider_name} via {source_description} at {full_check_url}. Status: {response.status}"); return False
-        except (aiohttp.ClientConnectorError, asyncio.TimeoutError): logger.debug(f"{provider_name} not reachable via {source_description} at {base_url}."); return False
-        except Exception as e: logger.error(f"Error checking reachability for {provider_name} via {source_description} at {base_url}: {e}", exc_info=False); return False
+
+                        if is_valid:
+                            logger.debug(f"Successfully reached {provider_name} via {source_description} at: {base_url} (Content Validated)"); return True
+                        else:
+                            logger.debug(f"{provider_name} found at {base_url} ({source_description}) but health check response content was unexpected."); return False
+                    else:
+                        logger.debug(f"Failed to reach {provider_name} via {source_description} at {full_check_url}. Status: {response.status}"); return False
+        except (aiohttp.ClientConnectorError, asyncio.TimeoutError):
+            logger.debug(f"{provider_name} not reachable via {source_description} at {base_url}."); return False
+        except Exception as e:
+            logger.error(f"Error checking reachability for {provider_name} via {source_description} at {base_url}: {e}", exc_info=False); return False
 
     async def _discover_openrouter_models(self):
         """ Fetches models using the confirmed reachable URL and an API key. """
@@ -220,21 +260,34 @@ class ModelRegistry:
              logger.warning("Removed OpenRouter from reachable providers due to exception during model discovery.")
 
     async def _discover_ollama_models(self):
-        """ Fetches models using the confirmed reachable URL. """
-        # (Logic remains the same as previous version)
-        logger.debug("Discovering Ollama models...")
-        ollama_url = self._reachable_providers.get("ollama")
-        if not ollama_url: logger.warning("Skipping Ollama model discovery: provider not reachable."); return
-        tags_endpoint = f"{ollama_url}/api/tags"
+        """ Fetches models using the DIRECT Ollama URL, bypassing the proxy for this specific request. """
+        logger.debug("Discovering Ollama models (using direct connection)...")
+
+        # Determine the *direct* URL, ignoring the proxy setting for this discovery step
+        direct_ollama_url = self.settings.OLLAMA_BASE_URL or f"http://localhost:{DEFAULT_OLLAMA_PORT}"
+        direct_ollama_url = direct_ollama_url.rstrip('/')
+        logger.debug(f"Using direct URL for Ollama model discovery: {direct_ollama_url}")
+
+        # Check if Ollama provider was marked as reachable (even if via proxy) - if not, skip discovery
+        if "ollama" not in self._reachable_providers:
+             logger.warning("Skipping Ollama model discovery: provider not marked as reachable (proxy or direct check failed earlier).")
+             return
+
+        tags_endpoint = f"{direct_ollama_url}/api/tags"
         try:
+            # Use a new session for the direct request
             async with aiohttp.ClientSession() as session:
                 async with session.get(tags_endpoint, timeout=10) as response:
                     if response.status == 200:
-                        data = await response.json(); models_data = data.get("models", [])
-                        if models_data:
-                             self._raw_models["ollama"] = [ModelInfo(id=m.get("name"), name=m.get("name"), provider="ollama") for m in models_data if m.get("name")]
-                             logger.info(f"Discovered {len(self._raw_models['ollama'])} models from Ollama at {ollama_url}: {[m['id'] for m in self._raw_models['ollama']]}.")
-                        else: logger.info(f"Ollama /api/tags endpoint at {ollama_url} returned empty models list.")
+                         data = await response.json(); models_data = data.get("models", [])
+                         if models_data:
+                              self._raw_models["ollama"] = [ModelInfo(id=m.get("name"), name=m.get("name"), provider="ollama") for m in models_data if m.get("name")]
+                              # Corrected logging statement to use direct_ollama_url
+                              logger.info(f"Discovered {len(self._raw_models['ollama'])} models from Ollama at {direct_ollama_url}: {[m['id'] for m in self._raw_models['ollama']]}.")
+                         else:
+                              # Corrected logging statement to use direct_ollama_url
+                              logger.info(f"Ollama /api/tags endpoint at {direct_ollama_url} returned empty models list.")
+                    # Corrected indentation for the else block
                     else:
                         error_text = await response.text(); logger.error(f"Failed to fetch Ollama models from {tags_endpoint}. Status: {response.status}, Response: {error_text[:200]}")
                         self._reachable_providers.pop("ollama", None); logger.warning("Removed Ollama from reachable providers due to model discovery failure.")

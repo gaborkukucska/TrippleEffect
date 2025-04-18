@@ -167,7 +167,20 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
         if agent_id == BOOTSTRAP_AGENT_ID:
             user_defined_prompt = agent_config_data.get("system_prompt", "")
             admin_ops_template = settings.PROMPTS.get("admin_ai_operational_instructions", "--- Admin Ops Instructions Missing ---")
-            operational_instructions = admin_ops_template.format(tool_descriptions_xml=manager.tool_descriptions_xml)
+            # Choose description format based on provider and use string replacement
+            if final_provider == "ollama":
+                tool_desc = manager.tool_descriptions_json
+                # Replace the JSON placeholder
+                operational_instructions = admin_ops_template.replace("{tool_descriptions_json}", tool_desc)
+                # Also remove the XML placeholder if it exists, just in case
+                operational_instructions = operational_instructions.replace("{tool_descriptions_xml}", "")
+            else: # Default to XML for others
+                tool_desc = manager.tool_descriptions_xml
+                # Replace the XML placeholder
+                operational_instructions = admin_ops_template.replace("{tool_descriptions_xml}", tool_desc)
+                 # Also remove the JSON placeholder if it exists, just in case
+                operational_instructions = operational_instructions.replace("{tool_descriptions_json}", "")
+
             final_agent_config_data["system_prompt"] = (
                 f"--- Primary Goal/Persona ---\n{user_defined_prompt}\n\n"
                 f"{operational_instructions}\n\n"
@@ -272,16 +285,39 @@ async def _create_agent_internal(
 
     # Assemble System Prompt
     role_specific_prompt = agent_config_data.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
-    final_system_prompt = role_specific_prompt
+    # Determine final system prompt, injecting correct tool format
     if not loading_from_session and not is_bootstrap:
         logger.debug(f"Lifecycle: Constructing final prompt for dynamic agent '{agent_id}'...")
         standard_info_template = settings.PROMPTS.get("standard_framework_instructions", "--- Standard Instructions Missing ---")
-        standard_info = standard_info_template.format(agent_id=agent_id, team_id=team_id or "N/A", tool_descriptions_xml=manager.tool_descriptions_xml)
-        final_system_prompt = standard_info + "\n\n--- Your Specific Role & Task ---\n" + role_specific_prompt
-        logger.info(f"Lifecycle: Injected standard framework instructions for dynamic agent '{agent_id}'.")
-    elif loading_from_session or is_bootstrap:
-        final_system_prompt = agent_config_data.get("system_prompt", role_specific_prompt) # Use provided prompt
-        logger.debug(f"Lifecycle: Using provided prompt for {'loaded' if loading_from_session else 'bootstrap'} agent '{agent_id}'.")
+        # Choose description format based on provider
+        if provider_name == "ollama":
+            # Choose description format based on provider and use string replacement
+            if provider_name == "ollama":
+                tool_desc = manager.tool_descriptions_json
+                standard_info = standard_info_template.replace("{tool_descriptions_json}", tool_desc)
+                standard_info = standard_info.replace("{tool_descriptions_xml}", "") # Remove other placeholder
+            else: # Default to XML
+                tool_desc = manager.tool_descriptions_xml
+                standard_info = standard_info_template.replace("{tool_descriptions_xml}", tool_desc)
+                standard_info = standard_info.replace("{tool_descriptions_json}", "") # Remove other placeholder
+
+            # Inject agent_id and team_id using .format (these are simple placeholders)
+            try:
+                 standard_info = standard_info.format(agent_id=agent_id, team_id=team_id or "N/A")
+            except KeyError as fmt_err:
+                 logger.error(f"Failed to format agent_id/team_id into standard instructions: {fmt_err}")
+                 # Proceed with potentially unformatted standard_info
+
+            final_system_prompt = standard_info + "\n\n--- Your Specific Role & Task ---\n" + role_specific_prompt
+            logger.info(f"Lifecycle: Injected standard framework instructions for dynamic agent '{agent_id}'.")
+    elif loading_from_session:
+         # For loaded sessions, just use the stored prompt directly
+         final_system_prompt = agent_config_data.get("system_prompt", role_specific_prompt)
+         logger.debug(f"Lifecycle: Using stored prompt for loaded agent '{agent_id}'.")
+    elif is_bootstrap:
+         # Bootstrap agents (like Admin AI) already had their prompt assembled above
+         final_system_prompt = agent_config_data.get("system_prompt", role_specific_prompt) # Use the already assembled prompt
+         logger.debug(f"Lifecycle: Using pre-assembled prompt for bootstrap agent '{agent_id}'.")
 
     # Prepare Provider Arguments using ProviderKeyManager
     final_provider_args: Optional[Dict[str, Any]] = None

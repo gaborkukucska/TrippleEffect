@@ -35,16 +35,30 @@ KNOWN_OLLAMA_OPTIONS = {
     "typical_p"
 }
 
+from src.config.settings import settings # Import the global settings object
+
 class OllamaProvider(BaseLLMProvider):
     """
     LLM Provider implementation for local Ollama models using aiohttp.
     Handles streaming by reading raw bytes and splitting by newline.
+    Conditionally uses an integrated proxy based on settings.
     Creates a new ClientSession for each request to ensure clean state
     and applies 'Connection: close' header.
     """
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, **kwargs):
-        self.base_url = (base_url or DEFAULT_OLLAMA_BASE_URL).rstrip('/')
+        # Determine the effective base URL based on proxy settings
+        use_proxy = settings.USE_OLLAMA_PROXY
+        proxy_port = settings.OLLAMA_PROXY_PORT
+        direct_base_url = base_url or settings.OLLAMA_BASE_URL or DEFAULT_OLLAMA_BASE_URL # Priority: explicit arg -> .env -> default
+
+        if use_proxy:
+            self.base_url = f"http://localhost:{proxy_port}" # Use proxy URL
+            logger.info(f"Ollama proxy enabled. Using proxy URL: {self.base_url}")
+        else:
+            self.base_url = direct_base_url.rstrip('/') # Use direct URL
+            logger.info(f"Ollama proxy disabled. Using direct URL: {self.base_url}")
+
         if api_key: logger.warning("OllamaProvider Warning: API key provided but not used.")
         # Timeout config can still be passed via kwargs if needed, applied per request
         self._session_timeout_config = kwargs.pop('timeout', None)
@@ -53,10 +67,11 @@ class OllamaProvider(BaseLLMProvider):
         # self._session: Optional[aiohttp.ClientSession] = None
         self.streaming_mode = True # Keep streaming default
         mode_str = "Streaming"
-        logger.info(f"OllamaProvider initialized with aiohttp. Base URL: {self.base_url}. Mode: {mode_str}. Sessions created per-request.")
+        # Log the *effective* base URL being used
+        logger.info(f"OllamaProvider initialized with aiohttp. Effective Base URL: {self.base_url}. Mode: {mode_str}. Sessions created per-request.")
 
     async def _create_request_session(self) -> aiohttp.ClientSession:
-        """Creates a new aiohttp ClientSession for a single request."""
+        """Creates a new aiohttp ClientSession for a single request, targeting the effective base_url."""
         # Configure timeout using aiohttp.ClientTimeout
         if isinstance(self._session_timeout_config, aiohttp.ClientTimeout):
             timeout = self._session_timeout_config
@@ -71,14 +86,14 @@ class OllamaProvider(BaseLLMProvider):
              )
              if self._session_timeout_config is not None: logger.warning(f"Invalid timeout config '{self._session_timeout_config}', using defaults.")
 
-        # Create connector with limits (optional) and force http/1.1 implicitly via Connection: close
-        connector = aiohttp.TCPConnector(limit=10, limit_per_host=5, force_close=True) # Force close might help
+        # Create connector with limits (optional) - REMOVED force_close=True
+        connector = aiohttp.TCPConnector(limit=10, limit_per_host=5) # Removed force_close=True
 
-        # Default headers INCLUDING Connection: close
+        # Default headers - REMOVED Connection: close
         headers = {
             'Accept': 'application/json, text/event-stream',
             'Content-Type': 'application/json',
-            'Connection': 'close', # Explicitly ask to close connection
+            # 'Connection': 'close', # REMOVED
         }
 
         session = aiohttp.ClientSession(
@@ -173,6 +188,9 @@ class OllamaProvider(BaseLLMProvider):
                     if attempt < MAX_RETRIES:
                         logger.info(f"Waiting {RETRY_DELAY_SECONDS}s...")
                         await asyncio.sleep(RETRY_DELAY_SECONDS)
+                        # Need to recreate session on connection errors when using per-request sessions
+                        if session and not session.closed: await session.close()
+                        session = await self._create_request_session()
                         continue
                     else:
                         logger.error(f"Max retries ({MAX_RETRIES}) reached after {type(e).__name__}.")
@@ -184,6 +202,9 @@ class OllamaProvider(BaseLLMProvider):
                     if attempt < MAX_RETRIES:
                          logger.info(f"Waiting {RETRY_DELAY_SECONDS}s...")
                          await asyncio.sleep(RETRY_DELAY_SECONDS)
+                         # Need to recreate session on errors when using per-request sessions
+                         if session and not session.closed: await session.close()
+                         session = await self._create_request_session()
                          continue
                     else:
                          logger.error(f"Max retries ({MAX_RETRIES}) after unexpected error.")

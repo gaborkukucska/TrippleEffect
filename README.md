@@ -20,15 +20,15 @@ For a quick setup, use the provided scripts (requires bash environment, Python 3
     chmod +x setup.sh
     ./setup.sh
     ```
-    *   This creates directories, sets up a Python virtual environment (`.venv/`), installs dependencies, and guides you through configuring API keys and settings in a `.env` file. Follow the prompts carefully.
+    *   This creates directories, sets up a Python virtual environment (`.venv/`), installs Python dependencies (`requirements.txt`), installs Node.js dependencies for the optional Ollama proxy (`ollama-proxy/package.json` if Node.js/npm are found), and guides you through configuring API keys and settings in a `.env` file. Follow the prompts carefully.
 4.  **Run Application Script:**
     ```bash
     chmod +x run.sh
     ./run.sh
     ```
     *   This activates the virtual environment and starts the FastAPI server.
-    *   Access the web UI in your browser, typically at `http://localhost:8000` (or your machine's IP if running remotely/on Termux). Watch the terminal for logs.
-    *   **Note on Ollama:** If using a local Ollama instance, especially over the network (e.g., from Termux), you might encounter `ClientConnectionError: Connection closed` during streaming. This seems environment-related. Check Ollama server logs and network configuration if issues persist.
+    *   Access the web UI in your browser, typically at `http://localhost:8000` (or your machine's IP if running remotely/on Termux). Watch the terminal for logs from both the Python backend and potentially the Ollama proxy (if enabled).
+    *   **Note on Ollama Connection Issues:** If using Ollama, especially over certain networks or Docker setups, you might encounter `ClientConnectionError: Connection closed` during streaming. The framework now includes an **integrated Node.js proxy** to mitigate this. Enable it by setting `USE_OLLAMA_PROXY=true` in your `.env` file. The `run.sh` script will automatically start/stop it. See configuration details below.
 
 *(See detailed manual steps below if needed)*
 
@@ -52,22 +52,38 @@ Follow these steps if you prefer manual setup or encounter issues with the setup
         *   Set **Base URLs** only if you need to override defaults (e.g., for proxies or local instances not on default ports). For local Ollama/LiteLLM, leave blank to use auto-discovery (localhost/network check) or set explicitly (e.g., `OLLAMA_BASE_URL=http://192.168.1.X:11434`).
         *   Set `MODEL_TIER` (`FREE` or `ALL`) to filter models from remote providers.
         *   Set `GITHUB_ACCESS_TOKEN` if you need the GitHub tool.
-8.  **Review Bootstrap Config (`config.yaml`):** Usually, leave as is. Admin AI model is auto-selected. Modify only to force Admin AI model or change its base persona. Create the file with default content if it doesn't exist (see `setup.sh` for default content).
-9.  **Review Default Prompts (`prompts.json`):** Review and customize the standard framework instructions or default agent prompts if desired. Create the file with default content if it doesn't exist (see `setup.sh` for default content).
-10. **Create Directories (if needed):** `mkdir logs data projects sandboxes`
+        *   **Configure Ollama Proxy (Optional):**
+            *   Set `USE_OLLAMA_PROXY=true` to enable the integrated Node.js proxy (recommended if you experience Ollama connection issues). Requires Node.js/npm installed.
+            *   Set `OLLAMA_PROXY_PORT` (default: 3000) for the proxy's listening port.
+            *   Set `OLLAMA_PROXY_TARGET_URL` (default: http://localhost:11434) to the actual address of your Ollama service that the proxy should connect to.
+8.  **(Optional) Install Ollama Proxy Dependencies:** If you plan to use the integrated proxy (`USE_OLLAMA_PROXY=true`), ensure Node.js and npm are installed, then run:
+    ```bash
+    cd ollama-proxy
+    npm install
+    cd ..
+    ```
+    *(Note: `setup.sh` attempts this automatically if Node.js/npm are found).*
+9.  **Review Bootstrap Config (`config.yaml`):** Usually, leave as is. Admin AI model is auto-selected. Modify only to force Admin AI model or change its base persona. Create the file with default content if it doesn't exist (see `setup.sh` for default content).
+10. **Review Default Prompts (`prompts.json`):** Review and customize the standard framework instructions or default agent prompts if desired. Create the file with default content if it doesn't exist (see `setup.sh` for default content).
+11. **Create Directories (if needed):** `mkdir logs data projects sandboxes`
 
 ## ▶️ Manual Running
 
 If using manual installation or not using `run.sh`:
 
-1.  Ensure your virtual environment is activated (`source .venv/bin/activate` or equivalent).
-2.  Run the application:
+1.  **Activate Python Virtual Environment:**
+    ```bash
+    source .venv/bin/activate
+    # Or equivalent for your OS
+    ```
+2.  **Run the Python Application:**
     ```bash
     python -m src.main
     ```
-*   The server starts. Watch the logs for provider discovery, model filtering, Admin AI model selection, prompt loading, and any errors.
+*   The Python server starts. Watch the logs for startup details.
+*   **Proxy Management:** If `USE_OLLAMA_PROXY=true` is set in your `.env` file, the Python application will automatically attempt to start the Node.js proxy process in the background during startup and terminate it during shutdown. Check the application logs for messages related to the proxy status.
 *   Access the web UI in your browser, typically at `http://localhost:8000` (or your machine's IP if running remotely/on Termux).
-*   **Note on Ollama:** As mentioned in the Quick Start, Ollama streaming might be unstable in some network configurations, potentially causing `ClientConnectionError: Connection closed`. Check external factors if this occurs.
+*   **Note on Ollama:** As mentioned, the integrated proxy (enabled via `USE_OLLAMA_PROXY=true` and now managed by the main application) is the recommended way to handle potential `ClientConnectionError` issues.
 
 ## 🎯 Core Concept
 

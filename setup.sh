@@ -253,6 +253,23 @@ else
     echo "prompts.json already exists."
 fi
 
+# --- Setup Ollama Proxy Dependencies ---
+echo ""
+echo "Setting up Ollama proxy dependencies (if directory exists)..."
+if [ -d "ollama-proxy" ] && [ -f "ollama-proxy/package.json" ]; then
+  echo "Running 'npm install' in ollama-proxy directory..."
+  (cd ollama-proxy && npm install)
+  if [ $? -ne 0 ]; then
+      echo "Warning: 'npm install' for ollama-proxy failed. The proxy might not function correctly."
+  else
+      echo "Ollama proxy dependencies installed."
+  fi
+else
+  echo "Skipping Ollama proxy setup: 'ollama-proxy' directory or 'package.json' not found."
+fi
+echo ""
+# --- End Ollama Proxy Setup ---
+
 echo "--- TrippleEffect Setup Complete ---"
 echo "Remember to activate the virtual environment before running:"
 echo "  $ACTIVATE_CMD"

@@ -71,6 +71,7 @@ class AgentManager:
         logger.info("Instantiating ToolExecutor...");
         self.tool_executor = ToolExecutor()
         self.tool_descriptions_xml = self.tool_executor.get_formatted_tool_descriptions_xml()
+        self.tool_descriptions_json = self.tool_executor.get_formatted_tool_descriptions_json() # Add JSON version
         logger.info(f"ToolExecutor instantiated with tools: {list(self.tool_executor.tools.keys())}")
         logger.info("Instantiating AgentStateManager...");
         self.state_manager = AgentStateManager(self)
