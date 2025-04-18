@@ -7,8 +7,8 @@ import time # For call IDs
 import traceback # For detailed error logging
 from typing import Dict, Any, List, Optional, Tuple, AsyncGenerator
 from pathlib import Path
-# import xml.etree.ElementTree as ET # Keep commented unless needed for complex parsing
-import html # For unescaping
+# --- REMOVED: import xml.etree.ElementTree as ET --- (Using regex for simpler parsing)
+import html # For unescaping XML parameter values
 import logging # Added logging
 
 # Import settings for defaults and BASE_DIR
@@ -25,17 +25,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Constants (Removed AWAITING_USER_OVERRIDE)
+# Constants (Unchanged)
 AGENT_STATUS_IDLE = "idle"
 AGENT_STATUS_PROCESSING = "processing"
 AGENT_STATUS_AWAITING_TOOL = "awaiting_tool_result"
 AGENT_STATUS_EXECUTING_TOOL = "executing_tool"
 AGENT_STATUS_ERROR = "error"
 
-# Tool Call Patterns (compiled in __init__)
-XML_TOOL_CALL_PATTERN = None # For raw XML: <tool>...</tool>
-MARKDOWN_FENCE_XML_PATTERN = r"```(?:[a-zA-Z]*\n)?\s*(<({tool_names})>[\s\S]*?</\2>)\s*\n?```" # For XML in ```
-MARKDOWN_FENCE_JSON_PATTERN = r"```json\s*(\{[\s\S]*?\})\s*```" # For JSON in ```json ... ```
+# --- Tool Call Patterns (Reverted to XML only) ---
+# --- REMOVED: MARKDOWN_FENCE_JSON_PATTERN ---
+# XML pattern for raw <tool>...</tool>
+XML_TOOL_CALL_PATTERN = None # Compiled in __init__
+# XML pattern for fenced ```<tool>...</tool>```
+MARKDOWN_FENCE_XML_PATTERN = r"```(?:[a-zA-Z]*\n)?\s*(<({tool_names})>[\s\S]*?</\2>)\s*\n?```" # Compiled in __init__
+# --- END Tool Call Patterns ---
 
 
 class Agent:
@@ -96,16 +99,24 @@ class Agent:
         self.message_history: List[MessageDict] = [] # Initialize empty, add prompt below
         self.message_history.append({"role": "system", "content": self.final_system_prompt})
 
+        # --- ADDED _last_api_key_used ---
+        self._last_api_key_used: Optional[str] = None
+        # --- END ADD ---
+        # --- ADDED _failed_models_this_cycle ---
+        self._failed_models_this_cycle: set = set()
+        # --- END ADD ---
+
+
         # Buffers for processing stream
         self.text_buffer: str = "" # Accumulates text chunks from LLM
 
         # Sandboxing
         self.sandbox_path: Path = BASE_DIR / "sandboxes" / f"agent_{self.agent_id}"
 
-        # Compile the regex patterns for tool detection
+        # --- Compile the XML regex patterns for tool detection ---
         self.raw_xml_tool_call_pattern = None
         self.markdown_xml_tool_call_pattern = None
-        self.markdown_json_tool_call_pattern = None # Add pattern for JSON
+        # --- REMOVED: self.markdown_json_tool_call_pattern = None ---
         if self.manager and self.manager.tool_executor and self.manager.tool_executor.tools:
             tool_names = list(self.manager.tool_executor.tools.keys())
             if tool_names:
@@ -121,14 +132,14 @@ class Agent:
                 md_xml_pattern_str = MARKDOWN_FENCE_XML_PATTERN.format(tool_names=tool_names_pattern_group)
                 self.markdown_xml_tool_call_pattern = re.compile(md_xml_pattern_str, re.IGNORECASE | re.DOTALL | re.MULTILINE)
 
-                # Pattern for JSON within markdown fence: captures JSON object in group 1
-                self.markdown_json_tool_call_pattern = re.compile(MARKDOWN_FENCE_JSON_PATTERN, re.DOTALL | re.MULTILINE)
+                # --- REMOVED: JSON pattern compilation ---
 
-                logger.info(f"Agent {self.agent_id}: Compiled XML and JSON tool patterns for tools: {tool_names}")
+                logger.info(f"Agent {self.agent_id}: Compiled XML tool patterns for tools: {tool_names}")
             else:
                 logger.info(f"Agent {self.agent_id}: No tools found in executor, tool parsing disabled.")
         else:
             logger.warning(f"Agent {self.agent_id}: Manager or ToolExecutor not available during init, tool parsing disabled.")
+        # --- End Pattern Compilation ---
 
 
         logger.info(f"Agent {self.agent_id} ({self.persona}) initialized. Status: {self.status}. Provider: {self.provider_name}, Model: {self.model}. Sandbox: {self.sandbox_path}. LLM Provider Instance: {self.llm_provider}")
@@ -168,15 +179,15 @@ class Agent:
             logger.error(f"Unexpected error ensuring sandbox for Agent {self.agent_id}: {e}", exc_info=True)
             return False
 
-    # --- Tool Call Parsing Helper (Handles XML and JSON) ---
+    # --- Tool Call Parsing Helper (Reverted to XML only) ---
     def _find_and_parse_tool_calls(self) -> List[Tuple[str, Dict[str, Any], Tuple[int, int]]]:
         """
-        Finds *all* occurrences of valid tool calls (XML raw, XML fenced, JSON fenced)
+        Finds *all* occurrences of valid XML tool calls (raw or fenced)
         in the text_buffer, avoiding nested matches. Parses them and returns validated info.
         """
         if not self.text_buffer: return []
         buffer_content = self.text_buffer
-        logger.debug(f"Agent {self.agent_id}: Checking buffer for tool calls (Len: {len(buffer_content)}): '{buffer_content[-500:]}'")
+        logger.debug(f"Agent {self.agent_id}: Checking buffer for XML tool calls (Len: {len(buffer_content)}): '{buffer_content[-500:]}'")
         found_calls = []; processed_spans = set()
 
         # --- Helper to check for overlaps ---
@@ -186,70 +197,9 @@ class Agent:
                     return True
             return False
 
-        # --- 1. Find Markdown JSON ```json ... ``` blocks ---
-        json_matches = []
-        if self.markdown_json_tool_call_pattern:
-            for match in self.markdown_json_tool_call_pattern.finditer(buffer_content):
-                match_start, match_end = match.span()
-                if is_overlapping(match_start, match_end): continue
+        # --- REMOVED: Section finding Markdown JSON ```json ... ``` blocks ---
 
-                json_string = match.group(1).strip()
-                try:
-                    tool_call_data = json.loads(json_string)
-                    tool_name = tool_call_data.get("tool_name")
-                    tool_args = tool_call_data.get("parameters", {})
-
-                    if not isinstance(tool_name, str) or not isinstance(tool_args, dict):
-                        logger.warning(f"Agent {self.agent_id}: Invalid JSON structure in tool call block: {json_string[:100]}...")
-                        continue
-
-                    # Validate tool name exists
-                    if tool_name not in self.manager.tool_executor.tools:
-                        logger.warning(f"Agent {self.agent_id}: Found JSON tool call for unknown tool '{tool_name}'.")
-                        continue
-
-                    # --- Added: Validate parameter types ---
-                    validated_args = {}
-                    valid_structure = True
-                    tool_schema = self.manager.tool_executor.tools[tool_name].get_schema()
-                    expected_params = {p['name']: p for p in tool_schema.get('parameters', [])}
-
-                    for param_name, param_value in tool_args.items():
-                        if param_name not in expected_params:
-                            logger.warning(f"Agent {self.agent_id}: Unknown parameter '{param_name}' provided for tool '{tool_name}'. Ignoring.")
-                            continue
-                        # Basic type check/conversion (can be expanded)
-                        expected_type = expected_params[param_name]['type']
-                        try:
-                            if expected_type == 'integer': validated_args[param_name] = int(param_value)
-                            elif expected_type == 'float': validated_args[param_name] = float(param_value)
-                            elif expected_type == 'boolean': validated_args[param_name] = str(param_value).lower() in ['true', '1', 'yes']
-                            else: validated_args[param_name] = str(param_value) # Default to string
-                        except ValueError:
-                             logger.warning(f"Agent {self.agent_id}: Invalid value type for parameter '{param_name}' (expected {expected_type}) in tool '{tool_name}'. Value: '{param_value}'")
-                             valid_structure = False; break # Stop processing this tool call if type is wrong
-
-                    if not valid_structure: continue # Skip this tool call if validation failed
-
-                    # Check for missing required parameters
-                    missing_required = []
-                    for p_name, p_info in expected_params.items():
-                         if p_info.get('required', True) and p_name not in validated_args:
-                              missing_required.append(p_name)
-                    if missing_required:
-                         logger.warning(f"Agent {self.agent_id}: Missing required parameters for tool '{tool_name}': {missing_required}")
-                         continue # Skip this tool call
-
-                    logger.info(f"Agent {self.agent_id}: Detected JSON tool call for '{tool_name}' at span ({match_start}, {match_end}). Validated Args: {validated_args}")
-                    json_matches.append((tool_name, validated_args, (match_start, match_end))) # Use validated_args
-                    processed_spans.add((match_start, match_end)) # Mark span as processed
-
-                except json.JSONDecodeError as e:
-                    logger.warning(f"Agent {self.agent_id}: Failed to decode JSON tool call block: {e}. Content: {json_string[:100]}...")
-                except Exception as e:
-                    logger.error(f"Agent {self.agent_id}: Unexpected error parsing JSON tool call: {e}", exc_info=True)
-
-        # --- 2. Find Markdown XML ```<tool>...</tool>``` blocks ---
+        # --- 1. Find Markdown XML ```<tool>...</tool>``` blocks ---
         markdown_xml_matches = []
         if self.markdown_xml_tool_call_pattern:
             for match in self.markdown_xml_tool_call_pattern.finditer(buffer_content):
@@ -272,38 +222,45 @@ class Agent:
                         continue
 
                     inner_content = inner_match.group(2)
-                    tool_args = {}; param_pattern = r"<(\w+?)\s*>([\s\S]*?)</\1>"; param_matches = re.findall(param_pattern, inner_content, re.DOTALL | re.IGNORECASE)
-                    for param_name, param_value_escaped in param_matches: tool_args[param_name] = html.unescape(param_value_escaped.strip())
+                    tool_args = {};
+                    # --- Corrected XML parameter extraction ---
+                    param_pattern = r"<(\w+?)\s*>([\s\S]*?)</\1>"
+                    param_matches = re.findall(param_pattern, inner_content, re.DOTALL | re.IGNORECASE)
+                    for param_name, param_value_escaped in param_matches:
+                        # --- Use html.unescape ---
+                        tool_args[param_name.lower()] = html.unescape(param_value_escaped.strip()) # Use lower() for case-insensitivity if needed
 
-                    # --- Added: Validate parameter types for XML ---
+                    # --- Validate parameter types and required fields ---
                     validated_args = {}
                     valid_structure = True
                     tool_schema = self.manager.tool_executor.tools[tool_name].get_schema()
-                    expected_params = {p['name']: p for p in tool_schema.get('parameters', [])}
+                    expected_params = {p['name'].lower(): p for p in tool_schema.get('parameters', [])} # Use lower()
 
-                    for param_name, param_value in tool_args.items():
-                         if param_name not in expected_params:
-                             logger.warning(f"Agent {self.agent_id}: Unknown parameter '{param_name}' provided for XML tool '{tool_name}'. Ignoring.")
+                    for param_name_lower, param_value in tool_args.items():
+                         if param_name_lower not in expected_params:
+                             logger.warning(f"Agent {self.agent_id}: Unknown parameter '{param_name_lower}' provided for fenced XML tool '{tool_name}'. Ignoring.")
                              continue
-                         expected_type = expected_params[param_name]['type']
+                         expected_type = expected_params[param_name_lower]['type']
+                         original_param_name = expected_params[param_name_lower]['name'] # Get original case for validated_args
                          try:
-                             if expected_type == 'integer': validated_args[param_name] = int(param_value)
-                             elif expected_type == 'float': validated_args[param_name] = float(param_value)
-                             elif expected_type == 'boolean': validated_args[param_name] = str(param_value).lower() in ['true', '1', 'yes']
-                             else: validated_args[param_name] = str(param_value)
+                             if expected_type == 'integer': validated_args[original_param_name] = int(param_value)
+                             elif expected_type == 'float': validated_args[original_param_name] = float(param_value)
+                             elif expected_type == 'boolean': validated_args[original_param_name] = str(param_value).lower() in ['true', '1', 'yes']
+                             else: validated_args[original_param_name] = str(param_value) # Default to string
                          except ValueError:
-                              logger.warning(f"Agent {self.agent_id}: Invalid value type for XML parameter '{param_name}' (expected {expected_type}) in tool '{tool_name}'. Value: '{param_value}'")
+                              logger.warning(f"Agent {self.agent_id}: Invalid value type for fenced XML parameter '{param_name_lower}' (expected {expected_type}) in tool '{tool_name}'. Value: '{param_value}'")
                               valid_structure = False; break
 
                     if not valid_structure: continue
 
                     missing_required = []
-                    for p_name, p_info in expected_params.items():
-                         if p_info.get('required', True) and p_name not in validated_args:
-                              missing_required.append(p_name)
+                    for p_name_lower, p_info in expected_params.items():
+                         if p_info.get('required', True) and p_info['name'] not in validated_args: # Check original case in validated_args
+                              missing_required.append(p_info['name'])
                     if missing_required:
-                         logger.warning(f"Agent {self.agent_id}: Missing required XML parameters for tool '{tool_name}': {missing_required}")
+                         logger.warning(f"Agent {self.agent_id}: Missing required fenced XML parameters for tool '{tool_name}': {missing_required}")
                          continue
+                    # --- End Validation ---
 
                     logger.info(f"Agent {self.agent_id}: Detected fenced XML tool call for '{tool_name}' at span ({match_start}, {match_end}). Validated Args: {validated_args}")
                     markdown_xml_matches.append((tool_name, validated_args, (match_start, match_end))) # Use validated_args
@@ -312,7 +269,7 @@ class Agent:
                 except Exception as parse_err:
                     logger.error(f"Agent {self.agent_id}: Error parsing params for fenced XML '{xml_block[:100]}...': {parse_err}", exc_info=True)
 
-        # --- 3. Find Raw XML <tool>...</tool> blocks ---
+        # --- 2. Find Raw XML <tool>...</tool> blocks ---
         raw_xml_matches = []
         if self.raw_xml_tool_call_pattern:
              for match in self.raw_xml_tool_call_pattern.finditer(buffer_content):
@@ -329,38 +286,45 @@ class Agent:
 
                  try:
                      inner_content = match.group(2)
-                     tool_args = {}; param_pattern = r"<(\w+?)\s*>([\s\S]*?)</\1>"; param_matches = re.findall(param_pattern, inner_content, re.DOTALL | re.IGNORECASE)
-                     for param_name, param_value_escaped in param_matches: tool_args[param_name] = html.unescape(param_value_escaped.strip())
+                     tool_args = {};
+                     # --- Corrected XML parameter extraction ---
+                     param_pattern = r"<(\w+?)\s*>([\s\S]*?)</\1>"
+                     param_matches = re.findall(param_pattern, inner_content, re.DOTALL | re.IGNORECASE)
+                     for param_name, param_value_escaped in param_matches:
+                         # --- Use html.unescape ---
+                         tool_args[param_name.lower()] = html.unescape(param_value_escaped.strip()) # Use lower()
 
-                     # --- Added: Validate parameter types for Raw XML ---
+                     # --- Validate parameter types and required fields ---
                      validated_args = {}
                      valid_structure = True
                      tool_schema = self.manager.tool_executor.tools[tool_name].get_schema()
-                     expected_params = {p['name']: p for p in tool_schema.get('parameters', [])}
+                     expected_params = {p['name'].lower(): p for p in tool_schema.get('parameters', [])} # Use lower()
 
-                     for param_name, param_value in tool_args.items():
-                          if param_name not in expected_params:
-                              logger.warning(f"Agent {self.agent_id}: Unknown parameter '{param_name}' provided for raw XML tool '{tool_name}'. Ignoring.")
+                     for param_name_lower, param_value in tool_args.items():
+                          if param_name_lower not in expected_params:
+                              logger.warning(f"Agent {self.agent_id}: Unknown parameter '{param_name_lower}' provided for raw XML tool '{tool_name}'. Ignoring.")
                               continue
-                          expected_type = expected_params[param_name]['type']
+                          expected_type = expected_params[param_name_lower]['type']
+                          original_param_name = expected_params[param_name_lower]['name']
                           try:
-                              if expected_type == 'integer': validated_args[param_name] = int(param_value)
-                              elif expected_type == 'float': validated_args[param_name] = float(param_value)
-                              elif expected_type == 'boolean': validated_args[param_name] = str(param_value).lower() in ['true', '1', 'yes']
-                              else: validated_args[param_name] = str(param_value)
+                              if expected_type == 'integer': validated_args[original_param_name] = int(param_value)
+                              elif expected_type == 'float': validated_args[original_param_name] = float(param_value)
+                              elif expected_type == 'boolean': validated_args[original_param_name] = str(param_value).lower() in ['true', '1', 'yes']
+                              else: validated_args[original_param_name] = str(param_value)
                           except ValueError:
-                               logger.warning(f"Agent {self.agent_id}: Invalid value type for raw XML parameter '{param_name}' (expected {expected_type}) in tool '{tool_name}'. Value: '{param_value}'")
+                               logger.warning(f"Agent {self.agent_id}: Invalid value type for raw XML parameter '{param_name_lower}' (expected {expected_type}) in tool '{tool_name}'. Value: '{param_value}'")
                                valid_structure = False; break
 
                      if not valid_structure: continue
 
                      missing_required = []
-                     for p_name, p_info in expected_params.items():
-                          if p_info.get('required', True) and p_name not in validated_args:
-                               missing_required.append(p_name)
+                     for p_name_lower, p_info in expected_params.items():
+                          if p_info.get('required', True) and p_info['name'] not in validated_args:
+                               missing_required.append(p_info['name'])
                      if missing_required:
                           logger.warning(f"Agent {self.agent_id}: Missing required raw XML parameters for tool '{tool_name}': {missing_required}")
                           continue
+                     # --- End Validation ---
 
                      logger.info(f"Agent {self.agent_id}: Detected raw XML tool call for '{tool_name}' at span ({match_start}, {match_end}). Validated Args: {validated_args}")
                      raw_xml_matches.append((tool_name, validated_args, (match_start, match_end))) # Use validated_args
@@ -369,16 +333,16 @@ class Agent:
                  except Exception as parse_err:
                      logger.error(f"Agent {self.agent_id}: Error parsing params for raw XML '{match.group(0)[:100]}...': {parse_err}", exc_info=True)
 
-        # Combine all found calls and sort by starting position
-        found_calls = json_matches + markdown_xml_matches + raw_xml_matches
+        # Combine all found XML calls and sort by starting position
+        found_calls = markdown_xml_matches + raw_xml_matches
         found_calls.sort(key=lambda x: x[2][0])
 
-        if not found_calls: logger.debug(f"Agent {self.agent_id}: No valid tool calls found.")
-        else: logger.info(f"Agent {self.agent_id}: Found {len(found_calls)} valid tool call(s) across all formats.")
+        if not found_calls: logger.debug(f"Agent {self.agent_id}: No valid XML tool calls found.")
+        else: logger.info(f"Agent {self.agent_id}: Found {len(found_calls)} valid XML tool call(s).")
         return found_calls
 
 
-    # --- Main Processing Logic (Restored) ---
+    # --- Main Processing Logic (Unchanged - Relies on CycleHandler now) ---
     async def process_message(self) -> AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]:
         """
         Processes the task based on the current message history using the LLM provider.
@@ -402,6 +366,7 @@ class Agent:
         self.text_buffer = "" # Clear buffer at the start of processing
         complete_assistant_response = "" # Accumulate the full response for history/final event
         stream_had_error = False # Flag if an error event was yielded by the provider stream
+        last_error_obj = None # Store exception object if provider sends one
 
         logger.info(f"Agent {self.agent_id} starting processing via {self.provider_name}. History length: {len(self.message_history)}")
 
@@ -424,8 +389,9 @@ class Agent:
                 elif event_type == "status": event["agent_id"] = self.agent_id; yield event
                 elif event_type == "error":
                     error_content = f"[{self.provider_name} Error] {event.get('content', 'Unknown provider error')}"
+                    last_error_obj = event.get("_exception_obj", ValueError(error_content)) # Get exception if available
                     logger.error(f"Agent {self.agent_id}: Received error event from provider: {error_content}")
-                    event["agent_id"] = self.agent_id; event["content"] = error_content; stream_had_error = True; yield event
+                    event["agent_id"] = self.agent_id; event["content"] = error_content; event["_exception_obj"] = last_error_obj; stream_had_error = True; yield event
                     # Don't break here, let CycleHandler manage retry/failover based on error
                 else: logger.warning(f"Agent {self.agent_id}: Received unknown event type '{event_type}' from provider.")
 
@@ -456,7 +422,7 @@ class Agent:
             error_msg = f"Unexpected Error processing message in Agent {self.agent_id}: {type(e).__name__} - {e}"
             logger.error(error_msg, exc_info=True)
             # Yield error for CycleHandler to process (triggers failover)
-            yield {"type": "error", "agent_id": self.agent_id, "content": f"[Agent Error: {error_msg}]"}
+            yield {"type": "error", "agent_id": self.agent_id, "content": f"[Agent Error: {error_msg}]", "_exception_obj": e}
         finally:
             # CycleHandler now determines the final state (IDLE or ERROR)
             # Only reset buffer here.
@@ -464,7 +430,7 @@ class Agent:
             logger.info(f"Agent {self.agent_id}: Finished processing cycle attempt. Status before cycle handler finalizes: {self.status}")
 
 
-    # --- get_state and clear_history (Restored) ---
+    # --- get_state and clear_history (Unchanged) ---
     def get_state(self) -> Dict[str, Any]:
         """Returns the current state of the agent."""
         state = {
