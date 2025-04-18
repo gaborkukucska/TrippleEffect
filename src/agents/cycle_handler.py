@@ -136,7 +136,6 @@ class AgentCycleHandler:
                          logger.warning(f"CycleHandler: Agent '{agent_id}' encountered non-retryable/unknown error: {type(last_error_obj).__name__}. Triggering failover.")
                     break # Exit inner loop on any error event
                 elif event_type == "tool_requests":
-                    # (Tool request handling remains the same)
                     all_tool_calls: List[Dict] = event.get("calls", [])
                     if not all_tool_calls: continue
                     logger.info(f"CycleHandler: Agent '{agent_id}' yielded {len(all_tool_calls)} tool request(s).")
@@ -144,12 +143,14 @@ class AgentCycleHandler:
                     if agent_last_response and (not agent.message_history or agent.message_history[-1].get("content") != agent_last_response or agent.message_history[-1].get("role") != "assistant"): agent.message_history.append({"role": "assistant", "content": agent_last_response})
                     mgmt_calls = []; other_calls = []; invalid_call_results = []
                     for call in all_tool_calls:
-                        cid, tname, targs = call.get("id"), call.get("name"), call.get("arguments", {})
-                        if cid and tname and isinstance(targs, dict):
-                            if tname == ManageTeamTool.name: mgmt_calls.append(call)
-                            else: other_calls.append(call)
-                        else: fail_res = await self._interaction_handler.failed_tool_result(cid, tname);
-                        if fail_res: invalid_call_results.append(fail_res)
+                         cid, tname, targs = call.get("id"), call.get("name"), call.get("arguments", {})
+                         fail_res: Optional[ToolResultDict] = None # <<< Initialize fail_res here
+                         if cid and tname and isinstance(targs, dict):
+                             if tname == ManageTeamTool.name: mgmt_calls.append(call)
+                             else: other_calls.append(call)
+                         else:
+                             fail_res = await self._interaction_handler.failed_tool_result(cid, tname);
+                         if fail_res: invalid_call_results.append(fail_res) # <<< Now this access is safe
                     if invalid_call_results:
                         for res in invalid_call_results: agent.message_history.append({"role": "tool", **res})
                     calls_to_execute = mgmt_calls + other_calls; activation_tasks = []; manager_action_feedback = []; executed_tool_successfully_this_cycle = False
