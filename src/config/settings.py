@@ -107,10 +107,10 @@ class Settings:
              logger.info(f"Loaded {len(keys)} API key(s) for provider: {provider}")
 
         # --- Model Tier ---
-        self.MODEL_TIER: str = os.getenv("MODEL_TIER", "ALL").upper()
+        self.MODEL_TIER: str = os.getenv("MODEL_TIER", "FREE").upper() # Default to FREE now
         if self.MODEL_TIER not in ["FREE", "ALL"]:
-             logger.warning(f"Warning: Invalid MODEL_TIER '{self.MODEL_TIER}'. Defaulting to 'ALL'.")
-             self.MODEL_TIER = "ALL"
+             logger.warning(f"Warning: Invalid MODEL_TIER '{self.MODEL_TIER}'. Defaulting to 'FREE'.")
+             self.MODEL_TIER = "FREE"
 
         # --- Project/Session Configuration (from .env) ---
         self.PROJECTS_BASE_DIR: Path = Path(os.getenv("PROJECTS_BASE_DIR", str(BASE_DIR / "projects")))
@@ -222,10 +222,12 @@ class Settings:
                  if provider == "ollama":
                      if self.USE_OLLAMA_PROXY:
                          detail_parts.append(f"Proxy Enabled (Port: {self.OLLAMA_PROXY_PORT})")
-                     elif config_details.get('base_url'):
-                         detail_parts.append("Direct URL Set")
-                     else:
-                         detail_parts.append("Direct URL Not Set (will use defaults/discovery)")
+                     # Check if direct URL is set even if proxy is enabled
+                     if self.OLLAMA_BASE_URL:
+                          detail_parts.append(f"Direct URL Set ({self.OLLAMA_BASE_URL})")
+                     elif not self.USE_OLLAMA_PROXY:
+                          detail_parts.append("Direct URL Not Set (will use defaults/discovery)")
+
                  elif provider == "litellm":
                      if config_details.get('base_url'): detail_parts.append("URL Set")
                      else: detail_parts.append("URL Not Set (will use defaults/discovery)")
@@ -235,7 +237,7 @@ class Settings:
                      if config_details.get('referer'): detail_parts.append("Referer Set")
                  logger.info(f"✅ {provider.capitalize()}: Configured ({', '.join(detail_parts)})")
              elif is_used:
-                 logger.warning(f"⚠️ WARNING: {provider.capitalize()} used by bootstrap/default but NOT configured in .env.")
+                 logger.warning(f"⚠️ WARNING: {provider.capitalize()} used by bootstrap/default but NOT configured.")
              else:
                  logger.info(f"ℹ️ INFO: {provider.capitalize()} not configured and not explicitly used by bootstrap agents.")
 
@@ -272,14 +274,22 @@ class Settings:
 
     def is_provider_configured(self, provider_name: str) -> bool:
         """
-        Checks if a provider has its essential configuration set in .env
-        (either keys for remote providers or a base URL for local ones).
+        Checks if a provider has its essential configuration set in .env.
+        - Remote providers require at least one API key.
+        - LiteLLM requires LITELLM_BASE_URL.
+        - Ollama requires OLLAMA_BASE_URL *or* USE_OLLAMA_PROXY=true.
         """
         provider_name = provider_name.lower()
-        # Ollama is considered configured if the proxy is enabled OR a direct URL is set
-        if provider_name == "ollama": return self.USE_OLLAMA_PROXY or bool(self.OLLAMA_BASE_URL)
-        elif provider_name == "litellm": return bool(self.LITELLM_BASE_URL)
+        # --- UPDATED Ollama Check ---
+        if provider_name == "ollama":
+             # Considered configured if Proxy is enabled OR a Direct Base URL is set
+             return self.USE_OLLAMA_PROXY or bool(self.OLLAMA_BASE_URL)
+        # --- END UPDATE ---
+        elif provider_name == "litellm":
+             # Considered configured only if a direct Base URL is set
+             return bool(self.LITELLM_BASE_URL)
         else: # Remote providers need keys
+             # Considered configured if the provider name exists in the keys dict AND the list of keys is not empty
              return provider_name in self.PROVIDER_API_KEYS and bool(self.PROVIDER_API_KEYS[provider_name])
 
 
