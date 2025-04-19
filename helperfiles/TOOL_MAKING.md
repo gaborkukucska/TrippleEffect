@@ -159,3 +159,5 @@ Okay, I can calculate that for you.
   <operand1>123.45</operand1>
   <operand2>67.8</operand2>
 </calculator>
+
+The framework parses this, calls the execute method, and the tool's string result (e.g., "Calculation result: 123.45 multiply 67.8 = 8370.01") is added back into the agent's message history.
