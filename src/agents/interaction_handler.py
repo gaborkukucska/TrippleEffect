@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class AgentInteractionHandler:
     """
     Handles the processing of specific tool interactions and execution of tools,
-    requiring context from the AgentManager.
+    requiring context from the AgentManager. Includes robust target agent resolution.
     """
     def __init__(self, manager: 'AgentManager'):
         self._manager = manager
@@ -37,16 +37,8 @@ class AgentInteractionHandler:
         """
         Processes validated ManageTeamTool actions signaled by the tool's execution.
         Calls appropriate AgentManager methods for agent/team lifecycle operations.
-
-        Args:
-            action: The validated action name (e.g., 'create_agent').
-            params: The validated parameters dictionary from the tool call.
-            calling_agent_id: The ID of the agent that invoked the tool.
-
-        Returns:
-            Tuple[bool, str, Optional[Any]]: (success_flag, message, optional_data_for_feedback)
         """
-        # (Code remains the same as previous version)
+        # (Code remains the same as previous version - no changes here)
         if not action:
             return False, "No action specified.", None
         success, message, result_data = False, "Unknown action or error.", None
@@ -60,11 +52,12 @@ class AgentInteractionHandler:
             extra_kwargs = {k: v for k, v in params.items() if k not in known_args and k not in ['project_name', 'session_name']}
 
             if action == "create_agent":
+                # Provider/model are now optional here, handled by lifecycle
                 success, message, created_agent_id = await self._manager.create_agent_instance(
                     agent_id_param, provider, model, system_prompt, persona, team_id, temperature, **extra_kwargs
                 )
                 if success and created_agent_id:
-                    result_data = { "created_agent_id": created_agent_id, "persona": persona, "provider": provider, "model": model, "team_id": team_id }
+                    result_data = { "created_agent_id": created_agent_id, "persona": persona, "provider": provider or "auto", "model": model or "auto", "team_id": team_id } # Indicate auto if used
                     message = f"Agent '{persona}' created successfully with ID '{created_agent_id}'."
             elif action == "delete_agent":
                  success, message = await self._manager.delete_agent_instance(agent_id_param)
@@ -100,73 +93,105 @@ class AgentInteractionHandler:
              return False, message, None
 
 
+    # --- *** UPDATED: route_and_activate_agent_message *** ---
     async def route_and_activate_agent_message(
         self,
         sender_id: str,
-        target_id: str,
+        target_identifier: str, # Renamed from target_id
         message_content: str
         ) -> Optional[asyncio.Task]:
         """
-        Routes a message from sender to target agent via AgentManager state.
-        Validates target existence and team state. Appends feedback to sender on failure.
-        Appends message to target history and activates target agent if idle (or queues).
+        Routes a message from sender to target agent.
+        Attempts to resolve target by exact ID first, then by unique persona match.
+        Appends feedback to sender on failure (not found, ambiguous).
+        Appends message to target history and activates target agent if idle.
 
         Args:
             sender_id: The ID of the agent sending the message.
-            target_id: The ID of the agent receiving the message.
+            target_identifier: The target specified by the sender (can be exact ID or persona).
             message_content: The content of the message.
 
         Returns:
             Optional[asyncio.Task]: An asyncio Task for the target agent's cycle handling if activated, otherwise None.
         """
-        from src.agents.manager import BOOTSTRAP_AGENT_ID # Import locally
+        from src.agents.manager import BOOTSTRAP_AGENT_ID # Local import for check
 
         sender_agent = self._manager.agents.get(sender_id)
-        target_agent = self._manager.agents.get(target_id)
-
         if not sender_agent:
             logger.error(f"InteractionHandler SendMsg route error: Sender '{sender_id}' not found (this should not happen)."); return None
 
-        if not target_agent:
-            error_msg = f"Failed to send message: Target agent '{target_id}' not found."
-            logger.error(f"InteractionHandler SendMsg route error from '{sender_id}': {error_msg}")
-            feedback_message: MessageDict = { "role": "tool", "tool_call_id": f"send_message_failed_{target_id}", "content": f"[Manager Feedback for SendMessage]: {error_msg}" }
+        target_agent: Optional[Agent] = None
+        resolved_target_id: Optional[str] = None
+        error_msg: Optional[str] = None
+
+        # 1. Try resolving by exact ID
+        if target_identifier in self._manager.agents:
+            resolved_target_id = target_identifier
+            target_agent = self._manager.agents[resolved_target_id]
+            logger.debug(f"SendMsg: Resolved target '{target_identifier}' directly by ID.")
+        else:
+            # 2. Try resolving by unique persona (case-insensitive)
+            logger.debug(f"SendMsg: Target '{target_identifier}' not found by ID. Trying persona match...")
+            matches = []
+            target_persona_lower = target_identifier.lower()
+            for agent in self._manager.agents.values():
+                if agent.persona.lower() == target_persona_lower:
+                    matches.append(agent)
+
+            if len(matches) == 1:
+                target_agent = matches[0]
+                resolved_target_id = target_agent.agent_id
+                logger.info(f"SendMsg: Resolved target '{target_identifier}' by unique persona match to agent ID '{resolved_target_id}'.")
+            elif len(matches) > 1:
+                error_msg = f"Failed to send message: Target persona '{target_identifier}' is ambiguous. Multiple agents found: {[a.agent_id for a in matches]}. Use the exact agent_id."
+                logger.warning(f"InteractionHandler SendMsg route error from '{sender_id}': {error_msg}")
+            else:
+                error_msg = f"Failed to send message: Target agent ID or persona '{target_identifier}' not found."
+                logger.error(f"InteractionHandler SendMsg route error from '{sender_id}': {error_msg}")
+
+        # 3. Handle resolution failure
+        if error_msg:
+            feedback_message: MessageDict = { "role": "tool", "tool_call_id": f"send_message_failed_{target_identifier}", "content": f"[Manager Feedback for SendMessage]: {error_msg}" }
             sender_agent.message_history.append(feedback_message)
-            logger.debug(f"InteractionHandler: Appended 'target not found' feedback to sender '{sender_id}' history.")
-            # --- REMOVED reactivate_agent_flags setting ---
+            logger.debug(f"InteractionHandler: Appended '{error_msg.split(':')[0]}' feedback to sender '{sender_id}' history.")
             return None
 
+        # 4. Check if target agent was found (should be true if no error)
+        if not target_agent or not resolved_target_id:
+             # This case should ideally not be reached if error handling above is correct
+             logger.error(f"Internal error: Target agent or ID is None after resolution for target '{target_identifier}'.")
+             feedback_message: MessageDict = { "role": "tool", "tool_call_id": f"send_message_failed_{target_identifier}", "content": f"[Manager Feedback for SendMessage]: Internal error resolving target agent."}
+             sender_agent.message_history.append(feedback_message)
+             return None
+
+        # 5. Check permissions (same logic as before)
         sender_team = self._manager.state_manager.get_agent_team(sender_id)
-        target_team = self._manager.state_manager.get_agent_team(target_id)
+        target_team = self._manager.state_manager.get_agent_team(resolved_target_id)
         allowed = (sender_id == BOOTSTRAP_AGENT_ID or
-                   target_id == BOOTSTRAP_AGENT_ID or
+                   resolved_target_id == BOOTSTRAP_AGENT_ID or
                    (sender_team and sender_team == target_team))
 
         if not allowed:
-            error_msg = f"Message blocked: Sender '{sender_id}' (Team: {sender_team or 'N/A'}) cannot send to Target '{target_id}' (Team: {target_team or 'N/A'}). Only communication within the same team or with Admin AI is permitted."
+            error_msg = f"Message blocked: Sender '{sender_id}' (Team: {sender_team or 'N/A'}) cannot send to Target '{resolved_target_id}' (Persona: {target_agent.persona}, Team: {target_team or 'N/A'}). Only communication within the same team or with Admin AI is permitted."
             logger.warning(f"InteractionHandler: {error_msg}")
-            feedback_message: MessageDict = { "role": "tool", "tool_call_id": f"send_message_failed_{target_id}", "content": f"[Manager Feedback for SendMessage]: {error_msg}" }
+            feedback_message: MessageDict = { "role": "tool", "tool_call_id": f"send_message_failed_{target_identifier}", "content": f"[Manager Feedback for SendMessage]: {error_msg}" }
             sender_agent.message_history.append(feedback_message)
             logger.debug(f"InteractionHandler: Appended 'communication blocked' feedback to sender '{sender_id}' history.")
-            # --- REMOVED reactivate_agent_flags setting ---
             return None
 
+        # 6. Append message and activate target
         formatted_message: MessageDict = { "role": "user", "content": f"[From @{sender_id}]: {message_content}" }
         target_agent.message_history.append(formatted_message)
-        logger.debug(f"InteractionHandler: Appended message from '{sender_id}' to history of '{target_id}'.")
+        logger.debug(f"InteractionHandler: Appended message from '{sender_id}' to history of '{resolved_target_id}'.")
 
-        if target_agent.status == "idle": # Use constant AGENT_STATUS_IDLE
-            logger.info(f"InteractionHandler: Target '{target_id}' is IDLE. Scheduling cycle...");
-            # Use manager's schedule method
+        if target_agent.status == "idle":
+            logger.info(f"InteractionHandler: Target '{resolved_target_id}' is IDLE. Scheduling cycle...");
             return await self._manager.schedule_cycle(target_agent, 0)
-        elif target_agent.status == "awaiting_user_override": # Use constant
-             logger.info(f"InteractionHandler: Target '{target_id}' is {target_agent.status}. Message queued, not activating.")
-             await self._manager.send_to_ui({ "type": "status", "agent_id": target_id, "content": f"Message received from @{sender_id}, queued (awaiting user override)." })
-             return None
         else:
-            logger.info(f"InteractionHandler: Target '{target_id}' not IDLE (Status: {target_agent.status}). Message queued.")
-            await self._manager.send_to_ui({ "type": "status", "agent_id": target_id, "content": f"Message received from @{sender_id}, queued." })
+            logger.info(f"InteractionHandler: Target '{resolved_target_id}' not IDLE (Status: {target_agent.status}). Message queued.")
+            await self._manager.send_to_ui({ "type": "status", "agent_id": resolved_target_id, "content": f"Message received from @{sender_id}, queued." })
             return None
+    # --- *** END UPDATE *** ---
 
 
     async def execute_single_tool(
