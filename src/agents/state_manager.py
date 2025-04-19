@@ -3,13 +3,11 @@ import asyncio
 import logging
 from typing import Dict, List, Tuple, Optional, TYPE_CHECKING
 
-# Type hinting for AgentManager if needed, avoid circular import
+# --- NEW: Import Agent class for type hinting in get_agents_in_team ---
+# This requires Agent definition, but should be safe with TYPE_CHECKING
 if TYPE_CHECKING:
     from src.agents.manager import AgentManager
     from src.agents.core import Agent
-
-# --- NEW: Import Agent class for type hinting in get_agents_in_team ---
-from src.agents.core import Agent
 # --- END NEW ---
 
 logger = logging.getLogger(__name__)
@@ -92,29 +90,52 @@ class AgentStateManager:
              logger.info(f"StateManager: Team '{team_id}' not found, creating.")
              success, msg = await self.create_new_team(team_id)
              if not success:
-                 logger.error(f"StateManager add_agent_to_team failed: Could not auto-create team '{team_id}': {msg}")
-                 return False, f"Failed to auto-create team '{team_id}': {msg}"
+                 # If create_new_team returned True because team already exists, it's okay
+                 if "already exists" not in msg:
+                     logger.error(f"StateManager add_agent_to_team failed: Could not auto-create team '{team_id}': {msg}")
+                     return False, f"Failed to auto-create team '{team_id}': {msg}"
+                 else:
+                      logger.info(f"StateManager: Team '{team_id}' confirmed to exist after checking.")
+
 
         old_team = self.agent_to_team.get(agent_id)
         if old_team == team_id:
              logger.info(f"StateManager: Agent '{agent_id}' already in team '{team_id}'.")
              return True, f"Agent '{agent_id}' is already in team '{team_id}'."
 
+        # --- State Update ---
+        # Remove from old team list
         if old_team and old_team in self.teams and agent_id in self.teams[old_team]:
-            try: self.teams[old_team].remove(agent_id); logger.info(f"StateManager: Removed '{agent_id}' from old team list '{old_team}'.")
-            except ValueError: logger.warning(f"StateManager: Agent '{agent_id}' not found in old team list '{old_team}' during removal (already removed?).")
-            except Exception as e: logger.error(f"StateManager: Error removing '{agent_id}' from old team '{old_team}': {e}")
+            try:
+                self.teams[old_team].remove(agent_id)
+                logger.info(f"StateManager: Removed '{agent_id}' from old team list '{old_team}'.")
+            except ValueError:
+                 logger.warning(f"StateManager: Agent '{agent_id}' not found in old team list '{old_team}' during removal (already removed?).")
+            except Exception as e:
+                 logger.error(f"StateManager: Error removing '{agent_id}' from old team '{old_team}': {e}")
 
+        # Add to new team list
         try:
-            if agent_id not in self.teams[team_id]: self.teams[team_id].append(agent_id); logger.info(f"StateManager: Appended '{agent_id}' to new team list '{team_id}'.")
-        except KeyError: logger.error(f"StateManager: Team '{team_id}' unexpectedly missing after creation check."); return False, f"Internal error: Team '{team_id}' disappeared."
-        except Exception as e: logger.error(f"StateManager: Error appending '{agent_id}' to new team list '{team_id}': {e}"); return False, f"Failed to add agent to team list: {e}"
+            # Ensure team list exists before appending (should always be true after create check)
+            if team_id not in self.teams: self.teams[team_id] = []
+            if agent_id not in self.teams[team_id]:
+                self.teams[team_id].append(agent_id)
+                logger.info(f"StateManager: Appended '{agent_id}' to new team list '{team_id}'.")
+        except KeyError:
+             logger.error(f"StateManager: Team '{team_id}' unexpectedly missing after creation check.")
+             return False, f"Internal error: Team '{team_id}' disappeared."
+        except Exception as e:
+             logger.error(f"StateManager: Error appending '{agent_id}' to new team list '{team_id}': {e}")
+             return False, f"Failed to add agent to team list: {e}"
 
+        # Update agent_to_team mapping
         self.agent_to_team[agent_id] = team_id
         logger.info(f"StateManager: Updated agent_to_team map: '{agent_id}' -> '{team_id}'.")
+        # --- End State Update ---
 
         message = f"Agent '{agent_id}' added to team '{team_id}' state."
         await self._manager.send_to_ui({ "type": "agent_moved_team", "agent_id": agent_id, "new_team_id": team_id, "old_team_id": old_team })
+        # Status update is pushed by the caller
         return True, message
 
     async def remove_agent_from_team(self, agent_id: str, team_id: str) -> Tuple[bool, str]:
@@ -154,14 +175,15 @@ class AgentStateManager:
         """Gets the list of member agent IDs for a given team ID."""
         return self.teams.get(team_id)
 
-    # --- NEW: Get Agent Instances in a Team ---
-    def get_agents_in_team(self, team_id: str) -> List[Agent]:
+    # --- Get Agent Instances in a Team ---
+    def get_agents_in_team(self, team_id: str) -> List['Agent']:
         """Gets the actual Agent instances belonging to a specific team."""
+        # Need to import Agent within TYPE_CHECKING block or locally if not already done
+        from src.agents.core import Agent # Local import might be needed if TYPE_CHECKING fails
         agent_ids = self.teams.get(team_id, [])
         agents = [self._manager.agents.get(aid) for aid in agent_ids if aid in self._manager.agents]
-        # Filter out None values in case an agent_id was in the list but not in manager.agents
         return [agent for agent in agents if agent is not None]
-    # --- END NEW ---
+    # --- End Get Agent Instances ---
 
 
     def get_team_info_dict(self) -> Dict[str, List[str]]:
@@ -185,6 +207,5 @@ class AgentStateManager:
 
     def clear_state(self):
         """ Clears all team and assignment state. """
-        self.teams = {}
-        self.agent_to_team = {}
+        self.teams = {}; self.agent_to_team = {}
         logger.info("AgentStateManager: Cleared all team state.")
