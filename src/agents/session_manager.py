@@ -8,17 +8,18 @@ from typing import TYPE_CHECKING, Tuple, Optional, Dict, List, Any
 
 # Import settings for project base directory
 from src.config.settings import settings
-from src.agents.core import AGENT_STATUS_IDLE # Import status constant
+
+# --- NEW: Import status constants ---
+from src.agents.constants import AGENT_STATUS_IDLE
+# --- END NEW ---
 
 # Type hinting for AgentManager and StateManager
 if TYPE_CHECKING:
     from src.agents.manager import AgentManager # Keep AgentManager for main reference
     from src.agents.state_manager import AgentStateManager
 
-# --- Import the new lifecycle module for agent creation/deletion ---
+# Import the agent lifecycle module for agent creation/deletion
 from src.agents import agent_lifecycle
-# --- End Import ---
-
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,6 @@ class SessionManager:
 
         for agent_id, agent in self._manager.agents.items():
             try:
-                # Quick check for serializability before adding
                 json.dumps(agent.message_history)
                 session_data["agent_histories"][agent_id] = agent.message_history
                 logger.debug(f"  Added history for agent '{agent_id}' (Length: {len(agent.message_history)})")
@@ -83,11 +83,11 @@ class SessionManager:
             if agent_id not in self._manager.bootstrap_agents:
                 dynamic_agent_ids_found.append(agent_id)
                 try:
+                    # Save the entire agent_config dictionary associated with the agent instance
                     agent_full_config = getattr(agent, 'agent_config', None)
-                    config_to_save = agent_full_config.get("config") if isinstance(agent_full_config, dict) else None
-                    if config_to_save and isinstance(config_to_save, dict):
-                        session_data["dynamic_agents_config"][agent_id] = config_to_save
-                        logger.debug(f"  Added config for dynamic agent '{agent_id}'. Keys: {list(config_to_save.keys())}")
+                    if agent_full_config and isinstance(agent_full_config, dict) and "config" in agent_full_config:
+                        session_data["dynamic_agents_config"][agent_id] = agent_full_config["config"] # Save the inner 'config' dict
+                        logger.debug(f"  Added config for dynamic agent '{agent_id}'. Keys: {list(agent_full_config['config'].keys())}")
                     else:
                         logger.warning(f"  Could not find valid 'config' dictionary for dynamic agent '{agent_id}'. Config not saved.")
                 except Exception as e_cfg:
@@ -207,9 +207,10 @@ class SessionManager:
                 agent = self._manager.agents.get(agent_id)
                 if agent:
                      if isinstance(history, list) and all(isinstance(msg, dict) and 'role' in msg and 'content' in msg for msg in history):
-                         agent.message_history = history; agent.set_status(AGENT_STATUS_IDLE); loaded_history_count += 1; agents_with_loaded_history.append(agent_id)
+                         agent.message_history = history;
+                         agent.set_status(AGENT_STATUS_IDLE); # Use imported constant
+                         loaded_history_count += 1; agents_with_loaded_history.append(agent_id)
                      else: logger.warning(f"Invalid history format for agent '{agent_id}'. History not loaded.")
-                # else: (Already logged if creation failed)
             logger.info(f"Loaded histories for {loaded_history_count} agents: {agents_with_loaded_history}")
             logger.debug(f"LOAD_DEBUG (After History Loading): Agents keys = {list(self._manager.agents.keys())}")
 
