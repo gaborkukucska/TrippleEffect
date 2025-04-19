@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # --- Define PROVIDER_CLASS_MAP using imported classes ---
 PROVIDER_CLASS_MAP: Dict[str, type[BaseLLMProvider]] = {
     "openai": OpenAIProvider,
-    "ollama": OllamaProvider, # <<< Ensure this points to the new OllamaProvider
+    "ollama": OllamaProvider,
     "openrouter": OpenRouterProvider,
     # TODO: Add LiteLLMProvider when implemented
     # "litellm": LiteLLMProvider,
@@ -55,7 +55,7 @@ PREFERRED_ADMIN_MODELS = [
     "*", # Fallback to any available model
 ]
 
-# --- ADDED: KNOWN_OLLAMA_OPTIONS ---
+# --- KNOWN_OLLAMA_OPTIONS ---
 # Known valid Ollama options (from ollama_provider.py, needed for filtering kwargs)
 KNOWN_OLLAMA_OPTIONS = {
     "mirostat", "mirostat_eta", "mirostat_tau", "num_ctx", "num_gpu", "num_thread",
@@ -65,9 +65,9 @@ KNOWN_OLLAMA_OPTIONS = {
     "vocab_only", "stop", "presence_penalty", "frequency_penalty", "penalize_newline",
     "typical_p"
 }
-# --- END ADD ---
+# --- END KNOWN_OLLAMA_OPTIONS ---
 
-# --- Automatic Model Selection Logic (Unchanged from previous) ---
+# --- Automatic Model Selection Logic ---
 async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optional[str], Optional[str]]:
     """
     Selects the best available and usable model based on performance ranking.
@@ -95,7 +95,6 @@ async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optiona
                  if models:
                      model_id = models[0].get("id")
                      if model_id:
-                         # Construct the full model ID for logging/return context
                          full_model_id = f"{provider}/{model_id}" if provider in ["ollama", "litellm"] else model_id
                          logger.info(f"Automatic selection (fallback): Selected first available '{full_model_id}'")
                          return provider, model_id # Return model_id *without* prefix
@@ -124,9 +123,9 @@ async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optiona
 # --- END Automatic Model Selection Logic ---
 
 
+# --- initialize_bootstrap_agents (Ensured full code included) ---
 async def initialize_bootstrap_agents(manager: 'AgentManager'):
     """ Initializes bootstrap agents defined in settings. """
-    # (No changes needed here compared to previous version - _create_agent_internal handles the logic)
     logger.info("Lifecycle: Initializing bootstrap agents...")
     agent_configs_list = settings.AGENT_CONFIGURATIONS
     if not agent_configs_list:
@@ -163,7 +162,6 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
 
             if config_provider and config_model:
                 logger.info(f"Lifecycle: Admin AI defined in config.yaml: {config_provider}/{config_model}")
-                # Basic checks first
                 if not settings.is_provider_configured(config_provider):
                     logger.warning(f"Lifecycle: Provider '{config_provider}' specified for Admin AI in config is not configured in .env. Ignoring.")
                 else:
@@ -174,16 +172,18 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
                          if config_model.startswith(f"{config_provider}/"):
                               model_id_check = config_model[len(config_provider)+1:] # Get suffix for check
                          else:
-                              # Invalid local format specified in config
                               logger.warning(f"Lifecycle: Admin AI model '{config_model}' in config.yaml must start with '{config_provider}/'. Ignoring.")
                               model_id_check = None # Mark as invalid
                     elif '/' in config_model:
-                         # Invalid remote format specified in config
-                         logger.warning(f"Lifecycle: Admin AI model '{config_model}' in config.yaml contains '/', but provider '{config_provider}' is not local. Ignoring.")
-                         model_id_check = None # Mark as invalid
+                         # Non-local models can contain '/', check if it's a *local provider* prefix
+                         if config_model.startswith("ollama/") or config_model.startswith("litellm/"):
+                              logger.warning(f"Lifecycle: Admin AI model '{config_model}' in config.yaml starts with local prefix, but provider is '{config_provider}'. Ignoring.")
+                              model_id_check = None # Mark as invalid
+                         else:
+                              # Assume valid non-local format (e.g., google/gemma...)
+                              model_id_check = config_model
 
-                    if model_id_check is None: # If format was invalid above
-                         pass # Skip availability check, will auto-select
+                    if model_id_check is None: pass # Skip availability check if format was invalid
                     elif not model_registry.is_model_available(config_provider, model_id_check):
                          logger.warning(f"Lifecycle: Model '{config_model}' specified for Admin AI in config is not available via registry. Ignoring.")
                     else:
@@ -208,7 +208,7 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
                 final_agent_config_data["provider"] = selected_admin_provider
         # --- End Admin AI Auto-Selection Logic ---
 
-        # --- Final Provider/Model Checks (These are now critical) ---
+        # --- Final Provider/Model Checks ---
         final_provider = final_agent_config_data.get("provider")
         final_model = final_agent_config_data.get("model")
         if not final_provider or not final_model:
@@ -248,7 +248,7 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
             is_bootstrap=True
             ))
 
-    # Gather results (Unchanged)
+    # Gather results
     results = await asyncio.gather(*tasks, return_exceptions=True)
     successful_ids = []
     num_expected_tasks = len([cfg for cfg in agent_configs_list if cfg.get("agent_id")])
@@ -270,8 +270,10 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
              except Exception as gather_err: logger.error(f"Lifecycle: Unexpected error processing bootstrap result for '{original_agent_id_attempted}': {gather_err}", exc_info=True)
     logger.info(f"Lifecycle: Finished bootstrap initialization. Active: {successful_ids}")
     if BOOTSTRAP_AGENT_ID not in manager.agents: logger.critical(f"CRITICAL: Admin AI ('{BOOTSTRAP_AGENT_ID}') failed to initialize! Check previous errors.")
+# --- END initialize_bootstrap_agents ---
 
 
+# --- _create_agent_internal (with corrected validation) ---
 async def _create_agent_internal(
     manager: 'AgentManager',
     agent_id_requested: Optional[str],
@@ -296,7 +298,7 @@ async def _create_agent_internal(
     provider_name = agent_config_data.get("provider")
     model_id_canonical = agent_config_data.get("model") # This might have prefix for local
     persona = agent_config_data.get("persona")
-    selection_source = "specified" # Track if model was specified or auto-selected
+    selection_source = "specified"
 
     if not persona:
          msg = f"Lifecycle Error: Missing persona for agent '{agent_id}'."
@@ -306,160 +308,125 @@ async def _create_agent_internal(
         if is_bootstrap:
              msg = f"Lifecycle Error: Bootstrap agent '{agent_id}' must have provider and model defined before _create_agent_internal."
              logger.critical(msg); return False, msg, None
-
         logger.info(f"Lifecycle: Provider or model not specified for dynamic agent '{agent_id}'. Attempting automatic selection...")
-        selected_provider, selected_model_suffix = await _select_best_available_model(manager)
-        selection_source = "automatic"
-
+        selected_provider, selected_model_suffix = await _select_best_available_model(manager); selection_source = "automatic"
         if not selected_provider or not selected_model_suffix:
             msg = f"Lifecycle Error: Automatic model selection failed for agent '{agent_id}'. No suitable model found."
             logger.error(msg); return False, msg, None
-
         provider_name = selected_provider
-        # Construct the canonical model ID (with prefix for local) for storage
-        if provider_name in ["ollama", "litellm"]:
-            model_id_canonical = f"{provider_name}/{selected_model_suffix}"
-        else:
-            model_id_canonical = selected_model_suffix
-        # Update agent_config_data
-        agent_config_data["provider"] = provider_name
-        agent_config_data["model"] = model_id_canonical
+        if provider_name in ["ollama", "litellm"]: model_id_canonical = f"{provider_name}/{selected_model_suffix}"
+        else: model_id_canonical = selected_model_suffix
+        agent_config_data["provider"] = provider_name; agent_config_data["model"] = model_id_canonical
         logger.info(f"Lifecycle: Automatically selected {model_id_canonical} for agent '{agent_id}'.")
     # --- End Model/Provider Handling ---
 
 
-    # --- Provider/Model Validation (applies to both specified and auto-selected) ---
+    # --- Provider/Model Validation ---
     if not provider_name or not model_id_canonical:
-         msg = f"Lifecycle Error: Missing final provider or model for agent '{agent_id}'."
-         logger.error(msg); return False, msg, None
-
+         msg = f"Lifecycle Error: Missing final provider or model for agent '{agent_id}'."; logger.error(msg); return False, msg, None
     if not settings.is_provider_configured(provider_name):
-        msg = f"Lifecycle: Provider '{provider_name}' ({selection_source}) not configured in .env settings."
-        logger.error(msg); return False, msg, None
-
+        msg = f"Lifecycle: Provider '{provider_name}' ({selection_source}) not configured in .env settings."; logger.error(msg); return False, msg, None
     if provider_name not in ["ollama", "litellm"] and await manager.key_manager.is_provider_depleted(provider_name):
-        msg = f"Lifecycle: Cannot create agent '{agent_id}': All keys for '{provider_name}' ({selection_source}) are quarantined."
-        logger.error(msg); return False, msg, None
+        msg = f"Lifecycle: Cannot create agent '{agent_id}': All keys for '{provider_name}' ({selection_source}) are quarantined."; logger.error(msg); return False, msg, None
 
-    # --- Refined Validation Logic ---
+    # --- Corrected Validation Logic ---
     is_local_provider = provider_name in ["ollama", "litellm"]
-    model_id_for_provider = model_id_canonical # Assume remote format initially
+    model_id_for_provider = None # ID to pass to the provider class
     validation_passed = True
+    error_msg_val = None
     error_prefix = f"Lifecycle Error ({selection_source} model '{model_id_canonical}' for provider '{provider_name}'):"
 
     if is_local_provider:
+        # Expect canonical ID like "ollama/model_name"
         if model_id_canonical.startswith(f"{provider_name}/"):
-            model_id_for_provider = model_id_canonical[len(provider_name)+1:] # Correct: strip prefix
+            model_id_for_provider = model_id_canonical[len(provider_name)+1:] # Strip prefix for provider
         else:
-            # This should only happen if user *specifies* local provider but wrong model format
-            msg = f"{error_prefix} Local model ID must start with prefix '{provider_name}/'."
-            logger.error(msg); validation_passed = False
+            error_msg_val = f"{error_prefix} Local model ID must start with prefix '{provider_name}/'."
+            validation_passed = False
     else: # Remote provider
-        if '/' in model_id_canonical:
-            # This should only happen if user *specifies* remote provider but local model format
-            model_suffix = model_id_canonical.split('/', 1)[-1]
-            logger.warning(f"{error_prefix} Model ID contains '/', but provider is not local. Attempting to use suffix '{model_suffix}'.")
-            model_id_for_provider = model_suffix # Auto-correct
-            model_id_canonical = model_suffix # Update canonical ID stored in config
-            agent_config_data["model"] = model_id_canonical
+        # Expect canonical ID like "google/gemma..." - it should NOT start with a local prefix
+        if model_id_canonical.startswith("ollama/") or model_id_canonical.startswith("litellm/"):
+             error_msg_val = f"{error_prefix} Remote model ID should not start with 'ollama/' or 'litellm/'."
+             validation_passed = False
         else:
-             model_id_for_provider = model_id_canonical # Use as-is
+             # Remote IDs (like OpenRouter's) can contain slashes, use the canonical ID directly
+             model_id_for_provider = model_id_canonical
 
     if not validation_passed:
-         return False, msg, None # Return error from format check above
+        logger.error(error_msg_val); return False, error_msg_val, None
 
-    # Check availability using the ID format the registry expects (no prefix)
+    # Final availability check using the model ID format the provider expects
     if not model_registry.is_model_available(provider_name, model_id_for_provider):
         available_list_str = ", ".join(model_registry.get_available_models_list(provider=provider_name)) or "(None available)"
-        msg = f"Lifecycle: Model '{model_id_canonical}' ({selection_source}) not available for provider '{provider_name}'. Available: [{available_list_str}]"
+        msg = f"Lifecycle: Model '{model_id_for_provider}' (derived from '{model_id_canonical}', source: {selection_source}) not available for provider '{provider_name}'. Available: [{available_list_str}]"
         logger.error(msg); return False, msg, None
-    # --- End Refined Validation ---
+    # --- End Corrected Validation ---
 
-    logger.info(f"Lifecycle: Final model validated: Provider='{provider_name}', Model='{model_id_for_provider}'.")
+    logger.info(f"Lifecycle: Final model validated: Provider='{provider_name}', Model='{model_id_for_provider}'. Canonical stored: '{model_id_canonical}'.")
 
-
-    # Assemble System Prompt (Unchanged)
+    # Assemble System Prompt
     role_specific_prompt = agent_config_data.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
     final_system_prompt = role_specific_prompt
     if not loading_from_session and not is_bootstrap:
         logger.debug(f"Lifecycle: Constructing final prompt for dynamic agent '{agent_id}'...")
         standard_info_template = settings.PROMPTS.get("standard_framework_instructions", "--- Standard Instructions Missing ---")
         tool_desc = manager.tool_descriptions_xml
-        standard_info = standard_info_template.replace("{tool_descriptions_xml}", tool_desc)
-        standard_info = standard_info.replace("{tool_descriptions_json}", "")
+        standard_info = standard_info_template.replace("{tool_descriptions_xml}", tool_desc); standard_info = standard_info.replace("{tool_descriptions_json}", "")
         try: standard_info = standard_info.format(agent_id=agent_id, team_id=team_id or "N/A")
         except KeyError as fmt_err: logger.error(f"Failed to format agent_id/team_id into standard instructions: {fmt_err}")
         final_system_prompt = standard_info + "\n\n--- Your Specific Role & Task ---\n" + role_specific_prompt
         logger.info(f"Lifecycle: Injected standard framework instructions (XML format) for dynamic agent '{agent_id}'.")
-    elif loading_from_session:
-         final_system_prompt = agent_config_data.get("system_prompt", role_specific_prompt)
-         logger.debug(f"Lifecycle: Using stored prompt for loaded agent '{agent_id}'.")
-    elif is_bootstrap:
-         final_system_prompt = agent_config_data.get("system_prompt", role_specific_prompt)
-         logger.debug(f"Lifecycle: Using pre-assembled prompt for bootstrap agent '{agent_id}'.")
+    elif loading_from_session: final_system_prompt = agent_config_data.get("system_prompt", role_specific_prompt); logger.debug(f"Lifecycle: Using stored prompt for loaded agent '{agent_id}'.")
+    elif is_bootstrap: final_system_prompt = agent_config_data.get("system_prompt", role_specific_prompt); logger.debug(f"Lifecycle: Using pre-assembled prompt for bootstrap agent '{agent_id}'.")
 
-    # Prepare Provider Arguments (Unchanged)
-    final_provider_args: Optional[Dict[str, Any]] = None
-    api_key_used = None
+    # Prepare Provider Arguments
+    final_provider_args: Optional[Dict[str, Any]] = None; api_key_used = None
     if provider_name in ["ollama", "litellm"]:
         final_provider_args = settings.get_provider_config(provider_name)
-        if provider_name == 'ollama' and PROVIDER_CLASS_MAP.get(provider_name) == OllamaProvider:
-             final_provider_args['api_key'] = 'ollama'
+        if provider_name == 'ollama' and PROVIDER_CLASS_MAP.get(provider_name) == OllamaProvider: final_provider_args['api_key'] = 'ollama'
     else:
         final_provider_args = await manager.key_manager.get_active_key_config(provider_name)
-        if final_provider_args is None:
-            msg = f"Lifecycle: Failed to get active API key for provider '{provider_name}'."; logger.error(msg); return False, msg, None
+        if final_provider_args is None: msg = f"Lifecycle: Failed to get active API key for provider '{provider_name}'."; logger.error(msg); return False, msg, None
         api_key_used = final_provider_args.get('api_key')
     temperature = agent_config_data.get("temperature", settings.DEFAULT_TEMPERATURE)
-    allowed_provider_keys = ['api_key', 'base_url', 'referer']
-    agent_config_keys_to_exclude = ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'project_name', 'session_name'] + allowed_provider_keys
+    allowed_provider_keys = ['api_key', 'base_url', 'referer']; agent_config_keys_to_exclude = ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'project_name', 'session_name'] + allowed_provider_keys
     client_init_kwargs = {k: v for k, v in agent_config_data.items() if k not in agent_config_keys_to_exclude and k not in KNOWN_OLLAMA_OPTIONS}
     api_call_options = {k: v for k, v in agent_config_data.items() if k not in agent_config_keys_to_exclude and k in KNOWN_OLLAMA_OPTIONS}
-    final_provider_args = {**final_provider_args, **client_init_kwargs}
-    final_provider_args = {k: v for k, v in final_provider_args.items() if v is not None}
+    final_provider_args = {**final_provider_args, **client_init_kwargs}; final_provider_args = {k: v for k, v in final_provider_args.items() if v is not None}
 
-    # Create final agent config entry for storage/state
-    # Use the canonical model ID (with prefix for local) for config storage
-    final_agent_config_entry = {
-        "agent_id": agent_id,
-        "config": { "provider": provider_name, "model": model_id_canonical, "system_prompt": final_system_prompt, "persona": persona, "temperature": temperature, **api_call_options, **client_init_kwargs }
-    }
+    # Create final agent config entry for storage/state - Use canonical ID
+    final_agent_config_entry = { "agent_id": agent_id, "config": { "provider": provider_name, "model": model_id_canonical, "system_prompt": final_system_prompt, "persona": persona, "temperature": temperature, **api_call_options, **client_init_kwargs } }
 
-    # Instantiate Provider (Unchanged)
+    # Instantiate Provider
     ProviderClass = PROVIDER_CLASS_MAP.get(provider_name)
-    if not ProviderClass:
-        msg = f"Lifecycle: Unknown provider type '{provider_name}'."; logger.error(msg); return False, msg, None
-    try:
-        llm_provider_instance = ProviderClass(**final_provider_args)
-    except Exception as e:
-        msg = f"Lifecycle: Provider init failed for {provider_name}: {e}"; logger.error(msg, exc_info=True); return False, msg, None
+    if not ProviderClass: msg = f"Lifecycle: Unknown provider type '{provider_name}'."; logger.error(msg); return False, msg, None
+    try: llm_provider_instance = ProviderClass(**final_provider_args)
+    except Exception as e: msg = f"Lifecycle: Provider init failed for {provider_name}: {e}"; logger.error(msg, exc_info=True); return False, msg, None
     logger.info(f"  Lifecycle: Instantiated provider {ProviderClass.__name__} for '{agent_id}'.")
 
-    # Instantiate Agent (Unchanged)
+    # Instantiate Agent
     try:
         agent = Agent(agent_config=final_agent_config_entry, llm_provider=llm_provider_instance, manager=manager)
-        agent.model = model_id_for_provider # Use adjusted model ID for provider calls
+        agent.model = model_id_for_provider # Use adjusted ID for provider calls
         if api_key_used: agent._last_api_key_used = api_key_used
-    except Exception as e:
-        msg = f"Lifecycle: Agent instantiation failed: {e}"; logger.error(msg, exc_info=True)
-        await manager._close_provider_safe(llm_provider_instance); return False, msg, None
+    except Exception as e: msg = f"Lifecycle: Agent instantiation failed: {e}"; logger.error(msg, exc_info=True); await manager._close_provider_safe(llm_provider_instance); return False, msg, None
     logger.info(f"  Lifecycle: Instantiated Agent object for '{agent_id}'.")
 
-    # Final steps (Unchanged)
+    # Final steps
     try: await asyncio.to_thread(agent.ensure_sandbox_exists)
     except Exception as e: logger.error(f"  Lifecycle: Error ensuring sandbox for '{agent_id}': {e}", exc_info=True)
-    manager.agents[agent_id] = agent
-    logger.debug(f"Lifecycle: Agent '{agent_id}' added to manager.agents dict.")
+    manager.agents[agent_id] = agent; logger.debug(f"Lifecycle: Agent '{agent_id}' added to manager.agents dict.")
     team_add_msg_suffix = ""
     if team_id:
         team_add_success, team_add_msg = await manager.state_manager.add_agent_to_team(agent_id, team_id)
         if not team_add_success: team_add_msg_suffix = f" (Warning adding to team: {team_add_msg})"
         logger.info(f"Lifecycle: Agent '{agent_id}' state added to team '{team_id}'.{team_add_msg_suffix}")
-
-    message = f"Agent '{agent_id}' ({persona}) created successfully using {model_id_canonical} ({selection_source})." + team_add_msg_suffix # Include model used & source
+    message = f"Agent '{agent_id}' ({persona}) created successfully using {model_id_canonical} ({selection_source})." + team_add_msg_suffix
     return True, message, agent_id
+# --- END _create_agent_internal ---
 
 
+# --- create_agent_instance (Ensured full code included) ---
 async def create_agent_instance(
     manager: 'AgentManager',
     agent_id_requested: Optional[str],
@@ -470,60 +437,45 @@ async def create_agent_instance(
     **kwargs
     ) -> Tuple[bool, str, Optional[str]]:
     """ Creates a dynamic agent instance, allowing provider/model to be omitted for auto-selection. """
-    # (Unchanged from previous)
     if not all([system_prompt, persona]):
         msg = "Lifecycle Error: Missing required arguments (system_prompt, persona) for creating dynamic agent."
-        logger.error(msg)
-        return False, msg, None
-
-    agent_config_data = {
-        "system_prompt": system_prompt,
-        "persona": persona
-    }
+        logger.error(msg); return False, msg, None
+    agent_config_data = { "system_prompt": system_prompt, "persona": persona }
     if provider: agent_config_data["provider"] = provider
     if model: agent_config_data["model"] = model
     if temperature is not None: agent_config_data["temperature"] = temperature
-
     known_args = ['action', 'agent_id', 'team_id', 'provider', 'model', 'system_prompt', 'persona', 'temperature', 'project_name', 'session_name']
     extra_kwargs = {k: v for k, v in kwargs.items() if k not in known_args}
     agent_config_data.update(extra_kwargs)
-
-    success, message, created_agent_id = await _create_agent_internal(
-        manager, agent_id_requested=agent_id_requested,
-        agent_config_data=agent_config_data, is_bootstrap=False,
-        team_id=team_id, loading_from_session=False
-    )
-
+    success, message, created_agent_id = await _create_agent_internal( manager, agent_id_requested=agent_id_requested, agent_config_data=agent_config_data, is_bootstrap=False, team_id=team_id, loading_from_session=False )
     if success and created_agent_id:
-        agent = manager.agents.get(created_agent_id)
-        team = manager.state_manager.get_agent_team(created_agent_id)
+        agent = manager.agents.get(created_agent_id); team = manager.state_manager.get_agent_team(created_agent_id)
         config_ui = agent.agent_config.get("config", {}) if agent else {}
         await manager.send_to_ui({ "type": "agent_added", "agent_id": created_agent_id, "config": config_ui, "team": team })
         await manager.push_agent_status_update(created_agent_id)
-
     return success, message, created_agent_id
+# --- END create_agent_instance ---
 
 
+# --- delete_agent_instance (Ensured full code included) ---
 async def delete_agent_instance(manager: 'AgentManager', agent_id: str) -> Tuple[bool, str]:
     """ Deletes a dynamic agent instance. """
-    # (Unchanged)
     if not agent_id: return False, "Lifecycle Error: Agent ID empty."
     if agent_id not in manager.agents: return False, f"Lifecycle Error: Agent '{agent_id}' not found."
     if agent_id in manager.bootstrap_agents: return False, f"Lifecycle Error: Cannot delete bootstrap agent '{agent_id}'."
-    agent_instance = manager.agents.pop(agent_id, None)
-    manager.state_manager.remove_agent_from_all_teams_state(agent_id)
+    agent_instance = manager.agents.pop(agent_id, None); manager.state_manager.remove_agent_from_all_teams_state(agent_id)
     if agent_instance and agent_instance.llm_provider: await manager._close_provider_safe(agent_instance.llm_provider)
-    message = f"Agent '{agent_id}' deleted."
-    logger.info(f"Lifecycle: {message}")
-    await manager.send_to_ui({"type": "agent_deleted", "agent_id": agent_id})
-    return True, message
+    message = f"Agent '{agent_id}' deleted."; logger.info(f"Lifecycle: {message}")
+    await manager.send_to_ui({"type": "agent_deleted", "agent_id": agent_id}); return True, message
+# --- END delete_agent_instance ---
 
 
+# --- _generate_unique_agent_id (Ensured full code included) ---
 def _generate_unique_agent_id(manager: 'AgentManager', prefix="agent") -> str:
     """ Generates a unique agent ID. """
-    # (Unchanged)
     timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4]
     while True:
-        new_id = f"{prefix}_{timestamp}_{short_uuid}".replace(":", "_")
+        new_id = f"{prefix}_{timestamp}_{short_uuid}".replace(":", "_");
         if new_id not in manager.agents: return new_id
         time.sleep(0.001); timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4]
+# --- END _generate_unique_agent_id ---
