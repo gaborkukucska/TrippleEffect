@@ -95,31 +95,32 @@ class Agent:
                 md_xml_pattern_str = MARKDOWN_FENCE_XML_PATTERN.format(tool_names=tool_names_pattern_group)
                 self.markdown_xml_tool_call_pattern = re.compile(md_xml_pattern_str, re.IGNORECASE | re.DOTALL | re.MULTILINE)
                 logger.info(f"Agent {self.agent_id}: Compiled XML tool patterns for tools: {tool_names}")
+                # --- ADDED: Log raw pattern ---
+                logger.debug(f"Agent {self.agent_id}: Raw XML pattern: {self.raw_xml_tool_call_pattern.pattern}")
+                # --- END ADD ---
             else: logger.info(f"Agent {self.agent_id}: No tools found in executor, tool parsing disabled.")
         else: logger.warning(f"Agent {self.agent_id}: Manager or ToolExecutor not available during init, tool parsing disabled.")
         logger.info(f"Agent {self.agent_id} ({self.persona}) initialized. Status: {self.status}. Provider: {self.provider_name}, Model: {self.model}. Sandbox: {self.sandbox_path}. LLM Provider Instance: {self.llm_provider}")
 
-    # --- Status Management ---
+    # --- Status Management (Unchanged) ---
     def set_status(self, new_status: str, tool_info: Optional[Dict[str, str]] = None):
-        """Updates the agent's status and optionally tool info."""
         if self.status != new_status: logger.info(f"Agent {self.agent_id}: Status changed from '{self.status}' to '{new_status}'")
         self.status = new_status
         self.current_tool_info = tool_info if new_status == AGENT_STATUS_EXECUTING_TOOL else None
         if self.manager: asyncio.create_task(self.manager.push_agent_status_update(self.agent_id))
         else: logger.warning(f"Agent {self.agent_id}: Manager not set, cannot push status update.")
 
-    # --- Dependency Setters ---
+    # --- Dependency Setters (Unchanged) ---
     def set_manager(self, manager: 'AgentManager'): self.manager = manager
     def set_tool_executor(self, tool_executor: Any): logger.warning(f"Agent {self.agent_id}: set_tool_executor called but ToolExecutor is no longer directly used by Agent.")
 
-    # --- Sandbox Creation ---
+    # --- Sandbox Creation (Unchanged) ---
     def ensure_sandbox_exists(self) -> bool:
-        """Creates the agent's sandbox directory if it doesn't exist."""
         try: self.sandbox_path.mkdir(parents=True, exist_ok=True); return True
         except OSError as e: logger.error(f"Error creating sandbox directory for Agent {self.agent_id} at {self.sandbox_path}: {e}"); return False
         except Exception as e: logger.error(f"Unexpected error ensuring sandbox for Agent {self.agent_id}: {e}", exc_info=True); return False
 
-    # --- Tool Call Parsing Helper ---
+    # --- Tool Call Parsing Helper (Added Debugging) ---
     def _find_and_parse_tool_calls(self) -> List[Tuple[str, Dict[str, Any], Tuple[int, int]]]:
         """
         Finds *all* occurrences of valid XML tool calls (raw or fenced)
@@ -127,7 +128,7 @@ class Agent:
         """
         if not self.text_buffer: return []
         buffer_content = self.text_buffer.strip() # Strip buffer first
-        logger.debug(f"Agent {self.agent_id}: Checking stripped buffer for XML tool calls (Len: {len(buffer_content)}): '{buffer_content[-500:]}'")
+        logger.debug(f"Agent {self.agent_id}: Checking stripped buffer for XML tool calls (Len: {len(buffer_content)}):\n>>>\n{buffer_content}\n<<<") # Log full buffer content now
         found_calls = []; processed_spans = set()
 
         def is_overlapping(start, end):
@@ -138,7 +139,10 @@ class Agent:
         # --- Find Markdown XML ```<tool>...</tool>``` blocks ---
         markdown_xml_matches = []
         if self.markdown_xml_tool_call_pattern:
-            for match in self.markdown_xml_tool_call_pattern.finditer(buffer_content):
+            logger.debug(f"Agent {self.agent_id}: Searching for MARKDOWN XML...") # ADDED
+            markdown_matches_found = list(self.markdown_xml_tool_call_pattern.finditer(buffer_content)) # ADDED: Check results explicitly
+            logger.debug(f"Agent {self.agent_id}: Found {len(markdown_matches_found)} potential markdown XML matches.") # ADDED
+            for match in markdown_matches_found: # Use the collected list
                 match_start, match_end = match.span();
                 if is_overlapping(match_start, match_end): continue
                 xml_block = match.group(1).strip(); tool_name_outer = match.group(2)
@@ -164,16 +168,9 @@ class Agent:
                     for p_name_lower, p_info in expected_params.items():
                          if p_info.get('required', True) and p_info['name'] not in validated_args: missing_required.append(p_info['name'])
                     if missing_required:
-                         # Check if it's ManageTeamTool create_agent missing only optional provider/model
-                         is_create_agent_optional_missing = (
-                             tool_name == "ManageTeamTool" and
-                             tool_args.get("action") == "create_agent" and
-                             all(p in ['provider', 'model'] for p in missing_required)
-                         )
-                         if not is_create_agent_optional_missing:
-                             logger.warning(f"Agent {self.agent_id}: Missing required fenced XML parameters for tool '{tool_name}': {missing_required}"); continue
-                         else:
-                             logger.debug(f"Allowing fenced ManageTeamTool create_agent without provider/model (will be auto-selected).")
+                         is_create_agent_optional_missing = (tool_name == "ManageTeamTool" and tool_args.get("action") == "create_agent" and all(p in ['provider', 'model'] for p in missing_required))
+                         if not is_create_agent_optional_missing: logger.warning(f"Agent {self.agent_id}: Missing required fenced XML parameters for tool '{tool_name}': {missing_required}"); continue
+                         else: logger.debug(f"Allowing fenced ManageTeamTool create_agent without provider/model (will be auto-selected).")
                     logger.info(f"Agent {self.agent_id}: Detected fenced XML tool call for '{tool_name}' at span ({match_start}, {match_end}). Validated Args: {validated_args}")
                     markdown_xml_matches.append((tool_name, validated_args, (match_start, match_end)))
                     processed_spans.add((match_start, match_end))
@@ -182,7 +179,10 @@ class Agent:
         # --- Find Raw XML <tool>...</tool> blocks ---
         raw_xml_matches = []
         if self.raw_xml_tool_call_pattern:
-             for match in self.raw_xml_tool_call_pattern.finditer(buffer_content):
+             logger.debug(f"Agent {self.agent_id}: Searching for RAW XML...") # ADDED
+             raw_matches_found = list(self.raw_xml_tool_call_pattern.finditer(buffer_content)) # ADDED: Check results explicitly
+             logger.debug(f"Agent {self.agent_id}: Found {len(raw_matches_found)} potential raw XML matches.") # ADDED
+             for match in raw_matches_found: # Use the collected list
                  match_start, match_end = match.span();
                  if is_overlapping(match_start, match_end): continue
                  tool_name_outer = match.group(1)
@@ -206,92 +206,52 @@ class Agent:
                      for p_name_lower, p_info in expected_params.items():
                           if p_info.get('required', True) and p_info['name'] not in validated_args: missing_required.append(p_info['name'])
                      if missing_required:
-                          # Check if it's ManageTeamTool create_agent missing only optional provider/model
-                          is_create_agent_optional_missing = (
-                              tool_name == "ManageTeamTool" and
-                              tool_args.get("action") == "create_agent" and
-                              all(p in ['provider', 'model'] for p in missing_required)
-                          )
-                          if not is_create_agent_optional_missing:
-                              logger.warning(f"Agent {self.agent_id}: Missing required raw XML parameters for tool '{tool_name}': {missing_required}"); continue
-                          else:
-                              logger.debug(f"Allowing raw XML ManageTeamTool create_agent without provider/model (will be auto-selected).")
-                              # Clear the list if only optional were missing
-                              missing_required = []
-
-                     # Check again after potentially clearing provider/model
+                          is_create_agent_optional_missing = (tool_name == "ManageTeamTool" and tool_args.get("action") == "create_agent" and all(p in ['provider', 'model'] for p in missing_required))
+                          if not is_create_agent_optional_missing: logger.warning(f"Agent {self.agent_id}: Missing required raw XML parameters for tool '{tool_name}': {missing_required}"); continue
+                          else: logger.debug(f"Allowing raw XML ManageTeamTool create_agent without provider/model (will be auto-selected)."); missing_required = []
                      if not missing_required:
                          logger.info(f"Agent {self.agent_id}: Detected raw XML tool call for '{tool_name}' at span ({match_start}, {match_end}). Validated Args: {validated_args}")
                          raw_xml_matches.append((tool_name, validated_args, (match_start, match_end)))
                          processed_spans.add((match_start, match_end))
-
                  except Exception as parse_err: logger.error(f"Agent {self.agent_id}: Error parsing params for raw XML '{match.group(0)[:100]}...': {parse_err}", exc_info=True)
 
         found_calls = markdown_xml_matches + raw_xml_matches; found_calls.sort(key=lambda x: x[2][0])
-        if not found_calls: logger.debug(f"Agent {self.agent_id}: No valid XML tool calls found.")
-        else: logger.info(f"Agent {self.agent_id}: Found {len(found_calls)} valid XML tool call(s).")
+        # --- Updated Logging ---
+        if not found_calls: logger.debug(f"Agent {self.agent_id}: No valid XML tool calls found in buffer.")
+        else: logger.info(f"Agent {self.agent_id}: Found {len(found_calls)} valid XML tool call(s) in buffer.")
+        # --- End Update ---
         return found_calls
 
 
-    # --- Main Processing Logic ---
+    # --- Main Processing Logic (Unchanged) ---
     async def process_message(self) -> AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]:
         """
         Processes the task based on the current message history using the LLM provider.
         Parses the response stream for XML tool calls and yields requests.
         Relies on CycleHandler for retry/failover logic.
-
-        Yields:
-            Dict[str, Any]: Events ('response_chunk', 'tool_requests', 'final_response', 'error', 'status').
-        Receives:
-             Optional[List[ToolResultDict]]: Currently ignored. CycleHandler manages loop continuation.
         """
-        if self.status not in [AGENT_STATUS_IDLE]:
-            logger.warning(f"Agent {self.agent_id} process_message called but agent is not idle (Status: {self.status}).")
-            yield {"type": "error", "content": f"[Agent Busy - Status: {self.status}]"}
-            return
-
+        if self.status not in [AGENT_STATUS_IDLE]: logger.warning(f"Agent {self.agent_id} process_message called but agent is not idle (Status: {self.status})."); yield {"type": "error", "content": f"[Agent Busy - Status: {self.status}]"}; return
         if not self.llm_provider: logger.error(f"Agent {self.agent_id}: LLM Provider not set."); self.set_status(AGENT_STATUS_ERROR); yield {"type": "error", "content": "[Agent Error: LLM Provider not configured]"}; return
         if not self.manager: logger.error(f"Agent {self.agent_id}: Manager not set."); self.set_status(AGENT_STATUS_ERROR); yield {"type": "error", "content": "[Agent Error: Manager not configured]"}; return
-
-        self.set_status(AGENT_STATUS_PROCESSING)
-        self.text_buffer = "" # Clear buffer at the start of processing
-        complete_assistant_response = "" # Accumulate the full response for history/final event
-        stream_had_error = False # Flag if an error event was yielded by the provider stream
-        last_error_obj = None # Store exception object if provider sends one
-
+        self.set_status(AGENT_STATUS_PROCESSING); self.text_buffer = ""; complete_assistant_response = ""; stream_had_error = False; last_error_obj = None
         logger.info(f"Agent {self.agent_id} starting processing via {self.provider_name}. History length: {len(self.message_history)}")
-
         try:
             if not self.ensure_sandbox_exists(): self.set_status(AGENT_STATUS_ERROR); yield {"type": "error", "content": f"[Agent Error: Could not ensure sandbox {self.sandbox_path}]"}; return
-
-            provider_stream = self.llm_provider.stream_completion(
-                messages=self.message_history, # Use current history
-                model=self.model,
-                temperature=self.temperature,
-                # No tools/tool_choice passed here, handled by XML parsing
-                **self.provider_kwargs
-            )
-
+            provider_stream = self.llm_provider.stream_completion( messages=self.message_history, model=self.model, temperature=self.temperature, **self.provider_kwargs )
             async for event in provider_stream:
                 event_type = event.get("type")
-                if event_type == "response_chunk":
-                    content = event.get("content", "");
-                    if content: self.text_buffer += content; complete_assistant_response += content; yield {"type": "response_chunk", "content": content}
+                if event_type == "response_chunk": content = event.get("content", "");
+                if content: self.text_buffer += content; complete_assistant_response += content; yield {"type": "response_chunk", "content": content}
                 elif event_type == "status": event["agent_id"] = self.agent_id; yield event
                 elif event_type == "error":
                     error_content = f"[{self.provider_name} Error] {event.get('content', 'Unknown provider error')}"
-                    last_error_obj = event.get("_exception_obj", ValueError(error_content)) # Get exception if available
+                    last_error_obj = event.get("_exception_obj", ValueError(error_content))
                     logger.error(f"Agent {self.agent_id}: Received error event from provider: {error_content}")
                     event["agent_id"] = self.agent_id; event["content"] = error_content; event["_exception_obj"] = last_error_obj; stream_had_error = True; yield event
-                    # Don't break here, let CycleHandler manage retry/failover based on error
                 else: logger.warning(f"Agent {self.agent_id}: Received unknown event type '{event_type}' from provider.")
-
             logger.debug(f"Agent {self.agent_id}: Provider stream finished processing. Stream had error: {stream_had_error}. Processing final buffer.")
-
             if not stream_had_error:
-                # --- Call parsing method ---
                 parsed_tool_calls = self._find_and_parse_tool_calls()
-                # --- End call ---
                 if parsed_tool_calls:
                      logger.info(f"Agent {self.agent_id}: {len(parsed_tool_calls)} tool call(s) found in final buffer.")
                      tool_requests_list = []
@@ -302,13 +262,10 @@ class Agent:
                      self.set_status(AGENT_STATUS_AWAITING_TOOL)
                      logger.info(f"Agent {self.agent_id}: Yielding {len(tool_requests_list)} tool request(s).")
                      yield {"type": "tool_requests", "calls": tool_requests_list, "raw_assistant_response": complete_assistant_response}
-                else: # No tool calls found
+                else:
                      logger.debug(f"Agent {self.agent_id}: No tool calls found in final buffer.")
-                     if complete_assistant_response:
-                          logger.debug(f"Agent {self.agent_id}: Yielding final_response event (no tool calls).")
-                          yield {"type": "final_response", "content": complete_assistant_response}
+                     if complete_assistant_response: logger.debug(f"Agent {self.agent_id}: Yielding final_response event (no tool calls)."); yield {"type": "final_response", "content": complete_assistant_response}
             else: logger.warning(f"Agent {self.agent_id}: Skipping final tool parsing/response yielding because stream yielded an error.")
-
         except Exception as e:
             error_msg = f"Unexpected Error processing message in Agent {self.agent_id}: {type(e).__name__} - {e}"
             logger.error(error_msg, exc_info=True)
@@ -316,13 +273,10 @@ class Agent:
         finally:
             self.text_buffer = ""; logger.info(f"Agent {self.agent_id}: Finished processing cycle attempt. Status before cycle handler finalizes: {self.status}")
 
-
-    # --- get_state and clear_history ---
+    # --- get_state and clear_history (Unchanged) ---
     def get_state(self) -> Dict[str, Any]:
-        """Returns the current state of the agent."""
         state = { "agent_id": self.agent_id, "persona": self.persona, "status": self.status, "provider": self.provider_name, "model": self.model, "temperature": self.temperature, "message_history_length": len(self.message_history), "sandbox_path": str(self.sandbox_path), "xml_tool_parsing_enabled": (self.raw_xml_tool_call_pattern is not None) }
         if self.status == AGENT_STATUS_EXECUTING_TOOL and self.current_tool_info: state["current_tool"] = self.current_tool_info
         return state
     def clear_history(self):
-        """Clears message history, keeps system prompt."""
         logger.info(f"Clearing message history for Agent {self.agent_id}"); self.message_history = [{"role": "system", "content": self.final_system_prompt}]
