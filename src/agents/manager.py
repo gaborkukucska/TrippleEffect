@@ -10,13 +10,17 @@ import uuid
 import fnmatch
 import copy
 
-# Import Agent class, Status constants, and BaseLLMProvider types
-from src.agents.core import (
-    Agent, AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING,
-    AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_AWAITING_TOOL,
-    AGENT_STATUS_ERROR
-)
+# --- REMOVED Agent Status Imports from core.py ---
+# Import BaseLLMProvider types (still needed)
 from src.llm_providers.base import BaseLLMProvider, ToolResultDict, MessageDict
+
+# --- NEW: Import status constants ---
+from src.agents.constants import AGENT_STATUS_IDLE, AGENT_STATUS_ERROR
+# --- END NEW ---
+
+# --- Import Agent class for type hinting ---
+from src.agents.core import Agent
+# --- End Import ---
 
 # Import settings, model_registry, AND BASE_DIR
 from src.config.settings import settings, model_registry, BASE_DIR
@@ -26,9 +30,6 @@ from src.api.websocket_manager import broadcast
 
 # Import ToolExecutor
 from src.tools.executor import ToolExecutor
-
-# Import Provider classes (needed for type hinting potentially)
-# No longer need specific provider imports here if lifecycle handles it
 
 # Import the component managers and utils
 from src.agents.state_manager import AgentStateManager
@@ -42,7 +43,7 @@ from src.agents.provider_key_manager import ProviderKeyManager
 # Import the refactored module functions
 from src.agents import agent_lifecycle # Use the module directly
 # Import the failover handler function
-from src.agents.failover_handler import handle_agent_model_failover, _select_next_failover_model
+from src.agents.failover_handler import handle_agent_model_failover # Keep this
 
 from pathlib import Path
 
@@ -59,7 +60,6 @@ class AgentManager:
     to specialized handlers/modules. Uses the 'openai' library structure for providers.
     """
     def __init__(self, websocket_manager: Optional[Any] = None):
-        # (Initialization remains the same as previous version)
         self.bootstrap_agents: List[str] = []
         self.agents: Dict[str, Agent] = {}
         self.send_to_ui_func = broadcast
@@ -71,7 +71,7 @@ class AgentManager:
         logger.info("Instantiating ToolExecutor...");
         self.tool_executor = ToolExecutor()
         self.tool_descriptions_xml = self.tool_executor.get_formatted_tool_descriptions_xml()
-        self.tool_descriptions_json = self.tool_executor.get_formatted_tool_descriptions_json() # Add JSON version
+        self.tool_descriptions_json = self.tool_executor.get_formatted_tool_descriptions_json()
         logger.info(f"ToolExecutor instantiated with tools: {list(self.tool_executor.tools.keys())}")
         logger.info("Instantiating AgentStateManager...");
         self.state_manager = AgentStateManager(self)
@@ -92,7 +92,6 @@ class AgentManager:
         logger.info("AgentManager initialized synchronously. Bootstrap agents and model discovery run asynchronously.")
 
     def _ensure_projects_dir(self):
-        # (Unchanged)
         try: settings.PROJECTS_BASE_DIR.mkdir(parents=True, exist_ok=True); logger.info(f"Ensured projects dir: {settings.PROJECTS_BASE_DIR}")
         except Exception as e: logger.error(f"Error creating projects dir {settings.PROJECTS_BASE_DIR}: {e}", exc_info=True)
 
@@ -100,20 +99,20 @@ class AgentManager:
     async def initialize_bootstrap_agents(self):
         await agent_lifecycle.initialize_bootstrap_agents(self)
 
-    async def create_agent_instance( self, agent_id_requested: Optional[str], provider: str, model: str, system_prompt: str, persona: str, team_id: Optional[str] = None, temperature: Optional[float] = None, **kwargs ) -> Tuple[bool, str, Optional[str]]:
+    async def create_agent_instance( self, agent_id_requested: Optional[str], provider: Optional[str], model: Optional[str], system_prompt: str, persona: str, team_id: Optional[str] = None, temperature: Optional[float] = None, **kwargs ) -> Tuple[bool, str, Optional[str]]:
+        # Provider and model are optional, lifecycle handles selection
         return await agent_lifecycle.create_agent_instance(self, agent_id_requested, provider, model, system_prompt, persona, team_id, temperature, **kwargs)
 
     async def delete_agent_instance(self, agent_id: str) -> Tuple[bool, str]:
         return await agent_lifecycle.delete_agent_instance(self, agent_id)
 
-    # --- Message Handling and Execution (Unchanged) ---
+    # --- Message Handling and Execution ---
     async def schedule_cycle(self, agent: Agent, retry_count: int = 0):
         if not agent: logger.error("Schedule cycle called with invalid Agent object."); return
         logger.debug(f"Manager: Scheduling cycle for agent '{agent.agent_id}' (Retry: {retry_count}).")
         asyncio.create_task(self.cycle_handler.run_cycle(agent, retry_count))
 
     async def handle_user_message(self, message: str, client_id: Optional[str] = None):
-        # (Unchanged)
         logger.info(f"Manager: Received user message for Admin AI: '{message[:100]}...'");
         if self.current_project is None:
             logger.info("Manager: No active project/session. Creating default context...")
@@ -122,19 +121,18 @@ class AgentManager:
             await self.send_to_ui({"type": "system_event", "event": "session_saved", "project": default_project, "session": default_session, "message": f"Context set: {default_project}/{default_session}" if success else f"Failed default context: {save_msg}"})
         admin_agent = self.agents.get(BOOTSTRAP_AGENT_ID);
         if not admin_agent: logger.error(f"Manager: Admin AI ('{BOOTSTRAP_AGENT_ID}') not found."); await self.send_to_ui({"type": "error", "agent_id": "manager", "content": "Admin AI unavailable."}); return
-        if admin_agent.status == AGENT_STATUS_IDLE:
+        if admin_agent.status == AGENT_STATUS_IDLE: # Uses imported constant
             logger.info(f"Manager: Delegating message to '{BOOTSTRAP_AGENT_ID}' and scheduling cycle.")
             admin_agent.message_history.append({"role": "user", "content": message}); await self.schedule_cycle(admin_agent, 0)
         else:
             logger.info(f"Manager: Admin AI busy ({admin_agent.status}). Message queued."); admin_agent.message_history.append({"role": "user", "content": message}); await self.push_agent_status_update(admin_agent.agent_id); await self.send_to_ui({ "type": "status", "agent_id": admin_agent.agent_id, "content": f"Admin AI busy ({admin_agent.status}). Queued." })
 
     # --- Failover Handling (Delegation) ---
-    async def handle_agent_model_failover(self, agent_id: str, last_error_obj: Exception): # <<< ACCEPTS EXCEPTION OBJECT
+    async def handle_agent_model_failover(self, agent_id: str, last_error_obj: Exception):
         """ Delegates failover handling to the imported failover handler function. """
-        # Call the imported function from failover_handler.py
-        await handle_agent_model_failover(self, agent_id, last_error_obj) # <<< PASS EXCEPTION OBJECT
+        await handle_agent_model_failover(self, agent_id, last_error_obj)
 
-    # --- UI Communication (Unchanged) ---
+    # --- UI Communication ---
     async def push_agent_status_update(self, agent_id: str):
         agent = self.agents.get(agent_id);
         if agent: state = agent.get_state(); state["team"] = self.state_manager.get_agent_team(agent_id);
@@ -146,7 +144,7 @@ class AgentManager:
         try: await self.send_to_ui_func(json.dumps(message_data));
         except Exception as e: logger.error(f"Error sending to UI: {e}. Data: {message_data}", exc_info=True)
 
-    # --- State and Session Management (Delegation - Unchanged) ---
+    # --- State and Session Management (Delegation) ---
     def get_agent_status(self) -> Dict[str, Dict[str, Any]]:
         return {aid: (ag.get_state() | {"team": self.state_manager.get_agent_team(aid)}) for aid, ag in self.agents.items()}
 
@@ -159,7 +157,6 @@ class AgentManager:
         return await self.session_manager.load_session(project_name, session_name)
 
     def get_agent_info_list_sync(self, filter_team_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        # (Unchanged)
         info_list = [];
         for agent_id, agent in self.agents.items():
              current_team = self.state_manager.get_agent_team(agent_id);
@@ -167,7 +164,7 @@ class AgentManager:
              state = agent.get_state(); info = {"agent_id": agent_id, "persona": state.get("persona"), "provider": state.get("provider"), "model": state.get("model"), "status": state.get("status"), "team": current_team}; info_list.append(info);
         return info_list
 
-    # --- Cleanup (Unchanged) ---
+    # --- Cleanup ---
     async def cleanup_providers(self):
         logger.info("Manager: Cleaning up LLM providers, saving metrics, and saving quarantine state...");
         active_providers = {agent.llm_provider for agent in self.agents.values() if agent.llm_provider}
@@ -179,16 +176,9 @@ class AgentManager:
         else: logger.info("Manager: No provider cleanup or saving needed.")
 
     async def _close_provider_safe(self, provider: BaseLLMProvider):
-        # (Unchanged)
         try:
              if hasattr(provider, 'close_session') and callable(provider.close_session): await provider.close_session(); logger.info(f"Manager: Closed session for {provider!r}")
              else: logger.debug(f"Manager: Provider {provider!r} does not have close_session.")
         except Exception as e: logger.error(f"Manager: Error closing session for {provider!r}: {e}", exc_info=True)
 
-    def _generate_unique_agent_id(self, prefix="agent") -> str:
-        # (Unchanged)
-        timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4]
-        while True:
-            new_id = f"{prefix}_{timestamp}_{short_uuid}".replace(":", "_")
-            if new_id not in self.agents: return new_id
-            time.sleep(0.001); timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4]
+    # _generate_unique_agent_id was moved to agent_lifecycle.py
