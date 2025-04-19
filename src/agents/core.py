@@ -88,16 +88,20 @@ class Agent:
         if self.manager and self.manager.tool_executor and self.manager.tool_executor.tools:
             tool_names = list(self.manager.tool_executor.tools.keys())
             if tool_names:
-                safe_tool_names = [re.escape(name) for name in tool_names]
-                tool_names_pattern_group = '|'.join(safe_tool_names)
-                raw_pattern_str = rf"<({tool_names_pattern_group})>([\s\S]*?)</\1>"
+                # --- MODIFICATION: Force lowercase for pattern group ---
+                safe_tool_names_lower = [re.escape(name.lower()) for name in tool_names]
+                tool_names_pattern_group_lower = '|'.join(safe_tool_names_lower)
+                # --- END MODIFICATION ---
+
+                # Use the lowercase pattern group but keep IGNORECASE for flexibility in user input tag matching
+                raw_pattern_str = rf"<({tool_names_pattern_group_lower})>([\s\S]*?)</\1>"
                 self.raw_xml_tool_call_pattern = re.compile(raw_pattern_str, re.IGNORECASE | re.DOTALL)
-                md_xml_pattern_str = MARKDOWN_FENCE_XML_PATTERN.format(tool_names=tool_names_pattern_group)
+
+                md_xml_pattern_str = MARKDOWN_FENCE_XML_PATTERN.format(tool_names=tool_names_pattern_group_lower) # Use lowercase here too
                 self.markdown_xml_tool_call_pattern = re.compile(md_xml_pattern_str, re.IGNORECASE | re.DOTALL | re.MULTILINE)
+
                 logger.info(f"Agent {self.agent_id}: Compiled XML tool patterns for tools: {tool_names}")
-                # --- ADDED: Log raw pattern ---
                 logger.debug(f"Agent {self.agent_id}: Raw XML pattern: {self.raw_xml_tool_call_pattern.pattern}")
-                # --- END ADD ---
             else: logger.info(f"Agent {self.agent_id}: No tools found in executor, tool parsing disabled.")
         else: logger.warning(f"Agent {self.agent_id}: Manager or ToolExecutor not available during init, tool parsing disabled.")
         logger.info(f"Agent {self.agent_id} ({self.persona}) initialized. Status: {self.status}. Provider: {self.provider_name}, Model: {self.model}. Sandbox: {self.sandbox_path}. LLM Provider Instance: {self.llm_provider}")
@@ -120,15 +124,15 @@ class Agent:
         except OSError as e: logger.error(f"Error creating sandbox directory for Agent {self.agent_id} at {self.sandbox_path}: {e}"); return False
         except Exception as e: logger.error(f"Unexpected error ensuring sandbox for Agent {self.agent_id}: {e}", exc_info=True); return False
 
-    # --- Tool Call Parsing Helper (Added Debugging) ---
+    # --- Tool Call Parsing Helper ---
     def _find_and_parse_tool_calls(self) -> List[Tuple[str, Dict[str, Any], Tuple[int, int]]]:
         """
         Finds *all* occurrences of valid XML tool calls (raw or fenced)
         in the text_buffer, avoiding nested matches. Parses them and returns validated info.
         """
         if not self.text_buffer: return []
-        buffer_content = self.text_buffer.strip() # Strip buffer first
-        logger.debug(f"Agent {self.agent_id}: Checking stripped buffer for XML tool calls (Len: {len(buffer_content)}):\n>>>\n{buffer_content}\n<<<") # Log full buffer content now
+        buffer_content = self.text_buffer.strip()
+        logger.debug(f"Agent {self.agent_id}: Checking stripped buffer for XML tool calls (Len: {len(buffer_content)}):\n>>>\n{buffer_content}\n<<<")
         found_calls = []; processed_spans = set()
 
         def is_overlapping(start, end):
@@ -139,18 +143,21 @@ class Agent:
         # --- Find Markdown XML ```<tool>...</tool>``` blocks ---
         markdown_xml_matches = []
         if self.markdown_xml_tool_call_pattern:
-            logger.debug(f"Agent {self.agent_id}: Searching for MARKDOWN XML...") # ADDED
-            markdown_matches_found = list(self.markdown_xml_tool_call_pattern.finditer(buffer_content)) # ADDED: Check results explicitly
-            logger.debug(f"Agent {self.agent_id}: Found {len(markdown_matches_found)} potential markdown XML matches.") # ADDED
-            for match in markdown_matches_found: # Use the collected list
+            logger.debug(f"Agent {self.agent_id}: Searching for MARKDOWN XML...")
+            markdown_matches_found = list(self.markdown_xml_tool_call_pattern.finditer(buffer_content))
+            logger.debug(f"Agent {self.agent_id}: Found {len(markdown_matches_found)} potential markdown XML matches.")
+            for match in markdown_matches_found:
                 match_start, match_end = match.span();
                 if is_overlapping(match_start, match_end): continue
                 xml_block = match.group(1).strip(); tool_name_outer = match.group(2)
+                # --- Match against original tool names (keys of self.tools) ---
                 tool_name = next((name for name in self.manager.tool_executor.tools if name.lower() == tool_name_outer.lower()), None)
+                # --- End Match ---
                 if not tool_name: logger.warning(f"Agent {self.agent_id}: Found fenced XML <{tool_name_outer}> but no matching tool registered."); continue
                 try:
                     inner_match = self.raw_xml_tool_call_pattern.search(xml_block) if self.raw_xml_tool_call_pattern else None
-                    if not inner_match or inner_match.group(1).lower() != tool_name.lower(): logger.warning(f"Agent {self.agent_id}: Could not parse inner content of fenced XML: '{xml_block[:100]}...'"); continue
+                    if not inner_match or inner_match.group(1).lower() != tool_name_outer.lower(): # Check against outer tag found
+                        logger.warning(f"Agent {self.agent_id}: Could not parse inner content of fenced XML (inner tag mismatch?): '{xml_block[:100]}...'"); continue
                     inner_content = inner_match.group(2); tool_args = {}; param_pattern = r"<(\w+?)\s*>([\s\S]*?)</\1>"; param_matches = re.findall(param_pattern, inner_content, re.DOTALL | re.IGNORECASE)
                     for param_name, param_value_escaped in param_matches: tool_args[param_name.lower()] = html.unescape(param_value_escaped.strip())
                     validated_args = {}; valid_structure = True; tool_schema = self.manager.tool_executor.tools[tool_name].get_schema(); expected_params = {p['name'].lower(): p for p in tool_schema.get('parameters', [])}
@@ -179,14 +186,16 @@ class Agent:
         # --- Find Raw XML <tool>...</tool> blocks ---
         raw_xml_matches = []
         if self.raw_xml_tool_call_pattern:
-             logger.debug(f"Agent {self.agent_id}: Searching for RAW XML...") # ADDED
-             raw_matches_found = list(self.raw_xml_tool_call_pattern.finditer(buffer_content)) # ADDED: Check results explicitly
-             logger.debug(f"Agent {self.agent_id}: Found {len(raw_matches_found)} potential raw XML matches.") # ADDED
-             for match in raw_matches_found: # Use the collected list
+             logger.debug(f"Agent {self.agent_id}: Searching for RAW XML...")
+             raw_matches_found = list(self.raw_xml_tool_call_pattern.finditer(buffer_content))
+             logger.debug(f"Agent {self.agent_id}: Found {len(raw_matches_found)} potential raw XML matches.")
+             for match in raw_matches_found:
                  match_start, match_end = match.span();
                  if is_overlapping(match_start, match_end): continue
-                 tool_name_outer = match.group(1)
+                 tool_name_outer = match.group(1) # This will be lowercase due to pattern change + IGNORECASE
+                 # --- Match against original tool names (keys of self.tools) ---
                  tool_name = next((name for name in self.manager.tool_executor.tools if name.lower() == tool_name_outer.lower()), None)
+                 # --- End Match ---
                  if not tool_name: logger.debug(f"Agent {self.agent_id}: Found raw XML <{tool_name_outer}> but no matching tool registered."); continue
                  try:
                      inner_content = match.group(2); tool_args = {}; param_pattern = r"<(\w+?)\s*>([\s\S]*?)</\1>"; param_matches = re.findall(param_pattern, inner_content, re.DOTALL | re.IGNORECASE)
@@ -216,20 +225,13 @@ class Agent:
                  except Exception as parse_err: logger.error(f"Agent {self.agent_id}: Error parsing params for raw XML '{match.group(0)[:100]}...': {parse_err}", exc_info=True)
 
         found_calls = markdown_xml_matches + raw_xml_matches; found_calls.sort(key=lambda x: x[2][0])
-        # --- Updated Logging ---
         if not found_calls: logger.debug(f"Agent {self.agent_id}: No valid XML tool calls found in buffer.")
         else: logger.info(f"Agent {self.agent_id}: Found {len(found_calls)} valid XML tool call(s) in buffer.")
-        # --- End Update ---
         return found_calls
 
 
     # --- Main Processing Logic (Unchanged) ---
     async def process_message(self) -> AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]:
-        """
-        Processes the task based on the current message history using the LLM provider.
-        Parses the response stream for XML tool calls and yields requests.
-        Relies on CycleHandler for retry/failover logic.
-        """
         if self.status not in [AGENT_STATUS_IDLE]: logger.warning(f"Agent {self.agent_id} process_message called but agent is not idle (Status: {self.status})."); yield {"type": "error", "content": f"[Agent Busy - Status: {self.status}]"}; return
         if not self.llm_provider: logger.error(f"Agent {self.agent_id}: LLM Provider not set."); self.set_status(AGENT_STATUS_ERROR); yield {"type": "error", "content": "[Agent Error: LLM Provider not configured]"}; return
         if not self.manager: logger.error(f"Agent {self.agent_id}: Manager not set."); self.set_status(AGENT_STATUS_ERROR); yield {"type": "error", "content": "[Agent Error: Manager not configured]"}; return
