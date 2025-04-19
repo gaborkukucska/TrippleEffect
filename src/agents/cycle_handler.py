@@ -5,19 +5,24 @@ import logging
 import time
 from typing import TYPE_CHECKING, Dict, Any, Optional, List, AsyncGenerator
 
-# Import base types and status constants
+# Import base types and Agent class
 from src.llm_providers.base import ToolResultDict, MessageDict
-from src.agents.core import (
-    AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING,
-    AGENT_STATUS_PLANNING,
+from src.agents.core import Agent
+
+# --- NEW: Import status constants ---
+from src.agents.constants import (
+    AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_PLANNING,
     AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_AWAITING_TOOL,
-    AGENT_STATUS_ERROR, Agent
+    AGENT_STATUS_ERROR
 )
+# --- END NEW ---
+
+# Import tools for type checking/logic if needed
 from src.tools.manage_team import ManageTeamTool
 from src.tools.send_message import SendMessageTool
 
-# Import specific exception types we might want to handle differently
-import openai # To check for openai specific errors
+# Import specific exception types
+import openai
 
 # Type hinting for AgentManager and InteractionHandler
 if TYPE_CHECKING:
@@ -53,6 +58,7 @@ class AgentCycleHandler:
         logger.info("AgentCycleHandler initialized.")
 
     async def run_cycle(self, agent: Agent, retry_count: int = 0):
+        # Uses imported constants
         agent_id = agent.agent_id
         current_provider = agent.provider_name
         current_model = agent.model
@@ -156,11 +162,10 @@ class AgentCycleHandler:
                                      else: manager_action_feedback.append({"call_id": call_id, "action": "unknown", "success": False, "message": "Unexpected tool result."})
                                  elif tool_name == SendMessageTool.name:
                                      target_id = call['arguments'].get("target_agent_id"); msg_content = call['arguments'].get("message_content")
-                                     activation_task = None # <<< Initialize activation_task to None
+                                     activation_task = None
                                      if target_id and msg_content is not None: activation_task = await self._interaction_handler.route_and_activate_agent_message(agent_id, target_id, msg_content);
-                                     if activation_task: activation_tasks.append(activation_task) # <<< Check is now safe
-                                     elif not target_id or msg_content is None: # <<< Add explicit check for failure reason
-                                         manager_action_feedback.append({"call_id": call_id, "action": "send_message", "success": False, "message": f"Validation Error: Missing {'target_agent_id' if not target_id else 'message_content'}."})
+                                     if activation_task: activation_tasks.append(activation_task)
+                                     elif not target_id or msg_content is None: manager_action_feedback.append({"call_id": call_id, "action": "send_message", "success": False, "message": f"Validation Error: Missing {'target_agent_id' if not target_id else 'message_content'}."})
                              else: manager_action_feedback.append({"call_id": call_id, "action": tool_name, "success": False, "message": "Tool execution failed (no result)."})
                         if activation_tasks: await asyncio.gather(*activation_tasks); logger.info(f"CycleHandler: Completed activation tasks for '{agent_id}'.")
                         if manager_action_feedback:
@@ -193,7 +198,6 @@ class AgentCycleHandler:
                  try: await self._manager.performance_tracker.record_call(provider=current_provider, model_id=current_model, duration_ms=llm_call_duration_ms, success=call_success)
                  except Exception as record_err: logger.error(f"Failed to record performance metrics for {current_provider}/{current_model}: {record_err}", exc_info=True)
 
-            # --- Decision Logic (Unchanged) ---
             if trigger_failover:
                 logger.warning(f"CycleHandler: Agent '{agent_id}' ({current_model_key}) requires failover. Error Type: {type(last_error_obj).__name__}. Triggering failover handler.")
                 asyncio.create_task(self._manager.handle_agent_model_failover(agent_id, last_error_obj))
@@ -205,7 +209,7 @@ class AgentCycleHandler:
             elif needs_reactivation_after_cycle:
                  reactivation_reason = "plan approved" if plan_approved_this_cycle else "tool/feedback processing"
                  logger.info(f"CycleHandler: Reactivating agent '{agent_id}' ({current_model_key}) after {reactivation_reason}.")
-                 agent.set_status(AGENT_STATUS_IDLE)
+                 agent.set_status(AGENT_STATUS_IDLE) # Uses imported constant
                  await asyncio.sleep(0)
                  asyncio.create_task(self._manager.schedule_cycle(agent, 0))
             else:
@@ -217,14 +221,14 @@ class AgentCycleHandler:
                      if history_len_after > history_len_before and agent.message_history[-1].get("role") == "user":
                           logger.info(f"CycleHandler: Agent '{agent_id}' ({current_model_key}) has new user message(s). Reactivating.")
                           if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear()
-                          agent.set_status(AGENT_STATUS_IDLE); asyncio.create_task(self._manager.schedule_cycle(agent, 0))
+                          agent.set_status(AGENT_STATUS_IDLE); asyncio.create_task(self._manager.schedule_cycle(agent, 0)) # Uses imported constant
                      else:
                           logger.info(f"CycleHandler: Agent '{agent_id}' ({current_model_key}) finished cycle cleanly, no reactivation needed.")
                           if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear()
-                          if agent.status != AGENT_STATUS_ERROR: agent.set_status(AGENT_STATUS_IDLE)
+                          if agent.status != AGENT_STATUS_ERROR: agent.set_status(AGENT_STATUS_IDLE) # Uses imported constant
                  elif not call_success:
                       logger.warning(f"CycleHandler: Agent '{agent_id}' cycle ended without explicit success or triggering failover/retry. Setting Idle. Last Error: {last_error_content}")
-                      if agent.status != AGENT_STATUS_ERROR: agent.set_status(AGENT_STATUS_IDLE)
+                      if agent.status != AGENT_STATUS_ERROR: agent.set_status(AGENT_STATUS_IDLE) # Uses imported constant
 
-            log_level = logging.ERROR if agent.status == AGENT_STATUS_ERROR else logging.INFO
+            log_level = logging.ERROR if agent.status == AGENT_STATUS_ERROR else logging.INFO # Uses imported constant
             logger.log(log_level, f"CycleHandler: Finished cycle logic for Agent '{agent_id}'. Final status for this attempt: {agent.status}")
