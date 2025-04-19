@@ -25,13 +25,13 @@ class ManageTeamTool(BaseTool):
     Tool used by the Admin AI to dynamically manage agents and teams.
     This tool validates the request and signals the AgentManager to perform the actual action.
     It does NOT modify state directly. NO RESTART NEEDED.
-    Admin AI MUST provide provider and model parameters for create_agent action.
+    Provider/model are optional for create_agent; framework will select if omitted.
     """
     name: str = "ManageTeamTool"
     description: str = (
         "Manages agents and teams dynamically within the system. "
         f"Use one of the valid actions: {', '.join(VALID_ACTIONS)}. "
-        "Provide required parameters for each action. For 'create_agent', 'provider' and 'model' MUST be provided from the available list. NO application restart is needed."
+        "Provide required parameters for each action. For 'create_agent', 'provider' and 'model' are optional; if omitted, the system will select the best available model based on performance and availability. NO application restart is needed." # Updated description
     )
     parameters: List[ToolParameter] = [
         ToolParameter(
@@ -55,26 +55,26 @@ class ManageTeamTool(BaseTool):
         ToolParameter(
             name="provider",
             type="string",
-            description="LLM provider name (e.g., 'openrouter', 'ollama'). **Required** for create_agent. Must match the provider part of the chosen model if applicable (e.g., provider 'ollama' for model 'ollama/llama3').",
-            required=True, # Technically required for create_agent, checked in execute
+            description="Optional: LLM provider name (e.g., 'openrouter', 'ollama'). If provided, must match the provider part of the chosen model.",
+            required=False, # Now Optional
         ),
         ToolParameter(
             name="model",
             type="string",
-            description="LLM model name specific to the provider (e.g., 'google/gemma-2-9b-it:free', 'llama3.2:3b-instruct-q4_K_M'). **Required** for create_agent. Must be chosen from the 'Currently Available Models' list provided in your system prompt.",
-            required=True, # Technically required for create_agent, checked in execute
+            description="Optional: LLM model name specific to the provider (e.g., 'google/gemma-2-9b-it:free', 'ollama/llama3.2:3b-instruct-q4_K_M'). If provided, must be chosen from the 'Currently Available Models' list.",
+            required=False, # Now Optional
         ),
         ToolParameter(
             name="system_prompt",
             type="string",
             description="The system prompt defining the agent's specific role and instructions (framework context is added automatically). Required for create_agent.",
-            required=True, # Technically required for create_agent, checked in execute
+            required=True, # Still Required for create_agent
         ),
         ToolParameter(
             name="persona",
             type="string",
             description="The display name for the agent. Required for create_agent.",
-            required=True, # Technically required for create_agent, checked in execute
+            required=True, # Still Required for create_agent
         ),
          ToolParameter(
             name="temperature",
@@ -89,18 +89,10 @@ class ManageTeamTool(BaseTool):
     async def execute(self, agent_id: str, agent_sandbox_path: Path, **kwargs: Any) -> Any:
         """
         Validates parameters for the requested management action.
-        Ensures mandatory parameters like provider/model are present for create_agent.
+        Checks required parameters based on the action, but allows provider/model
+        to be omitted for create_agent.
         Returns a structured dictionary signaling the AgentManager to perform the action,
         OR returns a specific error message if validation fails.
-
-        Args:
-            agent_id (str): The ID of the agent calling the tool (usually admin_ai).
-            agent_sandbox_path (Path): The path to the caller's sandbox (not used here).
-            **kwargs: Arguments containing 'action' and other relevant parameters.
-
-        Returns:
-            Dict[str, Any]: A dictionary containing status, action, validated params, and a message.
-                            This dictionary is processed by the AgentManager.
         """
         action = kwargs.get("action")
         params = kwargs # Store all provided args
@@ -115,21 +107,21 @@ class ManageTeamTool(BaseTool):
         # --- Specific Parameter Validation based on Action ---
         agent_id_param = params.get("agent_id")
         team_id_param = params.get("team_id")
-        provider_param = params.get("provider")
-        model_param = params.get("model")
+        # provider_param = params.get("provider") # No longer strictly needed here
+        # model_param = params.get("model")       # No longer strictly needed here
         prompt_param = params.get("system_prompt")
         persona_param = params.get("persona")
 
         error_message = None # Store validation error
 
         if action == "create_agent":
+            # Provider and model are now optional here, checked later
             missing = []
-            if not provider_param: missing.append("'provider'")
-            if not model_param: missing.append("'model'")
+            # Still require prompt and persona at this stage
             if not prompt_param: missing.append("'system_prompt'")
             if not persona_param: missing.append("'persona'")
             if missing:
-                error_message = f"Error: Missing required parameter(s) for 'create_agent': {', '.join(missing)}. You MUST provide these. Check the available model list for valid provider/model pairs."
+                error_message = f"Error: Missing required parameter(s) for 'create_agent': {', '.join(missing)}."
         elif action == "delete_agent":
             if not agent_id_param:
                  error_message = "Error: Missing required 'agent_id' parameter for 'delete_agent'. Use 'list_agents' first if you don't have the exact ID."
@@ -145,6 +137,7 @@ class ManageTeamTool(BaseTool):
         elif action == "remove_agent_from_team":
             if not agent_id_param: error_message = "Error: Missing required 'agent_id' parameter for 'remove_agent_from_team'."
             elif not team_id_param: error_message = "Error: Missing required 'team_id' parameter for 'remove_agent_from_team'."
+        # list_agents and list_teams have no required params here
 
         # Check for error message
         if error_message:
