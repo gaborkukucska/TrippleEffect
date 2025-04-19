@@ -190,14 +190,16 @@ graph TD
             DYNAMIC_AGENT_N["🤖 Dynamic Agent N"]
         end
 
-        subgraph LLM_Providers ["☁️ LLM Providers"] %% Instantiated by AGENT_MANAGER
+        subgraph LLM_Providers ["☁️ LLM Providers"]
+        %% Instantiated by AGENT_MANAGER
              PROVIDER_OR["🔌 OpenRouter"]
              PROVIDER_OLLAMA["🔌 Ollama"]
              PROVIDER_OPENAI["🔌 OpenAI"]
              PROVIDER_LITELLM["🔌 LiteLLM (TBD)"]
          end
 
-         subgraph Tools ["🛠️ Tools (XML Format)"] %% Updated
+         subgraph Tools ["🛠️ Tools (XML Format)"]
+        %% Updated
              TOOL_EXECUTOR["Executor"]
              TOOL_FS["FileSystem"]
              TOOL_SENDMSG["SendMessage"]
@@ -211,18 +213,23 @@ graph TD
          SHARED_WORKSPACE["🌐 Shared Workspace ✅"]
          LOG_FILES["📄 Log Files ✅"]
          METRICS_FILE["📄 Metrics File ✅"]
-         QUARANTINE_FILE["📄 Key Quarantine File ✅"] %% Added
+         QUARANTINE_FILE["📄 Key Quarantine File ✅"]
+        %% Added
          DATA_DIR["📁 Data Dir ✅"]
     end
 
-    subgraph External %% Status Implicit
+    subgraph External
+        %% Status Implicit
         LLM_API_SVC["☁️ Ext. LLM APIs"]
         OLLAMA_SVC["⚙️ Local Ollama Svc"]
-        OLLAMA_PROXY_SVC["🔌 Node.js Ollama Proxy (Optional)"] %% Added
+        OLLAMA_PROXY_SVC["🔌 Node.js Ollama Proxy (Optional)"]
+        %% Added
         LITELLM_SVC["⚙️ Local LiteLLM Svc"]
         CONFIG_YAML["⚙️ config.yaml"]
-        PROMPTS_JSON["📜 prompts.json (XML Format)"] %% Updated
-        DOT_ENV[".env File <br>(Multi-Key Support)<br>(Proxy Config)"] %% Updated
+        PROMPTS_JSON["📜 prompts.json (XML Format)"]
+        %% Updated
+        DOT_ENV[".env File <br>(Multi-Key Support)<br>(Proxy Config)"]
+        %% Updated
     end
 
     %% --- Connections ---
