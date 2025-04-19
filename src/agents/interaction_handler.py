@@ -9,9 +9,8 @@ from src.llm_providers.base import ToolResultDict, MessageDict
 from src.tools.manage_team import ManageTeamTool
 from src.tools.send_message import SendMessageTool
 
-# --- NEW: Import status constants ---
+# Import status constants
 from src.agents.constants import AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_EXECUTING_TOOL
-# --- END NEW ---
 
 # Import helper for prompt update
 from src.agents.prompt_utils import update_agent_prompt_team_id
@@ -32,15 +31,19 @@ class AgentInteractionHandler:
         self._manager = manager
         logger.info("AgentInteractionHandler initialized.")
 
-    # --- handle_manage_team_action (Unchanged from previous correct version) ---
     async def handle_manage_team_action(
         self,
         action: Optional[str],
         params: Dict[str, Any],
         calling_agent_id: str
         ) -> Tuple[bool, str, Optional[Any]]:
+        """
+        Processes validated ManageTeamTool actions signaled by the tool's execution.
+        Calls appropriate AgentManager methods for agent/team lifecycle operations.
+        Adds check for duplicate persona on create_agent. Handles idempotent create_team.
+        """
         if not action: return False, "No action specified.", None
-        success, message, result_data = False, "Unknown action or error.", None
+        success, message, result_data = False, f"Action '{action}' failed or not recognized.", None # Default message
         try:
             logger.debug(f"InteractionHandler: Processing ManageTeam action '{action}' from agent '{calling_agent_id}' with params: {params}")
             agent_id_param = params.get("agent_id"); team_id = params.get("team_id")
@@ -60,13 +63,17 @@ class AgentInteractionHandler:
                              duplicate_info = f" [Note: Agent with persona '{persona}' already exists in team '{team_id}' with ID '{existing_agent.agent_id}'.]"
                              logger.warning(f"InteractionHandler: {duplicate_info}")
                              break
+                # --- Corrected: Assign result directly ---
                 success, message, created_agent_id = await self._manager.create_agent_instance( agent_id_param, provider, model, system_prompt, persona, team_id, temperature, **extra_kwargs )
                 if success and created_agent_id:
                     result_data = { "created_agent_id": created_agent_id, "persona": persona, "provider": provider or "auto", "model": model or "auto", "team_id": team_id }
-                    message = f"Agent '{persona}' created successfully with ID '{created_agent_id}'." + duplicate_info
+                    # Append duplicate info to the success message from create_agent_instance
+                    message += duplicate_info
+                # --- End Correction ---
             elif action == "delete_agent": success, message = await self._manager.delete_agent_instance(agent_id_param)
-            elif action == "create_team": success, message = await self._manager.state_manager.create_new_team(team_id);
-            if success and action == "create_team": result_data = {"created_team_id": team_id}
+            elif action == "create_team":
+                 success, message = await self._manager.state_manager.create_new_team(team_id);
+                 if success and "created successfully" in message: result_data = {"created_team_id": team_id} # Only set result_data if actually created
             elif action == "delete_team": success, message = await self._manager.state_manager.delete_existing_team(team_id)
             elif action == "add_agent_to_team": success, message = await self._manager.state_manager.add_agent_to_team(agent_id_param, team_id);
             if success and action == "add_agent_to_team": await update_agent_prompt_team_id(self._manager, agent_id_param, team_id)
@@ -79,7 +86,8 @@ class AgentInteractionHandler:
                  try: json.dumps(result_data)
                  except TypeError: logger.error("list_agents result_data not JSON serializable"); result_data = [{"error": "data not serializable"}]
             elif action == "list_teams": result_data = self._manager.state_manager.get_team_info_dict(); success = True; message = f"Found {len(result_data)} team(s)."
-            else: message = f"Unrecognized action: {action}"; logger.warning(message)
+            # --- Removed the final 'else' that caused the "Unrecognized action" warning ---
+
             logger.info(f"InteractionHandler: ManageTeamTool action '{action}' processed. Success={success}, Message='{message}'")
             return success, message, result_data
         except Exception as e: message = f"InteractionHandler Error processing ManageTeamTool action '{action}': {e}"; logger.error(message, exc_info=True); return False, message, None
@@ -96,9 +104,9 @@ class AgentInteractionHandler:
         Routes a message from sender to target agent.
         Attempts to resolve target by exact ID first, then by unique persona match.
         Appends feedback to sender on failure (not found, ambiguous).
-        Appends message to target history and activates target agent if idle.
+        Appends message to target history and schedules target agent cycle if idle.
         """
-        from src.agents.manager import BOOTSTRAP_AGENT_ID # Local import for check
+        from src.agents.manager import BOOTSTRAP_AGENT_ID
 
         sender_agent = self._manager.agents.get(sender_id)
         if not sender_agent: logger.error(f"InteractionHandler SendMsg route error: Sender '{sender_id}' not found."); return None
@@ -129,10 +137,21 @@ class AgentInteractionHandler:
             error_msg = f"Message blocked: Sender '{sender_id}' (Team: {sender_team or 'N/A'}) cannot send to Target '{resolved_target_id}' (Persona: {target_agent.persona}, Team: {target_team or 'N/A'}). Only communication within the same team or with Admin AI is permitted."; logger.warning(f"InteractionHandler: {error_msg}"); feedback_message: MessageDict = { "role": "tool", "tool_call_id": f"send_message_failed_{target_identifier}", "content": f"[Manager Feedback for SendMessage]: {error_msg}" }; sender_agent.message_history.append(feedback_message); logger.debug(f"InteractionHandler: Appended 'communication blocked' feedback to sender '{sender_id}' history."); return None
 
         formatted_message: MessageDict = { "role": "user", "content": f"[From @{sender_id}]: {message_content}" }; target_agent.message_history.append(formatted_message); logger.debug(f"InteractionHandler: Appended message from '{sender_id}' to history of '{resolved_target_id}'.")
-        if target_agent.status == AGENT_STATUS_IDLE: # Use imported constant
-            logger.info(f"InteractionHandler: Target '{resolved_target_id}' is IDLE. Scheduling cycle..."); return await self._manager.schedule_cycle(target_agent, 0)
+
+        # --- Modified Activation Logic ---
+        activation_task = None
+        if target_agent.status == AGENT_STATUS_IDLE:
+            logger.info(f"InteractionHandler: Target '{resolved_target_id}' is IDLE. Scheduling cycle...");
+            # Schedule the cycle directly, don't return the task here
+            # The calling function (cycle_handler) handles the activation task list
+            activation_task = asyncio.create_task(self._manager.schedule_cycle(target_agent, 0))
         else:
-             logger.info(f"InteractionHandler: Target '{resolved_target_id}' not IDLE (Status: {target_agent.status}). Message queued."); await self._manager.send_to_ui({ "type": "status", "agent_id": resolved_target_id, "content": f"Message received from @{sender_id}, queued." }); return None
+            logger.info(f"InteractionHandler: Target '{resolved_target_id}' not IDLE (Status: {target_agent.status}). Message queued.")
+            await self._manager.send_to_ui({ "type": "status", "agent_id": resolved_target_id, "content": f"Message received from @{sender_id}, queued." })
+            # Agent is busy, message is queued, but no immediate activation task is created.
+            # The agent will process the message when its current cycle finishes or it's reactivated.
+        return activation_task # Return the task if created, otherwise None
+        # --- END MODIFICATION ---
 
 
     # --- execute_single_tool ---
@@ -149,10 +168,7 @@ class AgentInteractionHandler:
         Executes a single tool call via the ToolExecutor, passing necessary context including project/session names.
         """
         if not self._manager.tool_executor: logger.error("InteractionHandler: ToolExecutor unavailable in AgentManager. Cannot execute tool."); return {"call_id": call_id, "content": "[ToolExec Error: ToolExecutor unavailable]", "_raw_result": None}
-        tool_info = {"name": tool_name, "call_id": call_id}
-        # Uses imported constants
-        agent.set_status(AGENT_STATUS_EXECUTING_TOOL, tool_info=tool_info)
-        raw_result: Optional[Any] = None; result_content: str = "[Tool Execution Error: Unknown]"
+        tool_info = {"name": tool_name, "call_id": call_id}; agent.set_status(AGENT_STATUS_EXECUTING_TOOL, tool_info=tool_info); raw_result: Optional[Any] = None; result_content: str = "[Tool Execution Error: Unknown]"
         try:
             logger.debug(f"InteractionHandler: Executing tool '{tool_name}' (ID: {call_id}) for '{agent.agent_id}' with context Project: {project_name}, Session: {session_name}")
             raw_result = await self._manager.tool_executor.execute_tool( agent.agent_id, agent.sandbox_path, tool_name, tool_args, project_name=project_name, session_name=session_name )
@@ -164,9 +180,7 @@ class AgentInteractionHandler:
                  except TypeError: result_content = str(raw_result)
         except Exception as e: error_msg = f"InteractionHandler: Error executing tool '{tool_name}': {type(e).__name__} - {e}"; logger.error(error_msg, exc_info=True); result_content = f"[ToolExec Error: {error_msg}]"; raw_result = None
         finally:
-            # Uses imported constants
-            if agent.status == AGENT_STATUS_EXECUTING_TOOL and agent.current_tool_info and agent.current_tool_info.get("call_id") == call_id:
-                agent.set_status(AGENT_STATUS_PROCESSING)
+            if agent.status == AGENT_STATUS_EXECUTING_TOOL and agent.current_tool_info and agent.current_tool_info.get("call_id") == call_id: agent.set_status(AGENT_STATUS_PROCESSING)
         return {"call_id": call_id, "content": result_content, "_raw_result": raw_result}
 
 
