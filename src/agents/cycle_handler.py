@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Dict, Any, Optional, List, AsyncGenerator
 from src.llm_providers.base import ToolResultDict, MessageDict
 from src.agents.core import (
     AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING,
-    AGENT_STATUS_PLANNING, # <-- Import new status
+    AGENT_STATUS_PLANNING,
     AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_AWAITING_TOOL,
     AGENT_STATUS_ERROR, Agent
 )
@@ -31,14 +31,12 @@ MAX_STREAM_RETRIES = 3
 STREAM_RETRY_DELAYS = [5.0, 10.0, 10.0]
 MAX_FAILOVER_ATTEMPTS = 3
 
-# Define retryable exceptions (consider adding specific openai errors if needed)
+# Define retryable exceptions
 RETRYABLE_EXCEPTIONS = (
     openai.APIConnectionError,
     openai.APITimeoutError,
-    # Consider if RateLimitError should always trigger key cycling first
-    # openai.RateLimitError # Let's handle RateLimit specifically
 )
-# Specific Status Codes for Retry (includes Ollama 500 now)
+# Specific Status Codes for Retry
 RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504]
 
 
@@ -68,7 +66,7 @@ class AgentCycleHandler:
         last_error_content = ""
         is_retryable_error_type = False
         is_key_related_error = False
-        plan_approved_this_cycle = False # Flag for plan approval
+        plan_approved_this_cycle = False
 
         history_len_before = len(agent.message_history)
         executed_tool_successfully_this_cycle = False
@@ -88,33 +86,20 @@ class AgentCycleHandler:
                     event = await agent_generator.asend(None)
                 except StopAsyncIteration:
                     logger.info(f"CycleHandler: Agent '{agent_id}' generator finished normally.")
-                    # Check if a tool was executed in the last step before StopIteration
-                    if executed_tool_successfully_this_cycle:
-                        needs_reactivation_after_cycle = True
+                    if executed_tool_successfully_this_cycle: needs_reactivation_after_cycle = True
                     cycle_completed_successfully = True; break
                 except Exception as gen_err:
                     logger.error(f"CycleHandler: Generator error for '{agent_id}': {gen_err}", exc_info=True)
                     last_error_obj = gen_err; last_error_content = f"[Manager Error: Unexpected error in generator handler - {gen_err}]"; is_retryable_error_type = False; is_key_related_error = False; trigger_failover = True; break
 
                 event_type = event.get("type")
-                # --- Handle Plan Generated Event ---
                 if event_type == "plan_generated":
                      plan_content = event.get("plan_content", "[No Plan Content]")
                      logger.info(f"CycleHandler: Received plan from agent '{agent_id}'. Auto-approving.")
-                     # Store plan? Maybe not needed if we just auto-approve for now.
-                     # agent.current_plan = plan_content # Already set by agent.set_status
-
-                     # Add approval message to agent's history
                      approval_msg: MessageDict = {"role": "user", "content": "[Framework Approval] Plan approved. Proceed with execution."}
                      agent.message_history.append(approval_msg)
                      logger.debug(f"Appended plan approval message to history of agent '{agent_id}'.")
-
-                     # Set flag to reactivate agent immediately after this cycle finishes
-                     plan_approved_this_cycle = True
-                     needs_reactivation_after_cycle = True
-                     break # Exit inner loop, proceed to finally block for reactivation
-
-                # --- Handle other events ---
+                     plan_approved_this_cycle = True; needs_reactivation_after_cycle = True; break
                 elif event_type in ["response_chunk", "status", "final_response"]:
                     if "agent_id" not in event: event["agent_id"] = agent_id
                     await self._manager.send_to_ui(event)
@@ -131,9 +116,8 @@ class AgentCycleHandler:
                     elif isinstance(last_error_obj, (openai.AuthenticationError, openai.PermissionDeniedError)) or (isinstance(last_error_obj, openai.APIStatusError) and last_error_obj.status_code == 401): is_retryable_error_type = False; is_key_related_error = True; trigger_failover = True; logger.warning(f"CycleHandler: Agent '{agent_id}' encountered key-related error: {type(last_error_obj).__name__}. Triggering failover/key cycle.")
                     elif isinstance(last_error_obj, openai.RateLimitError) or (isinstance(last_error_obj, openai.APIStatusError) and last_error_obj.status_code == 429): is_retryable_error_type = False; is_key_related_error = True; trigger_failover = True; logger.warning(f"CycleHandler: Agent '{agent_id}' encountered rate limit error. Triggering failover/key cycle.")
                     else: is_retryable_error_type = False; is_key_related_error = False; trigger_failover = True; logger.warning(f"CycleHandler: Agent '{agent_id}' encountered non-retryable/unknown error: {type(last_error_obj).__name__}. Triggering failover.")
-                    break # Exit inner loop on any error event
+                    break
                 elif event_type == "tool_requests":
-                    # --- Tool processing logic (unchanged from previous correct version) ---
                     all_tool_calls: List[Dict] = event.get("calls", [])
                     if not all_tool_calls: continue
                     logger.info(f"CycleHandler: Agent '{agent_id}' yielded {len(all_tool_calls)} tool request(s).")
@@ -172,9 +156,11 @@ class AgentCycleHandler:
                                      else: manager_action_feedback.append({"call_id": call_id, "action": "unknown", "success": False, "message": "Unexpected tool result."})
                                  elif tool_name == SendMessageTool.name:
                                      target_id = call['arguments'].get("target_agent_id"); msg_content = call['arguments'].get("message_content")
+                                     activation_task = None # <<< Initialize activation_task to None
                                      if target_id and msg_content is not None: activation_task = await self._interaction_handler.route_and_activate_agent_message(agent_id, target_id, msg_content);
-                                     if activation_task: activation_tasks.append(activation_task)
-                                     else: manager_action_feedback.append({"call_id": call_id, "action": "send_message", "success": False, "message": "Validation Error: Missing target/content."})
+                                     if activation_task: activation_tasks.append(activation_task) # <<< Check is now safe
+                                     elif not target_id or msg_content is None: # <<< Add explicit check for failure reason
+                                         manager_action_feedback.append({"call_id": call_id, "action": "send_message", "success": False, "message": f"Validation Error: Missing {'target_agent_id' if not target_id else 'message_content'}."})
                              else: manager_action_feedback.append({"call_id": call_id, "action": tool_name, "success": False, "message": "Tool execution failed (no result)."})
                         if activation_tasks: await asyncio.gather(*activation_tasks); logger.info(f"CycleHandler: Completed activation tasks for '{agent_id}'.")
                         if manager_action_feedback:
@@ -201,16 +187,13 @@ class AgentCycleHandler:
                 except Exception as close_err: logger.error(f"CycleHandler: Error closing generator for '{agent_id}': {close_err}", exc_info=True)
 
             end_time = time.perf_counter(); llm_call_duration_ms = (end_time - start_time) * 1000
-            # Adjust success flag: if cycle ended due to plan approval, it's not an LLM call success/failure yet
             call_success = (cycle_completed_successfully or needs_reactivation_after_cycle) and not trigger_failover and not plan_approved_this_cycle
-
             logger.debug(f"Cycle outcome for {current_provider}/{current_model} (Retry: {retry_count}): Success={call_success}, Duration={llm_call_duration_ms:.2f}ms, Error? {bool(last_error_obj)}, Plan Approved? {plan_approved_this_cycle}")
-            # Only record metrics if it was an actual LLM call attempt (not just plan approval)
             if not plan_approved_this_cycle:
                  try: await self._manager.performance_tracker.record_call(provider=current_provider, model_id=current_model, duration_ms=llm_call_duration_ms, success=call_success)
                  except Exception as record_err: logger.error(f"Failed to record performance metrics for {current_provider}/{current_model}: {record_err}", exc_info=True)
 
-            # --- Refined Decision Logic ---
+            # --- Decision Logic (Unchanged) ---
             if trigger_failover:
                 logger.warning(f"CycleHandler: Agent '{agent_id}' ({current_model_key}) requires failover. Error Type: {type(last_error_obj).__name__}. Triggering failover handler.")
                 asyncio.create_task(self._manager.handle_agent_model_failover(agent_id, last_error_obj))
@@ -219,15 +202,13 @@ class AgentCycleHandler:
                  logger.warning(f"CycleHandler: Transient error for '{agent_id}' on {current_model_key}. Retrying same model/key in {retry_delay:.1f}s ({retry_count + 1}/{MAX_STREAM_RETRIES})... Last Error: {last_error_content}")
                  await self._manager.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Provider issue... Retrying '{current_model}' (Attempt {retry_count + 2})..."})
                  await asyncio.sleep(retry_delay); agent.set_status(AGENT_STATUS_IDLE); asyncio.create_task(self._manager.schedule_cycle(agent, retry_count + 1))
-            elif needs_reactivation_after_cycle: # Includes plan approval or successful tool use
-                 # --- Modified Logging ---
+            elif needs_reactivation_after_cycle:
                  reactivation_reason = "plan approved" if plan_approved_this_cycle else "tool/feedback processing"
                  logger.info(f"CycleHandler: Reactivating agent '{agent_id}' ({current_model_key}) after {reactivation_reason}.")
-                 # --- End Modification ---
                  agent.set_status(AGENT_STATUS_IDLE)
-                 await asyncio.sleep(0) # Yield control briefly
-                 asyncio.create_task(self._manager.schedule_cycle(agent, 0)) # Reset retry count
-            else: # Clean finish or max retries reached for transient error
+                 await asyncio.sleep(0)
+                 asyncio.create_task(self._manager.schedule_cycle(agent, 0))
+            else:
                  if not call_success and retry_count >= MAX_STREAM_RETRIES:
                       logger.error(f"CycleHandler: Agent '{agent_id}' ({current_model_key}) reached max retries ({MAX_STREAM_RETRIES}) for transient errors. Triggering failover.")
                       asyncio.create_task(self._manager.handle_agent_model_failover(agent_id, last_error_obj or ValueError("Max retries reached")))
