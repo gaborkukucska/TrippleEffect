@@ -19,7 +19,7 @@ def find_and_parse_xml_tool_calls(
     """
     Finds *all* occurrences of valid XML tool calls (raw or fenced)
     in the text_buffer, avoiding nested matches. Parses them and returns validated info.
-    Validates ONLY parameters marked as universally required in the tool schema.
+    Validates ONLY parameters marked as universally required=True in the tool schema.
     Action-specific validation happens within the tool's execute method.
 
     Args:
@@ -32,7 +32,7 @@ def find_and_parse_xml_tool_calls(
     Returns:
         List[Tuple[str, Dict[str, Any], Tuple[int, int]]]: A list of tuples, where each tuple contains:
             - tool_name (str): The validated name of the tool found.
-            - tool_args (Dict[str, Any]): A dictionary of parsed arguments (type validation basic).
+            - tool_args (Dict[str, Any]): A dictionary of parsed arguments.
             - span (Tuple[int, int]): The start and end indices of the matched tool call block.
     """
     if not text_buffer: return []
@@ -69,21 +69,23 @@ def find_and_parse_xml_tool_calls(
              for param_name, param_value_escaped in param_matches: tool_args[param_name] = html.unescape(param_value_escaped.strip()) # Store original case
              logger.info(f"Agent {agent_id}: Parsed args for '{tool_name}': {tool_args}")
 
-             # --- Simplified Parameter Validation ---
-             # Only check for parameters marked as required=True in the schema
+             # --- Simplified Universal Parameter Validation ---
              tool_schema = tools[tool_name].get_schema(); expected_params_dict = {p['name']: p for p in tool_schema.get('parameters', [])}
              missing_required = []
+             provided_arg_keys_lower = {k.lower() for k in tool_args.keys()} # Get lowercase keys of provided args
+
              for p_name, p_info in expected_params_dict.items():
-                 # Check if a universally required param is missing (case-insensitive check on provided args)
-                 is_present = any(provided_key.lower() == p_name.lower() for provided_key in tool_args)
-                 if p_info.get('required', True) and not is_present:
+                 # Check if a parameter marked as required=True in the schema is missing
+                 if p_info.get('required', True) and p_name.lower() not in provided_arg_keys_lower:
                      missing_required.append(p_name)
 
              if missing_required:
-                 logger.warning(f"Agent {agent_id}: Missing universally required parameter(s) for tool '{tool_name}': {missing_required}. Skipping tool call.")
-                 return None # Skip this tool call if universally required params are missing
+                 # Log warning but DO NOT return None here - let the tool's execute handle action-specific requirements
+                 logger.warning(f"Agent {agent_id}: Missing parameter(s) marked as required in schema for tool '{tool_name}': {missing_required}. Tool execution might fail if action needs them.")
+                 # Proceeding anyway, tool execute will handle final validation
+             # --- End Simplified Validation ---
 
-             # Basic type validation (optional, can add more robust checks here if needed)
+             # Basic type validation (optional, can add more robust checks here if needed) - This part is less critical now
              validated_args_for_exec = {}
              for schema_param_name, schema_info in expected_params_dict.items():
                  provided_key_match = next((k for k in tool_args if k.lower() == schema_param_name.lower()), None)
@@ -98,14 +100,11 @@ def find_and_parse_xml_tool_calls(
                      except ValueError:
                          logger.warning(f"Agent {agent_id}: Invalid value type for parameter '{schema_param_name}' (expected {expected_type}) in tool '{tool_name}'. Value: '{param_value}'. Passing as string.")
                          validated_args_for_exec[schema_param_name] = str(param_value) # Pass as string on error
-                 elif not schema_info.get('required', True):
-                      validated_args_for_exec[schema_param_name] = None # Pass None for missing optional args
+                 # We don't necessarily need to add None for missing optional here, kwargs handles it
 
              processed_spans.add((match_start, match_end));
-             # Return the originally parsed args (tool.execute handles specific needs)
-             # OR return validated_args_for_exec if you prefer typed args passed to execute
+             # Return the originally parsed args - the tool's execute method will handle specifics
              return tool_name, tool_args, (match_start, match_end)
-             # return tool_name, validated_args_for_exec, (match_start, match_end)
 
          except Exception as parse_err: logger.error(f"Agent {agent_id}: Error parsing params for '{xml_block_to_parse[:100]}...': {parse_err}", exc_info=True); return None
     # End Helper Function
