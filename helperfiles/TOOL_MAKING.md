@@ -1,7 +1,7 @@
 <!-- # START OF FILE helperfiles/TOOL_MAKING.md -->
 # TrippleEffect: Tool Development Guide
 
-This guide explains how to create new tools that agents within the TrippleEffect framework can utilize.
+This guide explains how to create new tools that agents within the TrippleEffect framework can utilize. Tools are invoked using an **XML format**.
 
 ## Core Concepts
 
@@ -10,6 +10,7 @@ This guide explains how to create new tools that agents within the TrippleEffect
 *   **Structure:** Each tool should ideally be in its own Python file (e.g., `my_tool.py`).
 *   **Base Class:** Every tool class MUST inherit from `src.tools.base.BaseTool`.
 *   **Registration:** The `ToolExecutor` automatically finds and registers valid tool classes inheriting from `BaseTool` (excluding `BaseTool` itself and files starting with `_`).
+*   **Invocation Format:** Agents request tool execution using an **XML block** at the end of their message.
 
 ## Creating a New Tool
 
@@ -78,22 +79,23 @@ Follow these steps to create a new tool:
     ```
 
 5.  **Implement `execute` Method:** Implement the core logic within the `async def execute(...)` method.
-    *   **Signature:** Must match `async def execute(self, agent_id: str, agent_sandbox_path: Path, **kwargs: Any) -> Any:`
+    *   **Signature:** Must match `async def execute(self, agent_id: str, agent_sandbox_path: Path, project_name: Optional[str] = None, session_name: Optional[str] = None, **kwargs: Any) -> Any:`
     *   `agent_id`: ID of the agent calling the tool (useful for logging or context).
     *   `agent_sandbox_path`: Absolute `Path` object to the agent's dedicated working directory. **Crucially, any file operations should be restricted to this path** using methods like `Path.is_relative_to()` for security. Most tools won't need this.
+    *   `project_name`, `session_name`: Context passed from the `ToolExecutor` (useful for tools like `FileSystemTool` accessing shared workspaces).
     *   `**kwargs`: A dictionary containing the arguments provided by the agent (parsed from the XML by `Agent Core`). Access parameters using `kwargs.get("param_name")`. The `ToolExecutor` performs basic validation based on your `parameters` definition (checking required fields). You might add more specific validation inside `execute`.
     *   **Return Value:**
         *   For most tools: Return a **string** summarizing the result or confirming success. This string is added to the calling agent's history.
         *   For errors: Return a descriptive **string** starting with "Error: ".
         *   *Special Case:* `ManageTeamTool` returns a dictionary signal for the `AgentManager`. Avoid returning complex objects unless handled specifically by the `AgentManager`.
-    *   **Blocking I/O:** If your tool needs to perform blocking operations (like network requests with `requests`, synchronous file I/O, or heavy computation), use `await asyncio.to_thread(your_blocking_function, args)` to avoid blocking the main application event loop. Use async libraries (like `aiohttp`, `AsyncDDGS`, `AsyncGithub`) whenever possible.
+    *   **Blocking I/O:** If your tool needs to perform blocking operations (like network requests with `requests`, synchronous file I/O, or heavy computation), use `await asyncio.to_thread(your_blocking_function, args)` to avoid blocking the main application event loop. Use async libraries (like `aiohttp`, `AsyncGithub`) whenever possible.
     *   **Logging:** Use the `logger` instance for informative messages.
 
     ```python
     class CalculatorTool(BaseTool):
         # ... name, description, parameters ...
 
-        async def execute(self, agent_id: str, agent_sandbox_path: Path, **kwargs: Any) -> Any:
+        async def execute(self, agent_id: str, agent_sandbox_path: Path, project_name: Optional[str] = None, session_name: Optional[str] = None, **kwargs: Any) -> Any:
             operation = kwargs.get("operation")
             op1_str = kwargs.get("operand1")
             op2_str = kwargs.get("operand2")
@@ -157,7 +159,3 @@ Okay, I can calculate that for you.
   <operand1>123.45</operand1>
   <operand2>67.8</operand2>
 </calculator>
-```
-
-The framework parses this, calls the `execute` method, and the tool's string result (e.g., "Calculation result: 123.45 multiply 67.8 = 8370.01") is added back into the agent's message history.
-```
