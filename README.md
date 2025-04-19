@@ -164,17 +164,21 @@ graph TD
         UI_CHAT_VIEW["Chat & Agents View ✅"]
         UI_LOGS_VIEW["System Logs View ✅"]
         UI_SESSION_VIEW["Project/Session View ✅"]
-        UI_CONFIG_VIEW["Static Config Info View ✅"] %% Simplified
+        UI_CONFIG_VIEW["Static Config Info View ✅"]
+    %% Simplified
     end
 
     subgraph Backend
         FASTAPI["🚀 FastAPI Backend ✅"]
         WS_MANAGER["🔌 WebSocket Manager ✅"]
-        AGENT_MANAGER["🧑‍💼 Agent Manager <br>(Coordinator)<br>+ Agent Create/Delete ✅<br>+ Uses ModelRegistry ✅<br>+ Uses ProviderKeyManager ✅<br>+ Auto-Selects Admin AI Model ✅<br>+ Handles Key/Model Failover ✅<br>+ Delegates Cycle Exec ✅<br>+ Manages Context ✅"] %% Updated
-        PROVIDER_KEY_MGR["🔑 Provider Key Manager <br>+ Manages Keys ✅<br>+ Handles Quarantine ✅<br>+ Saves/Loads State ✅"] %% Added
+        AGENT_MANAGER["🧑‍💼 Agent Manager <br>(Coordinator)<br>+ Agent Create/Delete ✅<br>+ Uses ModelRegistry ✅<br>+ Uses ProviderKeyManager ✅<br>+ Auto-Selects Admin AI Model ✅<br>+ Handles Key/Model Failover ✅<br>+ Delegates Cycle Exec ✅<br>+ Manages Context ✅"]
+        %% Updated
+        PROVIDER_KEY_MGR["🔑 Provider Key Manager <br>+ Manages Keys ✅<br>+ Handles Quarantine ✅<br>+ Saves/Loads State ✅"]
+        %% Added
         MODEL_REGISTRY["📚 Model Registry✅"]
         PERF_TRACKER["📊 Performance Tracker<br>+ Records Metrics ✅<br>+ Saves/Loads Metrics ✅"]
-        CYCLE_HANDLER["🔄 Agent Cycle Handler<br>+ Handles Retries ✅<br>+ Triggers Key/Model Failover ✅<br>+ Reports Metrics ✅"] %% Updated
+        CYCLE_HANDLER["🔄 Agent Cycle Handler<br>+ Handles Retries ✅<br>+ Triggers Key/Model Failover ✅<br>+ Reports Metrics ✅"]
+        %% Updated
         INTERACTION_HANDLER["🤝 Interaction Handler ✅"]
         STATE_MANAGER["📝 AgentStateManager ✅"]
         SESSION_MANAGER["💾 SessionManager ✅"]
