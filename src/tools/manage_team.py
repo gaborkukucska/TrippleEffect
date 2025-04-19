@@ -23,7 +23,8 @@ VALID_ACTIONS = [
 class ManageTeamTool(BaseTool):
     """
     Tool used by the Admin AI to dynamically manage agents and teams.
-    This tool validates the request and signals the AgentManager to perform the actual action.
+    This tool validates the request based on the specific action and signals
+    the AgentManager to perform the actual action.
     It does NOT modify state directly. NO RESTART NEEDED.
     Provider/model are optional for create_agent; framework will select if omitted.
     """
@@ -31,125 +32,113 @@ class ManageTeamTool(BaseTool):
     description: str = (
         "Manages agents and teams dynamically within the system. "
         f"Use one of the valid actions: {', '.join(VALID_ACTIONS)}. "
-        "Provide required parameters for each action. For 'create_agent', 'provider' and 'model' are optional; if omitted, the system will select the best available model based on performance and availability. NO application restart is needed." # Updated description
+        "Provide required parameters based on the specific action chosen. For 'create_agent', 'provider' and 'model' are optional (system selects if omitted). NO application restart is needed."
     )
     parameters: List[ToolParameter] = [
         ToolParameter(
             name="action",
             type="string",
             description=f"The management action to perform. Valid options: {', '.join(VALID_ACTIONS)}.",
-            required=True,
+            required=True, # Action is always required
         ),
         ToolParameter(
             name="agent_id",
             type="string",
-            description="The unique ID for an agent. Required for delete_agent, add_agent_to_team, remove_agent_from_team. Optional for create_agent (if omitted, one will be generated).",
-            required=False,
+            description="Agent ID. Required for: delete_agent, add_agent_to_team, remove_agent_from_team. Optional for create_agent.",
+            required=False, # Not universally required
         ),
         ToolParameter(
             name="team_id",
             type="string",
-            description="The unique ID for a team. Required for create_team, delete_team, add_agent_to_team, remove_agent_from_team. Optional for create_agent. **Also optional for 'list_agents' to filter by team.**",
-            required=False,
+            description="Team ID. Required for: create_team, delete_team, add_agent_to_team, remove_agent_from_team. Optional for create_agent, list_agents.",
+            required=False, # Not universally required
         ),
         ToolParameter(
             name="provider",
             type="string",
-            description="Optional: LLM provider name (e.g., 'openrouter', 'ollama'). If provided, must match the provider part of the chosen model.",
-            required=False, # Now Optional
+            description="Optional: LLM provider name for create_agent.",
+            required=False, # Optional: Handled by auto-select
         ),
         ToolParameter(
             name="model",
             type="string",
-            description="Optional: LLM model name specific to the provider (e.g., 'google/gemma-2-9b-it:free', 'ollama/llama3.2:3b-instruct-q4_K_M'). If provided, must be chosen from the 'Currently Available Models' list.",
-            required=False, # Now Optional
+            description="Optional: LLM model name for create_agent. Must be valid if provided.",
+            required=False, # Optional: Handled by auto-select
         ),
         ToolParameter(
             name="system_prompt",
             type="string",
-            description="The system prompt defining the agent's specific role and instructions (framework context is added automatically). Required for create_agent.",
-            required=True, # Still Required for create_agent
+            description="System prompt for create_agent. Defines the agent's role.",
+            required=False, # Required only for create_agent, checked in execute
         ),
         ToolParameter(
             name="persona",
             type="string",
-            description="The display name for the agent. Required for create_agent.",
-            required=True, # Still Required for create_agent
+            description="Display name for create_agent.",
+            required=False, # Required only for create_agent, checked in execute
         ),
          ToolParameter(
             name="temperature",
             type="float",
-            description="Optional temperature setting for create_agent (defaults will be used if omitted).",
+            description="Optional temperature setting for create_agent.",
             required=False,
         ),
-        # Add other relevant agent config params if needed (e.g., "extra_args" as JSON string?)
     ]
 
-    # --- UPDATED EXECUTE METHOD ---
+    # --- UPDATED EXECUTE METHOD with Action-Specific Validation ---
     async def execute(self, agent_id: str, agent_sandbox_path: Path, **kwargs: Any) -> Any:
         """
-        Validates parameters for the requested management action.
-        Checks required parameters based on the action, but allows provider/model
-        to be omitted for create_agent.
+        Validates parameters based on the specific management action requested.
         Returns a structured dictionary signaling the AgentManager to perform the action,
-        OR returns a specific error message if validation fails.
+        OR returns a specific error message if validation fails for the given action.
         """
         action = kwargs.get("action")
-        params = kwargs # Store all provided args
+        params = kwargs # Store all provided args (tool parser already extracted them)
 
         logger.info(f"'{agent_id}' requested ManageTeamTool action '{action}' with params: {params}")
 
         if not action or action not in VALID_ACTIONS:
+            # This check might be redundant if parser requires 'action', but keep for safety
             error_msg = f"Error: Invalid or missing 'action'. Must be one of: {', '.join(VALID_ACTIONS)}."
             logger.error(error_msg)
             return {"status": "error", "action": action, "message": error_msg}
 
-        # --- Specific Parameter Validation based on Action ---
-        agent_id_param = params.get("agent_id")
-        team_id_param = params.get("team_id")
-        # provider_param = params.get("provider") # No longer strictly needed here
-        # model_param = params.get("model")       # No longer strictly needed here
-        prompt_param = params.get("system_prompt")
-        persona_param = params.get("persona")
-
-        error_message = None # Store validation error
+        # --- Action-Specific Parameter Validation ---
+        error_message = None
+        missing = []
 
         if action == "create_agent":
-            # Provider and model are now optional here, checked later
-            missing = []
-            # Still require prompt and persona at this stage
-            if not prompt_param: missing.append("'system_prompt'")
-            if not persona_param: missing.append("'persona'")
-            if missing:
-                error_message = f"Error: Missing required parameter(s) for 'create_agent': {', '.join(missing)}."
+            # Provider/model are optional, but prompt and persona are required
+            if not params.get("system_prompt"): missing.append("'system_prompt'")
+            if not params.get("persona"): missing.append("'persona'")
+            if missing: error_message = f"Error: Missing required parameter(s) for 'create_agent': {', '.join(missing)}."
         elif action == "delete_agent":
-            if not agent_id_param:
-                 error_message = "Error: Missing required 'agent_id' parameter for 'delete_agent'. Use 'list_agents' first if you don't have the exact ID."
+            if not params.get("agent_id"): error_message = "Error: Missing required 'agent_id' parameter for 'delete_agent'."
         elif action == "create_team":
-            if not team_id_param:
-                 error_message = "Error: Missing required 'team_id' parameter for 'create_team'."
+            if not params.get("team_id"): error_message = "Error: Missing required 'team_id' parameter for 'create_team'."
         elif action == "delete_team":
-            if not team_id_param:
-                 error_message = "Error: Missing required 'team_id' parameter for 'delete_team'."
+            if not params.get("team_id"): error_message = "Error: Missing required 'team_id' parameter for 'delete_team'."
         elif action == "add_agent_to_team":
-             if not agent_id_param: error_message = "Error: Missing required 'agent_id' parameter for 'add_agent_to_team'."
-             elif not team_id_param: error_message = "Error: Missing required 'team_id' parameter for 'add_agent_to_team'."
+            if not params.get("agent_id"): missing.append("'agent_id'")
+            if not params.get("team_id"): missing.append("'team_id'")
+            if missing: error_message = f"Error: Missing required parameter(s) for 'add_agent_to_team': {', '.join(missing)}."
         elif action == "remove_agent_from_team":
-            if not agent_id_param: error_message = "Error: Missing required 'agent_id' parameter for 'remove_agent_from_team'."
-            elif not team_id_param: error_message = "Error: Missing required 'team_id' parameter for 'remove_agent_from_team'."
-        # list_agents and list_teams have no required params here
+            if not params.get("agent_id"): missing.append("'agent_id'")
+            if not params.get("team_id"): missing.append("'team_id'")
+            if missing: error_message = f"Error: Missing required parameter(s) for 'remove_agent_from_team': {', '.join(missing)}."
+        # list_agents and list_teams have no specific required params checked here
 
-        # Check for error message
+        # Check for validation error
         if error_message:
             logger.error(f"ManageTeamTool validation failed for agent '{agent_id}', action '{action}': {error_message}")
             return {"status": "error", "action": action, "message": error_message}
 
-        # If validation passes, return success signal for AgentManager
+        # If validation passes for the specific action, return success signal
         success_msg = f"Request for action '{action}' validated. Signaling manager to proceed."
         logger.info(success_msg)
         return {
             "status": "success",
             "action": action,
-            "params": params, # Pass all original params
+            "params": params, # Pass all original params parsed by core
             "message": success_msg
         }
