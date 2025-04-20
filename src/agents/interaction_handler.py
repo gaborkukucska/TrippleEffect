@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 from typing import TYPE_CHECKING, Dict, Any, Optional, List, Tuple
+import copy # Import copy for deepcopy
 
 # Import base types and tools
 from src.llm_providers.base import ToolResultDict, MessageDict
@@ -25,7 +26,8 @@ logger = logging.getLogger(__name__)
 class AgentInteractionHandler:
     """
     Handles the processing of specific tool interactions and execution of tools,
-    requiring context from the AgentManager. Includes robust target agent resolution.
+    requiring context from the AgentManager. Includes robust target agent resolution
+    and processing for ManageTeamTool actions like get_agent_details.
     """
     def __init__(self, manager: 'AgentManager'):
         self._manager = manager
@@ -41,6 +43,7 @@ class AgentInteractionHandler:
         Processes validated ManageTeamTool actions signaled by the tool's execution.
         Calls appropriate AgentManager methods for agent/team lifecycle operations.
         Adds check for duplicate persona on create_agent. Handles idempotent create_team.
+        Handles get_agent_details action.
         """
         if not action: return False, "No action specified.", None
         success, message, result_data = False, f"Action '{action}' failed or not recognized.", None # Default message
@@ -63,17 +66,19 @@ class AgentInteractionHandler:
                              duplicate_info = f" [Note: Agent with persona '{persona}' already exists in team '{team_id}' with ID '{existing_agent.agent_id}'.]"
                              logger.warning(f"InteractionHandler: {duplicate_info}")
                              break
-                # --- Corrected: Assign result directly ---
                 success, message, created_agent_id = await self._manager.create_agent_instance( agent_id_param, provider, model, system_prompt, persona, team_id, temperature, **extra_kwargs )
                 if success and created_agent_id:
-                    result_data = { "created_agent_id": created_agent_id, "persona": persona, "provider": provider or "auto", "model": model or "auto", "team_id": team_id }
-                    # Append duplicate info to the success message from create_agent_instance
+                    # Use the actual config used (which might include auto-selected provider/model)
+                    created_agent = self._manager.agents.get(created_agent_id)
+                    final_provider = created_agent.provider_name if created_agent else (provider or 'auto')
+                    # Use the canonical model ID stored in the agent's config
+                    final_model = created_agent.agent_config.get("config", {}).get("model", "auto") if created_agent else (model or 'auto')
+                    result_data = { "created_agent_id": created_agent_id, "persona": persona, "provider": final_provider, "model": final_model, "team_id": team_id }
                     message += duplicate_info
-                # --- End Correction ---
             elif action == "delete_agent": success, message = await self._manager.delete_agent_instance(agent_id_param)
             elif action == "create_team":
                  success, message = await self._manager.state_manager.create_new_team(team_id);
-                 if success and "created successfully" in message: result_data = {"created_team_id": team_id} # Only set result_data if actually created
+                 if success and "created successfully" in message: result_data = {"created_team_id": team_id}
             elif action == "delete_team": success, message = await self._manager.state_manager.delete_existing_team(team_id)
             elif action == "add_agent_to_team": success, message = await self._manager.state_manager.add_agent_to_team(agent_id_param, team_id);
             if success and action == "add_agent_to_team": await update_agent_prompt_team_id(self._manager, agent_id_param, team_id)
@@ -86,14 +91,51 @@ class AgentInteractionHandler:
                  try: json.dumps(result_data)
                  except TypeError: logger.error("list_agents result_data not JSON serializable"); result_data = [{"error": "data not serializable"}]
             elif action == "list_teams": result_data = self._manager.state_manager.get_team_info_dict(); success = True; message = f"Found {len(result_data)} team(s)."
-            # --- Removed the final 'else' that caused the "Unrecognized action" warning ---
+            # --- NEW: Handle get_agent_details ---
+            elif action == "get_agent_details":
+                 target_agent_id = params.get("agent_id")
+                 agent_instance = self._manager.agents.get(target_agent_id)
+                 if not agent_instance:
+                     success = False; message = f"Agent '{target_agent_id}' not found."
+                 else:
+                     # Gather detailed info
+                     agent_state = agent_instance.get_state() # Basic state: status, persona, provider, model etc.
+                     agent_config = getattr(agent_instance, 'agent_config', {}).get('config', {}) # Full config incl prompt
+                     team_id = self._manager.state_manager.get_agent_team(target_agent_id)
+
+                     # Construct result_data (make a copy of config to avoid exposing internal objects directly if needed)
+                     result_data = {
+                         "agent_id": target_agent_id,
+                         "status": agent_state.get("status"),
+                         "persona": agent_state.get("persona"),
+                         "team_id": team_id,
+                         "provider": agent_state.get("provider"),
+                         "model": agent_config.get("model"), # Get canonical model ID from config
+                         "temperature": agent_state.get("temperature"),
+                         "current_tool": agent_state.get("current_tool"), # If executing tool
+                         "current_plan": agent_state.get("current_plan"), # If planning
+                         # Include the full system prompt (potentially large)
+                         "system_prompt": agent_config.get("system_prompt"),
+                         # Include other config kwargs if needed
+                         "other_config": {k:v for k,v in agent_config.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona']}
+                     }
+                     success = True
+                     message = f"Successfully retrieved details for agent '{target_agent_id}'."
+                     try:
+                         # Test serialization before returning success
+                         json.dumps(result_data)
+                     except TypeError as json_err:
+                          logger.error(f"Agent details for '{target_agent_id}' not JSON serializable: {json_err}")
+                          result_data = {"agent_id": target_agent_id, "error": "Details contain non-serializable data."}
+                          # Still successful in finding agent, but data is limited
+                          message = f"Retrieved agent '{target_agent_id}', but details could not be fully serialized."
+            # --- End get_agent_details ---
 
             logger.info(f"InteractionHandler: ManageTeamTool action '{action}' processed. Success={success}, Message='{message}'")
             return success, message, result_data
         except Exception as e: message = f"InteractionHandler Error processing ManageTeamTool action '{action}': {e}"; logger.error(message, exc_info=True); return False, message, None
 
 
-    # --- Robust route_and_activate_agent_message ---
     async def route_and_activate_agent_message(
         self,
         sender_id: str,
@@ -138,23 +180,16 @@ class AgentInteractionHandler:
 
         formatted_message: MessageDict = { "role": "user", "content": f"[From @{sender_id}]: {message_content}" }; target_agent.message_history.append(formatted_message); logger.debug(f"InteractionHandler: Appended message from '{sender_id}' to history of '{resolved_target_id}'.")
 
-        # --- Modified Activation Logic ---
         activation_task = None
         if target_agent.status == AGENT_STATUS_IDLE:
             logger.info(f"InteractionHandler: Target '{resolved_target_id}' is IDLE. Scheduling cycle...");
-            # Schedule the cycle directly, don't return the task here
-            # The calling function (cycle_handler) handles the activation task list
             activation_task = asyncio.create_task(self._manager.schedule_cycle(target_agent, 0))
         else:
             logger.info(f"InteractionHandler: Target '{resolved_target_id}' not IDLE (Status: {target_agent.status}). Message queued.")
             await self._manager.send_to_ui({ "type": "status", "agent_id": resolved_target_id, "content": f"Message received from @{sender_id}, queued." })
-            # Agent is busy, message is queued, but no immediate activation task is created.
-            # The agent will process the message when its current cycle finishes or it's reactivated.
-        return activation_task # Return the task if created, otherwise None
-        # --- END MODIFICATION ---
+        return activation_task
 
 
-    # --- execute_single_tool ---
     async def execute_single_tool(
         self,
         agent: 'Agent',
@@ -184,7 +219,6 @@ class AgentInteractionHandler:
         return {"call_id": call_id, "content": result_content, "_raw_result": raw_result}
 
 
-    # --- failed_tool_result ---
     async def failed_tool_result(self, call_id: Optional[str], tool_name: Optional[str]) -> Optional[ToolResultDict]:
         """
         Generates a formatted error result dictionary for failed tool dispatch/validation.
