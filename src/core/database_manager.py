@@ -27,17 +27,15 @@ class Base(DeclarativeBase):
     pass
 
 # --- SQLAlchemy Models ---
-
+# (Models remain exactly the same as before)
 class Project(Base):
     __tablename__ = 'projects'
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False, unique=True)
     description = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=sql_func.now())
-
     sessions = relationship("Session", back_populates="project", cascade="all, delete-orphan")
-
-    __table_args__ = (Index('ix_project_name', 'name'),) # Index for faster name lookups
+    __table_args__ = (Index('ix_project_name', 'name'),)
 
 class Session(Base):
     __tablename__ = 'sessions'
@@ -46,44 +44,35 @@ class Session(Base):
     name = Column(String, nullable=False)
     start_time = Column(DateTime(timezone=True), server_default=sql_func.now())
     end_time = Column(DateTime(timezone=True), nullable=True)
-
     project = relationship("Project", back_populates="sessions")
-    # Define relationships to other tables linked by session_id
     agent_records = relationship("AgentRecord", back_populates="session", cascade="all, delete-orphan")
     interactions = relationship("Interaction", back_populates="session", cascade="all, delete-orphan")
     knowledge = relationship("LongTermKnowledge", back_populates="session", cascade="all, delete-orphan")
-
     __table_args__ = (Index('ix_session_project_id', 'project_id'),)
 
 class AgentRecord(Base):
-    """ Represents an agent instance within a specific session. """
     __tablename__ = 'agent_records'
     id = Column(Integer, primary_key=True)
-    agent_id = Column(String, nullable=False) # The runtime agent ID
+    agent_id = Column(String, nullable=False)
     session_id = Column(Integer, ForeignKey('sessions.id'), nullable=False)
     persona = Column(String, nullable=False)
-    model_config_json = Column(JSON, nullable=True) # Store provider, model, temp etc. as JSON
+    model_config_json = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=sql_func.now())
-
     session = relationship("Session", back_populates="agent_records")
-
-    __table_args__ = (Index('ix_agentrecord_session_agent', 'session_id', 'agent_id', unique=True),) # Agent ID should be unique per session
+    __table_args__ = (Index('ix_agentrecord_session_agent', 'session_id', 'agent_id', unique=True),)
 
 class Interaction(Base):
-    """ Logs a message or tool interaction within a session. """
     __tablename__ = 'interactions'
     id = Column(Integer, primary_key=True)
     session_id = Column(Integer, ForeignKey('sessions.id'), nullable=False)
-    agent_id = Column(String, nullable=False) # Agent involved (sender or target)
-    role = Column(String, nullable=False) # E.g., 'user', 'assistant', 'tool', 'system_event'
-    content = Column(Text, nullable=True) # Main text content
-    tool_calls_json = Column(JSON, nullable=True) # If role='assistant' and tools were called
-    tool_results_json = Column(JSON, nullable=True) # If role='tool', the results
+    agent_id = Column(String, nullable=False)
+    role = Column(String, nullable=False)
+    content = Column(Text, nullable=True)
+    tool_calls_json = Column(JSON, nullable=True)
+    tool_results_json = Column(JSON, nullable=True)
     timestamp = Column(DateTime(timezone=True), server_default=sql_func.now())
-
     session = relationship("Session", back_populates="interactions")
-    knowledge_source = relationship("LongTermKnowledge", back_populates="source_interaction", uselist=False) # One interaction might source one knowledge item
-
+    knowledge_source = relationship("LongTermKnowledge", back_populates="source_interaction", uselist=False)
     __table_args__ = (
         Index('ix_interaction_session_id', 'session_id'),
         Index('ix_interaction_agent_id', 'agent_id'),
@@ -91,25 +80,21 @@ class Interaction(Base):
     )
 
 class LongTermKnowledge(Base):
-    """ Stores distilled knowledge points derived from interactions. """
     __tablename__ = 'long_term_knowledge'
     id = Column(Integer, primary_key=True)
-    session_id = Column(Integer, ForeignKey('sessions.id'), nullable=True) # Knowledge might span sessions? Or be linked to the session it was learned in
-    keywords = Column(String, nullable=False) # Comma-separated or JSON list
+    session_id = Column(Integer, ForeignKey('sessions.id'), nullable=True)
+    keywords = Column(String, nullable=False)
     summary = Column(Text, nullable=False)
-    source_interaction_id = Column(Integer, ForeignKey('interactions.id'), nullable=True) # Link back to where this was learned
-    importance_score = Column(Float, nullable=True, default=0.5) # Simple relevance/importance
+    source_interaction_id = Column(Integer, ForeignKey('interactions.id'), nullable=True)
+    importance_score = Column(Float, nullable=True, default=0.5)
     created_at = Column(DateTime(timezone=True), server_default=sql_func.now())
-    last_accessed = Column(DateTime(timezone=True), nullable=True) # For potential future use (e.g., LRU cache)
-
+    last_accessed = Column(DateTime(timezone=True), nullable=True)
     session = relationship("Session", back_populates="knowledge")
     source_interaction = relationship("Interaction", back_populates="knowledge_source")
-
     __table_args__ = (
-        Index('ix_knowledge_keywords', 'keywords'), # Index for keyword search
+        Index('ix_knowledge_keywords', 'keywords'),
         Index('ix_knowledge_importance', 'importance_score'),
     )
-
 
 # --- Database Manager Class ---
 
@@ -117,14 +102,18 @@ class DatabaseManager:
     """ Handles database connection, session management, and CRUD operations. """
 
     def __init__(self, db_url: str = DB_URL):
-        self._engine = None
-        self._session_local = None
+        self._engine = None # Initialize as None
+        self._session_local = None # Initialize as None
         self.db_url = db_url
-        # Run async init in event loop
-        asyncio.create_task(self._initialize_db())
+        # REMOVED: asyncio.create_task(self._initialize_db()) - Will be called from main.py lifespan
 
     async def _initialize_db(self):
         """ Asynchronously initializes the database engine and creates tables. """
+        # Avoid re-initialization if already done
+        if self._engine is not None:
+            logger.debug("Database already initialized. Skipping re-initialization.")
+            return
+
         logger.info(f"Initializing asynchronous database connection to: {self.db_url}")
         try:
             # Ensure the data directory exists
@@ -143,13 +132,11 @@ class DatabaseManager:
 
             # Create tables if they don't exist
             async with self._engine.begin() as conn:
-                # await conn.run_sync(Base.metadata.drop_all) # Uncomment to drop tables on startup for testing
                 await conn.run_sync(Base.metadata.create_all)
             logger.info("Database tables created/verified successfully.")
 
         except Exception as e:
             logger.critical(f"CRITICAL: Database initialization failed: {e}", exc_info=True)
-            # Application might need to exit or handle this failure gracefully
             self._engine = None
             self._session_local = None
 
@@ -166,10 +153,8 @@ class DatabaseManager:
         """ Provides a database session within an async context manager. """
         if self._session_local is None:
              logger.error("Database session factory not initialized.")
-             # Optionally wait briefly for init to complete, or raise error
-             await asyncio.sleep(0.5) # Quick wait, might need better handling
-             if self._session_local is None:
-                 raise RuntimeError("Database session factory failed to initialize.")
+             # If called before init finishes, raise clearly
+             raise RuntimeError("DatabaseManager._initialize_db() must be awaited before getting a session.")
 
         session: AsyncSession = self._session_local()
         try:
@@ -186,27 +171,23 @@ class DatabaseManager:
             logger.debug("DB Session closed.")
 
     # --- Basic CRUD Methods ---
-
+    # (CRUD methods remain exactly the same as before)
     async def add_project(self, name: str, description: Optional[str] = None) -> Optional[Project]:
-        """ Adds a new project. """
         async with self.get_session() as session:
-            # Check if project exists
             stmt = select(Project).where(Project.name == name)
             result = await session.execute(stmt)
             existing = result.scalars().first()
             if existing:
                  logger.warning(f"Project '{name}' already exists with ID {existing.id}.")
-                 return existing # Return existing project
-            # Create new project
+                 return existing
             new_project = Project(name=name, description=description)
             session.add(new_project)
-            await session.flush() # Flush to get the ID
+            await session.flush()
             await session.refresh(new_project)
             logger.info(f"Added new project '{name}' with ID {new_project.id}.")
             return new_project
 
     async def get_project_by_name(self, name: str) -> Optional[Project]:
-        """ Gets a project by its name. """
         async with self.get_session() as session:
             stmt = select(Project).where(Project.name == name)
             result = await session.execute(stmt)
@@ -216,7 +197,6 @@ class DatabaseManager:
             return project
 
     async def start_session(self, project_id: int, session_name: str) -> Optional[Session]:
-        """ Creates a new session record for a project. """
         async with self.get_session() as session:
             new_session = Session(project_id=project_id, name=session_name)
             session.add(new_session)
@@ -226,12 +206,12 @@ class DatabaseManager:
             return new_session
 
     async def end_session(self, session_id: int):
-        """ Marks a session as ended. """
         async with self.get_session() as session:
             stmt = select(Session).where(Session.id == session_id)
             result = await session.execute(stmt)
             db_session = result.scalars().first()
             if db_session:
+                # Use func.now() which should translate to the DB's now() function
                 db_session.end_time = sql_func.now()
                 await session.flush()
                 logger.info(f"Marked session ID {session_id} as ended.")
@@ -239,13 +219,12 @@ class DatabaseManager:
                 logger.warning(f"Could not find session ID {session_id} to mark as ended.")
 
     async def add_agent_record(self, session_id: int, agent_id: str, persona: str, model_config_dict: Optional[Dict] = None) -> Optional[AgentRecord]:
-        """ Adds a record for an agent created during a session. """
         async with self.get_session() as session:
             new_agent_record = AgentRecord(
                 session_id=session_id,
                 agent_id=agent_id,
                 persona=persona,
-                model_config_json=model_config_dict # SQLAlchemy handles JSON conversion
+                model_config_json=model_config_dict
             )
             session.add(new_agent_record)
             await session.flush()
@@ -262,15 +241,14 @@ class DatabaseManager:
         tool_calls: Optional[List[Dict]] = None,
         tool_results: Optional[List[Dict]] = None
         ) -> Optional[Interaction]:
-        """ Logs a message or tool interaction to the database. """
         async with self.get_session() as session:
              interaction = Interaction(
                  session_id=session_id,
                  agent_id=agent_id,
                  role=role,
                  content=content,
-                 tool_calls_json=tool_calls, # Can be None
-                 tool_results_json=tool_results # Can be None
+                 tool_calls_json=tool_calls,
+                 tool_results_json=tool_results
              )
              session.add(interaction)
              await session.flush()
@@ -282,15 +260,14 @@ class DatabaseManager:
         self,
         keywords: str,
         summary: str,
-        session_id: Optional[int] = None, # Link to session where learned
-        interaction_id: Optional[int] = None, # Link to specific interaction
+        session_id: Optional[int] = None,
+        interaction_id: Optional[int] = None,
         importance: Optional[float] = 0.5
         ) -> Optional[LongTermKnowledge]:
-        """ Saves a piece of distilled knowledge. """
         async with self.get_session() as session:
             knowledge = LongTermKnowledge(
                 session_id=session_id,
-                keywords=keywords.lower(), # Store lowercase for consistent search
+                keywords=keywords.lower(),
                 summary=summary,
                 source_interaction_id=interaction_id,
                 importance_score=importance
@@ -307,35 +284,23 @@ class DatabaseManager:
         min_importance: Optional[float] = None,
         max_results: int = 5
         ) -> List[LongTermKnowledge]:
-        """ Searches long-term knowledge based on keywords. """
         if not query_keywords: return []
         async with self.get_session() as session:
             stmt = select(LongTermKnowledge)
-            # Simple keyword matching (can be improved with full-text search or vector search later)
             keyword_filters = [LongTermKnowledge.keywords.contains(kw.lower()) for kw in query_keywords]
-            stmt = stmt.where(*keyword_filters) # Requires at least one keyword match
-
+            stmt = stmt.where(*keyword_filters)
             if min_importance is not None:
                 stmt = stmt.where(LongTermKnowledge.importance_score >= min_importance)
-
-            # Order by importance (desc) then creation time (desc)
             stmt = stmt.order_by(desc(LongTermKnowledge.importance_score), desc(LongTermKnowledge.created_at))
             stmt = stmt.limit(max_results)
-
             result = await session.execute(stmt)
             knowledge_items = result.scalars().all()
             logger.info(f"Knowledge search for '{query_keywords}' found {len(knowledge_items)} items.")
+            return list(knowledge_items)
 
-            # Optional: Update last_accessed time for retrieved items
-            # now = sql_func.now()
-            # for item in knowledge_items:
-            #    item.last_accessed = now
-            # await session.flush()
-
-            return list(knowledge_items) # Return as list
 
 # --- Singleton Instance ---
-# Instantiate the manager globally
+# Instantiate the manager globally BUT DO NOT INITIALIZE ASYNC PARTS YET
 db_manager = DatabaseManager()
 
 # --- Cleanup Function ---
