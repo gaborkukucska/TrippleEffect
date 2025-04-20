@@ -13,14 +13,17 @@ logger = logging.getLogger(__name__)
 
 class FileSystemTool(BaseTool):
     """
-    Tool for reading, writing, listing, and modifying files within an agent's private sandbox
+    Tool for reading, writing, listing files/directories, creating directories,
+    deleting files/empty directories, and modifying files within an agent's private sandbox
     OR a shared session workspace. Ensures operations are restricted to the designated scope and path.
     """
     name: str = "file_system"
     description: str = ( # Updated description
-        "Reads, writes, lists files/directories, or finds and replaces text within a file. "
+        "Reads, writes, lists files/directories, creates directories, deletes files or empty directories, "
+        "or finds and replaces text within a file. "
         "Use 'scope' ('private' or 'shared') to specify the workspace. Default: 'private'. "
         "Actions: 'read' (gets content), 'write' (saves content), 'list' (shows directory contents), "
+        "'mkdir' (creates a directory), 'delete' (removes file/empty dir), "
         "'find_replace' (replaces text occurrences in a file). "
         "All paths are relative to the selected scope root."
     )
@@ -28,7 +31,7 @@ class FileSystemTool(BaseTool):
         ToolParameter(
             name="action",
             type="string",
-            description="The operation: 'read', 'write', 'list', 'find_replace'.", # Added find_replace
+            description="The operation: 'read', 'write', 'list', 'mkdir', 'delete', 'find_replace'.", # Added mkdir, delete
             required=True,
         ),
         ToolParameter(
@@ -52,10 +55,9 @@ class FileSystemTool(BaseTool):
          ToolParameter(
             name="path",
             type="string",
-            description="Relative sub-directory path to list. Defaults to '.' (scope root). Optional for 'list'.",
-            required=False,
+            description="Relative path to a directory or file. Required for 'list', 'mkdir', 'delete'. For 'list', defaults to '.' (scope root).",
+            required=False, # Dynamically required by action
         ),
-        # --- NEW Parameters for find_replace ---
         ToolParameter(
             name="find_text",
             type="string",
@@ -68,10 +70,8 @@ class FileSystemTool(BaseTool):
             description="The text string to replace occurrences of 'find_text' with. Required for 'find_replace'.",
             required=False, # Dynamically required
         ),
-        # --- End NEW Parameters ---
     ]
 
-    # --- Modified execute signature ---
     async def execute(
         self,
         agent_id: str,
@@ -85,14 +85,15 @@ class FileSystemTool(BaseTool):
         """
         action = kwargs.get("action")
         scope = kwargs.get("scope", "private").lower()
-        filename = kwargs.get("filename")
-        content = kwargs.get("content")
-        relative_path = kwargs.get("path", ".")
-        find_text = kwargs.get("find_text")
-        replace_text = kwargs.get("replace_text")
+        filename = kwargs.get("filename") # Used by read, write, find_replace
+        content = kwargs.get("content") # Used by write
+        relative_path = kwargs.get("path") # Used by list, mkdir, delete. Default for list is '.', set below if needed.
+        find_text = kwargs.get("find_text") # Used by find_replace
+        replace_text = kwargs.get("replace_text") # Used by find_replace
 
-        if not action or action not in ["read", "write", "list", "find_replace"]: # Added find_replace
-            return "Error: Invalid or missing 'action'. Must be 'read', 'write', 'list', or 'find_replace'."
+        valid_actions = ["read", "write", "list", "mkdir", "delete", "find_replace"]
+        if not action or action not in valid_actions:
+            return f"Error: Invalid or missing 'action'. Must be one of: {', '.join(valid_actions)}."
         if scope not in ["private", "shared"]:
             return "Error: Invalid 'scope'. Must be 'private' or 'shared'."
 
@@ -111,23 +112,34 @@ class FileSystemTool(BaseTool):
             except Exception as e: logger.error(f"Failed to create shared workspace dirs for {scope_description}: {e}", exc_info=True); return f"Error: Could not create shared workspace directory: {e}"
         if base_path is None: return "Error: Internal error determining workspace path."
 
+        # Default relative path for list action if not provided
+        if action == "list" and relative_path is None:
+             relative_path = "."
+
         # Execute action
         try:
             if action == "read":
-                if not filename: return "Error: 'filename' is required for 'read'."
+                if not filename: return "Error: 'filename' parameter is required for 'read'."
                 return await self._read_file(base_path, filename, agent_id, scope_description)
             elif action == "write":
-                if not filename: return "Error: 'filename' is required for 'write'."
-                if content is None: return "Error: 'content' is required for 'write'."
+                if not filename: return "Error: 'filename' parameter is required for 'write'."
+                if content is None: return "Error: 'content' parameter is required for 'write'."
                 return await self._write_file(base_path, filename, content, agent_id, scope_description)
             elif action == "list":
+                # relative_path default handled above
                 return await self._list_directory(base_path, relative_path, agent_id, scope_description)
-            # --- NEW: Handle find_replace action ---
             elif action == "find_replace":
-                if not filename: return "Error: 'filename' is required for 'find_replace'."
-                if find_text is None: return "Error: 'find_text' is required for 'find_replace'."
-                if replace_text is None: return "Error: 'replace_text' is required for 'find_replace'."
+                if not filename: return "Error: 'filename' parameter is required for 'find_replace'."
+                if find_text is None: return "Error: 'find_text' parameter is required for 'find_replace'."
+                if replace_text is None: return "Error: 'replace_text' parameter is required for 'find_replace'."
                 return await self._find_replace_in_file(base_path, filename, find_text, replace_text, agent_id, scope_description)
+            # --- NEW: Handle mkdir and delete ---
+            elif action == "mkdir":
+                 if not relative_path: return "Error: 'path' parameter (directory path) is required for 'mkdir'."
+                 return await self._create_directory(base_path, relative_path, agent_id, scope_description)
+            elif action == "delete":
+                 if not relative_path: return "Error: 'path' parameter (file or directory path) is required for 'delete'."
+                 return await self._delete_item(base_path, relative_path, agent_id, scope_description)
             # --- END NEW ---
 
         except Exception as e:
@@ -137,30 +149,34 @@ class FileSystemTool(BaseTool):
         return "Error: Unknown state in file system tool." # Should not be reached
 
 
-    # --- _resolve_and_validate_path (Unchanged) ---
     async def _resolve_and_validate_path(self, base_path: Path, relative_file_path: str, agent_id: str, scope_description: str) -> Path | None:
         """ Resolves the relative path against the base path and validates it. """
         if not relative_file_path: logger.warning(f"Agent {agent_id} provided empty path/filename for {scope_description}."); return None
         try:
-            norm_relative_path = Path(relative_file_path) if relative_file_path != '.' else Path()
+            # Handle potential path normalization issues
+            # Disallow paths starting with '/' or containing '..'
+            if relative_file_path.startswith('/') or '..' in Path(relative_file_path).parts:
+                 logger.warning(f"Agent {agent_id} provided potentially unsafe path '{relative_file_path}' for {scope_description}.")
+                 return None
+
+            norm_relative_path = Path(relative_file_path)
             absolute_path = (base_path / norm_relative_path).resolve()
             base_path_resolved = base_path.resolve()
+
             # SECURITY CHECK: Ensure the resolved path is *within* or *is* the base directory
-            # Using is_relative_to for robust check across OS
             if absolute_path == base_path_resolved or absolute_path.is_relative_to(base_path_resolved):
                  return absolute_path
             else:
                 logger.warning(f"Agent {agent_id} path traversal attempt blocked for {scope_description}: Resolved path {absolute_path} vs Base path {base_path_resolved}")
                 return None
         except ValueError as ve: # is_relative_to can raise ValueError on Windows if drives differ
-             logger.warning(f"Agent {agent_id} path validation error for {scope_description} ({ve}): Resolved path {absolute_path}, Base: {base_path_resolved}")
+             logger.warning(f"Agent {agent_id} path validation error for {scope_description} ({ve}): Path '{relative_file_path}', Base: {base_path_resolved}")
              return None
         except Exception as e:
             logger.error(f"Error resolving/validating path '{relative_file_path}' for agent {agent_id} within {scope_description} ('{base_path}'): {e}", exc_info=True)
             return None
 
 
-    # --- _read_file (Unchanged) ---
     async def _read_file(self, base_path: Path, filename: str, agent_id: str, scope_description: str) -> str:
         """Reads content from a file within the specified base path."""
         validated_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
@@ -175,7 +191,6 @@ class FileSystemTool(BaseTool):
         except Exception as e: logger.error(f"Agent {agent_id} error reading file '{filename}' in {scope_description}: {e}", exc_info=True); return f"Error reading file '{filename}': {type(e).__name__} - {e}"
 
 
-    # --- _write_file (Unchanged) ---
     async def _write_file(self, base_path: Path, filename: str, content: str, agent_id: str, scope_description: str) -> str:
         """Writes content to a file within the specified base path."""
         validated_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
@@ -190,7 +205,6 @@ class FileSystemTool(BaseTool):
         except Exception as e: logger.error(f"Agent {agent_id} error writing file '{filename}' in {scope_description}: {e}", exc_info=True); return f"Error writing file '{filename}': {type(e).__name__} - {e}"
 
 
-    # --- _list_directory (Unchanged) ---
     async def _list_directory(self, base_path: Path, relative_dir: str, agent_id: str, scope_description: str) -> str:
         """Lists files and directories within a specified sub-directory of the base path."""
         validated_path = await self._resolve_and_validate_path(base_path, relative_dir, agent_id, scope_description)
@@ -214,7 +228,6 @@ class FileSystemTool(BaseTool):
         except Exception as e: logger.error(f"Agent {agent_id} error listing directory '{relative_dir}' in {scope_description}: {e}", exc_info=True); return f"Error listing directory '{relative_dir}': {type(e).__name__} - {e}"
 
 
-    # --- NEW: _find_replace_in_file method ---
     async def _find_replace_in_file(self, base_path: Path, filename: str, find_text: str, replace_text: str, agent_id: str, scope_description: str) -> str:
         """Finds and replaces all occurrences of text in a file within the specified scope."""
         validated_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
@@ -238,4 +251,49 @@ class FileSystemTool(BaseTool):
         except FileNotFoundError: logger.warning(f"Agent {agent_id} find_replace error (FileNotFound): File not found at '{filename}' in {scope_description}."); return f"Error: File not found at '{filename}' in {scope_description}."
         except PermissionError: logger.error(f"Agent {agent_id} find_replace error: Permission denied for '{filename}' in {scope_description}."); return f"Error: Permission denied when accessing file '{filename}'."
         except Exception as e: logger.error(f"Agent {agent_id} error during find/replace in file '{filename}' in {scope_description}: {e}", exc_info=True); return f"Error during find/replace in '{filename}': {type(e).__name__} - {e}"
-    # --- END NEW ---
+
+    # --- NEW: _create_directory method ---
+    async def _create_directory(self, base_path: Path, relative_dir: str, agent_id: str, scope_description: str) -> str:
+         """Creates a directory within the specified base path."""
+         validated_path = await self._resolve_and_validate_path(base_path, relative_dir, agent_id, scope_description)
+         if not validated_path: return f"Error: Invalid or disallowed directory path '{relative_dir}' in {scope_description}."
+         if validated_path.exists():
+             if validated_path.is_dir(): return f"Directory '{relative_dir}' already exists in {scope_description}."
+             else: return f"Error: Cannot create directory. '{relative_dir}' points to an existing file."
+         try:
+             await asyncio.to_thread(validated_path.mkdir, parents=True, exist_ok=True) # exist_ok shouldn't be needed due to check, but safe
+             logger.info(f"Agent {agent_id} successfully created directory: '{relative_dir}' in {scope_description}")
+             return f"Successfully created directory '{relative_dir}' in {scope_description}."
+         except PermissionError: logger.error(f"Agent {agent_id} directory creation error: Permission denied for '{relative_dir}' in {scope_description}."); return f"Error: Permission denied when creating directory '{relative_dir}'."
+         except Exception as e: logger.error(f"Agent {agent_id} error creating directory '{relative_dir}' in {scope_description}: {e}", exc_info=True); return f"Error creating directory '{relative_dir}': {type(e).__name__} - {e}"
+
+    # --- NEW: _delete_item method ---
+    async def _delete_item(self, base_path: Path, relative_item_path: str, agent_id: str, scope_description: str) -> str:
+         """Deletes a file or an empty directory within the specified base path."""
+         validated_path = await self._resolve_and_validate_path(base_path, relative_item_path, agent_id, scope_description)
+         if not validated_path: return f"Error: Invalid or disallowed path '{relative_item_path}' for deletion in {scope_description}."
+         if not validated_path.exists(): return f"Error: Cannot delete. Path '{relative_item_path}' does not exist in {scope_description}."
+         # Prevent deleting the base path itself
+         if validated_path == base_path.resolve(): return f"Error: Cannot delete the root of the {scope_description}."
+
+         try:
+             if validated_path.is_file():
+                 await asyncio.to_thread(validated_path.unlink)
+                 logger.info(f"Agent {agent_id} successfully deleted file: '{relative_item_path}' from {scope_description}")
+                 return f"Successfully deleted file '{relative_item_path}' from {scope_description}."
+             elif validated_path.is_dir():
+                 # Check if directory is empty
+                 is_empty = not any(await asyncio.to_thread(validated_path.iterdir))
+                 if is_empty:
+                     await asyncio.to_thread(validated_path.rmdir)
+                     logger.info(f"Agent {agent_id} successfully deleted empty directory: '{relative_item_path}' from {scope_description}")
+                     return f"Successfully deleted empty directory '{relative_item_path}' from {scope_description}."
+                 else:
+                     logger.warning(f"Agent {agent_id} attempted to delete non-empty directory: '{relative_item_path}' in {scope_description}")
+                     return f"Error: Directory '{relative_item_path}' is not empty. Cannot delete."
+             else:
+                 # Handle symlinks or other types if necessary, for now, treat as error
+                 logger.warning(f"Agent {agent_id} attempted to delete unsupported item type at '{relative_item_path}' in {scope_description}")
+                 return f"Error: Path '{relative_item_path}' is not a file or directory. Cannot delete."
+         except PermissionError: logger.error(f"Agent {agent_id} deletion error: Permission denied for '{relative_item_path}' in {scope_description}."); return f"Error: Permission denied when deleting '{relative_item_path}'."
+         except Exception as e: logger.error(f"Agent {agent_id} error deleting '{relative_item_path}' in {scope_description}: {e}", exc_info=True); return f"Error deleting '{relative_item_path}': {type(e).__name__} - {e}"
