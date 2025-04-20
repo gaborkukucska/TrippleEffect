@@ -96,13 +96,17 @@ class Settings:
             if match and value:
                 provider_prefix = match.group(1)
                 key_index_str = match.group(2)
+                # Special case for Tavily - Treat it as a separate key, not a generic provider
+                if provider_prefix == "TAVILY":
+                     continue # Skip adding TAVILY to PROVIDER_API_KEYS
+
                 normalized_provider = provider_prefix.lower()
                 if provider_prefix in known_provider_env_prefixes:
                     if normalized_provider not in self.PROVIDER_API_KEYS:
                         self.PROVIDER_API_KEYS[normalized_provider] = []
                     self.PROVIDER_API_KEYS[normalized_provider].append(value)
                     key_index = int(key_index_str) if key_index_str else -1
-                    logger.debug(f"Found API key for provider '{normalized_provider}' (Index: {key_index})")
+                    logger.debug(f"Found Provider API key for '{normalized_provider}' (Index: {key_index})")
         for provider, keys in self.PROVIDER_API_KEYS.items():
              logger.info(f"Loaded {len(keys)} API key(s) for provider: {provider}")
 
@@ -117,6 +121,11 @@ class Settings:
 
         # --- Tool Configuration (from .env) ---
         self.GITHUB_ACCESS_TOKEN: Optional[str] = os.getenv("GITHUB_ACCESS_TOKEN")
+        # --- NEW: Tavily API Key ---
+        self.TAVILY_API_KEY: Optional[str] = os.getenv("TAVILY_API_KEY")
+        if self.TAVILY_API_KEY: logger.debug("Found TAVILY_API_KEY in environment.")
+        # --- END NEW ---
+
 
         # --- Load Prompts from JSON ---
         self._load_prompts_from_json() # Call the new method
@@ -220,14 +229,9 @@ class Settings:
 
              if is_configured:
                  if provider == "ollama":
-                     if self.USE_OLLAMA_PROXY:
-                         detail_parts.append(f"Proxy Enabled (Port: {self.OLLAMA_PROXY_PORT})")
-                     # Check if direct URL is set even if proxy is enabled
-                     if self.OLLAMA_BASE_URL:
-                          detail_parts.append(f"Direct URL Set ({self.OLLAMA_BASE_URL})")
-                     elif not self.USE_OLLAMA_PROXY:
-                          detail_parts.append("Direct URL Not Set (will use defaults/discovery)")
-
+                     if self.USE_OLLAMA_PROXY: detail_parts.append(f"Proxy Enabled (Port: {self.OLLAMA_PROXY_PORT})")
+                     if self.OLLAMA_BASE_URL: detail_parts.append(f"Direct URL Set ({self.OLLAMA_BASE_URL})")
+                     elif not self.USE_OLLAMA_PROXY: detail_parts.append("Direct URL Not Set (will use defaults/discovery)")
                  elif provider == "litellm":
                      if config_details.get('base_url'): detail_parts.append("URL Set")
                      else: detail_parts.append("URL Not Set (will use defaults/discovery)")
@@ -241,8 +245,13 @@ class Settings:
              else:
                  logger.info(f"ℹ️ INFO: {provider.capitalize()} not configured and not explicitly used by bootstrap agents.")
 
+        # --- Log Tool Specific Keys ---
         if self.GITHUB_ACCESS_TOKEN: logger.info("✅ GitHub Access Token: Found (for GitHub tool)")
         else: logger.info("ℹ️ INFO: GITHUB_ACCESS_TOKEN not set. GitHub tool may not function fully.")
+        # --- NEW: Tavily Check ---
+        if self.TAVILY_API_KEY: logger.info("✅ Tavily API Key: Found (for Web Search tool)")
+        else: logger.info("ℹ️ INFO: TAVILY_API_KEY not set. Web Search tool will use scraping fallback.")
+        # --- END NEW ---
         print("-" * 30)
 
 
@@ -255,20 +264,13 @@ class Settings:
         provider_name = provider_name.lower()
         if provider_name == "openai": config['base_url'] = self.OPENAI_BASE_URL
         elif provider_name == "openrouter":
-             # Use the default persona loaded from prompts.json or fallback
              referer = self.OPENROUTER_REFERER or f"http://localhost:8000/{self.DEFAULT_PERSONA}"
              config['base_url'] = self.OPENROUTER_BASE_URL
              config['referer'] = referer
-        elif provider_name == "ollama":
-            # The provider itself will decide whether to use the proxy URL or the direct URL
-            # based on self.USE_OLLAMA_PROXY. We provide the direct URL here for reference/discovery.
-            # Do NOT pass use_proxy or proxy_port here, as they are not valid aiohttp session args.
-            config['base_url'] = self.OLLAMA_BASE_URL
+        elif provider_name == "ollama": config['base_url'] = self.OLLAMA_BASE_URL
         elif provider_name == "litellm": config['base_url'] = self.LITELLM_BASE_URL
         else:
-             # For other providers, potentially add specific non-key configs if needed
              if provider_name: logger.debug(f"Requested base provider config for potentially unknown provider '{provider_name}'")
-
         return {k: v for k, v in config.items() if v is not None}
 
 
@@ -280,17 +282,9 @@ class Settings:
         - Ollama requires OLLAMA_BASE_URL *or* USE_OLLAMA_PROXY=true.
         """
         provider_name = provider_name.lower()
-        # --- UPDATED Ollama Check ---
-        if provider_name == "ollama":
-             # Considered configured if Proxy is enabled OR a Direct Base URL is set
-             return self.USE_OLLAMA_PROXY or bool(self.OLLAMA_BASE_URL)
-        # --- END UPDATE ---
-        elif provider_name == "litellm":
-             # Considered configured only if a direct Base URL is set
-             return bool(self.LITELLM_BASE_URL)
-        else: # Remote providers need keys
-             # Considered configured if the provider name exists in the keys dict AND the list of keys is not empty
-             return provider_name in self.PROVIDER_API_KEYS and bool(self.PROVIDER_API_KEYS[provider_name])
+        if provider_name == "ollama": return self.USE_OLLAMA_PROXY or bool(self.OLLAMA_BASE_URL)
+        elif provider_name == "litellm": return bool(self.LITELLM_BASE_URL)
+        else: return provider_name in self.PROVIDER_API_KEYS and bool(self.PROVIDER_API_KEYS[provider_name])
 
 
     def get_agent_config_by_id(self, agent_id: str) -> Optional[Dict[str, Any]]:
