@@ -22,7 +22,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # --- Load Environment Variables ---
 dotenv_path = BASE_DIR / '.env'
 load_dotenv(dotenv_path=dotenv_path)
-print(f"Attempted to load .env file from: {dotenv_path}")
+print(f"Attempted to load .env file from: {dotenv_path}") # Keep print for immediate feedback
 
 # --- Configure Logging ---
 LOG_DIR = BASE_DIR / "logs"
@@ -32,7 +32,8 @@ timestamp = time.strftime("%Y%m%d_%H%M%S")
 LOG_FILE = LOG_DIR / f"app_{timestamp}.log"
 
 log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-log_level = logging.INFO # Default level
+log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
+log_level = getattr(logging, log_level_str, logging.INFO)
 
 # Configure root logger
 logging.basicConfig(level=log_level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', force=True)
@@ -46,29 +47,35 @@ file_handler.setLevel(log_level)
 root_logger = logging.getLogger()
 # Clear existing handlers if necessary (especially in reload scenarios)
 if root_logger.hasHandlers():
-    root_logger.handlers.clear()
+    # Be careful not to remove handlers added by libraries if needed,
+    # but for basic setup, clearing default handlers is usually fine.
+    # root_logger.handlers.clear() # Temporarily commented out, check if needed
+    pass
 root_logger.addHandler(file_handler)
 
-# Add Console Handler (optional, if basicConfig doesn't cover it)
+# Add Console Handler (ensure logs also go to console)
+# basicConfig should add a StreamHandler by default if no handlers are present.
+# If running with uvicorn and its logging, this might duplicate. Check output.
+# If needed:
 # console_handler = logging.StreamHandler()
 # console_handler.setFormatter(log_formatter)
 # console_handler.setLevel(log_level)
-# root_logger.addHandler(console_handler)
+# if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):
+#      root_logger.addHandler(console_handler)
 
 
 logger = logging.getLogger(__name__) # Get logger for this module
-logger.info(f"--- Application Logging Initialized (Console & File: {LOG_FILE.name}) ---")
+logger.info(f"--- Application Logging Initialized (Level: {log_level_str}, Console & File: {LOG_FILE.name}) ---")
 
 
 # Import the routers and the setup function for AgentManager injection
 from src.api import http_routes, websocket_manager
 
-# --- Import the refactored AgentManager class ---
+# --- Import the AgentManager class ---
 from src.agents.manager import AgentManager
 # --- End Import ---
 
 # Import ModelRegistry instance and settings
-# Need DEFAULT_OLLAMA_PORT from model_registry for fallback
 from src.config.settings import model_registry, settings
 from src.config.model_registry import DEFAULT_OLLAMA_PORT
 
@@ -82,18 +89,25 @@ ollama_proxy_process: Optional[subprocess.Popen] = None
 # --- Define Lifespan Events ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """
+    Application lifespan manager for startup and shutdown events.
+    Initializes Database, Ollama Proxy (optional), Agent Manager, discovers models,
+    and initializes bootstrap agents. Handles graceful shutdown.
+    """
     global agent_manager_instance, ollama_proxy_process
     logger.info("Application startup sequence initiated...")
 
-    # --- Initialize Database ---
-    # The db_manager singleton attempts initialization in its constructor's task.
-    # Wait briefly to increase likelihood of completion before AgentManager might need it.
-    logger.debug("Waiting briefly for DB initialization task to start...")
-    await asyncio.sleep(0.1)
+    # --- Initialize Database Explicitly ---
+    # Call the async initialization function here, within the running event loop
+    logger.info("Lifespan: Initializing DatabaseManager...")
+    await db_manager._initialize_db() # <<< *** FIX: Await the init here ***
     if db_manager._session_local is None:
-        logger.warning("Lifespan: DatabaseManager session factory not initialized after brief wait. DB operations might fail initially.")
+        # Make this more prominent as it prevents DB operations
+        logger.critical("Lifespan: DatabaseManager initialization FAILED! Database operations will not work.")
+        # Depending on requirements, might want to exit:
+        # raise RuntimeError("Critical component DatabaseManager failed to initialize.")
     else:
-        logger.debug("Lifespan: DatabaseManager session factory appears initialized.")
+        logger.info("Lifespan: DatabaseManager initialized successfully.")
 
 
     # --- Start Ollama Proxy (if enabled) ---
@@ -110,21 +124,20 @@ async def lifespan(app: FastAPI):
             logger.error(f"Ollama Proxy Error: Proxy script not found at {proxy_script_path}. Cannot start proxy.")
             proxy_can_start = False
         else:
-            # --- Verify Proxy Script Content ---
+            # Verify Proxy Script Content
             try:
                 with open(proxy_script_path, 'r', encoding='utf-8') as f:
                     proxy_code = f.read()
-                if "app.get('/api/tags'" not in proxy_code:
-                    logger.critical(f"Ollama Proxy Error: The script at {proxy_script_path} is missing the required '/api/tags' route handler. Please ensure the file content is correct. Aborting proxy start.")
+                # Simple check for a known route handler
+                if "app.get('/api/tags'" not in proxy_code and "app.post('/api/chat'" not in proxy_code:
+                    logger.critical(f"Ollama Proxy Error: The script at {proxy_script_path} appears incomplete or incorrect. Missing expected route handlers. Aborting proxy start.")
                     proxy_can_start = False
                 else:
-                    logger.info("Proxy script content check passed ('/api/tags' route found).")
+                    logger.info("Proxy script content check passed.")
             except Exception as read_err:
                  logger.error(f"Ollama Proxy Error: Failed to read proxy script {proxy_script_path}: {read_err}", exc_info=True)
                  proxy_can_start = False
-            # --- End Proxy Script Content Check ---
 
-        # --- Proceed with Proxy Startup if checks passed ---
         if proxy_can_start:
             proxy_env = os.environ.copy()
             proxy_env["OLLAMA_PROXY_PORT"] = str(settings.OLLAMA_PROXY_PORT)
@@ -142,9 +155,11 @@ async def lifespan(app: FastAPI):
                     [node_executable, str(proxy_script_path)],
                     env=proxy_env,
                     start_new_session=True, # Important for clean termination on Linux/macOS
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
-                    # Consider redirecting stdout/stderr to files or logger if needed for debugging
+                    stdout=subprocess.PIPE, # Capture stdout
+                    stderr=subprocess.PIPE, # Capture stderr
+                    text=True, # Decode stdout/stderr as text
+                    encoding='utf-8',
+                    errors='replace' # Handle potential decoding errors
                 )
                 logger.info(f"Ollama proxy process started with PID: {ollama_proxy_process.pid}")
                 app.state.ollama_proxy_process = ollama_proxy_process # Store for shutdown
@@ -161,6 +176,12 @@ async def lifespan(app: FastAPI):
                     # Check if the process exited prematurely
                     if ollama_proxy_process.poll() is not None:
                         logger.error(f"Ollama proxy process (PID: {ollama_proxy_process.pid}) exited prematurely while waiting for readiness. Code: {ollama_proxy_process.returncode}")
+                        # Read stderr if available
+                        try:
+                            stderr_output = ollama_proxy_process.stderr.read() if ollama_proxy_process.stderr else "N/A"
+                            logger.error(f"Proxy stderr: {stderr_output}")
+                        except Exception as e:
+                            logger.error(f"Error reading proxy stderr after premature exit: {e}")
                         break
 
                     # Attempt to connect
@@ -186,18 +207,18 @@ async def lifespan(app: FastAPI):
                     # Attempt to terminate if it didn't become ready but is still running
                     if ollama_proxy_process and ollama_proxy_process.poll() is None:
                          logger.warning("Terminating non-ready proxy process...")
-                         if os.name == 'posix':
-                             os.killpg(os.getpgid(ollama_proxy_process.pid), signal.SIGTERM)
-                         else:
-                             ollama_proxy_process.terminate()
+                         signal_to_send_kill = signal.SIGKILL
+                         process_group_id = os.getpgid(ollama_proxy_process.pid) if os.name == 'posix' else None
                          try:
+                             if process_group_id: os.killpg(process_group_id, signal.SIGTERM)
+                             else: ollama_proxy_process.terminate()
                              ollama_proxy_process.wait(timeout=2)
-                         except subprocess.TimeoutExpired:
+                         except (subprocess.TimeoutExpired, ProcessLookupError):
                               logger.warning("Proxy did not terminate after SIGTERM, sending SIGKILL.")
-                              if os.name == 'posix':
-                                  os.killpg(os.getpgid(ollama_proxy_process.pid), signal.SIGKILL)
-                              else:
-                                  ollama_proxy_process.kill()
+                              if process_group_id: os.killpg(process_group_id, signal_to_send_kill)
+                              else: ollama_proxy_process.kill()
+                         except Exception as term_err:
+                             logger.error(f"Error during proxy termination: {term_err}")
                     app.state.ollama_proxy_process = None # Clear from state
                     ollama_proxy_process = None # Clear global
                 else:
@@ -216,7 +237,7 @@ async def lifespan(app: FastAPI):
 
 
     logger.info("Instantiating AgentManager...")
-    agent_manager_instance = AgentManager() # db_manager is used internally via singleton
+    agent_manager_instance = AgentManager()
     logger.info("AgentManager instantiated.")
 
     # Store manager in app state for access in request handlers (dependencies)
@@ -238,7 +259,7 @@ async def lifespan(app: FastAPI):
     try:
         # Run initialization in a task to avoid blocking startup if it takes time
         init_task = asyncio.create_task(agent_manager_instance.initialize_bootstrap_agents())
-        # Optionally await if bootstrap agents *must* be ready before yield
+        # Await completion if bootstrap agents must be ready before yield
         await init_task
         logger.info("Lifespan: Bootstrap agent initialization task completed.")
     except Exception as e:
@@ -251,43 +272,38 @@ async def lifespan(app: FastAPI):
 
     # --- Shutdown Logic ---
     logger.info("Application shutdown sequence initiated...")
+    # 1. Cleanup Agent Manager (saves metrics, quarantine, ends DB session)
     if app.state.agent_manager:
         try:
-            # Cleanup providers, save metrics/quarantine (DB close now handled separately below)
             await app.state.agent_manager.cleanup_providers()
-            logger.info("Lifespan: Agent Manager cleanup finished (providers, metrics, quarantine).")
+            logger.info("Lifespan: Agent Manager cleanup finished (providers, metrics, quarantine, DB session ended).")
         except Exception as e:
             logger.error(f"Lifespan: Error during AgentManager cleanup: {e}", exc_info=True)
     else:
         logger.warning("Lifespan: AgentManager instance not found in app.state during shutdown.")
 
-    # --- Stop Ollama Proxy (if running) ---
+    # 2. Stop Ollama Proxy (if running)
     proxy_process_to_stop = getattr(app.state, 'ollama_proxy_process', None)
     if proxy_process_to_stop and isinstance(proxy_process_to_stop, subprocess.Popen):
         logger.info(f"Attempting to stop Ollama proxy process (PID: {proxy_process_to_stop.pid})...")
         if proxy_process_to_stop.poll() is None: # Check if it's still running
             try:
-                # Use process group termination on POSIX for cleaner shutdown
-                if os.name == 'posix':
-                    os.killpg(os.getpgid(proxy_process_to_stop.pid), signal.SIGTERM)
-                    logger.info(f"Sent SIGTERM to process group {os.getpgid(proxy_process_to_stop.pid)}")
-                else: # Use terminate on Windows
-                    proxy_process_to_stop.terminate()
-                    logger.info(f"Sent terminate signal to process {proxy_process_to_stop.pid}")
-
-                # Wait briefly for graceful shutdown
+                signal_to_send_kill = signal.SIGKILL
+                process_group_id = os.getpgid(proxy_process_to_stop.pid) if os.name == 'posix' else None
+                # Try graceful termination first
+                if process_group_id:
+                    os.killpg(process_group_id, signal.SIGTERM); logger.info(f"Sent SIGTERM to process group {process_group_id}")
+                else:
+                    proxy_process_to_stop.terminate(); logger.info(f"Sent terminate signal to process {proxy_process_to_stop.pid}")
+                # Wait briefly
                 try:
                     proxy_process_to_stop.wait(timeout=5)
                     logger.info(f"Ollama proxy process {proxy_process_to_stop.pid} terminated gracefully.")
                 except subprocess.TimeoutExpired:
                     logger.warning(f"Ollama proxy process {proxy_process_to_stop.pid} did not terminate gracefully after 5s. Sending SIGKILL.")
-                    if os.name == 'posix':
-                         os.killpg(os.getpgid(proxy_process_to_stop.pid), signal.SIGKILL)
-                    else: # Use kill on Windows
-                         proxy_process_to_stop.kill()
-                    logger.info(f"Ollama proxy process {proxy_process_to_stop.pid} killed.")
+                    if process_group_id: os.killpg(process_group_id, signal_to_send_kill)
+                    else: proxy_process_to_stop.kill(); logger.info(f"Ollama proxy process {proxy_process_to_stop.pid} killed.")
             except ProcessLookupError:
-                 # Process might have terminated between poll() and killpg()/terminate()
                  logger.info(f"Ollama proxy process {proxy_process_to_stop.pid} already terminated.")
             except Exception as e:
                 logger.error(f"Error stopping Ollama proxy process {proxy_process_to_stop.pid}: {e}", exc_info=True)
@@ -295,17 +311,14 @@ async def lifespan(app: FastAPI):
             logger.info(f"Ollama proxy process {proxy_process_to_stop.pid} was already stopped.")
         # Clear the reference from app state
         app.state.ollama_proxy_process = None
-    # --- End Ollama Proxy Shutdown ---
 
-    # --- Close Database Connection ---
-    # Moved DB close from AgentManager cleanup to here to ensure it happens last
+    # 3. Close Database Connection Pool (Important: Do this *after* AgentManager cleanup)
     logger.info("Lifespan: Closing database connection pool...")
     try:
         await close_db_connection() # Call the close function from database_manager
         logger.info("Lifespan: Database connection pool closed.")
     except Exception as e:
         logger.error(f"Lifespan: Error closing database connection: {e}", exc_info=True)
-    # --- End DB Close ---
 
     logger.info("--- Application Shutdown Complete ---")
 
@@ -314,7 +327,8 @@ async def lifespan(app: FastAPI):
 logger.info("Creating FastAPI app instance...")
 app = FastAPI(
     title="TrippleEffect",
-    version="2.21", # Updated version for Phase 21
+    version="2.21", # Update version for Phase 21
+    description="Asynchronous Multi-Agent Framework with Dynamic Orchestration",
     lifespan=lifespan
 )
 logger.info("FastAPI app instance created with lifespan handler.")
@@ -329,7 +343,7 @@ if static_files_path.exists() and static_files_path.is_dir():
     except Exception as e:
          logger.error(f"Error mounting static files directory {static_files_path}: {e}", exc_info=True)
 else:
-    logger.warning(f"Static files directory not found at {static_files_path}")
+    logger.warning(f"Static files directory not found at {static_files_path}, UI will not load.")
 
 
 # Include the API routers
@@ -349,6 +363,6 @@ if __name__ == "__main__":
         "src.main:app",
         host="0.0.0.0",
         port=8000,
-        reload=False, # Disable reload
-        log_level="info"
+        reload=False, # Keep reload False for stability with background processes/state
+        log_level=log_level_str.lower() # Use configured log level for Uvicorn too
     )
