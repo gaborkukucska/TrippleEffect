@@ -3,40 +3,45 @@ import asyncio
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-import aiohttp # For making HTTP requests
-from bs4 import BeautifulSoup # For parsing HTML
-import urllib.parse # For URL encoding the query
+import aiohttp # For fallback scraping HTTP requests
+from bs4 import BeautifulSoup # For fallback scraping HTML parsing
+import urllib.parse # For fallback scraping URL encoding
 
+# --- New Imports ---
 from src.tools.base import BaseTool, ToolParameter
+from src.config.settings import settings # To access API keys
+try:
+    from tavily import TavilyClient # Import Tavily client
+    TAVILY_AVAILABLE = True
+except ImportError:
+    TavilyClient = None # Define as None if import fails
+    TAVILY_AVAILABLE = False
+# --- End New Imports ---
 
 logger = logging.getLogger(__name__)
 
-# --- Constants for Scraping ---
-# Using DuckDuckGo's HTML version which is simpler to parse
+# --- Constants for Scraping Fallback ---
 SEARCH_URL_TEMPLATE = "https://html.duckduckgo.com/html/?q={query}"
-# User agent to mimic a browser
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-}
-# Selectors to find result elements (these might change if DDG updates its HTML structure)
-RESULT_SELECTOR = "div.result" # Main container for each result
-TITLE_SELECTOR = "h2.result__title a.result__a" # Link containing the title
-SNIPPET_SELECTOR = "a.result__snippet" # Snippet text container
-URL_SELECTOR = "a.result__url" # URL display element (needs cleaning)
-# --- End Constants ---
+HEADERS = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" }
+RESULT_SELECTOR = "div.result"
+TITLE_SELECTOR = "h2.result__title a.result__a"
+SNIPPET_SELECTOR = "a.result__snippet"
+URL_SELECTOR = "a.result__url"
+# --- End Scraping Constants ---
 
 
 class WebSearchTool(BaseTool):
     """
-    Performs a web search using DuckDuckGo's HTML interface and returns scraped results.
-    Useful for finding current information, research, or code examples online.
-    NOTE: Relies on HTML scraping and may break if DuckDuckGo changes its page structure.
+    Performs a web search. Uses the Tavily Search API if TAVILY_API_KEY is configured in .env.
+    Otherwise, falls back to scraping DuckDuckGo's HTML interface.
+    Returns a specified number of results (title, URL, content/snippet).
     """
     name: str = "web_search"
-    description: str = (
-        "Searches the web using DuckDuckGo (HTML scraping) for a given query and returns a specified "
-        "number of results (title, URL, snippet). Useful for finding up-to-date information. "
-        "Results depend on parsing website structure and might be inconsistent."
+    description: str = ( # Updated description
+        "Searches the web for a given query and returns a specified number of results "
+        "(title, URL, content/snippet). Uses the Tavily API if configured (recommended), "
+        "otherwise falls back to scraping DuckDuckGo HTML (less reliable). "
+        "Useful for finding up-to-date information."
     )
     parameters: List[ToolParameter] = [
         ToolParameter(
@@ -51,8 +56,55 @@ class WebSearchTool(BaseTool):
             description="The approximate maximum number of search results to return (e.g., 3, 5). Defaults to 3. Fewer may be returned.",
             required=False,
         ),
+         # --- NEW: Tavily Specific Parameter ---
+         ToolParameter(
+            name="search_depth",
+            type="string",
+            description="Optional (Tavily API only): Search depth ('basic' or 'advanced'). Defaults to 'basic'. Advanced performs more in-depth research.",
+            required=False,
+        ),
+        # --- End NEW Parameter ---
     ]
 
+    # --- Tavily API Call Method ---
+    async def _search_with_tavily(self, query: str, num_results: int, search_depth: str) -> Optional[List[Dict[str, Any]]]:
+        """Attempts to perform search using the Tavily API."""
+        if not TAVILY_AVAILABLE:
+             logger.debug("Tavily library not installed. Cannot use Tavily API.")
+             return None
+        if not settings.TAVILY_API_KEY:
+             logger.debug("TAVILY_API_KEY not found in settings. Cannot use Tavily API.")
+             return None
+
+        logger.info(f"Attempting web search using Tavily API. Depth: {search_depth}, Max Results: {num_results}")
+        try:
+            tavily = TavilyClient(api_key=settings.TAVILY_API_KEY)
+            # Tavily search is synchronous, run it in a thread
+            response = await asyncio.to_thread(
+                tavily.search,
+                query=query,
+                search_depth=search_depth,
+                max_results=num_results
+            )
+            # Extract relevant results (Tavily format might be slightly different)
+            # Usually response['results'] is a list of dicts like {'title': ..., 'url': ..., 'content': ...}
+            if isinstance(response, dict) and "results" in response and isinstance(response["results"], list):
+                 logger.info(f"Tavily search successful, received {len(response['results'])} results.")
+                 # Standardize keys slightly if needed (Tavily usually uses 'content')
+                 standardized_results = [
+                     {"title": r.get("title"), "url": r.get("url"), "snippet": r.get("content")} # Use 'content' as 'snippet'
+                     for r in response["results"]
+                     if r.get("title") and r.get("url") # Ensure basic fields exist
+                 ]
+                 return standardized_results
+            else:
+                 logger.warning(f"Tavily API returned unexpected response format: {type(response)}")
+                 return None
+        except Exception as e:
+            logger.error(f"Error during Tavily API search for query '{query}': {e}", exc_info=True)
+            return None # Signal failure to fallback
+
+    # --- Scraping Methods (Fallback) ---
     async def _get_html(self, url: str) -> Optional[str]:
         """Fetches HTML content from a URL using aiohttp."""
         try:
@@ -78,83 +130,90 @@ class WebSearchTool(BaseTool):
             result_divs = soup.select(RESULT_SELECTOR) # Find all result containers
 
             for i, result_div in enumerate(result_divs):
-                if i >= num_results: # Stop if we have enough results
-                    break
+                if i >= num_results: break # Stop if we have enough results
 
                 title_tag = result_div.select_one(TITLE_SELECTOR)
                 snippet_tag = result_div.select_one(SNIPPET_SELECTOR)
                 url_tag = result_div.select_one(URL_SELECTOR)
 
                 title = title_tag.get_text(strip=True) if title_tag else "N/A"
-                # Extract URL from the title link if possible, otherwise try the URL tag
                 url = title_tag['href'] if title_tag and title_tag.has_attr('href') else None
-                if not url and url_tag: # Fallback to url_tag if title link fails
+                if not url and url_tag:
                      url_text = url_tag.get_text(strip=True)
-                     # Clean the displayed URL text (remove protocol, trailing slash if present)
-                     url = "https://" + url_text.strip() # Assume https if missing
+                     url = "https://" + url_text.strip()
 
                 snippet = snippet_tag.get_text(strip=True) if snippet_tag else "N/A"
 
-                if title != "N/A" and url: # Only add if we have a title and URL
-                    results.append({
-                        "title": title,
-                        "url": url,
-                        "snippet": snippet
-                    })
+                if title != "N/A" and url:
+                    results.append({ "title": title, "url": url, "snippet": snippet })
             return results
         except Exception as e:
             logger.error(f"Error parsing search results HTML: {e}", exc_info=True)
-            return [] # Return empty list on parsing error
+            return []
 
+    async def _search_with_scraping(self, query: str, num_results: int) -> Optional[List[Dict[str, str]]]:
+         """Performs search by scraping DuckDuckGo HTML."""
+         logger.info(f"Performing web search using DDG HTML scraping fallback.")
+         encoded_query = urllib.parse.quote_plus(query)
+         search_url = SEARCH_URL_TEMPLATE.format(query=encoded_query)
+         html_content = await self._get_html(search_url)
+         if not html_content:
+            logger.error(f"Failed to fetch search results page from DuckDuckGo for query: '{query}'")
+            return None
+         parsed_results = await self._parse_results(html_content, num_results)
+         return parsed_results
 
+    # --- Main Execute Method ---
     async def execute(self, agent_id: str, agent_sandbox_path: Path, **kwargs: Any) -> Any:
         """
-        Executes the web search by fetching and scraping DuckDuckGo HTML results.
-
-        Args:
-            agent_id (str): The ID of the agent calling the tool.
-            agent_sandbox_path (Path): Not used by this tool.
-            **kwargs: Arguments containing 'query' and optionally 'num_results'.
-
-        Returns:
-            str: A formatted string containing the search results or an error message.
+        Executes the web search. Tries Tavily API first if configured, otherwise falls back to scraping.
         """
         query = kwargs.get("query")
         num_results_str = kwargs.get("num_results", "3")
+        search_depth = kwargs.get("search_depth", "basic").lower()
+        if search_depth not in ["basic", "advanced"]: search_depth = "basic"
 
         if not query:
             return "Error: 'query' parameter is required for web search."
 
         try:
-            num_results = int(num_results_str)
+            num_results = int(num_results_str);
             if num_results <= 0: num_results = 3
         except ValueError:
             logger.warning(f"Invalid 'num_results' value '{num_results_str}' provided by {agent_id}. Defaulting to 3.")
             num_results = 3
 
-        logger.info(f"Agent {agent_id} performing web search (scraping) for: '{query}' (max results: {num_results})")
+        logger.info(f"Agent {agent_id} performing web search for: '{query}' (Depth: {search_depth}, Max Results: {num_results})")
 
-        # URL encode the query
-        encoded_query = urllib.parse.quote_plus(query)
-        search_url = SEARCH_URL_TEMPLATE.format(query=encoded_query)
+        # 1. Try Tavily API
+        api_results = await self._search_with_tavily(query, num_results, search_depth)
 
-        # Fetch HTML content
-        html_content = await self._get_html(search_url)
-        if not html_content:
-            return f"Error: Failed to fetch search results page from DuckDuckGo for query: '{query}'"
+        search_results = []
+        source = ""
 
-        # Parse results
-        parsed_results = await self._parse_results(html_content, num_results)
+        if api_results is not None: # Tavily succeeded (might be empty list)
+             search_results = api_results
+             source = "Tavily API"
+        else: # Tavily failed or not configured, try scraping
+             logger.warning(f"Tavily search failed or unavailable for query '{query}', falling back to DDG scraping.")
+             scrape_results = await self._search_with_scraping(query, num_results)
+             if scrape_results is not None:
+                 search_results = scrape_results
+                 source = "DuckDuckGo Scraping"
+             else: # Both failed
+                  error_msg = f"Error: Failed to retrieve search results from both Tavily API and DuckDuckGo scraping for query: '{query}'"
+                  logger.error(error_msg)
+                  return error_msg
 
-        if not parsed_results:
-            return f"No valid search results found or parsed for query: '{query}'"
+        # Format results
+        if not search_results:
+            return f"No search results found via {source} for query: '{query}'"
 
-        # Format the results for the agent
         formatted_output = [
-            f"Title: {res['title']}\n"
-            f"URL: {res['url']}\n"
-            f"Snippet: {res['snippet']}\n---"
-            for res in parsed_results
+            f"Title: {res.get('title', 'N/A')}\n"
+            f"URL: {res.get('url', 'N/A')}\n"
+            f"Snippet: {res.get('snippet', 'N/A')}\n---"
+            for i, res in enumerate(search_results) if i < num_results # Ensure max results respected
         ]
-        logger.info(f"Web search (scraping) for '{query}' completed successfully for {agent_id}.")
-        return f"Search Results for '{query}':\n\n" + "\n".join(formatted_output)
+        logger.info(f"Web search for '{query}' completed successfully for {agent_id} via {source}.")
+        return f"Search Results for '{query}' (Source: {source}):\n\n" + "\n".join(formatted_output)
