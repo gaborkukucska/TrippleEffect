@@ -1,93 +1,58 @@
-<!-- # START OF FILE helperfiles/PROJECT_PLAN.md -->
-# Project Plan: TrippleEffect
+<!-- # START OF FILE README.md -->
+# TrippleEffect Multi-Agent Framework
 
-**Version:** 2.18 <!-- Updated Version -->
-**Date:** 2025-04-19 <!-- Updated Date -->
+**Version:** 2.20 <!-- Updated Version -->
 
-## 1. Project Goals
+**TrippleEffect** is an asynchronous, collaborative multi-agent framework built with Python, FastAPI, and WebSockets. It features a central **Admin AI** that orchestrates tasks by dynamically creating and managing specialized agents.
 
-*   Develop an asynchronous, collaborative multi-agent framework (`TrippleEffect`).
-*   Implement an **Admin AI** agent that acts as the central coordinator. *(Completed)*
-*   Enable dynamic agent/team creation and deletion *in memory*. *(Completed)*
-*   Inject standardized context into dynamic agents' system prompts. *(Completed)*
-*   Empower agents to communicate and collaborate autonomously. *(Completed)*
-*   Implement **session persistence**. *(Completed)*
-*   Utilize `config.yaml` primarily for bootstrapping the `Admin AI`. *(Completed)*
-*   **Dynamically discover reachable providers** and **available models**. *(Completed in P12)*
-*   **Filter discovered models** based on configuration (`MODEL_TIER` env var). *(Completed in P12)*
-*   **Automatically select the Admin AI's provider/model at startup**. *(Completed in P12)*
-*   Implement provider availability checks and **automatic retries** for transient errors. *(Completed)*
-*   **Implement automatic model/provider failover** for agents experiencing persistent errors during generation, following preference tiers (Local -> Free -> Paid). *(Completed in P13)*
-*   **Implement basic performance metric tracking** (success rate, latency) per model, persisting data. *(Completed in P13)*
-*   Implement a **Human User Interface** reflecting system state. *(Simplified in P13)*
-*   Utilize **XML-based tool calling** with **sequential execution**. *(Restored & Refined in P16)*
-*   Allow tool use in sandboxed or **shared workspaces**. *(Completed in P11, Enhanced in P18)*
-*   Implement **automatic project/session context setting**. *(Partially Completed in P11)*
-*   Implement **automatic model selection** for dynamic agents if not specified by Admin AI. *(Completed in P17)*
-*   Implement **robust agent ID/persona handling** for `send_message`. *(Completed in P17)*
-*   Implement **structured planning phase** for Admin AI. *(Completed in P17b)*
-*   Enhance `FileSystemTool` with **find/replace** capability. *(Completed in P18)*
-*   Optimize for **context length** by encouraging file usage for large outputs. *(Completed in P18)*
-*   **(Future Goals)** Enhance Admin AI planning (few-shot examples P19), **use tracked performance metrics for ranking** (P19), implement new Admin AI tools, resource management, advanced collaboration patterns, database integration, formal project/task management.
+![TrippleEffect UI Screenshot Placeholder](https://via.placeholder.com/800x400.png?text=TrippleEffect+UI+Screenshot)
+*(Replace with actual screenshot)*
 
-## 2. Scope
+## Core Concepts
 
-**In Scope (Completed up to Phase 18):**
+*   **Admin AI Orchestrator:** The central agent (`admin_ai`) coordinates tasks, manages agent teams, and interacts with the human user. It follows a structured **Planning -> Execution -> Coordination** workflow.
+*   **Dynamic Agent Management:** Create, delete, and manage agents and teams *in memory* via Admin AI tool calls (`ManageTeamTool`). No restarts needed for dynamic changes.
+*   **Intelligent Model Handling:**
+    *   **Discovery:** Automatically finds reachable LLM providers (Ollama, OpenRouter, OpenAI) and available models at startup.
+    *   **Filtering:** Filters discovered models based on the `MODEL_TIER` setting (`.env`).
+    *   **Auto-Selection:** Automatically selects the best model for Admin AI (at startup) and dynamic agents (at creation if not specified) based on performance metrics and availability.
+    *   **Failover:** Automatic API key cycling and model/provider failover (Local -> Free -> Paid tiers) on persistent errors during generation.
+    *   **Performance Tracking:** Records success rate and latency per model, persisting data.
+*   **Tool-Based Interaction:** Agents use tools via an **XML format**. Tools include file system operations, inter-agent messaging, team management, web search, GitHub interaction, and system information retrieval.
+*   **Context Management:** Standardized instructions are injected, agents are guided to use file operations for large outputs, and Admin AI receives current time context.
+*   **Persistence:** Session state (agents, teams, histories) can be saved and loaded.
 
-*   **Core Backend & Agent Core:** Base functionality. *(Completed)*
-*   **Admin AI Agent:** Core logic. *(Completed)*
-*   **Agent Manager & Handlers:** Orchestration, cycle management, interaction handling, failover. *(Completed)*
-*   **State & Session Management:** Team state, save/load. *(Completed)*
-*   **Model Registry (`ModelRegistry`):** Provider/model discovery, filtering. *(Completed in P12)*
-*   **Automatic Admin AI Model Selection:** Based on discovery/preferences. *(Completed in P12)*
-*   **Performance Tracking (`ModelPerformanceTracker`):** Tracks success/failure/duration per model, saves to JSON. *(Completed in P13)*
-*   **Automatic Agent Failover:** Agent switches provider/model on persistent errors based on tiers (Local->Free->Paid), up to `MAX_FAILOVER_ATTEMPTS`. *(Completed in P13)*
-*   **Dynamic Agent/Team Management:** In-memory CRUD via Admin AI tool calls. *(Completed)*
-*   **Tooling:** Core tools implemented, using **XML format**. `FileSystemTool` enhanced with `find_replace`. *(Updated in P18)*
-*   **Configuration:** `config.yaml` (Admin AI optional), `.env` (keys, URLs, tier, proxy), `prompts.json` (XML tools, plan phase, file usage guidance). *(Updated in P18)*
-*   **Session Persistence:** Save/Load state. *(Completed)*
-*   **Human UI:** Dynamic updates, Session management, Conversation view. *(Simplified in P13)*
-*   **WebSocket Communication:** Real-time updates. *(Completed)*
-*   **Sandboxing & Shared Workspace:** Implemented. *(Completed in P11, Usage refined in P18)*
-*   **LLM Integration:** OpenRouter, Ollama, OpenAI providers with retries/failover. *(Completed)*
-*   **Helper Files & Logging:** Maintained. *(Ongoing)*
-*   **Ollama Proxy Integration:** Optional, managed proxy. *(Completed in P15)*
-*   **XML Tooling Restoration & Prompt Refinements:** Addressed tool usage issues. *(Completed in P16)*
-*   **Automatic Dynamic Agent Model Selection:** Framework selects model if Admin AI omits. *(Completed in P17)*
-*   **Robust `send_message` Targeting:** Handles persona as fallback for target ID. *(Completed in P17)*
-*   **Structured Planning Phase:** Admin AI outputs plan before execution. *(Completed in P17b)*
-*   **Context Optimization:** Prompts encourage file usage for large outputs. *(Completed in P18)*
+## Features
 
-**Out of Scope (Deferred to Future Phases 19+):**
+*   **Asynchronous Backend:** Built with FastAPI and `asyncio`.
+*   **WebSocket Communication:** Real-time updates via WebSockets.
+*   **Dynamic Agent/Team Creation:** Manage agents and teams on the fly using `ManageTeamTool`.
+*   **Configurable Model Selection:**
+    *   Dynamic discovery of providers/models (Ollama, OpenRouter, OpenAI).
+    *   Filtering based on `MODEL_TIER` (.env: `FREE` or `ALL`).
+    *   Automatic model selection for Admin AI and dynamic agents using performance data.
+*   **Robust Error Handling:**
+    *   Automatic retries for transient LLM API errors.
+    *   Multi-key support and key cycling for providers (`PROVIDER_API_KEY_N` in `.env`).
+    *   Automatic failover to different models/providers based on tiers (Local -> Free -> Paid).
+    *   Key quarantining on persistent auth/rate limit errors.
+*   **Performance Tracking:** Monitors success rate and latency per model, saved to `data/model_performance_metrics.json`.
+*   **Structured Admin AI Workflow:** Mandatory planning phase (`<plan>` tag) before execution.
+*   **XML Tooling:** Agents request tool use via XML format. Available tools:
+    *   `FileSystemTool`: Read, Write, List, **Mkdir**, **Delete** (File/Empty Dir), Find/Replace in private sandbox or shared workspace.
+    *   `GitHubTool`: List Repos, List Files (**Recursive**), Read File content using PAT.
+    *   `ManageTeamTool`: Create/Delete Agents/Teams, Assign Agents, List Agents/Teams, **Get Agent Details**.
+    *   `SendMessageTool`: Communicate between agents within a team or with Admin AI.
+    *   `WebSearchTool`: Search the web (**uses Tavily API if configured, falls back to DDG scraping**).
+    *   `SystemHelpTool`: (**NEW**) Get current time (UTC), Search application logs.
+*   **Session Persistence:** Save and load agent states, histories, and team structures.
+*   **Basic Web UI:** Interface to interact with Admin AI, view agent status, logs, manage static config, and manage sessions.
+*   **Sandboxing:** Agents operate within dedicated sandbox directories or a shared session workspace.
+*   **Context Optimization:** Agents guided to use files for large outputs.
+*   **Admin AI Time Context:** Current UTC time is injected into Admin AI prompts.
+*   **Ollama Proxy (Optional):** Integrates an optional Node.js proxy for Ollama to potentially stabilize streaming.
 
-*   **Phase 19: Few-Shot Prompting & Performance Ranking.** (Add examples to prompts, implement ranking algorithm).
-*   **Phase 20+:** New Admin AI Tools (Get Logs, Qualitative Feedback), LiteLLM Provider, Advanced Collaboration, Resource limiting, DB/Vector Store, GeUI, etc.
-
-## 💻 Technology Stack
-
-*   **Backend:** Python 3.9+, FastAPI, Uvicorn
-*   **Asynchronous Operations:** `asyncio`
-*   **WebSockets:** `websockets` library integrated with FastAPI
-*   **LLM Interaction:**
-    *   `openai` library (used by multiple providers)
-    *   `aiohttp` (used internally by Ollama provider, GitHub tool, Web Search tool)
-*   **Frontend:** HTML5, CSS3, Vanilla JavaScript
-*   **Configuration:**
-    *   YAML (`PyYAML`) for bootstrap agent definitions (`config.yaml`)
-    *   `.env` files (`python-dotenv`) for secrets, URLs, and settings like `MODEL_TIER`, proxy config.
-    *   JSON (`prompts.json`) for standard framework/agent instructions (using XML tool format, planning phase). <!-- Updated -->
-*   **Model Discovery & Management:** Custom `ModelRegistry` class
-*   **Performance Tracking:** Custom `ModelPerformanceTracker` class (saving to JSON)
-*   **Data Handling/Validation:** Pydantic (primarily via FastAPI)
-*   **File System Interaction:** Python's built-in `pathlib` and `os` modules
-*   **XML Parsing:** Standard library `re` (Regex) and `html` (for unescaping).
-*   **Logging:** Standard library `logging` module
-*   **HTTP Requests (Internal):** `aiohttp` (used within `ModelRegistry`, `GitHubTool`, `WebSearchTool`)
-*   **HTML Parsing (Tools):** `BeautifulSoup4` (`bs4`) (used within `WebSearchTool`)
-*   **File Persistence:** Standard library `json` module (for session state and performance metrics)
-*   **Ollama Proxy:** Node.js, Express, node-fetch (managed via `subprocess`).
-
-## 4. Proposed Architecture Refinement (Conceptual - Post Phase 18)
+## Architecture Overview
 
 ```mermaid
 graph TD
@@ -109,8 +74,8 @@ graph TD
         PROVIDER_KEY_MGR["🔑 Provider Key Manager <br>+ Manages Keys ✅<br>+ Handles Quarantine ✅<br>+ Saves/Loads State ✅"]
         MODEL_REGISTRY["📚 Model Registry✅"]
         PERF_TRACKER["📊 Performance Tracker<br>+ Records Metrics ✅<br>+ Saves/Loads Metrics ✅"]
-        CYCLE_HANDLER["🔄 Agent Cycle Handler<br>+ Handles Retries ✅<br>+ Triggers Key/Model Failover ✅<br>+ Reports Metrics ✅<br>+ Handles Tool Results ✅<br>+ **Handles Plan Approval ✅**"] %% Updated
-        INTERACTION_HANDLER["🤝 Interaction Handler <br>+ **Robust SendMessage Target ✅**"] %% Updated
+        CYCLE_HANDLER["🔄 Agent Cycle Handler<br>+ Handles Retries ✅<br>+ Triggers Key/Model Failover ✅<br>+ Reports Metrics ✅<br>+ Handles Tool Results ✅<br>+ **Handles Plan Approval ✅**<br>+ **Injects Time Context (Admin) ✅**"] %% Updated
+        INTERACTION_HANDLER["🤝 Interaction Handler <br>+ **Robust SendMessage Target ✅**<br>+ **Handles Get Agent Details ✅**"] %% Updated
         STATE_MANAGER["📝 AgentStateManager <br>+ **Idempotent Create Team ✅**"] %% Updated
         SESSION_MANAGER["💾 SessionManager ✅"]
 
@@ -130,11 +95,12 @@ graph TD
 
          subgraph Tools ["🛠️ Tools (XML Format)"]
              TOOL_EXECUTOR["Executor"]
-             TOOL_FS["FileSystem <br>+ **Find/Replace Action ✅**"] %% Updated
+             TOOL_FS["FileSystem <br>+ Find/Replace ✅<br>+ **Mkdir/Delete ✅**"] %% Updated
              TOOL_SENDMSG["SendMessage"]
-             TOOL_MANAGE_TEAM["ManageTeam <br>+ **Optional Provider/Model ✅**"] %% Updated
-             TOOL_GITHUB["GitHub"]
-             TOOL_WEBSEARCH["WebSearch"]
+             TOOL_MANAGE_TEAM["ManageTeam <br>+ Optional Provider/Model ✅<br>+ **Get Details ✅**"] %% Updated
+             TOOL_GITHUB["GitHub<br>+ **Recursive List ✅**"] %% Updated
+             TOOL_WEBSEARCH["WebSearch<br>+ **Tavily API ✅**<br>+ DDG Fallback ✅"] %% Updated
+             TOOL_SYSTEMHELP["**SystemHelp ✅**<br>+ Get Time<br>+ Search Logs"] %% Added
          end
 
          SANDBOXES["📁 Sandboxes ✅"]
@@ -148,12 +114,13 @@ graph TD
 
     subgraph External %% Status Implicit
         LLM_API_SVC["☁️ Ext. LLM APIs"]
+        TAVILY_API["☁️ Tavily API"] %% Added
         OLLAMA_SVC["⚙️ Local Ollama Svc"]
         OLLAMA_PROXY_SVC["🔌 Node.js Ollama Proxy (Optional)"]
         LITELLM_SVC["⚙️ Local LiteLLM Svc"]
         CONFIG_YAML["⚙️ config.yaml"]
-        PROMPTS_JSON["📜 prompts.json <br>(XML Format)<br>(Planning Phase)<br>(File Usage Guidance)"] %% Updated
-        DOT_ENV[".env File <br>(Multi-Key Support)<br>(Proxy Config)"]
+        PROMPTS_JSON["📜 prompts.json <br>(XML Format)<br>(Planning Phase)<br>(File Usage Guidance)<br>+ **SystemHelpTool Info**"] %% Updated
+        DOT_ENV[".env File <br>(Multi-Key Support)<br>(Proxy Config)<br>+ **Tavily Key**"] %% Updated
     end
 
     %% --- Connections ---
@@ -196,40 +163,95 @@ graph TD
     LLM_Providers -- Calls --> OLLAMA_SVC;
     OLLAMA_PROXY_SVC -- Forwards to --> OLLAMA_SVC;
 
+    %% Tool connections
+    TOOL_WEBSEARCH -- Uses --> TAVILY_API; %% Added
+    TOOL_WEBSEARCH -- Uses --> External; %% DDG Fallback
+    TOOL_GITHUB -- Uses --> LLM_API_SVC; %% GitHub API
+    TOOL_SYSTEMHELP -- Reads --> LOG_FILES;
+
     Backend -- "Writes Logs" --> LOG_FILES;
     SESSION_MANAGER -- Reads/Writes --> PROJECT_SESSIONS;
 ```
 
-## 5. Development Phases & Milestones
+## Technology Stack
 
-**Phase 1-16 (Completed)**
-*   [X] Core Functionality, Dynamic Agent/Team Mgmt, Refactoring, Provider/Model Discovery, Admin AI Auto-Selection, Performance Tracking, Failover, Key Management, Prompt Centralization, Ollama Proxy, XML Tooling Restoration, Bug Fixes & Prompt Refinements.
+*   **Backend:** Python 3.9+, FastAPI, Uvicorn
+*   **Asynchronous Operations:** `asyncio`
+*   **WebSockets:** `websockets` library integrated with FastAPI
+*   **LLM Interaction:** `openai` library, `aiohttp`
+*   **Frontend:** HTML5, CSS3, Vanilla JavaScript
+*   **Configuration:** YAML (`PyYAML`), `.env` (`python-dotenv`), JSON (`prompts.json`)
+*   **Tooling:** `BeautifulSoup4` (Web Search fallback), `tavily-python` (Web Search API) <!-- Added -->
+*   **Persistence:** JSON, File System
+*   **Optional Proxy:** Node.js, Express, node-fetch
 
-**Phase 17: Automatic Model Selection & Robust Agent ID Handling (Completed)**
-*   **Goal:** Allow Admin AI to omit provider/model for dynamic agents, enabling framework auto-selection. Make `send_message` target resolution more robust.
-*   [X] **Optional Params (`ManageTeamTool`):** Marked provider/model as optional, removed strict check in tool `execute`.
-*   [X] **Auto-Selection Logic (`agent_lifecycle`):** Implemented `_select_best_available_model` using performance ranks and availability checks. Integrated into `_create_agent_internal`.
-*   [X] **Robust `send_message` (`interaction_handler`):** Added logic to resolve target by persona if exact ID fails, with appropriate error feedback for ambiguity or not found.
-*   [X] **Prompt Updates (`prompts.json`):** Updated Admin AI instructions for optional provider/model and `send_message` persona usage.
+## Setup and Running
 
-**Phase 17b: Structured Planning & Batched Execution (Completed)**
-*   **Goal:** Introduce a mandatory planning step for Admin AI and allow batching of tool calls by type.
-*   [X] **Planning State (`core.py`, `constants.py`):** Added `AGENT_STATUS_PLANNING` status and `current_plan` attribute.
-*   [X] **Plan Detection (`core.py`):** Added logic to detect `<plan>` tag and yield `plan_generated` event.
-*   [X] **Plan Approval (`cycle_handler.py`):** Added handling for `plan_generated` event to auto-approve and reactivate Admin AI.
-*   [X] **Prompt Updates (`prompts.json`):** Restructured Admin AI workflow into Planning/Execution phases, mandated `<plan>` tag, instructed batch tool usage after approval.
+1.  **Prerequisites:**
+    *   Python 3.9+
+    *   Node.js and npm (only if using the optional Ollama proxy)
+    *   Access to LLM APIs (OpenAI, OpenRouter) and/or a running local Ollama instance.
 
-**Phase 18: Context Optimization & File System Enhancement (Completed)**
-*   **Goal:** Reduce token usage by promoting file operations for large content and enhance file manipulation capabilities.
-*   [X] **`FileSystemTool` Enhancement:** Added `find_replace` action and parameters. Implemented find/replace logic.
-*   [X] **Prompt Updates (`prompts.json`):** Updated Admin AI and Standard Agent instructions to strongly encourage using `file_system` (write/find_replace) for large outputs (code, reports) and reporting filenames instead of full content via `send_message`.
-*   [X] **Documentation Updates (`README.md`, `TOOL_MAKING.md`):** Updated descriptions to reflect `find_replace` and file usage guidance.
+2.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/your-username/TrippleEffect.git # Replace with actual repo URL
+    cd TrippleEffect
+    ```
 
-**Phase 19: Few-Shot Prompting & Performance Ranking (Next)**
-*   **Goal:** Improve LLM instruction following with few-shot examples in prompts. Implement basic model ranking based on collected performance data.
-*   [ ] **Few-Shot Examples:** Add concrete examples of correct, sequential tool usage (especially `ManageTeamTool` sequence, planning phase) to `prompts.json` for Admin AI. Add examples for standard agent tools (file usage, find/replace).
-*   [ ] **Ranking Algorithm:** Refine/implement scoring logic in `ModelPerformanceTracker._calculate_score` and `get_ranked_models`. Consider factors like success rate, latency, call volume threshold.
-*   [ ] **(Display Only)** Add a way to view the ranked models list (e.g., hidden API endpoint or log output) to verify ranking logic.
+3.  **Set up Python Environment:**
+    ```bash
+    python -m venv venv
+    source venv/bin/activate # On Windows: venv\Scripts\activate
+    pip install -r requirements.txt
+    ```
 
-**Future Phases (20+) (High-Level)**
-*   **Phase 20+:** New Admin AI Tools (Get Logs, Qualitative Feedback), LiteLLM Provider, Advanced Collaboration, Resource limiting, DB/Vector Store, GeUI, etc.
+4.  **Configure Environment:**
+    *   Copy `.env.example` to `.env`.
+    *   Edit `.env` and add your API keys (OpenAI, OpenRouter, GitHub PAT, **Tavily API Key**).
+    *   Set `MODEL_TIER` (`FREE` or `ALL`).
+    *   Configure `OLLAMA_BASE_URL` if your Ollama instance is not at `http://localhost:11434`.
+    *   Configure Ollama proxy settings (`USE_OLLAMA_PROXY`, `OLLAMA_PROXY_PORT`) if needed.
+
+5.  **Configure Bootstrap Agents (Optional):**
+    *   Edit `config.yaml` to define any bootstrap agents beyond the default Admin AI.
+    *   You can optionally specify a provider/model for Admin AI here, otherwise it will be auto-selected.
+
+6.  **Install Proxy Dependencies (Optional):**
+    ```bash
+    cd ollama-proxy
+    npm install
+    cd ..
+    ```
+
+7.  **Run the Application:**
+    ```bash
+    # Make setup script executable (if needed)
+    # chmod +x setup.sh
+    # ./setup.sh # Or run the command directly:
+    python -m src.main
+    ```
+    *(Alternatively, for development with auto-reload, use `uvicorn src.main:app --reload --port 8000`, but be aware reload might interfere with proxy management or agent state.)*
+
+8.  **Access the UI:** Open your web browser to `http://localhost:8000`.
+
+## Development Status
+
+*   **Current Version:** 2.20
+*   **Completed Phases:** 1-20 (Core, Dynamic Agents, Failover, Key Mgmt, Proxy, XML Tools, Auto-Selection, Planning Phase, Context Optimization, **Tool Enhancements, System Help**)
+*   **Next Phase (21):** Few-Shot Prompting & Performance Ranking.
+*   **Future Plans:** New Admin tools, LiteLLM provider, advanced collaboration, resource limits, DB/Vector Stores.
+
+See `helperfiles/PROJECT_PLAN.md` for detailed phase information.
+
+## Contributing
+
+Contributions are welcome! Please follow standard fork-and-pull-request procedures. Adhere to the development rules outlined in `helperfiles/DEVELOPMENT_RULES.md`.
+
+## License
+
+This project is licensed under the MIT License - see the `LICENSE` file for details.
+
+## Acknowledgements
+
+*   Inspired by AutoGen, CrewAI, and other multi-agent frameworks.
+*   Uses the powerful libraries FastAPI, Pydantic, and the OpenAI Python client.
