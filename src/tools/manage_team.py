@@ -8,7 +8,7 @@ import json # For potentially validating JSON config strings later
 
 logger = logging.getLogger(__name__)
 
-# Define valid actions
+# Define valid actions - Added get_agent_details
 VALID_ACTIONS = [
     "create_agent",
     "delete_agent",
@@ -18,6 +18,7 @@ VALID_ACTIONS = [
     "remove_agent_from_team",
     "list_agents",
     "list_teams",
+    "get_agent_details", # New action
 ]
 
 class ManageTeamTool(BaseTool):
@@ -29,10 +30,10 @@ class ManageTeamTool(BaseTool):
     Provider/model are optional for create_agent; framework will select if omitted.
     """
     name: str = "ManageTeamTool"
-    description: str = (
+    description: str = ( # Updated description
         "Manages agents and teams dynamically within the system. "
         f"Use one of the valid actions: {', '.join(VALID_ACTIONS)}. "
-        "Provide required parameters based on the specific action chosen. For 'create_agent', 'provider' and 'model' are optional (system selects if omitted). NO application restart is needed."
+        "Provide required parameters based on the specific action chosen. For 'create_agent', 'provider' and 'model' are optional (system selects if omitted). Use 'get_agent_details' to retrieve detailed information about a specific agent. NO application restart is needed."
     )
     parameters: List[ToolParameter] = [
         ToolParameter(
@@ -44,7 +45,7 @@ class ManageTeamTool(BaseTool):
         ToolParameter(
             name="agent_id",
             type="string",
-            description="Agent ID. Required for: delete_agent, add_agent_to_team, remove_agent_from_team. Optional for create_agent.",
+            description="Agent ID. Required for: delete_agent, add_agent_to_team, remove_agent_from_team, get_agent_details. Optional for create_agent.", # Added get_agent_details requirement
             required=False, # Not universally required
         ),
         ToolParameter(
@@ -85,7 +86,6 @@ class ManageTeamTool(BaseTool):
         ),
     ]
 
-    # --- UPDATED EXECUTE METHOD with Action-Specific Validation ---
     async def execute(self, agent_id: str, agent_sandbox_path: Path, **kwargs: Any) -> Any:
         """
         Validates parameters based on the specific management action requested.
@@ -98,7 +98,6 @@ class ManageTeamTool(BaseTool):
         logger.info(f"'{agent_id}' requested ManageTeamTool action '{action}' with params: {params}")
 
         if not action or action not in VALID_ACTIONS:
-            # This check might be redundant if parser requires 'action', but keep for safety
             error_msg = f"Error: Invalid or missing 'action'. Must be one of: {', '.join(VALID_ACTIONS)}."
             logger.error(error_msg)
             return {"status": "error", "action": action, "message": error_msg}
@@ -108,7 +107,6 @@ class ManageTeamTool(BaseTool):
         missing = []
 
         if action == "create_agent":
-            # Provider/model are optional, but prompt and persona are required
             if not params.get("system_prompt"): missing.append("'system_prompt'")
             if not params.get("persona"): missing.append("'persona'")
             if missing: error_message = f"Error: Missing required parameter(s) for 'create_agent': {', '.join(missing)}."
@@ -126,6 +124,10 @@ class ManageTeamTool(BaseTool):
             if not params.get("agent_id"): missing.append("'agent_id'")
             if not params.get("team_id"): missing.append("'team_id'")
             if missing: error_message = f"Error: Missing required parameter(s) for 'remove_agent_from_team': {', '.join(missing)}."
+        # --- NEW: Validation for get_agent_details ---
+        elif action == "get_agent_details":
+             if not params.get("agent_id"): error_message = "Error: Missing required 'agent_id' parameter for 'get_agent_details'."
+        # --- End NEW Validation ---
         # list_agents and list_teams have no specific required params checked here
 
         # Check for validation error
