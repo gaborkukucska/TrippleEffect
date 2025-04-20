@@ -81,17 +81,18 @@ Follow these steps to create a new tool:
 5.  **Implement `execute` Method:** Implement the core logic within the `async def execute(...)` method.
     *   **Signature:** Must match `async def execute(self, agent_id: str, agent_sandbox_path: Path, project_name: Optional[str] = None, session_name: Optional[str] = None, **kwargs: Any) -> Any:`
     *   `agent_id`: ID of the agent calling the tool (useful for logging or context).
-    *   `agent_sandbox_path`: Absolute `Path` object to the agent's dedicated working directory. **Crucially, any file operations should be restricted to this path** using methods like `Path.is_relative_to()` for security. Most tools won't need this.
-    *   `project_name`, `session_name`: Context passed from the `ToolExecutor` (useful for tools like `FileSystemTool` accessing shared workspaces).
+    *   `agent_sandbox_path`: Absolute `Path` object to the agent's dedicated working directory. **Crucially, any file operations should be restricted to this path** using methods like `Path.is_relative_to()` for security. Most tools won't need this directly unless operating in the private sandbox.
+    *   `project_name`, `session_name`: **(NEW)** Context passed from the `ToolExecutor` containing the currently active project and session names. This is essential for tools that need to interact with the shared workspace (like `FileSystemTool` with `scope='shared'`). Tools can use these to construct the correct path to the shared workspace.
     *   `**kwargs`: A dictionary containing the arguments provided by the agent (parsed from the XML by `Agent Core`). Access parameters using `kwargs.get("param_name")`. The `ToolExecutor` performs basic validation based on your `parameters` definition (checking required fields). You might add more specific validation inside `execute`.
     *   **Return Value:**
         *   For most tools: Return a **string** summarizing the result or confirming success. This string is added to the calling agent's history.
         *   For errors: Return a descriptive **string** starting with "Error: ".
         *   *Special Case:* `ManageTeamTool` returns a dictionary signal for the `AgentManager`. Avoid returning complex objects unless handled specifically by the `AgentManager`.
-    *   **Blocking I/O:** If your tool needs to perform blocking operations (like network requests with `requests`, synchronous file I/O, or heavy computation), use `await asyncio.to_thread(your_blocking_function, args)` to avoid blocking the main application event loop. Use async libraries (like `aiohttp`, `AsyncGithub`) whenever possible.
+    *   **Blocking I/O:** If your tool needs to perform blocking operations (like network requests with `requests`, synchronous file I/O, or heavy computation), use `await asyncio.to_thread(your_blocking_function, args)` to avoid blocking the main application event loop. Use async libraries (like `aiohttp`, `AsyncGithub`, `TavilyClient`) whenever possible.
     *   **Logging:** Use the `logger` instance for informative messages.
 
     ```python
+    # Example execute method incorporating project/session context check
     class CalculatorTool(BaseTool):
         # ... name, description, parameters ...
 
@@ -99,6 +100,11 @@ Follow these steps to create a new tool:
             operation = kwargs.get("operation")
             op1_str = kwargs.get("operand1")
             op2_str = kwargs.get("operand2")
+
+            # Example check if context is needed (though calculator doesn't need it)
+            # if not project_name or not session_name:
+            #    logger.warning(f"CalculatorTool called without project/session context (Project: {project_name}, Session: {session_name})")
+            #    # You might return an error if context is strictly required by the tool logic
 
             # Validate inputs (ToolExecutor already checked for presence if required)
             if not operation or operation not in ['add', 'subtract', 'multiply', 'divide', 'power']:
@@ -109,7 +115,7 @@ Follow these steps to create a new tool:
             except (ValueError, TypeError):
                 return f"Error: Invalid operands. Could not convert '{op1_str}' or '{op2_str}' to numbers."
 
-            logger.info(f"Agent {agent_id} performing calculation: {op1} {operation} {op2}")
+            logger.info(f"Agent {agent_id} performing calculation: {op1} {operation} {op2} (Project: {project_name}, Session: {session_name})") # Log context
 
             # Perform calculation
             result: Optional[float] = None
@@ -142,7 +148,7 @@ Follow these steps to create a new tool:
 
     ```
 
-6.  **Dependencies:** If your tool requires external libraries (like `requests`, `beautifulsoup4`, `duckduckgo-search`, `PyGithub`), add them to the main `requirements.txt` file.
+6.  **Dependencies:** If your tool requires external libraries (like `requests`, `beautifulsoup4`, `tavily-python`, `PyGithub`), add them to the main `requirements.txt` file.
 
 7.  **Environment Variables:** If your tool needs secrets or configuration (like API keys), add corresponding variables to `.env.example` (with placeholders) and instruct users to set them in their `.env` file. Access them within your tool using `from src.config.settings import settings` and then `settings.MY_VARIABLE_NAME`.
 
@@ -159,5 +165,6 @@ Okay, I can calculate that for you.
   <operand1>123.45</operand1>
   <operand2>67.8</operand2>
 </calculator>
+```
 
 The framework parses this, calls the execute method, and the tool's string result (e.g., "Calculation result: 123.45 multiply 67.8 = 8370.01") is added back into the agent's message history.
