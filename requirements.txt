@@ -14,3 +14,5 @@ lxml
 pynacl
 beautifulsoup4
 tavily-python # Added for WebSearchTool API fallback
+SQLAlchemy>=2.0 # Added for Database Memory
+# alembic # Skipping for now for Termux compatibility
