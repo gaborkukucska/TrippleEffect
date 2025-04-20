@@ -50,13 +50,13 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 *   `src/config/model_registry.py::ModelRegistry.get_reachable_provider_url(provider)` -> `Optional[str]` - Returns the base URL for a reachable provider.
 *   `src/config/model_registry.py::ModelRegistry._log_available_models()` (Internal) - Logs the final available models.
 
-*   `src/config/settings.py::Settings` (Class) - Holds settings from `.env`, `prompts.json`, and initial `config.yaml`.
-*   `src/config/settings.py::Settings.__init__()` - Initializes settings, loads env vars, prompts, initial config.
+*   `src/config/settings.py::Settings` (Class) - Holds settings from `.env`, `prompts.json`, and initial `config.yaml`. Instantiates `ModelRegistry` after loading. **Includes Tavily API key**.
+*   `src/config/settings.py::Settings.__init__()` - Initializes settings, loads env vars (incl. Tavily), prompts, initial config.
 *   `src/config/settings.py::Settings._load_prompts_from_json()` (Internal) - Loads prompts from `prompts.json`.
 *   `src/config/settings.py::Settings._ensure_projects_dir()` (Internal) - Creates projects directory.
-*   `src/config/settings.py::Settings._check_required_keys()` (Internal) - Validates provider keys/URLs and logs status.
+*   `src/config/settings.py::Settings._check_required_keys()` (Internal) - Validates provider keys/URLs and logs status **(incl. Tavily)**.
 *   `src/config/settings.py::Settings.get_provider_config(provider_name)` -> `Dict` - Gets base config (URL, referer) for a provider.
-*   `src/config/settings.py::Settings.is_provider_configured(provider_name)` -> `bool` - Checks if provider has essential config (keys or URL/proxy). Updated logic for Ollama proxy.
+*   `src/config/settings.py::Settings.is_provider_configured(provider_name)` -> `bool` - Checks if provider has essential config (keys or URL/proxy).
 *   `src/config/settings.py::Settings.get_agent_config_by_id(agent_id)` -> `Optional[Dict]` - Retrieves bootstrap agent's config.
 *   `src/config/settings.py::Settings.get_formatted_allowed_models()` -> `str` - Delegates to `model_registry`.
 *   `src/config/settings.py::settings` (Instance) - Singleton settings instance.
@@ -98,7 +98,7 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 *   `src/agents/core.py::Agent.set_manager(manager)` - Sets the agent manager reference.
 *   `src/agents/core.py::Agent.set_tool_executor(tool_executor)` - Sets the tool executor reference (marked as legacy/unused).
 *   `src/agents/core.py::Agent.ensure_sandbox_exists()` -> `bool` - Creates the agent's sandbox directory.
-*   `src/agents/core.py::Agent.process_message()` (Async Generator) - Main agent processing loop. Calls LLM provider, processes stream, detects `<plan>` tag (yields `plan_generated`), calls external `find_and_parse_xml_tool_calls`, yields `tool_requests` or `final_response`.
+*   `src/agents/core.py::Agent.process_message()` (Async Generator) - Main agent processing loop. Calls LLM provider, processes stream, detects `<plan>` tag (yields `plan_generated`), calls external `find_and_parse_xml_tool_calls`, yields `tool_requests` or `final_response`. **(Note: Time context injection requires modification here or in caller)**
 *   `src/agents/core.py::Agent.get_state()` -> `Dict` - Returns agent state, includes `current_plan` if status is PLANNING.
 *   `src/agents/core.py::Agent.clear_history()` - Clears message history, keeps system prompt.
 
@@ -124,7 +124,7 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 
 ## **Agent Session Manager (`src/agents/`)**
 
-*   `src/agents/session_manager.py::SessionManager` (Class) - Handles saving/loading of session state. Imports status constants.
+*   `src/agents/session_manager.py::SessionManager` (Class) - Handles saving/loading of session state. Delegates agent recreation to `agent_lifecycle` module during load. Imports status constants.
 *   `src/agents/session_manager.py::SessionManager.__init__(manager, state_manager)` - Initializes session manager.
 *   `src/agents/session_manager.py::SessionManager.save_session(project_name, session_name=None)` (Async) -> `Tuple[bool, str]` - Gathers current state (teams, agents, histories) and saves to JSON file.
 *   `src/agents/session_manager.py::SessionManager.load_session(project_name, session_name)` (Async) -> `Tuple[bool, str]` - Loads session state from file, clears dynamic state, delegates agent recreation to `agent_lifecycle`, restores histories.
@@ -150,14 +150,14 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 
 *   `src/agents/interaction_handler.py::AgentInteractionHandler` (Class) - Handles tool interactions/execution. Imports status constants.
 *   `src/agents/interaction_handler.py::AgentInteractionHandler.__init__(manager)` - Initializes interaction handler.
-*   `src/agents/interaction_handler.py::AgentInteractionHandler.handle_manage_team_action(action, params, calling_agent_id)` (Async) -> `Tuple[bool, str, Optional[Any]]` - Processes `ManageTeamTool` results, checks for duplicate persona, handles idempotent `create_team`. Calls manager methods.
+*   `src/agents/interaction_handler.py::AgentInteractionHandler.handle_manage_team_action(action, params, calling_agent_id)` (Async) -> `Tuple[bool, str, Optional[Any]]` - Processes `ManageTeamTool` results, **handles `get_agent_details` action**, checks for duplicate persona, handles idempotent `create_team`. Calls manager methods.
 *   `src/agents/interaction_handler.py::AgentInteractionHandler.route_and_activate_agent_message(sender_id, target_identifier, message_content)` (Async) -> `Optional[Task]` - Routes messages. Resolves target by ID then unique persona. Provides feedback on failure/ambiguity. Schedules target agent cycle if idle.
 *   `src/agents/interaction_handler.py::AgentInteractionHandler.execute_single_tool(agent, call_id, tool_name, tool_args, project_name, session_name)` (Async) -> `Optional[Dict]` - Executes a single tool via `ToolExecutor`, passes context.
 *   `src/agents/interaction_handler.py::AgentInteractionHandler.failed_tool_result(call_id, tool_name)` (Async) -> `Optional[ToolResultDict]` - Generates a formatted error result for failed tool dispatch.
 
 ## **Agent Cycle Handler (`src/agents/`)**
 
-*   `src/agents/cycle_handler.py::AgentCycleHandler` (Class) - Handles agent's execution cycle, retries, plan approval, failover triggering. Imports status constants.
+*   `src/agents/cycle_handler.py::AgentCycleHandler` (Class) - Handles agent's execution cycle, retries, plan approval, failover triggering. **Injects time context for Admin AI**. Imports status constants.
 *   `src/agents/cycle_handler.py::AgentCycleHandler.__init__(manager, interaction_handler)` - Initializes cycle handler.
 *   `src/agents/cycle_handler.py::AgentCycleHandler.run_cycle(agent, retry_count)` (Async) - Manages agent's `process_message` loop. Handles `plan_generated` event (auto-approves, reactivates), processes tool results, records metrics, triggers failover, ensures reactivation.
 
@@ -242,7 +242,7 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 
 *   `src/tools/base.py::ToolParameter` (Pydantic Model) - Defines schema for a tool parameter.
 *   `src/tools/base.py::BaseTool` (Abstract Class) - Base class for all tools.
-*   `src/tools/base.py::BaseTool.execute(agent_id, agent_sandbox_path, project_name=None, session_name=None, **kwargs)` (Abstract Async) - Defines signature for tool execution, includes context.
+*   `src/tools/base.py::BaseTool.execute(agent_id, agent_sandbox_path, project_name=None, session_name=None, **kwargs)` (Abstract Async) - **Signature updated** to include optional project/session context.
 *   `src/tools/base.py::BaseTool.get_schema()` -> `Dict` - Returns tool's schema description.
 
 ## **Tool Executor (`src/tools/`)**
@@ -253,33 +253,42 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 *   `src/tools/executor.py::ToolExecutor.register_tool(tool_instance)` - Manually registers a tool.
 *   `src/tools/executor.py::ToolExecutor.get_formatted_tool_descriptions_xml()` -> `str` - Generates XML description of tools.
 *   `src/tools/executor.py::ToolExecutor.get_formatted_tool_descriptions_json()` -> `str` - Generates JSON description of tools.
-*   `src/tools/executor.py::ToolExecutor.execute_tool(agent_id, agent_sandbox_path, tool_name, tool_args, project_name=None, session_name=None)` (Async) -> `Any` - Executes a tool, validates args, passes context.
+*   `src/tools/executor.py::ToolExecutor.execute_tool(agent_id, agent_sandbox_path, tool_name, tool_args, project_name=None, session_name=None)` (Async) -> `Any` - Executes a tool, validates args, **passes context**.
 
 ## **Tool Implementations (`src/tools/`)**
 
-*   `src/tools/file_system.py::FileSystemTool` (Class) - Tool for file operations (read, write, list, find_replace).
-*   `src/tools/file_system.py::FileSystemTool.execute(agent_id, agent_sandbox_path, project_name, session_name, **kwargs)` (Async) -> `str` - Executes file action based on scope and parameters.
-*   `src/tools/file_system.py::FileSystemTool._resolve_and_validate_path(base_path, relative_file_path, agent_id, scope_description)` (Async Internal) -> `Optional[Path]` - Resolves and validates path within scope.
-*   `src/tools/file_system.py::FileSystemTool._read_file(base_path, filename, agent_id, scope_description)` (Async Internal) -> `str` - Reads file content.
-*   `src/tools/file_system.py::FileSystemTool._write_file(base_path, filename, content, agent_id, scope_description)` (Async Internal) -> `str` - Writes file content.
-*   `src/tools/file_system.py::FileSystemTool._list_directory(base_path, relative_dir, agent_id, scope_description)` (Async Internal) -> `str` - Lists directory contents.
-*   `src/tools/file_system.py::FileSystemTool._find_replace_in_file(base_path, filename, find_text, replace_text, agent_id, scope_description)` (Async Internal) -> `str` - Finds and replaces text in a file.
+*   `src/tools/file_system.py::FileSystemTool` (Class) - Tool for file operations. **Added `mkdir` and `delete` actions**.
+*   `src/tools/file_system.py::FileSystemTool.execute(...)` (Async) -> `str` - Executes file action based on scope and parameters.
+*   `src/tools/file_system.py::FileSystemTool._resolve_and_validate_path(...)` (Async Internal) -> `Optional[Path]` - Resolves and validates path within scope.
+*   `src/tools/file_system.py::FileSystemTool._read_file(...)` (Async Internal) -> `str` - Reads file content.
+*   `src/tools/file_system.py::FileSystemTool._write_file(...)` (Async Internal) -> `str` - Writes file content.
+*   `src/tools/file_system.py::FileSystemTool._list_directory(...)` (Async Internal) -> `str` - Lists directory contents.
+*   `src/tools/file_system.py::FileSystemTool._find_replace_in_file(...)` (Async Internal) -> `str` - Finds and replaces text in a file.
+*   `src/tools/file_system.py::FileSystemTool._create_directory(...)` (Async Internal) -> `str` - **(NEW)** Creates directory.
+*   `src/tools/file_system.py::FileSystemTool._delete_item(...)` (Async Internal) -> `str` - **(NEW)** Deletes file or empty directory.
 
-*   `src/tools/github_tool.py::GitHubTool` (Class) - Tool for interacting with GitHub API.
+*   `src/tools/github_tool.py::GitHubTool` (Class) - Tool for GitHub API interaction. **Added `recursive` parameter for `list_files`**.
 *   `src/tools/github_tool.py::GitHubTool.__init__()` - Initializes tool, checks for token.
-*   `src/tools/github_tool.py::GitHubTool._make_github_request(method, endpoint, params=None)` (Async Internal) -> `Optional[Any]` - Makes authenticated GitHub API request.
-*   `src/tools/github_tool.py::GitHubTool.execute(agent_id, agent_sandbox_path, project_name, session_name, **kwargs)` (Async) -> `str` - Executes GitHub action (list_repos, list_files, read_file).
+*   `src/tools/github_tool.py::GitHubTool._make_github_request(...)` (Async Internal) -> `Optional[Any]` - Makes authenticated GitHub API request.
+*   `src/tools/github_tool.py::GitHubTool._list_repo_recursively(...)` (Async Internal) -> `List[Dict]` - **(NEW)** Recursively lists repo contents.
+*   `src/tools/github_tool.py::GitHubTool.execute(...)` (Async) -> `str` - Executes GitHub action (list_repos, list_files, read_file).
 
-*   `src/tools/manage_team.py::ManageTeamTool` (Class) - Tool for dynamic agent/team management.
-*   `src/tools/manage_team.py::ManageTeamTool.execute(agent_id, agent_sandbox_path, **kwargs)` (Async) -> `Dict` - Validates action-specific parameters, returns structured dictionary signal for `AgentManager`. Provider/model are optional.
+*   `src/tools/manage_team.py::ManageTeamTool` (Class) - Tool for agent/team management. **Added `get_agent_details` action**.
+*   `src/tools/manage_team.py::ManageTeamTool.execute(...)` (Async) -> `Dict` - Validates action-specific parameters, returns signal dictionary.
 
 *   `src/tools/send_message.py::SendMessageTool` (Class) - Tool for sending messages between agents.
-*   `src/tools/send_message.py::SendMessageTool.execute(agent_id, agent_sandbox_path, **kwargs)` (Async) -> `str` - Validates parameters, returns confirmation string (routing handled by manager).
+*   `src/tools/send_message.py::SendMessageTool.execute(...)` (Async) -> `str` - Validates parameters, returns confirmation string (routing handled by manager).
 
-*   `src/tools/web_search.py::WebSearchTool` (Class) - Tool for performing web search via DuckDuckGo scraping.
-*   `src/tools/web_search.py::WebSearchTool._get_html(url)` (Async Internal) -> `Optional[str]` - Fetches HTML content.
-*   `src/tools/web_search.py::WebSearchTool._parse_results(html_content, num_results)` (Async Internal) -> `List[Dict]` - Parses DDG HTML for results.
-*   `src/tools/web_search.py::WebSearchTool.execute(agent_id, agent_sandbox_path, **kwargs)` (Async) -> `str` - Executes search and returns formatted results.
+*   `src/tools/web_search.py::WebSearchTool` (Class) - Tool for web search. **Added Tavily API support with scraping fallback**.
+*   `src/tools/web_search.py::WebSearchTool._search_with_tavily(...)` (Async Internal) -> `Optional[List[Dict]]` - **(NEW)** Searches using Tavily API.
+*   `src/tools/web_search.py::WebSearchTool._get_html(...)` (Async Internal) -> `Optional[str]` - Fetches HTML (scraping fallback).
+*   `src/tools/web_search.py::WebSearchTool._parse_results(...)` (Async Internal) -> `List[Dict]` - Parses DDG HTML (scraping fallback).
+*   `src/tools/web_search.py::WebSearchTool._search_with_scraping(...)` (Async Internal) -> `Optional[List[Dict]]` - **(NEW)** Performs scraping search.
+*   `src/tools/web_search.py::WebSearchTool.execute(...)` (Async) -> `str` - Executes search (tries Tavily first).
+
+*   `src/tools/system_help.py::SystemHelpTool` (Class) - **(NEW)** Tool for system info and log search.
+*   `src/tools/system_help.py::SystemHelpTool.execute(...)` (Async) -> `str` - Executes 'get_time' or 'search_logs'.
+*   `src/tools/system_help.py::SystemHelpTool._search_logs_safe(...)` (Async Internal) -> `List[str] | str` - **(NEW)** Safely searches the latest log file.
 
 ## **Frontend Logic (`static/js/app.js`)**
 
