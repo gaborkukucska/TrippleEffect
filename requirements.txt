@@ -13,3 +13,4 @@ aiohttp
 lxml
 pynacl
 beautifulsoup4
+tavily-python # Added for WebSearchTool API fallback
