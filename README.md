@@ -1,12 +1,23 @@
 <!-- # START OF FILE README.md -->
 # TrippleEffect Multi-Agent Framework
 
-**Version:** 2.22 <!-- Updated Version -->
+**Version:** 2.22
 
 **TrippleEffect** is an asynchronous, collaborative multi-agent framework built with Python, FastAPI, and WebSockets. It features a central **Admin AI** that orchestrates tasks by dynamically creating and managing specialized agents.
 
 ![TrippleEffect UI Screenshot Placeholder](https://via.placeholder.com/800x400.png?text=TrippleEffect+UI+Screenshot)
 *(Replace with actual screenshot)*
+
+## Quick Start (using scripts)
+
+For a faster setup, you can use the provided shell scripts (ensure they are executable: `chmod +x setup.sh run.sh`):
+
+1.  **Run Setup:** `./setup.sh` (This usually creates the environment, installs dependencies, and copies `.env.example`).
+2.  **Configure:** Edit the created `.env` file with your API keys (OpenAI, OpenRouter, GitHub PAT, Tavily).
+3.  **Run:** `./run.sh` (This typically activates the environment and starts the application using `python -m src.main`).
+4.  **Access UI:** Open your browser to `http://localhost:8000`.
+
+*(See the detailed "Setup and Running" section below for manual steps and configuration options.)*
 
 ## Core Concepts
 
@@ -217,7 +228,7 @@ graph TD
 *   **Data Handling/Validation:** Pydantic (via FastAPI)
 *   **Logging:** Standard library `logging`
 
-## Setup and Running
+## Setup and Running (Detailed)
 
 1.  **Prerequisites:**
     *   Python 3.9+
@@ -226,7 +237,7 @@ graph TD
 
 2.  **Clone the repository:**
     ```bash
-    git clone https://github.com/gaborkukucska/TrippleEffect.git # Replace with actual repo URL
+    git clone https://github.com/your-username/TrippleEffect.git # Replace with actual repo URL
     cd TrippleEffect
     ```
 
@@ -257,9 +268,11 @@ graph TD
 
 7.  **Run the Application:**
     ```bash
-    # Make setup script executable (if needed)
-    # chmod +x setup.sh
-    # ./setup.sh # Or run the command directly:
+    # Option 1: Use the run script (if available and configured)
+    # chmod +x run.sh
+    # ./run.sh
+
+    # Option 2: Run directly using Python
     python -m src.main
     ```
     *(Alternatively, for development with auto-reload, use `uvicorn src.main:app --reload --port 8000`, but be aware reload might interfere with proxy management or agent state.)*
@@ -270,7 +283,7 @@ graph TD
 
 *   **Current Version:** 2.22
 *   **Completed Phases:** 1-21 (Core, Dynamic Agents, Failover, Key Mgmt, Proxy, XML Tools, Auto-Selection, Planning Phase, Context Optimization, Tool Enhancements, System Help, **Memory Foundation (DB)**)
-*   **Next Phase (22):** UI Layer Refactor & Workflow Refinements.
+*   **Current Phase (22):** UI Layer Refactor & Workflow Refinements.
 *   **Future Plans:** Governance Layer, Advanced Memory & Learning, Proactive Behavior, Federated Communication, New Admin tools, LiteLLM provider, advanced collaboration, resource limits, DB/Vector Stores.
 
 See `helperfiles/PROJECT_PLAN.md` for detailed phase information.
