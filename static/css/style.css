@@ -153,12 +153,13 @@ body {
     padding: 8px;
 }
 
-/* --- Logs & Config View Layouts --- */
-#logs-view .view-content,
+/* --- Internal Comms & Config View Layouts --- */
+/* Shared styles for the main content area in these views */
+#internal-comms-view .view-content,
 #config-view .view-content {
     padding: 10px; /* Consistent padding */
 }
-#logs-view .message-area, /* System log area */
+#internal-comms-view .message-area, /* Internal comms message area */
 #config-view .config-area { /* Config area container */
     flex-grow: 1;
     margin-bottom: 0; /* No margin at bottom if it's the main element */
@@ -171,13 +172,15 @@ body {
     min-height: 0; /* Flexbox fix */
     padding: 10px;
 }
-#logs-view #system-log-area { /* The actual list inside message-area */
+/* Specific styling for the scrollable list inside internal comms */
+#internal-comms-view #internal-comms-area {
     overflow-y: auto;
     flex-grow: 1;
-    padding: 0;
+    padding: 0; /* Padding handled by parent */
     margin: 0;
-    /* Styling inherited from message-area */
+    /* Additional styling inherited from message-area */
 }
+/* Config View specific adjustments */
 #config-view .config-area {
     padding: 10px 15px; /* Slightly more padding for config */
 }
@@ -207,6 +210,7 @@ body {
 }
 
 /* --- Message Area General Styling --- */
+/* Applies to #conversation-area and #internal-comms-area */
 .message-area {
     background-color: var(--bg-color-tertiary);
     overflow-y: auto; /* Allow vertical scrolling */
@@ -218,11 +222,12 @@ body {
     border-radius: 4px;
     min-height: 100px; /* Minimum height */
 }
-
+/* Remove bottom margin for conversation area in chat view */
 #chat-view .conversation-area {
-    margin-bottom: 0; /* Override margin if needed specifically */
+    margin-bottom: 0;
 }
-.system-log-area .message .timestamp {
+/* Timestamp styling (reused for internal comms area) */
+.system-log-area .message .timestamp { /* system-log-area class is reused */
     font-size: 0.8em;
     color: var(--text-color-muted);
     margin-right: 8px;
@@ -231,6 +236,7 @@ body {
 }
 
 /* --- Message Styling --- */
+/* General message block */
 .message {
     margin-bottom: 10px;
     padding: 8px 12px;
@@ -241,23 +247,20 @@ body {
     box-sizing: border-box;
     color: var(--text-color-primary);
     background-color: var(--agent-msg-bg-base);
-    align-self: flex-start; /* Default alignment for agent messages */
+    align-self: flex-start; /* Default alignment */
     display: flex;
-    flex-direction: row; /* Default for logs, user messages */
+    flex-direction: row; /* Default layout */
     flex-shrink: 0;
 }
-/* Agent responses in conversation view stack label and content */
-.conversation-area .message.agent_response {
-    flex-direction: column;
-    align-items: flex-start;
-}
 .message p { margin: 0; } /* Remove default paragraph margin */
+/* Content containers inside a message */
 .message span:not(.timestamp),
 .message .message-content {
     display: block; /* Change to block for better wrapping control */
     white-space: pre-wrap; /* Preserve whitespace and wrap */
     word-break: break-word;
 }
+/* Agent label (used in both conversation and internal comms) */
 .message .agent-label {
     font-weight: bold;
     color: var(--text-color-secondary);
@@ -266,13 +269,23 @@ body {
     flex-shrink: 0;
     display: block; /* Ensure it's block for stacking */
 }
+/* Message content (used in both) */
 .message .message-content {
     font-family: Menlo, Monaco, Consolas, "Courier New", monospace; /* Monospace for code/tool output */
     padding-top: 2px;
     width: 100%; /* Ensure content takes full width */
     overflow-wrap: break-word;
 }
-/* User messages aligned right */
+
+/* Specifics for Conversation Area (#conversation-area) */
+.conversation-area .message.agent_response {
+    flex-direction: column; /* Stack label and content */
+    align-items: flex-start;
+    margin-right: auto;
+    align-self: flex-start;
+    background-color: var(--agent-msg-bg-base);
+    border-color: var(--border-color);
+}
 .conversation-area .message.user {
     background-color: var(--user-message-bg);
     border-color: var(--user-message-bg); /* Match border */
@@ -280,21 +293,17 @@ body {
     align-self: flex-end;
     flex-direction: row; /* Keep user messages inline */
 }
-/* Agent messages aligned left */
-.conversation-area .message.agent_response {
-    margin-right: auto;
-    align-self: flex-start;
-    background-color: var(--agent-msg-bg-base);
-    border-color: var(--border-color);
-}
-/* Agent ID specific styling (Examples) */
+
+/* Specifics for Internal Comms Area (#internal-comms-area) */
+/* Agent ID specific styling applies here too */
 .message[data-agent-id="admin_ai"] { border-left: 4px solid var(--accent-color-1); background-color: #2a3a4a; }
 .message[data-agent-id*="coder"] { border-left: 4px solid var(--accent-color-2); background-color: #2a4a3a; }
 .message[data-agent-id*="analyst"] { border-left: 4px solid var(--accent-color-orange); background-color: #4a3a2a; }
 .message[data-agent-id*="creative"], .message[data-agent-id*="reviewer"] { border-left: 4px solid var(--accent-color-green); background-color: #3a4a2a; }
 .message[data-agent-id="default"] { border-left: 4px solid var(--text-color-muted); }
 .message[data-agent-id*="unknown_agent"] { border-left: 4px solid var(--text-color-secondary); }
-/* Status Messages */
+
+/* Status Messages (Apply in both areas) */
 .message.status {
     font-style: italic;
     color: var(--text-color-secondary);
@@ -313,7 +322,7 @@ body {
 .message.status.initial-placeholder span {
     color: var(--text-color-muted);
 }
-/* Tool Execution Status */
+/* Tool Execution Status (Apply in both areas) */
 .message.status.tool-execution {
     background-color: #404030; /* Dark yellow/brown */
     border-color: var(--accent-color-yellow);
@@ -327,7 +336,7 @@ body {
     padding: 6px 10px;
     flex-direction: row;
 }
-/* Error Messages */
+/* Error Messages (Apply in both areas) */
 .message.error,
 .message.error span {
     color: var(--error-text) !important;
@@ -341,12 +350,12 @@ body {
     border: 1px solid var(--accent-color-red);
     flex-direction: row;
 }
-/* System Log specific styling */
+/* Specifics for Internal Comms Area message types */
 .system-log-area .message.log-tool-use span:not(.timestamp) { color: #98FB98; } /* Pale green */
 .system-log-area .message.log-agent-message span:not(.timestamp) { color: #ADD8E6; } /* Light blue */
 
 
-/* --- Input Area --- */
+/* --- Input Area (Chat View Only) --- */
 .input-area {
     display: flex;
     flex-shrink: 0; /* Prevent shrinking */
@@ -483,7 +492,7 @@ body {
 .edit-button:hover { filter: brightness(1.1); }
 
 
-/* --- Agent Status List Styling --- */
+/* --- Agent Status List Styling (Chat View Only) --- */
 .agent-status-item {
     margin-bottom: 5px;
     padding: 4px 6px;
@@ -522,7 +531,6 @@ body {
     border-radius: 3px;
     color: white;
     margin-left: 5px;
-    /* float: right; Remove float */
     flex-shrink: 0; /* Prevent badge shrinking */
     white-space: nowrap; /* Prevent status text wrapping */
 }
@@ -531,14 +539,15 @@ body {
 .agent-status-item.status-idle .agent-status { background-color: var(--text-color-muted); color: var(--bg-color-primary); }
 .agent-status-item.status-processing { border-left-color: var(--accent-color-1); }
 .agent-status-item.status-processing .agent-status { background-color: var(--accent-color-1); }
+.agent-status-item.status-planning { border-left-color: var(--accent-color-magenta); } /* Planning status color */
+.agent-status-item.status-planning .agent-status { background-color: var(--accent-color-magenta); }
 .agent-status-item.status-awaiting_tool_result { border-left-color: var(--accent-color-orange); }
 .agent-status-item.status-awaiting_tool_result .agent-status { background-color: var(--accent-color-orange); }
 .agent-status-item.status-executing_tool { border-left-color: var(--accent-color-yellow); }
 .agent-status-item.status-executing_tool .agent-status { background-color: var(--accent-color-yellow); color: var(--bg-color-primary); }
 .agent-status-item.status-error { border-left-color: var(--accent-color-red); }
 .agent-status-item.status-error .agent-status { background-color: var(--accent-color-red); }
-.agent-status-item.status-awaiting_user_override { border-left-color: var(--accent-color-magenta); }
-.agent-status-item.status-awaiting_user_override .agent-status { background-color: var(--accent-color-magenta); }
+/* Removed user override status styling */
 .agent-status-item.status-unknown { border-left-color: var(--text-color-secondary); }
 .agent-status-item.status-unknown .agent-status { background-color: var(--text-color-secondary); color: var(--bg-color-primary); }
 /* Placeholder when no agents */
@@ -595,8 +604,8 @@ body {
     padding-bottom: 10px;
 }
 #agent-form label,
-#override-form label,
-.session-management-area label { /* Add session labels */
+/* #override-form label, -- Removed override modal */
+.session-management-area label {
     display: block;
     margin-top: 12px;
     margin-bottom: 4px;
@@ -608,10 +617,10 @@ body {
 #agent-form input[type="number"],
 #agent-form select,
 #agent-form textarea,
-#override-form input[type="text"],
-#override-form select,
-.session-management-area input[type="text"], /* Add session inputs */
-.session-management-area select { /* Add session selects */
+/* #override-form input[type="text"], */
+/* #override-form select, */
+.session-management-area input[type="text"],
+.session-management-area select {
     width: 100%;
     padding: 9px;
     border: 1px solid var(--modal-input-border);
@@ -659,21 +668,10 @@ body {
     text-align: center;
     font-style: italic;
 }
-/* Override Modal Specific */
-#override-form p { margin-bottom: 10px; line-height: 1.4; }
-#override-form code { /* Last error display */
-    background-color: var(--bg-color-primary);
-    padding: 2px 5px;
-    border-radius: 3px;
-    font-family: monospace;
-    font-size: 0.9em;
-    color: var(--error-text);
-    display: block; /* Make it block for better layout */
-    white-space: pre-wrap; /* Wrap long error messages */
-    max-height: 100px; /* Limit height */
-    overflow-y: auto; /* Allow scrolling if too long */
-    border: 1px solid var(--border-color);
-}
+/* Override Modal Specific - REMOVED */
+/* #override-form p { ... } */
+/* #override-form code { ... } */
+
 
 /* --- Scrollbar Styling --- */
 /* Webkit (Chrome, Safari, Edge) */
@@ -711,7 +709,7 @@ body {
 .nav-button.active { color: var(--nav-button-active); }
 
 
-/* --- *** NEW: Session Management View Styling *** --- */
+/* --- Session Management View Styling --- */
 #session-view .view-content {
     padding: 15px; /* More padding for this view */
 }
