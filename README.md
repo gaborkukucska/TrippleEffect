@@ -3,10 +3,7 @@
 
 **Version:** 2.22
 
-**TrippleEffect** is an asynchronous, collaborative multi-agent framework built with Python, FastAPI, and WebSockets. It features a central **Admin AI** that orchestrates tasks by dynamically creating and managing specialized agents.
-
-![TrippleEffect UI Screenshot Placeholder](https://via.placeholder.com/800x400.png?text=TrippleEffect+UI+Screenshot)
-*(Replace with actual screenshot)*
+**TrippleEffect** is an asynchronous, collaborative multi-agent framework built with Python, FastAPI, and WebSockets. It features a central **Admin AI** that orchestrates tasks by dynamically creating and managing specialized agents. This framework is predominantly developped by various LLMs guided by Gabby.
 
 ## Quick Start (using scripts)
 
