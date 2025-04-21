@@ -19,17 +19,20 @@ export const displayMessage = (text, type, targetAreaId, agentId = null, agentPe
     try {
         const messageArea = DOM[targetAreaId === 'conversation-area' ? 'conversationArea' : 'internalCommsArea'];
         if (!messageArea) {
-            console.error(`UI Error: Target message area #${targetAreaId} not found!`);
+            console.error(`UI Error: Target message area #${targetAreaId} not found! Cannot display message.`);
             return;
         }
+        console.debug(`Target area #${targetAreaId} found.`);
 
         const placeholder = messageArea.querySelector('.initial-placeholder');
         if (placeholder) {
+            console.debug(`Removing placeholder from #${targetAreaId}`);
             placeholder.remove();
         }
 
         const maxMessages = targetAreaId === 'conversation-area' ? config.MAX_CHAT_MESSAGES : config.MAX_COMM_MESSAGES;
         while (messageArea.children.length >= maxMessages) {
+            console.debug(`Trimming messages in #${targetAreaId}`);
             messageArea.removeChild(messageArea.firstChild);
         }
 
@@ -60,25 +63,23 @@ export const displayMessage = (text, type, targetAreaId, agentId = null, agentPe
             if (type === 'agent_response' && agentPersona) {
                 innerHTMLContent += `<span class="agent-label">${escapeHTML(agentPersona)}:</span>`;
             }
-            // User messages have no label here
         }
 
-        // Append the main content. Assume 'text' might contain intended HTML (like links or formatting from LLM)
-        // Be cautious if LLM output is not trusted. For now, pass it through.
+        // Pass raw text/HTML through; display function shouldn't escape automatically here
         innerHTMLContent += `<span class="message-content">${text}</span>`;
 
         messageElement.innerHTML = innerHTMLContent;
         messageArea.appendChild(messageElement);
         messageArea.scrollTop = messageArea.scrollHeight;
+        console.debug(`Message appended to #${targetAreaId}.`);
 
     } catch (error) {
         console.error(`UI Error in displayMessage (Target: ${targetAreaId}, Type: ${type}):`, error);
-        // Attempt to display error in internal comms area as fallback
         try {
              if (DOM.internalCommsArea) {
                 const errorEl = document.createElement('div');
                 errorEl.className = 'message error';
-                errorEl.innerHTML = `<span class="timestamp">${getCurrentTimestamp()}</span><span class="message-content">!! UI Error displaying message (Type: ${type}, Target: ${targetAreaId}). Check console. !!</span>`;
+                errorEl.innerHTML = `<span class="timestamp">${getCurrentTimestamp()}</span><span class="message-content">!! JS Error displaying message (Type: ${type}, Target: ${targetAreaId}). Check console. !!</span>`;
                 DOM.internalCommsArea.appendChild(errorEl);
                 DOM.internalCommsArea.scrollTop = DOM.internalCommsArea.scrollHeight;
              }
@@ -113,7 +114,7 @@ export const updateAgentStatusUI = (agentStatusData) => {
     console.debug("UI: Updating agent status list", agentStatusData);
 
     try {
-        DOM.agentStatusContent.innerHTML = ''; // Clear existing statuses
+        DOM.agentStatusContent.innerHTML = '';
         const agentIds = Object.keys(agentStatusData);
 
         if (agentIds.length === 0) {
@@ -129,14 +130,13 @@ export const updateAgentStatusUI = (agentStatusData) => {
 
         agentIds.forEach(agentId => {
             const agent = agentStatusData[agentId];
-            // Ensure agent data exists and isn't explicitly marked deleted in the source data
             if (!agent || agent.status === 'deleted') {
                  console.debug(`UI: Skipping deleted/missing agent ${agentId} in status update.`);
                  return;
             }
 
             const statusItem = document.createElement('div');
-            const statusClass = `status-${(agent.status || 'unknown').replace(/ /g, '_')}`; // Handle potential spaces in status
+            const statusClass = `status-${(agent.status || 'unknown').replace(/ /g, '_')}`;
             statusItem.classList.add('agent-status-item', statusClass);
             statusItem.setAttribute('data-agent-id', agentId);
 
@@ -198,12 +198,17 @@ export const switchView = (viewId) => {
     console.log(`UI: View switched successfully to: ${viewId}`);
 
     // Trigger data loading for the newly activated view
+    // Using dynamic imports to avoid circular dependencies if modules call each other
     if (viewId === 'config-view' && DOM.configContent) {
-        // Import dynamically or ensure configView.js is loaded in main.js
-        import('./configView.js').then(module => module.loadStaticAgentConfig());
+        console.log("UI: Triggering loadStaticAgentConfig for config-view...");
+        import('./configView.js')
+            .then(module => module.loadStaticAgentConfig())
+            .catch(err => console.error("UI Error importing configView.js:", err));
     } else if (viewId === 'session-view' && DOM.projectSelect) {
-         // Import dynamically or ensure session.js is loaded in main.js
-         import('./session.js').then(module => module.loadProjects());
+         console.log("UI: Triggering loadProjects for session-view...");
+         import('./session.js')
+            .then(module => module.loadProjects())
+            .catch(err => console.error("UI Error importing session.js:", err));
     }
 };
 
@@ -247,12 +252,16 @@ export const displayFileInfo = (fileData = null) => {
             <button id="clear-attachment-btn" title="Remove file">×</button>
         `;
         DOM.fileInfoArea.style.display = 'flex';
-        // Add listener to the newly created button
+        // Add listener dynamically, import handler
         const clearBtn = document.getElementById('clear-attachment-btn');
         if(clearBtn) {
-            import('./handlers.js').then(module => {
-                 clearBtn.onclick = module.handleClearAttachment; // Use handler from handlers.js
-            });
+            import('./handlers.js')
+                .then(module => {
+                     // Remove previous listener if any to avoid duplicates
+                     clearBtn.onclick = null;
+                     clearBtn.onclick = module.handleClearAttachment;
+                 })
+                 .catch(err => console.error("Failed to import handlers for clear attachment button:", err));
         }
     } else {
         DOM.fileInfoArea.style.display = 'none';
@@ -271,12 +280,10 @@ export const displaySessionStatus = (message, isSuccess) => {
     DOM.sessionStatusMessage.textContent = message;
     DOM.sessionStatusMessage.className = isSuccess ? 'session-status success' : 'session-status error';
     DOM.sessionStatusMessage.style.display = 'block';
+    // Set timeout to hide the message
     setTimeout(() => {
         if (DOM.sessionStatusMessage) DOM.sessionStatusMessage.style.display = 'none';
-    }, 5000);
+    }, 5000); // Hide after 5 seconds
 };
-
-// Make closeModal globally accessible IF NEEDED for inline HTML onclick, though it's better to use event listeners
-// window.uiModule = { closeModal }; // Expose on window if necessary
 
 console.log("Frontend UI module loaded.");
