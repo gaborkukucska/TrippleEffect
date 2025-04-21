@@ -24,7 +24,7 @@
                  <div class="chat-view-layout">
                      <div class="chat-area-container">
                          <div id="conversation-area" class="message-area conversation-area">
-                             <div class="message status initial-placeholder"><span>Conversation Area</span></div>
+                             <div class="message status initial-placeholder"><span>User <-> Admin AI Conversation</span></div>
                          </div>
                      </div>
                      <div class="input-container">
@@ -48,16 +48,23 @@
              </div>
         </div>
 
-        <!-- System Logs View -->
-        <div id="logs-view" class="view-panel">
-             <div class="view-header"><h1>System Logs</h1></div>
+        <!-- *** REMOVED Logs View *** -->
+        <!-- <div id="logs-view" class="view-panel"> -->
+        <!--     ... content ... -->
+        <!-- </div> -->
+
+        <!-- *** NEW Internal Communications View *** -->
+        <div id="internal-comms-view" class="view-panel">
+             <div class="view-header"><h1>Internal Communications</h1></div>
              <div class="view-content">
-                <div id="system-log-area" class="message-area system-log-area">
-                     <div class="message status initial-placeholder"><span>System Logs & Status</span></div>
+                <div id="internal-comms-area" class="message-area system-log-area"> <!-- Re-use system-log-area styling -->
+                     <div class="message status initial-placeholder"><span>Admin <-> Agent Comms, Tools, Status</span></div>
                      <div class="message status initial-connecting initial-placeholder"><span>Connecting...</span></div>
                 </div>
             </div>
         </div>
+        <!-- *** END Internal Communications View *** -->
+
 
         <!-- Configuration View -->
         <div id="config-view" class="view-panel">
@@ -79,20 +86,18 @@
             </div>
         </div>
 
-        <!-- *** Session Management View *** -->
+        <!-- Session Management View -->
         <div id="session-view" class="view-panel">
             <div class="view-header"><h1>Project & Session</h1></div>
             <div class="view-content session-management-area"> <!-- Add specific class -->
                 <div class="session-section">
                     <h3>Load Session</h3>
                     <label for="project-select">Select Project:</label>
-                    <!-- Ensure ID is exactly "project-select" -->
                     <select id="project-select" name="project_select">
                         <option value="">-- Select Project --</option>
                         <!-- Options populated by JS -->
                     </select>
                     <label for="session-select">Select Session:</label>
-                    <!-- Ensure ID is exactly "session-select" -->
                     <select id="session-select" name="session_select" disabled>
                         <option value="">-- Select Project First --</option>
                         <!-- Options populated by JS -->
@@ -114,16 +119,15 @@
                 </div>
             </div>
         </div>
-        <!-- *** END SESSION VIEW *** -->
 
 
-        <!-- Bottom Navigation Bar (Add Session Button) -->
+        <!-- Bottom Navigation Bar (Updated) -->
         <nav id="bottom-nav">
-            <button data-view="chat-view" class="nav-button active" title="Chat">💬</button> <!-- Use emoji or icon -->
-            <button data-view="logs-view" class="nav-button" title="Logs">📋</button> <!-- Use emoji or icon -->
-            <!-- *** SESSION BUTTON *** -->
-            <button data-view="session-view" class="nav-button" title="Project/Session">💾</button> <!-- Use emoji or icon -->
-            <button data-view="config-view" class="nav-button" title="Config">⚙️</button> <!-- Use emoji or icon -->
+            <button data-view="chat-view" class="nav-button active" title="Chat">💬</button>
+            <!-- Updated Button for Internal Comms -->
+            <button data-view="internal-comms-view" class="nav-button" title="Internal Comms">📈</button>
+            <button data-view="session-view" class="nav-button" title="Project/Session">💾</button>
+            <button data-view="config-view" class="nav-button" title="Config">⚙️</button>
         </nav>
 
     </div> <!-- /#app-container -->
