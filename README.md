@@ -1,7 +1,7 @@
 <!-- # START OF FILE README.md -->
 # TrippleEffect Multi-Agent Framework
 
-**Version:** 2.20 <!-- Updated Version -->
+**Version:** 2.22 <!-- Updated Version -->
 
 **TrippleEffect** is an asynchronous, collaborative multi-agent framework built with Python, FastAPI, and WebSockets. It features a central **Admin AI** that orchestrates tasks by dynamically creating and managing specialized agents.
 
@@ -10,17 +10,18 @@
 
 ## Core Concepts
 
-*   **Admin AI Orchestrator:** The central agent (`admin_ai`) coordinates tasks, manages agent teams, and interacts with the human user. It follows a structured **Planning -> Execution -> Coordination** workflow.
+*   **Admin AI Orchestrator:** The central agent (`admin_ai`) coordinates tasks, manages agent teams, and interacts with the human user. It follows a structured **Planning -> Execution -> Coordination** workflow. It is prompted to use its Knowledge Base tool before planning.
 *   **Dynamic Agent Management:** Create, delete, and manage agents and teams *in memory* via Admin AI tool calls (`ManageTeamTool`). No restarts needed for dynamic changes.
 *   **Intelligent Model Handling:**
     *   **Discovery:** Automatically finds reachable LLM providers (Ollama, OpenRouter, OpenAI) and available models at startup.
     *   **Filtering:** Filters discovered models based on the `MODEL_TIER` setting (`.env`).
     *   **Auto-Selection:** Automatically selects the best model for Admin AI (at startup) and dynamic agents (at creation if not specified) based on performance metrics and availability.
     *   **Failover:** Automatic API key cycling and model/provider failover (Local -> Free -> Paid tiers) on persistent errors during generation.
-    *   **Performance Tracking:** Records success rate and latency per model, persisting data.
-*   **Tool-Based Interaction:** Agents use tools via an **XML format**. Tools include file system operations, inter-agent messaging, team management, web search, GitHub interaction, and system information retrieval.
+    *   **Performance Tracking:** Records success rate and latency per model, persisting data (`data/model_performance_metrics.json`).
+*   **Tool-Based Interaction:** Agents use tools via an **XML format**. Tools include file system operations, inter-agent messaging, team management, web search, GitHub interaction, system information retrieval, and knowledge base operations.
 *   **Context Management:** Standardized instructions are injected, agents are guided to use file operations for large outputs, and Admin AI receives current time context.
-*   **Persistence:** Session state (agents, teams, histories) can be saved and loaded.
+*   **Persistence:** Session state (agents, teams, histories) can be saved/loaded (filesystem). Interactions and knowledge are logged to a database (`data/trippleeffect_memory.db`).
+*   **Communication Layer Separation (UI):** The user interface visually separates direct User<->Admin AI interaction from internal Admin AI<->Agent communication and system events.
 
 ## Features
 
@@ -37,16 +38,24 @@
     *   Automatic failover to different models/providers based on tiers (Local -> Free -> Paid).
     *   Key quarantining on persistent auth/rate limit errors.
 *   **Performance Tracking:** Monitors success rate and latency per model, saved to `data/model_performance_metrics.json`.
-*   **Structured Admin AI Workflow:** Mandatory planning phase (`<plan>` tag) before execution.
+*   **Structured Admin AI Workflow:** Mandatory planning phase (`<plan>` tag) before execution. Emphasis on **Knowledge Base search before planning**.
 *   **XML Tooling:** Agents request tool use via XML format. Available tools:
-    *   `FileSystemTool`: Read, Write, List, **Mkdir**, **Delete** (File/Empty Dir), Find/Replace in private sandbox or shared workspace.
-    *   `GitHubTool`: List Repos, List Files (**Recursive**), Read File content using PAT.
-    *   `ManageTeamTool`: Create/Delete Agents/Teams, Assign Agents, List Agents/Teams, **Get Agent Details**.
+    *   `FileSystemTool`: Read, Write, List, Mkdir, Delete (File/Empty Dir), Find/Replace in private sandbox or shared workspace.
+    *   `GitHubTool`: List Repos, List Files (Recursive), Read File content using PAT.
+    *   `ManageTeamTool`: Create/Delete Agents/Teams, Assign Agents, List Agents/Teams, Get Agent Details.
     *   `SendMessageTool`: Communicate between agents within a team or with Admin AI.
-    *   `WebSearchTool`: Search the web (**uses Tavily API if configured, falls back to DDG scraping**).
-    *   `SystemHelpTool`: (**NEW**) Get current time (UTC), Search application logs.
-*   **Session Persistence:** Save and load agent states, histories, and team structures.
-*   **Basic Web UI:** Interface to interact with Admin AI, view agent status, logs, manage static config, and manage sessions.
+    *   `WebSearchTool`: Search the web (uses Tavily API if configured, falls back to DDG scraping).
+    *   `SystemHelpTool`: Get current time (UTC), Search application logs.
+    *   `KnowledgeBaseTool`: Save/Search distilled knowledge in the database.
+*   **Session Persistence:** Save and load agent states, histories, and team structures (filesystem).
+*   **Database Backend (SQLite):**
+    *   Logs user, agent, tool, and system interactions.
+    *   Stores long-term knowledge summaries via `KnowledgeBaseTool`.
+*   **Refined Web UI:**
+    *   Separated view for User <-> Admin AI chat.
+    *   Dedicated view for internal Admin AI <-> Agent communication, tool usage, and system status updates.
+    *   Session management interface.
+    *   Static configuration viewer.
 *   **Sandboxing:** Agents operate within dedicated sandbox directories or a shared session workspace.
 *   **Context Optimization:** Agents guided to use files for large outputs.
 *   **Admin AI Time Context:** Current UTC time is injected into Admin AI prompts.
@@ -56,121 +65,138 @@
 
 ```mermaid
 graph TD
-    %% Changed to Top-Down for better layer visualization
-    USER[👨‍💻 Human User]
-
-    subgraph Frontend [Human UI Layer]
-        direction LR
-        UI_CHAT_VIEW["Chat & Agents View ✅"]
-        UI_LOGS_VIEW["System Logs View ✅"]
-        UI_SESSION_VIEW["Project/Session View ✅"]
-        UI_CONFIG_VIEW["Static Config Info View ✅"] %% Simplified
+    %% Layer Definitions
+    subgraph UserLayer [Layer 1: User Interface]
+        USER[👨‍💻 Human User]
+        subgraph Frontend [🌐 Human UI (Web)]
+             direction LR
+             UI_CHAT["**Chat View** <br> (User <-> Admin)✅"]
+             UI_INTERNAL["**Internal Comms View** <br>(Admin <-> Agents, Tools, Status)✅"] %% NEW/MODIFIED
+             UI_SESSIONS["Session View✅"]
+             UI_CONFIG["Config View✅"]
+             %% Removed Logs View
+        end
     end
 
-    subgraph Backend
-        FASTAPI["🚀 FastAPI Backend ✅"]
-        WS_MANAGER["🔌 WebSocket Manager ✅"]
-        AGENT_MANAGER["🧑‍💼 Agent Manager <br>(Coordinator)<br>+ Agent Create/Delete ✅<br>+ Uses ModelRegistry ✅<br>+ Uses ProviderKeyManager ✅<br>+ Auto-Selects Admin AI Model ✅<br>+ **Handles Auto Model Selection (Dyn) ✅**<br>+ Handles Key/Model Failover ✅<br>+ Delegates Cycle Exec ✅<br>+ Manages Context ✅"] %% Updated
-        PROVIDER_KEY_MGR["🔑 Provider Key Manager <br>+ Manages Keys ✅<br>+ Handles Quarantine ✅<br>+ Saves/Loads State ✅"]
-        MODEL_REGISTRY["📚 Model Registry✅"]
-        PERF_TRACKER["📊 Performance Tracker<br>+ Records Metrics ✅<br>+ Saves/Loads Metrics ✅"]
-        CYCLE_HANDLER["🔄 Agent Cycle Handler<br>+ Handles Retries ✅<br>+ Triggers Key/Model Failover ✅<br>+ Reports Metrics ✅<br>+ Handles Tool Results ✅<br>+ **Handles Plan Approval ✅**<br>+ **Injects Time Context (Admin) ✅**"] %% Updated
-        INTERACTION_HANDLER["🤝 Interaction Handler <br>+ **Robust SendMessage Target ✅**<br>+ **Handles Get Agent Details ✅**"] %% Updated
-        STATE_MANAGER["📝 AgentStateManager <br>+ **Idempotent Create Team ✅**"] %% Updated
-        SESSION_MANAGER["💾 SessionManager ✅"]
+    subgraph CoreInstance [Layer 2: Local TrippleEffect Instance]
+        direction TB
+        BackendApp["🚀 FastAPI Backend✅"]
 
-        subgraph Agents ["Bootstrap & Dynamic Agents"]
+        subgraph Managers ["Management & Orchestration"]
             direction LR
-             ADMIN_AI["🤖 Admin AI Agent <br>+ **Planning Phase Logic** ✅"] %% Updated
-            DYNAMIC_AGENT_1["🤖 Dynamic Agent 1✅"]
-            DYNAMIC_AGENT_N["🤖 Dynamic Agent N"]
+            AGENT_MANAGER["🧑‍💼 Agent Manager ✅"]
+            DB_MANAGER["**📦 Database Manager ✅**"]
+            STATE_MANAGER["📝 AgentStateManager ✅"]
+            SESSION_MANAGER["💾 SessionManager (FS) ✅"]
+            PROVIDER_KEY_MGR["🔑 ProviderKeyManager ✅"]
+            MODEL_REGISTRY["📚 ModelRegistry ✅"]
+            PERF_TRACKER["📊 PerformanceTracker ✅"]
         end
 
-        subgraph LLM_Providers ["☁️ LLM Providers"] %% Instantiated by AGENT_MANAGER
-             PROVIDER_OR["🔌 OpenRouter"]
-             PROVIDER_OLLAMA["🔌 Ollama"]
-             PROVIDER_OPENAI["🔌 OpenAI"]
-             PROVIDER_LITELLM["🔌 LiteLLM (TBD)"]
-         end
+        subgraph Handlers ["Core Logic Handlers"]
+            direction LR
+            CYCLE_HANDLER["🔄 AgentCycleHandler ✅<br>(Investigate Poking Issue)"] %% ANNOTATION
+            INTERACTION_HANDLER["🤝 InteractionHandler ✅"]
+            FAILOVER_HANDLER["💥 FailoverHandler (Func) ✅"]
+        end
 
-         subgraph Tools ["🛠️ Tools (XML Format)"]
-             TOOL_EXECUTOR["Executor"]
-             TOOL_FS["FileSystem <br>+ Find/Replace ✅<br>+ **Mkdir/Delete ✅**"] %% Updated
-             TOOL_SENDMSG["SendMessage"]
-             TOOL_MANAGE_TEAM["ManageTeam <br>+ Optional Provider/Model ✅<br>+ **Get Details ✅**"] %% Updated
-             TOOL_GITHUB["GitHub<br>+ **Recursive List ✅**"] %% Updated
-             TOOL_WEBSEARCH["WebSearch<br>+ **Tavily API ✅**<br>+ DDG Fallback ✅"] %% Updated
-             TOOL_SYSTEMHELP["**SystemHelp ✅**<br>+ Get Time<br>+ Search Logs"] %% Added
-         end
+        subgraph CoreAgents ["Core & Dynamic Agents"]
+             ADMIN_AI["🤖 Admin AI Agent <br>+ Planning ✅<br>+ Time Context ✅<br>+ KB Search Emphasis"] %% ANNOTATION
+             subgraph DynamicTeam [Dynamic Team Example]
+                direction LR
+                 AGENT_DYN_1["🤖 Dynamic Agent 1"]
+                 AGENT_DYN_N["🤖 ... Agent N"]
+             end
+        end
 
-         SANDBOXES["📁 Sandboxes ✅"]
-         PROJECT_SESSIONS["💾 Project/Session Storage ✅"]
-         SHARED_WORKSPACE["🌐 Shared Workspace ✅"]
-         LOG_FILES["📄 Log Files ✅"]
-         METRICS_FILE["📄 Metrics File ✅"]
-         QUARANTINE_FILE["📄 Key Quarantine File ✅"]
-         DATA_DIR["📁 Data Dir ✅"]
+        subgraph InstanceTools ["🛠️ Tools"]
+            TOOL_EXECUTOR["Executor"]
+            TOOL_FS["FileSystem ✅"]
+            TOOL_SENDMSG["SendMessage (Local) ✅"]
+            TOOL_MANAGE_TEAM["ManageTeam ✅"]
+            TOOL_GITHUB["GitHub ✅"]
+            TOOL_WEBSEARCH["WebSearch ✅"]
+            TOOL_SYSTEMHELP["SystemHelp ✅"]
+            TOOL_KNOWLEDGE["**KnowledgeBase ✅**"]
+        end
+
+        subgraph InstanceData ["Local Instance Data"]
+            SANDBOXES["📁 Sandboxes"]
+            SHARED_WORKSPACE["🌐 Shared Workspace"]
+            PROJECT_SESSIONS["💾 Project/Session Files"]
+            LOG_FILES["📄 Log Files <br>(Backend Only)"] %% ANNOTATION
+            CONFIG_FILES["⚙️ Config (yaml, json, env)"]
+            METRICS_FILE["📄 Metrics File"]
+            QUARANTINE_FILE["📄 Key Quarantine File"]
+            SQLITE_DB["**💾 SQLite DB <br>(Interactions, Knowledge)**"]
+        end
     end
 
-    subgraph External %% Status Implicit
+    subgraph ExternalServices [External Services]
         LLM_API_SVC["☁️ Ext. LLM APIs"]
-        TAVILY_API["☁️ Tavily API"] %% Added
+        TAVILY_API["☁️ Tavily API"]
         OLLAMA_SVC["⚙️ Local Ollama Svc"]
-        OLLAMA_PROXY_SVC["🔌 Node.js Ollama Proxy (Optional)"]
-        LITELLM_SVC["⚙️ Local LiteLLM Svc"]
-        CONFIG_YAML["⚙️ config.yaml"]
-        PROMPTS_JSON["📜 prompts.json <br>(XML Format)<br>(Planning Phase)<br>(File Usage Guidance)<br>+ **SystemHelpTool Info**"] %% Updated
-        DOT_ENV[".env File <br>(Multi-Key Support)<br>(Proxy Config)<br>+ **Tavily Key**"] %% Updated
+        OLLAMA_PROXY_SVC["🔌 Optional Ollama Proxy"]
+        GITHUB_API["☁️ GitHub API"]
+    end
+
+    %% --- Layer 3 (Future) ---
+    subgraph FederatedLayer [Layer 3: Federated Instances (Future - Phase 26+)]
+         ExternalInstance["🏢 External TrippleEffect Instance"]
+         ExternalAdminAI["🤖 External Admin AI"]
+         ExternalDB["💾 External Instance DB"]
     end
 
     %% --- Connections ---
-    USER -- Interacts --> Frontend;
-    Frontend -- HTTP/WebSocket --> Backend;
+    USER -- HTTP/WS --> Frontend;
+    Frontend -- HTTP/WS --> BackendApp;
 
-    FASTAPI -- Manages --> AGENT_MANAGER;
-    FASTAPI -- Manages --> MODEL_REGISTRY;
-    FASTAPI -- Manages --> PERF_TRACKER;
-    FASTAPI -- Manages --> PROVIDER_KEY_MGR;
-    FASTAPI -- Manages --> OLLAMA_PROXY_SVC;
+    BackendApp -- Manages --> AGENT_MANAGER;
+    BackendApp -- Manages --> DB_MANAGER; %% Via singleton / lifespan
 
-    AGENT_MANAGER -- Uses --> MODEL_REGISTRY;
+    AGENT_MANAGER -- Uses --> DB_MANAGER;
+    AGENT_MANAGER -- Uses --> STATE_MANAGER;
+    AGENT_MANAGER -- Uses --> SESSION_MANAGER;
     AGENT_MANAGER -- Uses --> PROVIDER_KEY_MGR;
+    AGENT_MANAGER -- Uses --> MODEL_REGISTRY;
     AGENT_MANAGER -- Uses --> PERF_TRACKER;
-    AGENT_MANAGER -- Instantiates --> LLM_Providers;
-    AGENT_MANAGER -- Manages --> Agents;
     AGENT_MANAGER -- Delegates --> CYCLE_HANDLER;
-    AGENT_MANAGER -- Delegates --> STATE_MANAGER;
-    AGENT_MANAGER -- Delegates --> SESSION_MANAGER;
-    AGENT_MANAGER -- Handles Failover --> AGENT_MANAGER;
-    AGENT_MANAGER -- Loads Prompts via --> External;
+    AGENT_MANAGER -- Delegates --> INTERACTION_HANDLER;
+    AGENT_MANAGER -- Triggers --> FAILOVER_HANDLER;
+    AGENT_MANAGER -- Manages --> CoreAgents;
 
-    MODEL_REGISTRY -- Discovers --> External;
-    PROVIDER_KEY_MGR -- Reads/Writes --> QUARANTINE_FILE;
-    PROVIDER_KEY_MGR -- Creates --> DATA_DIR;
-    PERF_TRACKER -- Reads/Writes --> METRICS_FILE;
-    PERF_TRACKER -- Creates --> DATA_DIR;
-
-    CYCLE_HANDLER -- Runs --> Agents;
-    CYCLE_HANDLER -- Delegates --> INTERACTION_HANDLER;
-    CYCLE_HANDLER -- Reports Metrics --> PERF_TRACKER;
-    CYCLE_HANDLER -- Triggers Failover --> AGENT_MANAGER;
-
+    CYCLE_HANDLER -- Runs --> CoreAgents;
+    CYCLE_HANDLER -- Logs to --> DB_MANAGER;
     INTERACTION_HANDLER -- Delegates --> TOOL_EXECUTOR;
-    TOOL_EXECUTOR -- Executes --> Tools;
+    INTERACTION_HANDLER -- Updates --> STATE_MANAGER;
+    INTERACTION_HANDLER -- Routes Msg --> CoreAgents;
 
-    LLM_Providers -- Calls --> OLLAMA_PROXY_SVC;
-    LLM_Providers -- Calls --> LLM_API_SVC;
-    LLM_Providers -- Calls --> OLLAMA_SVC;
-    OLLAMA_PROXY_SVC -- Forwards to --> OLLAMA_SVC;
+    TOOL_EXECUTOR -- Executes --> InstanceTools;
+    InstanceTools -- Access --> InstanceData;
+    InstanceTools -- Interact With --> ExternalServices;
+    TOOL_KNOWLEDGE -- Uses --> DB_MANAGER;
 
-    %% Tool connections
-    TOOL_WEBSEARCH -- Uses --> TAVILY_API; %% Added
-    TOOL_WEBSEARCH -- Uses --> External; %% DDG Fallback
-    TOOL_GITHUB -- Uses --> LLM_API_SVC; %% GitHub API
-    TOOL_SYSTEMHELP -- Reads --> LOG_FILES;
+    %% Data Persistence
+    SESSION_MANAGER -- R/W --> PROJECT_SESSIONS;
+    DB_MANAGER -- R/W --> SQLITE_DB;
+    PERF_TRACKER -- R/W --> METRICS_FILE;
+    PROVIDER_KEY_MGR -- R/W --> QUARANTINE_FILE;
+    BackendApp -- Writes --> LOG_FILES;
 
-    Backend -- "Writes Logs" --> LOG_FILES;
-    SESSION_MANAGER -- Reads/Writes --> PROJECT_SESSIONS;
+
+    %% External Services Connections
+    MODEL_REGISTRY -- Discovers --> LLM_API_SVC;
+    MODEL_REGISTRY -- Discovers --> OLLAMA_SVC;
+    MODEL_REGISTRY -- Discovers --> OLLAMA_PROXY_SVC;
+    CoreAgents -- via LLM Providers --> LLM_API_SVC;
+    CoreAgents -- via LLM Providers --> OLLAMA_SVC;
+    CoreAgents -- via LLM Providers --> OLLAMA_PROXY_SVC;
+    TOOL_WEBSEARCH -- Calls --> TAVILY_API;
+    TOOL_GITHUB -- Calls --> GITHUB_API;
+
+    %% Federated Layer Connections (Dashed lines for future)
+    BackendApp -.->|External API Calls| ExternalInstance;
+    ExternalInstance -.->|Callbacks / API Calls| BackendApp;
 ```
 
 ## Technology Stack
@@ -178,12 +204,18 @@ graph TD
 *   **Backend:** Python 3.9+, FastAPI, Uvicorn
 *   **Asynchronous Operations:** `asyncio`
 *   **WebSockets:** `websockets` library integrated with FastAPI
+*   **Database:** `SQLAlchemy` (Core, Asyncio), `aiosqlite` (for SQLite driver)
 *   **LLM Interaction:** `openai` library, `aiohttp`
 *   **Frontend:** HTML5, CSS3, Vanilla JavaScript
 *   **Configuration:** YAML (`PyYAML`), `.env` (`python-dotenv`), JSON (`prompts.json`)
-*   **Tooling:** `BeautifulSoup4` (Web Search fallback), `tavily-python` (Web Search API) <!-- Added -->
-*   **Persistence:** JSON, File System
+*   **Tooling APIs:** `tavily-python`
+*   **Parsing:** `BeautifulSoup4` (HTML), `re`, `html` (XML)
+*   **Model Discovery & Management:** Custom `ModelRegistry` class
+*   **Performance Tracking:** Custom `ModelPerformanceTracker` class (JSON)
+*   **Persistence:** JSON (session state - filesystem), SQLite (interactions, knowledge)
 *   **Optional Proxy:** Node.js, Express, node-fetch
+*   **Data Handling/Validation:** Pydantic (via FastAPI)
+*   **Logging:** Standard library `logging`
 
 ## Setup and Running
 
@@ -194,7 +226,7 @@ graph TD
 
 2.  **Clone the repository:**
     ```bash
-    git clone https://github.com/your-username/TrippleEffect.git # Replace with actual repo URL
+    git clone https://github.com/gaborkukucska/TrippleEffect.git # Replace with actual repo URL
     cd TrippleEffect
     ```
 
@@ -207,7 +239,7 @@ graph TD
 
 4.  **Configure Environment:**
     *   Copy `.env.example` to `.env`.
-    *   Edit `.env` and add your API keys (OpenAI, OpenRouter, GitHub PAT, **Tavily API Key**).
+    *   Edit `.env` and add your API keys (OpenAI, OpenRouter, GitHub PAT, Tavily API Key).
     *   Set `MODEL_TIER` (`FREE` or `ALL`).
     *   Configure `OLLAMA_BASE_URL` if your Ollama instance is not at `http://localhost:11434`.
     *   Configure Ollama proxy settings (`USE_OLLAMA_PROXY`, `OLLAMA_PROXY_PORT`) if needed.
@@ -236,10 +268,10 @@ graph TD
 
 ## Development Status
 
-*   **Current Version:** 2.20
-*   **Completed Phases:** 1-20 (Core, Dynamic Agents, Failover, Key Mgmt, Proxy, XML Tools, Auto-Selection, Planning Phase, Context Optimization, **Tool Enhancements, System Help**)
-*   **Next Phase (21):** Few-Shot Prompting & Performance Ranking.
-*   **Future Plans:** New Admin tools, LiteLLM provider, advanced collaboration, resource limits, DB/Vector Stores.
+*   **Current Version:** 2.22
+*   **Completed Phases:** 1-21 (Core, Dynamic Agents, Failover, Key Mgmt, Proxy, XML Tools, Auto-Selection, Planning Phase, Context Optimization, Tool Enhancements, System Help, **Memory Foundation (DB)**)
+*   **Next Phase (22):** UI Layer Refactor & Workflow Refinements.
+*   **Future Plans:** Governance Layer, Advanced Memory & Learning, Proactive Behavior, Federated Communication, New Admin tools, LiteLLM provider, advanced collaboration, resource limits, DB/Vector Stores.
 
 See `helperfiles/PROJECT_PLAN.md` for detailed phase information.
 
@@ -254,4 +286,4 @@ This project is licensed under the MIT License - see the `LICENSE` file for deta
 ## Acknowledgements
 
 *   Inspired by AutoGen, CrewAI, and other multi-agent frameworks.
-*   Uses the powerful libraries FastAPI, Pydantic, and the OpenAI Python client.
+*   Uses the powerful libraries FastAPI, Pydantic, SQLAlchemy, and the OpenAI Python client.
