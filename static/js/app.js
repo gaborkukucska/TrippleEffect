@@ -5,7 +5,7 @@ const WS_URL = `ws://${window.location.host}/ws`;
 const API_BASE_URL = ''; // Relative path for API calls
 const INITIAL_RECONNECT_DELAY = 1000; // 1 second
 const MAX_RECONNECT_DELAY = 30000; // 30 seconds
-const MAX_LOG_MESSAGES = 200; // Max messages to keep in internal comms view
+const MAX_COMM_MESSAGES = 200; // Max messages to keep in internal comms view (Renamed)
 const MAX_CHAT_MESSAGES = 100; // Max messages to keep in main chat view
 
 // --- State ---
@@ -15,11 +15,11 @@ let isConnected = false;
 let currentView = 'chat-view'; // Default view
 let attachedFile = null; // { name: string, content: string }
 
-// --- DOM Elements ---
+// --- DOM Elements (Ensure correct IDs) ---
 const messageInput = document.getElementById('message-input');
 const sendButton = document.getElementById('send-button');
 const conversationArea = document.getElementById('conversation-area');
-const internalCommsArea = document.getElementById('internal-comms-area'); // New area
+const internalCommsArea = document.getElementById('internal-comms-area'); // *** Check ID is correct ***
 const agentStatusContent = document.getElementById('agent-status-content');
 const viewPanels = document.querySelectorAll('.view-panel');
 const navButtons = document.querySelectorAll('.nav-button');
@@ -45,12 +45,20 @@ const addAgentButton = document.getElementById('add-agent-button');
 const agentModal = document.getElementById('agent-modal');
 const agentForm = document.getElementById('agent-form');
 const modalTitle = document.getElementById('modal-title');
-const editAgentIdInput = document.getElementById('edit-agent-id'); // Hidden field for edits
+const editAgentIdInput = document.getElementById('edit-agent-id');
 
 
 // --- Utility Functions ---
 const escapeHTML = (str) => {
     if (str === null || str === undefined) return '';
+    // Replace potential objects/arrays with their JSON string representation before escaping
+    if (typeof str === 'object') {
+        try {
+            str = JSON.stringify(str);
+        } catch (e) {
+            str = String(str); // Fallback to string conversion
+        }
+    }
     return String(str).replace(/[&<>"']/g, (match) => {
         switch (match) {
             case '&': return '&';
@@ -80,41 +88,42 @@ const connectWebSocket = () => {
     }
 
     console.log(`Attempting to connect WebSocket to ${WS_URL}...`);
-    displayStatusMessage("Connecting...", true); // Show initial connecting in internal comms
+    // Display initial connecting message in internal comms
+    displayStatusMessage("Connecting...", true, false, 'internal-comms-area'); // Target internal comms
 
     websocket = new WebSocket(WS_URL);
 
     websocket.onopen = (event) => {
         console.log("WebSocket connection established.");
         isConnected = true;
-        reconnectDelay = INITIAL_RECONNECT_DELAY; // Reset delay on successful connection
-        displayStatusMessage("Connected to backend.", true);
-        // Optionally request initial status or data here
+        reconnectDelay = INITIAL_RECONNECT_DELAY;
+        // Display connected message in internal comms
+        displayStatusMessage("Connected to backend.", true, false, 'internal-comms-area');
     };
 
     websocket.onmessage = (event) => {
         try {
             const messageData = JSON.parse(event.data);
-            // console.log("Message received:", messageData); // Can be noisy
+            console.debug("WebSocket message received:", messageData); // Log received data for debugging
             handleWebSocketMessage(messageData);
         } catch (error) {
             console.error("Error parsing WebSocket message:", error);
-            displayMessage(`Error parsing message: ${event.data}`, 'error', 'internal-comms-area');
+            displayMessage(`Error parsing message: ${escapeHTML(event.data)}`, 'error', 'internal-comms-area'); // Display raw data on parse error
         }
     };
 
     websocket.onerror = (event) => {
         console.error("WebSocket error:", event);
-        displayStatusMessage(`WebSocket error: ${event.type}`, true, true);
+        // Display error in internal comms
+        displayStatusMessage(`WebSocket error: ${event.type || 'Unknown error'}`, true, true, 'internal-comms-area');
     };
 
     websocket.onclose = (event) => {
         console.log(`WebSocket connection closed. Code: ${event.code}, Reason: ${event.reason}`);
         isConnected = false;
-        displayStatusMessage(`Connection closed (${event.code}). Reconnecting...`, true, true);
-        // Schedule reconnection attempt
+        // Display closed message in internal comms
+        displayStatusMessage(`Connection closed (${event.code}). Reconnecting...`, true, true, 'internal-comms-area');
         setTimeout(connectWebSocket, reconnectDelay);
-        // Exponential backoff for reconnection delay
         reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
     };
 };
@@ -125,6 +134,7 @@ const sendMessage = (message) => {
         console.debug(`Sent message: ${message.substring(0, 100)}...`);
     } else {
         console.error("WebSocket is not connected. Cannot send message.");
+        // Display error in the main conversation area as it relates to user action
         displayMessage("Error: Not connected to backend. Message not sent.", "error", "conversation-area");
     }
 };
@@ -132,134 +142,146 @@ const sendMessage = (message) => {
 // --- UI Update Functions ---
 
 /**
- * Displays a message in the specified message area (either conversation or internal comms).
- * Also handles auto-scrolling and message limits.
- * @param {string} text The message content (HTML allowed).
- * @param {string} type The message type (e.g., 'user', 'agent_response', 'status', 'error', 'log-tool-use').
- * @param {string} targetAreaId The ID of the container element ('conversation-area' or 'internal-comms-area').
- * @param {string} [agentId=null] Optional agent ID for styling.
- * @param {string} [agentPersona=null] Optional agent persona for display.
+ * Displays a message in the specified message area.
+ * @param {string} text The message content (can be HTML, should be pre-escaped if needed).
+ * @param {string} type Message type class (e.g., 'user', 'agent_response', 'status').
+ * @param {string} targetAreaId ID of the container ('conversation-area' or 'internal-comms-area').
+ * @param {string} [agentId=null] Optional agent ID.
+ * @param {string} [agentPersona=null] Optional agent persona.
  */
 const displayMessage = (text, type, targetAreaId, agentId = null, agentPersona = null) => {
-    const messageArea = document.getElementById(targetAreaId);
-    if (!messageArea) {
-        console.error(`Target message area #${targetAreaId} not found.`);
-        return;
-    }
+    try { // Add try-catch around display logic
+        const messageArea = document.getElementById(targetAreaId);
+        if (!messageArea) {
+            console.error(`Target message area #${targetAreaId} not found.`);
+            return; // Exit if target doesn't exist
+        }
 
-    // Remove placeholder if it exists
-    const placeholder = messageArea.querySelector('.initial-placeholder');
-    if (placeholder) {
-        placeholder.remove();
-    }
+        // Remove placeholder if it exists
+        const placeholder = messageArea.querySelector('.initial-placeholder');
+        if (placeholder) {
+            placeholder.remove();
+        }
 
-     // Remove oldest messages if limit exceeded
-     const maxMessages = targetAreaId === 'conversation-area' ? MAX_CHAT_MESSAGES : MAX_LOG_MESSAGES;
-     while (messageArea.children.length >= maxMessages) {
-        messageArea.removeChild(messageArea.firstChild);
-     }
+        // Remove oldest messages if limit exceeded
+        const maxMessages = targetAreaId === 'conversation-area' ? MAX_CHAT_MESSAGES : MAX_COMM_MESSAGES;
+        while (messageArea.children.length >= maxMessages) {
+            messageArea.removeChild(messageArea.firstChild);
+        }
 
-    const messageElement = document.createElement('div');
-    messageElement.classList.add('message', type);
-    if (agentId) {
-        messageElement.setAttribute('data-agent-id', agentId);
-        // Add specific class for agent responses for potential styling
-        if (type === 'agent_response') {
-            messageElement.classList.add('agent_response');
+        const messageElement = document.createElement('div');
+        messageElement.classList.add('message', type);
+        if (agentId) {
+            messageElement.setAttribute('data-agent-id', agentId);
+            if (type === 'agent_response') {
+                messageElement.classList.add('agent_response');
+            }
+        }
+
+        // Timestamp only for internal comms
+        const timestampSpan = (targetAreaId === 'internal-comms-area')
+            ? `<span class="timestamp">${getCurrentTimestamp()}</span>`
+            : '';
+
+        let innerHTMLContent = timestampSpan; // Start with timestamp (if applicable)
+
+        // Add Agent Label conditionally based on area and type
+        if (targetAreaId === 'internal-comms-area') {
+            if (agentPersona) {
+                innerHTMLContent += `<span class="agent-label">${escapeHTML(agentPersona)} (${escapeHTML(agentId)}):</span>`;
+            } else if (agentId && agentId !== 'manager' && agentId !== 'system' && agentId !== 'api' && agentId !== 'human_user') {
+                 innerHTMLContent += `<span class="agent-label">Agent (${escapeHTML(agentId)}):</span>`;
+            } else if (agentId) { // Handle system/manager/api labels
+                 innerHTMLContent += `<span class="agent-label">${escapeHTML(agentId.replace('_',' ').toUpperCase())}:</span>`;
+            }
+        } else if (targetAreaId === 'conversation-area') {
+            if (type === 'agent_response' && agentPersona) {
+                innerHTMLContent += `<span class="agent-label">${escapeHTML(agentPersona)}:</span>`;
+            }
+        }
+
+        // Add the main message content (assuming 'text' is HTML or pre-escaped)
+        innerHTMLContent += `<span class="message-content">${text}</span>`;
+
+        messageElement.innerHTML = innerHTMLContent;
+        messageArea.appendChild(messageElement);
+
+        // Auto-scroll to the bottom
+        messageArea.scrollTop = messageArea.scrollHeight;
+    } catch (error) {
+        console.error(`Error in displayMessage (Target: ${targetAreaId}, Type: ${type}):`, error);
+        // Optionally display a fallback error message in the UI
+        const errorArea = document.getElementById('internal-comms-area'); // Default to internal comms for display errors
+        if (errorArea) {
+            const errorEl = document.createElement('div');
+            errorEl.className = 'message error';
+            errorEl.innerHTML = `<span class="timestamp">${getCurrentTimestamp()}</span><span class="message-content">!! UI Error displaying message (Type: ${type}) !!</span>`;
+            errorArea.appendChild(errorEl);
+            errorArea.scrollTop = errorArea.scrollHeight;
         }
     }
-    // Use timestamp from internal comms area styling
-    const timestampSpan = `<span class="timestamp">${getCurrentTimestamp()}</span>`;
-
-    // Structure message content based on type and target area
-    let innerHTMLContent = '';
-    if (targetAreaId === 'internal-comms-area') {
-        innerHTMLContent += timestampSpan; // Add timestamp first for internal comms
-        if (agentPersona) {
-            innerHTMLContent += `<span class="agent-label">${escapeHTML(agentPersona)} (${escapeHTML(agentId)}):</span>`;
-        } else if (agentId && agentId !== 'manager' && agentId !== 'system') {
-             innerHTMLContent += `<span class="agent-label">Agent (${escapeHTML(agentId)}):</span>`;
-        }
-    } else if (targetAreaId === 'conversation-area') {
-        if (type === 'agent_response' && agentPersona) {
-            innerHTMLContent += `<span class="agent-label">${escapeHTML(agentPersona)}:</span>`;
-        }
-        // User messages don't get a label here, they are styled differently
-    }
-
-    // Add the main message content
-    innerHTMLContent += `<span class="message-content">${text}</span>`; // Use span for consistency, text already escaped or is HTML
-
-    messageElement.innerHTML = innerHTMLContent;
-    messageArea.appendChild(messageElement);
-
-    // Auto-scroll to the bottom
-    messageArea.scrollTop = messageArea.scrollHeight;
 };
 
 
 /**
- * Displays a status message specifically in the Internal Communications view.
+ * Displays a status message specifically in the specified target area.
  * @param {string} message The status text.
- * @param {boolean} [temporary=false] If true, the message might be removed later (not implemented yet).
+ * @param {boolean} [temporary=false] If true, the message might be removed later.
  * @param {boolean} [isError=false] If true, style as an error.
+ * @param {string} [targetAreaId='internal-comms-area'] Target area ID.
  */
-const displayStatusMessage = (message, temporary = false, isError = false) => {
+const displayStatusMessage = (message, temporary = false, isError = false, targetAreaId = 'internal-comms-area') => {
     const messageType = isError ? 'error' : 'status';
-    // Always display status messages in the internal comms area now
-    displayMessage(escapeHTML(message), messageType, 'internal-comms-area', 'system');
+    displayMessage(escapeHTML(message), messageType, targetAreaId, 'system');
 };
 
 
-/**
- * Updates the agent status list UI in the Chat View.
- * @param {object} agentStatusData Agent status keyed by agent ID.
- */
 const updateAgentStatusUI = (agentStatusData) => {
     if (!agentStatusContent) return;
-    agentStatusContent.innerHTML = ''; // Clear existing statuses
 
-    const agentIds = Object.keys(agentStatusData);
+    try { // Add try-catch
+        agentStatusContent.innerHTML = ''; // Clear existing statuses
+        const agentIds = Object.keys(agentStatusData);
 
-    if (agentIds.length === 0) {
-        agentStatusContent.innerHTML = '<span class="status-placeholder">No active agents.</span>';
-        return;
+        if (agentIds.length === 0) {
+            agentStatusContent.innerHTML = '<span class="status-placeholder">No active agents.</span>';
+            return;
+        }
+
+        agentIds.sort((a, b) => {
+            if (a === 'admin_ai') return -1;
+            if (b === 'admin_ai') return 1;
+            return a.localeCompare(b);
+        });
+
+        agentIds.forEach(agentId => {
+            const agent = agentStatusData[agentId];
+            if (!agent || agent.status === 'deleted') return;
+
+            const statusItem = document.createElement('div');
+            statusItem.classList.add('agent-status-item', `status-${agent.status || 'unknown'}`);
+            statusItem.setAttribute('data-agent-id', agentId);
+
+            const persona = agent.persona || agentId;
+            // Adjusted to use the canonical model ID from config if available
+            const modelDisplay = agent.model ? `(${escapeHTML(agent.model)})` : '(Model N/A)';
+            const teamInfo = agent.team ? `<span class="agent-team">[${escapeHTML(agent.team)}]</span>` : '';
+
+            const agentInfoSpan = document.createElement('span');
+            agentInfoSpan.innerHTML = `<strong>${escapeHTML(persona)}</strong> <span class="agent-model">${modelDisplay}</span> ${teamInfo}`;
+
+            const statusBadgeSpan = document.createElement('span');
+            statusBadgeSpan.classList.add('agent-status');
+            statusBadgeSpan.textContent = agent.status || 'unknown';
+
+            statusItem.appendChild(agentInfoSpan);
+            statusItem.appendChild(statusBadgeSpan);
+            agentStatusContent.appendChild(statusItem);
+        });
+    } catch (error) {
+        console.error("Error updating agent status UI:", error);
+        agentStatusContent.innerHTML = '<span class="status-placeholder">Error loading agent status.</span>';
     }
-
-    // Sort agents: admin_ai first, then alphabetically
-    agentIds.sort((a, b) => {
-        if (a === 'admin_ai') return -1;
-        if (b === 'admin_ai') return 1;
-        return a.localeCompare(b);
-    });
-
-
-    agentIds.forEach(agentId => {
-        const agent = agentStatusData[agentId];
-        if (!agent || agent.status === 'deleted') return; // Skip deleted agents
-
-        const statusItem = document.createElement('div');
-        statusItem.classList.add('agent-status-item', `status-${agent.status || 'unknown'}`);
-        statusItem.setAttribute('data-agent-id', agentId);
-
-        const persona = agent.persona || agentId;
-        const modelInfo = (agent.provider && agent.model) ? `(${agent.model})` : '(Model N/A)';
-        const teamInfo = agent.team ? `<span class="agent-team">[${escapeHTML(agent.team)}]</span>` : '';
-
-        // Agent info part
-        const agentInfoSpan = document.createElement('span');
-        agentInfoSpan.innerHTML = `<strong>${escapeHTML(persona)}</strong> <span class="agent-model">${escapeHTML(modelInfo)}</span> ${teamInfo}`;
-
-        // Status badge part
-        const statusBadgeSpan = document.createElement('span');
-        statusBadgeSpan.classList.add('agent-status');
-        statusBadgeSpan.textContent = agent.status || 'unknown';
-
-        statusItem.appendChild(agentInfoSpan);
-        statusItem.appendChild(statusBadgeSpan);
-
-        agentStatusContent.appendChild(statusItem);
-    });
 };
 
 /**
@@ -267,72 +289,105 @@ const updateAgentStatusUI = (agentStatusData) => {
  * @param {object} data The parsed message data from the WebSocket.
  */
 const handleWebSocketMessage = (data) => {
-    const messageType = data.type;
-    const agentId = data.agent_id; // Agent originating the message/status
+    try { // Add try-catch around the handler
+        const messageType = data.type;
+        const agentId = data.agent_id || 'system'; // Default to system if no agent_id
+        const agentPersona = data.persona; // May be present
 
-    // Remove initial connecting message if it exists
-    const connectingMsg = internalCommsArea.querySelector('.initial-connecting');
-    if (connectingMsg) connectingMsg.remove();
+        console.log(`Handling message type: ${messageType} from agent: ${agentId}`); // Added logging
 
-    switch (messageType) {
-        case 'agent_response':
-            // Route based on agent ID
-            if (agentId === 'admin_ai') {
-                displayMessage(data.content, messageType, 'conversation-area', agentId, data.persona || agentId);
-            } else {
-                // Optional: Display internal agent responses in the internal comms view
-                 displayMessage(data.content, messageType, 'internal-comms-area', agentId, data.persona || agentId);
-            }
-            break;
+        // Remove initial connecting message if it exists in internal comms
+        const connectingMsg = internalCommsArea?.querySelector('.initial-connecting');
+        if (connectingMsg) connectingMsg.remove();
 
-        case 'status':
-        case 'system_event':
-            // Display general status/events in internal comms
-             displayMessage(escapeHTML(data.content || data.message || 'Unknown status'), messageType, 'internal-comms-area', agentId || 'system');
-            break;
+        // --- Routing Logic ---
+        let targetArea = 'internal-comms-area'; // Default target
+        let displayPersona = agentPersona;
+        let displayAgentId = agentId;
+        let displayContent = data.content || data.message || JSON.stringify(data); // Fallback content
 
-        case 'error':
-            // Display errors in internal comms
-            displayMessage(escapeHTML(data.content || 'Unknown error'), messageType, 'internal-comms-area', agentId || 'system');
-            break;
+        switch (messageType) {
+            case 'agent_response':
+                if (agentId === 'admin_ai') {
+                    targetArea = 'conversation-area';
+                    // Content might be HTML (e.g., containing tool calls), handle carefully
+                    // Assuming backend doesn't send harmful HTML
+                    displayContent = data.content;
+                } else {
+                    targetArea = 'internal-comms-area';
+                    displayContent = escapeHTML(data.content);
+                }
+                break;
 
-        case 'agent_status_update':
-            // Update the status list in the Chat view
-            if (data.status && typeof data.status === 'object') {
-                // Ensure agent ID is included if missing (shouldn't happen ideally)
-                if (!data.status.agent_id && agentId) data.status.agent_id = agentId;
-                // Assuming the backend sends the full status object needed by updateAgentStatusUI
-                updateAgentStatusUI({ [agentId]: data.status });
-            } else {
-                 console.warn("Received agent_status_update without valid status object:", data);
-            }
-            break;
+            case 'user': // Should only happen if backend echoes user message (currently doesn't)
+                targetArea = 'conversation-area';
+                displayContent = escapeHTML(displayContent);
+                break;
 
-        case 'agent_added':
-        case 'agent_deleted':
-            // Log the event in internal comms
-            const eventMsg = messageType === 'agent_added'
-                ? `Agent Added: ${data.agent_id} (${data.config?.persona || 'N/A'}) - Model: ${data.config?.model || 'N/A'}`
-                : `Agent Deleted: ${data.agent_id}`;
-            displayMessage(escapeHTML(eventMsg), 'system_event', 'internal-comms-area', 'system');
-            // Request a full status update to refresh the agent list UI correctly
-            // (The backend should ideally send the full list on add/delete,
-            // but requesting works as a fallback)
-             // Example: sendMessage(JSON.stringify({ type: 'get_full_status' }));
-             // For now, we assume the backend pushes the necessary individual update or full list.
-            break;
-         case 'team_created':
-         case 'team_deleted':
-            const teamEventMsg = messageType === 'team_created'
-                 ? `Team Created: ${data.team_id}`
-                 : `Team Deleted: ${data.team_id}`;
-            displayMessage(escapeHTML(teamEventMsg), 'system_event', 'internal-comms-area', 'system');
-            break;
+            case 'status':
+            case 'system_event':
+            case 'log': // Treat 'log' type messages as internal comms events
+                targetArea = 'internal-comms-area';
+                displayContent = escapeHTML(displayContent);
+                displayAgentId = agentId || 'system'; // Ensure system label if agent missing
+                break;
 
-        default:
-            console.warn(`Received unknown message type: ${messageType}`, data);
-            // Display unrecognized messages in internal comms as a fallback
-            displayMessage(`Unknown message type '${messageType}': ${escapeHTML(JSON.stringify(data))}`, 'status', 'internal-comms-area', 'system');
+            case 'error':
+                targetArea = 'internal-comms-area';
+                displayContent = `❗ Error: ${escapeHTML(displayContent)}`; // Add indicator
+                displayAgentId = agentId || 'system';
+                break;
+
+            case 'agent_status_update':
+                // This updates the separate agent status list, not a message area
+                if (data.status && typeof data.status === 'object') {
+                    if (!data.status.agent_id && agentId) data.status.agent_id = agentId;
+                    // Pass the single agent update, let updateAgentStatusUI handle merging/replacing
+                    updateAgentStatusUI({ [agentId]: data.status });
+                } else {
+                    console.warn("Received agent_status_update without valid status object:", data);
+                }
+                return; // Don't proceed to displayMessage for status updates
+
+            case 'agent_added':
+            case 'agent_deleted':
+            case 'team_created':
+            case 'team_deleted':
+            case 'session_saved': // Handle session events
+            case 'session_loaded':
+                 targetArea = 'internal-comms-area';
+                 const eventMap = {
+                    'agent_added': `Agent Added: ${data.agent_id} (${data.config?.persona || 'N/A'})`,
+                    'agent_deleted': `Agent Deleted: ${data.agent_id}`,
+                    'team_created': `Team Created: ${data.team_id}`,
+                    'team_deleted': `Team Deleted: ${data.team_id}`,
+                    'session_saved': `Session Saved: ${data.project}/${data.session}`,
+                    'session_loaded': `Session Loaded: ${data.project}/${data.session}`,
+                 };
+                 displayContent = escapeHTML(eventMap[messageType] || data.message || `Event: ${messageType}`);
+                 displayAgentId = 'system';
+                 // Request full status after add/delete to refresh agent list UI
+                 // if (messageType === 'agent_added' || messageType === 'agent_deleted') {
+                 //   sendMessage(JSON.stringify({ type: 'get_full_status' })); // If backend supports this
+                 // }
+                 break; // Proceed to display this system event message
+
+            default:
+                console.warn(`Received unknown message type: ${messageType}`, data);
+                targetArea = 'internal-comms-area'; // Fallback to internal comms
+                displayContent = `Unknown msg type '${escapeHTML(messageType)}': ${escapeHTML(JSON.stringify(data))}`;
+                displayAgentId = 'system';
+        }
+
+        // Display the message in the determined target area
+        if (targetArea) {
+            displayMessage(displayContent, messageType, targetArea, displayAgentId, displayPersona);
+        }
+
+    } catch (error) {
+        console.error("Error in handleWebSocketMessage:", error);
+        // Display a generic error in internal comms if the handler fails
+        displayMessage(`!! JS Error handling message: ${escapeHTML(error.message)} !!`, 'error', 'internal-comms-area', 'frontend');
     }
 };
 
@@ -340,6 +395,10 @@ const handleWebSocketMessage = (data) => {
 // --- View Switching ---
 const switchView = (viewId) => {
     console.log(`Switching view to: ${viewId}`);
+    if (!document.getElementById(viewId)) {
+        console.error(`Cannot switch view: Element with ID '${viewId}' not found.`);
+        return;
+    }
     viewPanels.forEach(panel => {
         panel.classList.remove('active');
         if (panel.id === viewId) {
@@ -354,13 +413,14 @@ const switchView = (viewId) => {
     });
     currentView = viewId;
 
-    // Load data relevant to the view when switching TO it
-    if (viewId === 'config-view') {
+    // Load data relevant to the view
+    if (viewId === 'config-view' && configContent) {
         loadStaticAgentConfig();
-    } else if (viewId === 'session-view') {
-        loadProjects(); // Also loads sessions for the first project initially
+    } else if (viewId === 'session-view' && projectSelect) {
+        loadProjects();
     }
 };
+
 
 // --- API Call Functions ---
 const makeApiCall = async (endpoint, method = 'GET', body = null) => {
@@ -375,10 +435,10 @@ const makeApiCall = async (endpoint, method = 'GET', body = null) => {
     }
 
     try {
+        console.debug(`API Call: ${method} ${url}`, body ? JSON.stringify(body).substring(0,100) + '...' : ''); // Log API call
         const response = await fetch(url, options);
-        const responseData = await response.json(); // Assume JSON response
+        const responseData = await response.json();
         if (!response.ok) {
-            // Throw an error object compatible with how displayMessage handles errors
             const error = new Error(responseData.detail || `HTTP error ${response.status}`);
             error.status = response.status;
             error.responseBody = responseData;
@@ -387,22 +447,20 @@ const makeApiCall = async (endpoint, method = 'GET', body = null) => {
         return responseData;
     } catch (error) {
         console.error(`API call error (${method} ${endpoint}):`, error);
-        // Display API errors in the internal comms area
         const errorDetail = error.responseBody?.detail || error.message || 'Unknown API error';
+        // Display API errors in the internal comms area
         displayMessage(`API Error (${method} ${endpoint}): ${escapeHTML(errorDetail)}`, 'error', 'internal-comms-area', 'api');
-        throw error; // Re-throw to indicate failure to the caller
+        throw error;
     }
 };
 
-
 // --- Event Listeners ---
 const setupEventListeners = () => {
-    // Send message on button click
-    sendButton.addEventListener('click', () => {
-        const message = messageInput.value.trim();
+    // Ensure elements exist before adding listeners
+    sendButton?.addEventListener('click', () => {
+        const message = messageInput?.value?.trim();
         if (message || attachedFile) {
             if (attachedFile) {
-                // Send structured message with file content
                 const messageData = {
                     type: 'user_message_with_file',
                     text: message,
@@ -413,32 +471,32 @@ const setupEventListeners = () => {
                  displayMessage(escapeHTML(message) + `<br><small><i>[Attached: ${escapeHTML(attachedFile.name)}]</i></small>`, 'user', 'conversation-area');
                  clearAttachment();
             } else {
-                // Send plain text message
                 sendMessage(message);
                  displayMessage(escapeHTML(message), 'user', 'conversation-area');
             }
-            messageInput.value = '';
-            messageInput.style.height = 'auto'; // Reset height after sending
-            messageInput.style.height = messageInput.scrollHeight + 'px'; // Adjust to content briefly
-            messageInput.style.height = '60px'; // Reset to default fixed height
+            if (messageInput) {
+                messageInput.value = '';
+                messageInput.style.height = 'auto';
+                messageInput.style.height = messageInput.scrollHeight + 'px';
+                messageInput.style.height = '60px';
+            }
         }
     });
 
-    // Send message on Enter key press (Shift+Enter for newline)
-    messageInput.addEventListener('keypress', (e) => {
+    messageInput?.addEventListener('keypress', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault(); // Prevent default newline behavior
-            sendButton.click(); // Trigger send button click
+            e.preventDefault();
+            sendButton?.click();
         }
     });
 
-    // Auto-resize textarea
-    messageInput.addEventListener('input', () => {
-        messageInput.style.height = 'auto'; // Reset height
-        messageInput.style.height = messageInput.scrollHeight + 'px'; // Set to scroll height
+    messageInput?.addEventListener('input', () => {
+        if (messageInput) {
+            messageInput.style.height = 'auto';
+            messageInput.style.height = messageInput.scrollHeight + 'px';
+        }
     });
 
-    // Navigation Button Clicks
     navButtons.forEach(button => {
         button.addEventListener('click', () => {
             const viewId = button.getAttribute('data-view');
@@ -448,46 +506,37 @@ const setupEventListeners = () => {
         });
     });
 
-     // File Attachment
-     attachFileButton.addEventListener('click', () => fileInput.click());
-     fileInput.addEventListener('change', handleFileSelect);
+     attachFileButton?.addEventListener('click', () => fileInput?.click());
+     fileInput?.addEventListener('change', handleFileSelect);
 
-     // Config View Buttons
      refreshConfigButton?.addEventListener('click', loadStaticAgentConfig);
-     addAgentButton?.addEventListener('click', () => openAgentModal(null)); // Open modal for adding
+     addAgentButton?.addEventListener('click', () => openAgentModal(null));
 
-     // Agent Modal Form Submit
      agentForm?.addEventListener('submit', handleAgentFormSubmit);
 
-     // Session Management Event Listeners
      projectSelect?.addEventListener('change', handleProjectSelectionChange);
      loadSessionButton?.addEventListener('click', handleLoadSession);
      saveSessionButton?.addEventListener('click', handleSaveSession);
 };
 
-// --- File Attachment Handling ---
+// --- File Attachment Handling --- (No changes needed)
 const handleFileSelect = (event) => {
     const file = event.target.files[0];
     if (file) {
-        // Basic validation (e.g., type, size)
         if (!file.type.startsWith('text/') && !/\.(py|js|json|yaml|md|log|csv|html|css)$/i.test(file.name)) {
              alert('Error: Only text-based files (.txt, .py, .js, .css, .html, .md, .json, .yaml, .csv, .log) are allowed.');
-             fileInput.value = ''; // Reset input
+             fileInput.value = '';
              return;
          }
-         const maxSize = 5 * 1024 * 1024; // 5MB limit
+         const maxSize = 5 * 1024 * 1024;
          if (file.size > maxSize) {
              alert(`Error: File size exceeds the limit of ${maxSize / 1024 / 1024}MB.`);
-             fileInput.value = ''; // Reset input
+             fileInput.value = '';
              return;
          }
-
         const reader = new FileReader();
         reader.onload = (e) => {
-            attachedFile = {
-                name: file.name,
-                content: e.target.result
-            };
+            attachedFile = { name: file.name, content: e.target.result };
             displayFileInfo();
         };
         reader.onerror = (e) => {
@@ -495,20 +544,19 @@ const handleFileSelect = (event) => {
             alert("Error reading file.");
             clearAttachment();
         };
-        reader.readAsText(file); // Read as text
+        reader.readAsText(file);
     }
-     // Reset the input value so the 'change' event fires even if the same file is selected again
      event.target.value = null;
 };
 
 const displayFileInfo = () => {
-    if (attachedFile) {
+    if (attachedFile && fileInfoArea) {
         fileInfoArea.innerHTML = `
             <span>Attached: ${escapeHTML(attachedFile.name)}</span>
             <button onclick="clearAttachment()" title="Remove file">×</button>
         `;
         fileInfoArea.style.display = 'flex';
-    } else {
+    } else if (fileInfoArea) {
         fileInfoArea.style.display = 'none';
         fileInfoArea.innerHTML = '';
     }
@@ -516,12 +564,11 @@ const displayFileInfo = () => {
 
 const clearAttachment = () => {
     attachedFile = null;
-    fileInput.value = ''; // Clear the file input
+    if(fileInput) fileInput.value = '';
     displayFileInfo();
 };
 
-
-// --- Static Agent Config Functions ---
+// --- Static Agent Config Functions --- (Minor logging adjustment)
 const loadStaticAgentConfig = async () => {
     if (!configContent) return;
     configContent.innerHTML = '<span class="status-placeholder">Loading config...</span>';
@@ -530,13 +577,12 @@ const loadStaticAgentConfig = async () => {
         renderStaticAgentConfig(agentConfigs);
     } catch (error) {
          configContent.innerHTML = '<span class="status-placeholder">Error loading config.</span>';
-        // Error already displayed by makeApiCall
     }
 };
 
 const renderStaticAgentConfig = (agentConfigs) => {
     if (!configContent) return;
-    configContent.innerHTML = ''; // Clear previous
+    configContent.innerHTML = '';
 
     if (!agentConfigs || agentConfigs.length === 0) {
         configContent.innerHTML = '<span class="status-placeholder">No static agent configurations found.</span>';
@@ -552,37 +598,25 @@ const renderStaticAgentConfig = (agentConfigs) => {
                 <small class="agent-details">(${escapeHTML(agent.provider)} / ${escapeHTML(agent.model)}) - ${escapeHTML(agent.persona)}</small>
             </span>
             <span class="config-item-actions">
-                <button class="config-action-button edit-button" data-agent-id="${escapeHTML(agent.agent_id)}" title="Edit Agent">✏️</button>
+                <!-- Edit button disabled for now until full config fetching is implemented -->
+                <button class="config-action-button edit-button" data-agent-id="${escapeHTML(agent.agent_id)}" title="Edit Agent (Requires Backend Update)" disabled>✏️</button>
                 <button class="config-action-button delete-button" data-agent-id="${escapeHTML(agent.agent_id)}" title="Delete Agent">🗑️</button>
             </span>
         `;
         configContent.appendChild(item);
     });
 
-     // Add event listeners for edit/delete buttons after rendering
-     configContent.querySelectorAll('.edit-button').forEach(button => {
+     configContent.querySelectorAll('.edit-button:not([disabled])').forEach(button => { // Only add listener if not disabled
          button.addEventListener('click', (e) => {
              const agentId = e.currentTarget.getAttribute('data-agent-id');
-             // Find the full config data (requires fetching it - could be optimized)
-             makeApiCall('/api/config/agents') // Re-fetch might be inefficient, ideally get full data initially
-                 .then(allConfigs => {
-                     const agentData = allConfigs.find(a => a.agent_id === agentId);
-                     // Need to get the FULL config, not just AgentInfo. This API needs adjustment
-                     // For now, we can only edit basic info or prompt for full details.
-                     // Let's assume we can fetch full details somehow (requires backend change).
-                     // Placeholder: open modal with limited data
-                     console.warn("Edit requires fetching full agent config data - not fully implemented yet.");
-                     // Find the *full* configuration for this agent - requires a different API endpoint or data structure
-                     // For now, let's simulate opening with basic info
-                     openAgentModal(agentId, { /* Assume fullConfig fetched */
-                        provider: agentData?.provider,
-                        model: agentData?.model,
-                        persona: agentData?.persona,
-                        // Missing: system_prompt, temperature, other kwargs
-                     });
-
-                 })
-                 .catch(err => console.error("Error fetching agent details for edit:", err));
+             // Placeholder - requires backend endpoint to fetch FULL config for an agent ID
+             alert(`Editing agent '${agentId}' requires a backend update to fetch full configuration details.`);
+             // Example if backend provided full data:
+             // makeApiCall(`/api/config/agents/${agentId}/details`) // Fictional endpoint
+             //     .then(fullAgentData => {
+             //         openAgentModal(agentId, fullAgentData.config); // Pass the inner config object
+             //     })
+             //     .catch(err => console.error("Error fetching agent details for edit:", err));
          });
      });
      configContent.querySelectorAll('.delete-button').forEach(button => {
@@ -600,35 +634,37 @@ const handleDeleteAgentConfig = async (agentId) => {
     try {
         const result = await makeApiCall(`/api/config/agents/${agentId}`, 'DELETE');
         displayMessage(escapeHTML(result.message), 'system_event', 'internal-comms-area', 'system');
-        loadStaticAgentConfig(); // Refresh list
+        loadStaticAgentConfig();
     } catch (error) {
-        // Error message displayed by makeApiCall
+        // Error handled by makeApiCall
     }
 };
 
-// --- Agent Modal Functions ---
+// --- Agent Modal Functions --- (No changes needed)
 const openAgentModal = (agentIdToEdit = null, agentData = null) => {
-    agentForm.reset(); // Clear form
-    editAgentIdInput.value = agentIdToEdit || ''; // Set hidden field if editing
+    if (!agentModal || !agentForm || !modalTitle || !editAgentIdInput) return; // Check elements
+    agentForm.reset();
+    editAgentIdInput.value = agentIdToEdit || '';
+
+    const agentIdField = document.getElementById('agent-id'); // Get field inside function
 
     if (agentIdToEdit && agentData) {
         modalTitle.textContent = `Edit Agent: ${agentIdToEdit}`;
-        document.getElementById('agent-id').value = agentIdToEdit;
-        document.getElementById('agent-id').readOnly = true; // Prevent editing ID
-        // Populate form - NEED FULL CONFIG DATA
+        if (agentIdField) {
+            agentIdField.value = agentIdToEdit;
+            agentIdField.readOnly = true;
+        }
         document.getElementById('persona').value = agentData.persona || '';
         document.getElementById('provider').value = agentData.provider || 'openrouter';
         document.getElementById('model').value = agentData.model || '';
-        document.getElementById('temperature').value = agentData.temperature || 0.7;
+        document.getElementById('temperature').value = agentData.temperature ?? 0.7; // Use ?? for default
         document.getElementById('system_prompt').value = agentData.system_prompt || '';
-        // TODO: Handle additional kwargs if they exist in agentData.config
+        // TODO: Handle additional kwargs if they exist in agentData
     } else {
         modalTitle.textContent = 'Add New Static Agent';
-        document.getElementById('agent-id').readOnly = false;
-        // Set defaults for add mode if needed
+        if (agentIdField) agentIdField.readOnly = false;
         document.getElementById('temperature').value = 0.7;
     }
-
     agentModal.style.display = 'block';
 };
 
@@ -645,9 +681,7 @@ const handleAgentFormSubmit = async (event) => {
     const agentId = formData.get('agent_id');
     const isEditing = !!editAgentIdInput.value;
 
-    // Collect extra args (basic example)
     const extraArgs = {};
-    // Add logic here to collect fields not explicitly named if needed
 
     const agentConfigData = {
         provider: formData.get('provider'),
@@ -655,7 +689,7 @@ const handleAgentFormSubmit = async (event) => {
         system_prompt: formData.get('system_prompt'),
         temperature: parseFloat(formData.get('temperature')),
         persona: formData.get('persona'),
-        ...extraArgs // Add any extra kwargs collected
+        ...extraArgs
     };
 
     const payload = {
@@ -667,26 +701,26 @@ const handleAgentFormSubmit = async (event) => {
     const method = isEditing ? 'PUT' : 'POST';
 
     try {
-        const result = await makeApiCall(endpoint, method, isEditing ? agentConfigData : payload); // Send AgentConfigInput for PUT
+        const result = await makeApiCall(endpoint, method, isEditing ? agentConfigData : payload);
         displayMessage(escapeHTML(result.message), 'system_event', 'internal-comms-area', 'system');
         closeModal('agent-modal');
-        loadStaticAgentConfig(); // Refresh list
+        loadStaticAgentConfig();
     } catch (error) {
-        // Error displayed by makeApiCall
-        // Optional: display error inside modal?
         alert(`Error saving agent config: ${error.message || 'Unknown error'}`);
     }
 };
 
 
-// --- Session Management Functions ---
+// --- Session Management Functions --- (No changes needed)
 const loadProjects = async () => {
     if (!projectSelect) return;
     projectSelect.innerHTML = '<option value="">Loading Projects...</option>';
     projectSelect.disabled = true;
-    sessionSelect.innerHTML = '<option value="">-- Select Project First --</option>';
-    sessionSelect.disabled = true;
-    loadSessionButton.disabled = true;
+    if (sessionSelect) {
+        sessionSelect.innerHTML = '<option value="">-- Select Project First --</option>';
+        sessionSelect.disabled = true;
+    }
+    if (loadSessionButton) loadSessionButton.disabled = true;
 
     try {
         const projects = await makeApiCall('/api/projects');
@@ -699,30 +733,28 @@ const loadProjects = async () => {
                 projectSelect.appendChild(option);
             });
             projectSelect.disabled = false;
-            // Automatically load sessions for the first project if exists
             if (projects.length > 0) {
-                 projectSelect.value = projects[0].project_name; // Select first project
-                 await loadSessions(projects[0].project_name); // Load its sessions
+                 projectSelect.value = projects[0].project_name;
+                 await loadSessions(projects[0].project_name);
             }
         } else {
             projectSelect.innerHTML = '<option value="">-- No Projects Found --</option>';
         }
     } catch (error) {
         projectSelect.innerHTML = '<option value="">-- Error Loading Projects --</option>';
-        // Error message handled by makeApiCall
     }
 };
 
 const loadSessions = async (projectName) => {
     if (!sessionSelect || !projectName) {
-        sessionSelect.innerHTML = '<option value="">-- Select Project First --</option>';
-        sessionSelect.disabled = true;
-        loadSessionButton.disabled = true;
+        if(sessionSelect) sessionSelect.innerHTML = '<option value="">-- Select Project First --</option>';
+        if(sessionSelect) sessionSelect.disabled = true;
+        if(loadSessionButton) loadSessionButton.disabled = true;
         return;
     }
     sessionSelect.innerHTML = '<option value="">Loading Sessions...</option>';
     sessionSelect.disabled = true;
-    loadSessionButton.disabled = true;
+    if(loadSessionButton) loadSessionButton.disabled = true;
 
     try {
         const sessions = await makeApiCall(`/api/projects/${projectName}/sessions`);
@@ -735,88 +767,92 @@ const loadSessions = async (projectName) => {
                 sessionSelect.appendChild(option);
             });
             sessionSelect.disabled = false;
-            // Enable load button only if a session is selected
-            sessionSelect.addEventListener('change', () => {
+            if (loadSessionButton) {
+                sessionSelect.addEventListener('change', () => {
+                    loadSessionButton.disabled = !sessionSelect.value;
+                });
                 loadSessionButton.disabled = !sessionSelect.value;
-            });
-            loadSessionButton.disabled = !sessionSelect.value; // Initial state
+            }
         } else {
             sessionSelect.innerHTML = '<option value="">-- No Sessions Found --</option>';
         }
     } catch (error) {
         sessionSelect.innerHTML = '<option value="">-- Error Loading Sessions --</option>';
-        loadSessionButton.disabled = true;
-         // Error message handled by makeApiCall
+        if(loadSessionButton) loadSessionButton.disabled = true;
     }
 };
 
 const handleProjectSelectionChange = () => {
-    const selectedProject = projectSelect.value;
-    loadSessions(selectedProject);
+    if(projectSelect) {
+        const selectedProject = projectSelect.value;
+        loadSessions(selectedProject);
+    }
 };
 
 const displaySessionStatus = (message, isSuccess) => {
     if (!sessionStatusMessage) return;
     sessionStatusMessage.textContent = message;
-    sessionStatusMessage.className = isSuccess ? 'session-status success' : 'session-status error'; // Use className to overwrite previous status
+    sessionStatusMessage.className = isSuccess ? 'session-status success' : 'session-status error';
     sessionStatusMessage.style.display = 'block';
-    // Optionally hide after a few seconds
     setTimeout(() => {
         sessionStatusMessage.style.display = 'none';
     }, 5000);
 };
 
 const handleLoadSession = async () => {
-    const projectName = projectSelect.value;
-    const sessionName = sessionSelect.value;
+    const projectName = projectSelect?.value;
+    const sessionName = sessionSelect?.value;
 
     if (!projectName || !sessionName) {
         displaySessionStatus("Error: Please select both a project and a session.", false);
         return;
     }
-    loadSessionButton.disabled = true; // Disable button during load
-    loadSessionButton.textContent = "Loading...";
+    if(loadSessionButton) {
+        loadSessionButton.disabled = true;
+        loadSessionButton.textContent = "Loading...";
+    }
 
     try {
         const result = await makeApiCall(`/api/projects/${projectName}/sessions/${sessionName}/load`, 'POST');
         displaySessionStatus(result.message, true);
-        // Switch view to chat after successful load
         switchView('chat-view');
     } catch (error) {
         displaySessionStatus(`Error loading session: ${error.message || 'Unknown error'}`, false);
     } finally {
-         loadSessionButton.disabled = false; // Re-enable button
-         loadSessionButton.textContent = "Load Selected Session";
+         if(loadSessionButton) {
+             loadSessionButton.disabled = false;
+             loadSessionButton.textContent = "Load Selected Session";
+         }
     }
 };
 
 const handleSaveSession = async () => {
-    const projectName = saveProjectNameInput.value.trim();
-    const sessionName = saveSessionNameInput.value.trim() || null; // Send null if empty
+    const projectName = saveProjectNameInput?.value?.trim();
+    const sessionName = saveSessionNameInput?.value?.trim() || null;
 
     if (!projectName) {
         displaySessionStatus("Error: Project name is required to save.", false);
         return;
     }
-    saveSessionButton.disabled = true;
-    saveSessionButton.textContent = "Saving...";
+    if(saveSessionButton) {
+        saveSessionButton.disabled = true;
+        saveSessionButton.textContent = "Saving...";
+    }
 
     try {
         const payload = sessionName ? { session_name: sessionName } : {};
         const result = await makeApiCall(`/api/projects/${projectName}/sessions`, 'POST', payload);
         displaySessionStatus(result.message, true);
-        // Refresh project/session lists after saving
-        await loadProjects();
-        // Optionally select the newly saved project/session?
-        // Might be complex if session name was auto-generated.
-        // For now, just refresh the lists.
-        saveProjectNameInput.value = ''; // Clear inputs after save
-        saveSessionNameInput.value = '';
+        await loadProjects(); // Refresh lists
+        if(saveProjectNameInput) saveProjectNameInput.value = '';
+        if(saveSessionNameInput) saveSessionNameInput.value = '';
     } catch (error) {
         displaySessionStatus(`Error saving session: ${error.message || 'Unknown error'}`, false);
     } finally {
-        saveSessionButton.disabled = false;
-        saveSessionButton.textContent = "Save Current Session";
+        if(saveSessionButton) {
+            saveSessionButton.disabled = false;
+            saveSessionButton.textContent = "Save Current Session";
+        }
     }
 };
 
@@ -824,11 +860,9 @@ const handleSaveSession = async () => {
 // --- Initialization ---
 document.addEventListener('DOMContentLoaded', () => {
     console.log("DOM fully loaded and parsed.");
-    displayMessage("Welcome! Connecting to backend...", "status", "internal-comms-area", "system"); // Use internal comms for initial status
+    // Use internal comms area for initial status messages
+    displayStatusMessage("Welcome! Initializing connection...", true, false, 'internal-comms-area');
     connectWebSocket();
     setupEventListeners();
-    switchView('chat-view'); // Ensure initial view is set correctly
-    // Load initial data for views that need it
-    // loadStaticAgentConfig(); // Load config on demand when switching view
-    // loadProjects(); // Load projects/sessions on demand
+    switchView('chat-view'); // Start on chat view
 });
