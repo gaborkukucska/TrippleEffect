@@ -48,12 +48,7 @@
              </div>
         </div>
 
-        <!-- *** REMOVED Logs View *** -->
-        <!-- <div id="logs-view" class="view-panel"> -->
-        <!--     ... content ... -->
-        <!-- </div> -->
-
-        <!-- *** NEW Internal Communications View *** -->
+        <!-- Internal Communications View -->
         <div id="internal-comms-view" class="view-panel">
              <div class="view-header"><h1>Internal Communications</h1></div>
              <div class="view-content">
@@ -63,8 +58,6 @@
                 </div>
             </div>
         </div>
-        <!-- *** END Internal Communications View *** -->
-
 
         <!-- Configuration View -->
         <div id="config-view" class="view-panel">
@@ -95,12 +88,10 @@
                     <label for="project-select">Select Project:</label>
                     <select id="project-select" name="project_select">
                         <option value="">-- Select Project --</option>
-                        <!-- Options populated by JS -->
                     </select>
                     <label for="session-select">Select Session:</label>
                     <select id="session-select" name="session_select" disabled>
                         <option value="">-- Select Project First --</option>
-                        <!-- Options populated by JS -->
                     </select>
                     <button id="load-session-button" disabled>Load Selected Session</button>
                 </div>
@@ -115,16 +106,14 @@
                 </div>
 
                 <div id="session-status-message" class="session-status">
-                    <!-- Status messages from save/load operations will appear here -->
                 </div>
             </div>
         </div>
 
 
-        <!-- Bottom Navigation Bar (Updated) -->
+        <!-- Bottom Navigation Bar -->
         <nav id="bottom-nav">
             <button data-view="chat-view" class="nav-button active" title="Chat">💬</button>
-            <!-- Updated Button for Internal Comms -->
             <button data-view="internal-comms-view" class="nav-button" title="Internal Comms">📈</button>
             <button data-view="session-view" class="nav-button" title="Project/Session">💾</button>
             <button data-view="config-view" class="nav-button" title="Config">⚙️</button>
@@ -134,13 +123,11 @@
 
     <!-- Modals remain global -->
     <div id="agent-modal" class="modal" style="display: none;">
-         <div class="modal-content"> <span class="close-button" onclick="closeModal('agent-modal')">×</span> <h3 id="modal-title">Add Agent</h3> <form id="agent-form"> <input type="hidden" id="edit-agent-id" value=""> <label for="agent-id">Agent ID:</label> <input type="text" id="agent-id" name="agent_id" required pattern="^[a-zA-Z0-9_-]+$" title="Alphanumeric, underscores, hyphens only"> <label for="persona">Persona:</label> <input type="text" id="persona" name="persona"> <label for="provider">Provider:</label> <select id="provider" name="provider" required> <option value="openrouter">OpenRouter</option> <option value="ollama">Ollama</option> <option value="openai">OpenAI</option> </select> <label for="model">Model:</label> <input type="text" id="model" name="model" required> <label for="temperature">Temperature:</label> <input type="number" id="temperature" name="temperature" step="0.1" min="0" max="2.0" value="0.7"> <label for="system_prompt">System Prompt:</label> <textarea id="system_prompt" name="system_prompt" rows="4"></textarea> <div class="modal-actions"> <button type="submit" id="save-agent-button">Save Agent</button> <button type="button" onclick="closeModal('agent-modal')">Cancel</button> </div> <p class="restart-note">Note: Static config changes require application restart.</p> </form> </div>
+         <div class="modal-content"> <span class="close-button" onclick="window.uiModule.closeModal('agent-modal')">×</span> <h3 id="modal-title">Add Agent</h3> <form id="agent-form"> <input type="hidden" id="edit-agent-id" value=""> <label for="agent-id">Agent ID:</label> <input type="text" id="agent-id" name="agent_id" required pattern="^[a-zA-Z0-9_-]+$" title="Alphanumeric, underscores, hyphens only"> <label for="persona">Persona:</label> <input type="text" id="persona" name="persona"> <label for="provider">Provider:</label> <select id="provider" name="provider" required> <option value="openrouter">OpenRouter</option> <option value="ollama">Ollama</option> <option value="openai">OpenAI</option> </select> <label for="model">Model:</label> <input type="text" id="model" name="model" required> <label for="temperature">Temperature:</label> <input type="number" id="temperature" name="temperature" step="0.1" min="0" max="2.0" value="0.7"> <label for="system_prompt">System Prompt:</label> <textarea id="system_prompt" name="system_prompt" rows="4"></textarea> <div class="modal-actions"> <button type="submit" id="save-agent-button">Save Agent</button> <button type="button" onclick="window.uiModule.closeModal('agent-modal')">Cancel</button> </div> <p class="restart-note">Note: Static config changes require application restart.</p> </form> </div>
     </div>
-    <div id="override-modal" class="modal" style="display: none;">
-        <div class="modal-content"> <span class="close-button" onclick="closeModal('override-modal')">×</span> <h3 id="override-modal-title">Agent Override Required</h3> <p id="override-message">Agent '[Persona]' ([Agent ID]) failed.</p> <p><strong>Last Error:</strong> <code id="override-last-error">[Error Details]</code></p> <form id="override-form"> <input type="hidden" id="override-agent-id" value=""> <label for="override-provider">New Provider:</label> <select id="override-provider" name="new_provider" required> <option value="openrouter">OpenRouter</option> <option value="ollama">Ollama</option> <option value="openai">OpenAI</option> </select> <label for="override-model">New Model:</label> <input type="text" id="override-model" name="new_model" required placeholder="Enter new model name"> <div class="modal-actions"> <button type="submit" id="submit-override-button">Apply & Retry</button> <button type="button" onclick="closeModal('override-modal')">Cancel</button> </div> </form> </div>
-    </div>
+    <!-- Override Modal Removed -->
 
-    <!-- Main script -->
-    <script type="module" src="/static/js/app.js"></script>
+    <!-- *** UPDATED SCRIPT TAG *** -->
+    <script type="module" src="/static/js/main.js"></script>
 </body>
 </html>
