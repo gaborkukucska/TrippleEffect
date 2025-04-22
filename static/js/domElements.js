@@ -20,7 +20,7 @@ export const assignElements = () => {
     fileInfoArea = document.getElementById('file-info-area');
 
     // Internal Comms View
-    internalCommsArea = document.getElementById('internal-comms-area');
+    internalCommsArea = document.getElementById('internal-comms-area'); // Added this
 
     // General UI
     viewPanels = document.querySelectorAll('.view-panel');
@@ -48,7 +48,12 @@ export const assignElements = () => {
 
     // Basic validation check
     const criticalElements = {
-        conversationArea, internalCommsArea, messageInput, sendButton, viewPanels, navButtons
+        conversationArea,
+        internalCommsArea, // Added this
+        messageInput,
+        sendButton,
+        viewPanels,
+        navButtons
     };
     for (const [name, element] of Object.entries(criticalElements)) {
         // For querySelectorAll, check length
