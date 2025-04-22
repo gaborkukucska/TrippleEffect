@@ -3,13 +3,13 @@
 import { escapeHTML, getCurrentTimestamp } from './utils.js';
 import * as config from './config.js';
 import * as DOM from './domElements.js'; // Import all exported elements
-import { setCurrentView } from './state.js'; // Import state setter for view
+import * as state from './state.js'; // Import state getter/setters
 
 /**
  * Displays a message in the specified message area (conversation or internal comms).
- * Handles auto-scrolling and message limits.
+ * Handles auto-scrolling, message limits, and groups response chunks in internal comms.
  * @param {string} text The message content (can be HTML, should be pre-escaped if needed).
- * @param {string} type Message type class (e.g., 'user', 'agent_response', 'status').
+ * @param {string} type Message type class (e.g., 'user', 'agent_response', 'status', 'response_chunk').
  * @param {string} targetAreaId ID of the container ('conversation-area' or 'internal-comms-area').
  * @param {string} [agentId=null] Optional agent ID.
  * @param {string} [agentPersona=null] Optional agent persona.
@@ -17,7 +17,6 @@ import { setCurrentView } from './state.js'; // Import state setter for view
 export const displayMessage = (text, type, targetAreaId, agentId = null, agentPersona = null) => {
     console.debug(`UI: Attempting display in #${targetAreaId}. Type: ${type}, Agent: ${agentId}`);
     try {
-        // Select the correct DOM element based on the targetAreaId
         const messageArea = DOM[targetAreaId === 'conversation-area' ? 'conversationArea' : 'internalCommsArea'];
         if (!messageArea) {
             console.error(`UI Error: Target message area #${targetAreaId} not found! Cannot display message.`);
@@ -31,56 +30,95 @@ export const displayMessage = (text, type, targetAreaId, agentId = null, agentPe
             placeholder.remove();
         }
 
-        // Determine max messages based on the target area
-        const maxMessages = targetAreaId === 'conversation-area' ? config.MAX_CHAT_MESSAGES : config.MAX_COMM_MESSAGES;
-        while (messageArea.children.length >= maxMessages) {
-            console.debug(`Trimming messages in #${targetAreaId}`);
-            messageArea.removeChild(messageArea.firstChild);
-        }
+        // --- Logic for grouping response chunks in internal comms ---
+        let shouldAppend = false;
+        let lastMessageElement = messageArea.lastElementChild;
 
-        const messageElement = document.createElement('div');
-        messageElement.classList.add('message', type);
-        if (agentId) {
-            messageElement.setAttribute('data-agent-id', agentId);
-             // Keep specific class for agent responses in conversation for potential specific styling
-            if (type === 'agent_response' && targetAreaId === 'conversation-area') {
-                messageElement.classList.add('agent_response');
+        if (type === 'response_chunk' && targetAreaId === 'internal-comms-area' && lastMessageElement) {
+            // Check if the last message is also a chunk from the same agent
+            const lastAgentId = lastMessageElement.getAttribute('data-agent-id');
+            const lastTypeIsChunk = lastMessageElement.classList.contains('response_chunk'); // Match the type
+
+            if (lastAgentId === agentId && lastTypeIsChunk) {
+                 shouldAppend = true;
             }
         }
+        // --- End chunk grouping logic ---
 
-        // Add timestamp only for internal comms view
-        const timestampSpan = (targetAreaId === 'internal-comms-area')
-            ? `<span class="timestamp">${getCurrentTimestamp()}</span>`
-            : '';
+        if (shouldAppend && lastMessageElement) {
+            // Append content to the existing message element's content span
+            const contentSpan = lastMessageElement.querySelector('.message-content');
+            if (contentSpan) {
+                // Append text content (assuming 'text' is plain text here)
+                // Note: If 'text' can contain HTML, ensure it's handled appropriately or pre-escaped
+                contentSpan.textContent += text; // Append text directly for chunks
+                 console.debug(`UI: Appended chunk to last message for agent ${agentId} in #${targetAreaId}.`);
+            } else {
+                console.warn("UI: Could not find content span in last message element to append chunk.");
+                shouldAppend = false; // Fallback to creating a new message
+            }
+        } else {
+            // Create a new message element
+             console.debug(`UI: Creating new message element for type ${type} in #${targetAreaId}.`);
+             // Determine max messages based on the target area
+            const maxMessages = targetAreaId === 'conversation-area' ? config.MAX_CHAT_MESSAGES : config.MAX_COMM_MESSAGES;
+            while (messageArea.children.length >= maxMessages) {
+                console.debug(`Trimming messages in #${targetAreaId}`);
+                messageArea.removeChild(messageArea.firstChild);
+            }
 
-        let innerHTMLContent = timestampSpan;
+            const messageElement = document.createElement('div');
+            messageElement.classList.add('message', type); // Use original type for class
+            if (agentId) {
+                messageElement.setAttribute('data-agent-id', agentId);
+                // Keep specific class for agent responses in conversation for potential specific styling
+                if (type === 'agent_response' && targetAreaId === 'conversation-area') {
+                    messageElement.classList.add('agent_response');
+                }
+            }
 
-        // Add Agent Label based on target area and type
-         if (targetAreaId === 'internal-comms-area') {
-             // Show detailed labels in internal comms
-             if (agentPersona) {
-                 innerHTMLContent += `<span class="agent-label">${escapeHTML(agentPersona)} (${escapeHTML(agentId)}):</span>`;
-             } else if (agentId && !['system', 'api', 'frontend', 'manager', 'human_user'].includes(agentId)) {
-                 innerHTMLContent += `<span class="agent-label">Agent (${escapeHTML(agentId)}):</span>`;
-             } else if (agentId) { // Handle system/manager/etc.
-                  innerHTMLContent += `<span class="agent-label">${escapeHTML(agentId.replace(/_/g,' ').toUpperCase())}:</span>`;
+            const timestampSpan = (targetAreaId === 'internal-comms-area')
+                ? `<span class="timestamp">${getCurrentTimestamp()}</span>`
+                : '';
+
+            let innerHTMLContent = timestampSpan;
+
+            // Add Agent Label based on target area and type
+             if (targetAreaId === 'internal-comms-area') {
+                 // Show detailed labels in internal comms
+                 if (agentPersona) {
+                     innerHTMLContent += `<span class="agent-label">${escapeHTML(agentPersona)} (${escapeHTML(agentId)}):</span>`;
+                 } else if (agentId && !['system', 'api', 'frontend', 'manager', 'human_user'].includes(agentId)) {
+                     innerHTMLContent += `<span class="agent-label">Agent (${escapeHTML(agentId)}):</span>`;
+                 } else if (agentId) { // Handle system/manager/etc.
+                      innerHTMLContent += `<span class="agent-label">${escapeHTML(agentId.replace(/_/g,' ').toUpperCase())}:</span>`;
+                 }
+             } else if (targetAreaId === 'conversation-area') {
+                 // Only show persona for agent responses in chat
+                 if (type === 'agent_response' && agentPersona) {
+                     innerHTMLContent += `<span class="agent-label">${escapeHTML(agentPersona)}:</span>`;
+                 }
+                 // User messages don't need a label here
              }
-         } else if (targetAreaId === 'conversation-area') {
-             // Only show persona for agent responses in chat
-             if (type === 'agent_response' && agentPersona) {
-                 innerHTMLContent += `<span class="agent-label">${escapeHTML(agentPersona)}:</span>`;
-             }
-             // User messages don't need a label here
-         }
 
+            // Append the actual message content
+            // Use textContent for chunks being appended to avoid re-interpreting potential HTML in prior chunks
+            const contentSpan = document.createElement('span');
+            contentSpan.classList.add('message-content');
+            if (type === 'response_chunk') {
+                 contentSpan.textContent = text; // Set initial text content for the first chunk
+            } else {
+                 contentSpan.innerHTML = text; // Use innerHTML for other types that might contain pre-formatted HTML
+            }
+            messageElement.innerHTML = innerHTMLContent; // Add timestamp and label first
+            messageElement.appendChild(contentSpan); // Append the content span
 
-        // Append the actual message content (passed as raw text/HTML)
-        innerHTMLContent += `<span class="message-content">${text}</span>`;
+            messageArea.appendChild(messageElement);
+            console.debug(`Message appended to #${targetAreaId}.`);
+        }
 
-        messageElement.innerHTML = innerHTMLContent;
-        messageArea.appendChild(messageElement);
-        messageArea.scrollTop = messageArea.scrollHeight; // Auto-scroll
-        console.debug(`Message appended to #${targetAreaId}.`);
+        // Auto-scroll
+        messageArea.scrollTop = messageArea.scrollHeight;
 
     } catch (error) {
         console.error(`UI Error in displayMessage (Target: ${targetAreaId}, Type: ${type}):`, error);
@@ -99,6 +137,7 @@ export const displayMessage = (text, type, targetAreaId, agentId = null, agentPe
     }
 };
 
+
 /**
  * Displays a status message specifically in the specified target area.
  * @param {string} message The status text.
@@ -112,27 +151,30 @@ export const displayStatusMessage = (message, temporary = false, isError = false
     displayMessage(escapeHTML(message), messageType, targetAreaId, 'system');
 };
 
+
 /**
- * Updates the agent status list UI in the Chat View.
- * Accepts the full agent status dictionary.
- * @param {object} agentStatusData Agent status keyed by agent ID.
+ * Updates the agent status list UI in the Chat View based on the *cached* known statuses.
+ * Should be called after the state cache is updated.
  */
-export const updateAgentStatusUI = (agentStatusData) => {
+export const updateAgentStatusUI = () => {
     if (!DOM.agentStatusContent) {
-        console.warn("UI: Agent status container not found.");
+        console.warn("UI: Agent status container not found for update.");
         return;
     }
-    console.debug("UI: Updating agent status list", agentStatusData);
+
+    const agentStatusData = state.getKnownAgentStatuses(); // Get the cached data
+    console.debug("UI: Updating agent status list from cached state", agentStatusData);
 
     try {
-        DOM.agentStatusContent.innerHTML = '';
+        DOM.agentStatusContent.innerHTML = ''; // Clear previous content
         const agentIds = Object.keys(agentStatusData);
 
         if (agentIds.length === 0) {
-            DOM.agentStatusContent.innerHTML = '<span class="status-placeholder">No active agents.</span>';
+            DOM.agentStatusContent.innerHTML = '<span class="status-placeholder">No active agents known.</span>';
             return;
         }
 
+        // Sort admin_ai first, then alphabetically
         agentIds.sort((a, b) => {
             if (a === 'admin_ai') return -1;
             if (b === 'admin_ai') return 1;
@@ -141,13 +183,16 @@ export const updateAgentStatusUI = (agentStatusData) => {
 
         agentIds.forEach(agentId => {
             const agent = agentStatusData[agentId];
+            // Skip rendering if status somehow became 'deleted' in cache (shouldn't happen with new state logic, but safe)
             if (!agent || agent.status === 'deleted') {
-                 console.debug(`UI: Skipping deleted/missing agent ${agentId} in status update.`);
+                 console.debug(`UI: Skipping deleted/missing agent ${agentId} during render.`);
                  return;
             }
 
             const statusItem = document.createElement('div');
-            const statusClass = `status-${(agent.status || 'unknown').replace(/ /g, '_')}`;
+            // Use 'idle' as default if status is missing, replace spaces for class name
+            const statusValue = (agent.status || 'idle').replace(/ /g, '_');
+            const statusClass = `status-${statusValue}`;
             statusItem.classList.add('agent-status-item', statusClass);
             statusItem.setAttribute('data-agent-id', agentId);
 
@@ -156,22 +201,24 @@ export const updateAgentStatusUI = (agentStatusData) => {
             const teamInfo = agent.team ? `<span class="agent-team">[${escapeHTML(agent.team)}]</span>` : '';
 
             const agentInfoSpan = document.createElement('span');
+            // Display relevant info: Persona, Model, Team
             agentInfoSpan.innerHTML = `<strong>${escapeHTML(persona)}</strong> <span class="agent-model">${modelDisplay}</span> ${teamInfo}`;
 
             const statusBadgeSpan = document.createElement('span');
             statusBadgeSpan.classList.add('agent-status');
-            statusBadgeSpan.textContent = agent.status || 'unknown';
+            statusBadgeSpan.textContent = agent.status || 'idle'; // Default to idle if missing
 
             statusItem.appendChild(agentInfoSpan);
             statusItem.appendChild(statusBadgeSpan);
             DOM.agentStatusContent.appendChild(statusItem);
         });
-        console.debug("UI: Agent status list updated.");
+        console.debug("UI: Agent status list updated from cache.");
     } catch (error) {
         console.error("UI Error updating agent status UI:", error);
         if(DOM.agentStatusContent) DOM.agentStatusContent.innerHTML = '<span class="status-placeholder">Error updating agent status.</span>';
     }
 };
+
 
 /**
  * Switches the active view panel in the UI.
@@ -209,7 +256,7 @@ export const switchView = (viewId) => {
         }
     });
 
-    setCurrentView(viewId); // Update shared state
+    state.setCurrentView(viewId); // Update shared state
     console.log(`UI: View switched successfully to: ${viewId}`);
 
     // Trigger data loading for the newly activated view
