@@ -11,7 +11,7 @@ import { escapeHTML } from './utils.js';
 
 /**
  * Handles incoming WebSocket messages and routes them to appropriate UI display areas.
- * Routes User<->Admin messages to #conversation-area.
+ * Routes User<->Admin messages/responses to #conversation-area.
  * Routes internal comms, status, tools, errors etc. to #internal-comms-area.
  * @param {object} data The parsed message data from the WebSocket.
  */
@@ -32,18 +32,19 @@ export const handleWebSocketMessage = (data) => {
         let targetAreaId = 'internal-comms-area'; // Default to internal comms
         let displayType = messageType; // Use original type for class, might adjust later
 
-        if (messageType === 'agent_response' && agentId === 'admin_ai') {
-            // Admin AI responses directed to the user go to the main chat area
+        // *** MODIFIED ROUTING START ***
+        if (agentId === 'admin_ai' && (messageType === 'agent_response' || messageType === 'final_response')) {
+            // Admin AI responses (including final ones) directed to the user go to the main chat area
             targetAreaId = 'conversation-area';
-            // We can keep the 'agent_response' class or use a more specific one if needed
+            displayType = 'agent_response'; // Use consistent class for styling admin responses
         } else if (messageType === 'user_message') {
             // If backend ever echoes user messages, route them to chat area
             // NOTE: Currently, user messages are displayed locally in handleSendMessage
             targetAreaId = 'conversation-area';
             displayType = 'user'; // Use 'user' class for styling
         }
-        // All other types default to internal-comms-area (status, errors, system events,
-        // internal agent responses, tool calls/results if displayed, etc.)
+        // All other types default to internal-comms-area
+        // *** MODIFIED ROUTING END ***
 
         console.log(`Handler: Routing message to targetAreaId: ${targetAreaId}`);
 
@@ -55,9 +56,15 @@ export const handleWebSocketMessage = (data) => {
         // Format specific message types for better readability
         switch (messageType) {
             case 'agent_response':
+            case 'final_response': // Handle final_response content preparation
                  // Content is expected to be HTML/text from the agent.
                  // No extra formatting needed here, ui.displayMessage handles layout.
-                 // If not admin_ai, it goes to internal comms by default route.
+                 // Routing to correct area is handled above.
+                 // Make sure content exists
+                 if (displayContent === undefined || displayContent === null) {
+                    displayContent = '[Empty Response]';
+                    console.warn(`Handler: Received ${messageType} from ${agentId} with no content.`);
+                 }
                 break;
             case 'status':
             case 'system_event':
@@ -122,24 +129,9 @@ export const handleWebSocketMessage = (data) => {
                  break;
 
             // --- Tool Handling Display (Internal Comms Only) ---
-            // Decide IF and HOW to display tool requests/results.
-            // Often, just seeing the agent's thought process leading to the tool call
-            // and the subsequent result fed back is enough (which are agent_response/tool messages).
-            // Displaying the raw requests/results might be too verbose.
-            // Let's only display errors or explicit feedback related to tools for now.
-
-            // case 'tool_requests':
-            //     // Example: Could display a brief summary if needed
-            //     // displayContent = `Agent ${agentId} requested ${data.calls?.length || 0} tool(s): ${data.calls?.map(c => c.name).join(', ')}`;
-            //     // displayType = 'status';
-            //     // displayAgentId = 'system'; // Or maybe the agent who requested?
-            //     // break; // Commented out - likely too verbose
-
-            // case 'tool_results': // Backend shouldn't really send this, it feeds back to agent
-            //     // Could display if needed for debugging
-            //     // displayContent = `Received tool result for call ${data.call_id}`;
-            //     // displayType = 'status';
-            //     // break; // Commented out
+            // (No changes needed here, still intentionally verbose logging commented out)
+            // case 'tool_requests': ...
+            // case 'tool_results': ...
 
             // --- Default for Unknown Types ---
             default:
@@ -156,7 +148,10 @@ export const handleWebSocketMessage = (data) => {
              // Pass the calculated display parameters to the UI function
              ui.displayMessage(displayContent, displayType, targetAreaId, displayAgentId, displayPersonaForUI);
         } else {
-             console.error("Handler: Message handling resulted in no targetAreaId or displayContent", data);
+             // Don't log error if content was intentionally undefined (like for status updates)
+             if (messageType !== 'agent_status_update' && messageType !== 'full_status') {
+                 console.error("Handler: Message handling resulted in no targetAreaId or displayContent", data);
+             }
         }
 
     } catch (error) {
@@ -167,7 +162,7 @@ export const handleWebSocketMessage = (data) => {
 };
 
 
-// --- UI Event Handlers (Remain Unchanged from previous version) ---
+// --- UI Event Handlers (Remain Unchanged) ---
 
 export const handleSendMessage = () => {
     console.log("Handler: Send button clicked or Enter pressed.");
