@@ -159,7 +159,9 @@ body {
 #config-view .view-content {
     padding: 10px; /* Consistent padding */
 }
-#internal-comms-view .message-area, /* Internal comms message area */
+
+/* Specific container styles */
+#internal-comms-view .system-log-area, /* Use system-log-area class for styling target */
 #config-view .config-area { /* Config area container */
     flex-grow: 1;
     margin-bottom: 0; /* No margin at bottom if it's the main element */
@@ -170,16 +172,18 @@ body {
     flex-direction: column;
     overflow: hidden; /* Let children handle scroll */
     min-height: 0; /* Flexbox fix */
-    padding: 10px;
+    padding: 10px; /* Apply padding to the container */
 }
-/* Specific styling for the scrollable list inside internal comms */
-#internal-comms-view #internal-comms-area {
+
+/* Specific styling for the scrollable list inside internal comms (#internal-comms-area) */
+#internal-comms-area {
     overflow-y: auto;
     flex-grow: 1;
-    padding: 0; /* Padding handled by parent */
+    padding: 0; /* Padding handled by parent (.system-log-area) */
     margin: 0;
-    /* Additional styling inherited from message-area */
+    /* background inherited from parent */
 }
+
 /* Config View specific adjustments */
 #config-view .config-area {
     padding: 10px 15px; /* Slightly more padding for config */
@@ -210,8 +214,8 @@ body {
 }
 
 /* --- Message Area General Styling --- */
-/* Applies to #conversation-area and #internal-comms-area */
-.message-area {
+/* Applies to #conversation-area and #internal-comms-area (now via .system-log-area class) */
+.message-area { /* This includes .conversation-area and .system-log-area */
     background-color: var(--bg-color-tertiary);
     overflow-y: auto; /* Allow vertical scrolling */
     flex-grow: 1; /* Allow it to take available space */
@@ -227,7 +231,7 @@ body {
     margin-bottom: 0;
 }
 /* Timestamp styling (reused for internal comms area) */
-/* Now applies to any child with class .message inside system-log-area */
+/* Now applies to any child with class .message inside elements styled as .system-log-area */
 .system-log-area .message .timestamp {
     font-size: 0.8em;
     color: var(--text-color-muted);
@@ -295,7 +299,7 @@ body {
     flex-direction: row; /* Keep user messages inline */
 }
 
-/* Specifics for Internal Comms Area (#internal-comms-area) */
+/* Specifics for Internal Comms Area (styled via .system-log-area class) */
 /* Agent ID specific styling applies here too */
 .system-log-area .message[data-agent-id="admin_ai"] { border-left: 4px solid var(--accent-color-1); background-color: #2a3a4a; }
 .system-log-area .message[data-agent-id*="coder"] { border-left: 4px solid var(--accent-color-2); background-color: #2a4a3a; }
@@ -785,3 +789,4 @@ body {
 }
 
 /* --- REMOVED LOGS VIEW STYLING --- */
+/* No styles related to #logs-view or #log-area were present */
