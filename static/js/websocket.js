@@ -1,116 +1,101 @@
-// START OF FILE static/js/websocket.js
-
-import * as config from './config.js';
-import * as state from './state.js';
-import { displayStatusMessage } from './ui.js';
-import { handleWebSocketMessage } from './handlers.js'; // Import the central message handler
+// START OF FILE static/js/websocketModule.js
 
 /**
- * Establishes and manages the WebSocket connection.
+ * @module websocketModule
+ * @description Handles WebSocket connection setup, message sending, and basic lifecycle events.
+ * Delegates message processing to the eventHandler module.
  */
-export const connectWebSocket = () => {
-    // Prevent multiple concurrent connection attempts
-    if (state.getWebSocket() && state.getWebSocket().readyState === WebSocket.CONNECTING) {
-        console.log("WebSocket connection attempt already in progress.");
-        return;
-    }
-    if (state.getIsConnected()) {
-        console.log("WebSocket is already connected.");
-        return;
-    }
 
-    // Initialize reconnect delay if it's null (first connection attempt)
-    if (state.getReconnectDelay() === null) {
-        state.setReconnectDelay(config.INITIAL_RECONNECT_DELAY);
-    }
+import { eventHandler } from './eventHandler.js'; // Import the handler
+import { uiModule } from './uiModule.js';       // Import uiModule for connection status updates
 
-    console.log(`Attempting WebSocket connection to ${config.WS_URL}...`);
-    displayStatusMessage("Connecting...", false, false, 'internal-comms-area');
-
-    try {
-        const ws = new WebSocket(config.WS_URL);
-        state.setWebSocket(ws); // Update state with the new WebSocket instance
-
-        ws.onopen = (event) => {
-            console.log("WebSocket onopen event fired.");
-            state.setIsConnected(true);
-            state.setReconnectDelay(config.INITIAL_RECONNECT_DELAY); // Reset delay
-            displayStatusMessage("Connected to backend.", false, false, 'internal-comms-area');
-            console.log("WebSocket connection established.");
-             // Maybe request initial full status upon connection?
-             // sendMessage(JSON.stringify({ type: 'get_initial_status' })); // If backend supports
-        };
-
-        ws.onmessage = (event) => {
-            console.debug("WebSocket onmessage event fired.");
-            try {
-                const messageData = JSON.parse(event.data);
-                console.debug("WebSocket message received:", messageData);
-                // Delegate processing to the central handler
-                handleWebSocketMessage(messageData);
-            } catch (error) {
-                console.error("Error parsing WebSocket message:", error);
-                displayMessage(`Error parsing message: ${escapeHTML(event.data)}`, 'error', 'internal-comms-area');
-            }
-        };
-
-        ws.onerror = (event) => {
-            console.error("WebSocket onerror event fired:", event);
-             // Check if it's a simple closure event before logging as error
-             // Note: onerror is often followed by onclose. Log the error but rely on onclose for reconnect.
-             displayStatusMessage(`WebSocket error occurred. Check console.`, false, true, 'internal-comms-area');
-        };
-
-        ws.onclose = (event) => {
-            console.log(`WebSocket onclose event fired. Code: ${event.code}, Reason: '${event.reason || 'No reason given'}'`);
-            const wasConnected = state.getIsConnected(); // Check status *before* changing it
-            state.setIsConnected(false);
-            state.setWebSocket(null); // Clear the websocket instance from state
-
-            let delay = state.getReconnectDelay() || config.INITIAL_RECONNECT_DELAY; // Get current delay or start fresh
-            displayStatusMessage(`Connection closed (${event.code}). Reconnecting in ${delay / 1000}s...`, false, true, 'internal-comms-area');
-
-            // Schedule reconnection attempt with exponential backoff
-            setTimeout(connectWebSocket, delay);
-            state.setReconnectDelay(Math.min(delay * 2, config.MAX_RECONNECT_DELAY)); // Update delay in state for next attempt
-        };
-
-    } catch (err) {
-        console.error("Error creating WebSocket:", err);
-        displayStatusMessage(`Failed to create WebSocket connection: ${err.message}`, false, true, 'internal-comms-area');
-        // Ensure state reflects failure and attempt reconnect
-        state.setIsConnected(false);
-        state.setWebSocket(null);
-        let delay = state.getReconnectDelay() || config.INITIAL_RECONNECT_DELAY;
-         setTimeout(connectWebSocket, delay);
-         state.setReconnectDelay(Math.min(delay * 2, config.MAX_RECONNECT_DELAY));
-    }
-};
+let websocket = null;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
+const RECONNECT_DELAY = 3000; // 3 seconds
 
 /**
- * Sends a message over the WebSocket connection if open.
- * @param {string} message The message string to send (usually JSON stringified).
+ * Establishes the WebSocket connection.
  */
-export const sendMessage = (message) => {
-    const ws = state.getWebSocket(); // Get current websocket instance from state
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        try {
-            ws.send(message);
-            console.debug(`Sent message: ${message.substring(0, 100)}...`);
-        } catch (error) {
-            console.error("Error sending WebSocket message:", error);
-            // Display error in main chat as it's usually user-triggered
-            import('./ui.js').then(ui => ui.displayMessage("Error sending message. Check console.", "error", "conversation-area"));
+function connectWebSocket() {
+    // Determine WebSocket protocol based on window location protocol
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+
+    console.log(`Attempting to connect WebSocket to ${wsUrl}`);
+    uiModule.updateInitialConnectionStatus(false, "Connecting..."); // Show connecting status
+
+    websocket = new WebSocket(wsUrl);
+
+    websocket.onopen = () => {
+        console.log('WebSocket connection established.');
+        uiModule.updateInitialConnectionStatus(true); // Update UI to show connected
+        reconnectAttempts = 0; // Reset reconnect attempts on successful connection
+        // Maybe send a ping or initial message if required by backend?
+    };
+
+    websocket.onclose = (event) => {
+        console.warn('WebSocket connection closed.', event.code, event.reason);
+        uiModule.updateInitialConnectionStatus(false, `Disconnected. Attempting reconnect (${reconnectAttempts + 1}/${MAX_RECONNECT_ATTEMPTS})...`);
+        websocket = null; // Clear the instance
+
+        // Attempt to reconnect
+        if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+            setTimeout(() => {
+                reconnectAttempts++;
+                connectWebSocket(); // Retry connection
+            }, RECONNECT_DELAY);
+        } else {
+            console.error("WebSocket reconnection attempts exhausted.");
+            uiModule.updateInitialConnectionStatus(false, "Disconnected. Max reconnect attempts reached. Please refresh.");
+            // Optionally display a more permanent error to the user
         }
+    };
+
+    websocket.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        uiModule.addLogEntry({ content: `WebSocket connection error: ${error.message || 'Unknown error'}` }, 'error');
+        // onclose will likely be called after onerror, handling reconnection logic
+    };
+
+    /**
+     * Handles incoming messages by delegating to the eventHandler.
+     * @param {MessageEvent} event - The message event from the WebSocket.
+     */
+    websocket.onmessage = (event) => {
+        // *** MODIFIED: Delegate message handling to eventHandler ***
+        eventHandler.handleWebSocketMessage(event);
+        // *** END MODIFICATION ***
+    };
+}
+
+/**
+ * Sends a message through the WebSocket connection.
+ * @param {string | object} message - The message to send (can be string or object to be stringified).
+ */
+function sendMessage(message) {
+    if (websocket && websocket.readyState === WebSocket.OPEN) {
+        const messageToSend = typeof message === 'string' ? message : JSON.stringify(message);
+        // console.debug("Sending WS message:", messageToSend); // Optional log
+        websocket.send(messageToSend);
     } else {
-        console.error("WebSocket is not connected. Cannot send message.");
-        import('./ui.js').then(ui => ui.displayMessage("Error: Not connected to backend. Message not sent.", "error", "conversation-area"));
+        console.error('WebSocket is not connected or not ready. Cannot send message.');
+        // Optionally inform the user via UI
+        uiModule.addLogEntry({ content: 'Error: Cannot send message. WebSocket not connected.' }, 'error');
     }
+}
+
+/**
+ * Gets the current WebSocket instance.
+ * @returns {WebSocket | null} The WebSocket instance or null if not connected.
+ */
+function getWebSocket() {
+    return websocket;
+}
+
+// Export the necessary functions
+export const websocketModule = {
+    connectWebSocket,
+    sendMessage,
+    getWebSocket
 };
-
-console.log("Frontend websocket module loaded.");
-
-// Import necessary functions dynamically or ensure they are loaded before use
-// For now, using dynamic imports in the error handlers for displayMessage
-import { displayMessage } from './ui.js';
-import { escapeHTML } from './utils.js';
