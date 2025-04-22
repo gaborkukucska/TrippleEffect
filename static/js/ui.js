@@ -17,6 +17,7 @@ import { setCurrentView } from './state.js'; // Import state setter for view
 export const displayMessage = (text, type, targetAreaId, agentId = null, agentPersona = null) => {
     console.debug(`UI: Attempting display in #${targetAreaId}. Type: ${type}, Agent: ${agentId}`);
     try {
+        // Select the correct DOM element based on the targetAreaId
         const messageArea = DOM[targetAreaId === 'conversation-area' ? 'conversationArea' : 'internalCommsArea'];
         if (!messageArea) {
             console.error(`UI Error: Target message area #${targetAreaId} not found! Cannot display message.`);
@@ -30,6 +31,7 @@ export const displayMessage = (text, type, targetAreaId, agentId = null, agentPe
             placeholder.remove();
         }
 
+        // Determine max messages based on the target area
         const maxMessages = targetAreaId === 'conversation-area' ? config.MAX_CHAT_MESSAGES : config.MAX_COMM_MESSAGES;
         while (messageArea.children.length >= maxMessages) {
             console.debug(`Trimming messages in #${targetAreaId}`);
@@ -40,41 +42,49 @@ export const displayMessage = (text, type, targetAreaId, agentId = null, agentPe
         messageElement.classList.add('message', type);
         if (agentId) {
             messageElement.setAttribute('data-agent-id', agentId);
-            if (type === 'agent_response') {
+             // Keep specific class for agent responses in conversation for potential specific styling
+            if (type === 'agent_response' && targetAreaId === 'conversation-area') {
                 messageElement.classList.add('agent_response');
             }
         }
 
+        // Add timestamp only for internal comms view
         const timestampSpan = (targetAreaId === 'internal-comms-area')
             ? `<span class="timestamp">${getCurrentTimestamp()}</span>`
             : '';
 
         let innerHTMLContent = timestampSpan;
 
-        if (targetAreaId === 'internal-comms-area') {
-            if (agentPersona) {
-                innerHTMLContent += `<span class="agent-label">${escapeHTML(agentPersona)} (${escapeHTML(agentId)}):</span>`;
-            } else if (agentId && !['system', 'api', 'frontend', 'manager', 'human_user'].includes(agentId)) {
+        // Add Agent Label based on target area and type
+         if (targetAreaId === 'internal-comms-area') {
+             // Show detailed labels in internal comms
+             if (agentPersona) {
+                 innerHTMLContent += `<span class="agent-label">${escapeHTML(agentPersona)} (${escapeHTML(agentId)}):</span>`;
+             } else if (agentId && !['system', 'api', 'frontend', 'manager', 'human_user'].includes(agentId)) {
                  innerHTMLContent += `<span class="agent-label">Agent (${escapeHTML(agentId)}):</span>`;
-            } else if (agentId) {
-                 innerHTMLContent += `<span class="agent-label">${escapeHTML(agentId.replace(/_/g,' ').toUpperCase())}:</span>`;
-            }
-        } else if (targetAreaId === 'conversation-area') {
-            if (type === 'agent_response' && agentPersona) {
-                innerHTMLContent += `<span class="agent-label">${escapeHTML(agentPersona)}:</span>`;
-            }
-        }
+             } else if (agentId) { // Handle system/manager/etc.
+                  innerHTMLContent += `<span class="agent-label">${escapeHTML(agentId.replace(/_/g,' ').toUpperCase())}:</span>`;
+             }
+         } else if (targetAreaId === 'conversation-area') {
+             // Only show persona for agent responses in chat
+             if (type === 'agent_response' && agentPersona) {
+                 innerHTMLContent += `<span class="agent-label">${escapeHTML(agentPersona)}:</span>`;
+             }
+             // User messages don't need a label here
+         }
 
-        // Pass raw text/HTML through; display function shouldn't escape automatically here
+
+        // Append the actual message content (passed as raw text/HTML)
         innerHTMLContent += `<span class="message-content">${text}</span>`;
 
         messageElement.innerHTML = innerHTMLContent;
         messageArea.appendChild(messageElement);
-        messageArea.scrollTop = messageArea.scrollHeight;
+        messageArea.scrollTop = messageArea.scrollHeight; // Auto-scroll
         console.debug(`Message appended to #${targetAreaId}.`);
 
     } catch (error) {
         console.error(`UI Error in displayMessage (Target: ${targetAreaId}, Type: ${type}):`, error);
+        // Attempt to display error in internal comms area as a fallback
         try {
              if (DOM.internalCommsArea) {
                 const errorEl = document.createElement('div');
@@ -98,6 +108,7 @@ export const displayMessage = (text, type, targetAreaId, agentId = null, agentPe
  */
 export const displayStatusMessage = (message, temporary = false, isError = false, targetAreaId = 'internal-comms-area') => {
     const messageType = isError ? 'error' : 'status';
+    // Ensure status messages are escaped as they come from internal system events primarily
     displayMessage(escapeHTML(message), messageType, targetAreaId, 'system');
 };
 
@@ -173,20 +184,24 @@ export const switchView = (viewId) => {
         console.error(`UI Error: Cannot switch view. Element with ID '${viewId}' not found.`);
         return;
     }
+    // Ensure DOM elements have been assigned
     if (!DOM.viewPanels || DOM.viewPanels.length === 0) {
-        console.error("UI Error: viewPanels not assigned or empty.");
+        console.error("UI Error: viewPanels not assigned or empty. Cannot switch view.");
         return;
     }
      if (!DOM.navButtons || DOM.navButtons.length === 0) {
-        console.error("UI Error: navButtons not assigned or empty.");
+        console.error("UI Error: navButtons not assigned or empty. Cannot switch view.");
         return;
     }
 
+    // Deactivate all panels
     DOM.viewPanels.forEach(panel => {
         panel.classList.remove('active');
     });
+    // Activate the target panel
     targetPanel.classList.add('active');
 
+    // Update navigation button states
     DOM.navButtons.forEach(button => {
         button.classList.remove('active');
         if (button.getAttribute('data-view') === viewId) {
