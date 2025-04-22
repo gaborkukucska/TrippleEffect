@@ -3,7 +3,15 @@
 import * as ui from './ui.js';
 import * as api from './api.js';
 import * as ws from './websocket.js';
-import * as state from './state.js'; // Import state functions
+// --- MODIFIED: Import specific state functions ---
+import {
+    getAttachedFile,
+    setAttachedFile,
+    updateKnownAgentStatus, // Import directly
+    setFullKnownAgentStatuses, // Import directly
+    removeKnownAgentStatus // Import directly
+} from './state.js';
+// --- END MODIFIED ---
 import * as DOM from './domElements.js';
 import * as session from './session.js'; // Import session functions
 import * as configView from './configView.js'; // Import config view functions
@@ -33,7 +41,9 @@ export const handleWebSocketMessage = (data) => {
                 // Ensure agent_id is in the status payload for the state update
                 const statusPayload = { ...data.status };
                 if (!statusPayload.agent_id && agentId) statusPayload.agent_id = agentId;
-                state.updateKnownAgentStatus(agentId, statusPayload); // Update state cache
+                // --- MODIFIED: Call imported function directly ---
+                updateKnownAgentStatus(agentId, statusPayload);
+                // --- END MODIFIED ---
                 triggerStatusRedraw = true; // Flag to redraw UI
             } else {
                  console.warn("Handler: Received agent_status_update without valid status object:", data);
@@ -42,7 +52,9 @@ export const handleWebSocketMessage = (data) => {
         } else if (messageType === 'full_status') {
              console.log("Handler: Handling full_status update");
              if (data.agents && typeof data.agents === 'object') {
-                 state.setFullKnownAgentStatuses(data.agents); // Replace state cache
+                 // --- MODIFIED: Call imported function directly ---
+                 setFullKnownAgentStatuses(data.agents);
+                 // --- END MODIFIED ---
                  triggerStatusRedraw = true; // Flag to redraw UI
              } else {
                   console.warn("Handler: Received full_status without valid agents object:", data);
@@ -50,14 +62,17 @@ export const handleWebSocketMessage = (data) => {
              // Don't display a message for this type
         } else if (messageType === 'agent_deleted') {
              console.log(`Handler: Handling agent_deleted event for ${agentId}`);
-             state.removeKnownAgentStatus(agentId); // Remove from state cache
+             // --- MODIFIED: Call imported function directly ---
+             removeKnownAgentStatus(agentId);
+             // --- END MODIFIED ---
              triggerStatusRedraw = true; // Flag to redraw UI
              // Proceed to display a system message below
         } else if (messageType === 'agent_added') {
              console.log(`Handler: Handling agent_added event for ${agentId}`);
              // Add or update the agent in the cache
              if (data.config && typeof data.config === 'object') {
-                state.updateKnownAgentStatus(agentId, {
+                // --- MODIFIED: Call imported function directly ---
+                updateKnownAgentStatus(agentId, {
                     agent_id: agentId, // Ensure ID is present
                     status: data.status?.status || 'idle', // Use incoming status or default
                     persona: data.config.persona,
@@ -66,6 +81,7 @@ export const handleWebSocketMessage = (data) => {
                     provider: data.config.provider
                     // Add other relevant fields from config if needed
                  });
+                 // --- END MODIFIED ---
                 triggerStatusRedraw = true;
              } else {
                   console.warn("Handler: Received agent_added without valid config object:", data);
@@ -74,7 +90,9 @@ export const handleWebSocketMessage = (data) => {
         } else if (messageType === 'agent_moved_team') {
              console.log(`Handler: Handling agent_moved_team event for ${agentId}`);
               // Update the team in the agent's cached status
-             state.updateKnownAgentStatus(agentId, { team: data.new_team_id });
+             // --- MODIFIED: Call imported function directly ---
+             updateKnownAgentStatus(agentId, { team: data.new_team_id });
+             // --- END MODIFIED ---
              triggerStatusRedraw = true;
              // Proceed to display a system message below
         } else if (messageType === 'session_loaded') {
@@ -134,7 +152,7 @@ export const handleWebSocketMessage = (data) => {
                     'team_created': `Team Created: ${data.team_id}`,
                     'team_deleted': `Team Deleted: ${data.team_id}`,
                     'session_saved': `Session Saved: ${data.project}/${data.session}`,
-                    'session_loaded': `Session Loaded: ${data.project}/${data.session}.`,
+                    'session_loaded': `Session Loaded: ${data.project}/${data.session}.`, // Adjusted message
                     'agent_moved_team': `Agent Moved: ${data.agent_id} to team ${data.new_team_id || 'None'} from ${data.old_team_id || 'N/A'}`,
                  };
                  displayContent = escapeHTML(eventMap[messageType] || data.message || `Event: ${messageType}`);
@@ -211,12 +229,14 @@ export const handleWebSocketMessage = (data) => {
 };
 
 
-// --- UI Event Handlers (No changes needed in this section) ---
+// --- UI Event Handlers ---
 
 export const handleSendMessage = () => {
     console.log("Handler: Send button clicked or Enter pressed.");
     const message = DOM.messageInput?.value?.trim();
-    const currentAttachedFile = state.getAttachedFile(); // Get from state
+    // --- MODIFIED: Use imported getter ---
+    const currentAttachedFile = getAttachedFile();
+    // --- END MODIFIED ---
 
     if (message || currentAttachedFile) {
         if (currentAttachedFile) {
@@ -290,11 +310,13 @@ export const handleFileSelect = (event) => {
 
         const reader = new FileReader();
         reader.onload = (e) => {
-            state.setAttachedFile({ // Update state
+            // --- MODIFIED: Use imported setter ---
+            setAttachedFile({
                 name: file.name,
                 content: e.target.result
             });
-            ui.displayFileInfo(state.getAttachedFile()); // Update UI
+            ui.displayFileInfo(getAttachedFile()); // Use getter to update UI
+            // --- END MODIFIED ---
         };
         reader.onerror = (e) => {
             console.error("Handler: File reading error:", e);
@@ -309,7 +331,9 @@ export const handleFileSelect = (event) => {
 
 export const handleClearAttachment = () => {
     console.log("Handler: Clearing attachment.");
-    state.setAttachedFile(null); // Update state
+    // --- MODIFIED: Use imported setter ---
+    setAttachedFile(null);
+    // --- END MODIFIED ---
     if (DOM.fileInput) DOM.fileInput.value = ''; // Clear the actual file input
     ui.displayFileInfo(null); // Update UI
 };
