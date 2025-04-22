@@ -14,6 +14,7 @@ import logging
 import logging.handlers
 import asyncio
 from typing import Optional, TYPE_CHECKING # Added TYPE_CHECKING
+import time # <<< --- IMPORT ADDED HERE ---
 
 # --- Base Directory ---
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -27,7 +28,7 @@ print(f"Attempted to load .env file from: {dotenv_path}") # Keep print for immed
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
-timestamp = time.strftime("%Y%m%d_%H%M%S")
+timestamp = time.strftime("%Y%m%d_%H%M%S") # Now 'time' is defined
 LOG_FILE = LOG_DIR / f"app_{timestamp}.log"
 
 log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -69,10 +70,6 @@ logger.info(f"--- Application Logging Initialized (Level: {log_level_str}, Conso
 
 # Import the routers and the setup function for AgentManager injection
 from src.api import http_routes, websocket_manager
-
-# --- Import the AgentManager class (MOVED INSIDE LIFESPAN) ---
-# from src.agents.manager import AgentManager
-# --- End Import ---
 
 # Import ModelRegistry instance and settings
 from src.config.settings import model_registry, settings
