@@ -103,7 +103,7 @@ body {
     flex-grow: 1; /* Takes remaining space below header */
     padding: 10px;
     overflow-y: auto; /* THIS is where the main content scrolling happens */
-    /* overflow-x: hidden; */
+    /* overflow-x: hidden; */ /* Removed as it might interfere with some content */
     display: flex;
     flex-direction: column;
     min-height: 0; /* Flexbox fix */
@@ -119,8 +119,8 @@ body {
 #chat-view .chat-area-container {
     flex-grow: 1;
     min-height: 150px; /* Ensure minimum height for chat */
-    /* overflow: hidden; */
-    display: flex;
+    /* overflow: hidden; */ /* Let message-area handle scroll */
+    display: flex; /* Use flex for message-area inside */
     margin-bottom: 10px;
 }
 #chat-view .input-container {
@@ -136,7 +136,7 @@ body {
     background-color: var(--bg-color-secondary);
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    overflow: hidden; /* Let child handle scroll */
 }
 #chat-view .agent-status-container h2 {
     margin: 0;
@@ -170,15 +170,15 @@ body {
     border-radius: 4px;
     display: flex;
     flex-direction: column;
-    overflow: hidden; /* Let children handle scroll */
+    /* overflow: hidden; */ /* REMOVED: Let .view-content handle outer scroll */
     min-height: 0; /* Flexbox fix */
     padding: 10px; /* Apply padding to the container */
 }
 
 /* Specific styling for the scrollable list inside internal comms (#internal-comms-area) */
 #internal-comms-area {
-    overflow-y: auto;
-    flex-grow: 1;
+    /* overflow-y: auto; */ /* REMOVED: Let parent (.view-content) scroll */
+    /* flex-grow: 1; */ /* REMOVED: Let it expand naturally */
     padding: 0; /* Padding handled by parent (.system-log-area) */
     margin: 0;
     /* background inherited from parent */
@@ -189,7 +189,7 @@ body {
     padding: 10px 15px; /* Slightly more padding for config */
 }
 #config-view #config-content {
-    overflow-y: auto;
+    overflow-y: auto; /* Allow scrolling specifically for the config items */
     flex-grow: 1;
     padding-top: 5px;
 }
@@ -217,7 +217,7 @@ body {
 /* Applies to #conversation-area and #internal-comms-area (now via .system-log-area class) */
 .message-area { /* This includes .conversation-area and .system-log-area */
     background-color: var(--bg-color-tertiary);
-    overflow-y: auto; /* Allow vertical scrolling */
+    overflow-y: auto; /* Allow vertical scrolling for the message area itself */
     flex-grow: 1; /* Allow it to take available space */
     display: flex; /* Use flexbox for children */
     flex-direction: column; /* Stack messages vertically */
@@ -255,7 +255,7 @@ body {
     align-self: flex-start; /* Default alignment */
     display: flex;
     flex-direction: row; /* Default layout */
-    flex-shrink: 0;
+    flex-shrink: 0; /* Don't shrink messages */
 }
 .message p { margin: 0; } /* Remove default paragraph margin */
 /* Content containers inside a message */
@@ -263,7 +263,7 @@ body {
 .message .message-content {
     display: block; /* Change to block for better wrapping control */
     white-space: pre-wrap; /* Preserve whitespace and wrap */
-    word-break: break-word;
+    word-break: break-word; /* Break long words */
 }
 /* Agent label (used in both conversation and internal comms) */
 .message .agent-label {
