@@ -8,9 +8,9 @@
 export let messageInput, sendButton, conversationArea, internalCommsArea, agentStatusContent, viewPanels, navButtons, fileInput, attachFileButton, fileInfoArea, projectSelect, sessionSelect, loadSessionButton, saveProjectNameInput, saveSessionNameInput, saveSessionButton, sessionStatusMessage, configContent, refreshConfigButton, addAgentButton, agentModal, agentForm, modalTitle, editAgentIdInput;
 
 export const assignElements = () => {
-    console.log("Assigning DOM elements...");
+    console.log("DOM Assign: Starting element assignment..."); // Log start
 
-    // Main Chat View
+    // --- Select Elements ---
     messageInput = document.getElementById('message-input');
     sendButton = document.getElementById('send-button');
     conversationArea = document.getElementById('conversation-area');
@@ -18,15 +18,9 @@ export const assignElements = () => {
     fileInput = document.getElementById('file-input');
     attachFileButton = document.getElementById('attach-file-button');
     fileInfoArea = document.getElementById('file-info-area');
-
-    // Internal Comms View
-    internalCommsArea = document.getElementById('internal-comms-area'); // Added this
-
-    // General UI
+    internalCommsArea = document.getElementById('internal-comms-area');
     viewPanels = document.querySelectorAll('.view-panel');
     navButtons = document.querySelectorAll('.nav-button');
-
-    // Session View
     projectSelect = document.getElementById('project-select');
     sessionSelect = document.getElementById('session-select');
     loadSessionButton = document.getElementById('load-session-button');
@@ -34,34 +28,43 @@ export const assignElements = () => {
     saveSessionNameInput = document.getElementById('save-session-name');
     saveSessionButton = document.getElementById('save-session-button');
     sessionStatusMessage = document.getElementById('session-status-message');
-
-    // Config View
     configContent = document.getElementById('config-content');
     refreshConfigButton = document.getElementById('refresh-config-button');
     addAgentButton = document.getElementById('add-agent-button');
-
-    // Agent Modal
     agentModal = document.getElementById('agent-modal');
     agentForm = document.getElementById('agent-form');
     modalTitle = document.getElementById('modal-title');
     editAgentIdInput = document.getElementById('edit-agent-id');
+    // --- End Select Elements ---
+
+    console.log("DOM Assign: Element selection complete. Validating critical elements..."); // Log validation start
 
     // Basic validation check
     const criticalElements = {
-        conversationArea,
-        internalCommsArea, // Added this
-        messageInput,
-        sendButton,
-        viewPanels,
-        navButtons
+        conversationArea, internalCommsArea, messageInput, sendButton, viewPanels, navButtons
     };
+    let allCriticalFound = true;
     for (const [name, element] of Object.entries(criticalElements)) {
+        let found = false;
         // For querySelectorAll, check length
-        if (element instanceof NodeList && element.length === 0) {
-             console.error(`Critical Element Missing/Empty: ${name}`);
-        } else if (!element && !(element instanceof NodeList)) {
-             console.error(`Critical Element Missing: ${name}`);
+        if (element instanceof NodeList && element.length > 0) {
+             found = true;
+        } else if (element && !(element instanceof NodeList)) { // Check if element exists and is not a nodelist
+             found = true;
         }
+
+        if (!found) {
+             console.error(`DOM Assign: Critical Element Missing/Empty: ${name}`);
+             allCriticalFound = false;
+        } else {
+             console.log(`DOM Assign: Critical Element Found: ${name}`); // Log found elements
+        }
+    }
+
+    if (allCriticalFound) {
+        console.log("DOM Assign: All critical elements validated successfully.");
+    } else {
+        console.error("DOM Assign: One or more critical DOM elements were NOT found. UI functionality will be limited.");
     }
     console.log("DOM element assignment complete.");
 };
