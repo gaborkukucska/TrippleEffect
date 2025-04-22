@@ -21,9 +21,23 @@ if dotenv_path.exists():
 else:
     print(f"Warning: .env file not found at {dotenv_path}. Environment variables might not be loaded.")
 
-# --- REMOVED config_manager import ---
-# from src.config.config_manager import config_manager
-# --- END REMOVAL ---
+# Import ConfigManager - this should be safe as it doesn't import settings
+try:
+    from src.config.config_manager import config_manager
+    print("Successfully imported config_manager instance.")
+except ImportError as e:
+     print(f"Error importing config_manager: {e}. Agent configurations will not be loaded dynamically.")
+     class DummyConfigManager: # Define Dummy if import fails
+         def get_config_data_sync(self): return {"agents": [], "teams": {}}
+         async def get_config(self): return []
+         async def get_teams(self): return {}
+         async def get_full_config(self): return {}
+         async def load_config(self): return {"agents": [], "teams": {}}
+         async def add_agent(self, a): return False
+         async def update_agent(self, a, d): return False
+         async def delete_agent(self, a): return False
+     config_manager = DummyConfigManager()
+
 
 # Import ModelRegistry class only
 try:
@@ -53,36 +67,28 @@ class Settings:
     Holds application settings, loaded from environment variables, config.yaml, and prompts.json.
     Manages API keys (supporting multiple keys per provider), base URLs,
     default agent parameters, initial agent configs, and standard prompts.
-    Accepts initial config data via its constructor.
+    Uses ConfigManager to load configurations synchronously at startup.
     ModelRegistry is instantiated *after* settings are loaded.
     Provides checks for provider configuration status.
     """
-    # --- MODIFIED __init__ to accept config data ---
-    def __init__(self, initial_config_data: Dict[str, Any]):
-        """
-        Initializes settings using environment variables and provided config data.
-
-        Args:
-            initial_config_data (Dict[str, Any]): The configuration data loaded
-                                                  synchronously from config.yaml.
-        """
-        logger.info("Initializing Settings instance...")
+    def __init__(self):
         # --- Provider URLs and Referer (from .env) ---
         self.OPENAI_BASE_URL: Optional[str] = os.getenv("OPENAI_BASE_URL")
         self.OPENROUTER_BASE_URL: Optional[str] = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
         self.OPENROUTER_REFERER: Optional[str] = os.getenv("OPENROUTER_REFERER")
-        self.OLLAMA_BASE_URL: Optional[str] = os.getenv("OLLAMA_BASE_URL")
-        self.LITELLM_BASE_URL: Optional[str] = os.getenv("LITELLM_BASE_URL")
+        self.OLLAMA_BASE_URL: Optional[str] = os.getenv("OLLAMA_BASE_URL") # Allow None, discovery will try localhost. Overridden by proxy if enabled.
+        self.LITELLM_BASE_URL: Optional[str] = os.getenv("LITELLM_BASE_URL") # Allow None, discovery will try localhost
 
         # --- Ollama Proxy Settings (from .env) ---
         self.USE_OLLAMA_PROXY: bool = os.getenv("USE_OLLAMA_PROXY", "false").lower() == "true"
         self.OLLAMA_PROXY_PORT: int = int(os.getenv("OLLAMA_PROXY_PORT", "3000"))
+        # OLLAMA_PROXY_TARGET_URL is used by the proxy itself, not directly by Python settings
 
         # --- Load Multiple API Keys ---
         self.PROVIDER_API_KEYS: Dict[str, List[str]] = {}
         provider_key_pattern = re.compile(r"^([A-Z_]+)_API_KEY(?:_(\d+))?$")
         known_provider_env_prefixes = [
-            "OPENAI", "OPENROUTER", "LITELLM", "ANTHROPIC", "GOOGLE", "DEEPSEEK"
+            "OPENAI", "OPENROUTER", "LITELLM", "ANTHROPIC", "GOOGLE", "DEEPSEEK" # Add more as needed
         ]
         logger.info("Scanning environment variables for API keys...")
         for key, value in os.environ.items():
@@ -90,8 +96,10 @@ class Settings:
             if match and value:
                 provider_prefix = match.group(1)
                 key_index_str = match.group(2)
+                # Special case for Tavily - Treat it as a separate key, not a generic provider
                 if provider_prefix == "TAVILY":
-                     continue
+                     continue # Skip adding TAVILY to PROVIDER_API_KEYS
+
                 normalized_provider = provider_prefix.lower()
                 if provider_prefix in known_provider_env_prefixes:
                     if normalized_provider not in self.PROVIDER_API_KEYS:
@@ -103,7 +111,7 @@ class Settings:
              logger.info(f"Loaded {len(keys)} API key(s) for provider: {provider}")
 
         # --- Model Tier ---
-        self.MODEL_TIER: str = os.getenv("MODEL_TIER", "FREE").upper()
+        self.MODEL_TIER: str = os.getenv("MODEL_TIER", "FREE").upper() # Default to FREE now
         if self.MODEL_TIER not in ["FREE", "ALL"]:
              logger.warning(f"Warning: Invalid MODEL_TIER '{self.MODEL_TIER}'. Defaulting to 'FREE'.")
              self.MODEL_TIER = "FREE"
@@ -113,31 +121,40 @@ class Settings:
 
         # --- Tool Configuration (from .env) ---
         self.GITHUB_ACCESS_TOKEN: Optional[str] = os.getenv("GITHUB_ACCESS_TOKEN")
+        # --- NEW: Tavily API Key ---
         self.TAVILY_API_KEY: Optional[str] = os.getenv("TAVILY_API_KEY")
         if self.TAVILY_API_KEY: logger.debug("Found TAVILY_API_KEY in environment.")
+        # --- END NEW ---
 
 
         # --- Load Prompts from JSON ---
-        self._load_prompts_from_json()
+        self._load_prompts_from_json() # Call the new method
 
         # --- Default Agent Configuration (use values from prompts.json or .env as fallback) ---
         self.DEFAULT_AGENT_PROVIDER: str = os.getenv("DEFAULT_AGENT_PROVIDER", "openrouter")
         self.DEFAULT_AGENT_MODEL: str = os.getenv("DEFAULT_AGENT_MODEL", "google/gemini-flash-1.5:free")
+        # Get defaults from loaded prompts, fallback to env/hardcoded if JSON load failed
         self.DEFAULT_SYSTEM_PROMPT: str = self.PROMPTS.get("default_system_prompt", os.getenv("DEFAULT_SYSTEM_PROMPT", "You are a helpful assistant."))
         self.DEFAULT_TEMPERATURE: float = float(os.getenv("DEFAULT_TEMPERATURE", 0.7))
         self.DEFAULT_PERSONA: str = self.PROMPTS.get("default_agent_persona", os.getenv("DEFAULT_PERSONA", "Assistant Agent"))
 
-        # --- Load Initial Configurations using data passed to constructor ---
-        # REMOVED: raw_config_data = config_manager.get_config_data_sync()
-        self.AGENT_CONFIGURATIONS: List[Dict[str, Any]] = initial_config_data.get("agents", [])
+        # --- Load Initial Configurations using ConfigManager ---
+        raw_config_data: Dict[str, Any] = {}
+        try:
+            raw_config_data = config_manager.get_config_data_sync()
+            print("Successfully loaded initial config via ConfigManager.get_config_data_sync()")
+        except Exception as e:
+            logger.error(f"Failed to load initial config via ConfigManager: {e}", exc_info=True)
+
+        self.AGENT_CONFIGURATIONS: List[Dict[str, Any]] = raw_config_data.get("agents", [])
         if not isinstance(self.AGENT_CONFIGURATIONS, list):
-            logger.error("Initial config error: 'agents' key is not a list. Resetting to empty.")
+            logger.error("Config format error: 'agents' key is not a list. Resetting to empty.")
             self.AGENT_CONFIGURATIONS = []
 
-        self.TEAMS_CONFIG: Dict[str, List[str]] = initial_config_data.get("teams", {})
+        # Deprecated: Static team config is no longer primary way
+        self.TEAMS_CONFIG: Dict[str, List[str]] = raw_config_data.get("teams", {})
         if self.TEAMS_CONFIG:
             logger.warning("Config Warning: Static 'teams' definition found in config.yaml. This section is deprecated and ignored by AgentManager.")
-        # --- End config load modification ---
 
         # --- Log Loaded Config Summary ---
         if not self.AGENT_CONFIGURATIONS: print("Warning: No bootstrap agent configurations loaded.")
@@ -145,8 +162,8 @@ class Settings:
         print(f"Model Tier setting: {self.MODEL_TIER}")
 
         self._ensure_projects_dir()
-        self._check_required_keys()
-        logger.info("Settings instance initialization complete.")
+        self._check_required_keys() # Run check after loading everything
+
 
     def _load_prompts_from_json(self):
         """Loads prompt templates from prompts.json."""
@@ -231,8 +248,10 @@ class Settings:
         # --- Log Tool Specific Keys ---
         if self.GITHUB_ACCESS_TOKEN: logger.info("✅ GitHub Access Token: Found (for GitHub tool)")
         else: logger.info("ℹ️ INFO: GITHUB_ACCESS_TOKEN not set. GitHub tool may not function fully.")
+        # --- NEW: Tavily Check ---
         if self.TAVILY_API_KEY: logger.info("✅ Tavily API Key: Found (for Web Search tool)")
         else: logger.info("ℹ️ INFO: TAVILY_API_KEY not set. Web Search tool will use scraping fallback.")
+        # --- END NEW ---
         print("-" * 30)
 
 
@@ -245,7 +264,6 @@ class Settings:
         provider_name = provider_name.lower()
         if provider_name == "openai": config['base_url'] = self.OPENAI_BASE_URL
         elif provider_name == "openrouter":
-             # Use default persona if referer isn't set
              referer = self.OPENROUTER_REFERER or f"http://localhost:8000/{self.DEFAULT_PERSONA}"
              config['base_url'] = self.OPENROUTER_BASE_URL
              config['referer'] = referer
@@ -280,41 +298,14 @@ class Settings:
 
     def get_formatted_allowed_models(self) -> str:
         """ Delegates to ModelRegistry. Requires discover_models() to have been run. """
-        global model_registry # Access the singleton instance
+        global model_registry
         return model_registry.get_formatted_available_models()
 
 
-# --- Placeholder Instances - Will be overwritten after initialization ---
-# These need to be defined globally so modules importing settings can see them,
-# but they will be properly initialized after settings itself is created.
-settings = None
-model_registry = None
+# --- Create Singleton Instances ---
+settings = Settings()
 
-# --- Global function to initialize settings and registry ---
-# This needs to be called from main.py *before* other modules that import settings
-def initialize_configuration():
-    """
-    Loads initial config and initializes Settings and ModelRegistry singletons.
-    """
-    global settings, model_registry
-
-    # Import config_manager locally here to avoid top-level import issues
-    try:
-        from src.config.config_manager import config_manager
-        print("Initializing Configuration: Importing config_manager...")
-        initial_config = config_manager.get_config_data_sync()
-        print("Initializing Configuration: Loaded initial sync config.")
-    except Exception as e:
-        print(f"Initializing Configuration: FAILED to load config via ConfigManager: {e}")
-        initial_config = {"agents": [], "teams": {}} # Fallback
-
-    # Instantiate Settings, passing the loaded config
-    print("Initializing Configuration: Creating Settings instance...")
-    settings = Settings(initial_config_data=initial_config)
-    print("Initializing Configuration: Settings instance created.")
-
-    # Instantiate ModelRegistry *after* settings is created
-    print("Initializing Configuration: Creating ModelRegistry instance...")
-    model_registry = _ModelRegistry(settings) # Use the imported class
-    print("Initializing Configuration: ModelRegistry instance created.")
-    print("Initializing Configuration: Complete.")
+# --- Instantiate ModelRegistry *after* settings is created *** ---
+model_registry = _ModelRegistry(settings)
+print("Instantiated ModelRegistry singleton.")
+# --- *** END INSTANTIATION *** ---
