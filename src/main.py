@@ -13,8 +13,7 @@ from dotenv import load_dotenv
 import logging
 import logging.handlers
 import asyncio
-from typing import Optional
-import time
+from typing import Optional, TYPE_CHECKING # Added TYPE_CHECKING
 
 # --- Base Directory ---
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -71,8 +70,8 @@ logger.info(f"--- Application Logging Initialized (Level: {log_level_str}, Conso
 # Import the routers and the setup function for AgentManager injection
 from src.api import http_routes, websocket_manager
 
-# --- Import the AgentManager class ---
-from src.agents.manager import AgentManager
+# --- Import the AgentManager class (MOVED INSIDE LIFESPAN) ---
+# from src.agents.manager import AgentManager
 # --- End Import ---
 
 # Import ModelRegistry instance and settings
@@ -82,8 +81,12 @@ from src.config.model_registry import DEFAULT_OLLAMA_PORT
 # --- Import Database Manager ---
 from src.core.database_manager import db_manager, close_db_connection # Import manager and close function
 
+# --- Type Hinting ---
+if TYPE_CHECKING:
+    from src.agents.manager import AgentManager
+
 # --- Global placeholder for the manager and proxy process ---
-agent_manager_instance: Optional[AgentManager] = None
+agent_manager_instance: Optional['AgentManager'] = None # Use forward reference string
 ollama_proxy_process: Optional[subprocess.Popen] = None
 
 # --- Define Lifespan Events ---
@@ -94,13 +97,17 @@ async def lifespan(app: FastAPI):
     Initializes Database, Ollama Proxy (optional), Agent Manager, discovers models,
     and initializes bootstrap agents. Handles graceful shutdown.
     """
+    # --- Moved Import Here ---
+    from src.agents.manager import AgentManager
+    # --- End Moved Import ---
+
     global agent_manager_instance, ollama_proxy_process
     logger.info("Application startup sequence initiated...")
 
     # --- Initialize Database Explicitly ---
     # Call the async initialization function here, within the running event loop
     logger.info("Lifespan: Initializing DatabaseManager...")
-    await db_manager._initialize_db() # <<< *** FIX: Await the init here ***
+    await db_manager._initialize_db() # Await the init here
     if db_manager._session_local is None:
         # Make this more prominent as it prevents DB operations
         logger.critical("Lifespan: DatabaseManager initialization FAILED! Database operations will not work.")
@@ -237,7 +244,7 @@ async def lifespan(app: FastAPI):
 
 
     logger.info("Instantiating AgentManager...")
-    agent_manager_instance = AgentManager()
+    agent_manager_instance = AgentManager() # AgentManager is now imported
     logger.info("AgentManager instantiated.")
 
     # Store manager in app state for access in request handlers (dependencies)
@@ -327,7 +334,7 @@ async def lifespan(app: FastAPI):
 logger.info("Creating FastAPI app instance...")
 app = FastAPI(
     title="TrippleEffect",
-    version="2.21", # Update version for Phase 21
+    version="2.22", # Update version for Phase 22
     description="Asynchronous Multi-Agent Framework with Dynamic Orchestration",
     lifespan=lifespan
 )
