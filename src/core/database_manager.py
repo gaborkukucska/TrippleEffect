@@ -5,9 +5,10 @@ import json
 from contextlib import contextmanager, asynccontextmanager
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Generator, AsyncGenerator
+import datetime # Added for update timestamp
 
 # SQLAlchemy imports
-from sqlalchemy import create_engine, Column, Integer, String, Text, Float, DateTime, ForeignKey, JSON, Index, select, desc, func
+from sqlalchemy import create_engine, Column, Integer, String, Text, Float, DateTime, ForeignKey, JSON, Index, select, desc, func, update # Added update
 from sqlalchemy.orm import sessionmaker, relationship, DeclarativeBase
 from sqlalchemy.sql import func as sql_func # Alias sql functions
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession # Use Async Engine
@@ -53,7 +54,7 @@ class Session(Base):
     interactions = relationship("Interaction", back_populates="session", cascade="all, delete-orphan")
     knowledge = relationship("LongTermKnowledge", back_populates="session", cascade="all, delete-orphan")
 
-    __table_args__ = (Index('ix_session_project_id', 'project_id'),)
+    __table_args__ = (Index('ix_session_project_id', 'project_id'), Index('ix_session_name_project', 'project_id', 'name'),) # Added combined index
 
 class AgentRecord(Base):
     """ Represents an agent instance within a specific session. """
@@ -251,6 +252,20 @@ class DatabaseManager:
             else: logger.debug(f"Session '{session_name}' not found for project ID {project_id}.")
             return db_session
 
+    # --- *** NEW METHOD: Get Session ID by Name *** ---
+    async def get_session_id_by_name(self, project_id: int, session_name: str) -> Optional[int]:
+        """ Gets the ID of a specific session by project ID and session name. """
+        async with self.get_session() as session:
+            # Select only the ID column for efficiency
+            stmt = select(Session.id).where(Session.project_id == project_id, Session.name == session_name)
+            result = await session.execute(stmt)
+            session_id = result.scalars().first() # Fetch the first result (should be unique)
+            if session_id: logger.debug(f"Found session ID {session_id} for project ID {project_id}, session name '{session_name}'.")
+            else: logger.debug(f"Session ID not found for project ID {project_id}, session name '{session_name}'.")
+            return session_id
+    # --- *** END NEW METHOD *** ---
+
+
     # --- Agent Records ---
     async def add_agent_record(self, session_id: int, agent_id: str, persona: str, model_config_dict: Optional[Dict] = None) -> Optional[AgentRecord]:
         """ Adds a record for an agent created during a session. """
@@ -375,4 +390,4 @@ async def close_db_connection():
     await db_manager.close()
 
 # --- Import needed for update() ---
-from sqlalchemy import update
+# Already imported at the top
