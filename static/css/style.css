@@ -227,7 +227,8 @@ body {
     margin-bottom: 0;
 }
 /* Timestamp styling (reused for internal comms area) */
-.system-log-area .message .timestamp { /* system-log-area class is reused */
+/* Now applies to any child with class .message inside system-log-area */
+.system-log-area .message .timestamp {
     font-size: 0.8em;
     color: var(--text-color-muted);
     margin-right: 8px;
@@ -296,12 +297,12 @@ body {
 
 /* Specifics for Internal Comms Area (#internal-comms-area) */
 /* Agent ID specific styling applies here too */
-.message[data-agent-id="admin_ai"] { border-left: 4px solid var(--accent-color-1); background-color: #2a3a4a; }
-.message[data-agent-id*="coder"] { border-left: 4px solid var(--accent-color-2); background-color: #2a4a3a; }
-.message[data-agent-id*="analyst"] { border-left: 4px solid var(--accent-color-orange); background-color: #4a3a2a; }
-.message[data-agent-id*="creative"], .message[data-agent-id*="reviewer"] { border-left: 4px solid var(--accent-color-green); background-color: #3a4a2a; }
-.message[data-agent-id="default"] { border-left: 4px solid var(--text-color-muted); }
-.message[data-agent-id*="unknown_agent"] { border-left: 4px solid var(--text-color-secondary); }
+.system-log-area .message[data-agent-id="admin_ai"] { border-left: 4px solid var(--accent-color-1); background-color: #2a3a4a; }
+.system-log-area .message[data-agent-id*="coder"] { border-left: 4px solid var(--accent-color-2); background-color: #2a4a3a; }
+.system-log-area .message[data-agent-id*="analyst"] { border-left: 4px solid var(--accent-color-orange); background-color: #4a3a2a; }
+.system-log-area .message[data-agent-id*="creative"], .message[data-agent-id*="reviewer"] { border-left: 4px solid var(--accent-color-green); background-color: #3a4a2a; }
+.system-log-area .message[data-agent-id="default"] { border-left: 4px solid var(--text-color-muted); }
+.system-log-area .message[data-agent-id*="unknown_agent"] { border-left: 4px solid var(--text-color-secondary); }
 
 /* Status Messages (Apply in both areas) */
 .message.status {
@@ -782,3 +783,5 @@ body {
     color: var(--error-text);
     display: block;
 }
+
+/* --- REMOVED LOGS VIEW STYLING --- */
