@@ -10,134 +10,164 @@ import * as configView from './configView.js'; // Import config view functions
 import { escapeHTML } from './utils.js';
 
 /**
- * Handles incoming WebSocket messages and routes them to appropriate UI handlers.
+ * Handles incoming WebSocket messages and routes them to appropriate UI display areas.
+ * Routes User<->Admin messages to #conversation-area.
+ * Routes internal comms, status, tools, errors etc. to #internal-comms-area.
  * @param {object} data The parsed message data from the WebSocket.
  */
 export const handleWebSocketMessage = (data) => {
     console.log("Handler: Processing WebSocket message", data);
     try {
         const messageType = data.type;
-        const agentId = data.agent_id || 'system';
-        const agentPersona = data.persona;
+        const agentId = data.agent_id || 'system'; // Default to 'system' if no agent_id
+        const agentPersona = data.persona; // Persona might be included for context
 
         console.log(`Handler: Message type: ${messageType}, Agent: ${agentId}`);
 
-        // Remove initial connecting message if it exists
+        // Remove initial connecting message from internal comms if it exists
         const connectingMsg = DOM.internalCommsArea?.querySelector('.initial-connecting');
         if (connectingMsg) connectingMsg.remove();
 
-        // --- Routing Logic ---
-        let targetArea = 'internal-comms-area'; // Default target
-        let displayPersona = agentPersona;
-        let displayAgentId = agentId;
-        let displayContent = data.content || data.message || JSON.stringify(data);
+        // --- Routing Logic: Determine Target Area ---
+        let targetAreaId = 'internal-comms-area'; // Default to internal comms
+        let displayType = messageType; // Use original type for class, might adjust later
 
+        if (messageType === 'agent_response' && agentId === 'admin_ai') {
+            // Admin AI responses directed to the user go to the main chat area
+            targetAreaId = 'conversation-area';
+            // We can keep the 'agent_response' class or use a more specific one if needed
+        } else if (messageType === 'user_message') {
+            // If backend ever echoes user messages, route them to chat area
+            // NOTE: Currently, user messages are displayed locally in handleSendMessage
+            targetAreaId = 'conversation-area';
+            displayType = 'user'; // Use 'user' class for styling
+        }
+        // All other types default to internal-comms-area (status, errors, system events,
+        // internal agent responses, tool calls/results if displayed, etc.)
+
+        console.log(`Handler: Routing message to targetAreaId: ${targetAreaId}`);
+
+        // --- Prepare Content for Display ---
+        let displayContent = data.content; // Start with raw content
+        let displayAgentId = agentId;
+        let displayPersonaForUI = agentPersona;
+
+        // Format specific message types for better readability
         switch (messageType) {
             case 'agent_response':
-                if (agentId === 'admin_ai') {
-                    targetArea = 'conversation-area';
-                    // Content might be HTML/XML, pass directly (UI function should handle)
-                    displayContent = data.content;
-                    console.log(`Handler: Routing admin_ai response to ${targetArea}`);
-                } else {
-                    targetArea = 'internal-comms-area';
-                    // Display internal agent responses in the internal comms view
-                    // Escape content from non-admin agents just in case
-                    displayContent = escapeHTML(data.content);
-                    console.log(`Handler: Routing agent ${agentId} response to ${targetArea}`);
-                }
+                 // Content is expected to be HTML/text from the agent.
+                 // No extra formatting needed here, ui.displayMessage handles layout.
+                 // If not admin_ai, it goes to internal comms by default route.
                 break;
-
-            // User messages displayed locally on send, not via WebSocket echo
-
             case 'status':
             case 'system_event':
-            case 'log':
-                 targetArea = 'internal-comms-area';
-                 displayContent = escapeHTML(displayContent);
-                 displayAgentId = agentId || 'system';
-                 console.log(`Handler: Routing ${messageType} to ${targetArea}`);
-                 break;
-
+            case 'log': // Keep log type for now, might receive from older backend parts
+                // These are typically simple strings, escape them
+                displayContent = escapeHTML(data.content || data.message || `Event: ${messageType}`);
+                displayAgentId = agentId || 'system'; // Ensure agentId for display
+                break;
             case 'error':
-                targetArea = 'internal-comms-area';
+                // Format error messages clearly
                 displayContent = `❗ Error: ${escapeHTML(data.content || 'Unknown error')}`;
                 displayAgentId = agentId || 'system';
-                console.log(`Handler: Routing error to ${targetArea}`);
+                displayType = 'error'; // Ensure error class is used
                 break;
-
             case 'agent_status_update':
+                // Handled directly, no message display needed here
                 console.log(`Handler: Handling agent_status_update for ${agentId}`);
                 if (data.status && typeof data.status === 'object') {
                     const statusPayload = { ...data.status };
                     if (!statusPayload.agent_id && agentId) statusPayload.agent_id = agentId;
-                    // Assume backend sends the *full* status object needed by the UI function
                     const singleAgentUpdate = { [agentId]: statusPayload };
-                    ui.updateAgentStatusUI(singleAgentUpdate); // Call UI function
+                    ui.updateAgentStatusUI(singleAgentUpdate);
                 } else {
                     console.warn("Handler: Received agent_status_update without valid status object:", data);
                 }
-                return; // No message display needed for this type
+                return; // Stop processing for this type
 
-             case 'full_status': // Handle receiving the full agent status list
+             case 'full_status':
+                 // Handled directly, no message display needed here
                  console.log("Handler: Handling full_status update");
                  if (data.agents && typeof data.agents === 'object') {
-                     ui.updateAgentStatusUI(data.agents); // Update UI with the complete list
+                     ui.updateAgentStatusUI(data.agents);
                  } else {
                      console.warn("Handler: Received full_status without valid agents object:", data);
                  }
-                 return; // No message display needed
+                 return; // Stop processing for this type
 
-
+            // Handle lifecycle events (agent add/delete, team create/delete, session save/load)
             case 'agent_added':
             case 'agent_deleted':
             case 'team_created':
             case 'team_deleted':
             case 'session_saved':
             case 'session_loaded':
-                 targetArea = 'internal-comms-area';
                  const eventMap = {
                     'agent_added': `Agent Added: ${data.agent_id} (${data.config?.persona || 'N/A'})`,
                     'agent_deleted': `Agent Deleted: ${data.agent_id}`,
                     'team_created': `Team Created: ${data.team_id}`,
                     'team_deleted': `Team Deleted: ${data.team_id}`,
                     'session_saved': `Session Saved: ${data.project}/${data.session}`,
-                    'session_loaded': `Session Loaded: ${data.project}/${data.session}. UI Refreshing...`, // Added refresh note
+                    'session_loaded': `Session Loaded: ${data.project}/${data.session}. UI Refreshing...`,
                  };
                  displayContent = escapeHTML(eventMap[messageType] || data.message || `Event: ${messageType}`);
                  displayAgentId = 'system';
-                 console.log(`Handler: Routing ${messageType} event to ${targetArea}`);
+                 displayType = 'system_event'; // Use a consistent class for system events
+
                  // If session loaded, refresh necessary parts of UI
                  if (messageType === 'session_loaded') {
-                      // Clear conversation area (new session loaded)
-                      if (DOM.conversationArea) DOM.conversationArea.innerHTML = '';
-                      // Request full status to update agent list
-                      ws.sendMessage(JSON.stringify({ type: 'get_full_status' })); // Assume backend handles this
+                      if (DOM.conversationArea) DOM.conversationArea.innerHTML = ''; // Clear chat
+                      ws.sendMessage(JSON.stringify({ type: 'get_full_status' })); // Refresh agent list
                  }
                  break;
 
+            // --- Tool Handling Display (Internal Comms Only) ---
+            // Decide IF and HOW to display tool requests/results.
+            // Often, just seeing the agent's thought process leading to the tool call
+            // and the subsequent result fed back is enough (which are agent_response/tool messages).
+            // Displaying the raw requests/results might be too verbose.
+            // Let's only display errors or explicit feedback related to tools for now.
+
+            // case 'tool_requests':
+            //     // Example: Could display a brief summary if needed
+            //     // displayContent = `Agent ${agentId} requested ${data.calls?.length || 0} tool(s): ${data.calls?.map(c => c.name).join(', ')}`;
+            //     // displayType = 'status';
+            //     // displayAgentId = 'system'; // Or maybe the agent who requested?
+            //     // break; // Commented out - likely too verbose
+
+            // case 'tool_results': // Backend shouldn't really send this, it feeds back to agent
+            //     // Could display if needed for debugging
+            //     // displayContent = `Received tool result for call ${data.call_id}`;
+            //     // displayType = 'status';
+            //     // break; // Commented out
+
+            // --- Default for Unknown Types ---
             default:
                 console.warn(`Handler: Received unknown message type: ${messageType}`, data);
-                targetArea = 'internal-comms-area';
+                targetAreaId = 'internal-comms-area'; // Default to internal comms
                 displayContent = `Unknown msg type '${escapeHTML(messageType)}': ${escapeHTML(JSON.stringify(data))}`;
                 displayAgentId = 'system';
+                displayType = 'status'; // Treat unknown as status? Or error?
         }
 
-        // Display the message in the determined target area
-        if (targetArea && displayContent !== undefined) {
-             console.log(`Handler: Final display call: target=${targetArea}, type=${messageType}, agentId=${displayAgentId}`);
-             ui.displayMessage(displayContent, messageType, targetArea, displayAgentId, displayPersona);
+        // --- Final Display Call ---
+        if (targetAreaId && displayContent !== undefined) {
+             console.log(`Handler: Final display call: target=${targetAreaId}, type=${displayType}, agentId=${displayAgentId}`);
+             // Pass the calculated display parameters to the UI function
+             ui.displayMessage(displayContent, displayType, targetAreaId, displayAgentId, displayPersonaForUI);
         } else {
-             console.error("Handler: Message handling resulted in no targetArea or displayContent", data);
+             console.error("Handler: Message handling resulted in no targetAreaId or displayContent", data);
         }
 
     } catch (error) {
         console.error("Error in handleWebSocketMessage:", error);
+        // Ensure errors in the handler itself are displayed
         ui.displayMessage(`!! JS Error handling WebSocket message: ${escapeHTML(error.message)} !!`, 'error', 'internal-comms-area', 'frontend');
     }
 };
 
-// --- UI Event Handlers ---
+
+// --- UI Event Handlers (Remain Unchanged from previous version) ---
 
 export const handleSendMessage = () => {
     console.log("Handler: Send button clicked or Enter pressed.");
@@ -155,13 +185,13 @@ export const handleSendMessage = () => {
             };
              ws.sendMessage(JSON.stringify(messageData));
              // Display user message *locally* in chat area
-             ui.displayMessage(escapeHTML(message) + `<br><small><i>[Attached: ${escapeHTML(currentAttachedFile.name)}]</i></small>`, 'user', 'conversation-area');
+             ui.displayMessage(escapeHTML(message) + `<br><small><i>[Attached: ${escapeHTML(currentAttachedFile.name)}]</i></small>`, 'user', 'conversation-area', 'human_user'); // Added agentId
              handleClearAttachment(); // Clear file after sending
         } else {
             // Send plain text message
             ws.sendMessage(message);
             // Display user message *locally* in chat area
-            ui.displayMessage(escapeHTML(message), 'user', 'conversation-area');
+            ui.displayMessage(escapeHTML(message), 'user', 'conversation-area', 'human_user'); // Added agentId
         }
         if (DOM.messageInput) {
             DOM.messageInput.value = '';
@@ -240,7 +270,7 @@ export const handleClearAttachment = () => {
     ui.displayFileInfo(null); // Update UI
 };
 
-// --- Config View Handlers ---
+// --- Config View Handlers (Unchanged) ---
 export const handleRefreshConfig = () => {
     console.log("Handler: Refresh config button clicked.");
     configView.loadStaticAgentConfig();
@@ -326,7 +356,7 @@ export const handleDeleteAgentConfig = async (agentId) => {
     }
 };
 
-// --- Session Management Handlers ---
+// --- Session Management Handlers (Unchanged) ---
 export const handleProjectSelectionChange = () => {
     if (DOM.projectSelect) {
         const selectedProject = DOM.projectSelect.value;
