@@ -1,9 +1,9 @@
 <!-- # START OF FILE README.md -->
 # TrippleEffect Multi-Agent Framework
 
-**Version:** 2.22
+**Version:** 2.23 <!-- Updated Version -->
 
-**TrippleEffect** is an asynchronous, collaborative multi-agent framework built with Python, FastAPI, and WebSockets. It features a central **Admin AI** that orchestrates tasks by dynamically creating and managing specialized agents. This framework is predominantly developped by various LLMs guided by Gabby.
+**TrippleEffect** is an asynchronous, collaborative multi-agent framework built with Python, FastAPI, and WebSockets. It features a central **Admin AI** that orchestrates tasks by dynamically creating and managing specialized agents. This framework is predominantly developed by various LLMs guided by Gabby.
 
 ## Quick Start (using scripts)
 
@@ -18,7 +18,7 @@ For a faster setup, you can use the provided shell scripts (ensure they are exec
 
 ## Core Concepts
 
-*   **Admin AI Orchestrator:** The central agent (`admin_ai`) coordinates tasks, manages agent teams, and interacts with the human user. It follows a structured **Planning -> Execution -> Coordination** workflow. It is prompted to use its Knowledge Base tool before planning.
+*   **Admin AI Orchestrator:** The central agent (`admin_ai`) coordinates tasks, manages agent teams, and interacts with the human user. It follows a structured **Planning -> Execution -> Coordination** workflow. It is prompted to perform a **mandatory Knowledge Base search** before planning.
 *   **Dynamic Agent Management:** Create, delete, and manage agents and teams *in memory* via Admin AI tool calls (`ManageTeamTool`). No restarts needed for dynamic changes.
 *   **Intelligent Model Handling:**
     *   **Discovery:** Automatically finds reachable LLM providers (Ollama, OpenRouter, OpenAI) and available models at startup.
@@ -46,12 +46,12 @@ For a faster setup, you can use the provided shell scripts (ensure they are exec
     *   Automatic failover to different models/providers based on tiers (Local -> Free -> Paid).
     *   Key quarantining on persistent auth/rate limit errors.
 *   **Performance Tracking:** Monitors success rate and latency per model, saved to `data/model_performance_metrics.json`.
-*   **Structured Admin AI Workflow:** Mandatory planning phase (`<plan>` tag) before execution. Emphasis on **Knowledge Base search before planning**.
+*   **Structured Admin AI Workflow:** Mandatory planning phase (`<plan>` tag) before execution. Strong emphasis on **Knowledge Base search before planning**.
 *   **XML Tooling:** Agents request tool use via XML format. Available tools:
     *   `FileSystemTool`: Read, Write, List, Mkdir, Delete (File/Empty Dir), Find/Replace in private sandbox or shared workspace.
     *   `GitHubTool`: List Repos, List Files (Recursive), Read File content using PAT.
     *   `ManageTeamTool`: Create/Delete Agents/Teams, Assign Agents, List Agents/Teams, Get Agent Details.
-    *   `SendMessageTool`: Communicate between agents within a team or with Admin AI.
+    *   `SendMessageTool`: Communicate between agents within a team or with Admin AI (using exact agent IDs).
     *   `WebSearchTool`: Search the web (uses Tavily API if configured, falls back to DDG scraping).
     *   `SystemHelpTool`: Get current time (UTC), Search application logs.
     *   `KnowledgeBaseTool`: Save/Search distilled knowledge in the database.
@@ -59,9 +59,11 @@ For a faster setup, you can use the provided shell scripts (ensure they are exec
 *   **Database Backend (SQLite):**
     *   Logs user, agent, tool, and system interactions.
     *   Stores long-term knowledge summaries via `KnowledgeBaseTool`.
-*   **Refined Web UI:**
-    *   Separated view for User <-> Admin AI chat.
-    *   Dedicated view for internal Admin AI <-> Agent communication, tool usage, and system status updates.
+*   **Refined Web UI (Phase 22):**
+    *   Separated view for User <-> Admin AI chat (`Chat` view).
+    *   Dedicated view for internal Admin AI <-> Agent communication, tool usage, and system status updates (`Internal Comms` view).
+    *   Improved message chunk grouping for concurrent streams.
+    *   Increased message history limit in Internal Comms view.
     *   Session management interface.
     *   Static configuration viewer.
 *   **Sandboxing:** Agents operate within dedicated sandbox directories or a shared session workspace.
@@ -76,10 +78,10 @@ graph TD
     %% Layer Definitions
     subgraph UserLayer [Layer 1: User Interface]
         USER[👨‍💻 Human User]
-        subgraph Frontend [🌐 Human UI (Web)]
+        subgraph Frontend [🌐 Human UI (Web) - Refactored P22]
              direction LR
              UI_CHAT["**Chat View** <br> (User <-> Admin)✅"]
-             UI_INTERNAL["**Internal Comms View** <br>(Admin <-> Agents, Tools, Status)✅"] %% NEW/MODIFIED
+             UI_INTERNAL["**Internal Comms View** <br>(Admin <-> Agents, Tools, Status)✅"] %% MODIFIED View Name
              UI_SESSIONS["Session View✅"]
              UI_CONFIG["Config View✅"]
              %% Removed Logs View
@@ -103,13 +105,13 @@ graph TD
 
         subgraph Handlers ["Core Logic Handlers"]
             direction LR
-            CYCLE_HANDLER["🔄 AgentCycleHandler ✅<br>(Investigate Poking Issue)"] %% ANNOTATION
+            CYCLE_HANDLER["🔄 AgentCycleHandler ✅<br>(Agent logic issues noted)"] %% ANNOTATION
             INTERACTION_HANDLER["🤝 InteractionHandler ✅"]
             FAILOVER_HANDLER["💥 FailoverHandler (Func) ✅"]
         end
 
         subgraph CoreAgents ["Core & Dynamic Agents"]
-             ADMIN_AI["🤖 Admin AI Agent <br>+ Planning ✅<br>+ Time Context ✅<br>+ KB Search Emphasis"] %% ANNOTATION
+             ADMIN_AI["🤖 Admin AI Agent <br>+ Planning ✅<br>+ Time Context ✅<br>+ KB Search Emphasis ✅"] %% ANNOTATION
              subgraph DynamicTeam [Dynamic Team Example]
                 direction LR
                  AGENT_DYN_1["🤖 Dynamic Agent 1"]
@@ -205,6 +207,7 @@ graph TD
     %% Federated Layer Connections (Dashed lines for future)
     BackendApp -.->|External API Calls| ExternalInstance;
     ExternalInstance -.->|Callbacks / API Calls| BackendApp;
+
 ```
 
 ## Technology Stack
@@ -278,10 +281,10 @@ graph TD
 
 ## Development Status
 
-*   **Current Version:** 2.22
-*   **Completed Phases:** 1-21 (Core, Dynamic Agents, Failover, Key Mgmt, Proxy, XML Tools, Auto-Selection, Planning Phase, Context Optimization, Tool Enhancements, System Help, **Memory Foundation (DB)**)
-*   **Current Phase (22):** UI Layer Refactor & Workflow Refinements.
-*   **Future Plans:** Governance Layer, Advanced Memory & Learning, Proactive Behavior, Federated Communication, New Admin tools, LiteLLM provider, advanced collaboration, resource limits, DB/Vector Stores.
+*   **Current Version:** 2.23 <!-- Updated Version -->
+*   **Completed Phases:** 1-22 (Core, Dynamic Agents, Failover, Key Mgmt, Proxy, XML Tools, Auto-Selection, Planning Phase, Context Optimization, Tool Enhancements, System Help, Memory Foundation (DB), UI Layer Refactor & KB Prompt Refinement).
+*   **Current Phase (23):** Governance Layer Foundation.
+*   **Future Plans:** Advanced Memory & Learning (incl. fixing agent logic issues), Proactive Behavior, Federated Communication, New Admin tools, LiteLLM provider, advanced collaboration, resource limits, DB/Vector Stores.
 
 See `helperfiles/PROJECT_PLAN.md` for detailed phase information.
 
