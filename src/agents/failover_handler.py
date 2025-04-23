@@ -14,8 +14,13 @@ from src.agents.core import Agent
 
 # Import necessary components from other modules
 from src.llm_providers.base import BaseLLMProvider
+# --- *** NEW: Import settings *** ---
 from src.config.settings import settings, model_registry
-from src.agents.cycle_handler import MAX_FAILOVER_ATTEMPTS
+# --- *** END NEW *** ---
+
+# --- *** REMOVED import of constant from cycle_handler *** ---
+# from src.agents.cycle_handler import MAX_FAILOVER_ATTEMPTS # Now settings.MAX_FAILOVER_ATTEMPTS
+# --- *** END REMOVAL *** ---
 
 # Import PROVIDER_CLASS_MAP from the refactored lifecycle module
 from src.agents.agent_lifecycle import PROVIDER_CLASS_MAP, OllamaProvider # Import map and specific provider
@@ -31,6 +36,7 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
     """
     Handles failover: tries key cycling for relevant errors/providers first,
     then selects the next best model/provider if cycling fails or isn't applicable.
+    Uses MAX_FAILOVER_ATTEMPTS from settings.
 
     Args:
         manager: The AgentManager instance.
@@ -64,7 +70,6 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
 
     if is_remote_provider and is_key_related:
         logger.info(f"Failover Handler: Detected key-related error ({error_type_name}) for remote provider '{original_provider}'. Attempting key cycling.")
-        # Use the key tracker attribute on the agent object
         failed_key_value: Optional[str] = getattr(agent, '_last_api_key_used', None)
 
         if failed_key_value:
@@ -102,9 +107,11 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
 
     # --- 2. Model/Provider Failover ---
     if not key_cycled_successfully:
-        if len(failed_models_this_cycle) >= MAX_FAILOVER_ATTEMPTS:
+        # --- *** Use settings for Max Failover Attempts *** ---
+        if len(failed_models_this_cycle) >= settings.MAX_FAILOVER_ATTEMPTS:
             fail_reason = f"[Failover Limit Reached after {len(failed_models_this_cycle)} models/keys] Last error on {original_model_key}: {error_type_name}"
-            logger.error(f"Agent '{agent_id}': Max failover attempts ({MAX_FAILOVER_ATTEMPTS}) reached. Setting to ERROR.")
+            logger.error(f"Agent '{agent_id}': Max failover attempts ({settings.MAX_FAILOVER_ATTEMPTS}) reached. Setting to ERROR.")
+            # --- *** End Use settings *** ---
             agent.set_status(AGENT_STATUS_ERROR); await manager.send_to_ui({"type": "error", "agent_id": agent_id, "content": fail_reason}) # Uses imported constant
             if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear();
             return
