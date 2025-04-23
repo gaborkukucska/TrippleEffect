@@ -16,53 +16,52 @@ import * as state from './state.js'; // Import state getter/setters
  * @param {string} [agentPersona=null] Optional agent persona.
  */
 export const displayMessage = (text, type, targetAreaId, agentId = null, agentPersona = null) => {
-    console.debug(`UI: Attempting display in #${targetAreaId}. Type: ${type}, Agent: ${agentId}`);
+    console.debug(`UI: Display request in #${targetAreaId}. Type: ${type}, Agent: ${agentId}`);
     try {
         const messageArea = DOM[targetAreaId === 'conversation-area' ? 'conversationArea' : 'internalCommsArea'];
         if (!messageArea) {
             console.error(`UI Error: Target message area #${targetAreaId} not found! Cannot display message.`);
             return;
         }
-        console.debug(`Target area #${targetAreaId} found.`);
+        // console.debug(`Target area #${targetAreaId} found.`); // Less verbose
 
         const placeholder = messageArea.querySelector('.initial-placeholder');
         if (placeholder) {
-            console.debug(`Removing placeholder from #${targetAreaId}`);
             placeholder.remove();
         }
 
-        // --- MODIFIED Logic for grouping response chunks in internal comms ---
-        let shouldAppend = false;
-        let lastMessageElement = messageArea.lastElementChild;
+        let messageToAppendTo = null;
 
-        if (type === 'response_chunk' && targetAreaId === 'internal-comms-area' && lastMessageElement) {
-            // **Crucial Check:** Only append if the VERY LAST element in the area
-            // is a chunk AND belongs to the SAME agent ID.
-            const lastAgentId = lastMessageElement.getAttribute('data-agent-id');
-            const lastTypeIsChunk = lastMessageElement.classList.contains('response_chunk'); // Check if the last element is specifically a chunk type
+        // --- REVISED Logic for grouping response chunks in internal comms ---
+        if (type === 'response_chunk' && targetAreaId === 'internal-comms-area' && agentId) {
+            // Find the last message element specifically from this agent
+            const agentMessages = messageArea.querySelectorAll(`.message[data-agent-id="${agentId}"]`);
+            const lastAgentMessage = agentMessages.length > 0 ? agentMessages[agentMessages.length - 1] : null;
 
-            if (lastAgentId === agentId && lastTypeIsChunk) {
-                 shouldAppend = true;
-                 console.debug(`UI: Will append chunk to last message element for agent ${agentId} in #${targetAreaId}.`);
+            // Check if that last message from this agent was also a response chunk
+            if (lastAgentMessage && lastAgentMessage.classList.contains('response_chunk')) {
+                messageToAppendTo = lastAgentMessage;
+                console.debug(`UI: Will append chunk to last message element for agent ${agentId} in #${targetAreaId}.`);
             } else {
-                 console.debug(`UI: Will create new message element for chunk from agent ${agentId} in #${targetAreaId}. Last element was from ${lastAgentId}, type chunk: ${lastTypeIsChunk}.`);
+                 console.debug(`UI: Will create new message element for chunk from agent ${agentId} in #${targetAreaId}. No suitable prior chunk found.`);
             }
         }
-        // --- End MODIFIED chunk grouping logic ---
+        // --- End REVISED chunk grouping logic ---
 
-        if (shouldAppend && lastMessageElement) {
+        if (messageToAppendTo) {
             // Append content to the existing message element's content span
-            const contentSpan = lastMessageElement.querySelector('.message-content');
+            const contentSpan = messageToAppendTo.querySelector('.message-content');
             if (contentSpan) {
-                // Append text content (assuming 'text' is plain text here)
-                contentSpan.textContent += text; // Append text directly for chunks
-                // console.debug(`UI: Appended chunk content to agent ${agentId} in #${targetAreaId}.`); // Logged above
+                // Append text content
+                contentSpan.textContent += text;
             } else {
-                console.warn("UI: Could not find content span in last message element to append chunk.");
-                shouldAppend = false; // Fallback to creating a new message
+                console.warn("UI: Could not find content span in last message element to append chunk. Creating new message.");
+                messageToAppendTo = null; // Fallback to creating a new message
             }
-        } else {
-            // Create a new message element
+        }
+
+        // If not appending, create a new message element
+        if (!messageToAppendTo) {
              console.debug(`UI: Creating new message element for type ${type} in #${targetAreaId}.`);
              // Determine max messages based on the target area
             const maxMessages = targetAreaId === 'conversation-area' ? config.MAX_CHAT_MESSAGES : config.MAX_COMM_MESSAGES;
@@ -81,13 +80,12 @@ export const displayMessage = (text, type, targetAreaId, agentId = null, agentPe
                 }
                 // --- Apply border styling for internal comms here ---
                 if (targetAreaId === 'internal-comms-area') {
-                    if (agentId === 'admin_ai') { messageElement.style.borderLeft = '4px solid var(--accent-color-1)'; messageElement.style.backgroundColor = '#2a3a4a'; }
-                    else if (agentId.includes('coder')) { messageElement.style.borderLeft = '4px solid var(--accent-color-2)'; messageElement.style.backgroundColor = '#2a4a3a'; }
-                    else if (agentId.includes('analyst')) { messageElement.style.borderLeft = '4px solid var(--accent-color-orange)'; messageElement.style.backgroundColor = '#4a3a2a'; }
-                    else if (agentId.includes('creative') || agentId.includes('reviewer')) { messageElement.style.borderLeft = '4px solid var(--accent-color-green)'; messageElement.style.backgroundColor = '#3a4a2a'; }
-                    else if (agentId === 'default') { messageElement.style.borderLeft = '4px solid var(--text-color-muted)'; }
-                    else if (agentId.includes('unknown_agent')) { messageElement.style.borderLeft = '4px solid var(--text-color-secondary)'; }
-                    // Add more agent type/ID based styling if needed
+                    // Use styles defined in CSS instead of inline styles
+                    messageElement.classList.add(`agent-border-${agentId.split('_')[0] || agentId}`); // Add class like agent-border-admin or agent-border-agent
+                     // Add specific classes for common agent types if needed for backgrounds etc.
+                     if (agentId === 'admin_ai') { messageElement.classList.add('agent-admin'); }
+                     else if (agentId.includes('coder')) { messageElement.classList.add('agent-coder'); }
+                     // Add more as needed
                 }
                 // --- End border styling ---
             }
@@ -117,7 +115,6 @@ export const displayMessage = (text, type, targetAreaId, agentId = null, agentPe
              }
 
             // Append the actual message content
-            // Use textContent for chunks being appended to avoid re-interpreting potential HTML in prior chunks
             const contentSpan = document.createElement('span');
             contentSpan.classList.add('message-content');
             if (type === 'response_chunk') {
@@ -129,7 +126,7 @@ export const displayMessage = (text, type, targetAreaId, agentId = null, agentPe
             messageElement.appendChild(contentSpan); // Append the content span
 
             messageArea.appendChild(messageElement);
-            console.debug(`Message appended to #${targetAreaId}.`);
+            // console.debug(`Message appended to #${targetAreaId}.`); // Less verbose
         }
 
         // Auto-scroll only if the user isn't scrolled up significantly
@@ -234,7 +231,7 @@ export const updateAgentStatusUI = () => {
             statusItem.appendChild(statusBadgeSpan);
             DOM.agentStatusContent.appendChild(statusItem);
         });
-        console.debug("UI: Agent status list updated from cache.");
+        // console.debug("UI: Agent status list updated from cache."); // Less verbose
     } catch (error) {
         console.error("UI Error updating agent status UI:", error);
         if(DOM.agentStatusContent) DOM.agentStatusContent.innerHTML = '<span class="status-placeholder">Error updating agent status.</span>';
