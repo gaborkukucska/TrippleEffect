@@ -19,9 +19,9 @@ from src.agents.constants import (
 )
 # --- END NEW ---
 
-# --- *** NEW: Import settings *** ---
+# --- Import settings ---
 from src.config.settings import settings
-# --- *** END NEW *** ---
+# --- End Import settings ---
 
 # Import tools for type checking/logic if needed
 from src.tools.manage_team import ManageTeamTool
@@ -37,12 +37,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# --- *** REMOVED Hardcoded Constants *** ---
-# MAX_STREAM_RETRIES = 3 # Now settings.MAX_STREAM_RETRIES
-# RETRY_DELAY_SECONDS = 5.0 # Now settings.RETRY_DELAY_SECONDS
-# MAX_FAILOVER_ATTEMPTS = 3 # Now settings.MAX_FAILOVER_ATTEMPTS
-# --- *** END REMOVAL *** ---
-
+# Constants
 HEALTH_REPORT_HISTORY_LOOKBACK = 10 # How many recent messages to check for the report
 
 # Define retryable exceptions
@@ -73,7 +68,7 @@ class AgentCycleHandler:
         self.BOOTSTRAP_AGENT_ID = BOOTSTRAP_AGENT_ID
         logger.info("AgentCycleHandler initialized.")
 
-    # --- System Health Report Helper (Unchanged from last step) ---
+    # --- System Health Report Helper ---
     async def _generate_system_health_report(self, agent: Agent) -> Optional[str]:
         """Generates a concise report based on the agent's recent history."""
         if not agent or not agent.message_history: return None
@@ -104,13 +99,16 @@ class AgentCycleHandler:
                                  if data_dict:
                                       if 'created_agent_id' in data_dict: key_events.append(f"Agent '{data_dict['created_agent_id']}' created.")
                                       elif 'created_team_id' in data_dict: key_events.append(f"Team '{data_dict['created_team_id']}' created.")
+                                      # Add more key events as needed
                          elif success_match and success_match.group(1).lower() == 'false':
                              tool_failure_count += 1; error_summary = content.split('Message: ')[-1]; error_details.append(f"- Feedback ({action_name}): {error_summary[:150]}{'...' if len(error_summary) > 150 else ''}")
                          else: logger.debug(f"Could not parse success status from system_feedback: {content[:100]}"); tool_success_count += 1
                 elif role == 'system_error':
                      tool_failure_count += 1; error_summary = content.split('\n')[0]; error_details.append(f"- System Error: {error_summary[:150]}{'...' if len(error_summary) > 150 else ''}")
 
-            if tool_failure_count == 0 and not key_events: return "[System Health Report - Previous Turn: OK]"
+            if tool_failure_count == 0 and not key_events:
+                return "[System Health Report - Previous Turn: OK]"
+
             report_lines = ["[System Health Report - Previous Turn]"]
             if tool_success_count > 0 or tool_failure_count > 0: report_lines.append(f"- Tool Executions: {tool_success_count} succeeded, {tool_failure_count} failed.")
             if error_details: report_lines.append("- Errors/Warnings:"); report_lines.extend(error_details[:3]);
@@ -128,10 +126,10 @@ class AgentCycleHandler:
         agent_id = agent.agent_id
         current_provider = agent.provider_name
         current_model = agent.model
-        # --- *** Use settings for limits *** ---
+        # --- Use settings for limits ---
         max_retries = settings.MAX_STREAM_RETRIES
         retry_delay = settings.RETRY_DELAY_SECONDS
-        # --- *** End Use settings *** ---
+        # --- End Use settings ---
         logger.info(f"CycleHandler: Starting cycle for Agent '{agent_id}' (Model: {current_provider}/{current_model}, Retry: {retry_count}/{max_retries}).")
 
         agent_generator: Optional[AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]] = None
@@ -158,17 +156,19 @@ class AgentCycleHandler:
         current_db_session_id = self._manager.current_session_db_id
 
         try:
+            # --- Prepare history for LLM call ---
             system_health_report = None
             if agent.agent_id == self.BOOTSTRAP_AGENT_ID:
                 system_health_report = await self._generate_system_health_report(agent)
 
             history_for_call = agent.message_history.copy()
-            if system_health_report:
+
+            if system_health_report: # Append health report if generated
                  health_msg: MessageDict = {"role": "system", "content": system_health_report}
                  history_for_call.append(health_msg)
                  logger.debug(f"Injected system health report for {agent_id}")
 
-            if agent.agent_id == self.BOOTSTRAP_AGENT_ID:
+            if agent.agent_id == self.BOOTSTRAP_AGENT_ID: # Inject Time Context
                  try:
                      current_time_utc = datetime.datetime.now(datetime.timezone.utc)
                      current_time_str = current_time_utc.isoformat(sep=' ', timespec='seconds')
@@ -176,9 +176,12 @@ class AgentCycleHandler:
                      history_for_call.append(time_context_msg)
                      logger.debug(f"Prepared time context for Admin AI call: {current_time_str}")
                  except Exception as time_err: logger.error(f"Failed to create or inject time context for Admin AI: {time_err}", exc_info=True)
+            # --- End History Preparation ---
 
-            agent_generator = agent.process_message(history_for_call)
+            # --- Make LLM Call ---
+            agent_generator = agent.process_message(history_for_call) # Pass potentially modified history
 
+            # --- Proceed with event loop ---
             while True:
                 try:
                     event = await agent_generator.asend(None)
@@ -222,7 +225,7 @@ class AgentCycleHandler:
                     if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="assistant", content=agent_response_content, tool_calls=all_tool_calls)
                     else: logger.warning("Cannot log assistant tool request response to DB: current_session_db_id is None.")
 
-                    # --- Batching Enforcement (Unchanged) ---
+                    # --- Batching Enforcement ---
                     tool_names_in_batch = {call.get("name") for call in all_tool_calls if call.get("name")}
                     if len(tool_names_in_batch) > 1:
                         violation_msg = f"Error: Agent '{agent_id}' attempted to call multiple tool types in one turn ({', '.join(sorted(tool_names_in_batch))}). Only one tool type per response is allowed."
@@ -236,7 +239,7 @@ class AgentCycleHandler:
                         needs_reactivation_after_cycle = True; break
                     # --- End Batching Enforcement ---
 
-                    # Tool validation & execution loop (Unchanged)
+                    # Tool validation & execution loop
                     mgmt_calls = []; other_calls = []; invalid_call_results = []
                     for call in all_tool_calls:
                          cid, tname, targs = call.get("id"), call.get("name"), call.get("arguments", {})
@@ -303,7 +306,7 @@ class AgentCycleHandler:
                         break # Break loop after tool execution
                 else: logger.warning(f"CycleHandler: Unknown event type '{event_type}' from '{agent_id}'.")
 
-        # --- Outer Exception Handling (Unchanged) ---
+        # --- Outer Exception Handling ---
         except Exception as e:
             logger.error(f"CycleHandler: Error during core processing for '{agent_id}': {e}", exc_info=True)
             last_error_obj = e; last_error_content = f"[Manager Error: Unexpected error in cycle handler - {e}]"; is_retryable_error_type = False; is_key_related_error = False; trigger_failover = True; cycle_completed_successfully = False
@@ -334,11 +337,9 @@ class AgentCycleHandler:
                 logger.warning(f"CycleHandler: Agent '{agent_id}' ({current_model_key}) requires failover. Error Type: {type(last_error_obj).__name__ if last_error_obj else 'N/A'}. Triggering failover handler.")
                 asyncio.create_task(self._manager.handle_agent_model_failover(agent_id, last_error_obj))
             elif is_retryable_error_type and retry_count < settings.MAX_STREAM_RETRIES: # Use settings
-                 # --- Use settings for delay ---
                  logger.warning(f"CycleHandler: Transient error for '{agent_id}' on {current_model_key}. Retrying same model/key in {settings.RETRY_DELAY_SECONDS:.1f}s ({retry_count + 1}/{settings.MAX_STREAM_RETRIES})... Last Error: {last_error_content}")
                  await self._manager.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Provider issue... Retrying '{current_model}' (Attempt {retry_count + 2})..."})
-                 await asyncio.sleep(settings.RETRY_DELAY_SECONDS)
-                 # --- End Use settings ---
+                 await asyncio.sleep(settings.RETRY_DELAY_SECONDS) # Use settings
                  agent.set_status(AGENT_STATUS_IDLE); asyncio.create_task(self._manager.schedule_cycle(agent, retry_count + 1))
             elif needs_reactivation_after_cycle:
                  reactivation_reason = "plan approved" if plan_approved_this_cycle else ("tool/feedback processing" if executed_tool_successfully_this_cycle else "batching rule violation/feedback")
