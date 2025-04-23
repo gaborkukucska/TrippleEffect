@@ -56,7 +56,9 @@ logging.info("manager.py: Importing interaction_handler...")
 from src.agents.interaction_handler import AgentInteractionHandler
 logging.info("manager.py: Imported interaction_handler.")
 logging.info("manager.py: Importing cycle_handler...")
-from src.agents.cycle_handler import AgentCycleHandler, MAX_FAILOVER_ATTEMPTS
+# --- *** MODIFIED: Removed import of MAX_FAILOVER_ATTEMPTS *** ---
+from src.agents.cycle_handler import AgentCycleHandler
+# --- *** END MODIFICATION *** ---
 logging.info("manager.py: Imported cycle_handler.")
 logging.info("manager.py: Importing performance_tracker...")
 from src.agents.performance_tracker import ModelPerformanceTracker
@@ -176,8 +178,6 @@ class AgentManager:
                 self.current_session_db_id = found_session_id
                 logger.info(f"DB Context Set (Load): Found existing Session ID {self.current_session_db_id} for {project_name}/{session_name}")
             else:
-                 # Session not found in DB, maybe it was only saved to filesystem?
-                 # Create a new DB session record to log future interactions for this loaded session.
                  logger.warning(f"DB session record not found for loaded session '{project_name}/{session_name}'. Creating new DB session record.")
                  new_session_record = await self.db_manager.start_session(self.current_project_db_id, session_name)
                  if new_session_record and new_session_record.id:
@@ -255,9 +255,7 @@ class AgentManager:
         # Ensure context and log interaction
         if self.current_project is None or self.current_session_db_id is None:
             logger.info("Manager: No active project/DB session context. Setting default...")
-            # Setting context also starts the DB session record
             await self.set_project_session_context(DEFAULT_PROJECT_NAME, f"session_{int(time.time())}")
-            # Save filesystem session immediately after setting context
             save_success, save_msg = await self.session_manager.save_session(self.current_project, self.current_session)
             await self.send_to_ui({"type": "system_event", "event": "session_saved", "project": self.current_project, "session": self.current_session, "message": f"Context set: {self.current_project}/{self.current_session}" if save_success else f"Failed default context: {save_msg}"})
 
@@ -273,7 +271,7 @@ class AgentManager:
 
         admin_agent = self.agents.get(BOOTSTRAP_AGENT_ID);
         if not admin_agent: logger.error(f"Manager: Admin AI ('{BOOTSTRAP_AGENT_ID}') not found."); await self.send_to_ui({"type": "error", "agent_id": "manager", "content": "Admin AI unavailable."}); return
-        if admin_agent.status == AGENT_STATUS_IDLE: # Uses imported constant
+        if admin_agent.status == AGENT_STATUS_IDLE:
             logger.info(f"Manager: Delegating message to '{BOOTSTRAP_AGENT_ID}' and scheduling cycle.")
             admin_agent.message_history.append({"role": "user", "content": message}); await self.schedule_cycle(admin_agent, 0)
         else:
@@ -305,43 +303,24 @@ class AgentManager:
         if not session_name:
             session_name = f"session_{int(time.time())}"
 
-        # 1. Save filesystem state via SessionManager
         fs_success, fs_message = await self.session_manager.save_session(project_name, session_name)
-        if not fs_success:
-             return False, fs_message # Filesystem save failed
-
-        # 2. Set context and update/start DB session record
-        # set_project_session_context handles finding/creating the DB record
+        if not fs_success: return False, fs_message
         await self.set_project_session_context(project_name, session_name, loading=False)
         if not self.current_session_db_id:
              logger.error(f"Failed to update database session record after saving session '{session_name}'.")
              return False, f"{fs_message} but failed to update database session record."
-
         return True, f"{fs_message} Session context and DB record updated."
 
 
     async def load_session(self, project_name: str, session_name: str) -> Tuple[bool, str]:
         logger.info(f"Manager: Initiating load_session for '{project_name}/{session_name}'...")
-
-        # 1. Load filesystem state via SessionManager
-        # This also clears dynamic agents and team state internally
         fs_success, fs_message = await self.session_manager.load_session(project_name, session_name)
-        if not fs_success:
-             return False, fs_message
-
-        # 2. Update the database context (Project and Session IDs)
-        # This call will now attempt to find the existing DB session ID
+        if not fs_success: return False, fs_message
         await self.set_project_session_context(project_name, session_name, loading=True)
-
         if not self.current_session_db_id:
              logger.warning(f"Could not find or create a DB session record for loaded session '{project_name}/{session_name}'. Interaction logging might fail.")
              fs_message += " (Warning: DB session record not found/created)"
-
-        # Send full UI update (already done by SessionManager internally)
-        # status_update_tasks = [self.push_agent_status_update(aid) for aid in self.agents.keys()]
-        # await asyncio.gather(*status_update_tasks)
-
-        return True, fs_message # Return the message from the filesystem load
+        return True, fs_message
 
 
     def get_agent_info_list_sync(self, filter_team_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -355,7 +334,6 @@ class AgentManager:
     # --- Cleanup ---
     async def cleanup_providers(self):
         logger.info("Manager: Cleaning up LLM providers, saving metrics, saving quarantine state, and closing DB...");
-        # End the final DB session
         if self.current_session_db_id is not None:
              logger.info(f"Ending final active DB session ID: {self.current_session_db_id}")
              await self.db_manager.end_session(self.current_session_db_id)
@@ -365,11 +343,8 @@ class AgentManager:
         provider_tasks = [asyncio.create_task(self._close_provider_safe(p)) for p in active_providers if hasattr(p, 'close_session')]
         metrics_save_task = asyncio.create_task(self.performance_tracker.save_metrics())
         quarantine_save_task = asyncio.create_task(self.key_manager.save_quarantine_state())
-        # Close DB connection pool - Moved to main.py lifespan shutdown
-        # db_close_task = asyncio.create_task(close_db_connection())
-
-        all_cleanup_tasks = provider_tasks + [metrics_save_task, quarantine_save_task] # Removed db_close_task
-        if all_cleanup_tasks: await asyncio.gather(*all_cleanup_tasks); logger.info("Manager: Provider cleanup, metrics saving, and quarantine saving complete.") # Removed DB mention
+        all_cleanup_tasks = provider_tasks + [metrics_save_task, quarantine_save_task]
+        if all_cleanup_tasks: await asyncio.gather(*all_cleanup_tasks); logger.info("Manager: Provider cleanup, metrics saving, and quarantine saving complete.")
         else: logger.info("Manager: No provider cleanup or saving needed.")
 
     async def _close_provider_safe(self, provider: BaseLLMProvider):
