@@ -16,7 +16,7 @@ export const INITIAL_RECONNECT_DELAY = 1000; // 1 second
 export const MAX_RECONNECT_DELAY = 30000; // 30 seconds
 
 // Message history limits for UI display
-export const MAX_COMM_MESSAGES = 200; // Max messages in Internal Comms view
-export const MAX_CHAT_MESSAGES = 100; // Max messages in Chat view
+export const MAX_COMM_MESSAGES = 50000; // Max messages in Internal Comms view
+export const MAX_CHAT_MESSAGES = 10000; // Max messages in Chat view
 
 console.log("Frontend config loaded:", { WS_URL, API_BASE_URL });
