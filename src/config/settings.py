@@ -116,15 +116,33 @@ class Settings:
              logger.warning(f"Warning: Invalid MODEL_TIER '{self.MODEL_TIER}'. Defaulting to 'FREE'.")
              self.MODEL_TIER = "FREE"
 
+        # --- *** NEW: Load Retry/Failover Config *** ---
+        try:
+            self.MAX_STREAM_RETRIES: int = int(os.getenv("MAX_STREAM_RETRIES", "3"))
+        except ValueError:
+            logger.warning("Invalid MAX_STREAM_RETRIES in .env, using default 3.")
+            self.MAX_STREAM_RETRIES = 3
+        try:
+            self.RETRY_DELAY_SECONDS: float = float(os.getenv("RETRY_DELAY_SECONDS", "5.0"))
+        except ValueError:
+             logger.warning("Invalid RETRY_DELAY_SECONDS in .env, using default 5.0.")
+             self.RETRY_DELAY_SECONDS = 5.0
+        try:
+            self.MAX_FAILOVER_ATTEMPTS: int = int(os.getenv("MAX_FAILOVER_ATTEMPTS", "3"))
+        except ValueError:
+            logger.warning("Invalid MAX_FAILOVER_ATTEMPTS in .env, using default 3.")
+            self.MAX_FAILOVER_ATTEMPTS = 3
+        logger.info(f"Retry/Failover settings loaded: MaxRetries={self.MAX_STREAM_RETRIES}, Delay={self.RETRY_DELAY_SECONDS}s, MaxFailover={self.MAX_FAILOVER_ATTEMPTS}")
+        # --- *** END NEW *** ---
+
+
         # --- Project/Session Configuration (from .env) ---
         self.PROJECTS_BASE_DIR: Path = Path(os.getenv("PROJECTS_BASE_DIR", str(BASE_DIR / "projects")))
 
         # --- Tool Configuration (from .env) ---
         self.GITHUB_ACCESS_TOKEN: Optional[str] = os.getenv("GITHUB_ACCESS_TOKEN")
-        # --- NEW: Tavily API Key ---
         self.TAVILY_API_KEY: Optional[str] = os.getenv("TAVILY_API_KEY")
         if self.TAVILY_API_KEY: logger.debug("Found TAVILY_API_KEY in environment.")
-        # --- END NEW ---
 
 
         # --- Load Prompts from JSON ---
@@ -248,10 +266,8 @@ class Settings:
         # --- Log Tool Specific Keys ---
         if self.GITHUB_ACCESS_TOKEN: logger.info("✅ GitHub Access Token: Found (for GitHub tool)")
         else: logger.info("ℹ️ INFO: GITHUB_ACCESS_TOKEN not set. GitHub tool may not function fully.")
-        # --- NEW: Tavily Check ---
         if self.TAVILY_API_KEY: logger.info("✅ Tavily API Key: Found (for Web Search tool)")
         else: logger.info("ℹ️ INFO: TAVILY_API_KEY not set. Web Search tool will use scraping fallback.")
-        # --- END NEW ---
         print("-" * 30)
 
 
