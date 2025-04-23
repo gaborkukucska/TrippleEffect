@@ -7,7 +7,8 @@ import * as state from './state.js'; // Import state getter/setters
 
 /**
  * Displays a message in the specified message area (conversation or internal comms).
- * Handles auto-scrolling, message limits, and groups response chunks in internal comms.
+ * Handles auto-scrolling, message limits, and groups response chunks in internal comms
+ * even during concurrent streaming from multiple agents.
  * @param {string} text The message content (can be HTML, should be pre-escaped if needed).
  * @param {string} type Message type class (e.g., 'user', 'agent_response', 'status', 'response_chunk').
  * @param {string} targetAreaId ID of the container ('conversation-area' or 'internal-comms-area').
@@ -30,29 +31,32 @@ export const displayMessage = (text, type, targetAreaId, agentId = null, agentPe
             placeholder.remove();
         }
 
-        // --- Logic for grouping response chunks in internal comms ---
+        // --- MODIFIED Logic for grouping response chunks in internal comms ---
         let shouldAppend = false;
         let lastMessageElement = messageArea.lastElementChild;
 
         if (type === 'response_chunk' && targetAreaId === 'internal-comms-area' && lastMessageElement) {
-            // Check if the last message is also a chunk from the same agent
+            // **Crucial Check:** Only append if the VERY LAST element in the area
+            // is a chunk AND belongs to the SAME agent ID.
             const lastAgentId = lastMessageElement.getAttribute('data-agent-id');
-            const lastTypeIsChunk = lastMessageElement.classList.contains('response_chunk'); // Match the type
+            const lastTypeIsChunk = lastMessageElement.classList.contains('response_chunk'); // Check if the last element is specifically a chunk type
 
             if (lastAgentId === agentId && lastTypeIsChunk) {
                  shouldAppend = true;
+                 console.debug(`UI: Will append chunk to last message element for agent ${agentId} in #${targetAreaId}.`);
+            } else {
+                 console.debug(`UI: Will create new message element for chunk from agent ${agentId} in #${targetAreaId}. Last element was from ${lastAgentId}, type chunk: ${lastTypeIsChunk}.`);
             }
         }
-        // --- End chunk grouping logic ---
+        // --- End MODIFIED chunk grouping logic ---
 
         if (shouldAppend && lastMessageElement) {
             // Append content to the existing message element's content span
             const contentSpan = lastMessageElement.querySelector('.message-content');
             if (contentSpan) {
                 // Append text content (assuming 'text' is plain text here)
-                // Note: If 'text' can contain HTML, ensure it's handled appropriately or pre-escaped
                 contentSpan.textContent += text; // Append text directly for chunks
-                 console.debug(`UI: Appended chunk to last message for agent ${agentId} in #${targetAreaId}.`);
+                // console.debug(`UI: Appended chunk content to agent ${agentId} in #${targetAreaId}.`); // Logged above
             } else {
                 console.warn("UI: Could not find content span in last message element to append chunk.");
                 shouldAppend = false; // Fallback to creating a new message
@@ -75,6 +79,17 @@ export const displayMessage = (text, type, targetAreaId, agentId = null, agentPe
                 if (type === 'agent_response' && targetAreaId === 'conversation-area') {
                     messageElement.classList.add('agent_response');
                 }
+                // --- Apply border styling for internal comms here ---
+                if (targetAreaId === 'internal-comms-area') {
+                    if (agentId === 'admin_ai') { messageElement.style.borderLeft = '4px solid var(--accent-color-1)'; messageElement.style.backgroundColor = '#2a3a4a'; }
+                    else if (agentId.includes('coder')) { messageElement.style.borderLeft = '4px solid var(--accent-color-2)'; messageElement.style.backgroundColor = '#2a4a3a'; }
+                    else if (agentId.includes('analyst')) { messageElement.style.borderLeft = '4px solid var(--accent-color-orange)'; messageElement.style.backgroundColor = '#4a3a2a'; }
+                    else if (agentId.includes('creative') || agentId.includes('reviewer')) { messageElement.style.borderLeft = '4px solid var(--accent-color-green)'; messageElement.style.backgroundColor = '#3a4a2a'; }
+                    else if (agentId === 'default') { messageElement.style.borderLeft = '4px solid var(--text-color-muted)'; }
+                    else if (agentId.includes('unknown_agent')) { messageElement.style.borderLeft = '4px solid var(--text-color-secondary)'; }
+                    // Add more agent type/ID based styling if needed
+                }
+                // --- End border styling ---
             }
 
             const timestampSpan = (targetAreaId === 'internal-comms-area')
@@ -117,8 +132,15 @@ export const displayMessage = (text, type, targetAreaId, agentId = null, agentPe
             console.debug(`Message appended to #${targetAreaId}.`);
         }
 
-        // Auto-scroll
-        messageArea.scrollTop = messageArea.scrollHeight;
+        // Auto-scroll only if the user isn't scrolled up significantly
+        const isScrolledNearBottom = messageArea.scrollHeight - messageArea.scrollTop - messageArea.clientHeight < 150; // Check if near bottom
+        if (isScrolledNearBottom) {
+            messageArea.scrollTop = messageArea.scrollHeight;
+            // console.debug(`Auto-scrolled #${targetAreaId}`);
+        } else {
+            // console.debug(`User scrolled up in #${targetAreaId}, not auto-scrolling.`);
+        }
+
 
     } catch (error) {
         console.error(`UI Error in displayMessage (Target: ${targetAreaId}, Type: ${type}):`, error);
