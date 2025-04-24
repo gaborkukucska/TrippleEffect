@@ -62,7 +62,7 @@ class OllamaProvider(BaseLLMProvider):
         if api_key: logger.warning("OllamaProvider Warning: API key provided but not used.")
         # Timeout config can still be passed via kwargs if needed, applied per request
         self._session_timeout_config = kwargs.pop('timeout', None)
-        self._client_kwargs = kwargs # Store remaining kwargs for session creation
+        # self._client_kwargs = kwargs # REMOVED - Don't store arbitrary kwargs for session creation
         # Remove session instance variable, sessions are created per request now
         # self._session: Optional[aiohttp.ClientSession] = None
         self.streaming_mode = True # Keep streaming default
@@ -100,8 +100,8 @@ class OllamaProvider(BaseLLMProvider):
             base_url=self.base_url,
             timeout=timeout,
             connector=connector,
-            headers=headers,
-            **self._client_kwargs
+            headers=headers
+            # **self._client_kwargs # REMOVED - Do not pass arbitrary kwargs here
         )
         logger.debug(f"OllamaProvider: Created new aiohttp ClientSession for request. Timeout: {timeout}")
         return session
