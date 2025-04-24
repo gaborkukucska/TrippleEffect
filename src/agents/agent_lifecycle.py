@@ -295,6 +295,16 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
                 f"{operational_instructions}" # Now uses the template without static tool descriptions or model list
             )
             logger.info(f"Lifecycle: Assembled final prompt for '{BOOTSTRAP_AGENT_ID}' (using {selection_method} selection: {final_provider}/{final_model}) - Model list excluded.")
+
+            # --- Inject max_tokens for local Admin AI if not already set ---
+            if is_local_provider_selected:
+                if "max_tokens" not in final_agent_config_data and "num_predict" not in final_agent_config_data:
+                    final_agent_config_data["max_tokens"] = settings.ADMIN_AI_LOCAL_MAX_TOKENS
+                    logger.info(f"Lifecycle: Injecting default max_tokens ({settings.ADMIN_AI_LOCAL_MAX_TOKENS}) for local Admin AI.")
+                else:
+                    logger.debug(f"Lifecycle: max_tokens/num_predict already set for local Admin AI, skipping injection.")
+            # --- End max_tokens injection ---
+
         else:
              logger.info(f"Lifecycle: Using system prompt from config for bootstrap agent '{agent_id}'.")
              if "system_prompt" not in final_agent_config_data:

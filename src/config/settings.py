@@ -176,6 +176,13 @@ class Settings:
         self.DEFAULT_SYSTEM_PROMPT: str = self.PROMPTS.get("default_system_prompt", os.getenv("DEFAULT_SYSTEM_PROMPT", "You are a helpful assistant."))
         self.DEFAULT_TEMPERATURE: float = float(os.getenv("DEFAULT_TEMPERATURE", 0.7))
         self.DEFAULT_PERSONA: str = self.PROMPTS.get("default_agent_persona", os.getenv("DEFAULT_PERSONA", "Assistant Agent"))
+        # --- Max Tokens for Local Admin AI ---
+        try:
+            self.ADMIN_AI_LOCAL_MAX_TOKENS: int = int(os.getenv("ADMIN_AI_LOCAL_MAX_TOKENS", "512"))
+            logger.info(f"Loaded ADMIN_AI_LOCAL_MAX_TOKENS: {self.ADMIN_AI_LOCAL_MAX_TOKENS}")
+        except ValueError:
+            logger.warning("Invalid ADMIN_AI_LOCAL_MAX_TOKENS in .env, using default 512.")
+            self.ADMIN_AI_LOCAL_MAX_TOKENS = 512
 
         # --- Load Initial Configurations using ConfigManager ---
         raw_config_data: Dict[str, Any] = {}
