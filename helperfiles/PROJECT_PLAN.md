@@ -143,7 +143,7 @@ graph TD
 
         subgraph Handlers ["Core Logic Handlers"]
             direction LR
-            CYCLE_HANDLER["🔄 AgentCycleHandler ✅<br>(Agent logic issues noted)"] %% ANNOTATION
+            CYCLE_HANDLER["🔄 AgentCycleHandler ✅<br>(Known agent logic issues: looping, placeholder replacement, targeting - See Phase 24)"] %% ANNOTATION
             INTERACTION_HANDLER["🤝 InteractionHandler ✅"]
             FAILOVER_HANDLER["💥 FailoverHandler (Func) ✅"]
         end
@@ -277,4 +277,4 @@ graph TD
 *   **Phase 24:** Advanced Memory & Learning (Feedback Loop, Learned Principles, Address Agent Logic Issues from P22).
 *   **Phase 25:** Proactive Behavior (Scheduling, Goal Management).
 *   **Phase 26:** Federated Communication (Layer 3 - External Admin AI Interaction).
-*   **Phase 27+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, etc.
+*   **Phase 27+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts - Phase 27+), etc.

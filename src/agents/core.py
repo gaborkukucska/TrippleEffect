@@ -36,8 +36,9 @@ logger = logging.getLogger(__name__)
 # Tool Call Patterns (XML only)
 XML_TOOL_CALL_PATTERN = None # Compiled in __init__
 MARKDOWN_FENCE_XML_PATTERN = r"```(?:[a-zA-Z]*\n)?\s*(<({tool_names})>[\s\S]*?</\2>)\s*\n?```" # Compiled in __init__
-# Plan Tag Pattern
+# Plan/Think Tag Patterns
 PLAN_TAG_PATTERN = r"<plan>([\s\S]*?)</plan>" # Pattern to extract plan content
+THINK_TAG_PATTERN = r"<think>([\s\S]*?)</think>" # Pattern to extract think content
 
 class Agent:
     """
@@ -91,6 +92,7 @@ class Agent:
         self.raw_xml_tool_call_pattern = None
         self.markdown_xml_tool_call_pattern = None
         self.plan_pattern = re.compile(PLAN_TAG_PATTERN, re.IGNORECASE | re.DOTALL) # Compile plan pattern
+        self.think_pattern = re.compile(THINK_TAG_PATTERN, re.IGNORECASE | re.DOTALL) # Compile think pattern
         if self.manager and self.manager.tool_executor and self.manager.tool_executor.tools:
             tool_names = list(self.manager.tool_executor.tools.keys())
             if tool_names:
@@ -181,20 +183,30 @@ class Agent:
             logger.debug(f"Agent {self.agent_id}: Provider stream finished processing. Stream had error: {stream_had_error}. Processing final buffer.")
 
             if not stream_had_error:
+                # Check for plan or think tags
+                plan_content = None
+                tag_type = None
                 plan_match = self.plan_pattern.search(self.text_buffer.strip()) if self.plan_pattern else None
-                # --- START MODIFICATION ---
-                if plan_match and self.agent_id == "admin_ai": # Check if it's the admin agent
+                think_match = self.think_pattern.search(self.text_buffer.strip()) if hasattr(self, 'think_pattern') and self.think_pattern else None
+
+                if plan_match:
                     plan_content = plan_match.group(1).strip()
-                    logger.info(f"Agent {self.agent_id}: Detected <plan> tag. Yielding admin_plan_submitted event.")
+                    tag_type = "plan"
+                elif think_match: # Prioritize <plan> if both exist, otherwise use <think>
+                    plan_content = think_match.group(1).strip()
+                    tag_type = "think"
+
+                # --- START MODIFICATION ---
+                if tag_type and self.agent_id == "admin_ai": # Check if it's the admin agent and a plan/think tag was found
+                    logger.info(f"Agent {self.agent_id}: Detected <{tag_type}> tag. Yielding admin_plan_submitted event.")
                     self.set_status(AGENT_STATUS_PLANNING, plan_info=plan_content)
-                    # Store the assistant response containing the plan in the *actual* history
+                    # Store the assistant response containing the plan/think in the *actual* history
                     if complete_assistant_response and (not self.message_history or self.message_history[-1].get("content") != complete_assistant_response or self.message_history[-1].get("role") != "assistant"):
                         self.message_history.append({"role": "assistant", "content": complete_assistant_response})
                     # Yield the NEW event type for the cycle handler
                     yield {"type": "admin_plan_submitted", "plan_content": plan_content, "agent_id": self.agent_id}
                     return # Stop processing here, wait for framework intervention
-                elif plan_match: # Handle plans from non-admin agents (keep original behavior)
-                     plan_content = plan_match.group(1).strip()
+                elif tag_type == "plan": # Handle <plan> tags from non-admin agents (keep original behavior)
                      logger.info(f"Agent {self.agent_id}: Detected <plan> tag (non-admin). Yielding standard plan_generated.")
                      self.set_status(AGENT_STATUS_PLANNING, plan_info=plan_content)
                      if complete_assistant_response and (not self.message_history or self.message_history[-1].get("content") != complete_assistant_response or self.message_history[-1].get("role") != "assistant"):
@@ -203,6 +215,7 @@ class Agent:
                      return
                 # --- END MODIFICATION ---
 
+                # If no plan/think tag was processed, continue to check for tool calls
                 parsed_tool_calls = []
                 if self.manager.tool_executor:
                       parsed_tool_calls = find_and_parse_xml_tool_calls( self.text_buffer, self.manager.tool_executor.tools, self.raw_xml_tool_call_pattern, self.markdown_xml_tool_call_pattern, self.agent_id )

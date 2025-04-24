@@ -14,14 +14,15 @@ logger = logging.getLogger(__name__)
 class FileSystemTool(BaseTool):
     """
     Tool for reading, writing, listing files/directories, creating directories,
-    deleting files/empty directories, and modifying files within an agent's private sandbox
-    OR a shared session workspace. Ensures operations are restricted to the designated scope and path.
+    deleting files/empty directories, and modifying files within different scopes:
+    agent's private sandbox, a shared session workspace, or the main projects directory.
+    Ensures operations are restricted to the designated scope and path.
     """
     name: str = "file_system"
     description: str = ( # Updated description
         "Reads, writes, lists files/directories, creates directories, deletes files or empty directories, "
         "or finds and replaces text within a file. "
-        "Use 'scope' ('private' or 'shared') to specify the workspace. Default: 'private'. "
+        "Use 'scope' ('private', 'shared', or 'projects') to specify the target area. Default: 'private'. "
         "Actions: 'read' (gets content), 'write' (saves content), 'list' (shows directory contents), "
         "'mkdir' (creates a directory), 'delete' (removes file/empty dir), "
         "'find_replace' (replaces text occurrences in a file). "
@@ -31,13 +32,13 @@ class FileSystemTool(BaseTool):
         ToolParameter(
             name="action",
             type="string",
-            description="The operation: 'read', 'write', 'list', 'mkdir', 'delete', 'find_replace'.", # Added mkdir, delete
+            description="The operation: 'read', 'write', 'list', 'mkdir', 'delete', 'find_replace'.",
             required=True,
         ),
         ToolParameter(
             name="scope",
             type="string",
-            description="Workspace scope: 'private' (agent's sandbox) or 'shared' (session workspace). Defaults to 'private'.",
+            description="Target scope: 'private' (agent's sandbox), 'shared' (session workspace), or 'projects' (top-level project list). Defaults to 'private'.",
             required=False, # Default to private
         ),
         ToolParameter(
@@ -94,8 +95,8 @@ class FileSystemTool(BaseTool):
         valid_actions = ["read", "write", "list", "mkdir", "delete", "find_replace"]
         if not action or action not in valid_actions:
             return f"Error: Invalid or missing 'action'. Must be one of: {', '.join(valid_actions)}."
-        if scope not in ["private", "shared"]:
-            return "Error: Invalid 'scope'. Must be 'private' or 'shared'."
+        if scope not in ["private", "shared", "projects"]: # Added 'projects' scope
+            return "Error: Invalid 'scope'. Must be 'private', 'shared', or 'projects'."
 
         # Determine base path
         base_path: Optional[Path] = None
@@ -107,9 +108,15 @@ class FileSystemTool(BaseTool):
             if not project_name or not session_name: return "Error: Cannot use 'shared' scope - project/session context is missing."
             base_path = settings.PROJECTS_BASE_DIR / project_name / session_name / "shared_workspace"; scope_description = f"shared workspace for '{project_name}/{session_name}'"
             try:
-                output_path = base_path / "output"; await asyncio.to_thread(output_path.mkdir, parents=True, exist_ok=True)
-                logger.debug(f"Ensured shared workspace dirs exist: {base_path}, {output_path}")
-            except Exception as e: logger.error(f"Failed to create shared workspace dirs for {scope_description}: {e}", exc_info=True); return f"Error: Could not create shared workspace directory: {e}"
+                # Ensure shared workspace base exists (don't need output subdir here)
+                await asyncio.to_thread(base_path.mkdir, parents=True, exist_ok=True)
+                logger.debug(f"Ensured shared workspace dir exists: {base_path}")
+            except Exception as e: logger.error(f"Failed to create shared workspace dir for {scope_description}: {e}", exc_info=True); return f"Error: Could not create shared workspace directory: {e}"
+        elif scope == "projects": # Handle new 'projects' scope
+            base_path = settings.PROJECTS_BASE_DIR
+            scope_description = "main projects directory"
+            if not base_path.is_dir(): return f"Error: Main projects directory does not exist at {base_path}"
+        # --- End Scope Handling ---
         if base_path is None: return "Error: Internal error determining workspace path."
 
         # Default relative path for list action if not provided
@@ -153,11 +160,12 @@ class FileSystemTool(BaseTool):
         """Returns detailed usage instructions for the FileSystemTool."""
         usage = """**Tool Name:** file_system
 
-**Description:** Performs operations on files and directories within a specified workspace scope ('private' or 'shared'). All paths MUST be relative to the scope root.
+**Description:** Performs operations on files and directories within different scopes. All paths MUST be relative to the scope root.
 
 **Scopes:**
-*   `private`: Agent's own sandbox directory. Use for temporary files or agent-specific data.
-*   `shared`: Session's shared workspace (e.g., `projects/<project>/<session>/shared_workspace/`). Use for collaboration and final outputs. Default is 'private'.
+*   `private`: Agent's own sandbox directory (e.g., `sandboxes/agent_.../`). Use for temporary files or agent-specific data. Default.
+*   `shared`: Current session's shared workspace (e.g., `projects/<project>/<session>/shared_workspace/`). Use for collaboration and final outputs. Requires project/session context.
+*   `projects`: The top-level projects directory (e.g., `projects/`). Use ONLY with the `list` action to see existing project folders.
 
 **Actions & Parameters:**
 
@@ -177,8 +185,9 @@ class FileSystemTool(BaseTool):
     *   `<path>` (string, optional): Relative path to the directory. Defaults to '.' (the scope root) if omitted.
     *   Example (List shared root): `<file_system><action>list</action><scope>shared</scope></file_system>`
     *   Example (List subdir): `<file_system><action>list</action><scope>private</scope><path>temp_files</path></file_system>`
+    *   Example (List projects): `<file_system><action>list</action><scope>projects</scope></file_system>`
 
-4.  **mkdir:** Creates a directory, including parent directories if needed.
+4.  **mkdir:** Creates a directory, including parent directories if needed. (Cannot use `scope='projects'`)
     *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
     *   `<path>` (string, required): Relative path of the directory to create (e.g., `results/images`, `data`).
     *   Example: `<file_system><action>mkdir</action><scope>shared</scope><path>final_report/data_files</path></file_system>`
@@ -189,7 +198,7 @@ class FileSystemTool(BaseTool):
     *   Example (Delete file): `<file_system><action>delete</action><scope>private</scope><path>old_draft.txt</path></file_system>`
     *   Example (Delete empty dir): `<file_system><action>delete</action><scope>shared</scope><path>temp_output</path></file_system>`
 
-6.  **find_replace:** Finds and replaces all occurrences of text within a file.
+6.  **find_replace:** Finds and replaces all occurrences of text within a file. (Cannot use `scope='projects'`)
     *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
     *   `<filename>` (string, required): Relative path to the file to modify.
     *   `<find_text>` (string, required): The exact text string to find.

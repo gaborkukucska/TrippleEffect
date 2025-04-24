@@ -48,6 +48,7 @@ Follow these steps to create a new tool:
         *   `type`: Expected data type (e.g., 'string', 'integer', 'float', 'boolean'). This is mainly for documentation; validation might be basic.
         *   `description`: Clear explanation of the parameter for the LLM.
         *   `required` (bool): Whether the agent *must* provide this parameter (defaults to `True`).
+    *   `usage_example` (str, optional): A string, often using CDATA for clarity if it contains XML, showing the LLM exactly how to format the XML call for this tool. This is crucial for complex tools or when specific formatting is needed.
 
     ```python
     class CalculatorTool(BaseTool):
@@ -76,6 +77,14 @@ Follow these steps to create a new tool:
                 required=True,
             ),
         ]
+        # Optional: Provide a clear example for the LLM
+        usage_example: str = """<![CDATA[
+<calculator>
+  <operation>add</operation>
+  <operand1>5</operand1>
+  <operand2>3</operand2>
+</calculator>
+]]>"""
     ```
 
 5.  **Implement `execute` Method:** Implement the core logic within the `async def execute(...)` method.

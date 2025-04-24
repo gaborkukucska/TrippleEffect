@@ -1,4 +1,4 @@
-<!-- # START OF FILE helperfiles/FUNCTIONS_INDEX.md -->
+<!-- # START OF FILE helperfiles/FUNCTIONS_INDEX_002.md -->
 # Functions Index
 
 This file tracks the core functions/methods defined within the TrippleEffect framework, categorized by component. It helps in understanding the codebase and navigating between different parts.
