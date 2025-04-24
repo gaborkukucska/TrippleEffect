@@ -122,6 +122,43 @@ class WebSearchTool(BaseTool):
             logger.error(f"Unexpected error fetching {url}: {e}", exc_info=True)
             return None
 
+    # --- Detailed Usage Method ---
+    def get_detailed_usage(self) -> str:
+        """Returns detailed usage instructions for the WebSearchTool."""
+        usage = """
+        **Tool Name:** web_search
+
+        **Description:** Performs a web search using the Tavily API (if configured with TAVILY_API_KEY) or falls back to scraping DuckDuckGo. Returns a list of search results including title, URL, and snippet/content.
+
+        **Parameters:**
+
+        *   `<query>` (string, required): The search query.
+        *   `<num_results>` (integer, optional): The maximum number of results to return. Defaults to 3.
+        *   `<search_depth>` (string, optional, Tavily API only): How deep the search should go. Options: 'basic' (default) or 'advanced'. 'advanced' performs more in-depth research but takes longer and uses more credits if applicable.
+
+        **Example (Basic Search):**
+        ```xml
+        <web_search>
+          <query>latest advancements in AI agents</query>
+          <num_results>5</num_results>
+        </web_search>
+        ```
+
+        **Example (Advanced Tavily Search):**
+        ```xml
+        <web_search>
+          <query>detailed comparison of LLM frameworks</query>
+          <num_results>7</num_results>
+          <search_depth>advanced</search_depth>
+        </web_search>
+        ```
+
+        **Important Notes:**
+        *   Requires `TAVILY_API_KEY` in the environment for Tavily search (recommended).
+        *   DuckDuckGo scraping fallback is less reliable and may break if DDG changes its HTML structure.
+        """
+        return usage.strip()
+
     async def _parse_results(self, html_content: str, num_results: int) -> List[Dict[str, str]]:
         """Parses the DuckDuckGo HTML to extract search results."""
         results = []

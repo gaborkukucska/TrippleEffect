@@ -199,7 +199,8 @@ class ToolExecutor:
         tool_name: str,
         tool_args: Dict[str, Any], # Arguments are pre-parsed by Agent Core
         project_name: Optional[str] = None, # Added context
-        session_name: Optional[str] = None  # Added context
+        session_name: Optional[str] = None,  # Added context
+        manager: Optional[Any] = None # Pass manager instance for specific tools like system_help
     ) -> Any:
         """
         Executes the specified tool with the given arguments and context.
@@ -258,15 +259,29 @@ class ToolExecutor:
             kwargs_for_tool.pop('agent_sandbox_path', None)
             kwargs_for_tool.pop('project_name', None)
             kwargs_for_tool.pop('session_name', None)
+            kwargs_for_tool.pop('manager', None) # Ensure manager isn't passed via kwargs
+
+            # Prepare arguments for the tool's execute method
+            execute_args = {
+                "agent_id": agent_id,
+                "agent_sandbox_path": agent_sandbox_path,
+                "project_name": project_name,
+                "session_name": session_name,
+                **kwargs_for_tool # Pass the validated tool-specific args
+            }
+
+            # --- Pass manager specifically to SystemHelpTool ---
+            if tool_name == "system_help":
+                if manager:
+                    execute_args["manager"] = manager
+                else:
+                    logger.error("ToolExecutor: Manager instance not provided, cannot execute 'get_tool_info' in SystemHelpTool.")
+                    return "Error: Internal configuration error - manager instance missing for system_help tool."
+            # --- End SystemHelpTool specific logic ---
 
             # Execute with validated arguments and context
-            result = await tool.execute(
-                agent_id=agent_id,
-                agent_sandbox_path=agent_sandbox_path,
-                project_name=project_name, # Pass context
-                session_name=session_name, # Pass context
-                **kwargs_for_tool # Pass the validated tool-specific args
-            )
+            result = await tool.execute(**execute_args)
+            # Removed duplicated call arguments below
 
             # Handle Result Formatting
             if tool_name == ManageTeamTool.name:

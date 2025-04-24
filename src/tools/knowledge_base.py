@@ -87,10 +87,8 @@ class KnowledgeBaseTool(BaseTool):
         """Executes the knowledge base action."""
         action = kwargs.get("action")
         logger.info(f"Agent {agent_id} requesting KnowledgeBaseTool action '{action}' with params: {kwargs}")
-
         if not action or action not in ["save_knowledge", "search_knowledge"]:
             return "Error: Invalid or missing 'action'. Must be 'save_knowledge' or 'search_knowledge'."
-
         # --- Get DB Session ID (Best effort - Requires Manager modification ideally) ---
         # This is a temporary workaround. Ideally, ToolExecutor would get session_db_id from manager
         # and pass it here explicitly.
@@ -179,3 +177,47 @@ class KnowledgeBaseTool(BaseTool):
         except Exception as e:
             logger.error(f"Unexpected error executing KnowledgeBaseTool (Action: {action}) for agent {agent_id}: {e}", exc_info=True)
             return f"Error executing knowledge base tool ({action}): {type(e).__name__} - {e}"
+
+    # --- Detailed Usage Method ---
+    def get_detailed_usage(self) -> str:
+        """Returns detailed usage instructions for the KnowledgeBaseTool."""
+        usage = """
+        **Tool Name:** knowledge_base
+
+        **Description:** Saves or searches for information in the long-term knowledge base. Useful for remembering past learnings, procedures, or context across sessions.
+
+        **Actions & Parameters:**
+
+        1.  **save_knowledge:** Saves a piece of knowledge.
+            *   `<summary>` (string, required): A concise summary of the information to save.
+            *   `<keywords>` (string, required): Comma-separated keywords relevant to the summary (e.g., 'python,fastapi,deployment,docker').
+            *   `<importance>` (float, optional): A score from 0.1 to 1.0 indicating confidence or importance. Defaults to 0.5.
+            *   Example:
+                ```xml
+                <knowledge_base>
+                  <action>save_knowledge</action>
+                  <summary>Successfully deployed the webapp using Docker on the staging server. Key steps involved updating the Dockerfile and nginx config.</summary>
+                  <keywords>deployment,docker,webapp,staging,nginx</keywords>
+                  <importance>0.9</importance>
+                </knowledge_base>
+                ```
+
+        2.  **search_knowledge:** Searches the knowledge base for relevant items.
+            *   `<query_keywords>` (string, required): Comma-separated keywords to search for (e.g., 'python,data analysis,pandas').
+            *   `<max_results>` (integer, optional): Maximum number of results to return. Defaults to 5.
+            *   `<min_importance>` (float, optional): Only return results with an importance score greater than or equal to this value.
+            *   Example:
+                ```xml
+                <knowledge_base>
+                  <action>search_knowledge</action>
+                  <query_keywords>python,api,error handling</query_keywords>
+                  <max_results>3</max_results>
+                  <min_importance>0.7</min_importance>
+                </knowledge_base>
+                ```
+
+        **Important Notes:**
+        *   Use `save_knowledge` after successful complex tasks or when significant learning occurs.
+        *   Use `search_knowledge` *before* planning complex tasks to leverage past information.
+        """
+        return usage.strip()

@@ -61,3 +61,31 @@ class SendMessageTool(BaseTool):
         # that gets appended to the *sender's* history.
         # The recipient agent receives the actual message content via the AgentManager.
         return f"Message routing to agent '{target_agent_id}' initiated by manager."
+
+    # --- Detailed Usage Method ---
+    def get_detailed_usage(self) -> str:
+        """Returns detailed usage instructions for the SendMessageTool."""
+        usage = """
+        **Tool Name:** send_message
+
+        **Description:** Sends a message to another agent. Used for delegation, asking questions, providing information, or reporting results.
+
+        **Parameters:**
+
+        *   `<target_agent_id>` (string, required): The unique ID of the agent to send the message to.
+            *   **CRITICAL:** Use the exact agent ID (e.g., `agent_17..._abc`, `admin_ai`) obtained from `ManageTeamTool` (`create_agent` feedback or `list_agents`). Using personas might fail if not unique.
+        *   `<message_content>` (string, required): The content of the message to send.
+            *   **IMPORTANT:** For large outputs (code, reports), use the `file_system` tool to write the content to a file first, then use `send_message` to notify the recipient about the file (`filename` and `scope`). Do not include large content directly in the message.
+
+        **Example:**
+        ```xml
+        <send_message>
+          <target_agent_id>agent_coder_123</target_agent_id>
+          <message_content>Please review the code in shared workspace file 'src/utils.py' and provide feedback.</message_content>
+        </send_message>
+        ```
+
+        **Reporting Task Completion:**
+        After completing your assigned task, your **final action** MUST be to use this tool to report completion and results (or file location) back to the agent who assigned the task (usually `admin_ai`). Stop generating output after sending this final message.
+        """
+        return usage.strip()

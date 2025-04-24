@@ -287,14 +287,14 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
             admin_ops_template = settings.PROMPTS.get(prompt_key, f"--- {prompt_key} Instructions Missing ---")
             # --- End prompt selection ---
 
-            operational_instructions = admin_ops_template.replace("{tool_descriptions_xml}", tool_desc)
-            operational_instructions = operational_instructions.replace("{tool_descriptions_json}", "") # Ensure JSON placeholder removed if present
+            # Use the template directly, assuming placeholders are removed from prompts.json
+            operational_instructions = admin_ops_template
+
             final_agent_config_data["system_prompt"] = (
                 f"--- Primary Goal/Persona ---\n{user_defined_prompt}\n\n"
-                f"{operational_instructions}\n\n"
-                f"---\n{formatted_available_models}\n---" # Keep available models list
+                f"{operational_instructions}" # Now uses the template without static tool descriptions or model list
             )
-            logger.info(f"Lifecycle: Assembled final prompt for '{BOOTSTRAP_AGENT_ID}' (using {selection_method} selection: {final_provider}/{final_model})")
+            logger.info(f"Lifecycle: Assembled final prompt for '{BOOTSTRAP_AGENT_ID}' (using {selection_method} selection: {final_provider}/{final_model}) - Model list excluded.")
         else:
              logger.info(f"Lifecycle: Using system prompt from config for bootstrap agent '{agent_id}'.")
              if "system_prompt" not in final_agent_config_data:

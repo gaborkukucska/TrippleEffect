@@ -73,6 +73,40 @@ class GitHubTool(BaseTool):
         else:
             logger.info("GitHubTool initialized with access token.")
 
+    # --- Detailed Usage Method ---
+    def get_detailed_usage(self) -> str:
+        """Returns detailed usage instructions for the GitHubTool."""
+        usage = """
+        **Tool Name:** github_tool
+
+        **Description:** Accesses GitHub repositories using the REST API and a Personal Access Token (PAT) configured in the environment (GITHUB_ACCESS_TOKEN).
+
+        **Actions & Parameters:**
+
+        1.  **list_repos:** Lists repositories.
+            *   `<repo_full_name>` (string, optional): If provided as just a username (e.g., 'octocat'), lists that user's public repositories. If omitted, lists repositories accessible by the authenticated user's token.
+            *   Example (List authenticated user's repos): `<github_tool><action>list_repos</action></github_tool>`
+            *   Example (List public repos of 'octocat'): `<github_tool><action>list_repos</action><repo_full_name>octocat</repo_full_name></github_tool>`
+
+        2.  **list_files:** Lists files and directories within a repository path.
+            *   `<repo_full_name>` (string, required): Full repository name (e.g., 'username/repo-name').
+            *   `<path>` (string, optional): Path to list within the repo. Defaults to the root ('/') if omitted.
+            *   `<branch_or_ref>` (string, optional): Branch, tag, or commit SHA. Defaults to the repo's default branch.
+            *   `<recursive>` (boolean, optional): Set to 'true' to list recursively. Defaults to 'false'.
+            *   Example (List root of main branch): `<github_tool><action>list_files</action><repo_full_name>octocat/Spoon-Knife</repo_full_name></github_tool>`
+            *   Example (List 'src' dir recursively on 'dev' branch): `<github_tool><action>list_files</action><repo_full_name>my_user/my_repo</repo_full_name><path>src</path><branch_or_ref>dev</branch_or_ref><recursive>true</recursive></github_tool>`
+
+        3.  **read_file:** Reads the content of a specific file in a repository.
+            *   `<repo_full_name>` (string, required): Full repository name (e.g., 'username/repo-name').
+            *   `<path>` (string, required): Path to the file within the repo (e.g., 'README.md', 'src/main.py'). Cannot be '/'.
+            *   `<branch_or_ref>` (string, optional): Branch, tag, or commit SHA. Defaults to the repo's default branch.
+            *   Example: `<github_tool><action>read_file</action><repo_full_name>octocat/Spoon-Knife</repo_full_name><path>README.md</path></github_tool>`
+
+        **Important Notes:**
+        *   Requires a `GITHUB_ACCESS_TOKEN` with 'repo' scope set in the environment.
+        *   Subject to GitHub API rate limits.
+        """
+        return usage.strip()
 
     async def _make_github_request(self, method: str, endpoint: str, params: Optional[Dict] = None) -> Optional[Any]:
         """ Helper function to make authenticated requests to the GitHub API. """

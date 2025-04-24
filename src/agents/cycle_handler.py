@@ -193,15 +193,79 @@ class AgentCycleHandler:
                     last_error_obj = gen_err; last_error_content = f"[Manager Error: Unexpected error in generator handler - {gen_err}]"; is_retryable_error_type = False; is_key_related_error = False; trigger_failover = True; break
 
                 event_type = event.get("type")
-                if event_type == "plan_generated":
+                # --- START MODIFICATION ---
+                # Handle the new event type for Admin AI plans
+                if event_type == "admin_plan_submitted":
+                    plan_content = event.get("plan_content", "[No Plan Content]")
+                    agent_id = event.get("agent_id") # Should be admin_ai
+                    logger.info(f"CycleHandler: Received plan submission from agent '{agent_id}'. Parsing for tool requirements.")
+
+                    if current_db_session_id is not None:
+                        await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="assistant_plan", content=plan_content)
+                    else:
+                        logger.warning("Cannot log admin plan to DB: current_session_db_id is None.")
+
+                    # --- Logic to Parse Tool Names ---
+                    required_tools = []
+                    # Example: Simple keyword search (Refine regex/parsing as needed)
+                    match = re.search(r"Tools Required:\s*(.*)", plan_content, re.IGNORECASE)
+                    if match:
+                        tool_names_str = match.group(1).strip()
+                        # Split by comma, strip whitespace, filter empty strings
+                        required_tools = [name.strip() for name in tool_names_str.split(',') if name.strip()]
+                        logger.info(f"CycleHandler: Found required tools in plan: {required_tools}")
+                    else:
+                        logger.warning(f"CycleHandler: Could not find 'Tools Required:' list in the plan from {agent_id}. Cannot provide tool details.")
+                        # Decide handling: Proceed without details, or send an error? For now, proceed.
+
+                    # --- Logic to Get Tool Details ---
+                    tool_details_parts = []
+                    if required_tools and self._manager.tool_executor:
+                        tool_details_parts.append("[Framework Tool Details & Plan Approval]")
+                        for tool_name in required_tools:
+                            tool_instance = self._manager.tool_executor.tools.get(tool_name)
+                            if tool_instance:
+                                try:
+                                    usage = tool_instance.get_detailed_usage()
+                                    tool_details_parts.append(f"\n--- Tool: {tool_name} ---\n{usage}")
+                                except Exception as usage_err:
+                                    logger.error(f"Error getting usage for tool '{tool_name}': {usage_err}")
+                                    tool_details_parts.append(f"\n--- Tool: {tool_name} ---\nError retrieving usage details.")
+                            else:
+                                logger.warning(f"Tool '{tool_name}' requested in plan by {agent_id} not found in ToolExecutor.")
+                                tool_details_parts.append(f"\n--- Tool: {tool_name} ---\nError: Tool not found.")
+                        tool_details_parts.append("\n--- End Tool Details ---")
+                    else:
+                         # If no tools requested or found, just send approval
+                         tool_details_parts.append("[Framework Plan Approval] Plan approved. Proceed with execution.")
+
+
+                    # --- Inject Message Back to Agent ---
+                    details_message_content = "\n".join(tool_details_parts)
+                    details_msg: MessageDict = {"role": "system", "content": details_message_content} # Use 'system' role for framework messages
+                    agent.message_history.append(details_msg)
+                    logger.debug(f"Appended tool details/approval message to history of agent '{agent_id}'.")
+
+                    # Log this framework action
+                    if current_db_session_id is not None:
+                        await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="framework_tool_info", content=details_message_content)
+
+                    plan_approved_this_cycle = True # Mark that the plan phase is done
+                    needs_reactivation_after_cycle = True # Ensure agent runs again
+                    break # Exit the event loop to proceed to final action logic
+
+                # Handle original plan_generated for non-admin agents (optional)
+                elif event_type == "plan_generated":
                      plan_content = event.get("plan_content", "[No Plan Content]")
-                     logger.info(f"CycleHandler: Received plan from agent '{agent_id}'. Auto-approving.")
+                     logger.info(f"CycleHandler: Received plan from non-admin agent '{agent_id}'. Auto-approving (standard behavior).")
                      if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="assistant_plan", content=plan_content)
                      else: logger.warning("Cannot log plan to DB: current_session_db_id is None.")
-                     approval_msg: MessageDict = {"role": "user", "content": "[Framework Approval] Plan approved. Proceed with execution."}
-                     agent.message_history.append(approval_msg)
-                     logger.debug(f"Appended plan approval message to history of agent '{agent_id}'.")
-                     plan_approved_this_cycle = True; break
+                     # Decide if non-admin plans need approval message or just reactivation
+                     # For now, let's assume they just need reactivation like before
+                     plan_approved_this_cycle = True # Treat as approved for reactivation logic
+                     needs_reactivation_after_cycle = True
+                     break
+                # --- END MODIFICATION ---
                 elif event_type in ["response_chunk", "status", "final_response"]:
                     if "agent_id" not in event: event["agent_id"] = agent_id
                     await self._manager.send_to_ui(event)

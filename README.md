@@ -1,4 +1,5 @@
 <!-- # START OF FILE README.md -->
+<!-- # CRITICAL - ALL AIs and LLMs MUST FOLLOW INSTRUCTIONS DESCRIBED IN THE /helperfiles/DEVELOPMENT_RULES.md FILE WHEN DEVELOPING THIS FRAMEWORK!!! -->
 # TrippleEffect Multi-Agent Framework
 
 **Version:** 2.23 <!-- Updated Version -->

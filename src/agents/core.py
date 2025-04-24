@@ -182,15 +182,26 @@ class Agent:
 
             if not stream_had_error:
                 plan_match = self.plan_pattern.search(self.text_buffer.strip()) if self.plan_pattern else None
-                if plan_match:
+                # --- START MODIFICATION ---
+                if plan_match and self.agent_id == "admin_ai": # Check if it's the admin agent
                     plan_content = plan_match.group(1).strip()
-                    logger.info(f"Agent {self.agent_id}: Detected <plan> tag. Yielding plan.")
+                    logger.info(f"Agent {self.agent_id}: Detected <plan> tag. Yielding admin_plan_submitted event.")
                     self.set_status(AGENT_STATUS_PLANNING, plan_info=plan_content)
                     # Store the assistant response containing the plan in the *actual* history
                     if complete_assistant_response and (not self.message_history or self.message_history[-1].get("content") != complete_assistant_response or self.message_history[-1].get("role") != "assistant"):
                         self.message_history.append({"role": "assistant", "content": complete_assistant_response})
-                    yield {"type": "plan_generated", "plan_content": plan_content, "agent_id": self.agent_id}
-                    return
+                    # Yield the NEW event type for the cycle handler
+                    yield {"type": "admin_plan_submitted", "plan_content": plan_content, "agent_id": self.agent_id}
+                    return # Stop processing here, wait for framework intervention
+                elif plan_match: # Handle plans from non-admin agents (keep original behavior)
+                     plan_content = plan_match.group(1).strip()
+                     logger.info(f"Agent {self.agent_id}: Detected <plan> tag (non-admin). Yielding standard plan_generated.")
+                     self.set_status(AGENT_STATUS_PLANNING, plan_info=plan_content)
+                     if complete_assistant_response and (not self.message_history or self.message_history[-1].get("content") != complete_assistant_response or self.message_history[-1].get("role") != "assistant"):
+                         self.message_history.append({"role": "assistant", "content": complete_assistant_response})
+                     yield {"type": "plan_generated", "plan_content": plan_content, "agent_id": self.agent_id} # Original event for non-admin
+                     return
+                # --- END MODIFICATION ---
 
                 parsed_tool_calls = []
                 if self.manager.tool_executor:

@@ -7,6 +7,7 @@ During development please follow these rules.
 *   Write the location and name of every file in its first line like `<!-- # START OF FILE subfolder/file_name.extension -->`.
 *   Follow the user's specified interaction model:
     *   Analyze context fully before suggesting changes.
+    *   Whenever available use the log files to find clues. These files might be very large so first search them for warnings, errors or other specific strings, then use their time stamps to find more relating debug logs.
     *   Provide complete file contents for modification.
     *   Wait for confirmation before proceeding to the next file.
     *   Maintain code consistency.

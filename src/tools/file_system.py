@@ -146,7 +146,7 @@ class FileSystemTool(BaseTool):
             logger.error(f"Unexpected error executing file system tool (Action: {action}, Scope: {scope}) for agent {agent_id}: {e}", exc_info=True)
             return f"Error executing file system tool ({action} in {scope}): {type(e).__name__} - {e}"
 
-         return "Error: Unknown state in file system tool." # Should not be reached
+        return "Error: Unknown state in file system tool." # Should not be reached
 
     # --- Detailed Usage Method ---
     def get_detailed_usage(self) -> str:

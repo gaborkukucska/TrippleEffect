@@ -206,7 +206,16 @@ class AgentInteractionHandler:
         tool_info = {"name": tool_name, "call_id": call_id}; agent.set_status(AGENT_STATUS_EXECUTING_TOOL, tool_info=tool_info); raw_result: Optional[Any] = None; result_content: str = "[Tool Execution Error: Unknown]"
         try:
             logger.debug(f"InteractionHandler: Executing tool '{tool_name}' (ID: {call_id}) for '{agent.agent_id}' with context Project: {project_name}, Session: {session_name}")
-            raw_result = await self._manager.tool_executor.execute_tool( agent.agent_id, agent.sandbox_path, tool_name, tool_args, project_name=project_name, session_name=session_name )
+            # Pass the manager instance to execute_tool
+            raw_result = await self._manager.tool_executor.execute_tool(
+                agent_id=agent.agent_id,
+                agent_sandbox_path=agent.sandbox_path,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                project_name=project_name,
+                session_name=session_name,
+                manager=self._manager # Pass the manager instance
+            )
             logger.debug(f"InteractionHandler: Tool '{tool_name}' completed execution.")
             if tool_name == ManageTeamTool.name: result_content = raw_result.get("message", str(raw_result)) if isinstance(raw_result, dict) else str(raw_result)
             elif isinstance(raw_result, str): result_content = raw_result
