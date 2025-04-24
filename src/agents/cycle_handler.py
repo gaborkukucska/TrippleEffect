@@ -107,7 +107,8 @@ class AgentCycleHandler:
                      tool_failure_count += 1; error_summary = content.split('\n')[0]; error_details.append(f"- System Error: {error_summary[:150]}{'...' if len(error_summary) > 150 else ''}")
 
             if tool_failure_count == 0 and not key_events:
-                return "[System Health Report - Previous Turn: OK]"
+                # Make the "OK" report less ambiguous for the LLM
+                return "[Framework Internal Status: Last turn OK. This is not a user query.]"
 
             report_lines = ["[System Health Report - Previous Turn]"]
             if tool_success_count > 0 or tool_failure_count > 0: report_lines.append(f"- Tool Executions: {tool_success_count} succeeded, {tool_failure_count} failed.")
