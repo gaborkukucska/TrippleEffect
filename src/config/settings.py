@@ -79,6 +79,27 @@ class Settings:
         self.OLLAMA_BASE_URL: Optional[str] = os.getenv("OLLAMA_BASE_URL") # Allow None, discovery will try localhost. Overridden by proxy if enabled.
         self.LITELLM_BASE_URL: Optional[str] = os.getenv("LITELLM_BASE_URL") # Allow None, discovery will try localhost
 
+        # --- Local API Discovery Settings (from .env) ---
+        self.LOCAL_API_SCAN_ENABLED: bool = os.getenv("LOCAL_API_SCAN_ENABLED", "true").lower() == "true"
+        try:
+            ports_str = os.getenv("LOCAL_API_SCAN_PORTS", "11434,8000")
+            self.LOCAL_API_SCAN_PORTS: List[int] = [int(p.strip()) for p in ports_str.split(',') if p.strip()]
+        except ValueError:
+            logger.warning(f"Invalid LOCAL_API_SCAN_PORTS value '{ports_str}'. Using default [11434, 8000].")
+            self.LOCAL_API_SCAN_PORTS = [11434, 8000]
+        try:
+            self.LOCAL_API_SCAN_TIMEOUT: float = float(os.getenv("LOCAL_API_SCAN_TIMEOUT", "0.5"))
+        except ValueError:
+            logger.warning("Invalid LOCAL_API_SCAN_TIMEOUT value. Using default 0.5.")
+            self.LOCAL_API_SCAN_TIMEOUT = 0.5
+        # Default to scanning only localhost for performance.
+        # User can set LOCAL_API_SCAN_SUBNET in .env to:
+        # - "auto": Scan automatically detected local subnets (requires netifaces, can be slow).
+        # - CIDR notation (e.g., "192.168.1.0/24"): Scan a specific subnet.
+        # - Comma-separated IPs (e.g., "192.168.1.100,192.168.1.101"): Scan specific IPs.
+        self.LOCAL_API_SCAN_SUBNET: str = os.getenv("LOCAL_API_SCAN_SUBNET", "127.0.0.1")
+        logger.info(f"Local API Discovery settings: Enabled={self.LOCAL_API_SCAN_ENABLED}, Ports={self.LOCAL_API_SCAN_PORTS}, Timeout={self.LOCAL_API_SCAN_TIMEOUT}s, Subnet/IPs='{self.LOCAL_API_SCAN_SUBNET}'")
+
         # --- Ollama Proxy Settings (from .env) ---
         self.USE_OLLAMA_PROXY: bool = os.getenv("USE_OLLAMA_PROXY", "false").lower() == "true"
         self.OLLAMA_PROXY_PORT: int = int(os.getenv("OLLAMA_PROXY_PORT", "3000"))

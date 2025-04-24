@@ -146,8 +146,61 @@ class FileSystemTool(BaseTool):
             logger.error(f"Unexpected error executing file system tool (Action: {action}, Scope: {scope}) for agent {agent_id}: {e}", exc_info=True)
             return f"Error executing file system tool ({action} in {scope}): {type(e).__name__} - {e}"
 
-        return "Error: Unknown state in file system tool." # Should not be reached
+         return "Error: Unknown state in file system tool." # Should not be reached
 
+    # --- Detailed Usage Method ---
+    def get_detailed_usage(self) -> str:
+        """Returns detailed usage instructions for the FileSystemTool."""
+        usage = """**Tool Name:** file_system
+
+**Description:** Performs operations on files and directories within a specified workspace scope ('private' or 'shared'). All paths MUST be relative to the scope root.
+
+**Scopes:**
+*   `private`: Agent's own sandbox directory. Use for temporary files or agent-specific data.
+*   `shared`: Session's shared workspace (e.g., `projects/<project>/<session>/shared_workspace/`). Use for collaboration and final outputs. Default is 'private'.
+
+**Actions & Parameters:**
+
+1.  **read:** Reads the content of a file.
+    *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+    *   `<filename>` (string, required): Relative path to the file (e.g., `data/input.txt`, `report.md`).
+    *   Example: `<file_system><action>read</action><scope>shared</scope><filename>results/analysis.txt</filename></file_system>`
+
+2.  **write:** Writes content to a file, creating directories if needed. Overwrites existing files.
+    *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+    *   `<filename>` (string, required): Relative path to the file (e.g., `code/script.py`, `output/summary.txt`).
+    *   `<content>` (string, required): The text content to write. **CRITICAL:** For large content (code, reports), use this action instead of putting content in `send_message`.
+    *   Example: `<file_system><action>write</action><scope>shared</scope><filename>drafts/report_v1.md</filename><content># Report Title...</content></file_system>`
+
+3.  **list:** Lists files and directories within a path.
+    *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+    *   `<path>` (string, optional): Relative path to the directory. Defaults to '.' (the scope root) if omitted.
+    *   Example (List shared root): `<file_system><action>list</action><scope>shared</scope></file_system>`
+    *   Example (List subdir): `<file_system><action>list</action><scope>private</scope><path>temp_files</path></file_system>`
+
+4.  **mkdir:** Creates a directory, including parent directories if needed.
+    *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+    *   `<path>` (string, required): Relative path of the directory to create (e.g., `results/images`, `data`).
+    *   Example: `<file_system><action>mkdir</action><scope>shared</scope><path>final_report/data_files</path></file_system>`
+
+5.  **delete:** Deletes a file or an *empty* directory. Use with caution.
+    *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+    *   `<path>` (string, required): Relative path to the file or empty directory to delete.
+    *   Example (Delete file): `<file_system><action>delete</action><scope>private</scope><path>old_draft.txt</path></file_system>`
+    *   Example (Delete empty dir): `<file_system><action>delete</action><scope>shared</scope><path>temp_output</path></file_system>`
+
+6.  **find_replace:** Finds and replaces all occurrences of text within a file.
+    *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+    *   `<filename>` (string, required): Relative path to the file to modify.
+    *   `<find_text>` (string, required): The exact text string to find.
+    *   `<replace_text>` (string, required): The text string to replace occurrences with.
+    *   Example: `<file_system><action>find_replace</action><scope>shared</scope><filename>config.yaml</filename><find_text>old_value</find_text><replace_text>new_value</replace_text></file_system>`
+
+**Important Notes:**
+*   Path Traversal (`../`, `/`) is blocked for security. All paths must be relative within the chosen scope.
+*   Ensure directories exist (using `mkdir`) before writing files into subdirectories if unsure.
+"""
+        return usage.strip()
 
     async def _resolve_and_validate_path(self, base_path: Path, relative_file_path: str, agent_id: str, scope_description: str) -> Path | None:
         """ Resolves the relative path against the base path and validates it. """

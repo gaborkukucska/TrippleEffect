@@ -36,12 +36,16 @@ agents:
         Follow the structured workflow and tool usage protocols provided by the framework.
       temperature: 0.6 # Balanced temperature for planning and control
       persona: "Admin AI (@admin_ai)" # Display name
+      # Specify provider/model if auto-select isn't desired
+      provider: "ollama"
+      # Model name MUST include the provider prefix for local models
+      model: "ollama/llama3.2:3b-instruct-q4_K_M"
 
   # --- Add more bootstrap agents here if needed ---
   # Example:
   # - agent_id: "backup_monitor"
   #   config:
   #     provider: "ollama" # Specify provider/model if auto-select isn't desired
-  #     model: "tinyllama"
+  #     model: "llama3.2:3b-instruct-q4_K_M"
   #     system_prompt: "You periodically check system status."
   #     persona: "Backup Monitor (@monitor)"

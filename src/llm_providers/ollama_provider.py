@@ -131,7 +131,22 @@ class OllamaProvider(BaseLLMProvider):
         raw_options = {"temperature": temperature, **kwargs}
         valid_options = {k: v for k, v in raw_options.items() if k in KNOWN_OLLAMA_OPTIONS and v is not None}
         if max_tokens is not None: valid_options["num_predict"] = max_tokens
-        ignored_options = {k: v for k, v in raw_options.items() if k not in KNOWN_OLLAMA_OPTIONS}
+
+        # --- Add default num_ctx if not provided ---
+        if "num_ctx" not in valid_options and "num_ctx" not in kwargs:
+            valid_options["num_ctx"] = 8192
+            logger.debug("Added default context size 'num_ctx: 8192' to Ollama options.")
+        # --- End add default num_ctx ---
+
+        # --- Add default stop token if not provided ---
+        # Check if 'stop' is already in valid_options or was passed in kwargs but filtered out (e.g., None)
+        if "stop" not in valid_options and "stop" not in kwargs:
+            # Add a common Llama 3 stop token if none specified
+            valid_options["stop"] = ["<|eot_id|>"]
+            logger.debug("Added default stop token '<|eot_id|>' to Ollama options.")
+        # --- End add default stop token ---
+
+        ignored_options = {k: v for k, v in raw_options.items() if k not in KNOWN_OLLAMA_OPTIONS and k != "stop"} # Adjust ignored check
         if ignored_options: logger.warning(f"OllamaProvider ignoring unknown options: {ignored_options}")
 
         payload = { "model": model, "messages": messages, "stream": self.streaming_mode, "options": valid_options } # Pass options under 'options' key
@@ -231,51 +246,82 @@ class OllamaProvider(BaseLLMProvider):
                         while b'\n' in byte_buffer:
                             line_bytes, byte_buffer = byte_buffer.split(b'\n', 1)
                             line = line_bytes.decode('utf-8').strip()
-                            if not line: continue
+                            if not line: 
+                                logger.warning("OllamaProvider: Received empty line from stream.")
+                                continue
                             processed_lines += 1
                             try:
                                 chunk_data = json.loads(line)
+                                logger.debug(f"OllamaProvider: Processing chunk_data: {chunk_data}")
                                 if chunk_data.get("error"):
                                     error_msg = chunk_data["error"]
                                     logger.error(f"Ollama stream error: {error_msg}")
                                     stream_error_obj = ValueError(f"[Ollama Error]: {error_msg}") # Treat as ValueError
                                     yield {"type": "error", "content": f"[Ollama Error]: {error_msg}", "_exception_obj": stream_error_obj}
-                                    stream_error_occurred = True; return # Exit on error
+                                    stream_error_occurred = True
+                                    # Don't return immediately, maybe more data follows? Or maybe we should? Let's try continuing for now.
+                                    # return # Exit on error
 
-                                if content_chunk := chunk_data.get("message", {}).get("content"):
-                                    yield {"type": "response_chunk", "content": content_chunk}
+                                # Check for content even if error occurred? Maybe not.
+                                if not stream_error_occurred:
+                                     if content_chunk := chunk_data.get("message", {}).get("content"):
+                                         logger.debug(f"OllamaProvider: Yielding response_chunk: {content_chunk[:100]}...")
+                                         yield {"type": "response_chunk", "content": content_chunk}
+                                     else:
+                                         logger.warning("OllamaProvider: No content found in chunk_data.")
 
                                 if chunk_data.get("done", False):
                                     total_duration = chunk_data.get("total_duration")
                                     logger.debug(f"Received done=true. Total duration: {total_duration}ns")
                                     if total_duration: yield {"type": "status", "content": f"Ollama turn finished ({total_duration / 1e9:.2f}s)"}
-                                    stream_error_occurred = False; return # Exit cleanly on done
+                                    # Check for done *after* processing potential content in the same chunk
+                                    if chunk_data.get("done", False):
+                                        total_duration = chunk_data.get("total_duration")
+                                        logger.debug(f"Received done=true. Total duration: {total_duration}ns")
+                                        if total_duration: yield {"type": "status", "content": f"Ollama turn finished ({total_duration / 1e9:.2f}s)"}
+                                        stream_error_occurred = False # Reset error if we successfully reach done
+                                        return # Exit cleanly on done
+
                             except json.JSONDecodeError as e:
                                 logger.error(f"JSONDecodeError: {e} - Line: {line[:200]}")
                                 stream_error_obj = ValueError(f"Invalid JSON response: {line[:100]}")
-                                yield {"type": "error", "content": "Invalid JSON response", "_exception_obj": stream_error_obj}
-                                stream_error_occurred = True; return # Exit on error
+                                yield {"type": "error", "content": f"Invalid JSON response: {line[:100]}", "_exception_obj": stream_error_obj}
+                                stream_error_occurred = True
+                                # Continue processing stream? Or break? Let's continue for now.
+                                # break # Exit on error
                             except Exception as e:
                                 logger.error(f"Stream processing error: {str(e)}")
                                 stream_error_obj = e
                                 yield {"type": "error", "content": f"Stream error: {str(e)}", "_exception_obj": e}
-                                stream_error_occurred = True; return # Exit on error
+                                stream_error_occurred = True
+                                # Continue processing stream? Or break? Let's continue for now.
+                                # break # Exit on error
 
-                    logger.debug(f"Finished streaming loop (iter_any). Processed lines: {processed_lines}. Error: {stream_error_occurred}")
+                    logger.debug(f"Finished streaming loop (iter_any). Processed lines: {processed_lines}. Error occurred: {stream_error_occurred}")
+                    # Process final buffer only if no stream error occurred previously
                     if byte_buffer.strip() and not stream_error_occurred:
-                        logger.warning(f"Processing remaining buffer after loop: {byte_buffer[:200]}...")
-                        # Process final buffer... (logic same as before)
-                        line = byte_buffer.decode('utf-8').strip()
-                        try:
-                            chunk_data = json.loads(line)
-                            if chunk_data.get("done", False): logger.debug("Processed final 'done' from remaining buffer.") # Assume success
-                            elif content_chunk := chunk_data.get("message", {}).get("content"): yield {"type": "response_chunk", "content": content_chunk}
-                            else: logger.warning("Final buffer not 'done' or message.")
-                        except Exception as final_e:
-                            logger.error(f"Could not parse final buffer: {final_e}")
-                            stream_error_obj = ValueError(f"Invalid JSON in final buffer: {final_e}")
-                            yield {"type": "error", "content": "Invalid JSON in final buffer", "_exception_obj": stream_error_obj}
-                            stream_error_occurred = True
+                        logger.warning(f"Processing remaining buffer after loop: {byte_buffer.decode('utf-8', errors='ignore')[:200]}...")
+                        line = byte_buffer.decode('utf-8', errors='ignore').strip()
+                        if line: # Ensure line is not empty after decode/strip
+                            try:
+                                chunk_data = json.loads(line)
+                                # Check for content first
+                                if content_chunk := chunk_data.get("message", {}).get("content"):
+                                    logger.debug("Yielding final content chunk from buffer.")
+                                    yield {"type": "response_chunk", "content": content_chunk}
+                                # Then check for done
+                                if chunk_data.get("done", False):
+                                    logger.debug("Processed final 'done' from remaining buffer.")
+                                    total_duration = chunk_data.get("total_duration")
+                                    if total_duration: yield {"type": "status", "content": f"Ollama turn finished ({total_duration / 1e9:.2f}s)"}
+                                else:
+                                    logger.warning("Final buffer chunk did not contain 'done': True.")
+                            except json.JSONDecodeError as final_e:
+                                logger.error(f"Could not parse final buffer as JSON: {final_e}")
+                                # Don't yield error here, just log, as we might have already yielded content
+                            except Exception as final_e:
+                                logger.error(f"Unexpected error processing final buffer: {final_e}")
+                                # Don't yield error here
 
                 else: # Non-Streaming (logic same as before)
                     logger.debug("Processing non-streaming response...")

@@ -52,6 +52,14 @@ class BaseTool(ABC):
         pass
     # --- *** END MODIFIED SIGNATURE *** ---
 
+    @abstractmethod
+    def get_detailed_usage(self) -> str:
+        """
+        Returns a detailed string explaining how to use the tool, including actions,
+        parameters, and examples. This is intended for on-demand requests by LLMs.
+        """
+        pass
+
     def get_schema(self) -> Dict[str, Any]:
         """Returns a dictionary describing the tool's schema (name, description, parameters)."""
         return {

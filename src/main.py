@@ -21,8 +21,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # --- Load Environment Variables ---
 dotenv_path = BASE_DIR / '.env'
-load_dotenv(dotenv_path=dotenv_path)
-print(f"Attempted to load .env file from: {dotenv_path}") # Keep print for immediate feedback
+# Force override of existing environment variables with values from .env
+load_dotenv(dotenv_path=dotenv_path, override=True)
+print(f"Attempted to load .env file from: {dotenv_path} (Override=True)") # Keep print for immediate feedback
 
 # --- Configure Logging ---
 LOG_DIR = BASE_DIR / "logs"
@@ -358,11 +359,21 @@ except Exception as e:
 
 # Configuration for running the app with uvicorn directly
 if __name__ == "__main__":
-    logger.info("Starting Uvicorn server directly...")
+    # Use the log_level_str defined earlier (after initial load_dotenv)
+    # Ensure it's lowercase for uvicorn
+    uvicorn_log_level = log_level_str.lower()
+    # Basic validation just in case log_level_str itself is bad
+    valid_uvicorn_levels = ['critical', 'error', 'warning', 'info', 'debug', 'trace']
+    if uvicorn_log_level not in valid_uvicorn_levels:
+        logger.warning(f"Processed LOG_LEVEL '{log_level_str}' is invalid for Uvicorn. Defaulting Uvicorn log level to 'info'.")
+        # uvicorn_log_level = 'info' # No longer needed
+
+    logger.info(f"Starting Uvicorn server directly (using root logger level: {log_level_str})...")
+    # Remove log_level parameter to let Uvicorn use the already configured root logger
     uvicorn.run(
         "src.main:app",
         host="0.0.0.0",
         port=8000,
-        reload=False, # Keep reload False for stability with background processes/state
-        log_level=log_level_str.lower() # Use configured log level for Uvicorn too
+        reload=False # Keep reload False for stability with background processes/state
+        # log_level parameter removed
     )

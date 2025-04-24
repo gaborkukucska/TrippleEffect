@@ -70,55 +70,69 @@ KNOWN_OLLAMA_OPTIONS = {
 # --- Automatic Model Selection Logic ---
 async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optional[str], Optional[str]]:
     """
-    Selects the best available and usable model based on performance ranking.
+    Selects the best available and usable model based on performance ranking or registry order.
 
     Args:
         manager: The AgentManager instance.
 
     Returns:
-        Tuple[Optional[str], Optional[str]]: (provider_name, model_id) or (None, None)
-        Note: model_id returned *without* prefix for local providers.
+        Tuple[Optional[str], Optional[str]]: (specific_provider_name, model_suffix) or (None, None)
+        Returns the specific provider instance name (e.g., ollama-local-...) and the model suffix.
     """
-    logger.info("Attempting automatic model selection for dynamic agent...")
+    logger.info("Attempting automatic model selection...")
     ranked_models = manager.performance_tracker.get_ranked_models(min_calls=0)
+    available_dict = model_registry.get_available_models_dict()
 
-    if not ranked_models:
-        logger.warning("Automatic selection failed: No performance data available. Falling back to registry order.")
-        available_dict = model_registry.get_available_models_dict()
-        provider_order = ["ollama", "litellm", "openrouter", "openai"]
-        for provider in provider_order:
-            if provider in available_dict and settings.is_provider_configured(provider):
-                 if provider not in ["ollama", "litellm"] and await manager.key_manager.is_provider_depleted(provider):
-                     logger.debug(f"Fallback selection skipping {provider}: depleted keys.")
-                     continue
-                 models = available_dict[provider]
-                 if models:
-                     model_id = models[0].get("id")
-                     if model_id:
-                         full_model_id = f"{provider}/{model_id}" if provider in ["ollama", "litellm"] else model_id
-                         logger.info(f"Automatic selection (fallback): Selected first available '{full_model_id}'")
-                         return provider, model_id # Return model_id *without* prefix
-        logger.error("Automatic selection failed: No available models found in registry fallback.")
-        return None, None
-
-    logger.debug(f"Ranking based selection: {len(ranked_models)} models ranked. Checking availability and keys...")
-    for provider, model_id, score, _ in ranked_models:
-        if not settings.is_provider_configured(provider):
-            logger.debug(f"Auto-select skipping {provider}/{model_id} (score {score}): Provider not configured.")
-            continue
-        if not model_registry.is_model_available(provider, model_id):
-            logger.debug(f"Auto-select skipping {provider}/{model_id} (score {score}): Model no longer available in registry.")
-            continue
-        if provider not in ["ollama", "litellm"]:
-             if await manager.key_manager.is_provider_depleted(provider):
-                 logger.debug(f"Auto-select skipping {provider}/{model_id} (score {score}): Provider keys depleted.")
+    # Try ranked models first
+    if ranked_models:
+        logger.debug(f"Ranking based selection: {len(ranked_models)} models ranked. Checking availability and keys...")
+        for provider_base, model_suffix, score, _ in ranked_models: # provider_base is 'ollama', 'openrouter' etc.
+            # Find a specific reachable instance for this base provider type
+            specific_provider_instance = None
+            # Look for dynamic local, proxy, or the base name itself if remote/configured directly
+            matching_providers = [p for p in model_registry._reachable_providers if p.startswith(f"{provider_base}-local-") or p == f"{provider_base}-proxy" or p == provider_base]
+            if not matching_providers:
+                 logger.debug(f"Auto-select skipping {provider_base}/{model_suffix} (score {score}): No reachable instance found for base provider.")
                  continue
+            specific_provider_instance = matching_providers[0] # Take the first reachable one
 
-        full_model_id = f"{provider}/{model_id}" if provider in ["ollama", "litellm"] else model_id
-        logger.info(f"Automatic selection successful: Selected {full_model_id} (Score: {score})")
-        return provider, model_id # Return model_id *without* prefix
+            # Check if the model suffix is available on that specific instance
+            if not model_registry.is_model_available(specific_provider_instance, model_suffix):
+                logger.debug(f"Auto-select skipping {provider_base}/{model_suffix} (score {score}): Model not available on reachable instance '{specific_provider_instance}'.")
+                continue
 
-    logger.error("Automatic selection failed: No ranked models passed availability/key checks.")
+            # Check key depletion for remote providers (using base name)
+            if provider_base not in ["ollama", "litellm"]:
+                 if await manager.key_manager.is_provider_depleted(provider_base):
+                     logger.debug(f"Auto-select skipping {provider_base}/{model_suffix} (score {score}): Provider keys depleted.")
+                     continue
+
+            logger.info(f"Automatic selection successful (Ranked): Selected {specific_provider_instance}/{model_suffix} (Score: {score})")
+            return specific_provider_instance, model_suffix
+        logger.warning("Automatic selection: No ranked models passed availability/key checks. Falling back to registry order.")
+
+    # Fallback to registry order if ranking fails or no ranked models
+    provider_order = ["ollama", "litellm", "openrouter", "openai"] # Prioritize local base types
+    for provider_base in provider_order:
+        # Find reachable instances of this base type
+        matching_providers = sorted([p for p in available_dict if p.startswith(f"{provider_base}-local-") or p == f"{provider_base}-proxy" or p == provider_base])
+        if not matching_providers: continue # Skip if no instance of this type is reachable
+
+        # Check key depletion for remote base type
+        if provider_base not in ["ollama", "litellm"] and await manager.key_manager.is_provider_depleted(provider_base):
+            logger.debug(f"Fallback selection skipping base provider {provider_base}: depleted keys.")
+            continue
+
+        # Try models from the first reachable instance of this type
+        first_reachable_instance = matching_providers[0]
+        models = available_dict.get(first_reachable_instance, [])
+        if models:
+            model_id_suffix = models[0].get("id") # Get first model's suffix
+            if model_id_suffix:
+                logger.info(f"Automatic selection (Fallback): Selected first available '{first_reachable_instance}/{model_id_suffix}'")
+                return first_reachable_instance, model_id_suffix # Return specific instance and suffix
+
+    logger.error("Automatic selection failed: No available models found in registry fallback.")
     return None, None
 # --- END Automatic Model Selection Logic ---
 
@@ -141,7 +155,6 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
     tasks = []
     formatted_available_models = model_registry.get_formatted_available_models()
     logger.debug("Lifecycle: Retrieved formatted available models for Admin AI prompt.")
-    all_available_models_flat: List[str] = model_registry.get_available_models_list()
 
     for agent_conf_entry in agent_configs_list:
         agent_id = agent_conf_entry.get("agent_id")
@@ -152,87 +165,134 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
         agent_config_data = agent_conf_entry.get("config", {})
         final_agent_config_data = agent_config_data.copy()
         selection_method = "config.yaml" # Assume config first
+        final_provider_for_creation = None # Store the specific provider instance name
 
-        # --- Admin AI Auto-Selection Logic (Modified to handle automatic selection result format) ---
+        # --- Admin AI Model/Provider Determination ---
         if agent_id == BOOTSTRAP_AGENT_ID:
             logger.info(f"Lifecycle: Processing Admin AI ({BOOTSTRAP_AGENT_ID}) configuration...")
-            config_provider = final_agent_config_data.get("provider")
-            config_model = final_agent_config_data.get("model")
+            config_provider = final_agent_config_data.get("provider") # Base name like 'ollama'
+            config_model = final_agent_config_data.get("model") # Canonical name like 'ollama/model...'
             use_config_value = False
 
             if config_provider and config_model:
-                logger.info(f"Lifecycle: Admin AI defined in config.yaml: {config_provider}/{config_model}")
-                if not settings.is_provider_configured(config_provider):
-                    logger.warning(f"Lifecycle: Provider '{config_provider}' specified for Admin AI in config is not configured in .env. Ignoring.")
+                logger.info(f"Lifecycle: Admin AI defined in config.yaml: Provider='{config_provider}', Model='{config_model}'")
+                # Check if base provider type is configured in .env
+                provider_configured = settings.is_provider_configured(config_provider)
+                if not provider_configured:
+                    logger.warning(f"Lifecycle: Base provider '{config_provider}' specified for Admin AI is not configured in .env. Ignoring config.")
                 else:
-                    # Refined validation: check format and availability
+                    # Validate format and get model suffix
                     is_local_provider_cfg = config_provider in ["ollama", "litellm"]
-                    model_id_check = config_model # Assume remote format initially
+                    model_id_suffix = None
+                    format_valid = True
+
                     if is_local_provider_cfg:
-                         if config_model.startswith(f"{config_provider}/"):
-                              model_id_check = config_model[len(config_provider)+1:] # Get suffix for check
-                         else:
-                              logger.warning(f"Lifecycle: Admin AI model '{config_model}' in config.yaml must start with '{config_provider}/'. Ignoring.")
-                              model_id_check = None # Mark as invalid
-                    elif '/' in config_model:
-                         # Non-local models can contain '/', check if it's a *local provider* prefix
-                         if config_model.startswith("ollama/") or config_model.startswith("litellm/"):
-                              logger.warning(f"Lifecycle: Admin AI model '{config_model}' in config.yaml starts with local prefix, but provider is '{config_provider}'. Ignoring.")
-                              model_id_check = None # Mark as invalid
-                         else:
-                              # Assume valid non-local format (e.g., google/gemma...)
-                              model_id_check = config_model
+                        if config_model.startswith(f"{config_provider}/"):
+                            model_id_suffix = config_model[len(config_provider)+1:]
+                        else:
+                            logger.warning(f"Lifecycle: Admin AI model '{config_model}' in config.yaml must start with '{config_provider}/'. Ignoring config.")
+                            format_valid = False
+                    elif config_model.startswith("ollama/") or config_model.startswith("litellm/"):
+                         logger.warning(f"Lifecycle: Admin AI model '{config_model}' in config.yaml starts with local prefix, but provider is '{config_provider}'. Ignoring config.")
+                         format_valid = False
+                    else: # Remote provider
+                         model_id_suffix = config_model # Use full name for check
 
-                    if model_id_check is None: pass # Skip availability check if format was invalid
-                    elif not model_registry.is_model_available(config_provider, model_id_check):
-                         logger.warning(f"Lifecycle: Model '{config_model}' specified for Admin AI in config is not available via registry. Ignoring.")
-                    else:
-                         # Config value is valid and available
-                         logger.info(f"Lifecycle: Using Admin AI provider/model specified in config.yaml: {config_provider}/{config_model}")
-                         use_config_value = True
+                    # Check availability if format was valid
+                    if format_valid and model_id_suffix is not None:
+                        found_on_specific_provider = None
+                        if is_local_provider_cfg:
+                            # Search discovered local providers for this model suffix
+                            matching_providers = [p for p in model_registry.get_available_models_dict() if p.startswith(f"{config_provider}-local-") or p == f"{config_provider}-proxy"]
+                            for specific_provider_name in matching_providers:
+                                if model_registry.is_model_available(specific_provider_name, model_id_suffix):
+                                    found_on_specific_provider = specific_provider_name
+                                    break # Found it
+                            if not found_on_specific_provider:
+                                logger.warning(f"Lifecycle: Model suffix '{model_id_suffix}' (from '{config_model}') not found under any discovered '{config_provider}-local-*' or '{config_provider}-proxy' providers. Ignoring config.")
+                            else:
+                                logger.info(f"Lifecycle: Using Admin AI model '{model_id_suffix}' from config on discovered provider '{found_on_specific_provider}'.")
+                                final_provider_for_creation = found_on_specific_provider
+                                use_config_value = True
+                        else: # Remote provider check
+                            if not model_registry.is_model_available(config_provider, model_id_suffix):
+                                 logger.warning(f"Lifecycle: Model '{model_id_suffix}' (from '{config_model}') specified for Admin AI in config is not available via registry for provider '{config_provider}'. Ignoring config.")
+                            else:
+                                 logger.info(f"Lifecycle: Using Admin AI provider/model specified in config.yaml: {config_provider}/{config_model}")
+                                 final_provider_for_creation = config_provider
+                                 use_config_value = True
 
+            # Fallback to automatic selection if config wasn't valid, specified, or available
             if not use_config_value:
-                logger.info("Lifecycle: Admin AI provider/model not specified or invalid in config.yaml. Attempting automatic selection...")
-                selected_admin_provider, selected_admin_model_suffix = await _select_best_available_model(manager)
+                logger.info("Lifecycle: Admin AI provider/model not specified or invalid/unavailable in config.yaml. Attempting automatic selection...")
+                selected_provider, selected_model_suffix = await _select_best_available_model(manager) # Returns specific instance name for local
                 selection_method = "automatic"
 
-                if not selected_admin_model_suffix or not selected_admin_provider:
+                if not selected_model_suffix or not selected_provider:
                     logger.error("Lifecycle: Could not automatically select any available/configured/non-depleted model for Admin AI! Check .env configurations and model discovery logs.")
                     continue # Skip creating Admin AI
 
-                # Store the canonical model ID in the config (with prefix for local)
-                if selected_admin_provider in ["ollama", "litellm"]:
-                    final_agent_config_data["model"] = f"{selected_admin_provider}/{selected_admin_model_suffix}"
+                final_provider_for_creation = selected_provider
+                # Determine canonical model ID for storage/logging
+                base_provider_type = selected_provider.split('-local-')[0].split('-proxy')[0]
+                if base_provider_type in ["ollama", "litellm"]:
+                    final_agent_config_data["model"] = f"{base_provider_type}/{selected_model_suffix}"
                 else:
-                    final_agent_config_data["model"] = selected_admin_model_suffix
-                final_agent_config_data["provider"] = selected_admin_provider
-        # --- End Admin AI Auto-Selection Logic ---
+                    final_agent_config_data["model"] = selected_model_suffix
+                final_agent_config_data["provider"] = final_provider_for_creation # Store the specific provider name used
+            else:
+                 # If using config value, ensure final_provider_for_creation is set
+                 if not final_provider_for_creation: final_provider_for_creation = config_provider
+                 # Ensure the final config reflects the provider being used
+                 final_agent_config_data["provider"] = final_provider_for_creation
+                 final_agent_config_data["model"] = config_model # Keep original canonical name
 
         # --- Final Provider/Model Checks ---
-        final_provider = final_agent_config_data.get("provider")
-        final_model = final_agent_config_data.get("model")
+        final_provider = final_provider_for_creation # Use the determined specific provider name
+        final_model = final_agent_config_data.get("model") # Canonical name like 'ollama/...' or 'openai/...'
         if not final_provider or not final_model:
-            logger.error(f"Lifecycle: Cannot initialize '{agent_id}': Final provider or model is missing after selection. Skipping.")
+            logger.error(f"Lifecycle: Cannot initialize '{agent_id}': Final provider or model is missing after selection/validation. Skipping.")
             continue
-        if not settings.is_provider_configured(final_provider):
-            logger.error(f"Lifecycle: Cannot initialize '{agent_id}': Final provider '{final_provider}' is not configured in .env. Skipping.")
-            continue
-        if final_provider not in ["ollama", "litellm"] and await manager.key_manager.is_provider_depleted(final_provider):
-            logger.error(f"Lifecycle: Cannot initialize '{agent_id}': All keys for selected provider '{final_provider}' are quarantined. Skipping.")
-            continue
+
+        # Check if the selected provider is actually reachable
+        if final_provider not in model_registry._reachable_providers:
+             logger.error(f"Lifecycle: Cannot initialize '{agent_id}': Final provider '{final_provider}' is not in the list of reachable providers found during discovery. Skipping.")
+             continue
+
+        # Check key depletion only for remote providers, using the base name
+        base_provider_name = final_provider.split('-local-')[0].split('-proxy')[0]
+        if base_provider_name not in ["ollama", "litellm"]:
+             if await manager.key_manager.is_provider_depleted(base_provider_name):
+                  logger.error(f"Lifecycle: Cannot initialize '{agent_id}': All keys for selected provider '{base_provider_name}' (base for '{final_provider}') are quarantined. Skipping.")
+                  continue
         # --- End Final Provider Checks ---
 
         # Inject Admin AI operational instructions or standard ones
         if agent_id == BOOTSTRAP_AGENT_ID:
             user_defined_prompt = agent_config_data.get("system_prompt", "")
-            admin_ops_template = settings.PROMPTS.get("admin_ai_operational_instructions", "--- Admin Ops Instructions Missing ---")
             tool_desc = manager.tool_descriptions_xml
+
+            # --- Select prompt based on provider type ---
+            is_local_provider_selected = final_provider.startswith("ollama-local-") or \
+                                         final_provider.startswith("litellm-local-") or \
+                                         final_provider.endswith("-proxy") # Consider proxy local too
+
+            if is_local_provider_selected:
+                prompt_key = "admin_ai_operational_instructions_local"
+                logger.info(f"Lifecycle: Using LOCAL prompt template '{prompt_key}' for Admin AI on provider '{final_provider}'.")
+            else:
+                prompt_key = "admin_ai_operational_instructions"
+                logger.info(f"Lifecycle: Using STANDARD prompt template '{prompt_key}' for Admin AI on provider '{final_provider}'.")
+
+            admin_ops_template = settings.PROMPTS.get(prompt_key, f"--- {prompt_key} Instructions Missing ---")
+            # --- End prompt selection ---
+
             operational_instructions = admin_ops_template.replace("{tool_descriptions_xml}", tool_desc)
-            operational_instructions = operational_instructions.replace("{tool_descriptions_json}", "")
+            operational_instructions = operational_instructions.replace("{tool_descriptions_json}", "") # Ensure JSON placeholder removed if present
             final_agent_config_data["system_prompt"] = (
                 f"--- Primary Goal/Persona ---\n{user_defined_prompt}\n\n"
                 f"{operational_instructions}\n\n"
-                f"---\n{formatted_available_models}\n---"
+                f"---\n{formatted_available_models}\n---" # Keep available models list
             )
             logger.info(f"Lifecycle: Assembled final prompt for '{BOOTSTRAP_AGENT_ID}' (using {selection_method} selection: {final_provider}/{final_model})")
         else:
@@ -244,7 +304,7 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
         tasks.append(_create_agent_internal(
             manager,
             agent_id_requested=agent_id,
-            agent_config_data=final_agent_config_data,
+            agent_config_data=final_agent_config_data, # Pass potentially modified config
             is_bootstrap=True
             ))
 
@@ -295,53 +355,76 @@ async def _create_agent_internal(
     logger.debug(f"Lifecycle: Creating agent '{agent_id}' (Bootstrap: {is_bootstrap}, SessionLoad: {loading_from_session}, Team: {team_id})")
 
     # --- Model/Provider Handling ---
-    provider_name = agent_config_data.get("provider")
-    model_id_canonical = agent_config_data.get("model") # This might have prefix for local
+    provider_name = agent_config_data.get("provider") # This might be specific like 'ollama-local-...' if set by bootstrap init
+    model_id_canonical = agent_config_data.get("model") # This should be canonical like 'ollama/...'
     persona = agent_config_data.get("persona")
-    selection_source = "specified"
+    selection_source = "specified" if not is_bootstrap else agent_config_data.get("_selection_method", "specified") # Track source if bootstrap
 
     if not persona:
          msg = f"Lifecycle Error: Missing persona for agent '{agent_id}'."
          logger.error(msg); return False, msg, None
 
+    # Auto-selection only for non-bootstrap agents if needed
     if not provider_name or not model_id_canonical:
         if is_bootstrap:
-             msg = f"Lifecycle Error: Bootstrap agent '{agent_id}' must have provider and model defined before _create_agent_internal."
+             # This case should ideally not be reached due to checks in initialize_bootstrap_agents
+             msg = f"Lifecycle Error: Bootstrap agent '{agent_id}' reached _create_agent_internal without provider/model."
              logger.critical(msg); return False, msg, None
         logger.info(f"Lifecycle: Provider or model not specified for dynamic agent '{agent_id}'. Attempting automatic selection...")
         selected_provider, selected_model_suffix = await _select_best_available_model(manager); selection_source = "automatic"
         if not selected_provider or not selected_model_suffix:
             msg = f"Lifecycle Error: Automatic model selection failed for agent '{agent_id}'. No suitable model found."
             logger.error(msg); return False, msg, None
-        provider_name = selected_provider
-        if provider_name in ["ollama", "litellm"]: model_id_canonical = f"{provider_name}/{selected_model_suffix}"
-        else: model_id_canonical = selected_model_suffix
-        agent_config_data["provider"] = provider_name; agent_config_data["model"] = model_id_canonical
-        logger.info(f"Lifecycle: Automatically selected {model_id_canonical} for agent '{agent_id}'.")
+        provider_name = selected_provider # This is the specific instance name (e.g., ollama-local-...)
+        # Construct canonical ID carefully, avoid double prefix
+        base_provider_type = provider_name.split('-local-')[0].split('-proxy')[0]
+        if base_provider_type in ["ollama", "litellm"]:
+             if selected_model_suffix.startswith(f"{base_provider_type}/"):
+                  model_id_canonical = selected_model_suffix
+                  logger.warning(f"Auto-selected model suffix '{selected_model_suffix}' unexpectedly contained prefix for provider '{provider_name}'. Using suffix directly.")
+             else:
+                  model_id_canonical = f"{base_provider_type}/{selected_model_suffix}" # Add prefix
+        else: # Remote provider
+             model_id_canonical = selected_model_suffix # Use suffix directly
+        # Update config data passed to this function
+        agent_config_data["provider"] = provider_name
+        agent_config_data["model"] = model_id_canonical
+        logger.info(f"Lifecycle: Automatically selected {model_id_canonical} (Provider: {provider_name}) for agent '{agent_id}'.")
     # --- End Model/Provider Handling ---
 
 
     # --- Provider/Model Validation ---
     if not provider_name or not model_id_canonical:
          msg = f"Lifecycle Error: Missing final provider or model for agent '{agent_id}'."; logger.error(msg); return False, msg, None
-    if not settings.is_provider_configured(provider_name):
-        msg = f"Lifecycle: Provider '{provider_name}' ({selection_source}) not configured in .env settings."; logger.error(msg); return False, msg, None
-    if provider_name not in ["ollama", "litellm"] and await manager.key_manager.is_provider_depleted(provider_name):
-        msg = f"Lifecycle: Cannot create agent '{agent_id}': All keys for '{provider_name}' ({selection_source}) are quarantined."; logger.error(msg); return False, msg, None
+
+    # Check configuration/depletion using the *base* provider name if it's dynamic local
+    is_dynamic_local = "-local-" in provider_name or "-proxy" in provider_name
+    check_provider_name = provider_name.split('-local-')[0].split('-proxy')[0] if is_dynamic_local else provider_name
+
+    # Skip .env config check for dynamic local providers, as their config comes from discovery
+    if not is_dynamic_local and not settings.is_provider_configured(check_provider_name):
+        msg = f"Lifecycle: Provider '{check_provider_name}' (base for '{provider_name}', source: {selection_source}) not configured in .env settings."; logger.error(msg); return False, msg, None
+
+    # Key depletion check still applies to the base provider name for remote providers
+    if check_provider_name not in ["ollama", "litellm"] and await manager.key_manager.is_provider_depleted(check_provider_name):
+        msg = f"Lifecycle: Cannot create agent '{agent_id}': All keys for '{check_provider_name}' (base for '{provider_name}', source: {selection_source}) are quarantined."; logger.error(msg); return False, msg, None
 
     # --- Corrected Validation Logic ---
-    is_local_provider = provider_name in ["ollama", "litellm"]
-    model_id_for_provider = None # ID to pass to the provider class
+    # Determine if the final provider is local based on its name
+    is_local_provider = "-local-" in provider_name or "-proxy" in provider_name
+    model_id_for_provider = None # ID to pass to the provider class (without prefix)
     validation_passed = True
     error_msg_val = None
     error_prefix = f"Lifecycle Error ({selection_source} model '{model_id_canonical}' for provider '{provider_name}'):"
 
     if is_local_provider:
-        # Expect canonical ID like "ollama/model_name"
-        if model_id_canonical.startswith(f"{provider_name}/"):
-            model_id_for_provider = model_id_canonical[len(provider_name)+1:] # Strip prefix for provider
+        # Expect canonical ID like "ollama/model_name" or "litellm/model_name"
+        # Provider name might be dynamic (e.g., ollama-local-127-0-0-1)
+        base_provider_type = provider_name.split('-local-')[0].split('-proxy')[0] # Get 'ollama' or 'litellm'
+        if model_id_canonical.startswith(f"{base_provider_type}/"):
+            model_id_for_provider = model_id_canonical[len(base_provider_type)+1:] # Strip prefix
         else:
-            error_msg_val = f"{error_prefix} Local model ID must start with prefix '{provider_name}/'."
+            error_msg_val = f"{error_prefix} Local model ID must start with prefix '{base_provider_type}/'."
             validation_passed = False
     else: # Remote provider
         # Expect canonical ID like "google/gemma..." - it should NOT start with a local prefix
@@ -356,6 +439,7 @@ async def _create_agent_internal(
         logger.error(error_msg_val); return False, error_msg_val, None
 
     # Final availability check using the model ID format the provider expects
+    # Use the potentially dynamic provider_name for the check
     if not model_registry.is_model_available(provider_name, model_id_for_provider):
         available_list_str = ", ".join(model_registry.get_available_models_list(provider=provider_name)) or "(None available)"
         msg = f"Lifecycle: Model '{model_id_for_provider}' (derived from '{model_id_canonical}', source: {selection_source}) not available for provider '{provider_name}'. Available: [{available_list_str}]"
@@ -380,14 +464,43 @@ async def _create_agent_internal(
     elif is_bootstrap: final_system_prompt = agent_config_data.get("system_prompt", role_specific_prompt); logger.debug(f"Lifecycle: Using pre-assembled prompt for bootstrap agent '{agent_id}'.")
 
     # Prepare Provider Arguments
-    final_provider_args: Optional[Dict[str, Any]] = None; api_key_used = None
-    if provider_name in ["ollama", "litellm"]:
+    final_provider_args: Dict[str, Any] = {}; api_key_used = None
+    is_final_provider_local = "-local-" in provider_name or "-proxy" in provider_name
+
+    if is_final_provider_local:
+        # Get base URL from registry
+        base_url = model_registry.get_reachable_provider_url(provider_name)
+        if base_url:
+             final_provider_args['base_url'] = base_url
+
+        # Check if keys are configured for the base type (e.g., 'ollama')
+        base_provider_type = provider_name.split('-local-')[0].split('-proxy')[0]
+        if base_provider_type in settings.PROVIDER_API_KEYS and settings.PROVIDER_API_KEYS[base_provider_type]:
+            logger.debug(f"API keys found for local provider base type '{base_provider_type}'. Attempting to get active key.")
+            key_config = await manager.key_manager.get_active_key_config(base_provider_type)
+            if key_config is None:
+                msg = f"Lifecycle: Failed to get active API key for local provider '{provider_name}' (base type '{base_provider_type}') - keys might be configured but all quarantined."
+                logger.error(msg); return False, msg, None
+            final_provider_args.update(key_config) # Merge key config
+            api_key_used = final_provider_args.get('api_key')
+            logger.info(f"Using configured API key ending '...{api_key_used[-4:]}' for local provider '{provider_name}'.")
+        else:
+            # No keys configured for base type, proceed without key (except special ollama case)
+            logger.debug(f"No API keys configured for local provider base type '{base_provider_type}'. Proceeding without key for '{provider_name}'.")
+            ProviderClassCheck = PROVIDER_CLASS_MAP.get(base_provider_type) # Check base type class
+            if base_provider_type == 'ollama' and ProviderClassCheck == OllamaProvider:
+                 final_provider_args['api_key'] = 'ollama' # Add special key if needed by class
+
+    else: # Remote provider
+        # Get base config (e.g., referer) from settings
         final_provider_args = settings.get_provider_config(provider_name)
-        if provider_name == 'ollama' and PROVIDER_CLASS_MAP.get(provider_name) == OllamaProvider: final_provider_args['api_key'] = 'ollama'
-    else:
-        final_provider_args = await manager.key_manager.get_active_key_config(provider_name)
-        if final_provider_args is None: msg = f"Lifecycle: Failed to get active API key for provider '{provider_name}'."; logger.error(msg); return False, msg, None
+        # Get an active API key config
+        key_config = await manager.key_manager.get_active_key_config(provider_name)
+        if key_config is None:
+            msg = f"Lifecycle: Failed to get active API key for remote provider '{provider_name}'."; logger.error(msg); return False, msg, None
+        final_provider_args.update(key_config) # Merge key config
         api_key_used = final_provider_args.get('api_key')
+
     temperature = agent_config_data.get("temperature", settings.DEFAULT_TEMPERATURE)
     allowed_provider_keys = ['api_key', 'base_url', 'referer']; agent_config_keys_to_exclude = ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'project_name', 'session_name'] + allowed_provider_keys
     client_init_kwargs = {k: v for k, v in agent_config_data.items() if k not in agent_config_keys_to_exclude and k not in KNOWN_OLLAMA_OPTIONS}
@@ -399,6 +512,10 @@ async def _create_agent_internal(
 
     # Instantiate Provider
     ProviderClass = PROVIDER_CLASS_MAP.get(provider_name)
+    if not ProviderClass: # Handle dynamic local provider names
+        base_provider_type = provider_name.split('-local-')[0].split('-proxy')[0]
+        ProviderClass = PROVIDER_CLASS_MAP.get(base_provider_type)
+
     if not ProviderClass: msg = f"Lifecycle: Unknown provider type '{provider_name}'."; logger.error(msg); return False, msg, None
     try: llm_provider_instance = ProviderClass(**final_provider_args)
     except Exception as e: msg = f"Lifecycle: Provider init failed for {provider_name}: {e}"; logger.error(msg, exc_info=True); return False, msg, None
@@ -478,4 +595,3 @@ def _generate_unique_agent_id(manager: 'AgentManager', prefix="agent") -> str:
         new_id = f"{prefix}_{timestamp}_{short_uuid}".replace(":", "_");
         if new_id not in manager.agents: return new_id
         time.sleep(0.001); timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4]
-# --- END _generate_unique_agent_id ---
