@@ -1,22 +1,23 @@
 <!-- # START OF FILE helperfiles/PROJECT_PLAN.md -->
 # Project Plan: TrippleEffect
 
-**Version:** 2.23 <!-- Updated Version -->
-**Date:** 2025-04-23 <!-- Updated Date -->
+**Version:** 2.24 <!-- Updated Version -->
+**Date:** 2025-04-25 <!-- Updated Date -->
 
 ## 1. Project Goals
 
 *   Develop an asynchronous, collaborative multi-agent framework (`TrippleEffect`).
-*   Implement an **Admin AI** agent that acts as the central coordinator. *(Completed)*
+*   Implement an **Admin AI** agent that acts as the central coordinator/initiator. *(Completed, Role Refined in P23)*
+*   Implement a **Project Manager** agent, auto-created per session, to handle detailed task tracking and team coordination using `tasklib`. *(Completed in P23)*
 *   Enable dynamic agent/team creation and deletion *in memory*. *(Completed)*
 *   Implement **standardized communication layers**: *(Completed - UI Refactor Done)*
     *   **Layer 1:** User <-> Admin AI Interaction. *(Completed)*
     *   **Layer 2:** Admin AI <-> Local Dynamic Agents (within the same instance/session). *(Completed)*
-    *   **Layer 3:** Admin AI <-> External Authorized Admin AIs / Groups (Federated Communication). *(Future Goal - Phase 26+)*
+    *   **Layer 3:** Admin AI <-> External Authorized Admin AIs / Groups (Federated Communication). *(Future Goal - Phase 27+)*
 *   Inject standardized context into dynamic agents' system prompts. *(Completed)*
 *   Empower agents to communicate and collaborate autonomously (within Layer 2). *(Completed)*
-*   Implement **session persistence** (filesystem). *(Completed)*
-*   Utilize `config.yaml` primarily for bootstrapping the `Admin AI`. *(Completed)*
+*   Implement **session persistence** (filesystem), including project task data (`tasklib`). *(Completed, Enhanced in P23)*
+*   Utilize `config.yaml` primarily for bootstrapping the `Admin AI` and `Project Manager` agents. *(Completed, Updated in P23)*
 *   **Dynamically discover reachable providers** and **available models**. *(Completed)*
 *   **Filter discovered models** based on configuration (`MODEL_TIER` env var). *(Completed)*
 *   **Automatically select the Admin AI's provider/model at startup**. *(Completed)*
@@ -29,28 +30,30 @@
 *   Implement **automatic project/session context setting**. *(Completed)*
 *   Implement **automatic model selection** for dynamic agents if not specified by Admin AI. *(Completed)*
 *   Implement **robust agent ID/persona handling** for `send_message` (Layer 2). *(Completed)*
-*   Implement **structured planning phase** for Admin AI. *(Completed)*
+*   Implement **structured planning phase** for Admin AI, followed by **delegation to Project Manager**. *(Completed, Updated in P23)*
 *   Enhance `FileSystemTool` with **find/replace, mkdir, delete**. *(Completed)*
 *   Enhance `GitHubTool` with **recursive listing**. *(Completed)*
 *   Enhance `ManageTeamTool` with **agent detail retrieval**. *(Completed)*
 *   Make `WebSearchTool` more robust with **API fallback**. *(Completed)*
 *   Implement `SystemHelpTool` for Admin AI **time awareness and log searching**. *(Completed)*
+*   Implement `ProjectManagementTool` using `tasklib` for task tracking. *(Completed in P23)*
 *   Inject **current time context** into Admin AI LLM calls. *(Completed)*
 *   Implement **Memory Foundation** using a database (SQLite) for basic recall and interaction logging. *(Completed in P21)*
 *   Refactor UI for Communication Layers and refine Admin AI memory usage prompts. *(Completed in P22)*
 *   Fix UI message interleaving issue during concurrent streaming. *(Completed in P22)*
 *   Increase internal comms message history limit. *(Completed in P22)*
-*   **(Current Goal - Phase 23)** Implement **Governance Layer** (Constitution, Principles).
-*   **(Future Goals)** Address agent logic issues (looping, placeholders, targeting - P24), **Advanced Memory & Learning** (P24), **Proactive Behavior** (Scheduling - P25), **Federated Communication** (Layer 3 - P26+), Enhance Admin AI planning (few-shot examples), use tracked performance metrics for ranking, implement new Admin AI tools, resource management, advanced collaboration patterns, DB integration, formal project/task management.
+*   **(Current Goal - Phase 24)** Implement **Governance Layer** (Constitution, Principles).
+*   **(Future Goals)** Address agent logic issues (looping, placeholders, targeting - P25), **Advanced Memory & Learning** (P25), **Proactive Behavior** (Scheduling - P26), **Federated Communication** (Layer 3 - P27+), Enhance Admin AI planning (few-shot examples), use tracked performance metrics for ranking, implement new Admin AI tools, resource management, advanced collaboration patterns, DB integration.
 
 ## 2. Scope
 
-**In Scope (Completed up to Phase 22):**
+**In Scope (Completed up to Phase 23):**
 
 *   **Core Backend & Agent Core:** Base functionality.
-*   **Admin AI Agent:** Core logic, planning phase, time context, refined KB search prompt.
-*   **Agent Manager & Handlers:** Orchestration, cycle management, interaction handling, failover, DB logging integration.
-*   **State & Session Management:** Team state (runtime), Save/Load (filesystem).
+*   **Admin AI Agent:** Core logic, planning phase, time context, refined KB search prompt, **delegation to PM workflow**.
+*   **Project Manager Agent:** Definition, automatic creation per session, prompt for active management.
+*   **Agent Manager & Handlers:** Orchestration, cycle management, interaction handling, failover, DB logging integration, **PM agent auto-creation**.
+*   **State & Session Management:** Team state (runtime), Save/Load (filesystem), **Tasklib data persistence**.
 *   **Model Registry (`ModelRegistry`):** Provider/model discovery, filtering.
 *   **Automatic Model Selection:** Admin AI startup, dynamic agents.
 *   **Performance Tracking (`ModelPerformanceTracker`):** Tracks metrics, saves to JSON.
@@ -64,6 +67,7 @@
     *   `SendMessageTool`: Local agent communication (Layer 2).
     *   `SystemHelpTool`: Get Time, Search Logs.
     *   `KnowledgeBaseTool`: Save/Search knowledge (DB).
+    *   `ProjectManagementTool`: Add, list, modify, complete tasks using `tasklib`.
 *   **Configuration:** `config.yaml`, `.env`, `prompts.json`.
 *   **Session Persistence:** Save/Load state (filesystem).
 *   **Human UI:** Dynamic updates, Session management, **Separated Chat and Internal Comms views (UI Refactor P22)**, Config View, Fixed message interleaving (P22), Increased internal history limit (P22).
@@ -75,19 +79,19 @@
 *   **Database Integration (Phase 21):** SQLite backend, SQLAlchemy models, interaction/agent logging, knowledge save/search tools.
 *   **Communication Layers:** Layer 1 (User<->Admin) & Layer 2 (Admin<->Local Agents) logic implemented.
 
-**In Scope (Phase 23 - Current):**
+**In Scope (Phase 24 - Current):**
 
 *   **Governance Layer Foundation:**
     *   Define a structure for representing core principles or a 'constitution' (e.g., in a dedicated config file or DB table).
     *   Implement mechanisms to inject relevant principles into agent prompts (initially likely Admin AI).
     *   *Initial Goal:* Focus on defining the structure and injection, not complex enforcement or dynamic adaptation yet. Explore how Admin AI can use this during planning/review.
 
-**Out of Scope (Deferred to Future Phases 24+):**
+**Out of Scope (Deferred to Future Phases 25+):**
 
-*   **Phase 24: Advanced Memory & Learning.** (Feedback Loop, Learned Principles, Address Activation/Looping/Placeholder/Targeting Issues identified in P22).
-*   **Phase 25: Proactive Behavior.** (Scheduling, Goal Management).
-*   **Phase 26+: Federated Communication (Layer 3).** (External Admin AI interaction - protocol, security, discovery).
-*   **Phase 27+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource limiting, Advanced DB/Vector Store, GeUI, etc.
+*   **Phase 25: Advanced Memory & Learning.** (Feedback Loop, Learned Principles, Address Activation/Looping/Placeholder/Targeting Issues identified in P22).
+*   **Phase 26: Proactive Behavior.** (Scheduling, Goal Management).
+*   **Phase 27+: Federated Communication (Layer 3).** (External Admin AI interaction - protocol, security, discovery).
+*   **Phase 28+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, etc.
 
 ## 💻 Technology Stack
 
@@ -95,6 +99,7 @@
 *   **Asynchronous Operations:** `asyncio`
 *   **WebSockets:** `websockets` library integrated with FastAPI
 *   **Database:** `SQLAlchemy` (Core, Asyncio), `aiosqlite` (for SQLite driver)
+*   **Task Management:** `tasklib` (Python Taskwarrior library) %% Added P23
 *   **LLM Interaction:** `openai` library, `aiohttp`
 *   **Frontend:** HTML5, CSS3, Vanilla JavaScript
 *   **Configuration:** YAML (`PyYAML`), `.env` (`python-dotenv`), JSON (`prompts.json`)
@@ -102,17 +107,17 @@
 *   **Parsing:** `BeautifulSoup4` (HTML), `re`, `html` (XML)
 *   **Model Discovery & Management:** Custom `ModelRegistry` class
 *   **Performance Tracking:** Custom `ModelPerformanceTracker` class (JSON)
-*   **Persistence:** JSON (session state - filesystem), SQLite (interactions, knowledge)
+*   **Persistence:** JSON (session state - filesystem), SQLite (interactions, knowledge), Taskwarrior files (project tasks via `tasklib`) %% Updated P23
 *   **Optional Proxy:** Node.js, Express, node-fetch
 *   **Data Handling/Validation:** Pydantic (via FastAPI)
 *   **Logging:** Standard library `logging`
 
-## 4. Proposed Architecture Refinement (Conceptual - Reflects P22 Changes)
+## 4. Proposed Architecture Refinement (Conceptual - Reflects P23 Changes)
 
-*No major backend architecture changes in Phase 22. UI layer refactor completed.*
+*Introduced Project Manager Agent and Tasklib integration.*
 
 ```mermaid
-graph TD
+graph TD %% Updated P23
     %% Layer Definitions
     subgraph UserLayer [Layer 1: User Interface]
         USER[👨‍💻 Human User]
@@ -143,17 +148,18 @@ graph TD
 
         subgraph Handlers ["Core Logic Handlers"]
             direction LR
-            CYCLE_HANDLER["🔄 AgentCycleHandler ✅<br>(Known agent logic issues: looping, placeholder replacement, targeting - See Phase 24)"] %% ANNOTATION
+            CYCLE_HANDLER["🔄 AgentCycleHandler ✅<br>(Known agent logic issues: looping, placeholder replacement, targeting - See Phase 25)"] %% ANNOTATION Updated Phase
             INTERACTION_HANDLER["🤝 InteractionHandler ✅"]
             FAILOVER_HANDLER["💥 FailoverHandler (Func) ✅"]
         end
 
-        subgraph CoreAgents ["Core & Dynamic Agents"]
-             ADMIN_AI["🤖 Admin AI Agent <br>+ Planning ✅<br>+ Time Context ✅<br>+ KB Search Emphasis ✅"] %% ANNOTATION
+        subgraph CoreAgents ["Core & Dynamic Agents"] %% Updated P23
+             ADMIN_AI["🤖 Admin AI Agent <br>(Initiator/User Interface)✅"]
+             PM_AGENT["🤖 Project Manager Agent <br>(Per Session, Auto-Created)✅"]
              subgraph DynamicTeam [Dynamic Team Example]
                 direction LR
-                 AGENT_DYN_1["🤖 Dynamic Agent 1"]
-                 AGENT_DYN_N["🤖 ... Agent N"]
+                 AGENT_DYN_1["🤖 Worker Agent 1"]
+                 AGENT_DYN_N["🤖 ... Worker Agent N"]
              end
         end
 
@@ -166,9 +172,10 @@ graph TD
             TOOL_WEBSEARCH["WebSearch ✅"]
             TOOL_SYSTEMHELP["SystemHelp ✅"]
             TOOL_KNOWLEDGE["**KnowledgeBase ✅**"]
+            TOOL_PROJECT_MGMT["**ProjectManagement (Tasklib) ✅**"] %% Added P23
         end
 
-        subgraph InstanceData ["Local Instance Data"]
+        subgraph InstanceData ["Local Instance Data"] %% Updated P23
             SANDBOXES["📁 Sandboxes"]
             SHARED_WORKSPACE["🌐 Shared Workspace"]
             PROJECT_SESSIONS["💾 Project/Session Files"]
@@ -177,6 +184,7 @@ graph TD
             METRICS_FILE["📄 Metrics File"]
             QUARANTINE_FILE["📄 Key Quarantine File"]
             SQLITE_DB["**💾 SQLite DB <br>(Interactions, Knowledge)**"]
+            TASKLIB_DATA["**📊 Tasklib Data <br>(Per Session)**"] %% Added P23
         end
     end
 
@@ -189,7 +197,7 @@ graph TD
     end
 
     %% --- Layer 3 (Future) ---
-    subgraph FederatedLayer [Layer 3: Federated Instances (Future - Phase 26+)]
+    subgraph FederatedLayer [Layer 3: Federated Instances (Future - Phase 27+)] %% Updated Phase
          ExternalInstance["🏢 External TrippleEffect Instance"]
          ExternalAdminAI["🤖 External Admin AI"]
          ExternalDB["💾 External Instance DB"]
@@ -212,20 +220,22 @@ graph TD
     AGENT_MANAGER -- Delegates --> INTERACTION_HANDLER;
     AGENT_MANAGER -- Triggers --> FAILOVER_HANDLER;
     AGENT_MANAGER -- Manages --> CoreAgents;
+    AGENT_MANAGER -- Creates --> PM_AGENT; %% Added P23
 
     CYCLE_HANDLER -- Runs --> CoreAgents;
     CYCLE_HANDLER -- Logs to --> DB_MANAGER;
     INTERACTION_HANDLER -- Delegates --> TOOL_EXECUTOR;
     INTERACTION_HANDLER -- Updates --> STATE_MANAGER;
-    INTERACTION_HANDLER -- Routes Msg --> CoreAgents;
+    INTERACTION_HANDLER -- Routes Msg --> CoreAgents; %% Includes Admin <-> PM
 
     TOOL_EXECUTOR -- Executes --> InstanceTools;
     InstanceTools -- Access --> InstanceData;
     InstanceTools -- Interact With --> ExternalServices;
     TOOL_KNOWLEDGE -- Uses --> DB_MANAGER;
 
-    %% Data Persistence
+    %% Data Persistence %% Updated P23
     SESSION_MANAGER -- R/W --> PROJECT_SESSIONS;
+    TOOL_PROJECT_MGMT -- R/W --> TASKLIB_DATA; %% Added P23
     DB_MANAGER -- R/W --> SQLITE_DB;
     PERF_TRACKER -- R/W --> METRICS_FILE;
     PROVIDER_KEY_MGR -- R/W --> QUARANTINE_FILE;
@@ -250,31 +260,26 @@ graph TD
 
 ## 5. Development Phases & Milestones
 
-**Phase 1-21 (Completed)**
-*   [X] Core Functionality, Dynamic Agent/Team Mgmt, Refactoring, Provider/Model Discovery & Selection, Failover, Key Management, Prompt Centralization, Ollama Proxy, XML Tooling, Auto-Selection (Dyn), Robust Agent ID Handling, Structured Planning, Context Optimization & FS Tools, GitHub Recursive List, ManageTeam Details, WebSearch API Fallback, SystemHelp Tool, Admin Time Context, **Memory Foundation (DB & KB Tool)**.
+**Phase 1-22 (Completed)**
+*   [X] Core Functionality, Dynamic Agent/Team Mgmt, Refactoring, Provider/Model Discovery & Selection, Failover, Key Management, Prompt Centralization, Ollama Proxy, XML Tooling, Auto-Selection (Dyn), Robust Agent ID Handling, Structured Planning, Context Optimization & FS Tools, GitHub Recursive List, ManageTeam Details, WebSearch API Fallback, SystemHelp Tool, Admin Time Context, **Memory Foundation (DB & KB Tool)**, **UI Layer Refactor & Workflow Refinements**.
 
-**Phase 22: UI Layer Refactor & Workflow Refinements (Completed)**
-*   **Goal:** Visually separate User<->Admin and Admin<->Agent communication flows in the UI, remove the Logs view, enhance Admin AI memory usage, fix UI interleaving, increase history limit, and investigate agent activation logic.
-*   [X] **UI Refactoring:**
-    *   [X] Modify `templates/index.html`: Remove `#logs-view`, add `#internal-comms-view`, update nav bar (`#bottom-nav`).
-    *   [X] Modify `static/css/style.css`: Add styling rules for `#internal-comms-view`.
-    *   [X] Modify `static/js/app.js` (`handleWebSocketMessage`): Route messages to correct views.
-    *   [X] Modify `static/js/ui.js` (`displayMessage`): Implemented improved chunk grouping logic to prevent interleaving during concurrent streams.
-    *   [X] Modify `static/js/config.js`: Increased `MAX_COMM_MESSAGES` limit for Internal Comms view.
-*   [X] **Prompt Refinement:**
-    *   [X] Modify `prompts.json`: Updated `admin_ai_operational_instructions` to strongly emphasize mandatory `knowledge_base` search before planning and clarify agent ID usage.
-*   [ ] **Activation Logic Investigation:**
-    *   [X] Review `AgentCycleHandler`, `AgentManager`, `AgentInteractionHandler` code related to agent status changes, message queuing, and `schedule_cycle` calls.
-    *   **Findings:** Agent looping issues observed (Researcher agent repeating tasks), placeholder values not being replaced in tool calls (e.g., `[TOPIC]`, `[content_from_web_search]`), Admin AI sometimes fails to use specific agent IDs for `send_message`.
-    *   **Action:** Fixing these agent logic/prompt adherence issues deferred to Phase 24 (Advanced Memory & Learning).
+**Phase 23: Project Manager Agent & Tasklib Integration (Completed)**
+*   **Goal:** Introduce a dedicated Project Manager agent to handle task tracking and coordination, improving Admin AI reliability and workflow structure.
+*   [X] Add `tasklib` dependency.
+*   [X] Create `ProjectManagementTool` with `add_task`, `list_tasks`, `modify_task`, `complete_task` actions, storing data per session.
+*   [X] Define `project_manager_agent` in `config.yaml` with appropriate persona and instructions.
+*   [X] Implement automatic creation of `pm_{project}_{session}` agent in `AgentManager.save_session`.
+*   [X] Update Admin AI prompts (`prompts.json`) to delegate execution to the PM agent after planning.
+*   [X] Update PM agent prompt (`config.yaml`) to encourage active monitoring and follow-up.
+*   [X] Fix `ToolParameter` definition/usage bug in `base.py` and tool files.
 
-**Future Phases (23+) (High-Level)**
-*   **Phase 23: Governance Layer (Current)**
+**Future Phases (24+) (High-Level)**
+*   **Phase 24: Governance Layer (Current)**
     *   **Goal:** Establish a basic system for defining and injecting core principles or a 'constitution' to guide agent behavior, particularly Admin AI planning.
     *   [ ] Define structure for principles (e.g., `governance.yaml` or DB table).
     *   [ ] Implement mechanism to load and inject principles into relevant agent prompts.
     *   [ ] Explore how Admin AI can reference/apply these principles during planning.
-*   **Phase 24:** Advanced Memory & Learning (Feedback Loop, Learned Principles, Address Agent Logic Issues from P22).
-*   **Phase 25:** Proactive Behavior (Scheduling, Goal Management).
-*   **Phase 26:** Federated Communication (Layer 3 - External Admin AI Interaction).
-*   **Phase 27+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts - Phase 27+), etc.
+*   **Phase 25:** Advanced Memory & Learning (Feedback Loop, Learned Principles, Address Agent Logic Issues from P22).
+*   **Phase 26:** Proactive Behavior (Scheduling, Goal Management).
+*   **Phase 27+:** Federated Communication (Layer 3 - External Admin AI Interaction).
+*   **Phase 28+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), etc.

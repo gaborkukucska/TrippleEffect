@@ -290,6 +290,11 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 *   `src/tools/system_help.py::SystemHelpTool.execute(...)` (Async) -> `str` - Executes 'get_time' or 'search_logs'.
 *   `src/tools/system_help.py::SystemHelpTool._search_logs_safe(...)` (Async Internal) -> `List[str] | str` - **(NEW)** Safely searches the latest log file.
 
+*   `src/tools/project_management.py::ProjectManagementTool` (Class) - **(NEW)** Tool for managing project tasks using `tasklib`.
+*   `src/tools/project_management.py::ProjectManagementTool.__init__(...)` - Initializes tool.
+*   `src/tools/project_management.py::ProjectManagementTool._get_taskwarrior_instance(...)` (Internal) -> `Optional[TaskWarrior]` - **(NEW)** Initializes TaskWarrior with session-specific data path.
+*   `src/tools/project_management.py::ProjectManagementTool.execute(...)` (Async) -> `Dict` - **(NEW)** Executes task actions (add_task, list_tasks, modify_task, complete_task).
+
 ## **Frontend Logic (`static/js/app.js`)**
 
 *   (JavaScript functions are not typically included in a backend Python functions index, but key UI functionalities are handled here: WebSocket connection, message display, UI updates based on backend events, form handling, modal control, view switching, session management interaction).

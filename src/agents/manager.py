@@ -307,9 +307,60 @@ class AgentManager:
         if not fs_success: return False, fs_message
         await self.set_project_session_context(project_name, session_name, loading=False)
         if not self.current_session_db_id:
-             logger.error(f"Failed to update database session record after saving session '{session_name}'.")
-             return False, f"{fs_message} but failed to update database session record."
-        return True, f"{fs_message} Session context and DB record updated."
+            logger.error(f"Failed to update database session record after saving session '{session_name}'.")
+            # Even if DB update fails, FS save succeeded, so return True but with error message
+            return True, f"{fs_message} but failed to update database session record."
+
+        # --- Auto-create Project Manager Agent for the new session ---
+        pm_creation_message = ""
+        try:
+            import re # Import re locally for sanitization
+            # Sanitize names for use in agent ID
+            sanitized_project = re.sub(r'\W+', '_', project_name)
+            sanitized_session = re.sub(r'\W+', '_', session_name)
+            pm_instance_id = f"pm_{sanitized_project}_{sanitized_session}"
+            pm_bootstrap_id = "project_manager_agent" # ID from config.yaml
+
+            if pm_instance_id not in self.agents:
+                 logger.info(f"Attempting to auto-create Project Manager '{pm_instance_id}' for session '{project_name}/{session_name}'...")
+                 pm_config = settings.get_agent_config_by_id(pm_bootstrap_id)
+                 if pm_config:
+                     pm_persona = pm_config.get("persona", "Project Manager") + f" ({project_name}/{session_name})" # Unique persona
+                     pm_system_prompt = pm_config.get("system_prompt", "Manage project tasks.")
+                     pm_provider = pm_config.get("provider")
+                     pm_model = pm_config.get("model")
+                     pm_temp = pm_config.get("temperature")
+                     pm_extra_kwargs = {k: v for k, v in pm_config.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona']}
+
+                     pm_create_success, pm_create_msg, pm_created_id = await self.create_agent_instance(
+                         agent_id_requested=pm_instance_id,
+                         provider=pm_provider,
+                         model=pm_model,
+                         system_prompt=pm_system_prompt,
+                         persona=pm_persona,
+                         team_id=None, # PM agent is not assigned to a team initially
+                         temperature=pm_temp,
+                         **pm_extra_kwargs
+                     )
+                     if pm_create_success and pm_created_id:
+                         logger.info(f"Successfully auto-created Project Manager agent '{pm_created_id}' for session.")
+                         pm_creation_message = f" [Auto-created Project Manager: '{pm_created_id}'.]"
+                     else:
+                         logger.error(f"Failed to auto-create Project Manager agent for session: {pm_create_msg}")
+                         pm_creation_message = f" [Warning: Failed to auto-create Project Manager: {pm_create_msg}]"
+                 else:
+                     logger.warning(f"Could not find configuration for bootstrap agent '{pm_bootstrap_id}'. Cannot auto-create Project Manager.")
+                     pm_creation_message = f" [Warning: Config for '{pm_bootstrap_id}' not found, cannot auto-create PM.]"
+            else:
+                logger.info(f"Project Manager agent '{pm_instance_id}' already exists for this session. Skipping auto-creation.")
+                pm_creation_message = f" [Note: Project Manager '{pm_instance_id}' already exists.]"
+        except Exception as pm_err:
+            logger.error(f"Error during Project Manager auto-creation: {pm_err}", exc_info=True)
+            pm_creation_message = f" [Error during PM auto-creation: {pm_err}]"
+        # --- End Auto-create ---
+
+        final_message = f"{fs_message} Session context and DB record updated." + pm_creation_message
+        return True, final_message
 
 
     async def load_session(self, project_name: str, session_name: str) -> Tuple[bool, str]:

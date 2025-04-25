@@ -18,3 +18,4 @@ SQLAlchemy>=2.0 # Added for Database Memory
 aiosqlite # <<< --- ADDED: Async driver for SQLite ---
 # alembic # Skipping for now for Termux compatibility
 netifaces # Added for local network discovery
+tasklib # Added for Project Management Tool

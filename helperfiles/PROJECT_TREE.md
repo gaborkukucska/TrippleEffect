@@ -1,82 +1,94 @@
-# Project's folder structure when active
-
-TrippleEffect/
-├── LICENSE
-├── README.md
+TrippleEffect
 ├── config.yaml
+├── data
 ├── helperfiles
-│   ├── DEVELOPMENT _RULES. md
+│   ├── DEVELOPMENT_RULES.md
+│   ├── FUNCTIONS_INDEX_002.md
 │   ├── FUNCTIONS_INDEX.md
 │   ├── PROJECT_PLAN.md
+│   ├── PROJECT_TREE.md
 │   └── TOOL_MAKING.md
+├── LICENSE
 ├── logs
-│   └── app_20250410_195238.log
+├── ollama-proxy
+│   ├── package.json
+│   ├── package-lock.json
+│   └── server.js
 ├── projects
-│   ├── DefaultProject
-│   │   └── 20250410_195317
-│   │       ├── agent_session_data.json
-│   │       └── shared_workspace
-│   │           ├── output
-│   │           ├── snake_game.html
-│   │           ├── snake_script.js
-│   │           └── snake_style.css
-│   └── Worldwide-Automation
-│       └── session_1744170757
-│           └── agent_session_data.json
+├── prompts_injected.txt
+├── prompts.json
+├── README.md
 ├── requirements.txt
+├── run.sh
 ├── sandboxes
-│   └── agent_admin_ai
-│       ├── README.md
-│       ├── snake_game
-│       │   ├── README.md
-│       │   ├── index.html
-│       │   ├── script.js
-│       │   └── style.css
-│       └── testfile5.txt
 ├── setup.sh
 ├── src
-│   ├── __init__.py
 │   ├── agents
-│   │   ├── __init__.py
+│   │   ├── agent_lifecycle.py
+│   │   ├── agent_tool_parser.py
+│   │   ├── constants.py
 │   │   ├── core.py
 │   │   ├── cycle_handler.py
+│   │   ├── failover_handler.py
+│   │   ├── __init__.py
 │   │   ├── interaction_handler.py
 │   │   ├── manager.py
+│   │   ├── performance_tracker.py
 │   │   ├── prompt_utils.py
+│   │   ├── provider_key_manager.py
 │   │   ├── session_manager.py
 │   │   └── state_manager.py
 │   ├── api
-│   │   ├── __init__.py
 │   │   ├── http_routes.py
+│   │   ├── __init__.py
 │   │   └── websocket_manager.py
 │   ├── config
-│   │   ├── __init__.py
 │   │   ├── config_manager.py
-│   │   └── settings.py
-│   ├── llm_providers
 │   │   ├── __init__.py
+│   │   ├── model_registry.py
+│   │   └── settings.py
+│   ├── core
+│   │   ├── database_manager.py
+│   │   ├── __init__.py
+│   ├── __init__.py
+│   ├── llm_providers
 │   │   ├── base.py
+│   │   ├── __init__.py
 │   │   ├── ollama_provider.py
 │   │   ├── openai_provider.py
-│   │   └── openrouter_provider.py
+│   │   ├── openrouter_provider.py
 │   ├── main.py
 │   ├── tools
-│   │   ├── __init__.py
 │   │   ├── base.py
 │   │   ├── executor.py
 │   │   ├── file_system.py
 │   │   ├── github_tool.py
+│   │   ├── __init__.py
+│   │   ├── knowledge_base.py
 │   │   ├── manage_team.py
+│   │   ├── project_management.py
 │   │   ├── send_message.py
+│   │   ├── system_help.py
 │   │   └── web_search.py
 │   ├── ui
 │   │   └── __init__.py
 │   └── utils
-│       └── __init__.py
+│       ├── __init__.py
+│       └── network_utils.py
 ├── static
 │   ├── css
 │   │   └── style.css
 │   └── js
-│       └── app.js
+│       ├── api.js
+│       ├── config.js
+│       ├── configView.js
+│       ├── domElements.js
+│       ├── handlers.js
+│       ├── main.js
+│       ├── session.js
+│       ├── state.js
+│       ├── ui.js
+│       ├── utils.js
+│       └── websocket.js
 └── templates
     └── index.html

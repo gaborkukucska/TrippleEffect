@@ -2,9 +2,9 @@
 <!-- # IT IS CRITICAL THAT ALL AIs and LLMs FOLLOW THE DEVELOPMENT INSTRUCTIONS IN THE DEVELOPMENT_RULES.md FILE WHEN FURTER DEVELOPING THIS FRAMEWORK!!! -->
 # TrippleEffect Multi-Agent Framework
 
-**Version:** 2.23 <!-- Updated Version -->
+**Version:** 2.24 <!-- Updated Version -->
 
-**TrippleEffect** is an asynchronous, collaborative multi-agent framework built with Python, FastAPI, and WebSockets. It features a central **Admin AI** that orchestrates tasks by dynamically creating and managing specialized agents. This framework is predominantly developed by various LLMs guided by Gabby.
+**TrippleEffect** is an asynchronous, collaborative multi-agent framework built with Python, FastAPI, and WebSockets. It features a central **Admin AI** that initiates projects and a dedicated **Project Manager** agent per session that handles detailed task tracking and team coordination. This framework is predominantly developed by various LLMs guided by Gabby.
 
 ## Quick Start (using scripts)
 
@@ -19,8 +19,9 @@ For a faster setup, you can use the provided shell scripts (ensure they are exec
 
 ## Core Concepts
 
-*   **Admin AI Orchestrator:** The central agent (`admin_ai`) coordinates tasks, manages agent teams, and interacts with the human user. It follows a structured **Planning -> Execution -> Coordination** workflow. It is prompted to perform a **mandatory Knowledge Base search** before planning.
-*   **Dynamic Agent Management:** Create, delete, and manage agents and teams *in memory* via Admin AI tool calls (`ManageTeamTool`). No restarts needed for dynamic changes.
+*   **Admin AI Initiator:** The central agent (`admin_ai`) interacts with the user, understands requests, initiates projects, creates initial plans, and delegates execution to a Project Manager agent.
+*   **Project Manager Agent:** Automatically created per project/session (`pm_{project}_{session}`), this agent receives the plan from Admin AI, uses the `ProjectManagementTool` (backed by `tasklib`) to create and track tasks (including assignees), pings agents for updates, and reports progress/completion back to Admin AI.
+*   **Dynamic Agent Management:** Admin AI uses `ManageTeamTool` to create teams and worker agents as per the plan. The Project Manager agent is added to the team by Admin AI.
 *   **Intelligent Model Handling:**
     *   **Discovery:** Automatically finds reachable LLM providers (Ollama, OpenRouter, OpenAI) and available models at startup.
     *   **Filtering:** Filters discovered models based on the `MODEL_TIER` setting (`.env`).
@@ -56,8 +57,9 @@ For a faster setup, you can use the provided shell scripts (ensure they are exec
         *   `WebSearchTool`: Search the web (uses Tavily API if configured, falls back to DDG scraping).
             *   `SystemHelpTool`: Get current time (UTC), Search application logs, **Get detailed tool usage info (`get_tool_info`)**.
             *   `KnowledgeBaseTool`: Save/Search distilled knowledge in the database.
+            *   `ProjectManagementTool`: Add, list, modify, and complete project tasks (uses `tasklib` backend per session). Used primarily by the Project Manager agent.
     *   **On-Demand Tool Help:** Implemented `get_detailed_usage()` in tools and `get_tool_info` action in `SystemHelpTool` for dynamic help retrieval (full transition planned for Phase 27+).
-*   **Session Persistence:** Save and load agent states, histories, and team structures (filesystem).
+*   **Session Persistence:** Save and load agent states, histories, team structures, and **project task data** (filesystem, including `tasklib` data).
 *   **Database Backend (SQLite):**
     *   Logs user, agent, tool, and system interactions.
     *   Stores long-term knowledge summaries via `KnowledgeBaseTool`.
@@ -78,8 +80,7 @@ For a faster setup, you can use the provided shell scripts (ensure they are exec
 
 ```mermaid
 graph TD
-    %% Layer Definitions
-    subgraph UserLayer [Layer 1: User Interface]
+    subgraph UserLayer [Layer 1: User Interface] %% Updated P24
         USER[👨‍💻 Human User]
         subgraph Frontend [🌐 Human UI (Web) - Refactored P22]
              direction LR
@@ -113,12 +114,13 @@ graph TD
             FAILOVER_HANDLER["💥 FailoverHandler (Func) ✅"]
         end
 
-        subgraph CoreAgents ["Core & Dynamic Agents"]
-             ADMIN_AI["🤖 Admin AI Agent <br>+ Planning ✅<br>+ Time Context ✅<br>+ KB Search Emphasis ✅"] %% ANNOTATION
+        subgraph CoreAgents ["Core & Dynamic Agents"] %% Updated P24
+             ADMIN_AI["🤖 Admin AI Agent <br>(Initiator/User Interface)✅"]
+             PM_AGENT["🤖 Project Manager Agent <br>(Per Session, Auto-Created)✅"]
              subgraph DynamicTeam [Dynamic Team Example]
                 direction LR
-                 AGENT_DYN_1["🤖 Dynamic Agent 1"]
-                 AGENT_DYN_N["🤖 ... Agent N"]
+                 AGENT_DYN_1["🤖 Worker Agent 1"]
+                 AGENT_DYN_N["🤖 ... Worker Agent N"]
              end
         end
 
@@ -131,9 +133,10 @@ graph TD
             TOOL_WEBSEARCH["WebSearch ✅"]
             TOOL_SYSTEMHELP["SystemHelp ✅"]
             TOOL_KNOWLEDGE["**KnowledgeBase ✅**"]
+            TOOL_PROJECT_MGMT["**ProjectManagement (Tasklib) ✅**"] %% Added P24
         end
 
-        subgraph InstanceData ["Local Instance Data"]
+        subgraph InstanceData ["Local Instance Data"] %% Updated P24
             SANDBOXES["📁 Sandboxes"]
             SHARED_WORKSPACE["🌐 Shared Workspace"]
             PROJECT_SESSIONS["💾 Project/Session Files"]
@@ -142,6 +145,7 @@ graph TD
             METRICS_FILE["📄 Metrics File"]
             QUARANTINE_FILE["📄 Key Quarantine File"]
             SQLITE_DB["**💾 SQLite DB <br>(Interactions, Knowledge)**"]
+            TASKLIB_DATA["**📊 Tasklib Data <br>(Per Session)**"] %% Added P24
         end
     end
 
@@ -177,20 +181,22 @@ graph TD
     AGENT_MANAGER -- Delegates --> INTERACTION_HANDLER;
     AGENT_MANAGER -- Triggers --> FAILOVER_HANDLER;
     AGENT_MANAGER -- Manages --> CoreAgents;
+    AGENT_MANAGER -- Creates --> PM_AGENT; %% Added P24
 
     CYCLE_HANDLER -- Runs --> CoreAgents;
     CYCLE_HANDLER -- Logs to --> DB_MANAGER;
     INTERACTION_HANDLER -- Delegates --> TOOL_EXECUTOR;
     INTERACTION_HANDLER -- Updates --> STATE_MANAGER;
-    INTERACTION_HANDLER -- Routes Msg --> CoreAgents;
+    INTERACTION_HANDLER -- Routes Msg --> CoreAgents; %% Includes Admin <-> PM
 
     TOOL_EXECUTOR -- Executes --> InstanceTools;
     InstanceTools -- Access --> InstanceData;
     InstanceTools -- Interact With --> ExternalServices;
     TOOL_KNOWLEDGE -- Uses --> DB_MANAGER;
 
-    %% Data Persistence
+    %% Data Persistence %% Updated P24
     SESSION_MANAGER -- R/W --> PROJECT_SESSIONS;
+    TOOL_PROJECT_MGMT -- R/W --> TASKLIB_DATA; %% Added P24
     DB_MANAGER -- R/W --> SQLITE_DB;
     PERF_TRACKER -- R/W --> METRICS_FILE;
     PROVIDER_KEY_MGR -- R/W --> QUARANTINE_FILE;
@@ -219,6 +225,7 @@ graph TD
 *   **Asynchronous Operations:** `asyncio`
 *   **WebSockets:** `websockets` library integrated with FastAPI
 *   **Database:** `SQLAlchemy` (Core, Asyncio), `aiosqlite` (for SQLite driver)
+*   **Task Management:** `tasklib` (Python Taskwarrior library) %% Added P24
 *   **LLM Interaction:** `openai` library, `aiohttp`
 *   **Frontend:** HTML5, CSS3, Vanilla JavaScript
 *   **Configuration:** YAML (`PyYAML`), `.env` (`python-dotenv`), JSON (`prompts.json`)
@@ -226,7 +233,7 @@ graph TD
 *   **Parsing:** `BeautifulSoup4` (HTML), `re`, `html` (XML)
 *   **Model Discovery & Management:** Custom `ModelRegistry` class
 *   **Performance Tracking:** Custom `ModelPerformanceTracker` class (JSON)
-*   **Persistence:** JSON (session state - filesystem), SQLite (interactions, knowledge)
+*   **Persistence:** JSON (session state - filesystem), SQLite (interactions, knowledge), Taskwarrior files (project tasks via `tasklib`) %% Updated P24
 *   **Optional Proxy:** Node.js, Express, node-fetch
 *   **Data Handling/Validation:** Pydantic (via FastAPI)
 *   **Logging:** Standard library `logging`
@@ -240,7 +247,7 @@ graph TD
 
 2.  **Clone the repository:**
     ```bash
-    git clone https://github.com/your-username/TrippleEffect.git # Replace with actual repo URL
+    git clone https://github.com/gaborkukucska/TrippleEffect.git # Replace with actual repo URL
     cd TrippleEffect
     ```
 
@@ -285,10 +292,10 @@ graph TD
 
 ## Development Status
 
-*   **Current Version:** 2.23 <!-- Updated Version -->
-*   **Completed Phases:** 1-22 (Core, Dynamic Agents, Failover, Key Mgmt, Proxy, XML Tools, Auto-Selection, Planning Phase, Context Optimization, Tool Enhancements, System Help, Memory Foundation (DB), UI Layer Refactor & KB Prompt Refinement). **Recent Fixes/Enhancements:** Ollama integration fixes, enhanced network discovery, local model prompt variant, initial on-demand tool help mechanism.
-*   **Current Phase (23):** Governance Layer Foundation.
-*   **Future Plans:** Advanced Memory & Learning (incl. fixing known agent logic issues - looping, placeholders, targeting - Phase 24), Proactive Behavior (Phase 25), Federated Communication (Phase 26+), New Admin tools, LiteLLM provider, advanced collaboration, resource limits, DB/Vector Stores, **Full transition to on-demand tool help** (removing static descriptions from prompts - Phase 27+).
+*   **Current Version:** 2.24 <!-- Updated Version -->
+*   **Completed Phases:** 1-23 (Core, Dynamic Agents, Failover, Key Mgmt, Proxy, XML Tools, Auto-Selection, Planning Phase, Context Optimization, Tool Enhancements, System Help, Memory Foundation (DB), UI Layer Refactor & KB Prompt Refinement, **Project Manager Agent & Tasklib Integration**). **Recent Fixes/Enhancements:** Ollama integration fixes, enhanced network discovery, local model prompt variant, initial on-demand tool help mechanism, PM agent workflow, `tasklib` integration.
+*   **Current Phase (24):** Advanced Memory & Learning (incl. fixing known agent logic issues - looping, placeholders, targeting).
+*   **Future Plans:** Proactive Behavior (Phase 25), Federated Communication (Phase 26+), New Admin tools, LiteLLM provider, advanced collaboration, resource limits, DB/Vector Stores, **Full transition to on-demand tool help** (removing static descriptions from prompts - Phase 27+).
 
 See `helperfiles/PROJECT_PLAN.md` for detailed phase information.
 
