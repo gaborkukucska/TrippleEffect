@@ -177,10 +177,12 @@ uda.assignee.label=Assignee
                 if tags and isinstance(tags, list):
                     final_add_cmd_args.extend([f'+{tag}' for tag in tags])
 
-                # Add assignee as a tag at the end
-                if assignee: final_add_cmd_args.append(f'+{assignee}') # Add as +tag
+                # Add assignee as a tag AND as an assignee: argument at the end
+                if assignee:
+                    final_add_cmd_args.append(f'+{assignee}') # Add as +tag
+                    final_add_cmd_args.append(f'assignee:"{assignee}"') # Also add as assignee: argument
 
-                logger.debug(f"ProjectManagementTool: Executing command (assignee as tag last): task {' '.join(final_add_cmd_args)}")
+                logger.debug(f"ProjectManagementTool: Executing command (assignee tag & arg last): task {' '.join(final_add_cmd_args)}")
                 add_output_lines = tw.execute_command(final_add_cmd_args) # Execute the constructed command
                 add_output_str = "\n".join(add_output_lines)
                 logger.debug(f"Taskwarrior 'add' command output: {add_output_str}")
@@ -247,21 +249,34 @@ uda.assignee.label=Assignee
                 # Format results
                 task_list = []
                 for task in tasks: # Iterate through the already filtered tasks
-                    # --- Use _data.get() with correct lowercase keys ---
-                    assignee_val = task._data.get('assignee') # UDA key is likely lowercase
+                    # --- Extract assignee from tags ---
+                    assignee_val = None
+                    tags_list = list(task['tags']) if task['tags'] else []
+                    # Simple check: if a tag looks like a PM agent ID, assume it's the assignee
+                    # This assumes assignee tags are unique and follow the pm_... pattern
+                    for tag in tags_list:
+                        if tag.startswith("pm_"): # Basic check for our PM agent ID pattern
+                            assignee_val = tag
+                            # Optional: Remove the assignee tag from the list returned to the agent?
+                            # try: tags_list.remove(tag)
+                            # except ValueError: pass # Should not happen
+                            break # Assume only one assignee tag per task
+
+                    # --- Get other values using _data.get() ---
                     project_val = task._data.get('project')   # Standard key is lowercase
                     priority_val = task._data.get('priority') # Standard key is lowercase
-                    logger.debug(f"Task {task['id']} raw data: {task._data}") # Log raw data for inspection
+                    logger.debug(f"Task {task['id']} raw data: {task._data}, Extracted Assignee Tag: {assignee_val}") # Log raw data and extracted tag
+
                     task_list.append({
                         "id": task['id'],
                         "uuid": task['uuid'],
                         "status": task['status'],
                         "description": task['description'],
-                        "priority": priority_val, # Use value retrieved with correct key
-                        "project": project_val,   # Use value retrieved with correct key
-                        "tags": list(task['tags']) if task['tags'] else [],
+                        "priority": priority_val,
+                        "project": project_val,
+                        "tags": tags_list, # Return the list of tags (potentially without assignee tag if removed)
                         "depends": [dep['uuid'] for dep in task['depends']] if task['depends'] else [],
-                        "assignee": assignee_val  # Use value retrieved with correct key
+                        "assignee": assignee_val # Use the value extracted from the tag
                     })
 
                 return self._success_result({
