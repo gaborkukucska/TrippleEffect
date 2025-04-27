@@ -276,29 +276,24 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
             user_defined_prompt = agent_config_data.get("system_prompt", "") # Original from config
             # tool_desc = manager.tool_descriptions_xml # No longer needed here
 
-            # Select prompt template based on the *final* provider type
+            # --- Load the INITIAL Conversation Prompt for Admin AI ---
+            # The CycleHandler will load the state-appropriate prompt later.
+            prompt_key = "admin_ai_conversation_prompt"
+            initial_conversation_prompt = settings.PROMPTS.get(prompt_key, f"--- {prompt_key} Instructions Missing ---")
+
+            # Overwrite the system_prompt in the config data with the initial conversation prompt
+            # The user-defined part from config.yaml is prepended.
+            final_agent_config_data["system_prompt"] = (
+                f"--- Primary Goal/Persona ---\n{user_defined_prompt}\n\n"
+                f"{initial_conversation_prompt}" # Use the conversation prompt here
+            )
+            logger.info(f"Lifecycle: Set INITIAL system prompt for '{BOOTSTRAP_AGENT_ID}' to '{prompt_key}'. State-specific prompts will be loaded by CycleHandler.")
+            # --- End Initial Prompt Loading ---
+
+            # Inject max_tokens if needed (logic remains the same, based on final provider)
             is_local_provider_selected = final_provider_for_creation.startswith("ollama-local-") or \
                                          final_provider_for_creation.startswith("litellm-local-") or \
                                          final_provider_for_creation.endswith("-proxy")
-
-            if is_local_provider_selected:
-                prompt_key = "admin_ai_operational_instructions_local"
-                logger.info(f"Lifecycle: Using LOCAL prompt template '{prompt_key}' for Admin AI on provider '{final_provider_for_creation}'.")
-            else:
-                prompt_key = "admin_ai_operational_instructions"
-                logger.info(f"Lifecycle: Using STANDARD prompt template '{prompt_key}' for Admin AI on provider '{final_provider_for_creation}'.")
-
-            admin_ops_template = settings.PROMPTS.get(prompt_key, f"--- {prompt_key} Instructions Missing ---")
-            operational_instructions = admin_ops_template # Use template directly
-
-            # Overwrite the system_prompt in the config data to be passed
-            final_agent_config_data["system_prompt"] = (
-                f"--- Primary Goal/Persona ---\n{user_defined_prompt}\n\n"
-                f"{operational_instructions}"
-            )
-            logger.info(f"Lifecycle: Assembled final prompt for '{BOOTSTRAP_AGENT_ID}' (using {selection_method} selection: {final_provider_for_creation}/{final_model_canonical}) - Model list excluded.")
-
-            # Inject max_tokens for local Admin AI if not already set
             if is_local_provider_selected:
                 if "max_tokens" not in final_agent_config_data and "num_predict" not in final_agent_config_data:
                     final_agent_config_data["max_tokens"] = settings.ADMIN_AI_LOCAL_MAX_TOKENS
@@ -538,6 +533,12 @@ async def _create_agent_internal(
         agent = Agent(agent_config=final_agent_config_entry, llm_provider=llm_provider_instance, manager=manager)
         agent.model = model_id_for_provider # Use adjusted ID for provider calls
         if api_key_used: agent._last_api_key_used = api_key_used
+        # --- NEW: Set initial state for Admin AI ---
+        if agent_id == BOOTSTRAP_AGENT_ID:
+            from src.agents.constants import ADMIN_STATE_STARTUP # Import locally
+            agent.set_state(ADMIN_STATE_STARTUP)
+            logger.info(f"Lifecycle: Set initial state for Admin AI '{agent_id}' to '{ADMIN_STATE_STARTUP}'.")
+        # --- END NEW ---
     except Exception as e: msg = f"Lifecycle: Agent instantiation failed: {e}"; logger.error(msg, exc_info=True); await manager._close_provider_safe(llm_provider_instance); return False, msg, None
     logger.info(f"  Lifecycle: Instantiated Agent object for '{agent_id}'.")
 

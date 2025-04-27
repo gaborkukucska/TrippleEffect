@@ -273,13 +273,24 @@ graph TD %% Updated P23
 *   [X] Update PM agent prompt (`config.yaml`) to encourage active monitoring and follow-up.
 *   [X] Fix `ToolParameter` definition/usage bug in `base.py` and tool files.
 
-**Future Phases (24+) (High-Level)**
-*   **Phase 24: Governance Layer (Current)**
-    *   **Goal:** Establish a basic system for defining and injecting core principles or a 'constitution' to guide agent behavior, particularly Admin AI planning.
+**Phase 24: Admin AI State Machine & Framework-Driven Project Init (Completed)**
+*   **Goal:** Refactor Admin AI workflow into distinct states and automate project/PM creation by the framework.
+*   [X] Add Admin AI states (`conversation`, `planning`) and management logic (`Agent`, `CycleHandler`, `constants`).
+*   [X] Create state-specific prompts (`prompts.json`) for Admin AI (`admin_ai_conversation_prompt`, `admin_ai_planning_prompt`).
+*   [X] Require `<title>` tag in Admin AI plans.
+*   [X] Implement framework logic (`CycleHandler`, `AgentManager`) to intercept Admin AI plans, extract title, automatically create project task (via `tasklib`) and PM agent (`pm_{project_title}_{session_id}`), assign admins, and transition Admin AI state.
+*   [X] Update `SessionManager` to save/load Admin AI state.
+*   [X] Remove separate `admin_ai_operational_instructions_local` prompt.
+*   [X] Fix bootstrap agent initialization fallback logic (`agent_lifecycle.py`).
+
+**Future Phases (25+) (High-Level)**
+*   **Phase 25: Governance Layer & Agent Logic Issues**
+    *   **Goal:** Establish a basic system for defining and injecting core principles or a 'constitution'. Address known agent logic issues (looping, placeholders, targeting).
     *   [ ] Define structure for principles (e.g., `governance.yaml` or DB table).
     *   [ ] Implement mechanism to load and inject principles into relevant agent prompts.
     *   [ ] Explore how Admin AI can reference/apply these principles during planning.
-*   **Phase 25:** Advanced Memory & Learning (Feedback Loop, Learned Principles, Address Agent Logic Issues from P22).
-*   **Phase 26:** Proactive Behavior (Scheduling, Goal Management).
-*   **Phase 27+:** Federated Communication (Layer 3 - External Admin AI Interaction).
-*   **Phase 28+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), etc.
+    *   [ ] Investigate and fix agent looping, placeholder replacement, and targeting issues noted previously.
+*   **Phase 26:** Advanced Memory & Learning (Feedback Loop, Learned Principles).
+*   **Phase 27:** Proactive Behavior (Scheduling, Goal Management).
+*   **Phase 28+:** Federated Communication (Layer 3 - External Admin AI Interaction).
+*   **Phase 29+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), etc.

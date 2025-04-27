@@ -224,10 +224,11 @@ class Settings:
             if PROMPTS_FILE_PATH.exists():
                  with open(PROMPTS_FILE_PATH, 'r', encoding='utf-8') as f:
                      loaded_prompts = json.load(f)
-                     # Basic validation
+                     # Basic validation - Check for new state-specific keys
                      if isinstance(loaded_prompts, dict) and \
                         "standard_framework_instructions" in loaded_prompts and \
-                        "admin_ai_operational_instructions" in loaded_prompts and \
+                        "admin_ai_conversation_prompt" in loaded_prompts and \
+                        "admin_ai_planning_prompt" in loaded_prompts and \
                         "default_system_prompt" in loaded_prompts and \
                         "default_agent_persona" in loaded_prompts:
                           self.PROMPTS = loaded_prompts

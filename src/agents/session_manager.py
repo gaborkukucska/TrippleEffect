@@ -64,7 +64,8 @@ class SessionManager:
             "teams": current_teams,
             "agent_to_team": current_agent_to_team,
             "dynamic_agents_config": {},
-            "agent_histories": {}
+            "agent_histories": {},
+            "agent_states": {} # NEW: To store workflow states
         }
 
         logger.info(f"Gathering data for save. Current Teams: {list(current_teams.keys())}. Agent Mappings: {len(current_agent_to_team)}")
@@ -79,6 +80,11 @@ class SessionManager:
             except TypeError as e:
                 logger.error(f"History for agent '{agent_id}' is not JSON serializable: {e}. Saving placeholder.")
                 session_data["agent_histories"][agent_id] = [{"role": "system", "content": f"[History Serialization Error: {e}]"}]
+
+            # Save workflow state if it exists (primarily for Admin AI)
+            if hasattr(agent, 'state') and agent.state is not None:
+                session_data["agent_states"][agent_id] = agent.state
+                logger.debug(f"  Added workflow state '{agent.state}' for agent '{agent_id}'.")
 
             if agent_id not in self._manager.bootstrap_agents:
                 dynamic_agent_ids_found.append(agent_id)
@@ -135,6 +141,7 @@ class SessionManager:
             loaded_agent_to_team_data = session_data.get("agent_to_team", {})
             loaded_dynamic_configs = session_data.get("dynamic_agents_config", {})
             loaded_histories = session_data.get("agent_histories", {})
+            loaded_states = session_data.get("agent_states", {}) # NEW: Load states
             logger.info(f"Loaded 'teams' keys: {list(loaded_teams_data.keys())}")
             logger.info(f"Loaded 'agent_to_team' keys: {list(loaded_agent_to_team_data.keys())}")
             logger.info(f"Loaded 'dynamic_agents_config' keys: {list(loaded_dynamic_configs.keys())}")
@@ -201,18 +208,47 @@ class SessionManager:
             logger.debug(f"LOAD_DEBUG (After Dynamic Recreation): Agents keys = {list(self._manager.agents.keys())}")
 
             # Restore histories
-            loaded_history_count = 0
-            agents_with_loaded_history = []
-            for agent_id, history in loaded_histories.items():
+            loaded_history_count = 0; loaded_state_count = 0
+            agents_with_loaded_history = []; agents_with_loaded_state = []
+            all_recreated_or_bootstrap_ids = list(self._manager.agents.keys()) # Get all agents present after recreation
+
+            for agent_id in all_recreated_or_bootstrap_ids:
                 agent = self._manager.agents.get(agent_id)
-                if agent:
-                     if isinstance(history, list) and all(isinstance(msg, dict) and 'role' in msg and 'content' in msg for msg in history):
-                         agent.message_history = history;
-                         agent.set_status(AGENT_STATUS_IDLE); # Use imported constant
-                         loaded_history_count += 1; agents_with_loaded_history.append(agent_id)
-                     else: logger.warning(f"Invalid history format for agent '{agent_id}'. History not loaded.")
+                if not agent: continue # Should not happen, but safety check
+
+                # Restore History
+                history = loaded_histories.get(agent_id)
+                if history:
+                    if isinstance(history, list) and all(isinstance(msg, dict) and 'role' in msg and 'content' in msg for msg in history):
+                        agent.message_history = history
+                        loaded_history_count += 1
+                        agents_with_loaded_history.append(agent_id)
+                    else:
+                        logger.warning(f"Invalid history format for agent '{agent_id}'. History not loaded.")
+                else:
+                     # If history wasn't saved (e.g., bootstrap), ensure it's cleared/reset
+                     agent.clear_history()
+                     logger.debug(f"No saved history found for agent '{agent_id}', history reset.")
+
+                # Restore State (NEW)
+                state = loaded_states.get(agent_id)
+                if hasattr(agent, 'set_state') and state is not None:
+                    agent.set_state(state) # Use the new method
+                    loaded_state_count += 1
+                    agents_with_loaded_state.append(f"{agent_id}({state})")
+                elif agent_id == BOOTSTRAP_AGENT_ID and hasattr(agent, 'set_state'):
+                     # Ensure Admin AI defaults to conversation if no state was saved
+                     from src.agents.constants import ADMIN_STATE_CONVERSATION
+                     agent.set_state(ADMIN_STATE_CONVERSATION)
+                     logger.debug(f"No saved state for Admin AI '{agent_id}', defaulted to {ADMIN_STATE_CONVERSATION}.")
+
+
+                # Set final status to IDLE after loading everything
+                agent.set_status(AGENT_STATUS_IDLE)
+
             logger.info(f"Loaded histories for {loaded_history_count} agents: {agents_with_loaded_history}")
-            logger.debug(f"LOAD_DEBUG (After History Loading): Agents keys = {list(self._manager.agents.keys())}")
+            logger.info(f"Loaded workflow states for {loaded_state_count} agents: {agents_with_loaded_state}")
+            logger.debug(f"LOAD_DEBUG (After History/State Loading): Agents keys = {list(self._manager.agents.keys())}")
 
             # Update manager's state
             self._manager.current_project, self._manager.current_session = project_name, session_name

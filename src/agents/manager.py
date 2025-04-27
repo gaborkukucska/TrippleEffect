@@ -244,13 +244,23 @@ class AgentManager:
 
     # --- Message Handling and Execution ---
     async def schedule_cycle(self, agent: Agent, retry_count: int = 0):
-        if not agent: logger.error("Schedule cycle called with invalid Agent object."); return
-        logger.debug(f"Manager: Scheduling cycle for agent '{agent.agent_id}' (Retry: {retry_count}).")
-        # Log the intention/start of the cycle? Maybe too verbose. Logging happens within CycleHandler.
-        asyncio.create_task(self.cycle_handler.run_cycle(agent, retry_count))
+        if not agent:
+            logger.error("Schedule cycle called with invalid Agent object.")
+            return
+        logger.info(f"Manager: schedule_cycle called for agent '{agent.agent_id}' (Retry: {retry_count}). Creating asyncio task...")
+        try:
+            # --- ADDED MORE LOGGING ---
+            logger.debug(f"Manager: Attempting asyncio.create_task for agent '{agent.agent_id}'...")
+            task = asyncio.create_task(self.cycle_handler.run_cycle(agent, retry_count))
+            logger.info(f"Manager: Successfully created asyncio task object {task.get_name()} for agent '{agent.agent_id}' cycle.")
+            # --- END ADDED LOGGING ---
+        except Exception as e:
+            logger.error(f"Manager: FAILED to create asyncio task for agent '{agent.agent_id}' cycle: {e}", exc_info=True)
 
     async def handle_user_message(self, message: str, client_id: Optional[str] = None):
-        logger.info(f"Manager: Received user message for Admin AI: '{message[:100]}...'");
+        # --- ADDED LOGGING ---
+        logger.info(f"Manager: handle_user_message ENTERED. Message: '{message[:100]}...', Client ID: {client_id}")
+        # --- END ADDED LOGGING ---
 
         # Ensure context and log interaction
         if self.current_project is None or self.current_session_db_id is None:
@@ -270,12 +280,26 @@ class AgentManager:
              logger.error("Cannot log user message to DB: current_session_db_id is None.")
 
         admin_agent = self.agents.get(BOOTSTRAP_AGENT_ID);
-        if not admin_agent: logger.error(f"Manager: Admin AI ('{BOOTSTRAP_AGENT_ID}') not found."); await self.send_to_ui({"type": "error", "agent_id": "manager", "content": "Admin AI unavailable."}); return
+        if not admin_agent:
+            logger.error(f"Manager: Admin AI ('{BOOTSTRAP_AGENT_ID}') not found.");
+            await self.send_to_ui({"type": "error", "agent_id": "manager", "content": "Admin AI unavailable."});
+            return
+
+        # --- ADDED LOGGING ---
+        logger.info(f"Manager: Found Admin AI. Status: {admin_agent.status}. Checking if idle...")
+        # --- END ADDED LOGGING ---
         if admin_agent.status == AGENT_STATUS_IDLE:
-            logger.info(f"Manager: Delegating message to '{BOOTSTRAP_AGENT_ID}' and scheduling cycle.")
-            admin_agent.message_history.append({"role": "user", "content": message}); await self.schedule_cycle(admin_agent, 0)
+            logger.info(f"Manager: Admin AI is IDLE. Appending user message and scheduling cycle.")
+            admin_agent.message_history.append({"role": "user", "content": message});
+            await self.schedule_cycle(admin_agent, 0) # Schedule the cycle
         else:
-            logger.info(f"Manager: Admin AI busy ({admin_agent.status}). Message queued."); admin_agent.message_history.append({"role": "user", "content": message}); await self.push_agent_status_update(admin_agent.agent_id); await self.send_to_ui({ "type": "status", "agent_id": admin_agent.agent_id, "content": f"Admin AI busy ({admin_agent.status}). Queued." })
+            logger.info(f"Manager: Admin AI busy ({admin_agent.status}). Message queued.");
+            admin_agent.message_history.append({"role": "user", "content": message});
+            await self.push_agent_status_update(admin_agent.agent_id);
+            await self.send_to_ui({ "type": "status", "agent_id": admin_agent.agent_id, "content": f"Admin AI busy ({admin_agent.status}). Queued." })
+        # --- ADDED LOGGING ---
+        logger.info(f"Manager: handle_user_message EXITED for message: '{message[:100]}...'")
+        # --- END ADDED LOGGING ---
 
     # --- Failover Handling (Delegation) ---
     async def handle_agent_model_failover(self, agent_id: str, last_error_obj: Exception):
@@ -372,6 +396,171 @@ class AgentManager:
              logger.warning(f"Could not find or create a DB session record for loaded session '{project_name}/{session_name}'. Interaction logging might fail.")
              fs_message += " (Warning: DB session record not found/created)"
         return True, fs_message
+
+    # --- NEW: Framework-driven Project/PM Creation ---
+    async def create_project_and_pm_agent(self, project_title: str, plan_description: str) -> Tuple[bool, str, Optional[str]]:
+        """
+         Handles the automatic creation of a project task and its dedicated PM agent.
+         Called by CycleHandler when Admin AI submits a plan.
+         """
+        from src.tools.project_management import ProjectManagementTool, TASKLIB_AVAILABLE, Task # Import Task locally
+        from src.agents.constants import ADMIN_STATE_CONVERSATION # Import locally
+        import re # Import re locally for sanitization
+
+        logger.info(f"Framework attempting to create project '{project_title}' and PM agent.")
+        if not self.current_project or not self.current_session:
+            msg = "Framework Error: Cannot create project/PM agent without active project/session context."
+            logger.error(msg)
+            return False, msg, None
+
+        # --- REMOVED Old Task Creation Logic ---
+
+        # 2. Create PM Agent Instance (Keep this part)
+        pm_agent_id = None
+        pm_creation_success = False
+        pm_creation_message = f"Failed to create PM agent for project '{project_title}'."
+        try:
+            # Sanitize names for use in agent ID
+            sanitized_project = re.sub(r'\W+', '_', project_title)
+            sanitized_session = re.sub(r'\W+', '_', self.current_session)
+            pm_instance_id = f"pm_{sanitized_project}_{sanitized_session}"
+            pm_bootstrap_id = "project_manager_agent" # ID from config.yaml
+
+            if pm_instance_id not in self.agents:
+                 logger.info(f"Attempting to create Project Manager '{pm_instance_id}' for project '{project_title}'...")
+                 # --- MODIFIED LOGIC ---
+                 # Get base config for persona/temp etc., but don't rely on its provider/model
+                 pm_config_base = settings.get_agent_config_by_id(pm_bootstrap_id)
+
+                 if pm_config_base:
+                     pm_persona_base = pm_config_base.get("persona", "Project Manager")
+                     pm_persona = pm_persona_base + f" ({project_title})" # Unique persona
+
+                     # Try getting prompt from prompts.json first (key assumed to match bootstrap ID)
+                     pm_system_prompt = settings.PROMPTS.get(pm_bootstrap_id)
+                     if not pm_system_prompt:
+                         pm_system_prompt = pm_config_base.get("system_prompt") # Fallback to config
+                     if not pm_system_prompt:
+                         pm_system_prompt = "Manage project tasks." # Hardcoded default fallback
+                         logger.warning(f"Could not find system prompt for '{pm_bootstrap_id}' in prompts.json or config. Using default.")
+
+                     pm_temp = pm_config_base.get("temperature") # Get temp if possible
+                     # Get other kwargs, excluding ones handled by create_agent_instance or lifecycle
+                     pm_extra_kwargs = {k: v for k, v in pm_config_base.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona']}
+
+                     # Call create_agent_instance forcing auto-selection for provider/model
+                     logger.info(f"Calling create_agent_instance for '{pm_instance_id}' with provider=None, model=None to force auto-selection.")
+                     pm_creation_success, pm_creation_message, pm_agent_id = await self.create_agent_instance(
+                         agent_id_requested=pm_instance_id,
+                         provider=None, # Force auto-selection
+                         model=None,    # Force auto-selection
+                         system_prompt=pm_system_prompt,
+                         persona=pm_persona,
+                         team_id=None, # PM not in a team initially
+                         temperature=pm_temp,
+                         **pm_extra_kwargs
+                     )
+                 else:
+                     # Config for the bootstrap PM agent itself wasn't found
+                     pm_creation_success = False
+                     pm_creation_message = f"Config for bootstrap agent '{pm_bootstrap_id}' not found. Cannot create PM."
+                     logger.error(pm_creation_message)
+                 # --- END MODIFIED LOGIC ---
+            else:
+                pm_agent_id = pm_instance_id
+                pm_creation_success = True # Agent already exists
+                pm_creation_message = f"Project Manager agent '{pm_agent_id}' already exists for this project/session."
+                logger.info(pm_creation_message)
+
+        except Exception as pm_err:
+            logger.error(f"Error during PM agent creation for project '{project_title}': {pm_err}", exc_info=True)
+            pm_creation_message = f"Error creating PM agent: {pm_err}"
+
+        if not pm_creation_success or not pm_agent_id:
+            # If PM creation failed, return the error
+            logger.error(f"PM Agent creation failed for project '{project_title}'. Cannot proceed.")
+            return False, f"Failed to create PM agent: {pm_creation_message}", None
+
+        # 3. Create Initial "Project Plan" Task using ToolExecutor
+        task_creation_success = False
+        task_creation_message = f"Failed to create initial 'Project Plan' task for project '{project_title}'."
+        task_uuid = None
+
+        try:
+            logger.info(f"Attempting to add 'Project Plan' task via ToolExecutor for PM '{pm_agent_id}'...")
+            tool_args = {
+                "action": "add_task",
+                "description": f"Project Plan: {project_title}\n\n{plan_description}", # Combine title and plan
+                "priority": "H",
+                "project_filter": project_title, # Set the project field
+                "tags": ["project_plan"], # Use standard tag
+                "assignee_agent_id": pm_agent_id # Assign to the new PM
+            }
+            # Execute using ToolExecutor - Note: ToolExecutor needs agent_id of the CALLER (Admin AI?)
+            # Or should we execute this as the system? Let's assume system execution for now.
+            # We need the PM agent's sandbox path though.
+            pm_agent = self.agents.get(pm_agent_id)
+            if not pm_agent:
+                 raise ValueError(f"Could not find PM agent '{pm_agent_id}' after creation.")
+
+            # Execute the tool call
+            task_result = await self.tool_executor.execute_tool(
+                agent_id="framework", # Execute as framework/system
+                agent_sandbox_path=pm_agent.sandbox_path, # Use PM's sandbox context
+                tool_name="project_management",
+                tool_args=tool_args,
+                project_name=self.current_project, # Pass context
+                session_name=self.current_session   # Pass context
+            )
+
+            if isinstance(task_result, dict) and task_result.get("status") == "success":
+                task_uuid = task_result.get("task_uuid")
+                task_id = task_result.get("task_id")
+                task_creation_success = True
+                task_creation_message = f"Successfully created 'Project Plan' task (ID: {task_id}, UUID: {task_uuid}) and assigned to PM '{pm_agent_id}'."
+                logger.info(task_creation_message)
+            else:
+                error_detail = task_result.get("message", "Unknown error from tool execution.") if isinstance(task_result, dict) else str(task_result)
+                task_creation_message = f"Failed to create 'Project Plan' task via ToolExecutor: {error_detail}"
+                logger.error(task_creation_message)
+                # Ensure task_creation_success remains False if status wasn't 'success'
+                task_creation_success = False
+
+        except Exception as task_err:
+            logger.error(f"Exception during 'Project Plan' task creation via ToolExecutor: {task_err}", exc_info=True)
+            task_creation_message = f"Failed to create 'Project Plan' task due to exception: {task_err}"
+            task_creation_success = False # Ensure success is false on exception
+
+        # --- CORRECTED: Check task_creation_success flag ---
+        if not task_creation_success:
+            # Log error but proceed with approval request.
+            logger.error(f"Proceeding with PM agent '{pm_agent_id}' but failed to create initial plan task: {task_creation_message}")
+            # Optionally modify the final message to indicate the task failure
+            # final_message = f"Project '{project_title}' PM agent '{pm_agent_id}' created, but failed to add initial plan task. Awaiting approval."
+
+        # 4. Send Approval Notification to UI (AFTER task creation attempt)
+        final_message = f"Project '{project_title}' created and PM agent '{pm_agent_id}' assigned. {task_creation_message}. Awaiting user approval to start."
+        logger.info(f"Framework: {final_message}")
+
+        await self.send_to_ui({
+            "type": "project_pending_approval",
+            "project_title": project_title,
+            "plan_content": plan_description, # Send the original plan content
+            "pm_agent_id": pm_agent_id,
+            "message": f"Project '{project_title}' is planned and ready for review. Please approve to start execution."
+        })
+
+        # --- REMOVED: Auto-scheduling of PM agent ---
+        # pm_agent = self.agents.get(pm_agent_id)
+        # if pm_agent:
+        #     logger.info(f"Scheduling initial cycle for new PM agent '{pm_agent_id}'...")
+        #     asyncio.create_task(self.schedule_cycle(pm_agent))
+        # else:
+        #     logger.error(f"Could not find newly created PM agent '{pm_agent_id}' in manager to schedule cycle!")
+        # --- END REMOVED ---
+
+        return True, final_message, pm_agent_id
+    # --- END NEW ---
 
 
     def get_agent_info_list_sync(self, filter_team_id: Optional[str] = None) -> List[Dict[str, Any]]:

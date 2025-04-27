@@ -15,9 +15,15 @@ from src.config.settings import settings
 # Import the ConfigManager singleton instance for agent config CRUD
 from src.config.config_manager import config_manager
 
-# --- Type Hinting for AgentManager ---
+# --- Type Hinting & Direct Import for AgentManager ---
+from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.agents.manager import AgentManager
+# Add direct import to resolve runtime NameError during FastAPI dependency evaluation
+from src.agents.manager import AgentManager
+# --- NEW: Import agent status constants ---
+from src.agents.constants import AGENT_STATUS_IDLE
+# --- END NEW ---
 
 logger = logging.getLogger(__name__)
 
@@ -241,7 +247,7 @@ async def save_current_session(
     project_name: str,
     session_input: Optional[SaveSessionInput] = None,
     # --- Inject AgentManager using the modified dependency ---
-    manager: 'AgentManager' = Depends(get_agent_manager_dependency)
+    manager: AgentManager = Depends(get_agent_manager_dependency) # Use direct type hint now
 ):
     """ Saves the current state (agents, histories, teams) as a new session. """
     session_name_to_save = session_input.session_name if session_input else None
@@ -262,7 +268,7 @@ async def load_specific_session(
     project_name: str,
     session_name: str,
     # --- Inject AgentManager using the modified dependency ---
-    manager: 'AgentManager' = Depends(get_agent_manager_dependency)
+    manager: AgentManager = Depends(get_agent_manager_dependency) # Use direct type hint now
 ):
     """ Loads the specified session, replacing current dynamic agents and histories. """
     try:
@@ -282,3 +288,43 @@ async def load_specific_session(
     except Exception as e:
         logger.error(f"Unexpected error loading session '{session_name}' for project '{project_name}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Unexpected error loading session: {e}")
+
+
+# --- NEW: Project Approval Endpoint ---
+@router.post("/api/projects/approve/{pm_agent_id}", response_model=GeneralResponse)
+async def approve_project_start(
+    pm_agent_id: str,
+    manager: AgentManager = Depends(get_agent_manager_dependency)
+):
+    """ Approves the start of a project managed by the specified PM agent. """
+    logger.info(f"Received approval request for project managed by PM: {pm_agent_id}")
+    try:
+        agent_to_start = manager.agents.get(pm_agent_id)
+        if not agent_to_start:
+            logger.error(f"Approval failed: PM Agent '{pm_agent_id}' not found.")
+            raise HTTPException(status_code=404, detail=f"Project Manager agent '{pm_agent_id}' not found.")
+
+        # Check if the agent is idle (ready to start)
+        if agent_to_start.status != AGENT_STATUS_IDLE:
+            logger.warning(f"Approval failed: PM Agent '{pm_agent_id}' is not idle (Status: {agent_to_start.status}). Cannot start.")
+            raise HTTPException(status_code=409, detail=f"Project Manager agent '{pm_agent_id}' is currently busy (Status: {agent_to_start.status}) and cannot be started.")
+
+        # Schedule the agent's first cycle
+        logger.info(f"Approving project start for PM '{pm_agent_id}'. Scheduling initial cycle...")
+        await manager.schedule_cycle(agent_to_start)
+
+        # Send confirmation to UI
+        await manager.send_to_ui({
+            "type": "project_approved",
+            "pm_agent_id": pm_agent_id,
+            "message": f"Project managed by '{pm_agent_id}' approved and started."
+        })
+
+        return GeneralResponse(success=True, message=f"Project managed by '{pm_agent_id}' approved and started.")
+
+    except HTTPException as http_exc:
+        raise http_exc # Re-raise known HTTP exceptions
+    except Exception as e:
+        logger.error(f"Unexpected error approving project for PM '{pm_agent_id}': {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Unexpected error approving project: {e}")
+# --- END NEW ---

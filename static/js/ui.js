@@ -367,4 +367,5 @@ export const displaySessionStatus = (message, isSuccess) => {
     }, 5000); // Hide after 5 seconds
 };
 
+
 console.log("Frontend UI module loaded.");

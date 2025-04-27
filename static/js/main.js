@@ -8,6 +8,8 @@ import * as ui from './ui.js'; // Import UI manipulation functions
 import * as ws from './websocket.js'; // Import WebSocket connection logic
 // --- Handler Imports ---
 import * as handlers from './handlers.js'; // Import all handlers
+// --- API Import (Modified) ---
+import { approveProject } from './api.js'; // Import specific function
 
 /**
  * Sets up primary event listeners after DOM elements are assigned.
@@ -98,11 +100,55 @@ const setupEventListeners = () => {
     console.log("Main: Primary event listeners setup complete.");
 };
 
+// --- NEW: Define named handler function in module scope ---
+/**
+ * Handles clicks on the project approval button using event delegation.
+ * @param {Event} event The click event.
+ */
+const handleApproveButtonClick = async (event) => {
+    // Check if the clicked element is an approve button
+    if (event.target && event.target.classList.contains('approve-project-btn')) {
+        const button = event.target;
+        const pmAgentId = button.dataset.pmId; // Get agent ID from data attribute
+        if (!pmAgentId) {
+            console.error("Approve button clicked, but pmAgentId not found in data attribute.");
+            ui.displayMessage("Error: Could not identify project to approve.", 'error', 'internal-comms-area', 'frontend');
+            return;
+        }
+
+        console.log(`Handler: Approve button clicked for PM Agent ID: ${pmAgentId}`);
+        button.disabled = true; // Disable button immediately
+        button.textContent = 'Approving...';
+
+        // --- DIAGNOSTIC LOG ---
+        console.log("Checking approveProject function reference:", typeof approveProject, approveProject);
+        // --- END DIAGNOSTIC LOG ---
+
+        try {
+            // Use the directly imported approveProject function (available in this scope)
+            const result = await approveProject(pmAgentId);
+            console.log("Handler: Project approval API call successful.", result);
+            // Backend sends 'project_approved' message via WebSocket,
+            // which handleWebSocketMessage will process to show confirmation.
+            button.textContent = 'Approved'; // Update button text
+        } catch (error) {
+            console.error(`Handler: Error approving project for PM ${pmAgentId}:`, error);
+            // Error message should be displayed by makeApiCall, but add a fallback
+            ui.displayMessage(`Error approving project: ${error.message || 'Unknown error'}`, 'error', 'internal-comms-area', 'frontend');
+            button.disabled = false; // Re-enable button on error
+            button.textContent = 'Approve Project Start';
+        }
+    }
+};
+// --- END NEW ---
+
 
 /**
  * Initialization function runs when the DOM is fully loaded.
  */
 const initializeApp = () => {
+    // --- REMOVED Destructuring inside initializeApp ---
+
     console.log("Main: DOM fully loaded and parsed. Initializing app..."); // Log 1: Start Init
 
     console.log("Main: Attempting to assign DOM elements..."); // Log 2: Before Assign
@@ -115,6 +161,11 @@ const initializeApp = () => {
 
     ui.switchView('chat-view'); // Set the initial view using the UI module
     ws.connectWebSocket(); // Start WebSocket connection using the WS module
+
+
+    // --- Attach the named handler function ---
+    document.body.addEventListener('click', handleApproveButtonClick);
+    // --- END Attach ---
 
     console.log("Main: Application initialization sequence complete."); // Log 6: End Init
 };

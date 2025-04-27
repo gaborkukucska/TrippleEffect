@@ -99,12 +99,24 @@ class KnowledgeBaseTool(BaseTool):
 
         try:
             if action == "save_knowledge":
+                # --- MODIFIED: Make summary/keywords optional for saving ---
                 summary = kwargs.get("summary")
-                keywords = kwargs.get("keywords")
+                keywords_str = kwargs.get("keywords") # Renamed to avoid conflict
                 importance_str = kwargs.get("importance", "0.5")
 
-                if not summary or not keywords:
-                    return "Error: 'summary' and 'keywords' parameters are required for 'save_knowledge'."
+                # Provide defaults if missing (e.g., for automatic thought saving)
+                if not summary:
+                    # Attempt to get raw thought content if available (needs framework support)
+                    # For now, use a placeholder if summary is truly missing.
+                    summary = kwargs.get("_raw_thought_content", "[No Summary Provided]") # Example placeholder
+                    logger.warning(f"KnowledgeBaseTool: 'summary' missing for save_knowledge called by {agent_id}. Using placeholder/raw content.")
+
+                if not keywords_str:
+                    keywords_str = f"agent_thought,{agent_id},auto_logged" # Default keywords
+                    logger.warning(f"KnowledgeBaseTool: 'keywords' missing for save_knowledge called by {agent_id}. Using default tags: {keywords_str}")
+
+                # if not summary or not keywords: # Original check removed
+                #     return "Error: 'summary' and 'keywords' parameters are required for 'save_knowledge'."
 
                 try:
                     importance = float(importance_str)
@@ -116,8 +128,8 @@ class KnowledgeBaseTool(BaseTool):
                 interaction_id = None
 
                 saved_knowledge = await db_manager.save_knowledge(
-                    keywords=keywords,
-                    summary=summary,
+                    keywords=keywords_str, # Use the potentially defaulted string
+                    summary=summary, # Use the potentially defaulted summary
                     session_id=current_session_db_id, # May be None for now
                     interaction_id=interaction_id, # May be None
                     importance=importance

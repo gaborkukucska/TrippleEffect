@@ -19,9 +19,14 @@ For a faster setup, you can use the provided shell scripts (ensure they are exec
 
 ## Core Concepts
 
-*   **Admin AI Initiator:** The central agent (`admin_ai`) interacts with the user, understands requests, initiates projects, creates initial plans, and delegates execution to a Project Manager agent.
-*   **Project Manager Agent:** Automatically created per project/session (`pm_{project}_{session}`), this agent receives the plan from Admin AI, uses the `ProjectManagementTool` (backed by `tasklib`) to create and track tasks (including assignees), pings agents for updates, and reports progress/completion back to Admin AI.
-*   **Dynamic Agent Management:** Admin AI uses `ManageTeamTool` to create teams and worker agents as per the plan. The Project Manager agent is added to the team by Admin AI.
+*   **Stateful Admin AI:** The central agent (`admin_ai`) operates using a state machine (`conversation`, `planning`, etc.). In the `conversation` state, it interacts with the user and monitors ongoing projects via their PMs. When an actionable request is identified, it transitions to the `planning` state.
+*   **Framework-Driven Project Initiation:** When Admin AI submits a plan (including a `<title>`) in the `planning` state, the framework automatically:
+    *   Creates a project task in Taskwarrior using the title and plan.
+    *   Creates a dedicated Project Manager agent (`pm_{project_title}_{session_id}`).
+    *   Assigns both Admin AI and the new PM as administrators on the project task (via tags/UDAs).
+    *   Notifies Admin AI and transitions it back to the `conversation` state.
+*   **Project Manager Agent:** Automatically created per project/session by the framework, this agent uses the `ProjectManagementTool` (backed by `tasklib`) to decompose the initial plan, create/assign sub-tasks, monitor progress via `send_message`, and report status/completion back to Admin AI.
+*   **Dynamic Worker Agent Management:** The Project Manager agent (or Admin AI, depending on workflow evolution) uses `ManageTeamTool` to create worker agents as needed for specific sub-tasks.
 *   **Intelligent Model Handling:**
     *   **Discovery:** Automatically finds reachable LLM providers (Ollama, OpenRouter, OpenAI) and available models at startup.
     *   **Filtering:** Filters discovered models based on the `MODEL_TIER` setting (`.env`).
@@ -48,8 +53,10 @@ For a faster setup, you can use the provided shell scripts (ensure they are exec
     *   Automatic failover to different models/providers based on tiers (Local -> Free -> Paid).
     *   Key quarantining on persistent auth/rate limit errors.
 *   **Performance Tracking:** Monitors success rate and latency per model, saved to `data/model_performance_metrics.json`.
-*   **Structured Admin AI Workflow:** Mandatory planning phase (`<plan>` tag) before execution. Strong emphasis on **Knowledge Base search before planning**.
-    *   **XML Tooling:** Agents request tool use via XML format. Available tools:
+*   **State-Driven Admin AI Workflow:** Admin AI operates based on its current state (`conversation`, `planning`).
+    *   **Conversation State:** Focuses on user interaction, KB search/save, monitoring PM updates, and identifying new tasks. Uses `<request_state state='planning'>` to signal task identification.
+    *   **Planning State:** Focuses solely on creating a plan with a `<title>` tag. Framework handles project/PM creation upon plan submission.
+*   **XML Tooling:** Agents request tool use via XML format. Available tools:
         *   `FileSystemTool`: Read, Write, List, Mkdir, Delete (File/Empty Dir), Find/Replace in private sandbox or shared workspace.
         *   `GitHubTool`: List Repos, List Files (Recursive), Read File content using PAT.
         *   `ManageTeamTool`: Create/Delete Agents/Teams, Assign Agents, List Agents/Teams, Get Agent Details.
@@ -71,7 +78,7 @@ For a faster setup, you can use the provided shell scripts (ensure they are exec
     *   Session management interface.
     *   Static configuration viewer.
 *   **Sandboxing:** Agents operate within dedicated sandbox directories or a shared session workspace.
-*   **Context Optimization:** Agents guided to use files for large outputs. Separate, concise system prompt variant for local Admin AI models.
+*   **Context Optimization:** Agents guided to use files for large outputs. Admin AI prompts are now state-specific.
 *   **Admin AI Time Context:** Current UTC time is injected into Admin AI prompts.
 *   **Ollama Proxy (Optional):** Integrates an optional Node.js proxy for Ollama to potentially stabilize streaming.
 *   **Ollama Integration:** Fixed response streaming issues, improved network discovery (`LOCAL_API_DISCOVERY_SUBNETS="auto"`), addressed initialization errors.
@@ -109,14 +116,14 @@ graph TD
 
         subgraph Handlers ["Core Logic Handlers"]
             direction LR
-            CYCLE_HANDLER["🔄 AgentCycleHandler ✅<br>(Known agent logic issues: looping, placeholder replacement, targeting - See Phase 24)"] %% ANNOTATION
+            CYCLE_HANDLER["🔄 AgentCycleHandler ✅<br>(Manages agent cycles, state transitions, plan interception)"] %% Updated P25
             INTERACTION_HANDLER["🤝 InteractionHandler ✅"]
             FAILOVER_HANDLER["💥 FailoverHandler (Func) ✅"]
         end
 
-        subgraph CoreAgents ["Core & Dynamic Agents"] %% Updated P24
-             ADMIN_AI["🤖 Admin AI Agent <br>(Initiator/User Interface)✅"]
-             PM_AGENT["🤖 Project Manager Agent <br>(Per Session, Auto-Created)✅"]
+        subgraph CoreAgents ["Core & Dynamic Agents"] %% Updated P25
+             ADMIN_AI["🤖 Admin AI Agent <br>(Stateful: Conversation/Planning)✅"]
+             PM_AGENT["🤖 Project Manager Agent <br>(Per Session, Framework-Created)✅"]
              subgraph DynamicTeam [Dynamic Team Example]
                 direction LR
                  AGENT_DYN_1["🤖 Worker Agent 1"]
@@ -181,9 +188,10 @@ graph TD
     AGENT_MANAGER -- Delegates --> INTERACTION_HANDLER;
     AGENT_MANAGER -- Triggers --> FAILOVER_HANDLER;
     AGENT_MANAGER -- Manages --> CoreAgents;
-    AGENT_MANAGER -- Creates --> PM_AGENT; %% Added P24
+    %% AGENT_MANAGER -- Creates --> PM_AGENT; %% Removed P25 - Framework/CycleHandler now creates PM
 
     CYCLE_HANDLER -- Runs --> CoreAgents;
+    CYCLE_HANDLER -- Creates --> PM_AGENT; %% Added P25
     CYCLE_HANDLER -- Logs to --> DB_MANAGER;
     INTERACTION_HANDLER -- Delegates --> TOOL_EXECUTOR;
     INTERACTION_HANDLER -- Updates --> STATE_MANAGER;
@@ -293,9 +301,9 @@ graph TD
 ## Development Status
 
 *   **Current Version:** 2.24 <!-- Updated Version -->
-*   **Completed Phases:** 1-23 (Core, Dynamic Agents, Failover, Key Mgmt, Proxy, XML Tools, Auto-Selection, Planning Phase, Context Optimization, Tool Enhancements, System Help, Memory Foundation (DB), UI Layer Refactor & KB Prompt Refinement, **Project Manager Agent & Tasklib Integration**). **Recent Fixes/Enhancements:** Ollama integration fixes, enhanced network discovery, local model prompt variant, initial on-demand tool help mechanism, PM agent workflow, `tasklib` integration.
-*   **Current Phase (24):** Advanced Memory & Learning (incl. fixing known agent logic issues - looping, placeholders, targeting).
-*   **Future Plans:** Proactive Behavior (Phase 25), Federated Communication (Phase 26+), New Admin tools, LiteLLM provider, advanced collaboration, resource limits, DB/Vector Stores, **Full transition to on-demand tool help** (removing static descriptions from prompts - Phase 27+).
+*   **Completed Phases:** 1-24 (Core, Dynamic Agents, Failover, Key Mgmt, Proxy, XML Tools, Auto-Selection, Planning Phase, Context Optimization, Tool Enhancements, System Help, Memory Foundation (DB), UI Layer Refactor & KB Prompt Refinement, Project Manager Agent & Tasklib Integration, **Admin AI State Machine & Framework-Driven Project Init**). **Recent Fixes/Enhancements:** Ollama integration fixes, enhanced network discovery, initial on-demand tool help mechanism, PM agent workflow, `tasklib` integration, Bootstrap agent init fixes, Admin AI state machine, Framework project/PM creation.
+*   **Current Phase (25):** Advanced Memory & Learning (incl. fixing known agent logic issues - looping, placeholders, targeting).
+*   **Future Plans:** Proactive Behavior (Phase 26), Federated Communication (Phase 27+), New Admin tools, LiteLLM provider, advanced collaboration, resource limits, DB/Vector Stores, **Full transition to on-demand tool help** (removing static descriptions from prompts - Phase 28+).
 
 See `helperfiles/PROJECT_PLAN.md` for detailed phase information.
 

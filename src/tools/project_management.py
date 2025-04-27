@@ -1,7 +1,7 @@
 # START OF FILE src/tools/project_management.py
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, TYPE_CHECKING # Import TYPE_CHECKING
 
 # Import tasklib safely
 try:
@@ -11,6 +11,10 @@ except ImportError:
     TaskWarrior = None
     Task = None
     TASKLIB_AVAILABLE = False
+
+# Conditionally import for type checking only to avoid runtime errors if tasklib is missing
+if TYPE_CHECKING:
+    from tasklib import TaskWarrior, Task
 
 from .base import BaseTool, ToolParameter # Import ToolParameter
 from src.config.settings import BASE_DIR # Import BASE_DIR for constructing paths
@@ -51,7 +55,7 @@ class ProjectManagementTool(BaseTool):
             # Optionally raise an error or handle gracefully
         # No TaskWarrior instance created here, it's created per-execution
 
-    def _get_taskwarrior_instance(self, project_name: str, session_name: str) -> Optional[TaskWarrior]:
+    def _get_taskwarrior_instance(self, project_name: str, session_name: str) -> Optional['TaskWarrior']: # Use string literal for type hint
         """Initializes TaskWarrior with the correct data location."""
         if not TASKLIB_AVAILABLE:
             logger.error("Tasklib not available.")
@@ -65,15 +69,42 @@ class ProjectManagementTool(BaseTool):
             data_path = BASE_DIR / "projects" / project_name / session_name / "task_data"
             # Ensure the directory exists
             data_path.mkdir(parents=True, exist_ok=True)
+            # --- NEW: Ensure a minimal .taskrc exists ---
+            taskrc_path = data_path / '.taskrc'
+            if not taskrc_path.exists():
+                try:
+                    # Define necessary UDAs
+                    uda_config = """
+uda.assignee.type=string
+uda.assignee.label=Assignee
+# Add other UDAs here if needed in the future
+"""
+                    with open(taskrc_path, 'w') as f:
+                        f.write(uda_config.strip() + '\n')
+                    logger.info(f"Created .taskrc with UDA definitions at {taskrc_path}")
+                except Exception as rc_err:
+                    logger.warning(f"Failed to create .taskrc with UDA definitions at {taskrc_path}: {rc_err}. Task assignment might fail.")
+            # --- END MODIFIED ---
             logger.debug(f"Initializing TaskWarrior with data_location: {data_path}")
             # Override default config to point to our specific data location
             return TaskWarrior(data_location=str(data_path))
         except Exception as e:
-            logger.error(f"Failed to initialize TaskWarrior at {data_path}: {e}", exc_info=True)
-            return None
+             logger.error(f"Failed to initialize TaskWarrior at {data_path}: {e}", exc_info=True)
+             return None
 
-    async def execute(self, agent: Any, **kwargs) -> Dict[str, Any]:
+    # --- NEW: Helper methods for consistent results ---
+    def _success_result(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Formats a successful result."""
+        return {"status": "success", **data}
+
+    def _error_result(self, message: str) -> Dict[str, Any]:
+        """Formats an error result."""
+        return {"status": "error", "message": message}
+    # --- END NEW ---
+
+    async def execute(self, **kwargs) -> Dict[str, Any]: # Removed agent: Any parameter
         """Executes the specified project management action."""
+        agent_id = kwargs.get("agent_id", "UnknownAgent") # Get agent_id from kwargs for logging
         if not TASKLIB_AVAILABLE:
             return self._error_result("Tasklib library not installed.")
 
@@ -123,18 +154,67 @@ class ProjectManagementTool(BaseTool):
                          logger.warning(f"Error fetching dependency task UUID '{depends_uuid}': {dep_err}")
                          # return self._error_result(f"Error fetching dependency task UUID '{depends_uuid}'.")
 
+                # --- Use execute_command ONLY for adding ---
+                logger.debug(f"ProjectManagementTool add_task: Adding task via execute_command. Description: {description[:50]}...")
+                add_cmd_args = ['add']
+                # Add attributes directly to command
+                if priority: add_cmd_args.append(f'priority:{priority}')
+                if project: add_cmd_args.append(f'project:{project}')
+                if assignee: add_cmd_args.append(f'assignee:{assignee}') # Add assignee UDA via command
+                if tags and isinstance(tags, list):
+                    add_cmd_args.extend([f'+{tag}' for tag in tags])
+                # Handle depends? Adding dependencies via CLI add is complex, might need separate modify. Skip for now.
 
-                new_task = Task(tw, **task_data)
-                new_task.save()
-                logger.info(f"Task added: {new_task['description']} (UUID: {new_task['uuid']})")
-                # Return relevant info, especially the UUID
-                return self._success_result({
-                    "message": "Task added successfully.",
-                    "task_uuid": new_task['uuid'],
-                    "task_id": new_task['id'], # Also return the integer ID
-                    "description": new_task['description'],
-                    "assignee": new_task.get('assignee') # Return assignee if set
-                })
+                # --- User Requested CLI Add Order: priority, project, description, +tags, +assignee_tag ---
+                final_add_cmd_args = ['add']
+                if priority: final_add_cmd_args.append(f'priority:{priority}')
+                if project: final_add_cmd_args.append(f'project:{project}')
+
+                # Add description next
+                final_add_cmd_args.append(description)
+
+                # Add standard tags
+                if tags and isinstance(tags, list):
+                    final_add_cmd_args.extend([f'+{tag}' for tag in tags])
+
+                # Add assignee as a tag at the end
+                if assignee: final_add_cmd_args.append(f'+{assignee}') # Add as +tag
+
+                logger.debug(f"ProjectManagementTool: Executing command (assignee as tag last): task {' '.join(final_add_cmd_args)}")
+                add_output_lines = tw.execute_command(final_add_cmd_args) # Execute the constructed command
+                add_output_str = "\n".join(add_output_lines)
+                logger.debug(f"Taskwarrior 'add' command output: {add_output_str}")
+
+                created_task_id = None
+                # Import re if not already at the top
+                import re
+                id_match = re.search(r'Created task (\d+)\.', add_output_str)
+                if not id_match:
+                    logger.error(f"Failed to parse task ID from 'add' command output: {add_output_str}")
+                    return self._error_result(f"Failed to create task (could not parse ID from output). Output: {add_output_str}")
+
+                created_task_id = int(id_match.group(1))
+                logger.info(f"Task added via command (ID: {created_task_id}). Fetching final state...")
+
+                # Fetch the final task state using tasklib
+                try:
+                    final_task = tw.tasks.get(id=created_task_id)
+                    logger.debug(f"ProjectManagementTool: Final task state after add/modify: {final_task.export_data()}")
+                    return self._success_result({
+                        "message": "Task added successfully.",
+                        "task_uuid": final_task['uuid'],
+                        "task_id": final_task['id'],
+                        "description": final_task['description'],
+                        "assignee": getattr(final_task, 'assignee', None) # Still use getattr for safety on fetch
+                    })
+                except Exception as fetch_err:
+                    logger.error(f"Failed to fetch task ID {created_task_id} after add/modify: {fetch_err}", exc_info=True)
+                    return self._success_result({
+                        "message": f"Task added (ID: {created_task_id}), but failed to fetch final state.",
+                        "task_id": created_task_id,
+                        "task_uuid": None
+                    })
+                # --- End CLI Create-then-Modify ---
 
             elif action == "list_tasks":
                 # Filters
@@ -158,23 +238,30 @@ class ProjectManagementTool(BaseTool):
                 # Execute query and perform post-filtering
                 tasks = tasks_query.all() # Get all matching tasks first
                 if tags_filter and isinstance(tags_filter, list):
+                    # --- CORRECTED: Use ['tags'] for Tasklib ---
                     tasks = [t for t in tasks if t['tags'] and all(tag in t['tags'] for tag in tags_filter)]
                 if assignee_filter:
-                    tasks = [t for t in tasks if t.get('assignee') == assignee_filter]
+                    # --- CORRECTED: Use ['assignee'] or getattr for Tasklib ---
+                    tasks = [t for t in tasks if getattr(t, 'assignee', None) == assignee_filter]
 
                 # Format results
                 task_list = []
                 for task in tasks: # Iterate through the already filtered tasks
+                    # --- Use _data.get() with correct lowercase keys ---
+                    assignee_val = task._data.get('assignee') # UDA key is likely lowercase
+                    project_val = task._data.get('project')   # Standard key is lowercase
+                    priority_val = task._data.get('priority') # Standard key is lowercase
+                    logger.debug(f"Task {task['id']} raw data: {task._data}") # Log raw data for inspection
                     task_list.append({
                         "id": task['id'],
                         "uuid": task['uuid'],
                         "status": task['status'],
                         "description": task['description'],
-                        "priority": task.get('priority'),
-                        "project": task.get('project'),
+                        "priority": priority_val, # Use value retrieved with correct key
+                        "project": project_val,   # Use value retrieved with correct key
                         "tags": list(task['tags']) if task['tags'] else [],
                         "depends": [dep['uuid'] for dep in task['depends']] if task['depends'] else [],
-                        "assignee": task.get('assignee') # Include assignee
+                        "assignee": assignee_val  # Use value retrieved with correct key
                     })
 
                 return self._success_result({

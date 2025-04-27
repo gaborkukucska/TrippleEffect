@@ -85,4 +85,18 @@ export const makeApiCall = async (endpoint, method = 'GET', body = null) => {
     }
 };
 
+/**
+ * Sends a request to the backend to approve the start of a project.
+ * @param {string} pmAgentId The ID of the Project Manager agent whose project should be started.
+ * @returns {Promise<object>} The JSON response from the backend.
+ * @throws {Error} If the API call fails or returns an error status.
+ */
+export const approveProject = async (pmAgentId) => {
+    console.log(`API: Sending approval request for PM Agent ID: ${pmAgentId}`);
+    const endpoint = `/api/projects/approve/${pmAgentId}`;
+    // No body needed for this POST request, the ID is in the URL
+    return makeApiCall(endpoint, 'POST');
+};
+
+
 console.log("Frontend API module loaded.");

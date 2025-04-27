@@ -18,11 +18,9 @@ import * as configView from './configView.js'; // Import config view functions
 import { escapeHTML } from './utils.js';
 
 /**
- * Handles incoming WebSocket messages and routes them to appropriate UI display areas.
- * Routes User<->Admin messages/responses to #conversation-area.
- * Routes internal comms, status, tools, errors etc. to #internal-comms-area.
- * Updates agent status cache and triggers UI redraw.
- * @param {object} data The parsed message data from the WebSocket.
+ * Central handler for WebSocket messages. Determines where to display messages
+ * and triggers UI updates or specific actions based on message type.
+ * @param {object} data Parsed message data.
  */
 export const handleWebSocketMessage = (data) => {
     console.log("Handler: Processing WebSocket message", data);
@@ -38,107 +36,71 @@ export const handleWebSocketMessage = (data) => {
         if (messageType === 'agent_status_update') {
             console.log(`Handler: Handling agent_status_update for ${agentId}`);
             if (data.status && typeof data.status === 'object') {
-                // Ensure agent_id is in the status payload for the state update
                 const statusPayload = { ...data.status };
                 if (!statusPayload.agent_id && agentId) statusPayload.agent_id = agentId;
-                // --- MODIFIED: Call imported function directly ---
                 updateKnownAgentStatus(agentId, statusPayload);
-                // --- END MODIFIED ---
-                triggerStatusRedraw = true; // Flag to redraw UI
+                triggerStatusRedraw = true;
             } else {
                  console.warn("Handler: Received agent_status_update without valid status object:", data);
             }
-            // Don't display a message for this type, just update state and potentially redraw UI below
         } else if (messageType === 'full_status') {
              console.log("Handler: Handling full_status update");
              if (data.agents && typeof data.agents === 'object') {
-                 // --- MODIFIED: Call imported function directly ---
                  setFullKnownAgentStatuses(data.agents);
-                 // --- END MODIFIED ---
-                 triggerStatusRedraw = true; // Flag to redraw UI
+                 triggerStatusRedraw = true;
              } else {
                   console.warn("Handler: Received full_status without valid agents object:", data);
              }
-             // Don't display a message for this type
         } else if (messageType === 'agent_deleted') {
              console.log(`Handler: Handling agent_deleted event for ${agentId}`);
-             // --- MODIFIED: Call imported function directly ---
              removeKnownAgentStatus(agentId);
-             // --- END MODIFIED ---
-             triggerStatusRedraw = true; // Flag to redraw UI
-             // Proceed to display a system message below
+             triggerStatusRedraw = true;
         } else if (messageType === 'agent_added') {
              console.log(`Handler: Handling agent_added event for ${agentId}`);
-             // Add or update the agent in the cache
              if (data.config && typeof data.config === 'object') {
-                // --- MODIFIED: Call imported function directly ---
                 updateKnownAgentStatus(agentId, {
-                    agent_id: agentId, // Ensure ID is present
-                    status: data.status?.status || 'idle', // Use incoming status or default
+                    agent_id: agentId,
+                    status: data.status?.status || 'idle',
                     persona: data.config.persona,
                     model: data.config.model,
-                    team: data.team, // Include team if provided
+                    team: data.team,
                     provider: data.config.provider
-                    // Add other relevant fields from config if needed
                  });
-                 // --- END MODIFIED ---
                 triggerStatusRedraw = true;
              } else {
                   console.warn("Handler: Received agent_added without valid config object:", data);
              }
-             // Proceed to display a system message below
         } else if (messageType === 'agent_moved_team') {
              console.log(`Handler: Handling agent_moved_team event for ${agentId}`);
-              // Update the team in the agent's cached status
-             // --- MODIFIED: Call imported function directly ---
              updateKnownAgentStatus(agentId, { team: data.new_team_id });
-             // --- END MODIFIED ---
              triggerStatusRedraw = true;
-             // Proceed to display a system message below
         } else if (messageType === 'session_loaded') {
             console.log("Handler: Handling session_loaded event.");
             if (DOM.conversationArea) DOM.conversationArea.innerHTML = ''; // Clear chat
-            ws.sendMessage(JSON.stringify({ type: 'get_full_status' })); // Request full status to rebuild cache
-            triggerStatusRedraw = true; // Should be handled by full_status response
-            // Proceed to display system message below
+            ws.sendMessage(JSON.stringify({ type: 'get_full_status' }));
+            triggerStatusRedraw = true;
         }
 
-        // --- Now, determine message display ---
-        // Remove initial connecting message from internal comms if it exists
+        // --- Message Display Logic ---
         const connectingMsg = DOM.internalCommsArea?.querySelector('.initial-connecting');
         if (connectingMsg) connectingMsg.remove();
 
-        // --- Routing Logic: Determine Target Area ---
-        let targetAreaId = 'internal-comms-area'; // Default to internal comms
-        let displayType = messageType; // Use original type for class, might adjust later
-
-        // Route specific message types to the main chat area
-        if (agentId === 'admin_ai' && (messageType === 'agent_response' || messageType === 'final_response')) {
-            targetAreaId = 'conversation-area';
-            displayType = 'agent_response';
-        } else if (messageType === 'user_message') {
-            // Backend should ideally not echo user messages, but handle if it does
-            targetAreaId = 'conversation-area';
-            displayType = 'user';
-        }
-
-        console.log(`Handler: Routing message type '${messageType}' to targetAreaId: ${targetAreaId}`);
-
-        // --- Prepare Content for Display ---
+        let targetAreaId = 'internal-comms-area'; // Default
+        let displayType = messageType;
         let displayContent = data.content;
         let displayAgentId = agentId;
         let displayPersonaForUI = agentPersona;
-        let shouldDisplay = true; // Flag to control if ui.displayMessage should be called
+        let shouldDisplay = true;
 
-        // Format specific message types for better readability
+        // --- Routing and Formatting ---
         switch (messageType) {
-            // --- Types that only update state ---
+            // --- State-only updates ---
             case 'agent_status_update':
             case 'full_status':
-                shouldDisplay = false; // State updated above, no message needed
+                shouldDisplay = false;
                 break;
 
-            // --- Types handled mostly by state update + system message ---
+            // --- System Events (Internal Comms) ---
             case 'agent_deleted':
             case 'agent_added':
             case 'team_created':
@@ -146,60 +108,120 @@ export const handleWebSocketMessage = (data) => {
             case 'session_saved':
             case 'session_loaded':
             case 'agent_moved_team':
+            case 'project_approved': // NEW: Handle approval confirmation
                  const eventMap = {
                     'agent_added': `Agent Added: ${data.agent_id} (${data.config?.persona || 'N/A'}) to team ${data.team || 'N/A'}`,
                     'agent_deleted': `Agent Deleted: ${data.agent_id}`,
                     'team_created': `Team Created: ${data.team_id}`,
                     'team_deleted': `Team Deleted: ${data.team_id}`,
                     'session_saved': `Session Saved: ${data.project}/${data.session}`,
-                    'session_loaded': `Session Loaded: ${data.project}/${data.session}.`, // Adjusted message
+                    'session_loaded': `Session Loaded: ${data.project}/${data.session}.`,
                     'agent_moved_team': `Agent Moved: ${data.agent_id} to team ${data.new_team_id || 'None'} from ${data.old_team_id || 'N/A'}`,
+                    'project_approved': `Project Approved: ${data.message || `Project for PM ${data.pm_agent_id} started.`}` // NEW
                  };
                  displayContent = escapeHTML(eventMap[messageType] || data.message || `Event: ${messageType}`);
                  displayAgentId = 'system';
-                 displayType = 'system_event'; // Use a consistent class for system events
-                 targetAreaId = 'internal-comms-area'; // System events go to internal comms
-                 break; // Proceed to display
+                 displayType = 'system_event';
+                 targetAreaId = 'internal-comms-area';
+                 targetAreaId = 'internal-comms-area';
+                 break;
 
-            // --- Types displayed normally ---
+            // --- Project Approval Request (Main Chat Area) ---
+            case 'project_pending_approval':
+                console.log("Handler: Formatting project_pending_approval for main chat");
+                const safeTitle = escapeHTML(data.project_title);
+                const safePlan = escapeHTML(data.plan_content);
+                const safePmId = escapeHTML(data.pm_agent_id);
+                displayContent = `
+                    <strong>Project Approval Required</strong><br>
+                    Project Title: <strong>${safeTitle}</strong><br>
+                    PM Agent ID: <code>${safePmId}</code><br>
+                    <details>
+                        <summary>View Plan</summary>
+                        <pre>${safePlan}</pre>
+                    </details>
+                    <button class="approve-project-btn" data-pm-id="${safePmId}">Approve Project Start</button>
+                `;
+                targetAreaId = 'conversation-area'; // Route to main chat
+                displayType = 'system_request'; // Use a specific class for styling
+                displayAgentId = 'system'; // Display as from the system
+                shouldDisplay = true; // Let displayMessage handle it
+                break;
+
+            // --- Project Approved Confirmation (Main Chat Area) ---
+             case 'project_approved':
+                 displayContent = `✅ Project Approved: ${escapeHTML(data.message || `Project for PM ${data.pm_agent_id} started.`)}`;
+                 displayAgentId = 'system';
+                 displayType = 'system_confirmation'; // Use a specific class
+                 targetAreaId = 'conversation-area'; // Route to main chat
+                 break;
+
+            // --- Admin AI Responses ---
             case 'response_chunk':
-            case 'agent_response':
-            case 'final_response':
+                 if (agentId === 'admin_ai') {
+                     targetAreaId = 'internal-comms-area'; // <<< CORRECT: Chunks go to internal comms
+                     displayType = 'response_chunk'; // Style as chunk
+                 } else {
+                     // Other agents' chunks also go to internal comms
+                     targetAreaId = 'internal-comms-area';
+                     displayType = 'response_chunk';
+                 }
+                 // Handle empty chunks if necessary
                  if (displayContent === undefined || displayContent === null) {
-                    // Display empty responses only in internal comms for debugging
+                     displayContent = '[Empty Chunk]';
+                     console.warn(`Handler: Received empty response_chunk from ${agentId}.`);
+                 }
+                 break;
+            case 'agent_response': // Assuming this is used for the final complete message from Admin AI
+            case 'final_response': // Handling both just in case
+                 if (agentId === 'admin_ai') {
+                     targetAreaId = 'conversation-area'; // <<< CORRECT: Final message goes to main chat
+                     displayType = 'agent_response'; // Style as agent response
+                 } else {
+                     // Final/Agent responses from other agents go to internal comms as logs
+                     targetAreaId = 'internal-comms-area';
+                     displayType = 'log';
+                 }
+                 // Handle empty final messages
+                 if (displayContent === undefined || displayContent === null) {
                     if(targetAreaId === 'internal-comms-area') {
-                        displayContent = '[Empty Response Chunk/Msg]';
+                        displayContent = '[Empty Final Response/Msg]';
                     } else {
-                        shouldDisplay = false; // Don't show empty messages in chat
+                        shouldDisplay = false; // Don't show empty final messages in main chat
                     }
                     console.warn(`Handler: Received ${messageType} from ${agentId} with no content.`);
                  }
-                 // Content is passed as is (potentially HTML for displayMessage)
-                 // Grouping of chunks is handled within displayMessage
-                break;
+                 break;
+
+            // --- Other Internal Comms ---
             case 'status':
-            case 'system_event': // Already handled above, but catchall
+            case 'system_event': // Catchall if not handled above
             case 'log':
                 displayContent = escapeHTML(data.content || data.message || `Event: ${messageType}`);
                 displayAgentId = agentId || 'system';
-                targetAreaId = 'internal-comms-area'; // Ensure these go to internal comms
+                targetAreaId = 'internal-comms-area';
                 break;
             case 'error':
                 displayContent = `❗ Error (${escapeHTML(agentId)}): ${escapeHTML(data.content || 'Unknown error')}`;
                 displayAgentId = agentId || 'system';
                 displayType = 'error';
-                targetAreaId = 'internal-comms-area'; // Errors go to internal comms
+                targetAreaId = 'internal-comms-area';
                 break;
             case 'tool_requests':
                 displayContent = `Requesting Tool(s): ${escapeHTML(JSON.stringify(data.calls))}`;
-                displayType = 'log-tool-use'; // Use specific class
+                displayType = 'log-tool-use';
                 targetAreaId = 'internal-comms-area';
                  break;
-            case 'tool_results':
+            case 'tool_result': // Corrected type name from backend? Assuming 'tool_result'
                 displayContent = `Tool Result (${escapeHTML(data.call_id || 'N/A')}): ${escapeHTML(data.content)}`;
                 displayType = 'log-tool-use';
                 targetAreaId = 'internal-comms-area';
                 break;
+             case 'system_feedback': // Handle system feedback explicitly
+                 displayContent = `System Feedback: ${escapeHTML(data.content)}`;
+                 displayType = 'system_event'; // Style like other system events
+                 targetAreaId = 'internal-comms-area';
+                 break;
 
             default:
                 console.warn(`Handler: Received unknown message type: ${messageType}`, data);
@@ -209,24 +231,63 @@ export const handleWebSocketMessage = (data) => {
                 displayType = 'status';
         }
 
-        // --- Display Message if needed ---
+        // --- Display Message ---
         if (shouldDisplay && targetAreaId && displayContent !== undefined) {
              console.log(`Handler: Final display call: target=${targetAreaId}, type=${displayType}, agentId=${displayAgentId}`);
              ui.displayMessage(displayContent, displayType, targetAreaId, displayAgentId, displayPersonaForUI);
         }
 
-        // --- Trigger Agent Status UI Redraw if needed ---
+        // --- Trigger Agent Status UI Redraw ---
         if (triggerStatusRedraw) {
             console.log("Handler: Triggering agent status UI redraw.");
-            ui.updateAgentStatusUI(); // Call without args to redraw from cache
+            ui.updateAgentStatusUI();
         }
 
     } catch (error) {
         console.error("Error in handleWebSocketMessage:", error);
-        // Ensure errors in the handler itself are displayed
         ui.displayMessage(`!! JS Error handling WebSocket message: ${escapeHTML(error.message)} !!`, 'error', 'internal-comms-area', 'frontend');
     }
 };
+
+// --- NEW: Generic Button Click Handler ---
+export const handleMessageButtonClick = (event) => {
+    // Use event delegation - check if the clicked element is a button with the correct class
+    if (event.target.tagName === 'BUTTON' && event.target.classList.contains('message-button')) {
+        const command = event.target.getAttribute('data-command');
+        const buttonText = event.target.textContent; // Get button text for context
+        console.log(`Handler: Message button clicked. Command: '${command}', Text: '${buttonText}'`);
+
+        if (command) {
+            // Simulate user sending the command as a message
+            // Display the command locally as if the user typed it
+            ui.displayMessage(escapeHTML(command), 'user', 'conversation-area', 'human_user');
+            // Send the command via WebSocket
+            ws.sendMessage(command);
+
+            // Optional: Disable the button after click?
+            // event.target.disabled = true;
+            // event.target.textContent = 'Processing...';
+        } else {
+            console.warn("Handler: Clicked message button has no data-command attribute.");
+        }
+    } else if (event.target.tagName === 'BUTTON' && event.target.classList.contains('approve-project-btn')) {
+        // --- SPECIFIC Handler for existing Approve button ---
+        // This can be merged into the generic handler later if we standardize attributes
+        const pmId = event.target.getAttribute('data-pm-id');
+        const commandText = `approve project ${pmId}`; // Construct command
+        console.log(`Handler: Approve Project button clicked for PM: ${pmId}`);
+
+        // Display locally and send
+        ui.displayMessage(escapeHTML(commandText), 'user', 'conversation-area', 'human_user');
+        ws.sendMessage(commandText);
+
+        // Disable button after click
+        event.target.disabled = true;
+        event.target.textContent = 'Approval Sent';
+        event.target.style.backgroundColor = '#ccc'; // Indicate disabled state
+    }
+};
+// --- END NEW ---
 
 
 // --- UI Event Handlers ---
@@ -500,3 +561,16 @@ export const handleSaveSession = async () => {
 
 
 console.log("Frontend handlers module loaded.");
+
+// --- Add Event Listener (in main.js or here if appropriate) ---
+// This part should ideally go in main.js where DOM elements are assigned,
+// but adding it here for completeness of the logic.
+// Ensure DOM.conversationArea is available before adding listener.
+// document.addEventListener('DOMContentLoaded', () => {
+//     if (DOM.conversationArea) {
+//         DOM.conversationArea.addEventListener('click', handleMessageButtonClick);
+//         console.log("Added generic message button click listener to conversation area.");
+//     } else {
+//         console.error("Could not attach message button listener: conversationArea not found.");
+//     }
+// });
