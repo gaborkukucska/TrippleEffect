@@ -17,6 +17,8 @@ class KnowledgeBaseTool(BaseTool):
     Intended primarily for the Admin AI.
     """
     name: str = "knowledge_base" # Changed name for clarity
+    auth_level: str = "worker" # Accessible by all
+    summary: Optional[str] = "Saves or searches long-term knowledge (learnings, procedures)."
     description: str = (
         "Interacts with the long-term knowledge base. Actions: "
         "'save_knowledge' (saves a summary of learned information with keywords), "

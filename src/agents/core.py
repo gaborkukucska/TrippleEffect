@@ -30,7 +30,9 @@ from src.agents.constants import (
 # Import AgentManager for type hinting
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from src.agents.manager import AgentManager, BOOTSTRAP_AGENT_ID # Import BOOTSTRAP_AGENT_ID
+    from src.agents.manager import AgentManager # Removed BOOTSTRAP_AGENT_ID import here
+# Import the constant directly
+from src.agents.constants import BOOTSTRAP_AGENT_ID
 
 logger = logging.getLogger(__name__)
 
@@ -71,16 +73,19 @@ class Agent:
         if not self.final_system_prompt: logger.error(f"Agent {self.agent_id}: 'system_prompt' is missing or empty!"); self.final_system_prompt = "You are a helpful assistant."
         self.temperature: float = float(config.get("temperature", settings.DEFAULT_TEMPERATURE))
         self.persona: str = config.get("persona", settings.DEFAULT_PERSONA)
+        # --- NEW: Add agent_type ---
+        self.agent_type: str = config.get("agent_type", "worker") # Default to worker if not specified
+        # --- END NEW ---
         self.agent_config: Dict[str, Any] = agent_config
-        self.provider_kwargs = {k: v for k, v in config.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'api_key', 'base_url', 'referer']}
+        self.provider_kwargs = {k: v for k, v in config.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'agent_type', 'api_key', 'base_url', 'referer']} # Include agent_type
         self.llm_provider: BaseLLMProvider = llm_provider
         self.manager: 'AgentManager' = manager
         logger.debug(f"Agent {self.agent_id} using final system prompt (first 500 chars):\n{self.final_system_prompt[:500]}...")
 
         # State management
         self.status: str = AGENT_STATUS_IDLE # Operational status (idle, processing, etc.)
-        # --- NEW: Add workflow state ---
-        self.state: Optional[str] = ADMIN_STATE_CONVERSATION if self.agent_id == "admin_ai" else None # Higher-level workflow state (conversation, planning, etc.)
+        # --- NEW: Add workflow state (initialized by lifecycle) ---
+        self.state: Optional[str] = None # Initial state set by agent_lifecycle based on type
         # --- END NEW ---
         self.current_tool_info: Optional[Dict[str, str]] = None
         self.current_plan: Optional[str] = None # Stores plan content when status is PLANNING
@@ -115,7 +120,7 @@ class Agent:
             else: logger.info(f"Agent {self.agent_id}: No tools found in executor, tool parsing disabled.")
         else: logger.warning(f"Agent {self.agent_id}: Manager or ToolExecutor not available during init, tool parsing disabled.")
 
-        logger.info(f"Agent {self.agent_id} ({self.persona}) initialized. Status: {self.status}. Provider: {self.provider_name}, Model: {self.model}. Sandbox: {self.sandbox_path}. LLM Provider Instance: {self.llm_provider}")
+        logger.info(f"Agent {self.agent_id} ({self.persona}) initialized. Type: {self.agent_type}. Status: {self.status}. State: {self.state}. Provider: {self.provider_name}, Model: {self.model}. Sandbox: {self.sandbox_path}. LLM Provider Instance: {self.llm_provider}")
 
     # --- Status Management ---
     def set_status(self, new_status: str, tool_info: Optional[Dict[str, str]] = None, plan_info: Optional[str] = None):
@@ -220,27 +225,31 @@ class Agent:
                 requested_state = None
                 cycle_handler_instance = getattr(self.manager, 'cycle_handler', None)
                 manager_request_state_pattern = getattr(cycle_handler_instance, 'request_state_pattern', None) if cycle_handler_instance else None
-                from src.agents.manager import BOOTSTRAP_AGENT_ID # Import locally
+                # Removed BOOTSTRAP_AGENT_ID import as check is removed below
 
-                if self.agent_id == BOOTSTRAP_AGENT_ID and manager_request_state_pattern:
+                # Allow ANY agent to request a state change via the tag
+                if manager_request_state_pattern:
                     state_match = manager_request_state_pattern.search(buffer_to_process)
                     if state_match:
                         requested_state = state_match.group(1)
                         state_request_tag = state_match.group(0)
                         logger.info(f"Agent {self.agent_id}: Detected state request tag via search: {state_request_tag}")
-                        valid_states = [ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED]
-                        if requested_state in valid_states:
-                            event_to_yield = {"type": "agent_state_change_requested", "requested_state": requested_state, "agent_id": self.agent_id}
-                            logger.debug(f"CORE YIELD (State Request): {event_to_yield}")
-                            yield event_to_yield
-                            # --- RE-ADD RETURN ---
-                            return # Stop processing after yielding state change
-                            # --- END RE-ADD ---
-                        else:
-                            logger.warning(f"Admin AI requested invalid state '{requested_state}'. Ignoring tag.")
-                            buffer_to_process = buffer_to_process.replace(state_request_tag, '', 1).strip()
-                            state_request_tag = None
-                            requested_state = None
+                        # State validation is now handled by AgentWorkflowManager via CycleHandler
+                        # Just yield the request here
+                        event_to_yield = {"type": "agent_state_change_requested", "requested_state": requested_state, "agent_id": self.agent_id}
+                        logger.debug(f"CORE YIELD (State Request): {event_to_yield}")
+                        yield event_to_yield
+                        state_change_requested = True # Mark that a state change was requested and yielded
+                        # --- REMOVED RETURN ---
+                        # Return is removed, CycleHandler will now handle stopping the cycle if needed after state change.
+                        # return # Stop processing after yielding state change
+                        # --- END REMOVED RETURN ---
+                        # Remove the tag from the buffer to avoid it being processed as text
+                        buffer_to_process = buffer_to_process.replace(state_request_tag, '', 1).strip()
+
+                    # Removed the 'else' block that previously ignored invalid states for Admin AI,
+                    # as validation is now deferred to the WorkflowManager.
+                    # Also removed the dangling code from the original else block that caused indentation errors.
 
                 # 2. Check for Think Tag NEXT (Robust Extraction)
                 # Only process think tag if no state change was requested
@@ -267,6 +276,7 @@ class Agent:
                 # Only process plan tag if no state change was requested
                 if not state_change_requested:
                     plan_content = None
+                    # Use the imported constant directly
                     is_admin_planning = (self.agent_id == BOOTSTRAP_AGENT_ID and getattr(self, 'state', None) == ADMIN_STATE_PLANNING)
                     plan_match = self.plan_pattern.search(buffer_to_process) # Search the potentially cleaned buffer
 
@@ -342,7 +352,8 @@ class Agent:
             "agent_id": self.agent_id,
             "persona": self.persona,
             "status": self.status, # Operational status
-            "state": self.state, # Workflow state (e.g., conversation, planning) - NEW
+            "state": self.state, # Workflow state (e.g., conversation, planning)
+            "agent_type": self.agent_type, # Agent type (admin, pm, worker) - NEW
             "provider": self.provider_name,
             "model": self.model,
             "temperature": self.temperature,

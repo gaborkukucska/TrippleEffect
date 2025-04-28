@@ -11,6 +11,9 @@ import logging
 
 from src.tools.base import BaseTool
 from src.tools.manage_team import ManageTeamTool
+# --- NEW: Import agent type constants ---
+from src.agents.constants import AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER
+# --- END NEW ---
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +231,48 @@ class ToolExecutor:
             else:
                 return error_msg
 
-        logger.info(f"Executor: Executing tool '{tool_name}' for agent '{agent_id}' with args: {tool_args} (Project: {project_name}, Session: {session_name})")
+        # --- NEW: Authorization Check ---
+        is_authorized = False
+        agent_type = "unknown" # Default agent type for logging if not framework or found agent
+        tool_auth_level = getattr(tool, 'auth_level', 'worker') # Default to worker if missing
+
+        # Explicitly allow framework calls
+        if agent_id == "framework":
+            is_authorized = True
+            agent_type = "framework" # Set type for logging
+            logger.debug(f"Executor: Allowing tool '{tool_name}' for internal framework call.")
+        else:
+            # Check agent-based authorization
+            agent_instance = manager.agents.get(agent_id) if manager else None
+            if not agent_instance:
+                 # This might happen if agent was deleted mid-process
+                 logger.warning(f"Executor: Could not find agent instance for '{agent_id}' during authorization check. Denying tool use.")
+                 # is_authorized remains False
+            else:
+                 agent_type = getattr(agent_instance, 'agent_type', AGENT_TYPE_WORKER) # Get agent type, default to worker
+
+                 # Perform authorization check based on agent type and tool level
+                 if agent_type == AGENT_TYPE_ADMIN:
+                     is_authorized = True # Admin can use any tool
+                 elif agent_type == AGENT_TYPE_PM:
+                     is_authorized = tool_auth_level in [AGENT_TYPE_PM, AGENT_TYPE_WORKER]
+                 elif agent_type == AGENT_TYPE_WORKER:
+                     is_authorized = tool_auth_level == AGENT_TYPE_WORKER
+                 else: # Unknown agent type
+                      logger.warning(f"Executor: Unknown agent type '{agent_type}' for agent '{agent_id}'. Denying tool use.")
+                      # is_authorized remains False
+
+        # Final check on authorization status before proceeding
+        if not is_authorized:
+            error_msg = f"Error: Agent '{agent_id}' (type: {agent_type}) is not authorized to use tool '{tool_name}' (required level: {tool_auth_level})."
+            logger.error(error_msg)
+            if tool_name == ManageTeamTool.name:
+                return {"status": "error", "action": tool_args.get("action"), "message": error_msg}
+            else:
+                return error_msg
+        # --- END Authorization Check ---
+
+        logger.info(f"Executor: Executing tool '{tool_name}' for agent '{agent_id}' (Type: {agent_type}, Auth Level: {tool_auth_level}) with args: {tool_args} (Project: {project_name}, Session: {session_name})")
         try:
             # Argument Validation (using tool.get_schema())
             schema = tool.get_schema()
@@ -277,7 +321,14 @@ class ToolExecutor:
                 else:
                     logger.error("ToolExecutor: Manager instance not provided, cannot execute 'get_tool_info' in SystemHelpTool.")
                     return "Error: Internal configuration error - manager instance missing for system_help tool."
-            # --- End SystemHelpTool specific logic ---
+            # --- Pass manager to ToolInformationTool ---
+            elif tool_name == "tool_information":
+                if manager:
+                    execute_args["manager"] = manager
+                else:
+                    logger.error("ToolExecutor: Manager instance not provided, cannot execute ToolInformationTool.")
+                    return "Error: Internal configuration error - manager instance missing for tool_information tool."
+            # --- End ToolInformationTool specific logic ---
 
             # Execute with validated arguments and context
             result = await tool.execute(**execute_args)

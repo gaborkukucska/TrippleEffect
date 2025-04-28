@@ -37,6 +37,8 @@ class WebSearchTool(BaseTool):
     Returns a specified number of results (title, URL, content/snippet).
     """
     name: str = "web_search"
+    auth_level: str = "worker" # Accessible by all
+    summary: Optional[str] = "Performs a web search using Tavily API or DuckDuckGo scraping."
     description: str = ( # Updated description
         "Searches the web for a given query and returns a specified number of results "
         "(title, URL, content/snippet). Uses the Tavily API if configured (recommended), "

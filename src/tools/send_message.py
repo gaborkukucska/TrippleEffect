@@ -13,6 +13,8 @@ class SendMessageTool(BaseTool):
     This tool signals the AgentManager to route the message based on the tool call request.
     """
     name: str = "send_message"
+    auth_level: str = "worker" # Accessible by all
+    summary: Optional[str] = "Sends a message to another specified agent."
     description: str = (
         "Sends a message to a specified teammate agent. "
         "Use this to ask questions, delegate tasks, provide information, or request reviews from agents listed in your system prompt."

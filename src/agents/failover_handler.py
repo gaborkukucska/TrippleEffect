@@ -92,10 +92,10 @@ async def _try_switch_agent(
 
         # Prepare arguments for the provider class constructor
         current_agent_cfg = agent.agent_config.get("config", {})
-        # Base args from agent config, excluding provider-specific ones
+        # Base args from agent config, excluding provider-specific and agent-specific ones
         provider_kwargs = {
             k: v for k, v in current_agent_cfg.items()
-            if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'api_key', 'base_url', 'referer']
+            if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'agent_type', 'api_key', 'base_url', 'referer'] # Added agent_type exclusion
         }
 
         # Get base URL from registry for local, or settings for remote
@@ -116,6 +116,10 @@ async def _try_switch_agent(
 
         # Remove None values before passing to constructor
         final_provider_args = {k: v for k, v in final_provider_args.items() if v is not None}
+
+        # --- Explicitly remove agent_type just in case ---
+        final_provider_args.pop('agent_type', None)
+        # --- End explicit removal ---
 
         logger.debug(f"Instantiating {ProviderClass.__name__} with args: { {k: (v[:10]+'...' if k=='api_key' and isinstance(v, str) else v) for k,v in final_provider_args.items()} }")
         new_provider_instance = ProviderClass(**final_provider_args)

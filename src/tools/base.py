@@ -21,8 +21,10 @@ class BaseTool(ABC):
     the execute method.
     """
     name: str = "base_tool" # Unique identifier for the tool
-    description: str = "Base tool description" # Description for LLMs/users
+    description: str = "Base tool description" # Detailed description for LLMs/users
+    summary: Optional[str] = None # Optional brief summary for listing tools
     parameters: List[ToolParameter] = [] # List of parameters the tool accepts
+    auth_level: str = "worker" # Authorization level: 'admin', 'pm', 'worker' (default: worker)
 
     # --- *** MODIFIED EXECUTE SIGNATURE *** ---
     @abstractmethod
@@ -65,5 +67,7 @@ class BaseTool(ABC):
         return {
             "name": self.name,
             "description": self.description,
+            "summary": self.summary or self.description, # Fallback to description if summary is None
             "parameters": [param.dict() for param in self.parameters],
+            "auth_level": self.auth_level # Include auth_level in schema
         }

@@ -29,6 +29,8 @@ class ProjectManagementTool(BaseTool):
     project/session directory.
     """
     name = "project_management"
+    auth_level: str = "pm" # PMs manage tasks
+    summary: Optional[str] = "Manages project tasks (add, list, modify, complete) via Taskwarrior."
     description = (
         "Manages project tasks (add, list, modify, complete) using Tasklib. "
         "Requires 'action' parameter. Task data is stored per project/session."

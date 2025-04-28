@@ -16,7 +16,12 @@ from src.agents.constants import (
     AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_PLANNING,
     AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_AWAITING_TOOL,
     AGENT_STATUS_ERROR,
-    ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, # Added Admin States
+    # Workflow States (Import all for clarity)
+    ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, # Admin-specific
+    AGENT_STATE_CONVERSATION, AGENT_STATE_WORK, # General agent states
+    # Agent Types
+    AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER, # Import all types
+    # Other Constants
     REQUEST_STATE_TAG_PATTERN, # Import the compiled pattern
     # Import retry/error constants
     RETRYABLE_EXCEPTIONS, RETRYABLE_STATUS_CODES, KEY_RELATED_ERRORS, KEY_RELATED_STATUS_CODES
@@ -136,6 +141,7 @@ class AgentCycleHandler:
 
         # Uses imported constants
         agent_id = agent.agent_id
+        state_before_cycle = agent.state # Store state at the beginning
         current_provider = agent.provider_name
         current_model = agent.model
         # --- Use settings for limits ---
@@ -175,57 +181,20 @@ class AgentCycleHandler:
             try:
                 # --- Prepare history for LLM call ---
                 history_for_call = agent.message_history.copy() # Start with current history
-                current_time_utc_iso = datetime.datetime.now(datetime.timezone.utc).isoformat(sep=' ', timespec='seconds') # Get time once
 
-                # --- State-Aware Prompt Injection for Admin AI ---
-                if agent.agent_id == self.BOOTSTRAP_AGENT_ID:
-                    # --- MODIFIED: Use STARTUP or CONVERSATION based on state ---
-                    current_state = getattr(agent, 'state', ADMIN_STATE_STARTUP) # Default to STARTUP now
-                    prompt_key = None
-                    if current_state == ADMIN_STATE_PLANNING:
-                        prompt_key = "admin_ai_planning_prompt"
-                    elif current_state == ADMIN_STATE_CONVERSATION:
-                        prompt_key = "admin_ai_conversation_prompt"
-                    elif current_state == ADMIN_STATE_STARTUP:
-                        prompt_key = "admin_ai_startup_prompt" # Use the new startup prompt
-                    # Add elif for other states like work_delegated if they need specific prompts
-
-                    if prompt_key:
-                        state_prompt_template = settings.PROMPTS.get(prompt_key)
-                        if state_prompt_template:
-                            # Replace the first message (original system prompt) with the state-specific one
-                            # Need to format context into the prompt (time, project, session)
-                            try:
-                                # TODO: Inject active project list for conversation state if needed
-                                formatted_state_prompt = state_prompt_template.format(
-                                    project_name=self._manager.current_project or "N/A",
-                                    session_name=self._manager.current_session or "N/A",
-                                    current_time_utc=current_time_utc_iso
-                                    # Add other context placeholders as needed by prompts
-                                )
-                                # Prepend the user-defined part from config.yaml (first part of original system prompt)
-                                user_defined_part = agent.final_system_prompt.split("\n\n---")[0] # Extract user part from original prompt
-                                final_state_prompt = f"{user_defined_part}\n\n{formatted_state_prompt}"
-
-                                history_for_call[0] = {"role": "system", "content": final_state_prompt}
-                                logger.info(f"Admin AI state is '{current_state}'. Loaded prompt '{prompt_key}'.")
-                            except KeyError as fmt_err:
-                                 logger.error(f"Failed to format state prompt '{prompt_key}': Missing key {fmt_err}. Using original prompt.")
-                                 # Ensure history_for_call[0] exists even if formatting fails
-                                 if not history_for_call: history_for_call.append({"role": "system", "content": agent.final_system_prompt})
-                                 elif history_for_call[0].get("role") != "system": history_for_call.insert(0, {"role": "system", "content": agent.final_system_prompt})
-                            except Exception as prompt_err:
-                                 logger.error(f"Error loading/formatting state prompt '{prompt_key}': {prompt_err}. Using original prompt.", exc_info=True)
-                                 # Ensure history_for_call[0] exists even if formatting fails
-                                 if not history_for_call: history_for_call.append({"role": "system", "content": agent.final_system_prompt})
-                                 elif history_for_call[0].get("role") != "system": history_for_call.insert(0, {"role": "system", "content": agent.final_system_prompt})
-                        else:
-                            logger.error(f"State prompt key '{prompt_key}' not found in prompts.json! Using original prompt.")
-                    else:
-                        logger.warning(f"Admin AI state '{current_state}' has no specific prompt key defined. Using original prompt.")
+                # --- Get State-Specific Prompt via WorkflowManager ---
+                if hasattr(self._manager, 'workflow_manager'):
+                    final_system_prompt = self._manager.workflow_manager.get_system_prompt(agent, self._manager)
+                    history_for_call[0] = {"role": "system", "content": final_system_prompt}
+                    logger.debug(f"CycleHandler: Set system prompt for agent '{agent_id}' (Type: {agent.agent_type}, State: {agent.state}) via WorkflowManager.")
+                else:
+                    logger.error("WorkflowManager not found on AgentManager! Cannot get state-specific prompt. Using agent's default.")
+                    # Fallback: ensure system prompt exists, using agent's current one
+                    if not history_for_call or history_for_call[0].get("role") != "system":
+                         history_for_call.insert(0, {"role": "system", "content": agent.final_system_prompt})
 
                 # --- Inject System Health Report (Admin AI only) ---
-                system_health_report = None
+                # (This logic remains, but happens *after* the main system prompt is set)
                 if agent.agent_id == self.BOOTSTRAP_AGENT_ID:
                     system_health_report = await self._generate_system_health_report(agent)
                     if system_health_report: # Append health report if generated
@@ -233,22 +202,7 @@ class AgentCycleHandler:
                         # Insert *after* the main system prompt but before other history
                         history_for_call.insert(1, health_msg)
                         logger.debug(f"Injected system health report for {agent_id}")
-
-                # --- Inject Time Context (Admin AI only, if not already in state prompt's context) ---
-                # The state prompts now include {current_time_utc}, so explicit injection might be redundant
-                # We'll keep it for now as a fallback or if state prompts change.
-                time_context_already_in_prompt = '{current_time_utc}' in history_for_call[0].get("content", "")
-                if agent.agent_id == self.BOOTSTRAP_AGENT_ID and not time_context_already_in_prompt:
-                     try:
-                         # Use the time calculated earlier
-                         time_context_msg: MessageDict = {"role": "system", "content": f"[Framework Context - Current Time: {current_time_utc_iso}]"}
-                         # Insert after health report if present, otherwise after system prompt
-                         insert_index = 2 if system_health_report else 1
-                         history_for_call.insert(insert_index, time_context_msg)
-                         logger.debug(f"Explicitly injected time context for Admin AI call: {current_time_utc_iso}")
-                     except Exception as time_err:
-                         logger.error(f"Failed to create or inject explicit time context for Admin AI: {time_err}", exc_info=True)
-                # --- End History Preparation ---
+                # --- End History Preparation (Prompt + Health Report) ---
 
                 # --- Make LLM Call ---
                 # --- NEW: Send status update before calling LLM ---
@@ -376,18 +330,26 @@ class AgentCycleHandler:
                              needs_reactivation_after_cycle = True
                              break
                     # --- END STATE/PLAN HANDLING ---
-                    # --- NEW: Handle agent_state_change_requested event ---
+                    # --- Handle agent_state_change_requested event ---
                     elif event_type == "agent_state_change_requested":
                         requested_state = event.get("requested_state")
                         logger.info(f"CycleHandler: Received state change request to '{requested_state}' from agent '{agent_id}'.")
-                        if hasattr(agent, 'set_state') and requested_state:
-                            agent.set_state(requested_state)
-                            # Log state change? (Already logged in core.py after yielding)
+                        # Use WorkflowManager to handle the state change
+                        state_change_success = False
+                        if hasattr(self._manager, 'workflow_manager') and requested_state:
+                            state_change_success = self._manager.workflow_manager.change_state(agent, requested_state)
                         else:
-                            logger.error(f"Cannot process state change request for agent '{agent_id}': set_state method missing or requested_state empty.")
-                        needs_reactivation_after_cycle = True # Always reactivate after state change request
+                            logger.error(f"Cannot process state change request for agent '{agent_id}': WorkflowManager missing or requested_state empty.")
+
+                        if state_change_success:
+                             needs_reactivation_after_cycle = True # Reactivate after successful state change
+                        else:
+                             # Optionally send feedback if state change failed validation?
+                             logger.warning(f"State change to '{requested_state}' denied for agent '{agent_id}'. Agent remains in state '{agent.state}'.")
+                             # Decide if agent should reactivate even if state change failed. Let's assume yes for now.
+                             needs_reactivation_after_cycle = True
                         break # Exit event loop, let finally handle reactivation
-                    # --- END NEW ---
+                    # --- End state change handling ---
                     # --- NEW: Handle agent_thought event ---
                     elif event_type == "agent_thought":
                         thought_content = event.get("content")
@@ -408,15 +370,15 @@ class AgentCycleHandler:
                             # Note: This bypasses normal tool result handling/history injection,
                             # which is likely fine for internal logging.
                             try:
-                                # Correctly call execute_tool with positional and keyword args
+                                # Correctly call execute_tool, identifying as 'framework'
                                 kb_result = await self._manager.tool_executor.execute_tool(
-                                    agent_id,               # Positional arg 1: agent_id
-                                    agent.sandbox_path,     # Positional arg 2: agent_sandbox_path
-                                    "knowledge_base",       # Positional arg 3: tool_name
-                                    kb_args,                # Positional arg 4: tool_args
+                                    agent_id="framework",   # Identify call as framework internal
+                                    agent_sandbox_path=agent.sandbox_path, # Still use agent's sandbox context
+                                    tool_name="knowledge_base",
+                                    tool_args=kb_args,      # Pass args via keyword 'tool_args'
                                     project_name=self._manager.current_project, # Optional kwarg
-                                    session_name=self._manager.current_session  # Optional kwarg
-                                    # manager kwarg not needed for knowledge_base
+                                    session_name=self._manager.current_session, # Optional kwarg
+                                    manager=self._manager   # Pass manager explicitly if needed by auth check (though framework bypasses)
                                 )
                                 # Check result (knowledge_base returns string on success/error)
                                 if isinstance(kb_result, str) and kb_result.startswith("Error:"):
@@ -596,6 +558,11 @@ class AgentCycleHandler:
                      except Exception as record_err: logger.error(f"Failed to record performance metrics for {current_provider}/{current_model}: {record_err}", exc_info=True)
 
                 # --- Final Action Logic (Uses settings for retry/failover) ---
+
+                # --- REMOVED: Automatic state transition back from WORK ---
+                # The agent must now explicitly request to return to conversation state
+                # --- END REMOVED ---
+
                 # --- REVISED ORDER: Check FAILOVER FIRST ---
                 if trigger_failover:
                     logger.warning(f"CycleHandler: Agent '{agent_id}' ({current_model_key}) requires failover. Error Type: {type(last_error_obj).__name__ if last_error_obj else 'N/A'}. Triggering failover handler.")

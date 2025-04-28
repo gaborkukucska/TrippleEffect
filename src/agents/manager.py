@@ -20,9 +20,9 @@ logging.info("manager.py: Importing database_manager...")
 from src.core.database_manager import db_manager, close_db_connection, Project as DBProject, Session as DBSession # Import singleton and specific models if needed
 logging.info("manager.py: Imported database_manager.")
 
-# --- Agent Status Constants ---
+# --- Agent Status/Type/ID Constants ---
 logging.info("manager.py: Importing constants...")
-from src.agents.constants import AGENT_STATUS_IDLE, AGENT_STATUS_ERROR
+from src.agents.constants import AGENT_STATUS_IDLE, AGENT_STATUS_ERROR, BOOTSTRAP_AGENT_ID # Import BOOTSTRAP_AGENT_ID
 logging.info("manager.py: Imported constants.")
 
 # --- Import Agent class for type hinting ---
@@ -75,6 +75,11 @@ logging.info("manager.py: Imported agent_lifecycle.")
 logging.info("manager.py: Importing failover_handler...")
 from src.agents.failover_handler import handle_agent_model_failover
 logging.info("manager.py: Imported failover_handler.")
+# --- NEW: Import Workflow Manager ---
+logging.info("manager.py: Importing workflow_manager...")
+from src.agents.workflow_manager import AgentWorkflowManager
+logging.info("manager.py: Imported workflow_manager.")
+# --- END NEW ---
 
 from pathlib import Path # Used
 
@@ -86,7 +91,7 @@ logging.info("manager.py: Imported BaseLLMProvider.")
 logger = logging.getLogger(__name__)
 
 # Constants
-BOOTSTRAP_AGENT_ID = "admin_ai"
+# BOOTSTRAP_AGENT_ID imported from constants
 DEFAULT_PROJECT_NAME = "DefaultProject"
 
 # Class definition starts here...
@@ -130,6 +135,11 @@ class AgentManager:
         logger.info("AgentManager __init__: Instantiating ModelPerformanceTracker...");
         self.performance_tracker = ModelPerformanceTracker()
         logger.info("AgentManager __init__: ModelPerformanceTracker instantiated and metrics loaded.")
+        # --- NEW: Instantiate Workflow Manager ---
+        logger.info("AgentManager __init__: Instantiating AgentWorkflowManager...");
+        self.workflow_manager = AgentWorkflowManager()
+        logger.info("AgentManager __init__: AgentWorkflowManager instantiated.")
+        # --- END NEW ---
         self._ensure_projects_dir()
         logger.info("AgentManager __init__: Initialized synchronously. Bootstrap agents and model discovery run asynchronously.")
         # Start default session DB logging on init
@@ -496,17 +506,15 @@ class AgentManager:
                 "tags": ["project_plan"], # Use standard tag
                 "assignee_agent_id": pm_agent_id # Assign to the new PM
             }
-            # Execute using ToolExecutor - Note: ToolExecutor needs agent_id of the CALLER (Admin AI?)
-            # Or should we execute this as the system? Let's assume system execution for now.
-            # We need the PM agent's sandbox path though.
+            # Execute using ToolExecutor - Execute as 'framework'
             pm_agent = self.agents.get(pm_agent_id)
             if not pm_agent:
                  raise ValueError(f"Could not find PM agent '{pm_agent_id}' after creation.")
 
-            # Execute the tool call
+            # Execute the tool call using "framework" as the agent_id
             task_result = await self.tool_executor.execute_tool(
-                agent_id="framework", # Execute as framework/system
-                agent_sandbox_path=pm_agent.sandbox_path, # Use PM's sandbox context
+                agent_id="framework", # Explicitly identify as framework call
+                agent_sandbox_path=pm_agent.sandbox_path, # Still use PM's sandbox context
                 tool_name="project_management",
                 tool_args=tool_args,
                 project_name=self.current_project, # Pass context
@@ -521,10 +529,19 @@ class AgentManager:
                 logger.info(task_creation_message)
             else:
                 error_detail = task_result.get("message", "Unknown error from tool execution.") if isinstance(task_result, dict) else str(task_result)
-            task_creation_message = f"Failed to create 'Project Plan' task via ToolExecutor: {error_detail}"
-            logger.error(task_creation_message)
-            # Ensure task_creation_success remains False if status wasn't 'success'
-            task_creation_success = False # This line is correct
+            # Check the actual status from the result dictionary
+            if isinstance(task_result, dict) and task_result.get("status") == "success":
+                task_uuid = task_result.get("task_uuid")
+                task_id = task_result.get("task_id")
+                task_creation_success = True
+                task_creation_message = f"Successfully created 'Project Plan' task (ID: {task_id}, UUID: {task_uuid}) and assigned to PM '{pm_agent_id}'."
+                logger.info(task_creation_message)
+            else:
+                # Handle cases where task_result is not a success dict or not a dict at all
+                error_detail = task_result.get("message", "Unknown error from tool execution.") if isinstance(task_result, dict) else str(task_result)
+                task_creation_message = f"Failed to create 'Project Plan' task via ToolExecutor: {error_detail}"
+                logger.error(task_creation_message)
+                task_creation_success = False # Ensure flag is false on failure
 
         except Exception as task_err:
             logger.error(f"Exception during 'Project Plan' task creation via ToolExecutor: {task_err}", exc_info=True)

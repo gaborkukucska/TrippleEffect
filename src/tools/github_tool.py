@@ -23,6 +23,8 @@ class GitHubTool(BaseTool):
     Requires a GITHUB_ACCESS_TOKEN with 'repo' scope in the .env file.
     """
     name: str = "github_tool"
+    auth_level: str = "worker" # Accessible by all
+    summary: Optional[str] = "Lists repos/files or reads file content from GitHub."
     description: str = ( # Modified description
         "Accesses GitHub repositories using the REST API and a Personal Access Token (PAT). "
         "Allows listing repositories ('list_repos' for a user or the authenticated user), "

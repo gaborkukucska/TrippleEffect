@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, Tuple, Optional, Dict, List, Any
 # Import settings for project base directory
 from src.config.settings import settings
 
-# --- NEW: Import status constants ---
-from src.agents.constants import AGENT_STATUS_IDLE
+# --- NEW: Import status and ID constants ---
+from src.agents.constants import AGENT_STATUS_IDLE, BOOTSTRAP_AGENT_ID # Import BOOTSTRAP_AGENT_ID
 # --- END NEW ---
 
 # Type hinting for AgentManager and StateManager
@@ -122,7 +122,7 @@ class SessionManager:
 
     async def load_session(self, project_name: str, session_name: str) -> Tuple[bool, str]:
         """Loads dynamic agents, teams, and histories from a saved session file."""
-        from src.agents.manager import BOOTSTRAP_AGENT_ID # Local import for check
+        # BOOTSTRAP_AGENT_ID is now imported at the module level
 
         session_file_path = settings.PROJECTS_BASE_DIR / project_name / session_name / "agent_session_data.json"
         logger.info(f"Attempting to load session from: {session_file_path}")

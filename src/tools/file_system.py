@@ -19,6 +19,8 @@ class FileSystemTool(BaseTool):
     Ensures operations are restricted to the designated scope and path.
     """
     name: str = "file_system"
+    auth_level: str = "worker" # Accessible by all
+    summary: Optional[str] = "Performs file system operations (read, write, list, mkdir, delete, find_replace) within allowed scopes."
     description: str = ( # Updated description
         "Reads, writes, lists files/directories, creates directories, deletes files or empty directories, "
         "or finds and replaces text within a file. "

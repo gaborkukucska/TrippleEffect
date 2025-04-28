@@ -5,7 +5,23 @@ import openai # For exception types
 # --- Core Agent/Framework IDs ---
 BOOTSTRAP_AGENT_ID = "admin_ai"
 
-# --- Agent Status Constants ---
+# --- Agent Type Constants ---
+AGENT_TYPE_ADMIN = "admin"
+AGENT_TYPE_PM = "pm"
+AGENT_TYPE_WORKER = "worker"
+
+# --- Agent Workflow State Constants ---
+# General Agent States
+AGENT_STATE_CONVERSATION = "conversation" # Default state for PM/Worker
+AGENT_STATE_WORK = "work"                 # State for active tool use/task execution for PM/Worker
+
+# Admin-Specific States
+ADMIN_STATE_STARTUP = "startup"
+ADMIN_STATE_CONVERSATION = "admin_conversation" # Distinct conversation state for Admin
+ADMIN_STATE_PLANNING = "planning"
+ADMIN_STATE_WORK_DELEGATED = "work_delegated"
+
+# --- Agent Operational Status Constants ---
 AGENT_STATUS_IDLE = "idle"
 AGENT_STATUS_PROCESSING = "processing"
 AGENT_STATUS_PLANNING = "planning" # Agent is generating a plan (distinct from Admin AI state)
@@ -14,11 +30,7 @@ AGENT_STATUS_EXECUTING_TOOL = "executing_tool"
 AGENT_STATUS_ERROR = "error"
 
 # --- Admin AI Workflow States ---
-ADMIN_STATE_STARTUP = "startup" # Initial state before first user request is processed
-ADMIN_STATE_CONVERSATION = "conversation" # Ongoing interaction after startup/plan
-ADMIN_STATE_PLANNING = "planning" # Admin AI is actively creating a plan
-ADMIN_STATE_WORK_DELEGATED = "work_delegated" # Plan submitted, waiting for PM completion
-# Add other states like 'communicating', 'collaborating' later if needed
+# ADMIN_STATE_STARTUP, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED defined above
 
 # --- LLM Provider Interaction Constants ---
 

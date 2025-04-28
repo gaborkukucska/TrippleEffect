@@ -518,17 +518,37 @@ async def _create_agent_internal(
     except Exception as e: msg = f"Lifecycle: Provider init failed for {provider_name}: {e}"; logger.error(msg, exc_info=True); return False, msg, None
     logger.info(f"  Lifecycle: Instantiated provider {ProviderClass.__name__} for '{agent_id}'.")
 
+    # --- Determine Agent Type ---
+    from src.agents.constants import AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER
+    agent_type = AGENT_TYPE_WORKER # Default
+    if agent_id == BOOTSTRAP_AGENT_ID:
+        agent_type = AGENT_TYPE_ADMIN
+    elif agent_id.startswith("pm_"):
+        agent_type = AGENT_TYPE_PM
+    logger.debug(f"Determined agent_type for '{agent_id}' as '{agent_type}'.")
+    # Add agent_type to the config entry
+    final_agent_config_entry["config"]["agent_type"] = agent_type
+    # --- End Determine Agent Type ---
+
     # Instantiate Agent
     try:
+        # Pass the full config entry which now includes agent_type
         agent = Agent(agent_config=final_agent_config_entry, llm_provider=llm_provider_instance, manager=manager)
         agent.model = model_id_for_provider # Use adjusted ID for provider calls
         if api_key_used: agent._last_api_key_used = api_key_used
-        # --- NEW: Set initial state for Admin AI ---
-        if agent_id == BOOTSTRAP_AGENT_ID:
+
+        # --- Set initial state based on type ---
+        # (Deferring state setting via workflow_manager until that's integrated)
+        # For now, set state directly based on type
+        if agent_type == AGENT_TYPE_ADMIN:
             from src.agents.constants import ADMIN_STATE_STARTUP # Import locally
             agent.set_state(ADMIN_STATE_STARTUP)
             logger.info(f"Lifecycle: Set initial state for Admin AI '{agent_id}' to '{ADMIN_STATE_STARTUP}'.")
-        # --- END NEW ---
+        else: # PMs and Workers start in the general conversation state
+             from src.agents.constants import AGENT_STATE_CONVERSATION # Use the correct general conversation state constant
+             agent.set_state(AGENT_STATE_CONVERSATION) # Use AGENT_STATE_CONVERSATION
+             logger.info(f"Lifecycle: Set initial state for {agent_type} agent '{agent_id}' to '{AGENT_STATE_CONVERSATION}'.") # Log correct state
+        # --- End initial state setting ---
     except Exception as e: msg = f"Lifecycle: Agent instantiation failed: {e}"; logger.error(msg, exc_info=True); await manager._close_provider_safe(llm_provider_instance); return False, msg, None
     logger.info(f"  Lifecycle: Instantiated Agent object for '{agent_id}'.")
 

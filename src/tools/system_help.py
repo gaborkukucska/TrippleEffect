@@ -25,25 +25,22 @@ class SystemHelpTool(BaseTool):
     Useful for context, debugging, and dynamic help. Intended primarily for the Admin AI.
     """
     name: str = "system_help"
+    auth_level: str = "admin" # <<< NEW: Set auth level
     description: str = (
         "Provides system-level information. Actions: "
         "'get_time' (retrieves current UTC date and time), "
-        "'search_logs' (searches the latest application log file for specific text, optionally filtering by agent ID), "
-        "'get_tool_info' (retrieves detailed usage instructions for a specified tool)."
+        "'search_logs' (searches the latest application log file for specific text, optionally filtering by agent ID)."
+        # Removed get_tool_info
     )
+    summary: Optional[str] = "Provides system time or searches logs. (Admin only)" # Add summary
     parameters: List[ToolParameter] = [
         ToolParameter(
             name="action",
             type="string",
-            description="The operation to perform: 'get_time', 'search_logs', or 'get_tool_info'.",
+            description="The operation to perform: 'get_time' or 'search_logs'.",
             required=True,
         ),
-        ToolParameter(
-            name="tool_name",
-            type="string",
-            description="The name of the tool to get detailed information for. Required for 'get_tool_info'.",
-            required=False, # Dynamically required
-        ),
+        # Removed tool_name parameter
         ToolParameter(
             name="log_query",
             type="string",
@@ -76,7 +73,7 @@ class SystemHelpTool(BaseTool):
         ) -> Any:
         """Executes the system help action."""
         action = kwargs.get("action")
-        valid_actions = ["get_time", "search_logs", "get_tool_info"]
+        valid_actions = ["get_time", "search_logs"] # Removed get_tool_info
 
         if not action or action not in valid_actions:
             return f"Error: Invalid or missing 'action'. Must be one of {valid_actions}."
@@ -130,29 +127,7 @@ class SystemHelpTool(BaseTool):
                 else: # It's an error string
                     return search_result
 
-            elif action == "get_tool_info":
-                tool_name = kwargs.get("tool_name")
-                if not tool_name:
-                    return "Error: 'tool_name' parameter is required for 'get_tool_info' action."
-
-                # Access the tool executor via the manager
-                if not manager or not hasattr(manager, 'tool_executor'):
-                     logger.error(f"SystemHelpTool: AgentManager instance not available or missing tool_executor for 'get_tool_info'.")
-                     return "Error: Internal configuration error - cannot access tool executor."
-
-                target_tool = manager.tool_executor.tools.get(tool_name)
-                if not target_tool:
-                    available_tools = list(manager.tool_executor.tools.keys())
-                    return f"Error: Tool '{tool_name}' not found. Available tools: {available_tools}"
-
-                try:
-                    usage_info = target_tool.get_detailed_usage()
-                    logger.info(f"SystemHelpTool: Executed 'get_tool_info' for tool '{tool_name}' by agent {agent_id}.")
-                    # Return the detailed usage string directly
-                    return f"--- Detailed Usage for Tool: {tool_name} ---\n{usage_info}\n--- End Usage ---"
-                except Exception as tool_usage_err:
-                    logger.error(f"Error getting detailed usage for tool '{tool_name}': {tool_usage_err}", exc_info=True)
-                    return f"Error retrieving usage for tool '{tool_name}': {type(tool_usage_err).__name__}"
+            # Removed get_tool_info action logic
 
         except Exception as e:
             logger.error(f"Unexpected error executing SystemHelpTool (Action: {action}) for agent {agent_id}: {e}", exc_info=True)
@@ -164,7 +139,7 @@ class SystemHelpTool(BaseTool):
         usage = """
         **Tool Name:** system_help
 
-        **Description:** Provides system-level information or detailed help on other tools.
+        **Description:** Provides system-level information. (Admin Only)
 
         **Actions:**
 
@@ -191,18 +166,6 @@ class SystemHelpTool(BaseTool):
                   <log_query>error</log_query>
                   <agent_id_filter>agent_123</agent_id_filter>
                   <max_log_lines>50</max_log_lines>
-                </system_help>
-                ```
-
-        3.  **get_tool_info:**
-            *   Retrieves detailed usage instructions (actions, parameters, examples) for another specified tool.
-            *   Parameters:
-                *   `<tool_name>` (string, required): The exact name of the tool you want help with (e.g., 'file_system', 'ManageTeamTool').
-            *   Example Call (Get help for 'file_system' tool):
-                ```xml
-                <system_help>
-                  <action>get_tool_info</action>
-                  <tool_name>file_system</tool_name>
                 </system_help>
                 ```
         """
