@@ -6,8 +6,11 @@ import time
 import openai # Import openai exceptions
 import random # For selecting alternates if no performance data
 
-# --- NEW: Import status constants ---
-from src.agents.constants import AGENT_STATUS_IDLE, AGENT_STATUS_ERROR
+# --- NEW: Import status and error constants ---
+from src.agents.constants import (
+    AGENT_STATUS_IDLE, AGENT_STATUS_ERROR,
+    KEY_RELATED_ERRORS, KEY_RELATED_STATUS_CODES # Import error constants
+)
 # --- END NEW ---
 
 # Import base Agent class for type hinting
@@ -24,13 +27,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Define key-related errors for easier checking
-KEY_RELATED_ERRORS = (
-    openai.AuthenticationError,
-    openai.PermissionDeniedError,
-    openai.RateLimitError,
-)
-KEY_RELATED_STATUS_CODES = [401, 403, 429] # Unauthorized, Forbidden, Too Many Requests
+# Key-related errors imported from constants
 
 # --- Helper Function to Select Alternate Models ---
 async def _select_alternate_models(

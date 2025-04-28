@@ -6,34 +6,28 @@ import logging
 from typing import List, Dict, Any, Optional, AsyncGenerator
 
 from .base import BaseLLMProvider, MessageDict, ToolDict, ToolResultDict
+# --- Import centralized constants ---
+from src.agents.constants import (
+    MAX_RETRIES, RETRY_DELAY_SECONDS, RETRYABLE_STATUS_CODES, KNOWN_OLLAMA_OPTIONS
+)
+# --- End Import ---
 
 logger = logging.getLogger(__name__)
 
-# Retry Configuration
-MAX_RETRIES = 3
-RETRY_DELAY_SECONDS = 5.0
 # Define retryable aiohttp exceptions (adjust as needed)
 RETRYABLE_AIOHTTP_EXCEPTIONS = (
     aiohttp.ClientConnectionError,
     aiohttp.ClientPayloadError,
     asyncio.TimeoutError, # aiohttp raises this for timeouts
 )
-RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504]
+# RETRYABLE_STATUS_CODES imported from constants
 
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 DEFAULT_CONNECT_TIMEOUT = 15.0
 DEFAULT_READ_TIMEOUT = 1200.0 # 20 minutes for reading the stream
 DEFAULT_TOTAL_TIMEOUT = 1800.0 # 30 minutes total request time
 
-# Known valid Ollama options (Unchanged)
-KNOWN_OLLAMA_OPTIONS = {
-    "mirostat", "mirostat_eta", "mirostat_tau", "num_ctx", "num_gpu", "num_thread",
-    "num_keep", "seed", "num_predict", "repeat_last_n", "repeat_penalty",
-    "temperature", "tfs_z", "top_k", "top_p", "min_p", "use_mmap", "use_mlock",
-    "numa", "num_batch", "main_gpu", "low_vram", "f16_kv", "logits_all",
-    "vocab_only", "stop", "presence_penalty", "frequency_penalty", "penalize_newline",
-    "typical_p"
-}
+# KNOWN_OLLAMA_OPTIONS imported from constants
 
 from src.config.settings import settings # Import the global settings object
 

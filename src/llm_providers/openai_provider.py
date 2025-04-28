@@ -7,22 +7,31 @@ import time # Import time
 from typing import List, Dict, Any, Optional, AsyncGenerator
 
 from .base import BaseLLMProvider, MessageDict, ToolDict, ToolResultDict
+# --- Import centralized constants ---
+from src.agents.constants import (
+    MAX_RETRIES, RETRY_DELAY_SECONDS, RETRYABLE_STATUS_CODES, RETRYABLE_EXCEPTIONS
+)
+# --- End Import ---
 
 logger = logging.getLogger(__name__)
 # logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s') # Configured in main
 
-# Retry Configuration (Remains the same)
-MAX_RETRIES = 3
-RETRY_DELAY_SECONDS = 5.0
-RETRYABLE_STATUS_CODES = [429]
-RETRYABLE_EXCEPTIONS = (
+# Retry Configuration (Imported from constants)
+# MAX_RETRIES = 3
+# RETRY_DELAY_SECONDS = 5.0
+# RETRYABLE_STATUS_CODES = [429] # Note: constants.py has more codes, this provider might only retry 429 specifically? Keep local for now?
+# Let's use the centralized RETRYABLE_STATUS_CODES for consistency, but keep RETRYABLE_EXCEPTIONS local as it includes RateLimitError which constants.py excludes from the general retryable list.
+# RETRYABLE_EXCEPTIONS = (
+#    openai.APIConnectionError,
+#    openai.APITimeoutError,
+#    openai.RateLimitError
+#)
+# Define local retryable exceptions including RateLimitError for this provider
+LOCAL_RETRYABLE_EXCEPTIONS = (
     openai.APIConnectionError,
     openai.APITimeoutError,
     openai.RateLimitError
 )
-
-# --- Constants ---
-# MAX_TOOL_CALLS_PER_TURN is no longer relevant here
 
 class OpenAIProvider(BaseLLMProvider):
     """
@@ -81,33 +90,33 @@ class OpenAIProvider(BaseLLMProvider):
                 last_exception = None
                 break # Exit retry loop
 
-            except RETRYABLE_EXCEPTIONS as e:
+            except LOCAL_RETRYABLE_EXCEPTIONS as e: # Use local definition
                 last_exception = e; logger.warning(f"Retryable error on attempt {attempt + 1}/{MAX_RETRIES + 1}: {type(e).__name__} - {e}")
                 if attempt < MAX_RETRIES:
-                    logger.info(f"Waiting {RETRY_DELAY_SECONDS}s before retrying...")
-                    await asyncio.sleep(RETRY_DELAY_SECONDS); continue
+                    logger.info(f"Waiting {RETRY_DELAY_SECONDS}s before retrying...") # Use imported constant
+                    await asyncio.sleep(RETRY_DELAY_SECONDS); continue # Use imported constant
                 else:
-                    logger.error(f"Max retries ({MAX_RETRIES}) reached after retryable error.")
+                    logger.error(f"Max retries ({MAX_RETRIES}) reached after retryable error.") # Use imported constant
                     yield {"type": "error", "content": f"[OpenAIProvider Error]: Max retries reached. Last error: {type(e).__name__}"}
                     return
             except openai.APIStatusError as e:
                 last_exception = e
                 logger.warning(f"API Status Error on attempt {attempt + 1}/{MAX_RETRIES + 1}: Status={e.status_code}, Body={e.body}")
-                if (e.status_code >= 500 or e.status_code in RETRYABLE_STATUS_CODES) and attempt < MAX_RETRIES:
-                    logger.info(f"Status {e.status_code} is retryable. Waiting {RETRY_DELAY_SECONDS}s before retrying...")
-                    await asyncio.sleep(RETRY_DELAY_SECONDS)
+                if (e.status_code >= 500 or e.status_code in RETRYABLE_STATUS_CODES) and attempt < MAX_RETRIES: # Use imported constant
+                    logger.info(f"Status {e.status_code} is retryable. Waiting {RETRY_DELAY_SECONDS}s before retrying...") # Use imported constant
+                    await asyncio.sleep(RETRY_DELAY_SECONDS) # Use imported constant
                     continue
                 else:
-                    logger.error(f"Non-retryable API Status Error ({e.status_code}) or max retries reached.")
+                    logger.error(f"Non-retryable API Status Error ({e.status_code}) or max retries reached.") # Use imported constant
                     user_message = f"[OpenAIProvider Error]: API Status {e.status_code}"
                     try:
-                        body_dict = json.loads(e.body) if isinstance(e.body, str) else (e.body if isinstance(e.body, dict) else {})
-                        error_detail = body_dict.get('error', {}).get('message') or body_dict.get('message')
+                        body_dict = json.loads(e.body) if isinstance(e.body, str) else (e.body if isinstance(e.body, dict) else {}) # type: ignore
+                        error_detail = body_dict.get('error', {}).get('message') or body_dict.get('message') # type: ignore
                         if error_detail: user_message += f" - {str(error_detail)[:100]}"
-                    except Exception: pass
+                    except Exception: pass # type: ignore
                     yield {"type": "error", "content": user_message}
                     return
-            except (openai.AuthenticationError, openai.BadRequestError, openai.PermissionDeniedError, openai.NotFoundError) as e:
+            except (openai.AuthenticationError, openai.BadRequestError, openai.PermissionDeniedError, openai.NotFoundError) as e: # type: ignore
                  # --- *** CORRECTED FORMATTING FOR THIS BLOCK *** ---
                  error_type_name = type(e).__name__
                  status_code = getattr(e, 'status_code', 'N/A')
@@ -116,31 +125,31 @@ class OpenAIProvider(BaseLLMProvider):
                  user_message = f"[OpenAIProvider Error]: {error_type_name}"
                  try:
                      # Attempt to parse body for more details
-                     body_dict = json.loads(error_body) if isinstance(error_body, str) else (error_body if isinstance(error_body, dict) else {})
-                     error_detail = body_dict.get('error', {}).get('message') or body_dict.get('message')
+                     body_dict = json.loads(error_body) if isinstance(error_body, str) else (error_body if isinstance(error_body, dict) else {}) # type: ignore
+                     error_detail = body_dict.get('error', {}).get('message') or body_dict.get('message') # type: ignore
                      if error_detail:
                          user_message += f" - {str(error_detail)[:100]}"
-                 except Exception: # Ignore parsing errors
+                 except Exception: # Ignore parsing errors # type: ignore
                      pass
                  # Yield and return separately
                  yield {"type": "error", "content": user_message}
-                 return # Exit function
+                 return
                  # --- *** END CORRECTION *** ---
             except Exception as e:
                 last_exception = e; logger.exception(f"Unexpected Error during API call attempt {attempt + 1}: {type(e).__name__} - {e}")
                 if attempt < MAX_RETRIES:
-                    logger.info(f"Waiting {RETRY_DELAY_SECONDS}s before retrying...")
-                    await asyncio.sleep(RETRY_DELAY_SECONDS)
+                    logger.info(f"Waiting {RETRY_DELAY_SECONDS}s before retrying...") # Use imported constant
+                    await asyncio.sleep(RETRY_DELAY_SECONDS) # Use imported constant
                     continue
                 else:
-                    logger.error(f"Max retries ({MAX_RETRIES}) reached after unexpected error.")
+                    logger.error(f"Max retries ({MAX_RETRIES}) reached after unexpected error.") # Use imported constant
                     yield {"type": "error", "content": f"[OpenAIProvider Error]: Unexpected Error after retries - {type(e).__name__}"}
                     return
 
         # --- Check if API call failed after all retries ---
         if response_stream is None:
              logger.error("API call failed after all retries, response_stream is None.")
-             err_msg = f"[OpenAIProvider Error]: API call failed after {MAX_RETRIES} retries."
+             err_msg = f"[OpenAIProvider Error]: API call failed after {MAX_RETRIES} retries." # Use imported constant
              if last_exception: err_msg += f" Last error: {type(last_exception).__name__}"
              yield {"type": "error", "content": err_msg}; return
 

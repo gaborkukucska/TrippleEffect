@@ -11,12 +11,15 @@ from typing import TYPE_CHECKING, Dict, Any, Optional, List, AsyncGenerator
 from src.llm_providers.base import ToolResultDict, MessageDict
 from src.agents.core import Agent
 
-# --- NEW: Import status and state constants ---
+# --- NEW: Import status, state, and other constants ---
 from src.agents.constants import (
     AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_PLANNING,
     AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_AWAITING_TOOL,
     AGENT_STATUS_ERROR,
-    ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED # Added Admin States
+    ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, # Added Admin States
+    REQUEST_STATE_TAG_PATTERN, # Import the compiled pattern
+    # Import retry/error constants
+    RETRYABLE_EXCEPTIONS, RETRYABLE_STATUS_CODES, KEY_RELATED_ERRORS, KEY_RELATED_STATUS_CODES
 )
 # --- END NEW ---
 
@@ -40,16 +43,8 @@ logger = logging.getLogger(__name__)
 
 # Constants
 HEALTH_REPORT_HISTORY_LOOKBACK = 10 # How many recent messages to check for the report
-# Modified regex to accept both self-closing (/>) and non-self-closing (>) tags
-REQUEST_STATE_TAG_PATTERN = r"<request_state\s+state=['\"](\w+)['\"]\s*/?>" # Pattern for state change requests
 
-# Define retryable exceptions
-RETRYABLE_EXCEPTIONS = (
-    openai.APIConnectionError,
-    openai.APITimeoutError,
-)
-# Specific Status Codes for Retry
-RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504]
+# Retry/Error constants imported above
 
 
 class AgentCycleHandler:
@@ -69,12 +64,10 @@ class AgentCycleHandler:
         # Import BOOTSTRAP_AGENT_ID from manager to avoid module-level import issues potentially
         from src.agents.manager import BOOTSTRAP_AGENT_ID
         self.BOOTSTRAP_AGENT_ID = BOOTSTRAP_AGENT_ID
-        # Compile regex patterns here if they are static
-        try:
-            self.request_state_pattern = re.compile(REQUEST_STATE_TAG_PATTERN)
-        except Exception as re_err:
-            logger.error(f"Failed to compile REQUEST_STATE_TAG_PATTERN on init: {re_err}")
-            self.request_state_pattern = None # Ensure it exists but is None
+        # Use the imported compiled pattern directly
+        self.request_state_pattern = REQUEST_STATE_TAG_PATTERN
+        if not self.request_state_pattern:
+             logger.error("REQUEST_STATE_TAG_PATTERN failed to compile during import!")
         logger.info("AgentCycleHandler initialized.")
 
     # --- System Health Report Helper ---
@@ -451,10 +444,12 @@ class AgentCycleHandler:
                         last_error_obj = event.get('_exception_obj', ValueError(event.get('content', 'Unknown Error')))
                         last_error_content = event.get("content", "[Agent Error: Unknown error from provider]")
                         logger.error(f"CycleHandler: Agent '{agent_id}' reported error event: {last_error_content}")
+                        # Use imported constants for error checking
                         if isinstance(last_error_obj, RETRYABLE_EXCEPTIONS): is_retryable_error_type = True; is_key_related_error = False; trigger_failover = False; logger.warning(f"CycleHandler: Agent '{agent_id}' encountered retryable exception type: {type(last_error_obj).__name__}")
                         elif isinstance(last_error_obj, openai.APIStatusError) and (last_error_obj.status_code in RETRYABLE_STATUS_CODES or last_error_obj.status_code >= 500): is_retryable_error_type = True; is_key_related_error = False; trigger_failover = False; logger.warning(f"CycleHandler: Agent '{agent_id}' encountered retryable status code: {last_error_obj.status_code}")
-                        elif isinstance(last_error_obj, (openai.AuthenticationError, openai.PermissionDeniedError)) or (isinstance(last_error_obj, openai.APIStatusError) and last_error_obj.status_code == 401): is_retryable_error_type = False; is_key_related_error = True; trigger_failover = True; logger.warning(f"CycleHandler: Agent '{agent_id}' encountered key-related error: {type(last_error_obj).__name__}. Triggering failover/key cycle.")
-                        elif isinstance(last_error_obj, openai.RateLimitError) or (isinstance(last_error_obj, openai.APIStatusError) and last_error_obj.status_code == 429): is_retryable_error_type = False; is_key_related_error = True; trigger_failover = True; logger.warning(f"CycleHandler: Agent '{agent_id}' encountered rate limit error. Triggering failover/key cycle.")
+                        elif isinstance(last_error_obj, KEY_RELATED_ERRORS) or (isinstance(last_error_obj, openai.APIStatusError) and last_error_obj.status_code in KEY_RELATED_STATUS_CODES): is_retryable_error_type = False; is_key_related_error = True; trigger_failover = True; logger.warning(f"CycleHandler: Agent '{agent_id}' encountered key-related error: {type(last_error_obj).__name__}. Triggering failover/key cycle.")
+                        # Removed redundant RateLimitError check as it's covered by KEY_RELATED_ERRORS
+                        # elif isinstance(last_error_obj, openai.RateLimitError) or (isinstance(last_error_obj, openai.APIStatusError) and last_error_obj.status_code == 429): is_retryable_error_type = False; is_key_related_error = True; trigger_failover = True; logger.warning(f"CycleHandler: Agent '{agent_id}' encountered rate limit error. Triggering failover/key cycle.")
                         else: is_retryable_error_type = False; is_key_related_error = False; trigger_failover = True; logger.warning(f"CycleHandler: Agent '{agent_id}' encountered non-retryable/unknown error: {type(last_error_obj).__name__}. Triggering failover.")
                         if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="system_error", content=last_error_content)
                         break

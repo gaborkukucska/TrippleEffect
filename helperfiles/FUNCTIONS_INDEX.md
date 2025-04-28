@@ -205,6 +205,7 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 *   `src/agents/manager.py::AgentManager.get_agent_status()` -> `Dict` - Returns dictionary of current agent states.
 *   `src/agents/manager.py::AgentManager.save_session(project_name, session_name=None)` (Async) -> `Tuple` - Delegates session saving to `session_manager`.
 *   `src/agents/manager.py::AgentManager.load_session(project_name, session_name)` (Async) -> `Tuple` - Delegates session loading to `session_manager`.
+*   `src/agents/manager.py::AgentManager.create_project_and_pm_agent(project_title, plan_description)` (Async) -> `Tuple[bool, str, Optional[str]]` - **(NEW)** Handles automatic creation of project task (via ToolExecutor) and PM agent. Checks task creation status correctly before notifying UI.
 *   `src/agents/manager.py::AgentManager.get_agent_info_list_sync(filter_team_id=None)` -> `List[Dict]` - Synchronously gets a list of basic agent info.
 *   `src/agents/manager.py::AgentManager.cleanup_providers()` (Async) - Cleans up provider resources, saves metrics and quarantine state.
 *   `src/agents/manager.py::AgentManager._close_provider_safe(provider)` (Async Internal) - Safely closes provider session if applicable.
@@ -293,7 +294,7 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 *   `src/tools/project_management.py::ProjectManagementTool` (Class) - **(NEW)** Tool for managing project tasks using `tasklib`.
 *   `src/tools/project_management.py::ProjectManagementTool.__init__(...)` - Initializes tool.
 *   `src/tools/project_management.py::ProjectManagementTool._get_taskwarrior_instance(...)` (Internal) -> `Optional[TaskWarrior]` - **(NEW)** Initializes TaskWarrior with session-specific data path.
-*   `src/tools/project_management.py::ProjectManagementTool.execute(...)` (Async) -> `Dict` - **(NEW)** Executes task actions (add_task, list_tasks, modify_task, complete_task).
+*   `src/tools/project_management.py::ProjectManagementTool.execute(...)` (Async) -> `Dict` - **(NEW)** Executes task actions (add_task, list_tasks, modify_task, complete_task). `add_task` uses CLI with tags for assignee workaround. `list_tasks` extracts assignee from tags.
 
 ## **Frontend Logic (`static/js/app.js`)**
 

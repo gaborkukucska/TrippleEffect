@@ -12,7 +12,13 @@ During development please follow these rules.
     *   Wait for confirmation before proceeding to the next file.
     *   Maintain code consistency.
 
-# Example Mermaid graph 
+## Known Issues / Workarounds (as of v2.25)
+
+*   **Taskwarrior UDA Issues:** Setting User Defined Attributes (like `assignee`) via the Taskwarrior CLI `add` or `modify` commands within `tasklib`'s `execute_command` has proven unreliable (often corrupting the description or failing silently). The current workaround for task assignment uses tags (`+agent_id`).
+*   **PM Agent Tool Usage:** The Project Manager agent may attempt multiple tool calls in one response, violating framework rules. Its system prompt needs careful wording to enforce sequential execution (under investigation).
+*   **Rate Limiting:** External API rate limits (e.g., OpenRouter free tier) can halt agent execution. Ensure adequate limits or configure alternative providers/models in `.env` or `config.yaml`.
+
+# Example Mermaid graph
 **Mermaid Syntax:** Remember that Mermaid diagrams used in Markdown (like in `README.md` or `PROJECT_PLAN.md`) are sensitive to inline comments. Use `%% Comment Text` on a **separate line** for comments within diagram definitions, not after a statement on the same line (e.g., `NodeA --> NodeB; %% This might break`).
 
 ```mermaid

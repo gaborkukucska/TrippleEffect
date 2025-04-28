@@ -1,8 +1,8 @@
 <!-- # START OF FILE helperfiles/PROJECT_PLAN.md -->
 # Project Plan: TrippleEffect
 
-**Version:** 2.24 <!-- Updated Version -->
-**Date:** 2025-04-25 <!-- Updated Date -->
+**Version:** 2.25 <!-- Updated Version -->
+**Date:** 2025-04-27 <!-- Updated Date -->
 
 ## 1. Project Goals
 
@@ -42,8 +42,8 @@
 *   Refactor UI for Communication Layers and refine Admin AI memory usage prompts. *(Completed in P22)*
 *   Fix UI message interleaving issue during concurrent streaming. *(Completed in P22)*
 *   Increase internal comms message history limit. *(Completed in P22)*
-*   **(Current Goal - Phase 24)** Implement **Governance Layer** (Constitution, Principles).
-*   **(Future Goals)** Address agent logic issues (looping, placeholders, targeting - P25), **Advanced Memory & Learning** (P25), **Proactive Behavior** (Scheduling - P26), **Federated Communication** (Layer 3 - P27+), Enhance Admin AI planning (few-shot examples), use tracked performance metrics for ranking, implement new Admin AI tools, resource management, advanced collaboration patterns, DB integration.
+*   **(Current Goal - Phase 25)** Address agent logic issues (PM multi-tool calls, looping, placeholders, targeting), investigate Taskwarrior UDA issues, address rate limiting. Implement basic Governance Layer.
+*   **(Future Goals)** **Advanced Memory & Learning** (P26), **Proactive Behavior** (Scheduling - P27), **Federated Communication** (Layer 3 - P28+), Enhance Admin AI planning (few-shot examples), use tracked performance metrics for ranking, implement new Admin AI tools, resource management, advanced collaboration patterns, DB integration.
 
 ## 2. Scope
 
@@ -282,14 +282,17 @@ graph TD %% Updated P23
 *   [X] Update `SessionManager` to save/load Admin AI state.
 *   [X] Remove separate `admin_ai_operational_instructions_local` prompt.
 *   [X] Fix bootstrap agent initialization fallback logic (`agent_lifecycle.py`).
+*   [X] Correct `AgentManager` check for initial task creation result.
 
-**Future Phases (25+) (High-Level)**
-*   **Phase 25: Governance Layer & Agent Logic Issues**
-    *   **Goal:** Establish a basic system for defining and injecting core principles or a 'constitution'. Address known agent logic issues (looping, placeholders, targeting).
-    *   [ ] Define structure for principles (e.g., `governance.yaml` or DB table).
-    *   [ ] Implement mechanism to load and inject principles into relevant agent prompts.
+**Phase 25: Agent Logic & Taskwarrior Refinement (Current)**
+    *   **Goal:** Address known agent logic issues and stabilize Taskwarrior integration. Implement basic Governance Layer.
+    *   [ ] Investigate and fix PM agent multi-tool call issue (likely prompt refinement).
+    *   [ ] Investigate and fix other agent logic issues (looping, placeholders, targeting).
+    *   [ ] Stabilize `ProjectManagementTool` assignee handling (confirm tag approach is sufficient or revisit UDA/modify).
+    *   [ ] Address external API rate limiting impact (user config or alternative models).
+    *   [ ] Define structure for Governance principles (e.g., `governance.yaml` or DB table).
+    *   [ ] Implement mechanism to load and inject principles into relevant agent prompts (initially Admin AI).
     *   [ ] Explore how Admin AI can reference/apply these principles during planning.
-    *   [ ] Investigate and fix agent looping, placeholder replacement, and targeting issues noted previously.
 *   **Phase 26:** Advanced Memory & Learning (Feedback Loop, Learned Principles).
 *   **Phase 27:** Proactive Behavior (Scheduling, Goal Management).
 *   **Phase 28+:** Federated Communication (Layer 3 - External Admin AI Interaction).

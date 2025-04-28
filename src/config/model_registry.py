@@ -291,8 +291,61 @@ class ModelRegistry:
 
         self._apply_filters()
         logger.info("Provider and model discovery/filtering complete.")
-        self._log_available_models()
+        self._log_available_models() # Log the final list
 
+    # --- Helper for Formatting/Logging ---
+    def _format_model_list_output(self, include_header: bool = True) -> str:
+        """ Formats the available models for display or logging. """
+        if not self.available_models: return "Model Availability: No models discovered or available after filtering." if include_header else "No models available."
+
+        lines = []
+        if include_header: lines.append("**Currently Available Models (Based on config & tier):**")
+        found_any = False
+        # Group by base type for better display
+        provider_groups: Dict[str, List[Tuple[str, List[ModelInfo]]]] = {
+            "ollama": [], "litellm": [], "openrouter": [], "openai": [], "other": []
+        }
+        for provider, models in self.available_models.items():
+            base_type = "other"
+            if provider.startswith("ollama"): base_type = "ollama"
+            elif provider.startswith("litellm"): base_type = "litellm"
+            elif provider == "openrouter": base_type = "openrouter"
+            elif provider == "openai": base_type = "openai"
+            provider_groups[base_type].append((provider, models))
+
+        try:
+            for base_type in ["ollama", "litellm", "openrouter", "openai", "other"]:
+                group = sorted(provider_groups[base_type], key=lambda item: item[0]) # Sort instances alphabetically
+                if not group: continue
+
+                for provider, models in group:
+                     model_names = sorted([m.get("id", "?") for m in models])
+                     if model_names:
+                         # Determine tag (Local Discovered, Local Proxy, Remote)
+                         tag = ""
+                         if provider == "ollama-proxy": tag = " (Local Proxy)"
+                         elif "-local-" in provider: tag = " (Local Discovered)"
+                         elif provider in ["openrouter", "openai"]: tag = " (Remote)" # Add tag for remote
+
+                         # Add prefix for local models for clarity
+                         prefix = ""
+                         if tag: # Add prefix only if it's local or proxy
+                             prefix = provider.split('-local-')[0].split('-proxy')[0] + "/"
+
+                         display_names = [f"{prefix}{name}" for name in model_names]
+
+                         # Use different formatting for log vs. display
+                         if include_header: # Formatting for display (e.g., markdown)
+                              lines.append(f"- **{provider}{tag}**: `{', '.join(display_names)}`")
+                         else: # Formatting for logging
+                              lines.append(f"  {provider}{tag}: {len(display_names)} models -> {display_names}")
+                         found_any = True
+
+            if not found_any: return "Model Availability: No models discovered or available after filtering." if include_header else "No models available."
+            return "\n".join(lines)
+        except Exception as e:
+             logger.error(f"Error formatting available models: {e}")
+             return "**Error:** Could not format available models list." if include_header else "Error formatting model list."
 
     # --- Keep existing model discovery methods for remote providers ---
     async def _discover_openrouter_models(self):
@@ -470,48 +523,8 @@ class ModelRegistry:
 
 
     def get_formatted_available_models(self) -> str:
-        """ Formats the available models for display, grouping local instances. """
-        if not self.available_models: return "Model Availability: No models discovered or available after filtering."
-        lines = ["**Currently Available Models (Based on config & tier):**"]; found_any = False
-        # Group by base type for better display
-        provider_groups: Dict[str, List[Tuple[str, List[ModelInfo]]]] = {
-            "ollama": [], "litellm": [], "openrouter": [], "openai": [], "other": []
-        }
-        for provider, models in self.available_models.items():
-            base_type = "other"
-            if provider.startswith("ollama"): base_type = "ollama"
-            elif provider.startswith("litellm"): base_type = "litellm"
-            elif provider == "openrouter": base_type = "openrouter"
-            elif provider == "openai": base_type = "openai"
-            provider_groups[base_type].append((provider, models))
-
-        try:
-            for base_type in ["ollama", "litellm", "openrouter", "openai", "other"]:
-                group = sorted(provider_groups[base_type], key=lambda item: item[0]) # Sort instances alphabetically
-                if not group: continue
-
-                for provider, models in group:
-                     model_names = sorted([m.get("id", "?") for m in models])
-                     if model_names:
-                         # Determine tag (Local Discovered, Local Proxy, Remote)
-                         tag = ""
-                         if provider == "ollama-proxy": tag = " (Local Proxy)"
-                         elif "-local-" in provider: tag = " (Local Discovered)"
-                         elif provider in ["openrouter", "openai"]: tag = " (Remote)" # Add tag for remote
-
-                         # Add prefix for local models for clarity
-                         prefix = ""
-                         if tag: # Add prefix only if it's local or proxy
-                             prefix = provider.split('-local-')[0].split('-proxy')[0] + "/"
-
-                         display_names = [f"{prefix}{name}" for name in model_names]
-
-                         lines.append(f"- **{provider}{tag}**: `{', '.join(display_names)}`")
-                         found_any = True
-
-            if not found_any: return "Model Availability: No models discovered or available after filtering."
-            return "\n".join(lines)
-        except Exception as e: logger.error(f"Error formatting available models: {e}"); return "**Error:** Could not format available models list."
+        """ Formats the available models for display using the helper method. """
+        return self._format_model_list_output(include_header=True)
 
     def is_model_available(self, provider: str, model_id: str) -> bool:
         """ Checks if a specific model ID is available under a given provider name (potentially dynamic). """
@@ -524,40 +537,15 @@ class ModelRegistry:
         return self._reachable_providers.get(provider)
 
     def _log_available_models(self):
-        """ Logs the available models, grouped by provider type. """
-        if not self.available_models: logger.warning("No models available after discovery and filtering."); return
-        logger.info("--- Available Models (from Reachable Providers) ---")
-        # Group by base type for better display
-        provider_groups: Dict[str, List[Tuple[str, List[ModelInfo]]]] = {
-            "ollama": [], "litellm": [], "openrouter": [], "openai": [], "other": []
-        }
-        for provider, models in self.available_models.items():
-            base_type = "other"
-            if provider.startswith("ollama"): base_type = "ollama"
-            elif provider.startswith("litellm"): base_type = "litellm"
-            elif provider == "openrouter": base_type = "openrouter"
-            elif provider == "openai": base_type = "openai"
-            provider_groups[base_type].append((provider, models))
-
-        for base_type in ["ollama", "litellm", "openrouter", "openai", "other"]:
-            group = sorted(provider_groups[base_type], key=lambda item: item[0]) # Sort instances alphabetically
-            if not group: continue
-            for provider, models in group:
-                model_names = sorted([m.get("id", "?") for m in models])
-                # Determine tag (Local Discovered, Local Proxy, Remote)
-                tag = ""
-                if provider == "ollama-proxy": tag = " (Local Proxy)"
-                elif "-local-" in provider: tag = " (Local Discovered)"
-                elif provider in ["openrouter", "openai"]: tag = " (Remote)"
-
-                # Add prefix for local models for clarity
-                prefix = ""
-                if tag: # Add prefix only if it's local or proxy
-                    prefix = provider.split('-local-')[0].split('-proxy')[0] + "/"
-
-                display_names = [f"{prefix}{name}" for name in model_names]
-                logger.info(f"  {provider}{tag}: {len(display_names)} models -> {display_names}")
-
-        logger.info("--------------------------------------------------")
+        """ Logs the available models using the helper method. """
+        log_output = self._format_model_list_output(include_header=False)
+        if log_output == "No models available.":
+             logger.warning(log_output)
+        else:
+             logger.info("--- Available Models (from Reachable Providers) ---")
+             # Log each line from the formatted output
+             for line in log_output.splitlines():
+                 logger.info(line)
+             logger.info("--------------------------------------------------")
 
 # END OF FILE src/config/model_registry.py

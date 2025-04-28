@@ -521,33 +521,37 @@ class AgentManager:
                 logger.info(task_creation_message)
             else:
                 error_detail = task_result.get("message", "Unknown error from tool execution.") if isinstance(task_result, dict) else str(task_result)
-                task_creation_message = f"Failed to create 'Project Plan' task via ToolExecutor: {error_detail}"
-                logger.error(task_creation_message)
-                # Ensure task_creation_success remains False if status wasn't 'success'
-                task_creation_success = False
+            task_creation_message = f"Failed to create 'Project Plan' task via ToolExecutor: {error_detail}"
+            logger.error(task_creation_message)
+            # Ensure task_creation_success remains False if status wasn't 'success'
+            task_creation_success = False # This line is correct
 
         except Exception as task_err:
             logger.error(f"Exception during 'Project Plan' task creation via ToolExecutor: {task_err}", exc_info=True)
             task_creation_message = f"Failed to create 'Project Plan' task due to exception: {task_err}"
             task_creation_success = False # Ensure success is false on exception
 
-        # --- CORRECTED: Check task_creation_success flag ---
+        # --- CORRECTED: Check task_creation_success flag and adjust final message ---
         if not task_creation_success:
             # Log error but proceed with approval request.
             logger.error(f"Proceeding with PM agent '{pm_agent_id}' but failed to create initial plan task: {task_creation_message}")
-            # Optionally modify the final message to indicate the task failure
-            # final_message = f"Project '{project_title}' PM agent '{pm_agent_id}' created, but failed to add initial plan task. Awaiting approval."
+            # Modify the final message to indicate the task failure clearly
+            final_status_message = f"Project '{project_title}' PM agent '{pm_agent_id}' created, but failed to add initial plan task ({task_creation_message}). Awaiting user approval to start."
+        else:
+            # Task creation was successful
+            final_status_message = f"Project '{project_title}' created and PM agent '{pm_agent_id}' assigned. {task_creation_message}. Awaiting user approval to start."
+
 
         # 4. Send Approval Notification to UI (AFTER task creation attempt)
-        final_message = f"Project '{project_title}' created and PM agent '{pm_agent_id}' assigned. {task_creation_message}. Awaiting user approval to start."
-        logger.info(f"Framework: {final_message}")
+        logger.info(f"Framework: {final_status_message}") # Log the accurate final status
 
         await self.send_to_ui({
             "type": "project_pending_approval",
             "project_title": project_title,
             "plan_content": plan_description, # Send the original plan content
             "pm_agent_id": pm_agent_id,
-            "message": f"Project '{project_title}' is planned and ready for review. Please approve to start execution."
+            # Use the accurate status message for the UI notification
+            "message": f"Project '{project_title}' is planned ({'Task OK' if task_creation_success else 'Task Failed'}). Please approve to start execution."
         })
 
         # --- REMOVED: Auto-scheduling of PM agent ---
@@ -559,7 +563,7 @@ class AgentManager:
         #     logger.error(f"Could not find newly created PM agent '{pm_agent_id}' in manager to schedule cycle!")
         # --- END REMOVED ---
 
-        return True, final_message, pm_agent_id
+        return True, final_status_message, pm_agent_id # Use the correct variable name
     # --- END NEW ---
 
 

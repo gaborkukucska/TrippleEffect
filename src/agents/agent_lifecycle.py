@@ -6,11 +6,15 @@ import uuid
 import time
 import fnmatch
 
+import re # Import re for pattern matching if needed later
 # Import necessary components from other modules
 from src.agents.core import Agent
 from src.llm_providers.base import BaseLLMProvider
 # Import settings and model_registry, BASE_DIR
 from src.config.settings import settings, model_registry, BASE_DIR
+# --- Import centralized constants ---
+from src.agents.constants import BOOTSTRAP_AGENT_ID, KNOWN_OLLAMA_OPTIONS
+# --- End Import ---
 
 # Import PROVIDER_CLASS_MAP and BOOTSTRAP_AGENT_ID from the refactored manager
 # Avoid circular import using TYPE_CHECKING
@@ -37,8 +41,6 @@ PROVIDER_CLASS_MAP: Dict[str, type[BaseLLMProvider]] = {
 }
 # --- End PROVIDER_CLASS_MAP Definition ---
 
-# Define BOOTSTRAP_AGENT_ID here or import if moved elsewhere
-BOOTSTRAP_AGENT_ID = "admin_ai"
 # Define PREFERRED_ADMIN_MODELS here or import if moved elsewhere
 PREFERRED_ADMIN_MODELS = [
     "ollama/llama3*", "litellm/llama3*", # Local prioritized
@@ -54,18 +56,6 @@ PREFERRED_ADMIN_MODELS = [
     "mistralai/mistral-7b-instruct:free",
     "*", # Fallback to any available model
 ]
-
-# --- KNOWN_OLLAMA_OPTIONS ---
-# Known valid Ollama options (from ollama_provider.py, needed for filtering kwargs)
-KNOWN_OLLAMA_OPTIONS = {
-    "mirostat", "mirostat_eta", "mirostat_tau", "num_ctx", "num_gpu", "num_thread",
-    "num_keep", "seed", "num_predict", "repeat_last_n", "repeat_penalty",
-    "temperature", "tfs_z", "top_k", "top_p", "min_p", "use_mmap", "use_mlock",
-    "numa", "num_batch", "main_gpu", "low_vram", "f16_kv", "logits_all",
-    "vocab_only", "stop", "presence_penalty", "frequency_penalty", "penalize_newline",
-    "typical_p"
-}
-# --- END KNOWN_OLLAMA_OPTIONS ---
 
 # --- Automatic Model Selection Logic ---
 async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optional[str], Optional[str]]:

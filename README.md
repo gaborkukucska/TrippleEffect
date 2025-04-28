@@ -2,7 +2,7 @@
 <!-- # IT IS CRITICAL THAT ALL AIs and LLMs FOLLOW THE DEVELOPMENT INSTRUCTIONS IN THE DEVELOPMENT_RULES.md FILE WHEN FURTER DEVELOPING THIS FRAMEWORK!!! -->
 # TrippleEffect Multi-Agent Framework
 
-**Version:** 2.24 <!-- Updated Version -->
+**Version:** 2.25 <!-- Updated Version -->
 
 **TrippleEffect** is an asynchronous, collaborative multi-agent framework built with Python, FastAPI, and WebSockets. It features a central **Admin AI** that initiates projects and a dedicated **Project Manager** agent per session that handles detailed task tracking and team coordination. This framework is predominantly developed by various LLMs guided by Gabby.
 
@@ -23,10 +23,10 @@ For a faster setup, you can use the provided shell scripts (ensure they are exec
 *   **Framework-Driven Project Initiation:** When Admin AI submits a plan (including a `<title>`) in the `planning` state, the framework automatically:
     *   Creates a project task in Taskwarrior using the title and plan.
     *   Creates a dedicated Project Manager agent (`pm_{project_title}_{session_id}`).
-    *   Assigns both Admin AI and the new PM as administrators on the project task (via tags/UDAs).
+    *   Assigns the new PM to the initial project task using a tag (`+pm_{project_title}_{session_id}`) due to CLI UDA setting issues.
     *   Notifies Admin AI and transitions it back to the `conversation` state.
-*   **Project Manager Agent:** Automatically created per project/session by the framework, this agent uses the `ProjectManagementTool` (backed by `tasklib`) to decompose the initial plan, create/assign sub-tasks, monitor progress via `send_message`, and report status/completion back to Admin AI.
-*   **Dynamic Worker Agent Management:** The Project Manager agent (or Admin AI, depending on workflow evolution) uses `ManageTeamTool` to create worker agents as needed for specific sub-tasks.
+*   **Project Manager Agent:** Automatically created per project/session by the framework, this agent uses the `ProjectManagementTool` (backed by `tasklib`) to decompose the initial plan, create/assign sub-tasks (assigning via tags), monitor progress via `send_message`, and report status/completion back to Admin AI.
+*   **Dynamic Worker Agent Management:** The Project Manager agent (or Admin AI, depending on workflow evolution) uses `ManageTeamTool` to create worker agents as needed for specific sub-tasks. (Note: PM agent may currently attempt multiple tool calls per turn, requiring prompt refinement).
 *   **Intelligent Model Handling:**
     *   **Discovery:** Automatically finds reachable LLM providers (Ollama, OpenRouter, OpenAI) and available models at startup.
     *   **Filtering:** Filters discovered models based on the `MODEL_TIER` setting (`.env`).
@@ -64,9 +64,9 @@ For a faster setup, you can use the provided shell scripts (ensure they are exec
         *   `WebSearchTool`: Search the web (uses Tavily API if configured, falls back to DDG scraping).
             *   `SystemHelpTool`: Get current time (UTC), Search application logs, **Get detailed tool usage info (`get_tool_info`)**.
             *   `KnowledgeBaseTool`: Save/Search distilled knowledge in the database.
-            *   `ProjectManagementTool`: Add, list, modify, and complete project tasks (uses `tasklib` backend per session). Used primarily by the Project Manager agent.
+            *   `ProjectManagementTool`: Add, list, modify, and complete project tasks (uses `tasklib` backend per session). **Assigns tasks via tags (`+agent_id`)** due to CLI UDA issues. Used primarily by the Project Manager agent.
     *   **On-Demand Tool Help:** Implemented `get_detailed_usage()` in tools and `get_tool_info` action in `SystemHelpTool` for dynamic help retrieval (full transition planned for Phase 27+).
-*   **Session Persistence:** Save and load agent states, histories, team structures, and **project task data** (filesystem, including `tasklib` data).
+*   **Session Persistence:** Save and load agent states, histories, team structures, and **project task data** (filesystem, including `tasklib` data with assignee tags).
 *   **Database Backend (SQLite):**
     *   Logs user, agent, tool, and system interactions.
     *   Stores long-term knowledge summaries via `KnowledgeBaseTool`.
@@ -300,9 +300,9 @@ graph TD
 
 ## Development Status
 
-*   **Current Version:** 2.24 <!-- Updated Version -->
-*   **Completed Phases:** 1-24 (Core, Dynamic Agents, Failover, Key Mgmt, Proxy, XML Tools, Auto-Selection, Planning Phase, Context Optimization, Tool Enhancements, System Help, Memory Foundation (DB), UI Layer Refactor & KB Prompt Refinement, Project Manager Agent & Tasklib Integration, **Admin AI State Machine & Framework-Driven Project Init**). **Recent Fixes/Enhancements:** Ollama integration fixes, enhanced network discovery, initial on-demand tool help mechanism, PM agent workflow, `tasklib` integration, Bootstrap agent init fixes, Admin AI state machine, Framework project/PM creation.
-*   **Current Phase (25):** Advanced Memory & Learning (incl. fixing known agent logic issues - looping, placeholders, targeting).
+*   **Current Version:** 2.25 <!-- Updated Version -->
+*   **Completed Phases:** 1-24. **Recent Fixes/Enhancements (v2.25):** Corrected `project_management` tool's Taskwarrior CLI usage for task creation (using tags for assignment workaround), fixed `AgentManager` initial task creation check logic. Ollama integration fixes, enhanced network discovery, initial on-demand tool help mechanism, PM agent workflow, `tasklib` integration, Bootstrap agent init fixes, Admin AI state machine, Framework project/PM creation.
+*   **Current Phase (25):** Advanced Memory & Learning (incl. fixing known agent logic issues - PM agent multi-tool calls, looping, placeholders, targeting). Investigating Taskwarrior CLI UDA issues. Addressing external API rate limits.
 *   **Future Plans:** Proactive Behavior (Phase 26), Federated Communication (Phase 27+), New Admin tools, LiteLLM provider, advanced collaboration, resource limits, DB/Vector Stores, **Full transition to on-demand tool help** (removing static descriptions from prompts - Phase 28+).
 
 See `helperfiles/PROJECT_PLAN.md` for detailed phase information.

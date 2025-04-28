@@ -199,8 +199,7 @@ class Settings:
 
         # Deprecated: Static team config is no longer primary way
         self.TEAMS_CONFIG: Dict[str, List[str]] = raw_config_data.get("teams", {})
-        if self.TEAMS_CONFIG:
-            logger.warning("Config Warning: Static 'teams' definition found in config.yaml. This section is deprecated and ignored by AgentManager.")
+        # Removed warning log for deprecated static teams config
 
         # --- Log Loaded Config Summary ---
         if not self.AGENT_CONFIGURATIONS: print("Warning: No bootstrap agent configurations loaded.")

@@ -16,8 +16,8 @@ import asyncio
 from typing import Optional
 import time
 
-# --- Base Directory ---
-BASE_DIR = Path(__file__).resolve().parent.parent
+# --- Import BASE_DIR from settings ---
+from src.config.settings import BASE_DIR # Import BASE_DIR
 
 # --- Load Environment Variables ---
 dotenv_path = BASE_DIR / '.env'
@@ -328,7 +328,7 @@ async def lifespan(app: FastAPI):
 logger.info("Creating FastAPI app instance...")
 app = FastAPI(
     title="TrippleEffect",
-    version="2.21", # Update version for Phase 21
+    version="2.25", # Updated Version
     description="Asynchronous Multi-Agent Framework with Dynamic Orchestration",
     lifespan=lifespan
 )
