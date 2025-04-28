@@ -32,7 +32,7 @@ class BaseLLMProvider(ABC):
         messages: List[MessageDict],
         model: str,
         temperature: float,
-        max_tokens: Optional[int] = None,
+        max_tokens: Optional[int] = None, # Added max_tokens parameter
         # Tools/tool_choice are now optional at the base level,
         # as the primary mechanism might be XML parsing by the caller.
         # Implementations can still accept them if they support native tool calls.

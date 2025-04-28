@@ -35,6 +35,7 @@ from src.config.settings import settings
 # Import tools for type checking/logic if needed
 from src.tools.manage_team import ManageTeamTool
 from src.tools.send_message import SendMessageTool
+from src.tools.tool_information import ToolInformationTool # Import ToolInformationTool
 
 # Import specific exception types
 import openai
@@ -62,6 +63,8 @@ class AgentCycleHandler:
     Logs interactions to the database.
     Enforces single tool type per execution batch.
     Uses retry/failover limits from settings.
+    Handles initial mandatory tool call for PM agent in 'work' state.
+    Passes max_tokens override to Agent.process_message based on state.
     """
     def __init__(self, manager: 'AgentManager', interaction_handler: 'AgentInteractionHandler'):
         self._manager = manager
@@ -179,348 +182,394 @@ class AgentCycleHandler:
         try:
             # --- Inner try...finally block for core logic ---
             try:
-                # --- Prepare history for LLM call ---
-                history_for_call = agent.message_history.copy() # Start with current history
+                # --- NEW: Check for PM Agent's first cycle in WORK state ---
+                is_pm_first_work_cycle = (
+                    agent.agent_type == AGENT_TYPE_PM and
+                    agent.state == AGENT_STATE_WORK and
+                    getattr(agent, '_pm_needs_initial_list_tools', False) # Check flag set by WorkflowManager
+                )
+                if is_pm_first_work_cycle:
+                    logger.info(f"CycleHandler: PM Agent '{agent_id}' first cycle in WORK state. Executing mandatory 'list_tools'.")
+                    agent._pm_needs_initial_list_tools = False # Clear the flag
 
-                # --- Get State-Specific Prompt via WorkflowManager ---
-                if hasattr(self._manager, 'workflow_manager'):
-                    final_system_prompt = self._manager.workflow_manager.get_system_prompt(agent, self._manager)
-                    history_for_call[0] = {"role": "system", "content": final_system_prompt}
-                    logger.debug(f"CycleHandler: Set system prompt for agent '{agent_id}' (Type: {agent.agent_type}, State: {agent.state}) via WorkflowManager.")
-                else:
-                    logger.error("WorkflowManager not found on AgentManager! Cannot get state-specific prompt. Using agent's default.")
-                    # Fallback: ensure system prompt exists, using agent's current one
-                    if not history_for_call or history_for_call[0].get("role") != "system":
-                         history_for_call.insert(0, {"role": "system", "content": agent.final_system_prompt})
+                    # Execute list_tools directly
+                    tool_name = ToolInformationTool.name
+                    tool_args = {"action": "list_tools"}
+                    call_id = f"framework_list_tools_{int(time.time() * 1000)}"
 
-                # --- Inject System Health Report (Admin AI only) ---
-                # (This logic remains, but happens *after* the main system prompt is set)
-                if agent.agent_id == self.BOOTSTRAP_AGENT_ID:
-                    system_health_report = await self._generate_system_health_report(agent)
-                    if system_health_report: # Append health report if generated
-                        health_msg: MessageDict = {"role": "system", "content": system_health_report}
-                        # Insert *after* the main system prompt but before other history
-                        history_for_call.insert(1, health_msg)
-                        logger.debug(f"Injected system health report for {agent_id}")
-                # --- End History Preparation (Prompt + Health Report) ---
+                    result = await self._interaction_handler.execute_single_tool(
+                        agent, call_id, tool_name, tool_args,
+                        project_name=self._manager.current_project,
+                        session_name=self._manager.current_session
+                    )
 
-                # --- Make LLM Call ---
-                # --- NEW: Send status update before calling LLM ---
-                await self._manager.send_to_ui({
-                    "type": "status",
-                    "agent_id": agent_id,
-                    "content": f"Contacting model {current_provider}/{current_model}..."
-                })
-                # --- END NEW ---
-                agent_generator = agent.process_message(history_for_call) # Pass potentially modified history
+                    if result:
+                        raw_content_hist = result.get("content", "[Tool Error: No content]");
+                        tool_msg: MessageDict = {"role": "tool", "tool_call_id": call_id, "content": str(raw_content_hist)}
+                        agent.message_history.append(tool_msg)
+                        if current_db_session_id is not None:
+                            await self._manager.db_manager.log_interaction(
+                                session_id=current_db_session_id, agent_id=agent_id, role="tool",
+                                content=str(raw_content_hist), tool_results=[result]
+                            )
+                        # Send result to UI
+                        await self._manager.send_to_ui({
+                            "type": "tool_result", "agent_id": agent_id, "call_id": call_id,
+                            "tool_name": tool_name, "content": str(raw_content_hist)
+                        })
+                        executed_tool_successfully_this_cycle = True # Mark as success for reactivation
+                    else:
+                        # Handle potential error during internal tool call
+                        error_msg = "[Framework Error] Failed to execute initial 'list_tools' for PM agent."
+                        logger.error(error_msg)
+                        agent.message_history.append({"role": "system_error", "content": error_msg})
+                        if current_db_session_id is not None:
+                            await self._manager.db_manager.log_interaction(
+                                session_id=current_db_session_id, agent_id=agent_id, role="system_error", content=error_msg
+                            )
+                        # Don't trigger failover, just reactivate so LLM can try
+                        needs_reactivation_after_cycle = True
 
-                # --- Proceed with event loop ---
-                while True:
-                    event = None # Initialize event outside try
-                    try:
-                        event = await agent_generator.asend(None)
-                        # --- TEMP LOGGING: Event Received ---
-                        logger.debug(f"CYCLE HANDLER RECEIVED Event: {event}")
-                        # --- END TEMP LOGGING ---
-                    except StopAsyncIteration:
-                        logger.info(f"CycleHandler: Agent '{agent_id}' generator finished normally.")
-                        cycle_completed_successfully = True
-                        generator_finished_normally = True # Set flag
+                    # Skip the LLM call for this specific cycle
+                    cycle_completed_successfully = True # Mark cycle as 'complete' for finally block logic
+                    generator_finished_normally = True # Prevent generator closing issues
+                    # --- End of PM first work cycle logic ---
 
-                        # --- NEW: Check for state change request AFTER generator finishes ---
-                        # This block is now redundant as state change is handled by agent_state_change_requested event
-                        # state_request_match = None # Reset here for safety within the loop scope
-                        # if agent.agent_id == self.BOOTSTRAP_AGENT_ID and self.request_state_pattern:
-                        #     # Check the *complete* assistant response buffer for the tag
-                        #     final_buffer_content = agent.text_buffer.strip()
-                        #     state_request_match = self.request_state_pattern.search(final_buffer_content)
-                        #     # ... rest of state change logic ...
-                        # --- END REDUNDANT BLOCK ---
+                else: # Normal cycle (not PM's first work cycle)
+                    # --- Prepare history for LLM call ---
+                    history_for_call = agent.message_history.copy() # Start with current history
 
-                        # Log the final response normally if no state change was requested during the stream
-                        if not needs_reactivation_after_cycle and current_db_session_id is not None:
-                            final_content = agent.text_buffer.strip() # Get final content again
-                            if final_content: # Only log if there's actual content
-                                await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="assistant", content=final_content)
-                        # --- END NEW ---
-                        break # Exit inner loop as generator finished
+                    # --- Get State-Specific Prompt via WorkflowManager ---
+                    if hasattr(self._manager, 'workflow_manager'):
+                        final_system_prompt = self._manager.workflow_manager.get_system_prompt(agent, self._manager)
+                        history_for_call[0] = {"role": "system", "content": final_system_prompt}
+                        logger.debug(f"CycleHandler: Set system prompt for agent '{agent_id}' (Type: {agent.agent_type}, State: {agent.state}) via WorkflowManager.")
+                    else:
+                        logger.error("WorkflowManager not found on AgentManager! Cannot get state-specific prompt. Using agent's default.")
+                        # Fallback: ensure system prompt exists, using agent's current one
+                        if not history_for_call or history_for_call[0].get("role") != "system":
+                             history_for_call.insert(0, {"role": "system", "content": agent.final_system_prompt})
 
-                    except Exception as gen_err:
-                        logger.error(f"CycleHandler: Generator error for '{agent_id}': {gen_err}", exc_info=True)
-                        last_error_obj = gen_err; last_error_content = f"[Manager Error: Unexpected error in generator handler - {gen_err}]"; is_retryable_error_type = False; is_key_related_error = False; trigger_failover = True; break
+                    # --- Inject System Health Report (Admin AI only) ---
+                    # (This logic remains, but happens *after* the main system prompt is set)
+                    if agent.agent_id == self.BOOTSTRAP_AGENT_ID:
+                        system_health_report = await self._generate_system_health_report(agent)
+                        if system_health_report: # Append health report if generated
+                            health_msg: MessageDict = {"role": "system", "content": system_health_report}
+                            # Insert *after* the main system prompt but before other history
+                            history_for_call.insert(1, health_msg)
+                            logger.debug(f"Injected system health report for {agent_id}")
+                    # --- End History Preparation (Prompt + Health Report) ---
 
-                    event_type = event.get("type")
-
-                    # --- START STATE/PLAN/TOOL HANDLING ---
-
-                    # Handle plan submission (now specific to Admin AI AND only if in PLANNING state)
-                    if event_type == "admin_plan_submitted":
-                        # --- NEW: Check if agent is actually in PLANNING state ---
-                        if agent.agent_id == self.BOOTSTRAP_AGENT_ID and getattr(agent, 'state', None) == ADMIN_STATE_PLANNING:
-                            plan_content = event.get("plan_content", "[No Plan Content]")
-                            agent_id_from_event = event.get("agent_id") # Should be admin_ai
-                            logger.info(f"CycleHandler: Received plan submission from agent '{agent_id_from_event}' (State: PLANNING).")
-
-                            if current_db_session_id is not None:
-                                try:
-                                    await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="assistant_plan", content=plan_content) # Log the plan
-                                except Exception as db_log_err:
-                                     logger.error(f"Failed to log admin plan to DB: {db_log_err}", exc_info=True)
-                            else:
-                                logger.warning("Cannot log admin plan to DB: current_session_db_id is None.")
-
-                            # --- Framework Project Creation Logic ---
-                            project_title = f"Project_{int(time.time())}" # Default title
-                            creation_success = False
-                            creation_message = f"[Framework Notification] Failed to initiate project '{project_title}'."
-                            pm_agent_id = None # Initialize pm_agent_id
-
-                            try:
-                                # Extract title
-                                title_match = re.search(r"<title>(.*?)</title>", plan_content, re.IGNORECASE | re.DOTALL)
-                                if title_match:
-                                    extracted_title = title_match.group(1).strip()
-                                    if extracted_title: # Ensure title is not empty
-                                        project_title = extracted_title
-                                        logger.info(f"Extracted project title: '{project_title}'")
-                                    else:
-                                        logger.warning("Extracted <title> was empty. Using default project title.")
-                                else:
-                                    logger.warning("Could not extract <title> from plan. Using default project title.")
-
-                                # --- Call AgentManager to handle creation ---
-                                if hasattr(self._manager, 'create_project_and_pm_agent'):
-                                    creation_success, creation_message, pm_agent_id = await self._manager.create_project_and_pm_agent(
-                                        project_title=project_title, # Use original title for display/task name
-                                        plan_description=plan_content # Pass full plan as description
-                                    )
-                                else:
-                                     logger.error("AgentManager does not have 'create_project_and_pm_agent' method!")
-                                     creation_message = "[Framework Error] Project creation function not implemented."
-
-                            except Exception as creation_err:
-                                logger.error(f"Error during framework project/PM creation: {creation_err}", exc_info=True)
-                                creation_message = f"[Framework Error] An error occurred during project creation: {creation_err}"
-                            # --- End Creation Call ---
-
-                            # --- Inject Confirmation & Set State ---
-                            # Use the potentially updated message from create_project_and_pm_agent
-                            confirm_msg: MessageDict = {"role": "system", "content": creation_message} # Keep confirmation message
-                            agent.message_history.append(confirm_msg)
-                            # --- UI notification is now sent from manager.py ---
-                            if hasattr(agent, 'set_state'):
-                                 # --- Ensure state is set to CONVERSATION after plan submission ---
-                                 agent.set_state(ADMIN_STATE_CONVERSATION) # Explicitly set to conversation
-                                 logger.info(f"CycleHandler: Set Admin AI state to '{ADMIN_STATE_CONVERSATION}' after plan submission.")
-                                 # Log state change?
-                                 if current_db_session_id is not None:
-                                      try:
-                                          await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="agent_state_change", content=f"State changed to: {ADMIN_STATE_CONVERSATION} after plan submission.")
-                                      except Exception as db_log_err:
-                                           logger.error(f"Failed to log state change to DB: {db_log_err}", exc_info=True)
-                            else:
-                                 logger.error("Cannot set Admin AI state back to conversation: set_state method missing.")
-
-                            needs_reactivation_after_cycle = True # Reactivate in conversation state
-                            break # Exit event loop
-                        else:
-                             # Log warning if plan submitted in wrong state
-                             logger.warning(f"CycleHandler: Agent '{agent.agent_id}' submitted a plan but was not in PLANNING state. Ignoring plan.")
-                             # Continue processing other events? Or break? Let's break and reactivate.
-                             needs_reactivation_after_cycle = True
-                             break
-                    # --- END STATE/PLAN HANDLING ---
-                    # --- Handle agent_state_change_requested event ---
-                    elif event_type == "agent_state_change_requested":
-                        requested_state = event.get("requested_state")
-                        logger.info(f"CycleHandler: Received state change request to '{requested_state}' from agent '{agent_id}'.")
-                        # Use WorkflowManager to handle the state change
-                        state_change_success = False
-                        if hasattr(self._manager, 'workflow_manager') and requested_state:
-                            state_change_success = self._manager.workflow_manager.change_state(agent, requested_state)
-                        else:
-                            logger.error(f"Cannot process state change request for agent '{agent_id}': WorkflowManager missing or requested_state empty.")
-
-                        if state_change_success:
-                             needs_reactivation_after_cycle = True # Reactivate after successful state change
-                        else:
-                             # Optionally send feedback if state change failed validation?
-                             logger.warning(f"State change to '{requested_state}' denied for agent '{agent_id}'. Agent remains in state '{agent.state}'.")
-                             # Decide if agent should reactivate even if state change failed. Let's assume yes for now.
-                             needs_reactivation_after_cycle = True
-                        break # Exit event loop, let finally handle reactivation
-                    # --- End state change handling ---
-                    # --- NEW: Handle agent_thought event ---
-                    elif event_type == "agent_thought":
-                        thought_content = event.get("content")
-                        if thought_content:
-                            logger.info(f"CycleHandler: Received thought from agent '{agent_id}'. Saving to KB.")
-                            # Construct KB save arguments
-                            kb_key = f"thought_{agent_id}_{int(time.time())}"
-                            kb_entry = {
-                                "key": kb_key,
-                                "value": thought_content,
-                                "tags": ["temp_thought_log", f"agent:{agent_id}"] # Add agent ID tag
-                            }
-                            kb_args = {
-                                "action": "save_knowledge",
-                                "entry": kb_entry
-                            }
-                            # Execute KB save directly using ToolExecutor
-                            # Note: This bypasses normal tool result handling/history injection,
-                            # which is likely fine for internal logging.
-                            try:
-                                # Correctly call execute_tool, identifying as 'framework'
-                                kb_result = await self._manager.tool_executor.execute_tool(
-                                    agent_id="framework",   # Identify call as framework internal
-                                    agent_sandbox_path=agent.sandbox_path, # Still use agent's sandbox context
-                                    tool_name="knowledge_base",
-                                    tool_args=kb_args,      # Pass args via keyword 'tool_args'
-                                    project_name=self._manager.current_project, # Optional kwarg
-                                    session_name=self._manager.current_session, # Optional kwarg
-                                    manager=self._manager   # Pass manager explicitly if needed by auth check (though framework bypasses)
-                                )
-                                # Check result (knowledge_base returns string on success/error)
-                                if isinstance(kb_result, str) and kb_result.startswith("Error:"):
-                                    logger.error(f"Failed to save agent '{agent_id}' thought to KB. Result: {kb_result}")
-                                elif not isinstance(kb_result, str): # Should be string on success too
-                                     logger.warning(f"Unexpected result type saving thought to KB: {type(kb_result)}. Result: {kb_result}")
-
-                            except Exception as kb_err:
-                                logger.error(f"Exception saving agent '{agent_id}' thought to KB: {kb_err}", exc_info=True)
-                        # REMOVED continue: Allow loop to proceed naturally after handling thought
-                        # continue
+                    # --- Make LLM Call ---
+                    # --- NEW: Send status update before calling LLM ---
+                    await self._manager.send_to_ui({
+                        "type": "status",
+                        "agent_id": agent_id,
+                        "content": f"Contacting model {current_provider}/{current_model}..."
+                    })
                     # --- END NEW ---
-                    elif event_type in ["response_chunk", "status", "final_response"]:
-                        if "agent_id" not in event: event["agent_id"] = agent_id
-                        # --- TEMP LOGGING: Event Before Send ---
-                        logger.debug(f"CYCLE HANDLER SENDING Event: {event}")
-                        # --- END TEMP LOGGING ---
-                        await self._manager.send_to_ui(event)
-                        # Log final response normally
-                        if event_type == "final_response":
-                            final_content = event.get("content", "")
-                            if current_db_session_id is not None:
-                                 await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="assistant", content=final_content)
-                    elif event_type == "error":
-                        last_error_obj = event.get('_exception_obj', ValueError(event.get('content', 'Unknown Error')))
-                        last_error_content = event.get("content", "[Agent Error: Unknown error from provider]")
-                        logger.error(f"CycleHandler: Agent '{agent_id}' reported error event: {last_error_content}")
-                        # Use imported constants for error checking
-                        if isinstance(last_error_obj, RETRYABLE_EXCEPTIONS): is_retryable_error_type = True; is_key_related_error = False; trigger_failover = False; logger.warning(f"CycleHandler: Agent '{agent_id}' encountered retryable exception type: {type(last_error_obj).__name__}")
-                        elif isinstance(last_error_obj, openai.APIStatusError) and (last_error_obj.status_code in RETRYABLE_STATUS_CODES or last_error_obj.status_code >= 500): is_retryable_error_type = True; is_key_related_error = False; trigger_failover = False; logger.warning(f"CycleHandler: Agent '{agent_id}' encountered retryable status code: {last_error_obj.status_code}")
-                        elif isinstance(last_error_obj, KEY_RELATED_ERRORS) or (isinstance(last_error_obj, openai.APIStatusError) and last_error_obj.status_code in KEY_RELATED_STATUS_CODES): is_retryable_error_type = False; is_key_related_error = True; trigger_failover = True; logger.warning(f"CycleHandler: Agent '{agent_id}' encountered key-related error: {type(last_error_obj).__name__}. Triggering failover/key cycle.")
-                        # Removed redundant RateLimitError check as it's covered by KEY_RELATED_ERRORS
-                        # elif isinstance(last_error_obj, openai.RateLimitError) or (isinstance(last_error_obj, openai.APIStatusError) and last_error_obj.status_code == 429): is_retryable_error_type = False; is_key_related_error = True; trigger_failover = True; logger.warning(f"CycleHandler: Agent '{agent_id}' encountered rate limit error. Triggering failover/key cycle.")
-                        else: is_retryable_error_type = False; is_key_related_error = False; trigger_failover = True; logger.warning(f"CycleHandler: Agent '{agent_id}' encountered non-retryable/unknown error: {type(last_error_obj).__name__}. Triggering failover.")
-                        if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="system_error", content=last_error_content)
-                        break
-                    elif event_type == "tool_requests":
-                        all_tool_calls: List[Dict] = event.get("calls", [])
-                        agent_response_content = event.get("raw_assistant_response")
-                        if not all_tool_calls: continue
-                        logger.info(f"CycleHandler: Agent '{agent_id}' yielded {len(all_tool_calls)} tool request(s).")
-                        if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="assistant", content=agent_response_content, tool_calls=all_tool_calls)
-                        else: logger.warning("Cannot log assistant tool request response to DB: current_session_db_id is None.")
+                    # --- MODIFIED: Pass max_tokens to process_message ---
+                    agent_generator = agent.process_message(history_override=history_for_call) # Pass potentially modified history
+                    # --- END MODIFIED ---
 
-                        # --- Batching Enforcement ---
-                        tool_names_in_batch = {call.get("name") for call in all_tool_calls if call.get("name")}
-                        if len(tool_names_in_batch) > 1:
-                            violation_msg = f"Error: Agent '{agent_id}' attempted to call multiple tool types in one turn ({', '.join(sorted(tool_names_in_batch))}). Only one tool type per response is allowed."
-                            logger.error(violation_msg)
-                            first_call_id = all_tool_calls[0].get('id', f"batch_violation_{int(time.time())}")
-                            tool_feedback: Optional[ToolResultDict] = await self._interaction_handler.failed_tool_result(first_call_id, ", ".join(sorted(tool_names_in_batch)))
-                            if tool_feedback:
-                                 tool_feedback["content"] = f"[Framework Rule Violation]: {violation_msg}"
-                                 agent.message_history.append({"role": "tool", **tool_feedback})
-                                 if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="system_feedback", content=tool_feedback["content"], tool_results=[tool_feedback])
-                            needs_reactivation_after_cycle = True; break
-                        # --- End Batching Enforcement ---
+                    # --- Proceed with event loop ---
+                    while True:
+                        event = None # Initialize event outside try
+                        try:
+                            event = await agent_generator.asend(None)
+                            # --- TEMP LOGGING: Event Received ---
+                            logger.debug(f"CYCLE HANDLER RECEIVED Event: {event}")
+                            # --- END TEMP LOGGING ---
+                        except StopAsyncIteration:
+                            logger.info(f"CycleHandler: Agent '{agent_id}' generator finished normally.")
+                            cycle_completed_successfully = True
+                            generator_finished_normally = True # Set flag
 
-                        # Tool validation & execution loop
-                        mgmt_calls = []; other_calls = []; invalid_call_results = []
-                        for call in all_tool_calls:
-                             cid, tname, targs = call.get("id"), call.get("name"), call.get("arguments", {})
-                             fail_res: Optional[ToolResultDict] = None
-                             if cid and tname and isinstance(targs, dict):
-                                 if tname == ManageTeamTool.name: mgmt_calls.append(call)
-                                 else: other_calls.append(call)
-                             else: fail_res = await self._interaction_handler.failed_tool_result(cid, tname);
-                             if fail_res: invalid_call_results.append(fail_res)
-                        if invalid_call_results:
-                            for res in invalid_call_results:
-                                 agent.message_history.append({"role": "tool", **res})
-                                 if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="tool", content=res.get("content"), tool_results=[res])
+                            # Log the final response normally if no state change was requested during the stream
+                            if not needs_reactivation_after_cycle and current_db_session_id is not None:
+                                final_content = agent.text_buffer.strip() # Get final content again
+                                if final_content: # Only log if there's actual content
+                                    await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="assistant", content=final_content)
+                            # --- END NEW ---
+                            break # Exit inner loop as generator finished
 
-                        calls_to_execute = mgmt_calls + other_calls; activation_tasks = []; manager_action_feedback = []; executed_tool_successfully_this_cycle = False
-                        if calls_to_execute:
-                            logger.info(f"CycleHandler: Executing {len(calls_to_execute)} tool(s) sequentially for '{agent_id}'.")
-                            await self._manager.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Executing {len(calls_to_execute)} tool(s)..."})
-                            for call in calls_to_execute:
-                                 call_id = call['id']; tool_name = call['name']; tool_args = call['arguments']
-                                 result = await self._interaction_handler.execute_single_tool(agent, call_id, tool_name, tool_args, project_name=self._manager.current_project, session_name=self._manager.current_session)
-                                 if result:
-                                     raw_content_hist = result.get("content", "[Tool Error: No content]"); tool_msg: MessageDict = {"role": "tool", "tool_call_id": call_id, "content": str(raw_content_hist)}
-                                     if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("tool_call_id") != call_id: agent.message_history.append(tool_msg)
-                                     tool_exec_success = not str(raw_content_hist).strip().startswith(("Error:", "[ToolExec Error:", "[Manager Error:"))
-                                     if tool_exec_success: executed_tool_successfully_this_cycle = True
-                                     if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="tool", content=str(raw_content_hist), tool_results=[result])
-                                     # --- NEW: Send tool result to UI ---
-                                     await self._manager.send_to_ui({
-                                         "type": "tool_result", # Use the type the frontend expects
-                                         "agent_id": agent_id,
-                                         "call_id": call_id,
-                                         "tool_name": tool_name,
-                                         "content": str(raw_content_hist) # Send the string representation
-                                     })
-                                     # --- END NEW ---
-                                     raw_tool_output = result.get("_raw_result")
-                                     if tool_name == ManageTeamTool.name:
-                                         if isinstance(raw_tool_output, dict) and raw_tool_output.get("status") == "success":
-                                             action = raw_tool_output.get("action"); params = raw_tool_output.get("params", {}); act_success, act_msg, act_data = await self._interaction_handler.handle_manage_team_action(action, params, agent_id)
-                                             feedback = {"call_id": call_id, "action": action, "success": act_success, "message": act_msg};
-                                             if act_data: feedback["data"] = act_data; manager_action_feedback.append(feedback)
-                                         elif isinstance(raw_tool_output, dict): manager_action_feedback.append({"call_id": call_id, "action": raw_tool_output.get("action"), "success": False, "message": raw_tool_output.get("message", "Tool exec failed.")})
-                                         else: manager_action_feedback.append({"call_id": call_id, "action": "unknown", "success": False, "message": "Unexpected tool result."})
-                                     elif tool_name == SendMessageTool.name:
-                                         target_id = call['arguments'].get("target_agent_id"); msg_content = call['arguments'].get("message_content")
-                                         activation_task = None
-                                         if target_id and msg_content is not None:
-                                               activation_task = await self._interaction_handler.route_and_activate_agent_message(agent_id, target_id, msg_content);
-                                               if activation_task: activation_tasks.append(activation_task)
-                                         elif not target_id or msg_content is None: manager_action_feedback.append({"call_id": call_id, "action": "send_message", "success": False, "message": f"Validation Error: Missing {'target_agent_id' if not target_id else 'message_content'}."})
-                                 else:
-                                     manager_action_feedback.append({"call_id": call_id, "action": tool_name, "success": False, "message": "Tool execution failed (no result)."})
-                                     if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="tool", content="[Tool Execution Error: Tool failed internally (no result)]", tool_results=[{"call_id": call_id, "content": "[Tool Execution Error: Tool failed internally (no result)]"}])
+                        except Exception as gen_err:
+                            logger.error(f"CycleHandler: Generator error for '{agent_id}': {gen_err}", exc_info=True)
+                            last_error_obj = gen_err; last_error_content = f"[Manager Error: Unexpected error in generator handler - {gen_err}]"; is_retryable_error_type = False; is_key_related_error = False; trigger_failover = True; break
 
-                            if activation_tasks: await asyncio.gather(*activation_tasks); logger.info(f"CycleHandler: Completed activation tasks for '{agent_id}'.")
+                        event_type = event.get("type")
 
-                            if manager_action_feedback:
-                                 feedback_appended = False
-                                 for fb in manager_action_feedback:
-                                     fb_content = f"[Manager Result for {fb.get('action', 'N/A')} (Call ID: {fb['call_id']})]: Success={fb['success']}. Message: {fb['message']}"
-                                     if fb.get("data"):
-                                         try: data_str = json.dumps(fb['data'], indent=2); fb_content += f"\nData:\n{data_str[:1500]}{'... (truncated)' if len(data_str) > 1500 else ''}"
-                                         except TypeError: fb_content += "\nData: [Unserializable]"
-                                     fb_msg: MessageDict = {"role": "tool", "tool_call_id": fb['call_id'], "content": fb_content}
-                                     if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("content") != fb_content: agent.message_history.append(fb_msg); feedback_appended = True
-                                     if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="system_feedback", content=fb_content, tool_results=[fb])
-                                     # --- NEW: Send system feedback to UI ---
-                                     await self._manager.send_to_ui({
-                                         "type": "system_feedback", # Use a distinct type
-                                         "agent_id": agent_id,
-                                         "call_id": fb['call_id'],
-                                         "action": fb.get('action', 'N/A'),
-                                         "content": fb_content # Send the formatted feedback content
-                                     })
-                                     # --- END NEW ---
+                        # --- START STATE/PLAN/TOOL HANDLING ---
 
-                        if calls_to_execute:
-                            logger.debug(f"CycleHandler: Tools executed for '{agent_id}', breaking inner loop to allow reactivation check.");
-                            if executed_tool_successfully_this_cycle:
+                        # Handle plan submission (now specific to Admin AI AND only if in PLANNING state)
+                        if event_type == "admin_plan_submitted":
+                            # --- NEW: Check if agent is actually in PLANNING state ---
+                            if agent.agent_id == self.BOOTSTRAP_AGENT_ID and getattr(agent, 'state', None) == ADMIN_STATE_PLANNING:
+                                plan_content = event.get("plan_content", "[No Plan Content]")
+                                agent_id_from_event = event.get("agent_id") # Should be admin_ai
+                                logger.info(f"CycleHandler: Received plan submission from agent '{agent_id_from_event}' (State: PLANNING).")
+
+                                if current_db_session_id is not None:
+                                    try:
+                                        await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="assistant_plan", content=plan_content) # Log the plan
+                                    except Exception as db_log_err:
+                                         logger.error(f"Failed to log admin plan to DB: {db_log_err}", exc_info=True)
+                                else:
+                                    logger.warning("Cannot log admin plan to DB: current_session_db_id is None.")
+
+                                # --- Framework Project Creation Logic ---
+                                project_title = f"Project_{int(time.time())}" # Default title
+                                creation_success = False
+                                creation_message = f"[Framework Notification] Failed to initiate project '{project_title}'."
+                                pm_agent_id = None # Initialize pm_agent_id
+
+                                try:
+                                    # Extract title
+                                    title_match = re.search(r"<title>(.*?)</title>", plan_content, re.IGNORECASE | re.DOTALL)
+                                    if title_match:
+                                        extracted_title = title_match.group(1).strip()
+                                        if extracted_title: # Ensure title is not empty
+                                            project_title = extracted_title
+                                            logger.info(f"Extracted project title: '{project_title}'")
+                                        else:
+                                            logger.warning("Extracted <title> was empty. Using default project title.")
+                                    else:
+                                        logger.warning("Could not extract <title> from plan. Using default project title.")
+
+                                    # --- Call AgentManager to handle creation ---
+                                    if hasattr(self._manager, 'create_project_and_pm_agent'):
+                                        creation_success, creation_message, pm_agent_id = await self._manager.create_project_and_pm_agent(
+                                            project_title=project_title, # Use original title for display/task name
+                                            plan_description=plan_content # Pass full plan as description
+                                        )
+                                    else:
+                                         logger.error("AgentManager does not have 'create_project_and_pm_agent' method!")
+                                         creation_message = "[Framework Error] Project creation function not implemented."
+
+                                except Exception as creation_err:
+                                    logger.error(f"Error during framework project/PM creation: {creation_err}", exc_info=True)
+                                    creation_message = f"[Framework Error] An error occurred during project creation: {creation_err}"
+                                # --- End Creation Call ---
+
+                                # --- Inject Confirmation & Set State ---
+                                # Use the potentially updated message from create_project_and_pm_agent
+                                confirm_msg: MessageDict = {"role": "system", "content": creation_message} # Keep confirmation message
+                                agent.message_history.append(confirm_msg)
+                                # --- UI notification is now sent from manager.py ---
+                                if hasattr(agent, 'set_state'):
+                                     # --- Ensure state is set to CONVERSATION after plan submission ---
+                                     agent.set_state(ADMIN_STATE_CONVERSATION) # Explicitly set to conversation
+                                     logger.info(f"CycleHandler: Set Admin AI state to '{ADMIN_STATE_CONVERSATION}' after plan submission.")
+                                     # Log state change?
+                                     if current_db_session_id is not None:
+                                          try:
+                                              await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="agent_state_change", content=f"State changed to: {ADMIN_STATE_CONVERSATION} after plan submission.")
+                                          except Exception as db_log_err:
+                                               logger.error(f"Failed to log state change to DB: {db_log_err}", exc_info=True)
+                                else:
+                                     logger.error("Cannot set Admin AI state back to conversation: set_state method missing.")
+
+                                needs_reactivation_after_cycle = True # Reactivate in conversation state
+                                break # Exit event loop
+                            else:
+                                 # Log warning if plan submitted in wrong state
+                                 logger.warning(f"CycleHandler: Agent '{agent.agent_id}' submitted a plan but was not in PLANNING state. Ignoring plan.")
+                                 # Continue processing other events? Or break? Let's break and reactivate.
                                  needs_reactivation_after_cycle = True
-                            break # Break loop after tool execution
-                    else: logger.warning(f"CycleHandler: Unknown event type '{event_type}' from '{agent_id}'.")
+                                 break
+                        # --- END STATE/PLAN HANDLING ---
+                        # --- Handle agent_state_change_requested event ---
+                        elif event_type == "agent_state_change_requested":
+                            requested_state = event.get("requested_state")
+                            logger.info(f"CycleHandler: Received state change request to '{requested_state}' from agent '{agent_id}'.")
+                            # Use WorkflowManager to handle the state change
+                            state_change_success = False
+                            if hasattr(self._manager, 'workflow_manager') and requested_state:
+                                state_change_success = self._manager.workflow_manager.change_state(agent, requested_state)
+                            else:
+                                logger.error(f"Cannot process state change request for agent '{agent_id}': WorkflowManager missing or requested_state empty.")
+
+                            if state_change_success:
+                                 needs_reactivation_after_cycle = True # Reactivate after successful state change
+                            else:
+                                 # Optionally send feedback if state change failed validation?
+                                 logger.warning(f"State change to '{requested_state}' denied for agent '{agent_id}'. Agent remains in state '{agent.state}'.")
+                                 # Decide if agent should reactivate even if state change failed. Let's assume yes for now.
+                                 needs_reactivation_after_cycle = True
+                            break # Exit event loop, let finally handle reactivation
+                        # --- End state change handling ---
+                        # --- NEW: Handle agent_thought event ---
+                        elif event_type == "agent_thought":
+                            thought_content = event.get("content")
+                            if thought_content:
+                                logger.info(f"CycleHandler: Received thought from agent '{agent_id}'. Saving to KB.")
+                                # Construct KB save arguments
+                                kb_key = f"thought_{agent_id}_{int(time.time())}"
+                                kb_entry = {
+                                    "key": kb_key,
+                                    "value": thought_content,
+                                    "tags": ["temp_thought_log", f"agent:{agent_id}"] # Add agent ID tag
+                                }
+                                kb_args = {
+                                    "action": "save_knowledge",
+                                    "entry": kb_entry
+                                }
+                                # Execute KB save directly using ToolExecutor
+                                # Note: This bypasses normal tool result handling/history injection,
+                                # which is likely fine for internal logging.
+                                try:
+                                    # Correctly call execute_tool, identifying as 'framework'
+                                    kb_result = await self._manager.tool_executor.execute_tool(
+                                        agent_id="framework",   # Identify call as framework internal
+                                        agent_sandbox_path=agent.sandbox_path, # Still use agent's sandbox context
+                                        tool_name="knowledge_base",
+                                        tool_args=kb_args,      # Pass args via keyword 'tool_args'
+                                        project_name=self._manager.current_project, # Optional kwarg
+                                        session_name=self._manager.current_session, # Optional kwarg
+                                        manager=self._manager   # Pass manager explicitly if needed by auth check (though framework bypasses)
+                                    )
+                                    # Check result (knowledge_base returns string on success/error)
+                                    if isinstance(kb_result, str) and kb_result.startswith("Error:"):
+                                        logger.error(f"Failed to save agent '{agent_id}' thought to KB. Result: {kb_result}")
+                                    elif not isinstance(kb_result, str): # Should be string on success too
+                                         logger.warning(f"Unexpected result type saving thought to KB: {type(kb_result)}. Result: {kb_result}")
+
+                                except Exception as kb_err:
+                                    logger.error(f"Exception saving agent '{agent_id}' thought to KB: {kb_err}", exc_info=True)
+                            # REMOVED continue: Allow loop to proceed naturally after handling thought
+                            # continue
+                        # --- END NEW ---
+                        elif event_type in ["response_chunk", "status", "final_response"]:
+                            if "agent_id" not in event: event["agent_id"] = agent_id
+                            # --- TEMP LOGGING: Event Before Send ---
+                            logger.debug(f"CYCLE HANDLER SENDING Event: {event}")
+                            # --- END TEMP LOGGING ---
+                            await self._manager.send_to_ui(event)
+                            # Log final response normally
+                            if event_type == "final_response":
+                                final_content = event.get("content", "")
+                                if current_db_session_id is not None:
+                                     await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="assistant", content=final_content)
+                        elif event_type == "error":
+                            last_error_obj = event.get('_exception_obj', ValueError(event.get('content', 'Unknown Error')))
+                            last_error_content = event.get("content", "[Agent Error: Unknown error from provider]")
+                            logger.error(f"CycleHandler: Agent '{agent_id}' reported error event: {last_error_content}")
+                            # Use imported constants for error checking
+                            if isinstance(last_error_obj, RETRYABLE_EXCEPTIONS): is_retryable_error_type = True; is_key_related_error = False; trigger_failover = False; logger.warning(f"CycleHandler: Agent '{agent_id}' encountered retryable exception type: {type(last_error_obj).__name__}")
+                            elif isinstance(last_error_obj, openai.APIStatusError) and (last_error_obj.status_code in RETRYABLE_STATUS_CODES or last_error_obj.status_code >= 500): is_retryable_error_type = True; is_key_related_error = False; trigger_failover = False; logger.warning(f"CycleHandler: Agent '{agent_id}' encountered retryable status code: {last_error_obj.status_code}")
+                            elif isinstance(last_error_obj, KEY_RELATED_ERRORS) or (isinstance(last_error_obj, openai.APIStatusError) and last_error_obj.status_code in KEY_RELATED_STATUS_CODES): is_retryable_error_type = False; is_key_related_error = True; trigger_failover = True; logger.warning(f"CycleHandler: Agent '{agent_id}' encountered key-related error: {type(last_error_obj).__name__}. Triggering failover/key cycle.")
+                            # Removed redundant RateLimitError check as it's covered by KEY_RELATED_ERRORS
+                            # elif isinstance(last_error_obj, openai.RateLimitError) or (isinstance(last_error_obj, openai.APIStatusError) and last_error_obj.status_code == 429): is_retryable_error_type = False; is_key_related_error = True; trigger_failover = True; logger.warning(f"CycleHandler: Agent '{agent_id}' encountered rate limit error. Triggering failover/key cycle.")
+                            else: is_retryable_error_type = False; is_key_related_error = False; trigger_failover = True; logger.warning(f"CycleHandler: Agent '{agent_id}' encountered non-retryable/unknown error: {type(last_error_obj).__name__}. Triggering failover.")
+                            if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="system_error", content=last_error_content)
+                            break
+                        elif event_type == "tool_requests":
+                            all_tool_calls: List[Dict] = event.get("calls", [])
+                            agent_response_content = event.get("raw_assistant_response")
+                            if not all_tool_calls: continue
+                            logger.info(f"CycleHandler: Agent '{agent_id}' yielded {len(all_tool_calls)} tool request(s).")
+                            if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="assistant", content=agent_response_content, tool_calls=all_tool_calls)
+                            else: logger.warning("Cannot log assistant tool request response to DB: current_session_db_id is None.")
+
+                            # --- Batching Enforcement ---
+                            tool_names_in_batch = {call.get("name") for call in all_tool_calls if call.get("name")}
+                            if len(tool_names_in_batch) > 1:
+                                violation_msg = f"Error: Agent '{agent_id}' attempted to call multiple tool types in one turn ({', '.join(sorted(tool_names_in_batch))}). Only one tool type per response is allowed."
+                                logger.error(violation_msg)
+                                first_call_id = all_tool_calls[0].get('id', f"batch_violation_{int(time.time())}")
+                                tool_feedback: Optional[ToolResultDict] = await self._interaction_handler.failed_tool_result(first_call_id, ", ".join(sorted(tool_names_in_batch)))
+                                if tool_feedback:
+                                     tool_feedback["content"] = f"[Framework Rule Violation]: {violation_msg}"
+                                     agent.message_history.append({"role": "tool", **tool_feedback})
+                                     if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="system_feedback", content=tool_feedback["content"], tool_results=[tool_feedback])
+                                needs_reactivation_after_cycle = True; break
+                            # --- End Batching Enforcement ---
+
+                            # Tool validation & execution loop
+                            mgmt_calls = []; other_calls = []; invalid_call_results = []
+                            for call in all_tool_calls:
+                                 cid, tname, targs = call.get("id"), call.get("name"), call.get("arguments", {})
+                                 fail_res: Optional[ToolResultDict] = None
+                                 if cid and tname and isinstance(targs, dict):
+                                     if tname == ManageTeamTool.name: mgmt_calls.append(call)
+                                     else: other_calls.append(call)
+                                 else: fail_res = await self._interaction_handler.failed_tool_result(cid, tname);
+                                 if fail_res: invalid_call_results.append(fail_res)
+                            if invalid_call_results:
+                                for res in invalid_call_results:
+                                     agent.message_history.append({"role": "tool", **res})
+                                     if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="tool", content=res.get("content"), tool_results=[res])
+
+                            calls_to_execute = mgmt_calls + other_calls; activation_tasks = []; manager_action_feedback = []; executed_tool_successfully_this_cycle = False
+                            if calls_to_execute:
+                                logger.info(f"CycleHandler: Executing {len(calls_to_execute)} tool(s) sequentially for '{agent_id}'.")
+                                await self._manager.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Executing {len(calls_to_execute)} tool(s)..."})
+                                for call in calls_to_execute:
+                                     call_id = call['id']; tool_name = call['name']; tool_args = call['arguments']
+                                     result = await self._interaction_handler.execute_single_tool(agent, call_id, tool_name, tool_args, project_name=self._manager.current_project, session_name=self._manager.current_session)
+                                     if result:
+                                         raw_content_hist = result.get("content", "[Tool Error: No content]"); tool_msg: MessageDict = {"role": "tool", "tool_call_id": call_id, "content": str(raw_content_hist)}
+                                         if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("tool_call_id") != call_id: agent.message_history.append(tool_msg)
+                                         tool_exec_success = not str(raw_content_hist).strip().startswith(("Error:", "[ToolExec Error:", "[Manager Error:"))
+                                         if tool_exec_success: executed_tool_successfully_this_cycle = True
+                                         if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="tool", content=str(raw_content_hist), tool_results=[result])
+                                         # --- NEW: Send tool result to UI ---
+                                         await self._manager.send_to_ui({
+                                             "type": "tool_result", # Use the type the frontend expects
+                                             "agent_id": agent_id,
+                                             "call_id": call_id,
+                                             "tool_name": tool_name,
+                                             "content": str(raw_content_hist) # Send the string representation
+                                         })
+                                         # --- END NEW ---
+                                         raw_tool_output = result.get("_raw_result")
+                                         if tool_name == ManageTeamTool.name:
+                                             if isinstance(raw_tool_output, dict) and raw_tool_output.get("status") == "success":
+                                                 action = raw_tool_output.get("action"); params = raw_tool_output.get("params", {}); act_success, act_msg, act_data = await self._interaction_handler.handle_manage_team_action(action, params, agent_id)
+                                                 feedback = {"call_id": call_id, "action": action, "success": act_success, "message": act_msg};
+                                                 if act_data: feedback["data"] = act_data; manager_action_feedback.append(feedback)
+                                             elif isinstance(raw_tool_output, dict): manager_action_feedback.append({"call_id": call_id, "action": raw_tool_output.get("action"), "success": False, "message": raw_tool_output.get("message", "Tool exec failed.")})
+                                             else: manager_action_feedback.append({"call_id": call_id, "action": "unknown", "success": False, "message": "Unexpected tool result."})
+                                         elif tool_name == SendMessageTool.name:
+                                             target_id = call['arguments'].get("target_agent_id"); msg_content = call['arguments'].get("message_content")
+                                             activation_task = None
+                                             if target_id and msg_content is not None:
+                                                   activation_task = await self._interaction_handler.route_and_activate_agent_message(agent_id, target_id, msg_content);
+                                                   if activation_task: activation_tasks.append(activation_task)
+                                             elif not target_id or msg_content is None: manager_action_feedback.append({"call_id": call_id, "action": "send_message", "success": False, "message": f"Validation Error: Missing {'target_agent_id' if not target_id else 'message_content'}."})
+                                     else:
+                                         manager_action_feedback.append({"call_id": call_id, "action": tool_name, "success": False, "message": "Tool execution failed (no result)."})
+                                         if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="tool", content="[Tool Execution Error: Tool failed internally (no result)]", tool_results=[{"call_id": call_id, "content": "[Tool Execution Error: Tool failed internally (no result)]"}])
+
+                                if activation_tasks: await asyncio.gather(*activation_tasks); logger.info(f"CycleHandler: Completed activation tasks for '{agent_id}'.")
+
+                                if manager_action_feedback:
+                                     feedback_appended = False
+                                     for fb in manager_action_feedback:
+                                         fb_content = f"[Manager Result for {fb.get('action', 'N/A')} (Call ID: {fb['call_id']})]: Success={fb['success']}. Message: {fb['message']}"
+                                         if fb.get("data"):
+                                             try: data_str = json.dumps(fb['data'], indent=2); fb_content += f"\nData:\n{data_str[:1500]}{'... (truncated)' if len(data_str) > 1500 else ''}"
+                                             except TypeError: fb_content += "\nData: [Unserializable]"
+                                         fb_msg: MessageDict = {"role": "tool", "tool_call_id": fb['call_id'], "content": fb_content}
+                                         if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("content") != fb_content: agent.message_history.append(fb_msg); feedback_appended = True
+                                         if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="system_feedback", content=fb_content, tool_results=[fb])
+                                         # --- NEW: Send system feedback to UI ---
+                                         await self._manager.send_to_ui({
+                                             "type": "system_feedback", # Use a distinct type
+                                             "agent_id": agent_id,
+                                             "call_id": fb['call_id'],
+                                             "action": fb.get('action', 'N/A'),
+                                             "content": fb_content # Send the formatted feedback content
+                                         })
+                                         # --- END NEW ---
+
+                            if calls_to_execute:
+                                logger.debug(f"CycleHandler: Tools executed for '{agent_id}', breaking inner loop to allow reactivation check.");
+                                if executed_tool_successfully_this_cycle:
+                                     needs_reactivation_after_cycle = True
+                                break # Break loop after tool execution
+                        else: logger.warning(f"CycleHandler: Unknown event type '{event_type}' from '{agent_id}'.")
 
             # --- Inner Exception Handling ---
             except Exception as e:

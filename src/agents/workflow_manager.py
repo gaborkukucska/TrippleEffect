@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 class AgentWorkflowManager:
     """
     Manages agent workflow states, transitions, and state-specific prompt selection.
+    Sets a flag on PM agents when transitioning to the 'work' state to trigger
+    the initial mandatory 'list_tools' call in the CycleHandler.
     """
     def __init__(self):
         # Define valid states per agent type
@@ -48,12 +50,12 @@ class AgentWorkflowManager:
             (AGENT_TYPE_ADMIN, ADMIN_STATE_CONVERSATION): "admin_ai_conversation_prompt",
             (AGENT_TYPE_ADMIN, ADMIN_STATE_PLANNING): "admin_ai_planning_prompt",
             (AGENT_TYPE_ADMIN, ADMIN_STATE_WORK_DELEGATED): "admin_ai_delegated_prompt",
-            (AGENT_TYPE_ADMIN, AGENT_STATE_WORK): "agent_work_prompt", # Admin uses the generic work prompt too
+            (AGENT_TYPE_ADMIN, AGENT_STATE_WORK): "admin_work_prompt", # Use specific admin work prompt
             (AGENT_TYPE_PM, AGENT_STATE_CONVERSATION): "pm_conversation_prompt",
             (AGENT_TYPE_WORKER, AGENT_STATE_CONVERSATION): "agent_conversation_prompt",
-            # Add mappings for 'work' state
-            (AGENT_TYPE_PM, AGENT_STATE_WORK): "agent_work_prompt",
-            (AGENT_TYPE_WORKER, AGENT_STATE_WORK): "agent_work_prompt"
+            # Use role-specific work prompts
+            (AGENT_TYPE_PM, AGENT_STATE_WORK): "pm_work_prompt",
+            (AGENT_TYPE_WORKER, AGENT_STATE_WORK): "worker_work_prompt"
         }
         logger.info("AgentWorkflowManager initialized.")
 
@@ -64,6 +66,7 @@ class AgentWorkflowManager:
     def change_state(self, agent: 'Agent', requested_state: str) -> bool:
         """
         Attempts to change the agent's state, validating against allowed states for its type.
+        Sets a flag on PM agents when entering the 'work' state.
 
         Args:
             agent: The Agent instance.
@@ -80,10 +83,18 @@ class AgentWorkflowManager:
             if agent.state != requested_state:
                 logger.info(f"WorkflowManager: Changing state for agent '{agent.agent_id}' ({agent.agent_type}) from '{agent.state}' to '{requested_state}'.")
                 agent.state = requested_state
+                # --- NEW: Set flag for PM entering WORK state ---
+                if agent.agent_type == AGENT_TYPE_PM and requested_state == AGENT_STATE_WORK:
+                    agent._pm_needs_initial_list_tools = True
+                    logger.info(f"WorkflowManager: Set '_pm_needs_initial_list_tools' flag for agent '{agent.agent_id}'.")
+                # --- END NEW ---
                 # Note: Pushing status update might happen elsewhere (e.g., CycleHandler after state change)
                 return True
             else:
                 logger.debug(f"WorkflowManager: Agent '{agent.agent_id}' already in state '{requested_state}'. No change.")
+                # Clear flag if re-entering the same state (shouldn't happen often, but safe)
+                if agent.agent_type == AGENT_TYPE_PM and requested_state == AGENT_STATE_WORK:
+                    agent._pm_needs_initial_list_tools = False
                 return True # Considered successful as it's already in the target state
         else:
             logger.warning(f"WorkflowManager: Invalid state transition requested for agent '{agent.agent_id}' ({agent.agent_type}) to state '{requested_state}'. Allowed states: {self._valid_states.get(agent.agent_type, [])}")
@@ -105,20 +116,25 @@ class AgentWorkflowManager:
             logger.error(f"Cannot get prompt for agent '{agent.agent_id}': Missing 'agent_type'. Using default.")
             return settings.DEFAULT_SYSTEM_PROMPT
         if not hasattr(agent, 'state') or not agent.state:
-            logger.error(f"Cannot get prompt for agent '{agent.agent_id}': Missing 'state'. Using default.")
-            return settings.DEFAULT_SYSTEM_PROMPT
-
-        prompt_key = self._prompt_map.get((agent.agent_type, agent.state))
-
-        if not prompt_key:
-            logger.warning(f"WorkflowManager: No specific prompt key found for agent type '{agent.agent_type}' in state '{agent.state}'. Falling back to default conversation prompt for type or absolute default.")
-            # Fallback logic: Try default conversation prompt for type, then absolute default
-            # Use the correct conversation state constant based on agent type
-            default_conv_state = ADMIN_STATE_CONVERSATION if agent.agent_type == AGENT_TYPE_ADMIN else AGENT_STATE_CONVERSATION
+            # If state is None (e.g., during initial creation before lifecycle sets it), use a default
+            logger.warning(f"Agent '{agent.agent_id}' state is None. Using default conversation prompt for type or absolute default.")
+            default_conv_state = AGENT_STATE_CONVERSATION # Use general conversation as fallback
             prompt_key = self._prompt_map.get((agent.agent_type, default_conv_state))
             if not prompt_key:
                 logger.error(f"WorkflowManager: No default conversation prompt found for type '{agent.agent_type}'. Using absolute default.")
                 return settings.DEFAULT_SYSTEM_PROMPT
+        else:
+            # Normal state lookup
+            prompt_key = self._prompt_map.get((agent.agent_type, agent.state))
+
+            if not prompt_key:
+                logger.warning(f"WorkflowManager: No specific prompt key found for agent type '{agent.agent_type}' in state '{agent.state}'. Falling back to default conversation prompt for type or absolute default.")
+                # Fallback logic: Try default conversation prompt for type, then absolute default
+                default_conv_state = AGENT_STATE_CONVERSATION # Use general conversation as fallback
+                prompt_key = self._prompt_map.get((agent.agent_type, default_conv_state))
+                if not prompt_key:
+                    logger.error(f"WorkflowManager: No default conversation prompt found for type '{agent.agent_type}'. Using absolute default.")
+                    return settings.DEFAULT_SYSTEM_PROMPT
 
         prompt_template = settings.PROMPTS.get(prompt_key)
         if not prompt_template:

@@ -19,13 +19,14 @@ from src.llm_providers.base import BaseLLMProvider, MessageDict, ToolResultDict
 # Import the parser function
 from src.agents.agent_tool_parser import find_and_parse_xml_tool_calls
 
-# --- NEW: Import status and state constants ---
+# --- Import status and state constants ---
 from src.agents.constants import (
     AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_PLANNING,
     AGENT_STATUS_AWAITING_TOOL, AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_ERROR,
-    ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED # Added Admin States
+    ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, # Added Admin States
+    AGENT_STATE_WORK, AGENT_TYPE_PM # Added AGENT_STATE_WORK, AGENT_TYPE_PM
 )
-# --- END NEW ---
+# --- END Import status and state constants ---
 
 # Import AgentManager for type hinting
 from typing import TYPE_CHECKING
@@ -93,6 +94,9 @@ class Agent:
         self.message_history.append({"role": "system", "content": self.final_system_prompt})
         self._last_api_key_used: Optional[str] = None
         self._failed_models_this_cycle: set = set()
+        # --- NEW: Flag for PM initial tool call ---
+        self._pm_needs_initial_list_tools: bool = False # Set by WorkflowManager
+        # --- END NEW ---
 
         # Buffers for processing stream
         self.text_buffer: str = ""
@@ -163,6 +167,7 @@ class Agent:
         Detects plan generation (<plan>...</plan>) for Admin AI.
         Parses the response stream for XML tool calls (using agent_tool_parser) and yields requests.
         Relies on CycleHandler for retry/failover logic.
+        Enforces stricter output format for PM agent in 'work' state.
 
         Args:
             history_override (Optional[List[MessageDict]]): If provided, use this message
@@ -180,10 +185,18 @@ class Agent:
         try:
             if not self.ensure_sandbox_exists(): self.set_status(AGENT_STATUS_ERROR); yield {"type": "error", "content": f"[Agent Error: Could not ensure sandbox {self.sandbox_path}]"}; return
 
+            # --- NEW: Determine max_tokens based on state ---
+            max_tokens_override = None
+            if self.agent_type == AGENT_TYPE_PM and self.state == AGENT_STATE_WORK:
+                max_tokens_override = settings.PM_WORK_STATE_MAX_TOKENS # Use configured limit
+                logger.debug(f"Agent {self.agent_id}: Applying max_tokens limit of {max_tokens_override} for PM work state.")
+            # --- END NEW ---
+
             provider_stream = self.llm_provider.stream_completion(
                 messages=history_to_use,
                 model=self.model,
                 temperature=self.temperature,
+                max_tokens=max_tokens_override, # Pass the override
                 **self.provider_kwargs
             )
 
@@ -213,43 +226,32 @@ class Agent:
             logger.debug(f"Agent {self.agent_id}: Provider stream finished processing. Stream had error: {stream_had_error}. Processing final buffer.")
 
             if not stream_had_error:
-                # --- REVERTED POST-STREAM PROCESSING ORDER ---
+                # --- POST-STREAM PROCESSING ---
                 buffer_to_process = self.text_buffer # Working copy
                 logger.debug(f"CORE POST-STREAM: Buffer='{buffer_to_process[:100]}...', yielded_chunks={yielded_chunks}")
                 original_complete_response = complete_assistant_response # Keep original for history if plan submitted
                 state_change_requested = False # Flag to track if state change was handled
                 plan_submitted = False # Flag to track if plan was handled
+                think_content_extracted = None # Store extracted think content
+                tool_calls_found = [] # Store parsed tool calls
 
                 # 1. Check for State Request FIRST (Robust Search)
                 state_request_tag = None
                 requested_state = None
                 cycle_handler_instance = getattr(self.manager, 'cycle_handler', None)
                 manager_request_state_pattern = getattr(cycle_handler_instance, 'request_state_pattern', None) if cycle_handler_instance else None
-                # Removed BOOTSTRAP_AGENT_ID import as check is removed below
 
-                # Allow ANY agent to request a state change via the tag
                 if manager_request_state_pattern:
                     state_match = manager_request_state_pattern.search(buffer_to_process)
                     if state_match:
                         requested_state = state_match.group(1)
                         state_request_tag = state_match.group(0)
                         logger.info(f"Agent {self.agent_id}: Detected state request tag via search: {state_request_tag}")
-                        # State validation is now handled by AgentWorkflowManager via CycleHandler
-                        # Just yield the request here
                         event_to_yield = {"type": "agent_state_change_requested", "requested_state": requested_state, "agent_id": self.agent_id}
                         logger.debug(f"CORE YIELD (State Request): {event_to_yield}")
                         yield event_to_yield
-                        state_change_requested = True # Mark that a state change was requested and yielded
-                        # --- REMOVED RETURN ---
-                        # Return is removed, CycleHandler will now handle stopping the cycle if needed after state change.
-                        # return # Stop processing after yielding state change
-                        # --- END REMOVED RETURN ---
-                        # Remove the tag from the buffer to avoid it being processed as text
+                        state_change_requested = True
                         buffer_to_process = buffer_to_process.replace(state_request_tag, '', 1).strip()
-
-                    # Removed the 'else' block that previously ignored invalid states for Admin AI,
-                    # as validation is now deferred to the WorkflowManager.
-                    # Also removed the dangling code from the original else block that caused indentation errors.
 
                 # 2. Check for Think Tag NEXT (Robust Extraction)
                 # Only process think tag if no state change was requested
@@ -257,26 +259,22 @@ class Agent:
                     think_match = self.think_pattern.search(buffer_to_process) # Use robust pattern
                     if think_match:
                         extracted_think_content = think_match.group(1).strip()
-                        full_think_block = think_match.group(0) # Get the exact matched block (handles missing </think>)
-
+                        full_think_block = think_match.group(0) # Get the exact matched block
                         if extracted_think_content:
                             logger.info(f"Agent {self.agent_id}: Detected robust <think> tag content.")
+                            think_content_extracted = extracted_think_content # Store it
                             event_to_yield = {"type": "agent_thought", "content": extracted_think_content, "agent_id": self.agent_id}
-                            logger.debug(f"CORE YIELD (Thought): {event_to_yield}") # <<< TEMP LOGGING
+                            logger.debug(f"CORE YIELD (Thought): {event_to_yield}")
                             yield event_to_yield
                         else:
                              logger.info(f"Agent {self.agent_id}: Found <think> tag but content was empty.")
-
-                        # Remove only the matched think block, leaving subsequent tags if any
-                        logger.debug(f"Removing matched think block: '{full_think_block}'")
-                        buffer_to_process = buffer_to_process.replace(full_think_block, '', 1).strip() # Replace only first occurrence
-                        logger.debug(f"Buffer after think removal: '{buffer_to_process[:100]}...'")
+                        # Remove the matched think block
+                        buffer_to_process = buffer_to_process.replace(full_think_block, '', 1).strip()
 
                 # 3. Check for Plan Tag (Admin AI in PLANNING state only)
                 # Only process plan tag if no state change was requested
                 if not state_change_requested:
                     plan_content = None
-                    # Use the imported constant directly
                     is_admin_planning = (self.agent_id == BOOTSTRAP_AGENT_ID and getattr(self, 'state', None) == ADMIN_STATE_PLANNING)
                     plan_match = self.plan_pattern.search(buffer_to_process) # Search the potentially cleaned buffer
 
@@ -289,42 +287,73 @@ class Agent:
                         event_to_yield = {"type": "admin_plan_submitted", "plan_content": plan_content, "agent_id": self.agent_id}
                         logger.debug(f"CORE YIELD (Plan): {event_to_yield}")
                         yield event_to_yield
-                        # --- RE-ADD RETURN ---
-                        return # Stop processing after yielding plan
-                        # --- END RE-ADD ---
+                        plan_submitted = True # Mark plan as submitted
+                        buffer_to_process = self.plan_pattern.sub('', buffer_to_process).strip() # Clean buffer
 
                     elif plan_match: # Log if plan tag found in wrong state/agent
                          logger.warning(f"Agent {self.agent_id}: Detected <plan> tag but agent is not Admin AI in PLANNING state. Ignoring plan tag.")
                          buffer_to_process = self.plan_pattern.sub('', buffer_to_process).strip()
 
-                # 4. Process remaining buffer for Tool Calls or Final Response
-                # This part should ONLY run if no state change was requested and handled, and no plan was submitted.
+                # 4. Process remaining buffer for Tool Calls
+                # Only process tools if no state change was requested and no plan was submitted
                 if not state_change_requested and not plan_submitted:
                     final_cleaned_response = buffer_to_process # Use the buffer after state/think/plan removal
-                    parsed_tool_calls = []
                     if self.manager.tool_executor:
-                        parsed_tool_calls = find_and_parse_xml_tool_calls( final_cleaned_response, self.manager.tool_executor.tools, self.raw_xml_tool_call_pattern, self.markdown_xml_tool_call_pattern, self.agent_id )
+                        tool_calls_found = find_and_parse_xml_tool_calls( final_cleaned_response, self.manager.tool_executor.tools, self.raw_xml_tool_call_pattern, self.markdown_xml_tool_call_pattern, self.agent_id )
 
-                    if parsed_tool_calls:
-                        logger.info(f"Agent {self.agent_id}: {len(parsed_tool_calls)} tool call(s) found in final cleaned buffer.")
+                    # --- NEW: Stricter validation for PM in WORK state ---
+                    is_pm_work_state = (self.agent_type == AGENT_TYPE_PM and self.state == AGENT_STATE_WORK)
+                    if is_pm_work_state:
+                        # Expecting ONLY a single tool call after optional <think>
+                        if tool_calls_found and len(tool_calls_found) == 1:
+                            # Extract the matched tool call string using start/end indices
+                            match_start, match_end = tool_calls_found[0][2]
+                            matched_tool_string = final_cleaned_response[match_start:match_end]
+                            # Check if removing the matched tool string leaves any non-whitespace characters
+                            if not final_cleaned_response.replace(matched_tool_string, '', 1).strip(): # <-- FIXED HERE
+                                logger.debug(f"PM Agent {self.agent_id} in WORK state: Valid output format found (single tool call).")
+                                # Proceed to yield tool request below
+                            else:
+                                # Invalid format: Found a single tool call but also other text
+                                error_msg = f"PM Agent {self.agent_id} in WORK state provided invalid output. Expected ONLY <think> (optional) + single XML tool call. Found extra text around tool call: '{final_cleaned_response[:200]}...'"
+                                logger.error(error_msg)
+                                yield {"type": "error", "agent_id": self.agent_id, "content": f"[Framework Violation] {error_msg}", "_exception_obj": ValueError(error_msg)}
+                                tool_calls_found = [] # Clear calls
+                                final_cleaned_response = "" # Clear response
+                        elif not tool_calls_found and not final_cleaned_response:
+                             logger.info(f"PM Agent {self.agent_id} in WORK state: No tool call or text found. Assuming cycle completion (no action needed).")
+                             # Let the loop finish, CycleHandler will set to IDLE if no reactivation needed
+                        else:
+                            # Invalid format for PM work state (e.g., multiple tools, or just text)
+                            error_msg = f"PM Agent {self.agent_id} in WORK state provided invalid output. Expected ONLY <think> (optional) + single XML tool call OR ONLY <request_state>. Found: '{final_cleaned_response[:200]}...'"
+                            logger.error(error_msg)
+                            # Yield an error event instead of tool request or final response
+                            yield {"type": "error", "agent_id": self.agent_id, "content": f"[Framework Violation] {error_msg}", "_exception_obj": ValueError(error_msg)}
+                            tool_calls_found = [] # Clear any potentially parsed calls to prevent yielding below
+                            final_cleaned_response = "" # Clear response to prevent yielding final_response
+                    # --- END Stricter validation ---
+
+                    if tool_calls_found:
+                        logger.info(f"Agent {self.agent_id}: {len(tool_calls_found)} tool call(s) found in final cleaned buffer.")
                         tool_requests_list = []
-                        for tool_name, tool_args, (match_start, match_end) in parsed_tool_calls:
+                        for tool_name, tool_args, (match_start, match_end) in tool_calls_found:
                             call_id = f"xml_call_{self.agent_id}_{int(time.time() * 1000)}_{os.urandom(2).hex()}"
                             tool_requests_list.append({"id": call_id, "name": tool_name, "arguments": tool_args})
                             await asyncio.sleep(0.001)
                         self.set_status(AGENT_STATUS_AWAITING_TOOL)
                         logger.info(f"Agent {self.agent_id}: Yielding {len(tool_requests_list)} XML tool request(s).")
-                        if final_cleaned_response and (not self.message_history or self.message_history[-1].get("content") != final_cleaned_response or self.message_history[-1].get("role") != "assistant"):
-                            self.message_history.append({"role": "assistant", "content": final_cleaned_response})
-                        event_to_yield = {"type": "tool_requests", "calls": tool_requests_list, "raw_assistant_response": final_cleaned_response}
+                        # Use original_complete_response for history if think tag was present
+                        response_for_history = original_complete_response if think_content_extracted else final_cleaned_response
+                        if response_for_history and (not self.message_history or self.message_history[-1].get("content") != response_for_history or self.message_history[-1].get("role") != "assistant"):
+                            self.message_history.append({"role": "assistant", "content": response_for_history})
+                        event_to_yield = {"type": "tool_requests", "calls": tool_requests_list, "raw_assistant_response": response_for_history}
                         logger.debug(f"CORE YIELD (Tool Request): {event_to_yield}")
                         yield event_to_yield
-                        # --- RE-ADD RETURN ---
-                        return # Stop processing after yielding tool requests
-                        # --- END RE-ADD ---
+                        # Stop processing after yielding tool requests
+                        return
                     else:
-                        # No plan processed, no tools found
-                        logger.debug(f"Agent {self.agent_id}: No plan or tool calls found in final cleaned buffer.")
+                        # No plan processed, no tools found, no state change requested
+                        logger.debug(f"Agent {self.agent_id}: No plan, tool calls, or state change found in final cleaned buffer.")
                         if final_cleaned_response: # Check if anything remains after cleaning
                             logger.debug(f"Agent {self.agent_id}: Yielding final_response event.")
                             if not self.message_history or self.message_history[-1].get("content") != final_cleaned_response or self.message_history[-1].get("role") != "assistant":
@@ -334,7 +363,7 @@ class Agent:
                             yield event_to_yield
                         else:
                              logger.info(f"Agent {self.agent_id}: Buffer is empty after tag processing. No final response yielded.")
-                # --- END REVERTED PROCESSING ORDER ---
+                # --- END Post-stream processing ---
 
             else: # stream_had_error
                 logger.warning(f"Agent {self.agent_id}: Skipping final tag/tool parsing due to stream error.")

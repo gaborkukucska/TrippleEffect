@@ -110,7 +110,7 @@ class OllamaProvider(BaseLLMProvider):
         messages: List[MessageDict],
         model: str,
         temperature: float,
-        max_tokens: Optional[int] = None,
+        max_tokens: Optional[int] = None, # Added max_tokens
         tools: Optional[List[ToolDict]] = None,
         tool_choice: Optional[str] = None,
         **kwargs
@@ -124,7 +124,11 @@ class OllamaProvider(BaseLLMProvider):
 
         raw_options = {"temperature": temperature, **kwargs}
         valid_options = {k: v for k, v in raw_options.items() if k in KNOWN_OLLAMA_OPTIONS and v is not None}
-        if max_tokens is not None: valid_options["num_predict"] = max_tokens
+        # --- MODIFIED: Add max_tokens to valid_options ---
+        if max_tokens is not None:
+            valid_options["num_predict"] = max_tokens # Ollama uses num_predict for max tokens
+            logger.debug(f"Setting Ollama num_predict (max_tokens) to: {max_tokens}")
+        # --- END MODIFIED ---
 
         # --- Add default num_ctx if not provided ---
         if "num_ctx" not in valid_options and "num_ctx" not in kwargs:
@@ -240,7 +244,7 @@ class OllamaProvider(BaseLLMProvider):
                         while b'\n' in byte_buffer:
                             line_bytes, byte_buffer = byte_buffer.split(b'\n', 1)
                             line = line_bytes.decode('utf-8').strip()
-                            if not line: 
+                            if not line:
                                 logger.warning("OllamaProvider: Received empty line from stream.")
                                 continue
                             processed_lines += 1

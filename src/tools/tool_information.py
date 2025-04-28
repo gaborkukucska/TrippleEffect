@@ -101,14 +101,15 @@ class ToolInformationTool(BaseTool):
                 # Handle 'all' tools request (filtered by auth)
                 if tool_name_req.lower() == 'all':
                     all_usage_info = []
-                    authorized_tools = []
-                all_tool_names = sorted(list(manager.tool_executor.tools.keys()))
+                    authorized_tools = [] # Initialize the list here
+                    all_tool_names = sorted(list(manager.tool_executor.tools.keys()))
 
-                for name in all_tool_names:
-                    tool_instance = manager.tool_executor.tools.get(name)
-                    if not tool_instance: continue
+                    for name in all_tool_names:
+                        # Correct indentation for the loop body starts here
+                        tool_instance = manager.tool_executor.tools.get(name)
+                        if not tool_instance: continue
 
-                    tool_auth_level = getattr(tool_instance, 'auth_level', 'worker')
+                        tool_auth_level = getattr(tool_instance, 'auth_level', 'worker')
 
                     # Check authorization based on agent type
                     is_authorized = False

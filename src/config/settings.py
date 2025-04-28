@@ -183,6 +183,14 @@ class Settings:
         except ValueError:
             logger.warning("Invalid ADMIN_AI_LOCAL_MAX_TOKENS in .env, using default 512.")
             self.ADMIN_AI_LOCAL_MAX_TOKENS = 512
+        # --- NEW: Max Tokens for PM Work State ---
+        try:
+            self.PM_WORK_STATE_MAX_TOKENS: int = int(os.getenv("PM_WORK_STATE_MAX_TOKENS", "1024")) # Default to 1024
+            logger.info(f"Loaded PM_WORK_STATE_MAX_TOKENS: {self.PM_WORK_STATE_MAX_TOKENS}")
+        except ValueError:
+            logger.warning("Invalid PM_WORK_STATE_MAX_TOKENS in .env, using default 1024.")
+            self.PM_WORK_STATE_MAX_TOKENS = 1024
+        # --- END NEW ---
 
         # --- Load Initial Configurations using ConfigManager ---
         raw_config_data: Dict[str, Any] = {}

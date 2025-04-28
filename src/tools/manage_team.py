@@ -29,7 +29,7 @@ class ManageTeamTool(BaseTool):
     It does NOT modify state directly. NO RESTART NEEDED.
     Provider/model are optional for create_agent; framework will select if omitted.
     """
-    name: str = "ManageTeamTool"
+    name: str = "manage_team" # Changed from ManageTeamTool to match XML tag
     auth_level: str = "pm" # Admin only
     summary: Optional[str] = "Manages agents and teams (create, delete, list, assign). (Admin only)"
     description: str = ( # Updated description
@@ -149,9 +149,9 @@ class ManageTeamTool(BaseTool):
 
     # --- Detailed Usage Method ---
     def get_detailed_usage(self) -> str:
-        """Returns detailed usage instructions for the ManageTeamTool."""
+        """Returns detailed usage instructions for the manage_team tool."""
         usage = """
-        **Tool Name:** ManageTeamTool
+        **Tool Name:** manage_team
 
         **Description:** Dynamically manages agents and teams within the system. Does not require application restart.
 
@@ -167,49 +167,49 @@ class ManageTeamTool(BaseTool):
             *   `<temperature>` (float, optional): Set model temperature (e.g., 0.7). Defaults vary.
             *   Example:
                 ```xml
-                <ManageTeamTool>
+                <manage_team>
                   <action>create_agent</action>
                   <persona>Data Analyst</persona>
                   <system_prompt>Analyze the provided CSV data, identify trends, and generate a summary report.</system_prompt>
                   <team_id>data_analysis_team</team_id>
                   <model>openai/gpt-4o</model>
-                </ManageTeamTool>
+                </manage_team>
                 ```
 
         2.  **delete_agent:** Deletes an existing agent. Cannot delete bootstrap agents (like 'admin_ai').
             *   `<agent_id>` (string, required): The exact ID of the agent to delete.
-            *   Example: `<ManageTeamTool><action>delete_agent</action><agent_id>agent_171...</agent_id></ManageTeamTool>`
+            *   Example: `<manage_team><action>delete_agent</action><agent_id>agent_171...</agent_id></manage_team>`
 
         3.  **create_team:** Creates a new, empty team.
             *   `<team_id>` (string, required): The unique ID for the new team (e.g., 'web_dev_crew').
-            *   Example: `<ManageTeamTool><action>create_team</action><team_id>research_group</team_id></ManageTeamTool>`
+            *   Example: `<manage_team><action>create_team</action><team_id>research_group</team_id></manage_team>`
 
         4.  **delete_team:** Deletes an existing team. Agents within the team are NOT deleted but become team-less.
             *   `<team_id>` (string, required): The ID of the team to delete.
-            *   Example: `<ManageTeamTool><action>delete_team</action><team_id>old_project_team</team_id></ManageTeamTool>`
+            *   Example: `<manage_team><action>delete_team</action><team_id>old_project_team</team_id></manage_team>`
 
         5.  **add_agent_to_team:** Adds an existing agent to a team.
             *   `<agent_id>` (string, required): The ID of the agent to add.
             *   `<team_id>` (string, required): The ID of the team to add the agent to.
-            *   Example: `<ManageTeamTool><action>add_agent_to_team</action><agent_id>agent_abc...</agent_id><team_id>frontend_devs</team_id></ManageTeamTool>`
+            *   Example: `<manage_team><action>add_agent_to_team</action><agent_id>agent_abc...</agent_id><team_id>frontend_devs</team_id></manage_team>`
 
         6.  **remove_agent_from_team:** Removes an agent from a team. The agent remains active but team-less.
             *   `<agent_id>` (string, required): The ID of the agent to remove.
             *   `<team_id>` (string, required): The ID of the team to remove the agent from.
-            *   Example: `<ManageTeamTool><action>remove_agent_from_team</action><agent_id>agent_xyz...</agent_id><team_id>backend_devs</team_id></ManageTeamTool>`
+            *   Example: `<manage_team><action>remove_agent_from_team</action><agent_id>agent_xyz...</agent_id><team_id>backend_devs</team_id></manage_team>`
 
         7.  **list_agents:** Lists currently active agents.
             *   `<team_id>` (string, optional): If provided, lists only agents in that specific team. Otherwise, lists all active agents.
-            *   Example (List all): `<ManageTeamTool><action>list_agents</action></ManageTeamTool>`
-            *   Example (List team): `<ManageTeamTool><action>list_agents</action><team_id>design_team</team_id></ManageTeamTool>`
+            *   Example (List all): `<manage_team><action>list_agents</action></manage_team>`
+            *   Example (List team): `<manage_team><action>list_agents</action><team_id>design_team</team_id></manage_team>`
 
         8.  **list_teams:** Lists all currently defined teams.
             *   No parameters needed.
-            *   Example: `<ManageTeamTool><action>list_teams</action></ManageTeamTool>`
+            *   Example: `<manage_team><action>list_teams</action></manage_team>`
 
         9.  **get_agent_details:** Retrieves detailed information about a specific agent (config, status, history summary).
             *   `<agent_id>` (string, required): The exact ID of the agent to get details for.
-            *   Example: `<ManageTeamTool><action>get_agent_details</action><agent_id>admin_ai</agent_id></ManageTeamTool>`
+            *   Example: `<manage_team><action>get_agent_details</action><agent_id>admin_ai</agent_id></manage_team>`
 
         **Important Notes:**
         *   Use exact `agent_id`s obtained from `create_agent` feedback or `list_agents` for reliable targeting.

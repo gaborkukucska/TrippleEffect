@@ -521,15 +521,7 @@ class AgentManager:
                 session_name=self.current_session   # Pass context
             )
 
-            if isinstance(task_result, dict) and task_result.get("status") == "success":
-                task_uuid = task_result.get("task_uuid")
-                task_id = task_result.get("task_id")
-                task_creation_success = True
-                task_creation_message = f"Successfully created 'Project Plan' task (ID: {task_id}, UUID: {task_uuid}) and assigned to PM '{pm_agent_id}'."
-                logger.info(task_creation_message)
-            else:
-                error_detail = task_result.get("message", "Unknown error from tool execution.") if isinstance(task_result, dict) else str(task_result)
-            # Check the actual status from the result dictionary
+            # --- Corrected Logic for Checking Task Creation Result ---
             if isinstance(task_result, dict) and task_result.get("status") == "success":
                 task_uuid = task_result.get("task_uuid")
                 task_id = task_result.get("task_id")
@@ -542,6 +534,7 @@ class AgentManager:
                 task_creation_message = f"Failed to create 'Project Plan' task via ToolExecutor: {error_detail}"
                 logger.error(task_creation_message)
                 task_creation_success = False # Ensure flag is false on failure
+            # --- End Corrected Logic ---
 
         except Exception as task_err:
             logger.error(f"Exception during 'Project Plan' task creation via ToolExecutor: {task_err}", exc_info=True)
