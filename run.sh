@@ -28,7 +28,7 @@ echo "Virtual environment activated."
 echo "Launching TrippleEffect (uvicorn src.main:app)..."
 # Run uvicorn directly, omitting --log-level to use default/root logger config
 # Pass any arguments passed to run.sh directly to the uvicorn command
-uvicorn src.main:app --host 0.0.0.0 --port 8000 "$@"
+"$VENV_DIR/bin/python" -m uvicorn src.main:app --host 0.0.0.0 --port 8000 "$@"
 
 # --- Check Exit Status (Optional) ---
 EXIT_STATUS=$?
