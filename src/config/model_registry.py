@@ -47,6 +47,8 @@ class ModelRegistry:
         self.available_models: Dict[str, List[ModelInfo]] = {}
         # Stores reachable provider info: unique_provider_name -> base_url
         self._reachable_providers: Dict[str, str] = {}
+        # Tracks (service_type, port) for canonical local services already verified in this cycle
+        self._verified_local_canonical_services: Set[Tuple[str, int]] = set()
         # Use MODEL_TIER from the passed settings object
         self._model_tier: str = getattr(self.settings, 'MODEL_TIER', 'ALL').upper()
         logger.info(f"ModelRegistry initialized. MODEL_TIER='{self._model_tier}'.")
@@ -151,6 +153,7 @@ class ModelRegistry:
         """ Coordinates provider reachability checks and model discovery, including local network scan. """
         self._reachable_providers.clear()
         self._raw_models = {} # Reset raw models completely
+        self._verified_local_canonical_services.clear() # Reset for this discovery cycle
         logger.info("Starting provider reachability checks and discovery...")
 
         # --- 1. Discover Remote Providers (Based on .env config) ---
@@ -172,93 +175,112 @@ class ModelRegistry:
             logger.debug("Skipping OpenAI discovery: No API key found in settings.")
         # Add checks/discovery tasks for other remote providers similarly...
 
-        # --- 2. Discover Local Providers (Network Scan + Configured) ---
-        discovered_local_urls = set()
+        # --- 2. Discover Local Providers (Check Localhost/Config, Scan Network, Verify All) ---
+        urls_to_verify = set()
+        processed_urls = set() # Track URLs successfully verified
 
-        # Add explicitly configured local URLs first (if not using proxy for Ollama)
-        if not (self.settings.USE_OLLAMA_PROXY and "ollama" in self._reachable_providers): # Don't add direct if proxy is reachable
-             if self.settings.OLLAMA_BASE_URL:
-                 discovered_local_urls.add(self.settings.OLLAMA_BASE_URL.rstrip('/'))
-        if self.settings.LITELLM_BASE_URL:
-            discovered_local_urls.add(self.settings.LITELLM_BASE_URL.rstrip('/'))
+        # 2a. Add Localhost Defaults
+        logger.info("Adding default localhost endpoints for verification...")
+        urls_to_verify.add(f"http://localhost:{DEFAULT_OLLAMA_PORT}")
+        urls_to_verify.add(f"http://127.0.0.1:{DEFAULT_OLLAMA_PORT}")
+        urls_to_verify.add(f"http://localhost:{DEFAULT_LITELLM_PORT}")
+        urls_to_verify.add(f"http://127.0.0.1:{DEFAULT_LITELLM_PORT}")
 
-        # Perform network scan if enabled
+        # 2b. Add Explicitly Configured Local URLs (Optional - if you add such settings)
+        # Example: if self.settings.EXPLICIT_LOCAL_URLS: urls_to_verify.update(self.settings.EXPLICIT_LOCAL_URLS)
+
+        # 2c. Network Scan (If enabled)
+        network_scan_urls = set()
         if self.settings.LOCAL_API_SCAN_ENABLED:
+            logger.info("Starting network scan for local APIs...")
             try:
-                logger.info("Starting local network scan...")
                 scanned_urls = await scan_for_local_apis(
                     ports=self.settings.LOCAL_API_SCAN_PORTS,
-                    subnet_config=self.settings.LOCAL_API_SCAN_SUBNET,
                     timeout=self.settings.LOCAL_API_SCAN_TIMEOUT
                 )
-                discovered_local_urls.update(scanned_urls)
-                logger.info(f"Local network scan completed. Found {len(scanned_urls)} potential endpoints.")
+                # Filter out localhost/loopback from scan results as they are added manually
+                network_scan_urls = {url for url in scanned_urls if not ("localhost" in url or "127.0.0.1" in url)}
+                logger.info(f"Network scan completed. Found {len(network_scan_urls)} potential non-localhost endpoints.")
+                urls_to_verify.update(network_scan_urls)
             except Exception as scan_err:
                 logger.error(f"Error during local network scan: {scan_err}", exc_info=True)
+        else:
+             logger.info("Local network scan is disabled in settings.")
 
-        # Add localhost defaults if not already found and not explicitly configured elsewhere
-        localhost_ollama = f"http://localhost:{DEFAULT_OLLAMA_PORT}"
-        localhost_litellm = f"http://localhost:{DEFAULT_LITELLM_PORT}"
-        if not self.settings.OLLAMA_BASE_URL and localhost_ollama not in discovered_local_urls:
-            discovered_local_urls.add(localhost_ollama)
-        if not self.settings.LITELLM_BASE_URL and localhost_litellm not in discovered_local_urls:
-            discovered_local_urls.add(localhost_litellm)
-
-        # Verify all potential local URLs (scanned + configured + defaults)
-        if discovered_local_urls:
-            logger.info(f"Verifying {len(discovered_local_urls)} potential local endpoints...")
-            verification_tasks = [self._verify_and_fetch_models(url) for url in discovered_local_urls]
+        # 2d. Verify All Unique Candidate URLs
+        if urls_to_verify:
+            logger.info(f"Verifying {len(urls_to_verify)} potential local endpoints...")
+            # Use list comprehension to avoid adding already processed URLs if the logic is complex
+            urls_to_actually_verify = [url for url in urls_to_verify if url not in processed_urls]
+            verification_tasks = [self._verify_and_fetch_models(url) for url in urls_to_actually_verify]
             verification_results = await asyncio.gather(*verification_tasks, return_exceptions=True)
 
-            processed_urls = set() # Track URLs that have been successfully verified
             for result in verification_results:
                 if isinstance(result, tuple) and len(result) == 3:
                     provider_name, verified_url, models = result
                     if provider_name and verified_url and models:
-                        # Ensure provider name is unique if multiple instances found
-                        # (e.g., ollama-local-127-0-0-1, ollama-local-192-168-1-10)
-                        base_name = provider_name
-                        counter = 1
-                        unique_provider_name = provider_name
-                        while unique_provider_name in self._reachable_providers:
-                            unique_provider_name = f"{base_name}-{counter}"
-                            counter += 1
+                        # --- Check for duplicate localhost/127.0.0.1 registration ---
+                        try:
+                            host_part = verified_url.split('//')[1].split('/')[0].split(':')[0]
+                            port_part_str = verified_url.split(':')[-1].split('/')[0] # Handle potential trailing slash
+                            port_part = int(port_part_str)
+                            is_loopback = host_part == "localhost" or host_part == "127.0.0.1"
 
+                            if is_loopback:
+                                # Determine service type (e.g., 'ollama', 'litellm')
+                                service_type = "unknown"
+                                if provider_name.startswith("ollama-"): service_type = "ollama"
+                                elif provider_name.startswith("litellm-"): service_type = "litellm"
+                                # Add other types if needed
+
+                                canonical_service_id = (service_type, port_part)
+                                if canonical_service_id in self._verified_local_canonical_services:
+                                    logger.debug(f"Skipping registration for {verified_url}: Canonical service {canonical_service_id} already registered in this cycle.")
+                                    processed_urls.add(verified_url) # Still mark as processed to avoid re-verification attempts if logic changes
+                                    continue # Skip to the next result
+                                # Else, this is the first time we see this canonical service in this cycle
+                        except Exception as e:
+                             logger.warning(f"Error during duplicate check for {verified_url}: {e}. Proceeding with registration attempt.")
+                             is_loopback = False # Assume not loopback if parsing failed
+
+                        # --- Proceed with registration if not a duplicate loopback ---
+                        base_name = provider_name; counter = 1; unique_provider_name = provider_name
+                        while unique_provider_name in self._reachable_providers:
+                            unique_provider_name = f"{base_name}-{counter}"; counter += 1
+
+                        # Special handling for localhost Ollama to use canonical name 'ollama-local'
+                        if provider_name.startswith("ollama-local-") and is_loopback: # Use the is_loopback flag determined earlier
+                            canonical_name = "ollama-local"
+                            if canonical_name not in self._reachable_providers:
+                                 unique_provider_name = canonical_name # Use canonical name
+                                 logger.info(f"Assigning canonical name '{unique_provider_name}' to verified localhost Ollama at {verified_url}")
+                            else:
+                                 # This case should be less likely now due to the duplicate check above, but keep as safety
+                                 logger.warning(f"Canonical name '{canonical_name}' already assigned. Using dynamic name '{unique_provider_name}' for Ollama at {verified_url}")
+
+                        # Register the provider
                         self._reachable_providers[unique_provider_name] = verified_url
-                        # Add provider name to each model info dict
-                        for m in models: m['provider'] = unique_provider_name
-                        self._raw_models[unique_provider_name] = models # Store raw models under unique name
-                        processed_urls.add(verified_url)
-                        logger.info(f"Successfully registered discovered local provider '{unique_provider_name}' at {verified_url} with {len(models)} models.")
-                    else:
-                         logger.debug(f"Verification task returned invalid data: {result}")
+                        for m in models: m['provider'] = unique_provider_name # Ensure models have the final unique provider name
+                        self._raw_models[unique_provider_name] = models
+                        processed_urls.add(verified_url) # Mark URL as processed
+
+                        # If it was a successfully registered loopback, add to the tracking set and mark variations as processed
+                        if is_loopback:
+                            self._verified_local_canonical_services.add(canonical_service_id)
+                            processed_urls.add(f"http://localhost:{port_part}")
+                            processed_urls.add(f"http://127.0.0.1:{port_part}")
+
+                        logger.info(f"Successfully registered discovered provider '{unique_provider_name}' at {verified_url} with {len(models)} models.")
                 elif isinstance(result, Exception):
                     logger.error(f"Error during local API verification task: {result}", exc_info=result)
                 elif result is None:
                     pass # Verification failed, already logged in _verify_and_fetch_models
                 else:
                      logger.warning(f"Unexpected result type from verification task: {type(result)}")
+        else:
+             logger.info("No local endpoints found or configured to verify.")
 
-        # --- 3. Handle Ollama Proxy Separately (if enabled and not already covered by scan) ---
-        if self.settings.USE_OLLAMA_PROXY:
-            proxy_url = f"http://localhost:{self.settings.OLLAMA_PROXY_PORT}"
-            if proxy_url not in processed_urls: # Only check if not already verified by scan/config
-                logger.debug(f"Ollama proxy enabled. Explicitly checking proxy URL: {proxy_url}")
-                # Use _verify_and_fetch_models to check proxy and get its models
-                proxy_result = await self._verify_and_fetch_models(proxy_url)
-                if isinstance(proxy_result, tuple) and len(proxy_result) == 3:
-                    provider_name, verified_url, models = proxy_result
-                    if provider_name and verified_url and models:
-                         # Use a distinct name for the proxy provider
-                         proxy_provider_name = "ollama-proxy"
-                         self._reachable_providers[proxy_provider_name] = verified_url
-                         for m in models: m['provider'] = proxy_provider_name
-                         self._raw_models[proxy_provider_name] = models
-                         logger.info(f"Successfully registered Ollama Proxy '{proxy_provider_name}' at {verified_url} with {len(models)} models.")
-                elif isinstance(proxy_result, Exception):
-                     logger.error(f"Error during Ollama Proxy verification task: {proxy_result}", exc_info=proxy_result)
-                else:
-                     logger.warning(f"Ollama proxy enabled in settings but verification failed at {proxy_url}. Proxy will be unavailable.")
+        # --- 3. Handle Ollama Proxy (REMOVED) ---
 
 
         # --- 4. Run Remote Discovery Tasks Concurrently ---

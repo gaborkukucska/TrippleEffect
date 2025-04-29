@@ -6,12 +6,17 @@ from typing import TYPE_CHECKING, Dict, Any, Optional, List, Tuple
 import copy # Import copy for deepcopy
 
 # Import base types and tools
+import time # Import time for failed_tool_result timestamp
 from src.llm_providers.base import ToolResultDict, MessageDict
 from src.tools.manage_team import ManageTeamTool
 from src.tools.send_message import SendMessageTool
+from src.tools.project_management import ProjectManagementTool # Import ProjectManagementTool
 
-# Import status constants
-from src.agents.constants import AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_EXECUTING_TOOL
+# Import status constants and agent types
+from src.agents.constants import (
+    AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_EXECUTING_TOOL,
+    AGENT_TYPE_WORKER, AGENT_STATE_WORK # Import worker type and state
+)
 
 # Import helper for prompt update
 from src.agents.prompt_utils import update_agent_prompt_team_id
@@ -225,6 +230,52 @@ class AgentInteractionHandler:
         except Exception as e: error_msg = f"InteractionHandler: Error executing tool '{tool_name}': {type(e).__name__} - {e}"; logger.error(error_msg, exc_info=True); result_content = f"[ToolExec Error: {error_msg}]"; raw_result = None
         finally:
             if agent.status == AGENT_STATUS_EXECUTING_TOOL and agent.current_tool_info and agent.current_tool_info.get("call_id") == call_id: agent.set_status(AGENT_STATUS_PROCESSING)
+
+            # --- NEW: Worker Activation on Task Assignment ---
+            if tool_name == ProjectManagementTool.name and isinstance(raw_result, dict) and raw_result.get("status") == "success":
+                action = tool_args.get("action") # Get the action performed
+                assignee_id = raw_result.get("assignee")
+                task_description = raw_result.get("description")
+
+                if assignee_id and task_description and action in ["add_task", "modify_task"]:
+                    logger.info(f"InteractionHandler: Task '{action}' successful for assignee '{assignee_id}'. Checking for worker activation.")
+                    assigned_agent = self._manager.agents.get(assignee_id)
+                    if assigned_agent and assigned_agent.agent_type == AGENT_TYPE_WORKER and assigned_agent.status == AGENT_STATUS_IDLE:
+                        logger.info(f"Activating idle worker agent '{assignee_id}' for assigned task.")
+                        # Set flag and inject context
+                        assigned_agent._needs_initial_work_context = True
+                        assigned_agent._injected_task_description = task_description
+                        # Get tool list string (assuming ToolExecutor has this method)
+                        try:
+                            # Ensure tool_executor exists before calling
+                            if hasattr(self._manager, 'tool_executor') and hasattr(self._manager.tool_executor, 'get_available_tools_list_str'):
+                                assigned_agent._injected_tools_list_str = self._manager.tool_executor.get_available_tools_list_str(assigned_agent.agent_type)
+                            else:
+                                logger.error(f"ToolExecutor or get_available_tools_list_str not found on manager for worker {assignee_id}.")
+                                assigned_agent._injected_tools_list_str = "[Error retrieving tool list: ToolExecutor unavailable]"
+                        except Exception as tool_list_err:
+                             logger.error(f"Failed to get tool list for worker {assignee_id}: {tool_list_err}")
+                             assigned_agent._injected_tools_list_str = "[Error retrieving tool list]"
+
+                        # Change state and schedule
+                        state_changed = False
+                        if hasattr(self._manager, 'workflow_manager'):
+                             state_changed = self._manager.workflow_manager.change_state(assigned_agent, AGENT_STATE_WORK)
+                        else:
+                             logger.error("WorkflowManager not found on AgentManager. Cannot change worker state.")
+
+                        if state_changed:
+                            asyncio.create_task(self._manager.schedule_cycle(assigned_agent, 0))
+                        else:
+                            logger.error(f"Failed to change state to WORK for activated worker '{assignee_id}'.")
+                            # Clear flag if state change failed
+                            assigned_agent._needs_initial_work_context = False
+                    elif assigned_agent and assigned_agent.agent_type == AGENT_TYPE_WORKER:
+                         logger.info(f"Worker agent '{assignee_id}' assigned task but is not IDLE (Status: {assigned_agent.status}). Will process when available.")
+                    elif not assigned_agent:
+                         logger.error(f"Assignee agent ID '{assignee_id}' from task assignment not found.")
+            # --- END NEW ---
+
         return {"call_id": call_id, "content": result_content, "_raw_result": raw_result}
 
 

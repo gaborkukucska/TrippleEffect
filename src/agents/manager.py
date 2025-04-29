@@ -22,7 +22,10 @@ logging.info("manager.py: Imported database_manager.")
 
 # --- Agent Status/Type/ID Constants ---
 logging.info("manager.py: Importing constants...")
-from src.agents.constants import AGENT_STATUS_IDLE, AGENT_STATUS_ERROR, BOOTSTRAP_AGENT_ID # Import BOOTSTRAP_AGENT_ID
+from src.agents.constants import (
+    AGENT_STATUS_IDLE, AGENT_STATUS_ERROR, BOOTSTRAP_AGENT_ID,
+    AGENT_TYPE_PM, AGENT_STATE_CONVERSATION, AGENT_STATE_MANAGE # Add PM states/type
+)
 logging.info("manager.py: Imported constants.")
 
 # --- Import Agent class for type hinting ---
@@ -141,9 +144,15 @@ class AgentManager:
         logger.info("AgentManager __init__: AgentWorkflowManager instantiated.")
         # --- END NEW ---
         self._ensure_projects_dir()
-        logger.info("AgentManager __init__: Initialized synchronously. Bootstrap agents and model discovery run asynchronously.")
+        # --- NEW: PM Manage Timer Task ---
+        self._pm_manage_task: Optional[asyncio.Task] = None
+        # --- END NEW ---
+        logger.info("AgentManager __init__: Initialized synchronously. Bootstrap agents, model discovery, and timers run asynchronously.")
         # Start default session DB logging on init
         asyncio.create_task(self._ensure_default_db_session())
+        # --- NEW: Start PM Manage Timer ---
+        asyncio.create_task(self.start_pm_manage_timer())
+        # --- END NEW ---
 
     async def _ensure_default_db_session(self):
         """Ensures the default project and a new session are logged in the DB on startup."""
@@ -312,9 +321,13 @@ class AgentManager:
         # --- END ADDED LOGGING ---
 
     # --- Failover Handling (Delegation) ---
-    async def handle_agent_model_failover(self, agent_id: str, last_error_obj: Exception):
-        """ Delegates failover handling to the imported failover handler function. """
-        await handle_agent_model_failover(self, agent_id, last_error_obj)
+    async def handle_agent_model_failover(self, agent_id: str, last_error_obj: Exception) -> bool: # Add return type hint
+        """ Delegates failover handling to the imported failover handler function and returns its result. """
+        # --- FIXED: Added return statement & logging ---
+        result = await handle_agent_model_failover(self, agent_id, last_error_obj)
+        logger.debug(f"AgentManager.handle_agent_model_failover: Returning result = {result} for agent '{agent_id}'.")
+        # +++ END ADDED LOGGING +++
+        return result
 
     # --- UI Communication ---
     async def push_agent_status_update(self, agent_id: str):
@@ -470,6 +483,15 @@ class AgentManager:
                          temperature=pm_temp,
                          **pm_extra_kwargs
                      )
+                     # --- NEW: Set approval flag on successful PM creation ---
+                     if pm_creation_success and pm_agent_id:
+                         pm_agent = self.agents.get(pm_agent_id)
+                         if pm_agent:
+                             pm_agent._awaiting_project_approval = True
+                             logger.info(f"Set _awaiting_project_approval flag for new PM agent '{pm_agent_id}'.")
+                         else:
+                             logger.error(f"Could not find newly created PM agent '{pm_agent_id}' to set approval flag!")
+                     # --- END NEW ---
                  else:
                      # Config for the bootstrap PM agent itself wasn't found
                      pm_creation_success = False
@@ -555,6 +577,10 @@ class AgentManager:
         # 4. Send Approval Notification to UI (AFTER task creation attempt)
         logger.info(f"Framework: {final_status_message}") # Log the accurate final status
 
+        # --- Add a small delay before sending the approval notification ---
+        await asyncio.sleep(0.1) # e.g., 100ms delay
+        # --- End delay ---
+
         await self.send_to_ui({
             "type": "project_pending_approval",
             "project_title": project_title,
@@ -606,6 +632,97 @@ class AgentManager:
              if hasattr(provider, 'close_session') and callable(provider.close_session): await provider.close_session(); logger.info(f"Manager: Closed session for {provider!r}")
              else: logger.debug(f"Manager: Provider {provider!r} does not have close_session.")
         except Exception as e: logger.error(f"Manager: Error closing session for {provider!r}: {e}", exc_info=True)
+
+    # --- NEW: PM Manage State Timer Logic ---
+    async def _periodic_pm_manage_check(self):
+        """Periodically checks for idle PM agents and transitions them to the MANAGE state."""
+        interval = settings.PM_MANAGE_CHECK_INTERVAL_SECONDS
+        logger.info(f"Starting periodic PM manage check loop (Interval: {interval}s)...")
+        while True:
+            await asyncio.sleep(interval)
+            logger.debug("Running periodic PM manage check...")
+            try:
+                idle_pms_to_activate = []
+                # Iterate over a copy of agent values to avoid issues if dict changes during iteration
+                agents_snapshot = list(self.agents.values())
+                for agent in agents_snapshot:
+                    if (agent.agent_type == AGENT_TYPE_PM and
+                        agent.status == AGENT_STATUS_IDLE and
+                        agent.state == AGENT_STATE_CONVERSATION): # Only activate idle PMs in conversation state
+                        idle_pms_to_activate.append(agent)
+
+                if idle_pms_to_activate:
+                    logger.info(f"Found {len(idle_pms_to_activate)} idle PM agent(s) potentially ready for MANAGE state.")
+                    for pm_agent in idle_pms_to_activate:
+                        # --- NEW: Check if project is awaiting approval ---
+                        if getattr(pm_agent, '_awaiting_project_approval', False):
+                            logger.debug(f"Skipping MANAGE state transition for PM '{pm_agent.agent_id}': Project awaiting approval.")
+                            continue # Skip this PM for now
+                        # --- END NEW ---
+
+                        logger.debug(f"Attempting to transition PM '{pm_agent.agent_id}' to MANAGE state.")
+                        state_changed = False
+                        if hasattr(self, 'workflow_manager'):
+                            state_changed = self.workflow_manager.change_state(pm_agent, AGENT_STATE_MANAGE)
+                        else:
+                            logger.error("WorkflowManager not found on AgentManager. Cannot change PM state.")
+
+                        if state_changed:
+                            logger.info(f"Transitioned PM '{pm_agent.agent_id}' to MANAGE state. Scheduling cycle.")
+                            await self.schedule_cycle(pm_agent, 0) # Schedule cycle immediately after state change
+                        else:
+                            logger.warning(f"Failed to transition PM '{pm_agent.agent_id}' to MANAGE state (already in state or invalid transition?).")
+            except Exception as e:
+                logger.error(f"Error during periodic PM manage check: {e}", exc_info=True)
+                # Optional: Add a longer sleep after an error to prevent rapid error loops
+                await asyncio.sleep(interval * 2)
+
+    async def start_pm_manage_timer(self):
+        """Starts the background task for periodic PM checks if not already running."""
+        if self._pm_manage_task is None or self._pm_manage_task.done():
+            logger.info("Starting PM manage timer background task.")
+            self._pm_manage_task = asyncio.create_task(self._periodic_pm_manage_check())
+        else:
+            logger.info("PM manage timer task already running.")
+
+    async def stop_pm_manage_timer(self):
+        """Stops the background task for periodic PM checks."""
+        if self._pm_manage_task and not self._pm_manage_task.done():
+            logger.info("Stopping PM manage timer background task...")
+            self._pm_manage_task.cancel()
+            try:
+                await self._pm_manage_task # Wait for cancellation
+            except asyncio.CancelledError:
+                logger.info("PM manage timer task successfully cancelled.")
+            except Exception as e:
+                logger.error(f"Error stopping PM manage timer task: {e}", exc_info=True)
+            self._pm_manage_task = None
+        else:
+            logger.info("PM manage timer task not running or already stopped.")
+    # --- END NEW ---
+
+    # --- Cleanup ---
+    async def cleanup_providers(self):
+        logger.info("Manager: Cleaning up LLM providers, saving metrics, saving quarantine state, stopping timers, and closing DB...");
+        # --- NEW: Stop Timer ---
+        await self.stop_pm_manage_timer()
+        # --- END NEW ---
+        if self.current_session_db_id is not None:
+             logger.info(f"Ending final active DB session ID: {self.current_session_db_id}")
+             await self.db_manager.end_session(self.current_session_db_id)
+             self.current_session_db_id = None
+
+        active_providers = {agent.llm_provider for agent in self.agents.values() if agent.llm_provider}
+        provider_tasks = [asyncio.create_task(self._close_provider_safe(p)) for p in active_providers if hasattr(p, 'close_session')]
+        metrics_save_task = asyncio.create_task(self.performance_tracker.save_metrics())
+        quarantine_save_task = asyncio.create_task(self.key_manager.save_quarantine_state())
+        all_cleanup_tasks = provider_tasks + [metrics_save_task, quarantine_save_task]
+        if all_cleanup_tasks: await asyncio.gather(*all_cleanup_tasks); logger.info("Manager: Provider cleanup, metrics saving, and quarantine saving complete.")
+        else: logger.info("Manager: No provider cleanup or saving needed.")
+        # Close DB connection after all other cleanup
+        await close_db_connection()
+        logger.info("Manager: Database connection closed.")
+
 
 # --- Logging statement at the very end ---
 logging.info("manager.py: Module loading finished.")

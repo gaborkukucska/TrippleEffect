@@ -41,17 +41,9 @@ class OllamaProvider(BaseLLMProvider):
     """
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, **kwargs):
-        # Determine the effective base URL based on proxy settings
-        use_proxy = settings.USE_OLLAMA_PROXY
-        proxy_port = settings.OLLAMA_PROXY_PORT
-        direct_base_url = base_url or settings.OLLAMA_BASE_URL or DEFAULT_OLLAMA_BASE_URL # Priority: explicit arg -> .env -> default
-
-        if use_proxy:
-            self.base_url = f"http://localhost:{proxy_port}" # Use proxy URL
-            logger.info(f"Ollama proxy enabled. Using proxy URL: {self.base_url}")
-        else:
-            self.base_url = direct_base_url.rstrip('/') # Use direct URL
-            logger.info(f"Ollama proxy disabled. Using direct URL: {self.base_url}")
+        # Use the base_url provided (from ModelRegistry), fallback to default localhost
+        self.base_url = (base_url or DEFAULT_OLLAMA_BASE_URL).rstrip('/')
+        logger.info(f"OllamaProvider initialized. Using Base URL: {self.base_url}")
 
         if api_key: logger.warning("OllamaProvider Warning: API key provided but not used.")
         # Timeout config can still be passed via kwargs if needed, applied per request
@@ -268,17 +260,13 @@ class OllamaProvider(BaseLLMProvider):
                                      else:
                                          logger.warning("OllamaProvider: No content found in chunk_data.")
 
+                                # Check for done *after* processing potential content in the same chunk
                                 if chunk_data.get("done", False):
                                     total_duration = chunk_data.get("total_duration")
                                     logger.debug(f"Received done=true. Total duration: {total_duration}ns")
                                     if total_duration: yield {"type": "status", "content": f"Ollama turn finished ({total_duration / 1e9:.2f}s)"}
-                                    # Check for done *after* processing potential content in the same chunk
-                                    if chunk_data.get("done", False):
-                                        total_duration = chunk_data.get("total_duration")
-                                        logger.debug(f"Received done=true. Total duration: {total_duration}ns")
-                                        if total_duration: yield {"type": "status", "content": f"Ollama turn finished ({total_duration / 1e9:.2f}s)"}
-                                        stream_error_occurred = False # Reset error if we successfully reach done
-                                        return # Exit cleanly on done
+                                    stream_error_occurred = False # Reset error if we successfully reach done
+                                    return # Exit cleanly on done
 
                             except json.JSONDecodeError as e:
                                 logger.error(f"JSONDecodeError: {e} - Line: {line[:200]}")

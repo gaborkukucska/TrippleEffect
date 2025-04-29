@@ -78,7 +78,8 @@ class Agent:
         self.agent_type: str = config.get("agent_type", "worker") # Default to worker if not specified
         # --- END NEW ---
         self.agent_config: Dict[str, Any] = agent_config
-        self.provider_kwargs = {k: v for k, v in config.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'agent_type', 'api_key', 'base_url', 'referer']} # Include agent_type
+        # Exclude max_tokens here as it's handled explicitly in process_message
+        self.provider_kwargs = {k: v for k, v in config.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'agent_type', 'api_key', 'base_url', 'referer', 'max_tokens']}
         self.llm_provider: BaseLLMProvider = llm_provider
         self.manager: 'AgentManager' = manager
         logger.debug(f"Agent {self.agent_id} using final system prompt (first 500 chars):\n{self.final_system_prompt[:500]}...")
@@ -96,6 +97,9 @@ class Agent:
         self._failed_models_this_cycle: set = set()
         # --- NEW: Flag for PM initial tool call ---
         self._pm_needs_initial_list_tools: bool = False # Set by WorkflowManager
+        # --- END NEW ---
+        # --- NEW: Flag for project approval status ---
+        self._awaiting_project_approval: bool = False # Set by Manager during PM creation, cleared by API on approval
         # --- END NEW ---
 
         # Buffers for processing stream
@@ -247,17 +251,33 @@ class Agent:
                         requested_state = state_match.group(1)
                         state_request_tag = state_match.group(0)
                         logger.info(f"Agent {self.agent_id}: Detected state request tag via search: {state_request_tag}")
+                        # --- MODIFIED: Yield remaining text BEFORE state change ---
+                        remaining_text_after_tag = buffer_to_process.replace(state_request_tag, '', 1).strip()
+                        if remaining_text_after_tag:
+                            logger.debug(f"Agent {self.agent_id}: Found remaining text after state tag: '{remaining_text_after_tag[:50]}...' Yielding as final_response first.")
+                            # Add to history if needed
+                            if not self.message_history or self.message_history[-1].get("content") != remaining_text_after_tag or self.message_history[-1].get("role") != "assistant":
+                                self.message_history.append({"role": "assistant", "content": remaining_text_after_tag})
+                            # Yield final response
+                            final_response_event = {"type": "final_response", "content": remaining_text_after_tag}
+                            logger.debug(f"CORE YIELD (Final Response before State Change): {final_response_event}")
+                            yield final_response_event
+                        # Now yield the state change request
                         event_to_yield = {"type": "agent_state_change_requested", "requested_state": requested_state, "agent_id": self.agent_id}
                         logger.debug(f"CORE YIELD (State Request): {event_to_yield}")
                         yield event_to_yield
                         state_change_requested = True
-                        buffer_to_process = buffer_to_process.replace(state_request_tag, '', 1).strip()
+                        # --- MODIFICATION: Continue processing buffer even after state change ---
+                        buffer_to_process = remaining_text_after_tag # Update buffer with already cleaned text
+                        logger.debug(f"Agent {self.agent_id}: Continuing buffer processing after state change request. Remaining buffer: '{buffer_to_process[:50]}...'")
+                        # --- END MODIFICATION ---
+
 
                 # 2. Check for Think Tag NEXT (Robust Extraction)
-                # Only process think tag if no state change was requested
-                if not state_change_requested:
-                    think_match = self.think_pattern.search(buffer_to_process) # Use robust pattern
-                    if think_match:
+                # Process think tag regardless of whether state change was requested
+                # if not state_change_requested: # REMOVED Condition
+                think_match = self.think_pattern.search(buffer_to_process) # Use robust pattern
+                if think_match:
                         extracted_think_content = think_match.group(1).strip()
                         full_think_block = think_match.group(0) # Get the exact matched block
                         if extracted_think_content:
@@ -292,14 +312,16 @@ class Agent:
 
                     elif plan_match: # Log if plan tag found in wrong state/agent
                          logger.warning(f"Agent {self.agent_id}: Detected <plan> tag but agent is not Admin AI in PLANNING state. Ignoring plan tag.")
+                         # Still remove the tag even if ignored
                          buffer_to_process = self.plan_pattern.sub('', buffer_to_process).strip()
 
+
                 # 4. Process remaining buffer for Tool Calls
-                # Only process tools if no state change was requested and no plan was submitted
-                if not state_change_requested and not plan_submitted:
-                    final_cleaned_response = buffer_to_process # Use the buffer after state/think/plan removal
-                    if self.manager.tool_executor:
-                        tool_calls_found = find_and_parse_xml_tool_calls( final_cleaned_response, self.manager.tool_executor.tools, self.raw_xml_tool_call_pattern, self.markdown_xml_tool_call_pattern, self.agent_id )
+                # Process tools regardless of whether state change or plan was submitted, using the potentially cleaned buffer
+                # if not state_change_requested and not plan_submitted: # REMOVED Condition
+                final_cleaned_response = buffer_to_process # Use the buffer after state/think/plan removal
+                if self.manager.tool_executor:
+                    tool_calls_found = find_and_parse_xml_tool_calls( final_cleaned_response, self.manager.tool_executor.tools, self.raw_xml_tool_call_pattern, self.markdown_xml_tool_call_pattern, self.agent_id )
 
                     # --- NEW: Stricter validation for PM in WORK state ---
                     is_pm_work_state = (self.agent_type == AGENT_TYPE_PM and self.state == AGENT_STATE_WORK)
@@ -350,19 +372,25 @@ class Agent:
                         logger.debug(f"CORE YIELD (Tool Request): {event_to_yield}")
                         yield event_to_yield
                         # Stop processing after yielding tool requests
-                        return
-                    else:
-                        # No plan processed, no tools found, no state change requested
-                        logger.debug(f"Agent {self.agent_id}: No plan, tool calls, or state change found in final cleaned buffer.")
-                        if final_cleaned_response: # Check if anything remains after cleaning
-                            logger.debug(f"Agent {self.agent_id}: Yielding final_response event.")
-                            if not self.message_history or self.message_history[-1].get("content") != final_cleaned_response or self.message_history[-1].get("role") != "assistant":
-                                self.message_history.append({"role": "assistant", "content": final_cleaned_response})
-                            event_to_yield = {"type": "final_response", "content": final_cleaned_response}
-                            logger.debug(f"CORE YIELD (Final Response): {event_to_yield}")
-                            yield event_to_yield
-                        else:
-                             logger.info(f"Agent {self.agent_id}: Buffer is empty after tag processing. No final response yielded.")
+                        # --- MODIFICATION: Only return if tools were actually found and yielded ---
+                        if tool_requests_list:
+                            return
+                        # --- END MODIFICATION ---
+                    # else: # No tools found
+
+                    # 5. Yield Final Response if anything remains and no tools/plan/state change handled it
+                    # Check if anything remains *after* all tag processing attempts
+                    final_cleaned_response = buffer_to_process # Re-check buffer
+                    if final_cleaned_response and not tool_calls_found and not plan_submitted and not state_change_requested:
+                        # Only yield final response if no other action was taken based on tags
+                        logger.debug(f"Agent {self.agent_id}: Yielding final_response event for remaining text.")
+                        if not self.message_history or self.message_history[-1].get("content") != final_cleaned_response or self.message_history[-1].get("role") != "assistant":
+                            self.message_history.append({"role": "assistant", "content": final_cleaned_response})
+                        event_to_yield = {"type": "final_response", "content": final_cleaned_response}
+                        logger.debug(f"CORE YIELD (Final Response): {event_to_yield}")
+                        yield event_to_yield
+                    elif not final_cleaned_response and not tool_calls_found and not plan_submitted and not state_change_requested:
+                         logger.info(f"Agent {self.agent_id}: Buffer is empty after all tag processing. No final response yielded.")
                 # --- END Post-stream processing ---
 
             else: # stream_had_error

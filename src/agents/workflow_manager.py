@@ -1,13 +1,14 @@
 # START OF FILE src/agents/workflow_manager.py
 import logging
 import datetime # Added import
+import asyncio # Import asyncio
 from typing import Dict, List, Optional, TYPE_CHECKING, Tuple, Any # Added Tuple, Any
 
 # Import constants
 from src.agents.constants import (
     AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER,
     ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED,
-    AGENT_STATE_CONVERSATION, AGENT_STATE_WORK # Import general states too
+    AGENT_STATE_CONVERSATION, AGENT_STATE_WORK, AGENT_STATE_MANAGE # Import general states and MANAGE
 )
 # Import settings for prompt access
 from src.config.settings import settings
@@ -36,7 +37,8 @@ class AgentWorkflowManager:
             ],
             AGENT_TYPE_PM: [
                 AGENT_STATE_CONVERSATION,
-                AGENT_STATE_WORK # Add 'work' state
+                AGENT_STATE_WORK, # Add 'work' state
+                AGENT_STATE_MANAGE # Add 'manage' state
             ],
             AGENT_TYPE_WORKER: [
                 AGENT_STATE_CONVERSATION,
@@ -53,8 +55,9 @@ class AgentWorkflowManager:
             (AGENT_TYPE_ADMIN, AGENT_STATE_WORK): "admin_work_prompt", # Use specific admin work prompt
             (AGENT_TYPE_PM, AGENT_STATE_CONVERSATION): "pm_conversation_prompt",
             (AGENT_TYPE_WORKER, AGENT_STATE_CONVERSATION): "agent_conversation_prompt",
-            # Use role-specific work prompts
+            # Use role-specific work/manage prompts
             (AGENT_TYPE_PM, AGENT_STATE_WORK): "pm_work_prompt",
+            (AGENT_TYPE_PM, AGENT_STATE_MANAGE): "pm_manage_prompt", # Add mapping for PM manage state
             (AGENT_TYPE_WORKER, AGENT_STATE_WORK): "worker_work_prompt"
         }
         logger.info("AgentWorkflowManager initialized.")
@@ -88,7 +91,16 @@ class AgentWorkflowManager:
                     agent._pm_needs_initial_list_tools = True
                     logger.info(f"WorkflowManager: Set '_pm_needs_initial_list_tools' flag for agent '{agent.agent_id}'.")
                 # --- END NEW ---
-                # Note: Pushing status update might happen elsewhere (e.g., CycleHandler after state change)
+                # --- NEW: Send UI notification on state change ---
+                if hasattr(agent, 'manager') and hasattr(agent.manager, 'send_to_ui'):
+                    asyncio.create_task(agent.manager.send_to_ui({
+                        "type": "agent_state_change", # Specific type for UI
+                        "agent_id": agent.agent_id,
+                        "old_state": agent.state, # Include old state for context
+                        "new_state": requested_state,
+                        "message": f"Agent '{agent.agent_id}' state changed from '{agent.state}' to '{requested_state}'."
+                    }))
+                # --- END NEW ---
                 return True
             else:
                 logger.debug(f"WorkflowManager: Agent '{agent.agent_id}' already in state '{requested_state}'. No change.")
@@ -161,6 +173,18 @@ class AgentWorkflowManager:
                  formatting_context["tool_descriptions_xml"] = getattr(manager, 'tool_descriptions_xml', "<!-- Tool descriptions unavailable -->")
             if "{tool_descriptions_json}" in prompt_template:
                  formatting_context["tool_descriptions_json"] = getattr(manager, 'tool_descriptions_json', "{}")
+            # --- MODIFIED: Add available_tools_list for PM WORK and MANAGE states ---
+            if "{available_tools_list}" in prompt_template and agent.agent_type == AGENT_TYPE_PM and agent.state in [AGENT_STATE_WORK, AGENT_STATE_MANAGE]:
+                 try:
+                     if hasattr(manager, 'tool_executor') and hasattr(manager.tool_executor, 'get_available_tools_list_str'):
+                         formatting_context["available_tools_list"] = manager.tool_executor.get_available_tools_list_str(agent.agent_type)
+                     else:
+                         logger.error(f"ToolExecutor or get_available_tools_list_str not found on manager for PM {agent.agent_id} in MANAGE state.")
+                         formatting_context["available_tools_list"] = "[Error retrieving tool list: ToolExecutor unavailable]"
+                 except Exception as tool_list_err:
+                     logger.error(f"Failed to get tool list for PM {agent.agent_id} in MANAGE state: {tool_list_err}")
+                     formatting_context["available_tools_list"] = "[Error retrieving tool list]"
+            # --- END NEW ---
             # TODO: Add project task list for PM? Requires manager access to ProjectManagementTool instance for the session.
 
         try:

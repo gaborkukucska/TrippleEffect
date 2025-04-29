@@ -4,6 +4,7 @@ from typing import Dict, Any, Optional, List, Tuple, Set, TYPE_CHECKING
 import logging
 import time
 import openai # Import openai exceptions
+import aiohttp # Import aiohttp exceptions for provider-level check
 import random # For selecting alternates if no performance data
 
 # --- NEW: Import status and error constants ---
@@ -27,7 +28,49 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Define provider-level errors (connection, timeout, etc.)
+PROVIDER_LEVEL_ERRORS = (
+    aiohttp.ClientConnectorError,
+    asyncio.TimeoutError,
+    openai.APIConnectionError,
+    # Add others if needed, e.g., certain auth errors affecting the whole provider
+)
+
 # Key-related errors imported from constants
+
+
+# --- NEW: Helper Function to Check Provider Health ---
+async def _check_provider_health(base_url: str, timeout: int = 3) -> bool:
+    """Performs a quick health check on the provider's base URL."""
+    if not base_url:
+        return False
+    check_url = base_url.rstrip('/') + "/" # Check root path
+    logger.debug(f"Performing health check on: {check_url}")
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Use a HEAD request for efficiency, fallback to GET if needed
+            async with session.head(check_url, timeout=timeout, allow_redirects=False) as response:
+                # Consider any 2xx or 3xx status as reachable for basic check
+                if 200 <= response.status < 400:
+                    logger.debug(f"Health check successful for {check_url} (Status: {response.status})")
+                    return True
+                else:
+                    # Try GET if HEAD failed or gave non-success status
+                    logger.debug(f"HEAD request failed ({response.status}), trying GET for {check_url}")
+                    async with session.get(check_url, timeout=timeout) as get_response:
+                         if 200 <= get_response.status < 400:
+                              logger.debug(f"Health check successful for {check_url} via GET (Status: {get_response.status})")
+                              return True
+                         else:
+                              logger.warning(f"Health check failed for {check_url}. Status: {get_response.status}")
+                              return False
+    except (aiohttp.ClientConnectorError, asyncio.TimeoutError) as conn_err:
+        logger.warning(f"Health check connection failed for {check_url}: {conn_err}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error during health check for {check_url}: {e}", exc_info=True)
+        return False # Assume failed on unexpected error
+
 
 # --- Helper Function to Select Alternate Models ---
 async def _select_alternate_models(
@@ -68,10 +111,13 @@ async def _try_switch_agent(
     agent_id = agent.agent_id
     current_provider = agent.provider_name
     current_model = agent.model
-    target_model_log_name = f"{target_provider}/{target_model}" # For logging
+    # Use plain model name for UI message, but full provider/model for internal logs
+    ui_status_model_name = target_model
+    internal_log_target_name = f"{target_provider}/{target_model}"
 
-    logger.info(f"Attempting switch for Agent '{agent_id}': Target='{target_model_log_name}'")
-    await manager.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Failover: Trying model {target_model_log_name}..."})
+    logger.info(f"Attempting switch for Agent '{agent_id}': Target='{internal_log_target_name}'")
+    # Send clearer message to UI
+    await manager.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Failover: Trying model '{ui_status_model_name}' on provider '{target_provider}'..."})
 
     old_provider_instance = agent.llm_provider
     new_provider_instance = None
@@ -136,20 +182,24 @@ async def _try_switch_agent(
 
         # Update agent's stored config (use canonical ID if local)
         is_local = "-local-" in target_provider or "-proxy" in target_provider
-        canonical_model_id = f"{target_provider.split('-local-')[0].split('-proxy')[0]}/{target_model}" if is_local else target_model
+        # Construct canonical ID ONLY for config storage
+        config_model_id = f"{target_provider.split('-local-')[0].split('-proxy')[0]}/{target_model}" if is_local else target_model
         if hasattr(agent, 'agent_config') and isinstance(agent.agent_config, dict) and "config" in agent.agent_config and isinstance(agent.agent_config["config"], dict):
-            agent.agent_config["config"].update({"provider": target_provider, "model": canonical_model_id})
-            logger.debug(f"Updated agent config: provider='{target_provider}', model='{canonical_model_id}'")
+            agent.agent_config["config"].update({"provider": target_provider, "model": config_model_id}) # Store canonical ID in config
+            logger.debug(f"Updated agent config dict: provider='{target_provider}', model='{config_model_id}'") # Log the config update
 
-        # --- Cleanup and Reschedule ---
+        # --- Cleanup ---
+        # Close the old provider instance safely
         await manager._close_provider_safe(old_provider_instance)
+        # Set status to idle, ready for the rescheduled cycle (done by caller)
         agent.set_status(AGENT_STATUS_IDLE)
-        await manager.schedule_cycle(agent, 0) # Reset retry count for new config
-        logger.info(f"Agent '{agent_id}' failover switch successful to '{target_model_log_name}'. Rescheduled cycle.")
-        return True
+        # Log success using internal name
+        logger.info(f"Agent '{agent_id}' configuration switched successfully to '{internal_log_target_name}'.")
+        return True # Indicate successful reconfiguration
 
     except Exception as switch_err:
-        logger.error(f"Failover switch failed for Agent '{agent_id}' -> '{target_model_log_name}': {switch_err}", exc_info=True)
+        # Log failure using internal name
+        logger.error(f"Failover switch failed for Agent '{agent_id}' -> '{internal_log_target_name}': {switch_err}", exc_info=True)
         # Attempt to close the newly created provider instance if it exists
         if new_provider_instance:
             await manager._close_provider_safe(new_provider_instance)
@@ -162,7 +212,7 @@ async def _try_switch_agent(
 
 
 # --- Main Failover Handler ---
-async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, last_error_obj: Exception):
+async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, last_error_obj: Exception) -> bool:
     """
     Handles failover with refined logic:
     1. Try all models on all discovered/configured local providers.
@@ -173,6 +223,8 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
        d. If key-related, quarantine key, get next key, repeat step 2b.
        e. If not key-related (or no more keys), try next external provider (step 2a).
     3. If all options exhausted, set agent to ERROR.
+
+    Returns: True if a new configuration was successfully set for the agent to retry, False otherwise.
     """
     agent = manager.agents.get(agent_id)
     if not agent:
@@ -187,13 +239,13 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
              "original_model": agent.model,
              "last_error_obj": last_error_obj, # Store the error that triggered this
              "tried_local_providers": set(), # Stores unique provider names (e.g., ollama-local-...)
-             "tried_models_on_current_local": set(),
+             "tried_models_per_local_provider": {}, # NEW: Dict[str, Set[str]] - Tracks models tried per specific local provider instance
              "tried_external_providers": set(), # Stores base provider names (e.g., openrouter)
-             "tried_keys_on_current_external": set(), # Stores actual key values for the current external provider
-             "tried_models_on_current_external_key": set(),
+             "tried_keys_per_external_provider": {}, # NEW: Dict[str, Set[str]] - Tracks keys tried per external provider base name
+             "tried_models_per_external_key": {}, # NEW: Dict[str, Set[str]] - Tracks models tried per specific API key
              "failover_attempt_count": 0, # Overall attempts across providers/keys/models
              "current_external_provider": None, # Track which external provider we are cycling keys for
-             "external_key_index": {} # Track index per provider: {'openrouter': 0, 'openai': 0}
+             # "external_key_index": {} # REMOVED: Key cycling now handled by ProviderKeyManager and tracking tried keys
          }
     else: # Update error if this is somehow re-entrant (shouldn't be with current cycle logic)
          agent._failover_state["last_error_obj"] = last_error_obj
@@ -201,7 +253,38 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
     failover_state = agent._failover_state
     failover_state["failover_attempt_count"] += 1
 
-    original_provider = failover_state["original_provider"]
+    # --- NEW: Mark the FAILED provider/model as tried BEFORE searching ---
+    failed_provider = agent.provider_name # Provider that just failed
+    failed_model = agent.model          # Model that just failed
+    is_failed_local = "-local-" in failed_provider or "-proxy" in failed_provider
+
+    if is_failed_local:
+        if failed_provider not in failover_state["tried_models_per_local_provider"]:
+            failover_state["tried_models_per_local_provider"][failed_provider] = set()
+        failover_state["tried_models_per_local_provider"][failed_provider].add(failed_model)
+        logger.debug(f"Marked recently failed local model '{failed_provider}/{failed_model}' as tried in failover state.")
+    else: # External provider
+        # Need to associate with the key used, if available
+        last_key_used = getattr(agent, '_last_api_key_used', None)
+        if last_key_used:
+            # Ensure the provider itself is tracked if this is the first key failure for it
+            if failed_provider not in failover_state["tried_keys_per_external_provider"]:
+                 failover_state["tried_keys_per_external_provider"][failed_provider] = set()
+            failover_state["tried_keys_per_external_provider"][failed_provider].add(last_key_used)
+
+            # Track the model failure for this specific key
+            if last_key_used not in failover_state["tried_models_per_external_key"]:
+                failover_state["tried_models_per_external_key"][last_key_used] = set()
+            failover_state["tried_models_per_external_key"][last_key_used].add(failed_model)
+            logger.debug(f"Marked recently failed external model '{failed_provider}/{failed_model}' (Key: ...{last_key_used[-4:]}) as tried in failover state.")
+        else:
+            # This case might be tricky - if we don't know the key, how to track?
+            # Maybe add to a generic "tried_without_key" set for the provider?
+            # For now, log a warning. This might need refinement if external providers without keys are common.
+            logger.warning(f"Could not mark recently failed external model '{failed_provider}/{failed_model}' as tried: No last API key recorded.")
+    # --- END NEW ---
+
+    original_provider = failover_state["original_provider"] # Keep original for reference if needed
     original_model = failover_state["original_model"]
     # Use the error stored in the state for checks
     triggering_error_obj = failover_state["last_error_obj"]
@@ -211,14 +294,23 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
     logger.warning(f"Failover Handler (Attempt {failover_state['failover_attempt_count']}): Initiating for Agent '{agent_id}' (Original: {original_provider}/{original_model}) due to error: {error_type_name} - {last_error_str[:150]}")
     await manager.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Failover: Encountered '{error_type_name}'. Trying recovery..."})
 
+    # --- Check if the error indicates the whole provider is likely down ---
+    is_provider_level_error = isinstance(triggering_error_obj, PROVIDER_LEVEL_ERRORS)
+    if is_provider_level_error:
+        # Log the provider-level error, but DO NOT mark the provider as tried yet.
+        # The loops below will skip this specific provider instance based on this flag.
+        logger.warning(f"Error '{error_type_name}' suggests provider '{failed_provider}' is unreachable. Will skip trying models on this specific instance.")
+    # --- We no longer prematurely mark the provider as tried here ---
+
     # Check overall attempt limit (heuristic)
     # Adjust limit based on number of providers/keys/models? For now, a high fixed limit.
     if failover_state["failover_attempt_count"] > settings.MAX_FAILOVER_ATTEMPTS * 10:
          fail_reason = f"[Failover Safety Limit Reached] Too many attempts ({failover_state['failover_attempt_count']}). Last error: {error_type_name}"
          logger.error(f"Agent '{agent_id}': {fail_reason}")
          agent.set_status(AGENT_STATUS_ERROR); await manager.send_to_ui({"type": "error", "agent_id": agent_id, "content": fail_reason})
-         if hasattr(agent, '_failover_state'): del agent._failover_state # Clean up state
-         return
+         # Keep state for debugging? Or clear it? Let's clear it for now.
+         if hasattr(agent, '_failover_state'): del agent._failover_state
+         return False # Indicate failover exhausted
 
     # --- 1. Try Local Providers ---
     logger.info("Failover Step 1: Trying available local providers...")
@@ -227,34 +319,80 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
     local_provider_names = sorted([p for p in all_available if "-local-" in p or "-proxy" in p])
 
     for local_provider in local_provider_names:
+        # --- Skip this specific provider instance if it's the one that just failed with a provider-level error ---
+        if local_provider == failed_provider and is_provider_level_error:
+            logger.debug(f"Skipping local provider '{local_provider}': It just failed with a provider-level error ({error_type_name}).")
+            # Ensure it's marked as tried so we don't loop back to it unnecessarily if failover continues
+            failover_state["tried_local_providers"].add(local_provider)
+            continue
+        # --- Also skip if it was marked tried in a previous failover step (e.g., exhausted models) ---
         if local_provider in failover_state["tried_local_providers"]:
-            continue # Skip already tried provider
+             logger.debug(f"Skipping local provider '{local_provider}': Already marked as tried in a previous step.")
+             continue
 
-        logger.info(f"Trying local provider: {local_provider}")
-        failover_state["tried_models_on_current_local"].clear()
+        logger.info(f"Considering local provider: {local_provider}")
+
+        # --- NEW: Perform health check ONLY if this provider *wasn't* the one that just failed with a provider-level error ---
+        # If it *was* the one that failed with a provider-level error, we already know it's likely down.
+        # If the failure was model-specific, we need to check if the provider is *still* up before trying alternates.
+        provider_seems_healthy = True # Assume healthy unless check fails
+        if not (local_provider == failed_provider and is_provider_level_error):
+            provider_url = model_registry.get_reachable_provider_url(local_provider)
+            if provider_url:
+                logger.debug(f"Checking health of local provider '{local_provider}' at {provider_url} before trying models...")
+                provider_seems_healthy = await _check_provider_health(provider_url)
+                if not provider_seems_healthy:
+                    logger.warning(f"Health check failed for local provider '{local_provider}'. Skipping model attempts.")
+                    failover_state["tried_local_providers"].add(local_provider) # Mark as tried due to health check failure
+                    continue # Move to the next local provider
+            else:
+                logger.warning(f"Could not get URL for local provider '{local_provider}' to perform health check. Assuming unhealthy.")
+                provider_seems_healthy = False
+                failover_state["tried_local_providers"].add(local_provider) # Mark as tried
+                continue # Move to the next local provider
+
+        # --- Proceed only if provider seems healthy ---
+        logger.info(f"Trying models on local provider: {local_provider}") # Changed log level
         local_models = all_available.get(local_provider, [])
         sorted_local_models = sorted([m['id'] for m in local_models])
+        models_available_on_provider = False # Track if we find any untried model
 
         for local_model in sorted_local_models:
             # Construct canonical ID for checking against failover state if needed, though model ID should be sufficient here
             # canonical_local_id = f"{local_provider.split('-local-')[0].split('-proxy')[0]}/{local_model}"
 
-            # Skip if already tried (redundant with clear() above, but safe)
-            if local_model in failover_state["tried_models_on_current_local"]:
+            # Initialize the set for this provider if it doesn't exist (redundant check after initial mark, but safe)
+            if local_provider not in failover_state["tried_models_per_local_provider"]:
+                failover_state["tried_models_per_local_provider"][local_provider] = set()
+
+            # Initialize the set for this provider if it doesn't exist (redundant check after initial mark, but safe)
+            if local_provider not in failover_state["tried_models_per_local_provider"]:
+                failover_state["tried_models_per_local_provider"][local_provider] = set()
+
+            # Skip if already tried *for this specific provider*
+            if local_model in failover_state["tried_models_per_local_provider"][local_provider]:
+                logger.debug(f"Skipping model '{local_model}' on provider '{local_provider}': already tried.")
                 continue
 
-            # Attempt the switch - local providers don't need key config
+            models_available_on_provider = True # Found at least one untried model
+            # Attempt the switch configuration
+            logger.debug(f"Failover: Attempting switch to local model: {local_provider}/{local_model}") # ADDED LOGGING
             switched = await _try_switch_agent(manager, agent, local_provider, local_model, None)
             if switched:
-                if hasattr(agent, '_failover_state'): del agent._failover_state # Success, clear state
-                return # Success!
+                logger.info(f"Failover handler successfully reconfigured agent '{agent_id}' to try '{local_provider}/{local_model}'.")
+                return True
+            else: # ADDED LOGGING
+                logger.warning(f"Failover: _try_switch_agent failed for local model: {local_provider}/{local_model}") # ADDED LOGGING
 
-            # If switch failed, mark model as tried for this provider
-            failover_state["tried_models_on_current_local"].add(local_model)
-            failover_state["failover_attempt_count"] += 1 # Increment overall counter
+            # If _try_switch_agent itself failed, mark model as tried *for this provider*
+            failover_state["tried_models_per_local_provider"][local_provider].add(local_model)
+            # failover_state["failover_attempt_count"] += 1 # REMOVE: Don't increment overall count for model switch failure
 
-        # If all models on this provider failed, mark provider as tried
-        failover_state["tried_local_providers"].add(local_provider)
+        # If loop finishes without returning True, all models on this provider were tried or switch failed
+        if not models_available_on_provider:
+             logger.warning(f"No untried models found or switch failed for all models on local provider: {local_provider}")
+        # Mark the provider as fully tried *only after checking all its models*
+        failover_state["tried_local_providers"].add(local_provider) # Mark provider tried after exhausting its models
         logger.warning(f"Exhausted all models for local provider: {local_provider}")
 
     logger.info("Failover Step 1: Finished trying local providers.")
@@ -265,8 +403,18 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
     current_model_tier = settings.MODEL_TIER
 
     for external_provider in external_provider_order:
+        # --- Skip this specific provider instance if it's the one that just failed with a provider-level error ---
+        # Note: Comparing base name (e.g., 'openrouter') with the potentially dynamic failed_provider name
+        # This comparison might need refinement if failed_provider can be dynamic external. Assuming failed_provider is base name for external for now.
+        if external_provider == failed_provider and is_provider_level_error:
+             logger.debug(f"Skipping external provider '{external_provider}': It just failed with a provider-level error ({error_type_name}).")
+             # Ensure it's marked as tried
+             failover_state["tried_external_providers"].add(external_provider)
+             continue
+        # --- Also skip if it was marked tried in a previous failover step ---
         if external_provider in failover_state["tried_external_providers"]:
-            continue # Skip already tried provider base name
+             logger.debug(f"Skipping external provider '{external_provider}': Already marked as tried in a previous step.")
+             continue
 
         if external_provider not in all_available:
              logger.debug(f"Skipping external provider '{external_provider}': Not available/reachable.")
@@ -333,12 +481,18 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
             model_switch_successful = False
             if initial_model_to_try:
                  logger.info(f"Attempting initial model '{initial_model_to_try}' with current key.")
+                 logger.debug(f"Failover: Attempting switch to external initial model: {external_provider}/{initial_model_to_try}") # ADDED LOGGING
                  switched = await _try_switch_agent(manager, agent, external_provider, initial_model_to_try, next_key_config)
-                 if switched:
-                      if hasattr(agent, '_failover_state'): del agent._failover_state # Success
-                      return # Success!
+                 if switched: # Reconfiguration successful
+                      logger.info(f"Failover handler successfully reconfigured agent '{agent_id}' to try '{external_provider}/{initial_model_to_try}'.")
+                      # CycleHandler will schedule the next attempt.
+                      return True # Signal to CycleHandler
+                 else: # ADDED LOGGING
+                      logger.warning(f"Failover: _try_switch_agent failed for external initial model: {external_provider}/{initial_model_to_try}") # ADDED LOGGING
+
+                 # If switch failed or cycle fails later, mark model as tried for this key
                  failover_state["tried_models_on_current_external_key"].add(initial_model_to_try)
-                 failover_state["failover_attempt_count"] += 1
+                 # failover_state["failover_attempt_count"] += 1 # REMOVE: Don't increment overall count for model switch failure
             else:
                  logger.warning(f"No suitable initial models available for provider '{external_provider}' and tier '{current_model_tier}'.")
 
@@ -353,42 +507,52 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
                       logger.debug(f"Skipping alternate model '{alt_model}': Does not match FREE tier.")
                       continue
 
+                 logger.debug(f"Failover: Attempting switch to external alternate model: {external_provider}/{alt_model}") # ADDED LOGGING
                  switched = await _try_switch_agent(manager, agent, external_provider, alt_model, next_key_config)
-                 if switched:
-                      if hasattr(agent, '_failover_state'): del agent._failover_state # Success
-                      return # Success!
+                 if switched: # Reconfiguration successful
+                      logger.info(f"Failover handler successfully reconfigured agent '{agent_id}' to try alternate '{external_provider}/{alt_model}'.")
+                      # CycleHandler will schedule the next attempt.
+                      return True # Signal to CycleHandler
+                 else: # ADDED LOGGING
+                      logger.warning(f"Failover: _try_switch_agent failed for external alternate model: {external_provider}/{alt_model}") # ADDED LOGGING
+
+                 # If switch failed or cycle fails later, mark model as tried for this key
                  failover_state["tried_models_on_current_external_key"].add(alt_model)
-                 failover_state["failover_attempt_count"] += 1
+                 # failover_state["failover_attempt_count"] += 1 # REMOVE: Don't increment overall count for model switch failure
 
             # All models (initial + alternates) failed for this key. Check error reason.
             logger.warning(f"All model attempts failed for key ending '...{current_key[-4:]}' on provider '{external_provider}'.")
             failover_state["tried_keys_on_current_external"].add(current_key) # Mark key as tried for this failover sequence
 
-            # Check if the *original* error that triggered failover was key-related
+            # Check if the *original* error that triggered failover was key-related OR provider-level
             is_key_related_error = isinstance(triggering_error_obj, KEY_RELATED_ERRORS) or \
                                    (isinstance(triggering_error_obj, openai.APIStatusError) and triggering_error_obj.status_code in KEY_RELATED_STATUS_CODES)
 
-            if is_key_related_error:
+            # If the error was provider-level, we likely already marked the provider tried earlier.
+            # If it was key-related (and not provider-level), quarantine the key.
+            if is_key_related_error and not is_provider_level_error:
                 logger.warning(f"Original error ({error_type_name}) was key-related. Quarantining key ending '...{current_key[-4:]}' and trying next key for '{external_provider}'.")
                 await manager.key_manager.quarantine_key(external_provider, current_key)
-                # Loop continues to get next key via get_active_key_config
-            else:
-                logger.info(f"Original error ({error_type_name}) was not key-related. Trying next key for '{external_provider}' without quarantining.")
-                # Loop continues to get next key via get_active_key_config
+            elif not is_provider_level_error: # Not key-related and not provider-level
+                logger.info(f"Original error ({error_type_name}) was not key or provider-level. Trying next key for '{external_provider}' without quarantining.")
+            # If it was provider-level, we don't quarantine the key, just move to the next provider (already handled by marking tried_external_providers)
 
-            # Check if the provider is now depleted after potential quarantine
-            if await manager.key_manager.is_provider_depleted(external_provider):
-                 logger.warning(f"Provider '{external_provider}' is now depleted of active keys.")
+            # Check if the provider is now depleted or marked tried
+            # Use the base provider name for checking depletion and tried status
+            provider_base_name = external_provider # Assuming external_provider is the base name like 'openrouter'
+            if await manager.key_manager.is_provider_depleted(provider_base_name) or provider_base_name in failover_state["tried_external_providers"]:
+                 logger.warning(f"Provider '{provider_base_name}' is now depleted of active keys or marked as tried.")
                  keys_available_for_provider = False # Exit key loop
 
-        # If key loop finishes, all keys for this provider are exhausted
-        failover_state["tried_external_providers"].add(external_provider)
-        logger.warning(f"Exhausted all keys for external provider: {external_provider}")
+        # If key loop finishes, all keys for this provider are exhausted or provider marked tried
+        failover_state["tried_external_providers"].add(external_provider) # Ensure it's marked tried
+        logger.warning(f"Exhausted all keys/attempts for external provider: {external_provider}")
 
     # --- 3. All Options Exhausted ---
     logger.error(f"Failover exhausted for Agent '{agent_id}'. No working local or external provider/model/key combination found.")
     fail_reason = f"[Failover Exhausted after {failover_state['failover_attempt_count']} attempts] Last error: {error_type_name}"
     agent.set_status(AGENT_STATUS_ERROR); await manager.send_to_ui({"type": "error", "agent_id": agent_id, "content": fail_reason})
     if hasattr(agent, '_failover_state'): del agent._failover_state # Clean up state
+    return False # Indicate failover exhausted
 
 # END OF FILE src/agents/failover_handler.py

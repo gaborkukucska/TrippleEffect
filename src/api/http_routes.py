@@ -328,6 +328,11 @@ async def approve_project_start(
             logger.error(f"Failed to change PM agent '{pm_agent_id}' state to '{AGENT_STATE_WORK}'. Cannot start cycle.")
             raise HTTPException(status_code=500, detail=f"Failed to set PM agent state to '{AGENT_STATE_WORK}'.")
 
+        # --- NEW: Clear the approval flag before scheduling ---
+        agent_to_start._awaiting_project_approval = False
+        logger.info(f"Cleared _awaiting_project_approval flag for PM agent '{pm_agent_id}'.")
+        # --- END NEW ---
+
         # Schedule the agent's first cycle now that it's in the work state
         logger.info(f"PM agent '{pm_agent_id}' state set to '{AGENT_STATE_WORK}'. Scheduling initial cycle...")
         asyncio.create_task(manager.schedule_cycle(agent_to_start)) # Use asyncio.create_task

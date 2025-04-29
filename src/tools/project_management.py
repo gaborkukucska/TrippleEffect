@@ -158,66 +158,70 @@ uda.assignee.label=Assignee
 
                 # --- Use execute_command ONLY for adding ---
                 logger.debug(f"ProjectManagementTool add_task: Adding task via execute_command. Description: {description[:50]}...")
-                add_cmd_args = ['add']
-                # Add attributes directly to command
-                if priority: add_cmd_args.append(f'priority:{priority}')
-                if project: add_cmd_args.append(f'project:{project}')
-                if assignee: add_cmd_args.append(f'assignee:{assignee}') # Add assignee UDA via command
-                if tags and isinstance(tags, list):
-                    add_cmd_args.extend([f'+{tag}' for tag in tags])
-                # Handle depends? Adding dependencies via CLI add is complex, might need separate modify. Skip for now.
+                try: # Wrap the command execution and parsing
+                    add_cmd_args = ['add']
+                    # Add attributes directly to command
+                    if priority: add_cmd_args.append(f'priority:{priority}')
+                    if project: add_cmd_args.append(f'project:{project}')
+                    if assignee: add_cmd_args.append(f'assignee:{assignee}') # Add assignee UDA via command
+                    if tags and isinstance(tags, list):
+                        add_cmd_args.extend([f'+{tag}' for tag in tags])
+                    # Handle depends? Adding dependencies via CLI add is complex, might need separate modify. Skip for now.
 
-                # --- User Requested CLI Add Order: priority, project, description, +tags, +assignee_tag ---
-                final_add_cmd_args = ['add']
-                if priority: final_add_cmd_args.append(f'priority:{priority}')
-                if project: final_add_cmd_args.append(f'project:{project}')
+                    # --- User Requested CLI Add Order: priority, project, description, +tags, +assignee_tag ---
+                    final_add_cmd_args = ['add']
+                    if priority: final_add_cmd_args.append(f'priority:{priority}')
+                    if project: final_add_cmd_args.append(f'project:{project}')
 
-                # Add description next
-                final_add_cmd_args.append(description)
+                    # Add description next
+                    final_add_cmd_args.append(description)
 
-                # Add standard tags
-                if tags and isinstance(tags, list):
-                    final_add_cmd_args.extend([f'+{tag}' for tag in tags])
+                    # Add standard tags
+                    if tags and isinstance(tags, list):
+                        final_add_cmd_args.extend([f'+{tag}' for tag in tags])
 
-                # Add assignee as a tag AND as an assignee: argument at the end
-                if assignee:
-                    final_add_cmd_args.append(f'+{assignee}') # Add as +tag
-                    final_add_cmd_args.append(f'assignee:"{assignee}"') # Also add as assignee: argument
+                    # Add assignee as a tag AND as an assignee: argument at the end
+                    if assignee:
+                        final_add_cmd_args.append(f'+{assignee}') # Add as +tag
+                        final_add_cmd_args.append(f'assignee:"{assignee}"') # Also add as assignee: argument
 
-                logger.debug(f"ProjectManagementTool: Executing command (assignee tag & arg last): task {' '.join(final_add_cmd_args)}")
-                add_output_lines = tw.execute_command(final_add_cmd_args) # Execute the constructed command
-                add_output_str = "\n".join(add_output_lines)
-                logger.debug(f"Taskwarrior 'add' command output: {add_output_str}")
+                    logger.debug(f"ProjectManagementTool: Executing command (assignee tag & arg last): task {' '.join(final_add_cmd_args)}")
+                    add_output_lines = tw.execute_command(final_add_cmd_args) # Execute the constructed command
+                    add_output_str = "\n".join(add_output_lines)
+                    logger.debug(f"Taskwarrior 'add' command output: {add_output_str}")
 
-                created_task_id = None
-                # Import re if not already at the top
-                import re
-                id_match = re.search(r'Created task (\d+)\.', add_output_str)
-                if not id_match:
-                    logger.error(f"Failed to parse task ID from 'add' command output: {add_output_str}")
-                    return self._error_result(f"Failed to create task (could not parse ID from output). Output: {add_output_str}")
+                    created_task_id = None
+                    # Import re if not already at the top
+                    import re
+                    id_match = re.search(r'Created task (\d+)\.', add_output_str)
+                    if not id_match:
+                        logger.error(f"Failed to parse task ID from 'add' command output: {add_output_str}")
+                        return self._error_result(f"Failed to create task (could not parse ID from output). Output: {add_output_str}")
 
-                created_task_id = int(id_match.group(1))
-                logger.info(f"Task added via command (ID: {created_task_id}). Fetching final state...")
+                    created_task_id = int(id_match.group(1))
+                    logger.info(f"Task added via command (ID: {created_task_id}). Fetching final state...")
 
-                # Fetch the final task state using tasklib
-                try:
-                    final_task = tw.tasks.get(id=created_task_id)
-                    logger.debug(f"ProjectManagementTool: Final task state after add/modify: {final_task.export_data()}")
-                    return self._success_result({
-                        "message": "Task added successfully.",
-                        "task_uuid": final_task['uuid'],
-                        "task_id": final_task['id'],
-                        "description": final_task['description'],
-                        "assignee": getattr(final_task, 'assignee', None) # Still use getattr for safety on fetch
-                    })
-                except Exception as fetch_err:
-                    logger.error(f"Failed to fetch task ID {created_task_id} after add/modify: {fetch_err}", exc_info=True)
-                    return self._success_result({
-                        "message": f"Task added (ID: {created_task_id}), but failed to fetch final state.",
-                        "task_id": created_task_id,
-                        "task_uuid": None
-                    })
+                    # Fetch the final task state using tasklib
+                    try:
+                        final_task = tw.tasks.get(id=created_task_id)
+                        logger.debug(f"ProjectManagementTool: Final task state after add/modify: {final_task.export_data()}")
+                        return self._success_result({
+                            "message": "Task added successfully.",
+                            "task_uuid": final_task['uuid'],
+                            "task_id": final_task['id'],
+                            "description": final_task['description'],
+                            "assignee": getattr(final_task, 'assignee', None) # Still use getattr for safety on fetch
+                        })
+                    except Exception as fetch_err:
+                        logger.error(f"Failed to fetch task ID {created_task_id} after add/modify: {fetch_err}", exc_info=True)
+                        return self._success_result({
+                            "message": f"Task added (ID: {created_task_id}), but failed to fetch final state.",
+                            "task_id": created_task_id,
+                            "task_uuid": None
+                        })
+                except Exception as cmd_err: # This except should align with the outer try
+                    logger.error(f"Error during Taskwarrior command execution or parsing for add_task: {cmd_err}", exc_info=True)
+                    return self._error_result(f"Failed during task add execution: {cmd_err}")
                 # --- End CLI Create-then-Modify ---
 
             elif action == "list_tasks":
@@ -339,12 +343,16 @@ uda.assignee.label=Assignee
 
                 task.save()
                 logger.info(f"Task '{task_id}' modified. Fields changed: {', '.join(modified_fields)}")
+                # --- MODIFIED: Return assignee and description ---
                 return self._success_result({
                     "message": f"Task '{task_id}' modified successfully.",
                     "task_uuid": task['uuid'],
                     "task_id": task['id'],
-                    "modified_fields": modified_fields
+                    "modified_fields": modified_fields,
+                    "description": task['description'], # Add description
+                    "assignee": getattr(task, 'assignee', None) # Add assignee
                 })
+                # --- END MODIFIED ---
 
             elif action == "complete_task":
                 task_id = kwargs.get("task_id")

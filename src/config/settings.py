@@ -76,8 +76,8 @@ class Settings:
         self.OPENAI_BASE_URL: Optional[str] = os.getenv("OPENAI_BASE_URL")
         self.OPENROUTER_BASE_URL: Optional[str] = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
         self.OPENROUTER_REFERER: Optional[str] = os.getenv("OPENROUTER_REFERER")
-        self.OLLAMA_BASE_URL: Optional[str] = os.getenv("OLLAMA_BASE_URL") # Allow None, discovery will try localhost. Overridden by proxy if enabled.
-        self.LITELLM_BASE_URL: Optional[str] = os.getenv("LITELLM_BASE_URL") # Allow None, discovery will try localhost
+        # self.OLLAMA_BASE_URL: Optional[str] = os.getenv("OLLAMA_BASE_URL") # REMOVED
+        # self.LITELLM_BASE_URL: Optional[str] = os.getenv("LITELLM_BASE_URL") # REMOVED - Handled by discovery
 
         # --- Local API Discovery Settings (from .env) ---
         self.LOCAL_API_SCAN_ENABLED: bool = os.getenv("LOCAL_API_SCAN_ENABLED", "true").lower() == "true"
@@ -92,18 +92,12 @@ class Settings:
         except ValueError:
             logger.warning("Invalid LOCAL_API_SCAN_TIMEOUT value. Using default 0.5.")
             self.LOCAL_API_SCAN_TIMEOUT = 0.5
-        # Default to scanning only localhost for performance.
-        # User can set LOCAL_API_SCAN_SUBNET in .env to:
-        # - "auto": Scan automatically detected local subnets (requires netifaces, can be slow).
-        # - CIDR notation (e.g., "192.168.1.0/24"): Scan a specific subnet.
-        # - Comma-separated IPs (e.g., "192.168.1.100,192.168.1.101"): Scan specific IPs.
-        self.LOCAL_API_SCAN_SUBNET: str = os.getenv("LOCAL_API_SCAN_SUBNET", "127.0.0.1")
-        logger.info(f"Local API Discovery settings: Enabled={self.LOCAL_API_SCAN_ENABLED}, Ports={self.LOCAL_API_SCAN_PORTS}, Timeout={self.LOCAL_API_SCAN_TIMEOUT}s, Subnet/IPs='{self.LOCAL_API_SCAN_SUBNET}'")
+        # LOCAL_API_SCAN_SUBNET removed - network range is now determined automatically using netifaces/nmap
+        logger.info(f"Local API Discovery settings: Enabled={self.LOCAL_API_SCAN_ENABLED}, Ports={self.LOCAL_API_SCAN_PORTS}, Timeout={self.LOCAL_API_SCAN_TIMEOUT}s")
 
-        # --- Ollama Proxy Settings (from .env) ---
-        self.USE_OLLAMA_PROXY: bool = os.getenv("USE_OLLAMA_PROXY", "false").lower() == "true"
-        self.OLLAMA_PROXY_PORT: int = int(os.getenv("OLLAMA_PROXY_PORT", "3000"))
-        # OLLAMA_PROXY_TARGET_URL is used by the proxy itself, not directly by Python settings
+        # --- Ollama Proxy Settings (REMOVED) ---
+        # self.USE_OLLAMA_PROXY: bool = os.getenv("USE_OLLAMA_PROXY", "false").lower() == "true" # REMOVED
+        # self.OLLAMA_PROXY_PORT: int = int(os.getenv("OLLAMA_PROXY_PORT", "3000")) # REMOVED
 
         # --- Load Multiple API Keys ---
         self.PROVIDER_API_KEYS: Dict[str, List[str]] = {}
@@ -155,6 +149,14 @@ class Settings:
             self.MAX_FAILOVER_ATTEMPTS = 3
         logger.info(f"Retry/Failover settings loaded: MaxRetries={self.MAX_STREAM_RETRIES}, Delay={self.RETRY_DELAY_SECONDS}s, MaxFailover={self.MAX_FAILOVER_ATTEMPTS}")
         # --- *** END NEW *** ---
+        # --- NEW: PM Manage State Timer Interval ---
+        try:
+            self.PM_MANAGE_CHECK_INTERVAL_SECONDS: float = float(os.getenv("PM_MANAGE_CHECK_INTERVAL_SECONDS", "60.0")) # Default 60 seconds
+            logger.info(f"Loaded PM_MANAGE_CHECK_INTERVAL_SECONDS: {self.PM_MANAGE_CHECK_INTERVAL_SECONDS}s")
+        except ValueError:
+            logger.warning("Invalid PM_MANAGE_CHECK_INTERVAL_SECONDS in .env, using default 60.0.")
+            self.PM_MANAGE_CHECK_INTERVAL_SECONDS = 60.0
+        # --- END NEW ---
 
 
         # --- Project/Session Configuration (from .env) ---
@@ -283,12 +285,17 @@ class Settings:
 
              if is_configured:
                  if provider == "ollama":
-                     if self.USE_OLLAMA_PROXY: detail_parts.append(f"Proxy Enabled (Port: {self.OLLAMA_PROXY_PORT})")
-                     if self.OLLAMA_BASE_URL: detail_parts.append(f"Direct URL Set ({self.OLLAMA_BASE_URL})")
-                     elif not self.USE_OLLAMA_PROXY: detail_parts.append("Direct URL Not Set (will use defaults/discovery)")
+                     # Check registry for discovered local instance
+                     if model_registry.get_reachable_provider_url("ollama-local"):
+                         detail_parts.append("Discovered Locally")
+                     else:
+                         detail_parts.append("Not Discovered Locally") # Should not happen if is_configured is True based on new logic
                  elif provider == "litellm":
-                     if config_details.get('base_url'): detail_parts.append("URL Set")
-                     else: detail_parts.append("URL Not Set (will use defaults/discovery)")
+                     # Check registry for discovered local instance(s)
+                     if any(p.startswith("litellm-local-") for p in model_registry._reachable_providers):
+                          detail_parts.append("Discovered Locally")
+                     else:
+                          detail_parts.append("Not Discovered Locally")
                  else: # Remote providers
                      detail_parts.append(f"{num_keys} Key(s)")
                      if config_details.get('base_url'): detail_parts.append("Base URL Set")
@@ -319,8 +326,8 @@ class Settings:
              referer = self.OPENROUTER_REFERER or f"http://localhost:8000/{self.DEFAULT_PERSONA}"
              config['base_url'] = self.OPENROUTER_BASE_URL
              config['referer'] = referer
-        elif provider_name == "ollama": config['base_url'] = self.OLLAMA_BASE_URL
-        elif provider_name == "litellm": config['base_url'] = self.LITELLM_BASE_URL
+        # elif provider_name == "ollama": # REMOVED
+        # elif provider_name == "litellm": config['base_url'] = self.LITELLM_BASE_URL # REMOVED - Use registry.get_reachable_provider_url
         else:
              if provider_name: logger.debug(f"Requested base provider config for potentially unknown provider '{provider_name}'")
         return {k: v for k, v in config.items() if v is not None}
@@ -334,9 +341,16 @@ class Settings:
         - Ollama requires OLLAMA_BASE_URL *or* USE_OLLAMA_PROXY=true.
         """
         provider_name = provider_name.lower()
-        if provider_name == "ollama": return self.USE_OLLAMA_PROXY or bool(self.OLLAMA_BASE_URL)
-        elif provider_name == "litellm": return bool(self.LITELLM_BASE_URL)
-        else: return provider_name in self.PROVIDER_API_KEYS and bool(self.PROVIDER_API_KEYS[provider_name])
+        # During settings initialization, we can only check for API keys for remote providers.
+        # Discovery status for local providers (Ollama, LiteLLM) is checked later via ModelRegistry.
+        if provider_name in ["ollama", "litellm"]:
+            # Cannot determine configuration status from settings alone, discovery handles this.
+            # Return False here; the _check_required_keys log will be less informative for local,
+            # but prevents startup crash. Actual availability is checked via registry later.
+            return False
+        else:
+            # Check for API keys for remote providers
+            return provider_name in self.PROVIDER_API_KEYS and bool(self.PROVIDER_API_KEYS[provider_name])
 
 
     def get_agent_config_by_id(self, agent_id: str) -> Optional[Dict[str, Any]]:

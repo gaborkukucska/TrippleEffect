@@ -37,14 +37,14 @@ agents:
       temperature: 0.6 # Balanced temperature for planning and control
       persona: "Admin AI (@admin_ai)" # Display name
       # Specify provider/model if auto-select isn't desired
-      provider: "openrouter"
+      provider: "ollama"
       # Model name MUST include the provider prefix for local models
-      model: "meta-llama/llama-4-maverick:free"
+      model: "ollama/llama3.2:3b-instruct-q4_K_M"
 
   - agent_id: "project_manager_agent"
     config:
-      provider: "openrouter" # Or leave commented for auto-select
-      model: "meta-llama/llama-4-maverick:free" # Or choose another capable model
+      provider: "ollama" # Or leave commented for auto-select
+      model: "ollama/llama3.2:3b-instruct-q4_K_M" # Or choose another capable model
       system_prompt: |
         You are the Project Manager Agent for a specific project. Your Agent ID identifies the project session.
         Your primary goal is to orchestrate the execution of the project plan by managing tasks and coordinating worker agents using the `project_management` and `manage_team` tools. Use `system_help` -> `get_tool_info` for tool parameter details if needed.

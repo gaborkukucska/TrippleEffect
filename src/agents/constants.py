@@ -1,6 +1,7 @@
 # START OF FILE src/agents/constants.py
 import re
 import openai # For exception types
+import aiohttp # For retryable exceptions
 
 # --- Core Agent/Framework IDs ---
 BOOTSTRAP_AGENT_ID = "admin_ai"
@@ -14,6 +15,7 @@ AGENT_TYPE_WORKER = "worker"
 # General Agent States
 AGENT_STATE_CONVERSATION = "conversation" # Default state for PM/Worker
 AGENT_STATE_WORK = "work"                 # State for active tool use/task execution for PM/Worker
+AGENT_STATE_MANAGE = "manage"             # State for PM monitoring/management tasks
 
 # Admin-Specific States
 ADMIN_STATE_STARTUP = "startup"
@@ -46,8 +48,10 @@ RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504]
 RETRYABLE_EXCEPTIONS = (
     openai.APIConnectionError,
     openai.APITimeoutError,
+    aiohttp.ClientPayloadError, # Error during response body processing (e.g., incomplete stream)
+    aiohttp.ClientConnectorError, # Cannot connect to host error
     # openai.RateLimitError, # Often treated as key-related for quarantine/failover
-    # aiohttp exceptions could be added here if needed globally, but often handled per-provider
+    # Add other general aiohttp exceptions if needed
 )
 
 # Key-Related Errors (For Failover/Quarantine Logic)

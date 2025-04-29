@@ -111,129 +111,8 @@ async def lifespan(app: FastAPI):
         logger.info("Lifespan: DatabaseManager initialized successfully.")
 
 
-    # --- Start Ollama Proxy (if enabled) ---
-    if settings.USE_OLLAMA_PROXY:
-        logger.info("Ollama proxy is enabled in settings. Attempting to start...")
-        node_executable = shutil.which("node")
-        proxy_script_path = BASE_DIR / "ollama-proxy" / "server.js"
-        proxy_can_start = True # Flag to track if proxy should be started
-
-        if not node_executable:
-            logger.error("Ollama Proxy Error: 'node' command not found in PATH. Cannot start proxy.")
-            proxy_can_start = False
-        elif not proxy_script_path.is_file():
-            logger.error(f"Ollama Proxy Error: Proxy script not found at {proxy_script_path}. Cannot start proxy.")
-            proxy_can_start = False
-        else:
-            # Verify Proxy Script Content
-            try:
-                with open(proxy_script_path, 'r', encoding='utf-8') as f:
-                    proxy_code = f.read()
-                # Simple check for a known route handler
-                if "app.get('/api/tags'" not in proxy_code and "app.post('/api/chat'" not in proxy_code:
-                    logger.critical(f"Ollama Proxy Error: The script at {proxy_script_path} appears incomplete or incorrect. Missing expected route handlers. Aborting proxy start.")
-                    proxy_can_start = False
-                else:
-                    logger.info("Proxy script content check passed.")
-            except Exception as read_err:
-                 logger.error(f"Ollama Proxy Error: Failed to read proxy script {proxy_script_path}: {read_err}", exc_info=True)
-                 proxy_can_start = False
-
-        if proxy_can_start:
-            proxy_env = os.environ.copy()
-            proxy_env["OLLAMA_PROXY_PORT"] = str(settings.OLLAMA_PROXY_PORT)
-            # Determine target URL for the proxy
-            proxy_target_url = settings.OLLAMA_BASE_URL or f"http://localhost:{DEFAULT_OLLAMA_PORT}"
-            proxy_env["OLLAMA_PROXY_TARGET_URL"] = proxy_target_url
-
-            logger.info(f"Starting Ollama proxy: {node_executable} {proxy_script_path}")
-            logger.info(f"  Proxy Port: {proxy_env['OLLAMA_PROXY_PORT']}")
-            logger.info(f"  Proxy Target URL: {proxy_env['OLLAMA_PROXY_TARGET_URL']}")
-
-            try:
-                # Start the Node.js process
-                ollama_proxy_process = subprocess.Popen(
-                    [node_executable, str(proxy_script_path)],
-                    env=proxy_env,
-                    start_new_session=True, # Important for clean termination on Linux/macOS
-                    stdout=subprocess.PIPE, # Capture stdout
-                    stderr=subprocess.PIPE, # Capture stderr
-                    text=True, # Decode stdout/stderr as text
-                    encoding='utf-8',
-                    errors='replace' # Handle potential decoding errors
-                )
-                logger.info(f"Ollama proxy process started with PID: {ollama_proxy_process.pid}")
-                app.state.ollama_proxy_process = ollama_proxy_process # Store for shutdown
-
-                # --- Wait for proxy to become ready ---
-                proxy_ready = False
-                proxy_check_url = f"http://localhost:{proxy_env['OLLAMA_PROXY_PORT']}/" # Check root path
-                max_wait_time = 15 # seconds
-                check_interval = 0.5 # seconds
-                start_time = time.monotonic()
-                logger.info(f"Waiting up to {max_wait_time}s for proxy at {proxy_check_url} to become ready...")
-
-                while time.monotonic() - start_time < max_wait_time:
-                    # Check if the process exited prematurely
-                    if ollama_proxy_process.poll() is not None:
-                        logger.error(f"Ollama proxy process (PID: {ollama_proxy_process.pid}) exited prematurely while waiting for readiness. Code: {ollama_proxy_process.returncode}")
-                        # Read stderr if available
-                        try:
-                            stderr_output = ollama_proxy_process.stderr.read() if ollama_proxy_process.stderr else "N/A"
-                            logger.error(f"Proxy stderr: {stderr_output}")
-                        except Exception as e:
-                            logger.error(f"Error reading proxy stderr after premature exit: {e}")
-                        break
-
-                    # Attempt to connect
-                    try:
-                        async with aiohttp.ClientSession() as session:
-                            async with session.get(proxy_check_url, timeout=check_interval) as response:
-                                # Check for a successful status code (e.g., 200 OK from proxy's root)
-                                if response.status == 200:
-                                    logger.info(f"Ollama proxy is ready at {proxy_check_url}.")
-                                    proxy_ready = True
-                                    break
-                                else:
-                                     logger.debug(f"Proxy check attempt failed with status {response.status}. Retrying...")
-                    except (aiohttp.ClientConnectorError, asyncio.TimeoutError):
-                        logger.debug(f"Proxy not yet reachable at {proxy_check_url}. Retrying...")
-                    except Exception as check_err:
-                         logger.warning(f"Unexpected error during proxy readiness check: {check_err}")
-
-                    await asyncio.sleep(check_interval) # Wait before next check
-
-                if not proxy_ready:
-                    logger.error(f"Ollama proxy did not become ready within {max_wait_time} seconds.")
-                    # Attempt to terminate if it didn't become ready but is still running
-                    if ollama_proxy_process and ollama_proxy_process.poll() is None:
-                         logger.warning("Terminating non-ready proxy process...")
-                         signal_to_send_kill = signal.SIGKILL
-                         process_group_id = os.getpgid(ollama_proxy_process.pid) if os.name == 'posix' else None
-                         try:
-                             if process_group_id: os.killpg(process_group_id, signal.SIGTERM)
-                             else: ollama_proxy_process.terminate()
-                             ollama_proxy_process.wait(timeout=2)
-                         except (subprocess.TimeoutExpired, ProcessLookupError):
-                              logger.warning("Proxy did not terminate after SIGTERM, sending SIGKILL.")
-                              if process_group_id: os.killpg(process_group_id, signal_to_send_kill)
-                              else: ollama_proxy_process.kill()
-                         except Exception as term_err:
-                             logger.error(f"Error during proxy termination: {term_err}")
-                    app.state.ollama_proxy_process = None # Clear from state
-                    ollama_proxy_process = None # Clear global
-                else:
-                    logger.info("Ollama proxy appears to be running and ready.")
-                # --- End Wait for proxy ---
-
-            except Exception as e:
-                logger.error(f"Failed during Ollama proxy startup or readiness check: {e}", exc_info=True)
-                ollama_proxy_process = None
-                app.state.ollama_proxy_process = None
-        # --- End Proxy Startup Logic ---
-
-    else:
-        logger.info("Ollama proxy is disabled in settings.")
+    # --- Ollama Proxy Startup Section (REMOVED) ---
+    # The proxy system has been removed. Discovery handles local Ollama instances.
     # --- End Ollama Proxy Startup Section ---
 
 
@@ -281,37 +160,9 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Lifespan: Error during AgentManager cleanup: {e}", exc_info=True)
     else:
-        logger.warning("Lifespan: AgentManager instance not found in app.state during shutdown.")
+            logger.warning("Lifespan: AgentManager instance not found in app.state during shutdown.")
 
-    # 2. Stop Ollama Proxy (if running)
-    proxy_process_to_stop = getattr(app.state, 'ollama_proxy_process', None)
-    if proxy_process_to_stop and isinstance(proxy_process_to_stop, subprocess.Popen):
-        logger.info(f"Attempting to stop Ollama proxy process (PID: {proxy_process_to_stop.pid})...")
-        if proxy_process_to_stop.poll() is None: # Check if it's still running
-            try:
-                signal_to_send_kill = signal.SIGKILL
-                process_group_id = os.getpgid(proxy_process_to_stop.pid) if os.name == 'posix' else None
-                # Try graceful termination first
-                if process_group_id:
-                    os.killpg(process_group_id, signal.SIGTERM); logger.info(f"Sent SIGTERM to process group {process_group_id}")
-                else:
-                    proxy_process_to_stop.terminate(); logger.info(f"Sent terminate signal to process {proxy_process_to_stop.pid}")
-                # Wait briefly
-                try:
-                    proxy_process_to_stop.wait(timeout=5)
-                    logger.info(f"Ollama proxy process {proxy_process_to_stop.pid} terminated gracefully.")
-                except subprocess.TimeoutExpired:
-                    logger.warning(f"Ollama proxy process {proxy_process_to_stop.pid} did not terminate gracefully after 5s. Sending SIGKILL.")
-                    if process_group_id: os.killpg(process_group_id, signal_to_send_kill)
-                    else: proxy_process_to_stop.kill(); logger.info(f"Ollama proxy process {proxy_process_to_stop.pid} killed.")
-            except ProcessLookupError:
-                 logger.info(f"Ollama proxy process {proxy_process_to_stop.pid} already terminated.")
-            except Exception as e:
-                logger.error(f"Error stopping Ollama proxy process {proxy_process_to_stop.pid}: {e}", exc_info=True)
-        else:
-            logger.info(f"Ollama proxy process {proxy_process_to_stop.pid} was already stopped.")
-        # Clear the reference from app state
-        app.state.ollama_proxy_process = None
+    # 2. Stop Ollama Proxy (REMOVED)
 
     # 3. Close Database Connection Pool (Important: Do this *after* AgentManager cleanup)
     logger.info("Lifespan: Closing database connection pool...")
