@@ -12,6 +12,7 @@ config.yaml
 
 # Venv folders
 .venv/
+venv/
 
 # other
 data/
@@ -19,4 +20,3 @@ logs/
 projects/
 sandboxes/
 security/
-ollama-proxy/node_modules/

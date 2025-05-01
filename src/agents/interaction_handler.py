@@ -83,7 +83,18 @@ class AgentInteractionHandler:
             elif action == "delete_agent": success, message = await self._manager.delete_agent_instance(agent_id_param)
             elif action == "create_team":
                  success, message = await self._manager.state_manager.create_new_team(team_id);
-                 if success and "created successfully" in message: result_data = {"created_team_id": team_id}
+                 if success:
+                     # --- ADDED: Auto-add creator to team ---
+                     add_success, add_message = await self._manager.state_manager.add_agent_to_team(agent_id=calling_agent_id, team_id=team_id)
+                     if add_success:
+                         message += f" Agent '{calling_agent_id}' automatically added."
+                         # Update team_id in the agent's prompt context if needed (though PM might not have team_id initially)
+                         await update_agent_prompt_team_id(self._manager, calling_agent_id, team_id)
+                     else:
+                         logger.warning(f"Failed to automatically add creator '{calling_agent_id}' to new team '{team_id}': {add_message}")
+                         message += f" (Warning: Failed to auto-add creator: {add_message})"
+                     # --- END ADDED ---
+                     if "created successfully" in message: result_data = {"created_team_id": team_id} # Keep original result data logic
             elif action == "delete_team": success, message = await self._manager.state_manager.delete_existing_team(team_id)
             elif action == "add_agent_to_team": success, message = await self._manager.state_manager.add_agent_to_team(agent_id_param, team_id);
             if success and action == "add_agent_to_team": await update_agent_prompt_team_id(self._manager, agent_id_param, team_id)

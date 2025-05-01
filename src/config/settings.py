@@ -197,12 +197,26 @@ class Settings:
         # --- Load Initial Configurations using ConfigManager ---
         raw_config_data: Dict[str, Any] = {}
         try:
+            # --- Add print statement before ---
+            # print("DEBUG: Settings.__init__: Calling config_manager.get_config_data_sync()...") # Removed debug print
+            # --- End added print ---
             raw_config_data = config_manager.get_config_data_sync()
+            # --- Add logging here ---
+            logger.info(f"Settings.__init__: Received raw_config_data from config_manager.get_config_data_sync(). Keys: {list(raw_config_data.keys())}")
+            logger.debug(f"Settings.__init__: Full raw_config_data: {raw_config_data}")
+            # --- End added logging ---
+            # --- Add print statement after ---
+            # print(f"DEBUG: Settings.__init__: raw_config_data keys: {list(raw_config_data.keys())}") # Removed debug print
+            # --- End added print ---
             print("Successfully loaded initial config via ConfigManager.get_config_data_sync()")
         except Exception as e:
             logger.error(f"Failed to load initial config via ConfigManager: {e}", exc_info=True)
+            raw_config_data = {} # Ensure raw_config_data is a dict on error
 
         self.AGENT_CONFIGURATIONS: List[Dict[str, Any]] = raw_config_data.get("agents", [])
+        # --- Add print statement for AGENT_CONFIGURATIONS ---
+        # print(f"DEBUG: Settings.__init__: self.AGENT_CONFIGURATIONS length: {len(self.AGENT_CONFIGURATIONS)}") # Removed debug print
+        # --- End added print ---
         if not isinstance(self.AGENT_CONFIGURATIONS, list):
             logger.error("Config format error: 'agents' key is not a list. Resetting to empty.")
             self.AGENT_CONFIGURATIONS = []

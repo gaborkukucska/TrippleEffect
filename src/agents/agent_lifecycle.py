@@ -31,6 +31,29 @@ from src.llm_providers.openrouter_provider import OpenRouterProvider
 
 logger = logging.getLogger(__name__)
 
+# --- NEW: Helper function to extract model size ---
+def _extract_model_size_b(model_id: str) -> float:
+    """Extracts the parameter size in billions (e.g., 7b, 70b, 0.5b) from a model ID."""
+    if not isinstance(model_id, str):
+        return 0.0
+    # Regex to find patterns like -7b-, -70B-, -0.5b-, _7b_, etc.
+    # Handles optional decimal part and case-insensitive 'b'
+    match = re.search(r'[-_](\d+(?:\.\d+)?)[bB][-_]', model_id)
+    if match:
+        try:
+            return float(match.group(1))
+        except ValueError:
+            return 0.0 # Should not happen with regex, but safe fallback
+    # Fallback for models that might just end in size, e.g., model-7b
+    match_end = re.search(r'[-_](\d+(?:\.\d+)?)[bB]$', model_id)
+    if match_end:
+        try:
+            return float(match_end.group(1))
+        except ValueError:
+            return 0.0
+    return 0.0 # Return 0 if no size pattern found
+# --- END NEW HELPER ---
+
 # --- Define PROVIDER_CLASS_MAP using imported classes ---
 PROVIDER_CLASS_MAP: Dict[str, type[BaseLLMProvider]] = {
     "openai": OpenAIProvider,
@@ -70,13 +93,29 @@ async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optiona
         Returns the specific provider instance name (e.g., ollama-local-...) and the model suffix.
     """
     logger.info("Attempting automatic model selection...")
-    ranked_models = manager.performance_tracker.get_ranked_models(min_calls=0)
+    ranked_models_perf = manager.performance_tracker.get_ranked_models(min_calls=0)
     available_dict = model_registry.get_available_models_dict()
+    current_model_tier = settings.MODEL_TIER # Get tier setting
 
-    # Try ranked models first
-    if ranked_models:
-        logger.debug(f"Ranking based selection: {len(ranked_models)} models ranked. Checking availability and keys...")
-        for provider_base, model_suffix, score, _ in ranked_models: # provider_base is 'ollama', 'openrouter' etc.
+    # --- NEW: Re-sort ranked models by score (desc) then size (desc) ---
+    ranked_models_sorted = sorted(
+        ranked_models_perf,
+        key=lambda item: (item[2], _extract_model_size_b(item[1])), # item[2] is score, item[1] is model_suffix
+        reverse=True # Sorts score desc, then size desc
+    )
+    # --- END NEW SORT ---
+
+    # Try ranked models first (using the newly sorted list)
+    if ranked_models_sorted:
+        logger.debug(f"Ranking based selection: {len(ranked_models_sorted)} models ranked (Score then Size). Checking availability, keys, and tier...")
+        for provider_base, model_suffix, score, _ in ranked_models_sorted: # Use sorted list
+            # --- ADDED: Tier Check ---
+            is_free_tier_model = ":free" in model_suffix.lower()
+            if current_model_tier == "FREE" and not is_free_tier_model and provider_base == "openrouter": # Only OpenRouter has explicit free tier marking for now
+                 logger.debug(f"Auto-select skipping ranked {provider_base}/{model_suffix} (score {score}): Does not meet FREE tier requirement.")
+                 continue
+            # --- END Tier Check ---
+
             # Find a specific reachable instance for this base provider type
             specific_provider_instance = None
             # Look for dynamic local, proxy, or the base name itself if remote/configured directly
@@ -99,7 +138,7 @@ async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optiona
 
             logger.info(f"Automatic selection successful (Ranked): Selected {specific_provider_instance}/{model_suffix} (Score: {score})")
             return specific_provider_instance, model_suffix
-        logger.warning("Automatic selection: No ranked models passed availability/key checks. Falling back to registry order.")
+        logger.warning("Automatic selection: No ranked models passed availability/key/tier checks. Falling back to registry order.")
 
     # Fallback to registry order if ranking fails or no ranked models
     provider_order = ["ollama", "litellm", "openrouter", "openai"] # Prioritize local base types
@@ -113,14 +152,40 @@ async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optiona
             logger.debug(f"Fallback selection skipping base provider {provider_base}: depleted keys.")
             continue
 
-        # Try models from the first reachable instance of this type
-        first_reachable_instance = matching_providers[0]
-        models = available_dict.get(first_reachable_instance, [])
-        if models:
-            model_id_suffix = models[0].get("id") # Get first model's suffix
-            if model_id_suffix:
-                logger.info(f"Automatic selection (Fallback): Selected first available '{first_reachable_instance}/{model_id_suffix}'")
-                return first_reachable_instance, model_id_suffix # Return specific instance and suffix
+        # --- MODIFIED: Iterate through models to find largest valid one ---
+        first_reachable_instance = matching_providers[0] # Still prioritize first reachable instance of this type
+        models_on_instance = available_dict.get(first_reachable_instance, [])
+        best_fallback_model_suffix = None
+        best_fallback_model_size = -1.0 # Initialize size tracker
+
+        if models_on_instance:
+            logger.debug(f"Fallback: Checking {len(models_on_instance)} models on instance '{first_reachable_instance}' for tier '{current_model_tier}'...")
+            for model_info in models_on_instance:
+                model_id_suffix = model_info.get("id")
+                if not model_id_suffix: continue
+
+                # Apply tier filter
+                is_free_tier_model = ":free" in model_id_suffix.lower()
+                if current_model_tier == "FREE" and not is_free_tier_model and provider_base == "openrouter":
+                    logger.debug(f"Fallback skipping model '{model_id_suffix}': Does not meet FREE tier requirement.")
+                    continue
+
+                # Extract size and compare
+                current_model_size = _extract_model_size_b(model_id_suffix)
+                if current_model_size > best_fallback_model_size:
+                    best_fallback_model_suffix = model_id_suffix
+                    best_fallback_model_size = current_model_size
+                    logger.debug(f"Fallback: Found new largest valid model '{model_id_suffix}' (Size: {current_model_size}b)")
+
+            # After checking all models on this instance, select the best one found
+            if best_fallback_model_suffix:
+                logger.info(f"Automatic selection (Fallback): Selected largest valid model '{first_reachable_instance}/{best_fallback_model_suffix}' (Size: {best_fallback_model_size}b)")
+                return first_reachable_instance, best_fallback_model_suffix # Return specific instance and selected suffix
+            else:
+                 logger.debug(f"Fallback: No models meeting tier '{current_model_tier}' found on instance '{first_reachable_instance}'.")
+        else:
+             logger.debug(f"Fallback: No models listed for instance '{first_reachable_instance}'.")
+        # --- END MODIFIED ---
 
     logger.error("Automatic selection failed: No available models found in registry fallback.")
     return None, None
@@ -261,30 +326,34 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
                   continue
         # --- End Final Provider Checks ---
 
-        # --- Step 4: Assemble Prompt (Specific logic for Admin AI) ---
-        if agent_id == BOOTSTRAP_AGENT_ID:
-            user_defined_prompt = agent_config_data.get("system_prompt", "") # Original from config
+        # --- Step 4: Assemble Prompt (REMOVED Admin AI specific logic here) ---
+        # Prompt assembly, including personality injection, is now handled by AgentWorkflowManager.
+        # We just ensure the system_prompt field exists in the config passed to _create_agent_internal,
+        # even if it's empty for Admin AI at this stage.
+        if "system_prompt" not in final_agent_config_data:
+             final_agent_config_data["system_prompt"] = "" # Ensure key exists
+        logger.info(f"Lifecycle: Passing system prompt from config (or empty) for bootstrap agent '{agent_id}' to _create_agent_internal.")
+        # --- End Prompt Assembly ---
+
+        # --- Add logging before scheduling task ---
+        logger.debug(f"Lifecycle: Preparing to schedule creation task for bootstrap agent '{agent_id}' with final config: { {k: (v[:50]+'...' if k=='system_prompt' and isinstance(v, str) else v) for k,v in final_agent_config_data.items()} }")
+        # --- End added logging ---
+
+        # Schedule agent creation task using the internal function
             # tool_desc = manager.tool_descriptions_xml # No longer needed here
 
             # --- Load the INITIAL Conversation Prompt for Admin AI ---
             # The CycleHandler will load the state-appropriate prompt later.
-            prompt_key = "admin_ai_conversation_prompt"
-            initial_conversation_prompt = settings.PROMPTS.get(prompt_key, f"--- {prompt_key} Instructions Missing ---")
-
-            # Overwrite the system_prompt in the config data with the initial conversation prompt
-            # The user-defined part from config.yaml is prepended.
-            final_agent_config_data["system_prompt"] = (
-                f"--- Primary Goal/Persona ---\n{user_defined_prompt}\n\n"
-                f"{initial_conversation_prompt}" # Use the conversation prompt here
-            )
-            logger.info(f"Lifecycle: Set INITIAL system prompt for '{BOOTSTRAP_AGENT_ID}' to '{prompt_key}'. State-specific prompts will be loaded by CycleHandler.")
+        prompt_key = "admin_ai_conversation_prompt"
+        initial_conversation_prompt = settings.PROMPTS.get(prompt_key, f"--- {prompt_key} Instructions Missing ---")                
+        logger.info(f"Lifecycle: Set INITIAL system prompt for '{BOOTSTRAP_AGENT_ID}' to '{prompt_key}'. State-specific prompts will be loaded by CycleHandler.")
             # --- End Initial Prompt Loading ---
 
             # Inject max_tokens if needed (logic remains the same, based on final provider)
-            is_local_provider_selected = final_provider_for_creation.startswith("ollama-local-") or \
+        is_local_provider_selected = final_provider_for_creation.startswith("ollama-local-") or \
                                          final_provider_for_creation.startswith("litellm-local-") or \
                                          final_provider_for_creation.endswith("-proxy")
-            if is_local_provider_selected:
+        if is_local_provider_selected:
                 if "max_tokens" not in final_agent_config_data and "num_predict" not in final_agent_config_data:
                     final_agent_config_data["max_tokens"] = settings.ADMIN_AI_LOCAL_MAX_TOKENS
                     logger.info(f"Lifecycle: Injecting default max_tokens ({settings.ADMIN_AI_LOCAL_MAX_TOKENS}) for local Admin AI.")
@@ -297,7 +366,6 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
                   final_agent_config_data["system_prompt"] = ""
         # --- End Prompt Assembly ---
 
-        # Schedule agent creation task using the internal function
         tasks.append(_create_agent_internal(
             manager,
             agent_id_requested=agent_id,
@@ -307,6 +375,9 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
 
     # Gather results
     results = await asyncio.gather(*tasks, return_exceptions=True)
+    # --- Add logging for gathered results ---
+    logger.debug(f"Lifecycle: Gathered bootstrap agent creation results (Count: {len(results)}): {results}")
+    # --- End added logging ---
     successful_ids = []
     num_expected_tasks = len([cfg for cfg in agent_configs_list if cfg.get("agent_id")])
     if len(results) != num_expected_tasks:
@@ -455,10 +526,17 @@ async def _create_agent_internal(
         standard_info = standard_info_template.replace("{tool_descriptions_xml}", tool_desc); standard_info = standard_info.replace("{tool_descriptions_json}", "")
         try: standard_info = standard_info.format(agent_id=agent_id, team_id=team_id or "N/A")
         except KeyError as fmt_err: logger.error(f"Failed to format agent_id/team_id into standard instructions: {fmt_err}")
-        final_system_prompt = standard_info + "\n\n--- Your Specific Role & Task ---\n" + role_specific_prompt
+        # Use the already defined final_system_prompt which holds the role-specific part
+        final_system_prompt = standard_info + "\n\n--- Your Specific Role & Task ---\n" + final_system_prompt
         logger.info(f"Lifecycle: Injected standard framework instructions (XML format) for dynamic agent '{agent_id}'.")
-    elif loading_from_session: final_system_prompt = agent_config_data.get("system_prompt", role_specific_prompt); logger.debug(f"Lifecycle: Using stored prompt for loaded agent '{agent_id}'.")
-    elif is_bootstrap: final_system_prompt = agent_config_data.get("system_prompt", role_specific_prompt); logger.debug(f"Lifecycle: Using pre-assembled prompt for bootstrap agent '{agent_id}'.")
+    elif loading_from_session:
+        # Use the prompt stored in config data, fallback to default if missing
+        final_system_prompt = agent_config_data.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
+        logger.debug(f"Lifecycle: Using stored prompt for loaded agent '{agent_id}'.")
+    elif is_bootstrap:
+        # Use the prompt stored in config data, fallback to default if missing
+        final_system_prompt = agent_config_data.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
+        logger.debug(f"Lifecycle: Using pre-assembled prompt for bootstrap agent '{agent_id}'.")
 
     # Prepare Provider Arguments
     final_provider_args: Dict[str, Any] = {}; api_key_used = None
@@ -555,7 +633,11 @@ async def _create_agent_internal(
     # Final steps
     try: await asyncio.to_thread(agent.ensure_sandbox_exists)
     except Exception as e: logger.error(f"  Lifecycle: Error ensuring sandbox for '{agent_id}': {e}", exc_info=True)
-    manager.agents[agent_id] = agent; logger.debug(f"Lifecycle: Agent '{agent_id}' added to manager.agents dict.")
+    # --- Add logging before and after adding to manager ---
+    logger.debug(f"Lifecycle: Attempting to add agent '{agent_id}' to manager.agents dictionary...")
+    manager.agents[agent_id] = agent;
+    logger.info(f"  Lifecycle: Successfully added agent '{agent_id}' to manager.agents dict. Current keys: {list(manager.agents.keys())}")
+    # --- End added logging ---
     team_add_msg_suffix = ""
     if team_id:
         team_add_success, team_add_msg = await manager.state_manager.add_agent_to_team(agent_id, team_id)

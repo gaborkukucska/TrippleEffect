@@ -331,9 +331,15 @@ class AgentCycleHandler:
                             agent_id_from_event = event.get("agent_id") # Should be admin_ai
                             logger.info(f"CycleHandler: Received plan submission from agent '{agent_id_from_event}' (State: PLANNING).")
 
+                            # --- ADD LOGGING ---
+                            logger.debug(f"CycleHandler: Attempting to log plan to DB for session {current_db_session_id}...")
+                            # --- END LOGGING ---
                             if current_db_session_id is not None:
                                 try:
                                     await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="assistant_plan", content=plan_content) # Log the plan
+                                    # --- ADD LOGGING ---
+                                    logger.debug("CycleHandler: Plan logged to DB successfully.")
+                                    # --- END LOGGING ---
                                 except Exception as db_log_err:
                                      logger.error(f"Failed to log admin plan to DB: {db_log_err}", exc_info=True)
                             else:
@@ -359,11 +365,17 @@ class AgentCycleHandler:
                                     logger.warning("Could not extract <title> from plan. Using default project title.")
 
                                 # --- Call AgentManager to handle creation ---
+                                # --- ADD LOGGING ---
+                                logger.debug(f"CycleHandler: Calling manager.create_project_and_pm_agent for title '{project_title}'...")
+                                # --- END LOGGING ---
                                 if hasattr(self._manager, 'create_project_and_pm_agent'):
                                     creation_success, creation_message, pm_agent_id = await self._manager.create_project_and_pm_agent(
                                         project_title=project_title, # Use original title for display/task name
                                         plan_description=plan_content # Pass full plan as description
                                     )
+                                    # --- ADD LOGGING ---
+                                    logger.debug(f"CycleHandler: manager.create_project_and_pm_agent returned: success={creation_success}, msg='{creation_message}', pm_id={pm_agent_id}")
+                                    # --- END LOGGING ---
                                 else:
                                      logger.error("AgentManager does not have 'create_project_and_pm_agent' method!")
                                      creation_message = "[Framework Error] Project creation function not implemented."
@@ -374,6 +386,9 @@ class AgentCycleHandler:
                             # --- End Creation Call ---
 
                             # --- Inject Confirmation & Set State ---
+                            # --- ADD LOGGING ---
+                            logger.debug(f"CycleHandler: Preparing to inject confirmation and set state back to conversation.")
+                            # --- END LOGGING ---
                             # Use the potentially updated message from create_project_and_pm_agent
                             confirm_msg: MessageDict = {"role": "system", "content": creation_message} # Keep confirmation message
                             agent.message_history.append(confirm_msg)
@@ -390,13 +405,14 @@ class AgentCycleHandler:
                                            logger.error(f"Failed to log state change to DB: {db_log_err}", exc_info=True)
                             else:
                                  logger.error("Cannot set Admin AI state back to conversation: set_state method missing.")
+                            # --- END State Setting ---
 
-                            # --- MODIFIED: Do NOT automatically reactivate after plan submission ---
-                            # Let the agent become idle in the new 'conversation' state.
-                            # The next cycle will be triggered by user input or another event.
-                            # needs_reactivation_after_cycle = True # REMOVED
-                            # --- END MODIFICATION ---
-                            break # Exit event loop
+                            # --- Ensure no automatic reactivation after plan submission ---
+                            # The Admin AI should wait for user input or PM updates in the conversation state.
+                            needs_reactivation_after_cycle = False
+                            logger.debug("CycleHandler: Plan submitted, Admin AI state set to conversation, preventing immediate reactivation.")
+                            # --- END Reactivation Prevention ---
+                            break # Exit event loop after handling plan
                         else:
                              # Log warning if plan submitted in wrong state
                              logger.warning(f"CycleHandler: Agent '{agent.agent_id}' submitted a plan but was not in PLANNING state. Ignoring plan.")
@@ -620,8 +636,8 @@ class AgentCycleHandler:
 
                         if calls_to_execute:
                             logger.debug(f"CycleHandler: Tools executed for '{agent_id}', breaking inner loop to allow reactivation check.");
-                            if executed_tool_successfully_this_cycle:
-                                 needs_reactivation_after_cycle = True
+                            # REMOVED condition: if executed_tool_successfully_this_cycle:
+                            needs_reactivation_after_cycle = True # Now always runs if tools were executed
                             break # Break loop after tool execution
                     else: logger.warning(f"CycleHandler: Unknown event type '{event_type}' from '{agent_id}'.")
 

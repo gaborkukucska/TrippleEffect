@@ -70,8 +70,11 @@ class Agent:
         self.agent_id: str = agent_config.get("agent_id", f"unknown_agent_{os.urandom(4).hex()}")
         self.provider_name: str = config.get("provider", settings.DEFAULT_AGENT_PROVIDER)
         self.model: str = config.get("model", settings.DEFAULT_AGENT_MODEL) # This will be set correctly later by lifecycle
-        self.final_system_prompt: str = config.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
-        if not self.final_system_prompt: logger.error(f"Agent {self.agent_id}: 'system_prompt' is missing or empty!"); self.final_system_prompt = "You are a helpful assistant."
+        # Initialize final_system_prompt as empty. It will be set by AgentWorkflowManager via CycleHandler before the first call.
+        self.final_system_prompt: str = ""
+        # Store the original config prompt separately if needed (e.g., for Admin AI personality)
+        self._config_system_prompt: str = config.get("system_prompt", "")
+        # if not self.final_system_prompt: logger.error(f"Agent {self.agent_id}: 'system_prompt' is missing or empty!"); self.final_system_prompt = "You are a helpful assistant." # Removed this check
         self.temperature: float = float(config.get("temperature", settings.DEFAULT_TEMPERATURE))
         self.persona: str = config.get("persona", settings.DEFAULT_PERSONA)
         # --- NEW: Add agent_type ---
@@ -79,10 +82,11 @@ class Agent:
         # --- END NEW ---
         self.agent_config: Dict[str, Any] = agent_config
         # Exclude max_tokens here as it's handled explicitly in process_message
+        # Also exclude system_prompt from provider_kwargs now
         self.provider_kwargs = {k: v for k, v in config.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'agent_type', 'api_key', 'base_url', 'referer', 'max_tokens']}
         self.llm_provider: BaseLLMProvider = llm_provider
         self.manager: 'AgentManager' = manager
-        logger.debug(f"Agent {self.agent_id} using final system prompt (first 500 chars):\n{self.final_system_prompt[:500]}...")
+        # logger.debug(f"Agent {self.agent_id} using final system prompt (first 500 chars):\n{self.final_system_prompt[:500]}...") # Removed log as prompt is initially empty
 
         # State management
         self.status: str = AGENT_STATUS_IDLE # Operational status (idle, processing, etc.)
@@ -91,8 +95,9 @@ class Agent:
         # --- END NEW ---
         self.current_tool_info: Optional[Dict[str, str]] = None
         self.current_plan: Optional[str] = None # Stores plan content when status is PLANNING
+        # Initialize history empty. CycleHandler adds the system prompt before the first call.
         self.message_history: List[MessageDict] = []
-        self.message_history.append({"role": "system", "content": self.final_system_prompt})
+        # self.message_history.append({"role": "system", "content": self.final_system_prompt}) # Removed initial system message
         self._last_api_key_used: Optional[str] = None
         self._failed_models_this_cycle: set = set()
         # --- NEW: Flag for PM initial tool call ---
@@ -230,6 +235,9 @@ class Agent:
             logger.debug(f"Agent {self.agent_id}: Provider stream finished processing. Stream had error: {stream_had_error}. Processing final buffer.")
 
             if not stream_had_error:
+                # --- ADDED: Log complete raw response before parsing ---
+                logger.debug(f"Agent {self.agent_id}: Complete raw response buffer before post-processing:\n>>>\n{complete_assistant_response}\n<<<")
+                # --- END ADDED ---
                 # --- POST-STREAM PROCESSING ---
                 buffer_to_process = self.text_buffer # Working copy
                 logger.debug(f"CORE POST-STREAM: Buffer='{buffer_to_process[:100]}...', yielded_chunks={yielded_chunks}")
@@ -239,43 +247,7 @@ class Agent:
                 think_content_extracted = None # Store extracted think content
                 tool_calls_found = [] # Store parsed tool calls
 
-                # 1. Check for State Request FIRST (Robust Search)
-                state_request_tag = None
-                requested_state = None
-                cycle_handler_instance = getattr(self.manager, 'cycle_handler', None)
-                manager_request_state_pattern = getattr(cycle_handler_instance, 'request_state_pattern', None) if cycle_handler_instance else None
-
-                if manager_request_state_pattern:
-                    state_match = manager_request_state_pattern.search(buffer_to_process)
-                    if state_match:
-                        requested_state = state_match.group(1)
-                        state_request_tag = state_match.group(0)
-                        logger.info(f"Agent {self.agent_id}: Detected state request tag via search: {state_request_tag}")
-                        # --- MODIFIED: Yield remaining text BEFORE state change ---
-                        remaining_text_after_tag = buffer_to_process.replace(state_request_tag, '', 1).strip()
-                        if remaining_text_after_tag:
-                            logger.debug(f"Agent {self.agent_id}: Found remaining text after state tag: '{remaining_text_after_tag[:50]}...' Yielding as final_response first.")
-                            # Add to history if needed
-                            if not self.message_history or self.message_history[-1].get("content") != remaining_text_after_tag or self.message_history[-1].get("role") != "assistant":
-                                self.message_history.append({"role": "assistant", "content": remaining_text_after_tag})
-                            # Yield final response
-                            final_response_event = {"type": "final_response", "content": remaining_text_after_tag}
-                            logger.debug(f"CORE YIELD (Final Response before State Change): {final_response_event}")
-                            yield final_response_event
-                        # Now yield the state change request
-                        event_to_yield = {"type": "agent_state_change_requested", "requested_state": requested_state, "agent_id": self.agent_id}
-                        logger.debug(f"CORE YIELD (State Request): {event_to_yield}")
-                        yield event_to_yield
-                        state_change_requested = True
-                        # --- MODIFICATION: Continue processing buffer even after state change ---
-                        buffer_to_process = remaining_text_after_tag # Update buffer with already cleaned text
-                        logger.debug(f"Agent {self.agent_id}: Continuing buffer processing after state change request. Remaining buffer: '{buffer_to_process[:50]}...'")
-                        # --- END MODIFICATION ---
-
-
-                # 2. Check for Think Tag NEXT (Robust Extraction)
-                # Process think tag regardless of whether state change was requested
-                # if not state_change_requested: # REMOVED Condition
+                # --- MOVED: Process Think Tag FIRST ---
                 think_match = self.think_pattern.search(buffer_to_process) # Use robust pattern
                 if think_match:
                         extracted_think_content = think_match.group(1).strip()
@@ -290,6 +262,71 @@ class Agent:
                              logger.info(f"Agent {self.agent_id}: Found <think> tag but content was empty.")
                         # Remove the matched think block
                         buffer_to_process = buffer_to_process.replace(full_think_block, '', 1).strip()
+                # --- END MOVED ---
+
+                # 1. Check for State Request FIRST (Robust Search)
+                state_request_tag = None
+                requested_state = None
+                cycle_handler_instance = getattr(self.manager, 'cycle_handler', None)
+                manager_request_state_pattern = getattr(cycle_handler_instance, 'request_state_pattern', None) if cycle_handler_instance else None
+
+                if manager_request_state_pattern:
+                    state_match = manager_request_state_pattern.search(buffer_to_process)
+                    if state_match:
+                        requested_state = state_match.group(1)
+                        state_request_tag = state_match.group(0)
+                        # --- ADDED: Check if the requested state is specifically 'planning' ---
+                        if requested_state == 'planning':
+                            logger.info(f"Agent {self.agent_id}: Detected EXACT state request tag for 'planning': {state_request_tag}")
+                            # --- MODIFIED: Yield remaining text BEFORE state change ---
+                            remaining_text_after_tag = buffer_to_process.replace(state_request_tag, '', 1).strip()
+                            if remaining_text_after_tag:
+                                logger.debug(f"Agent {self.agent_id}: Found remaining text after state tag: '{remaining_text_after_tag[:50]}...' Yielding as final_response first.")
+                                # Add to history if needed
+                                if not self.message_history or self.message_history[-1].get("content") != remaining_text_after_tag or self.message_history[-1].get("role") != "assistant":
+                                    self.message_history.append({"role": "assistant", "content": remaining_text_after_tag})
+                                # Yield final response
+                                final_response_event = {"type": "final_response", "content": remaining_text_after_tag}
+                                logger.debug(f"CORE YIELD (Final Response before State Change): {final_response_event}")
+                                yield final_response_event
+                            # Now yield the state change request
+                            event_to_yield = {"type": "agent_state_change_requested", "requested_state": requested_state, "agent_id": self.agent_id}
+                            logger.debug(f"CORE YIELD (State Request): {event_to_yield}")
+                            yield event_to_yield # <<< YIELDS the request
+                            # --- ADDED: Stop processing immediately after yielding state change request ---
+                            logger.info(f"Agent {self.agent_id}: State change requested to '{requested_state}'. Terminating current cycle processing.")
+                            return # Stop the generator here
+                            # --- END ADDED ---
+                        else:
+                            # Log that a state change tag was found, but not for 'planning'
+                            logger.warning(f"Agent {self.agent_id}: Detected state request tag for state '{requested_state}', but only 'planning' is currently processed here. Ignoring tag: {state_request_tag}")
+                            # Continue processing the buffer as if the tag wasn't a valid state change request
+                            buffer_to_process = buffer_to_process # Ensure buffer remains unchanged for further processing
+                        # --- END ADDED ---
+
+
+                # 2. Check for Think Tag NEXT (Robust Extraction)
+                        if remaining_text_after_tag:
+                            logger.debug(f"Agent {self.agent_id}: Found remaining text after state tag: '{remaining_text_after_tag[:50]}...' Yielding as final_response first.")
+                            # Add to history if needed
+                            if not self.message_history or self.message_history[-1].get("content") != remaining_text_after_tag or self.message_history[-1].get("role") != "assistant":
+                                self.message_history.append({"role": "assistant", "content": remaining_text_after_tag})
+                            # Yield final response
+                            final_response_event = {"type": "final_response", "content": remaining_text_after_tag}
+                            logger.debug(f"CORE YIELD (Final Response before State Change): {final_response_event}")
+                            yield final_response_event
+                        # Now yield the state change request
+                        event_to_yield = {"type": "agent_state_change_requested", "requested_state": requested_state, "agent_id": self.agent_id}
+                        logger.debug(f"CORE YIELD (State Request): {event_to_yield}")
+                        yield event_to_yield # <<< YIELDS the request
+                        # --- ADDED: Stop processing immediately after yielding state change request ---
+                        logger.info(f"Agent {self.agent_id}: State change requested to '{requested_state}'. Terminating current cycle processing.")
+                        return # Stop the generator here
+                        # --- END ADDED ---
+                        # state_change_requested = True # No longer needed
+                        # buffer_to_process = remaining_text_after_tag # No longer needed
+                        # logger.debug(f"Agent {self.agent_id}: Continuing buffer processing after state change request...") # No longer needed
+
 
                 # 3. Check for Plan Tag (Admin AI in PLANNING state only)
                 # Only process plan tag if no state change was requested
@@ -423,5 +460,6 @@ class Agent:
         return state_info
 
     def clear_history(self):
-        """Clears message history, keeps system prompt."""
-        logger.info(f"Clearing message history for Agent {self.agent_id}"); self.message_history = [{"role": "system", "content": self.final_system_prompt}]
+        """Clears message history. The system prompt will be added by CycleHandler."""
+        # The system prompt is now added dynamically by CycleHandler, so just clear the list.
+        logger.info(f"Clearing message history for Agent {self.agent_id}"); self.message_history = []

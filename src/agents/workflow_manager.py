@@ -173,48 +173,57 @@ class AgentWorkflowManager:
                  formatting_context["tool_descriptions_xml"] = getattr(manager, 'tool_descriptions_xml', "<!-- Tool descriptions unavailable -->")
             if "{tool_descriptions_json}" in prompt_template:
                  formatting_context["tool_descriptions_json"] = getattr(manager, 'tool_descriptions_json', "{}")
-            # --- MODIFIED: Add available_tools_list for PM WORK and MANAGE states ---
-            if "{available_tools_list}" in prompt_template and agent.agent_type == AGENT_TYPE_PM and agent.state in [AGENT_STATE_WORK, AGENT_STATE_MANAGE]:
-                 try:
-                     if hasattr(manager, 'tool_executor') and hasattr(manager.tool_executor, 'get_available_tools_list_str'):
-                         formatting_context["available_tools_list"] = manager.tool_executor.get_available_tools_list_str(agent.agent_type)
-                     else:
-                         logger.error(f"ToolExecutor or get_available_tools_list_str not found on manager for PM {agent.agent_id} in MANAGE state.")
-                         formatting_context["available_tools_list"] = "[Error retrieving tool list: ToolExecutor unavailable]"
-                 except Exception as tool_list_err:
-                     logger.error(f"Failed to get tool list for PM {agent.agent_id} in MANAGE state: {tool_list_err}")
-                     formatting_context["available_tools_list"] = "[Error retrieving tool list]"
-            # --- END NEW ---
+            # --- REMOVED available_tools_list injection block ---
             # TODO: Add project task list for PM? Requires manager access to ProjectManagementTool instance for the session.
 
         try:
-            # Prepend user-defined part ONLY for Admin AI in startup or conversation states
-            user_defined_part = ""
-            # --- MODIFIED: Check agent type and state before prepending ---
-            if agent.agent_type == AGENT_TYPE_ADMIN and agent.state in [ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION]:
-                if hasattr(agent, 'final_system_prompt') and isinstance(agent.final_system_prompt, str):
-                    # Check if the original prompt contained the standard instructions marker
-                    # (This check might be redundant if lifecycle always structures it, but safe to keep)
-                    if "--- Standard Tool & Communication Protocol ---" in agent.final_system_prompt or \
-                       "--- Admin AI Core Operational Workflow ---" in agent.final_system_prompt or \
-                       "--- Primary Goal/Persona ---" in agent.final_system_prompt: # Check for admin marker too
-                         user_defined_part = agent.final_system_prompt.split("\n\n---")[0] + "\n\n" # Extract user part
-                         logger.debug(f"Prepending user-defined part for Admin AI in state '{agent.state}'.")
-                    # else: # If no marker, assume the whole original prompt was user-defined? Risky.
-                    #    user_defined_part = agent.final_system_prompt + "\n\n"
-            # --- END MODIFICATION ---
+            # --- NEW: Get personality instructions for Admin AI ---
+            personality_instructions = ""
+            if agent.agent_type == AGENT_TYPE_ADMIN:
+                # Access the stored config prompt
+                if hasattr(agent, '_config_system_prompt') and isinstance(agent._config_system_prompt, str):
+                    personality_instructions = agent._config_system_prompt.strip()
+                    if personality_instructions:
+                         logger.debug(f"Found personality instructions for Admin AI from config.")
+                    else:
+                         logger.debug("Admin AI config system_prompt is empty, no personality instructions added.")
+                else:
+                     logger.warning("Admin AI missing '_config_system_prompt' attribute or it's not a string.")
+            # Add personality instructions to the formatting context if available
+            formatting_context["personality_instructions"] = personality_instructions
+            # --- END NEW ---
 
-            # Format the loaded template
+            # Format the loaded template using the potentially updated context
             formatted_state_prompt = prompt_template.format(**formatting_context)
 
-            # Combine user part (if any) and the formatted state-specific instructions
-            final_prompt = user_defined_part + formatted_state_prompt
+            # The final prompt is just the formatted state prompt now
+            final_prompt = formatted_state_prompt
             logger.info(f"WorkflowManager: Generated prompt for agent '{agent.agent_id}' using key '{prompt_key}'.")
             return final_prompt
 
         except KeyError as fmt_err:
-            logger.error(f"WorkflowManager: Failed to format prompt template '{prompt_key}'. Missing key: {fmt_err}. Using absolute default prompt.")
-            return settings.DEFAULT_SYSTEM_PROMPT
+            # --- MODIFIED: Handle missing personality_instructions gracefully ---
+            missing_key = str(fmt_err).strip("'") # Get the missing key name
+            if missing_key == "personality_instructions":
+                 # This is expected for non-admin agents or if the admin prompt doesn't use it. Log as debug.
+                 logger.debug(f"WorkflowManager: Prompt template '{prompt_key}' is missing the optional '{{personality_instructions}}' placeholder. Proceeding without it.")
+                 # Attempt to format again after removing the key from context
+                 formatting_context.pop("personality_instructions", None)
+                 try:
+                     formatted_state_prompt = prompt_template.format(**formatting_context)
+                     return formatted_state_prompt # Return successfully formatted prompt without personality
+                 except KeyError as inner_fmt_err:
+                      # Failure even after removing personality means another key is missing
+                      logger.error(f"WorkflowManager: Failed to format prompt template '{prompt_key}' even after removing personality placeholder. Missing key: {inner_fmt_err}. Using absolute default prompt.")
+                      return settings.DEFAULT_SYSTEM_PROMPT
+                 except Exception as inner_e:
+                      logger.error(f"WorkflowManager: Unexpected error formatting prompt template '{prompt_key}' after removing personality placeholder: {inner_e}. Using absolute default prompt.", exc_info=True)
+                      return settings.DEFAULT_SYSTEM_PROMPT
+            else:
+                 # Error for a different, unexpected missing key
+                 logger.error(f"WorkflowManager: Failed to format prompt template '{prompt_key}'. Missing required key: {fmt_err}. Using absolute default prompt.")
+                 return settings.DEFAULT_SYSTEM_PROMPT
+            # --- END MODIFIED ---
         except Exception as e:
             logger.error(f"WorkflowManager: Unexpected error formatting prompt template '{prompt_key}': {e}. Using absolute default prompt.", exc_info=True)
             return settings.DEFAULT_SYSTEM_PROMPT
