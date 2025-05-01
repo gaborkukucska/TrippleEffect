@@ -96,6 +96,7 @@ class Agent:
         self.current_tool_info: Optional[Dict[str, str]] = None
         self.current_plan: Optional[str] = None # Stores plan content when status is PLANNING
         # Initialize history empty. CycleHandler adds the system prompt before the first call.
+        self.current_task_id: Optional[str] = None  # NEW: Current task ID
         self.message_history: List[MessageDict] = []
         # self.message_history.append({"role": "system", "content": self.final_system_prompt}) # Removed initial system message
         self._last_api_key_used: Optional[str] = None
