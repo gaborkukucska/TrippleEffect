@@ -51,7 +51,14 @@ class ModelRegistry:
         self._verified_local_canonical_services: Set[Tuple[str, int]] = set()
         # Use MODEL_TIER from the passed settings object
         self._model_tier: str = getattr(self.settings, 'MODEL_TIER', 'ALL').upper()
-        logger.info(f"ModelRegistry initialized. MODEL_TIER='{self._model_tier}'.")
+        self._model_cost: str = getattr(self.settings, 'MODEL_COST', 'ALL').upper()
+        logger.info(f"ModelRegistry initialized. MODEL_TIER='{self._model_tier}', MODEL_COST='{self._model_cost}'.")
+
+    async def discover_models_and_providers(self):
+        """ Coordinates provider reachability checks and model discovery, including local network scan. """
+        if self._model_tier == "FREE":
+            logger.info("MODEL_TIER is FREE, skipping remote provider discovery.")
+            self._reachable_providers = {}
 
     async def _verify_and_fetch_models(self, base_url: str) -> Optional[Tuple[str, str, List[ModelInfo]]]:
         """
