@@ -87,19 +87,15 @@
 
 **In Scope (Phase 25 - Current):**
 
+*   **Agent Logic Refinement:**
+    *   Investigating `MODEL_TIER` & `MODEL_COST` interference, need to refactor is likely.
+    *   Investigate and fix other potential logic issues (looping, placeholders, targeting).
+*   **Memory/Learning Foundation:**
+    *   Refine agent thought capture/usage.
 *   **Governance Layer Foundation:**
     *   Define a structure for representing core principles or a 'constitution'.
     *   Implement mechanisms to inject relevant principles into agent prompts.
     *   *Initial Goal:* Focus on structure and injection, not complex enforcement. Explore Admin AI use during planning/review.
-*   **Agent Logic Refinement:**
-    *   Investigate and fix PM agent multi-tool call issue.
-    *   Investigate and fix other potential logic issues (looping, placeholders, targeting).
-*   **Taskwarrior Integration Refinement:**
-    *   Stabilize `ProjectManagementTool` assignee handling (confirm tag/UDA approach or revisit).
-*   **Rate Limiting:**
-    *   Address external API rate limiting impact (user config or alternative models).
-*   **Memory/Learning Foundation:**
-    *   Refine agent thought capture/usage.
 
 **Out of Scope (Deferred to Future Phases 26+):**
 
@@ -125,162 +121,10 @@
 *   **Persistence:** JSON (session state - filesystem), SQLite (interactions, knowledge, thoughts), Taskwarrior files (project tasks via `tasklib`) %% Updated P25
 *   **Optional Proxy:** Node.js, Express, node-fetch
 *   **Data Handling/Validation:** Pydantic (via FastAPI)
+*   **Local Auto Discovery** nmap
 *   **Logging:** Standard library `logging`
 
-## 4. Proposed Architecture Refinement (Conceptual - Reflects v2.25)
-
-*Includes Workflow Manager, Tool Info Tool, User Approval, Thoughts DB.*
-
-```mermaid
-graph TD %% Updated P25
-    %% Layer Definitions
-    subgraph UserLayer [Layer 1: User Interface]
-        USER[👨‍💻 Human User]
-        subgraph Frontend [🌐 Human UI (Web) - Refactored P22]
-             direction LR
-             UI_CHAT["**Chat View** <br> (User <-> Admin, Approval)✅"] %% Added Approval
-             UI_INTERNAL["**Internal Comms View** <br>(Admin <-> Agents, Tools, Status)✅"]
-             UI_SESSIONS["Session View✅"]
-             UI_CONFIG["Config View✅"]
-        end
-    end
-
-    subgraph CoreInstance [Layer 2: Local TrippleEffect Instance]
-        direction TB
-        BackendApp["🚀 FastAPI Backend✅"]
-
-        subgraph Managers ["Management & Orchestration"]
-            direction LR
-            AGENT_MANAGER["🧑‍💼 Agent Manager ✅"]
-            DB_MANAGER["**📦 Database Manager ✅**"]
-            STATE_MANAGER["📝 AgentStateManager ✅"]
-            SESSION_MANAGER["💾 SessionManager (FS) ✅"]
-            PROVIDER_KEY_MGR["🔑 ProviderKeyManager ✅"]
-            MODEL_REGISTRY["📚 ModelRegistry ✅"]
-            PERF_TRACKER["📊 PerformanceTracker ✅"]
-            WORKFLOW_MANAGER["🌊 AgentWorkflowManager ✅"] %% Added P25
-        end
-
-        subgraph Handlers ["Core Logic Handlers"]
-            direction LR
-            CYCLE_HANDLER["🔄 AgentCycleHandler ✅<br>(Manages cycles, state transitions, plan interception)"]
-            INTERACTION_HANDLER["🤝 InteractionHandler ✅"]
-            FAILOVER_HANDLER["💥 FailoverHandler (Func) ✅"]
-        end
-
-        subgraph CoreAgents ["Core & Dynamic Agents"]
-             ADMIN_AI["🤖 Admin AI Agent <br>(Stateful: Conversation/Planning)✅"]
-             PM_AGENT["🤖 Project Manager Agent <br>(Per Session, Framework-Created, User-Approved)✅"] %% Added User-Approved
-             subgraph DynamicTeam [Dynamic Team Example]
-                direction LR
-                 AGENT_DYN_1["🤖 Worker Agent 1"]
-                 AGENT_DYN_N["🤖 ... Worker Agent N"]
-             end
-        end
-
-        subgraph InstanceTools ["🛠️ Tools"]
-            TOOL_EXECUTOR["Executor"]
-            TOOL_FS["FileSystem ✅"]
-            TOOL_SENDMSG["SendMessage (Local) ✅"]
-            TOOL_MANAGE_TEAM["ManageTeam ✅"]
-            TOOL_GITHUB["GitHub ✅"]
-            TOOL_WEBSEARCH["WebSearch ✅"]
-            TOOL_SYSTEMHELP["SystemHelp ✅"]
-            TOOL_KNOWLEDGE["**KnowledgeBase ✅**"]
-            TOOL_PROJECT_MGMT["**ProjectManagement (Tasklib) ✅**"]
-            TOOL_INFO["ToolInformation ✅"] %% Added P25
-        end
-
-        subgraph InstanceData ["Local Instance Data"]
-            SANDBOXES["📁 Sandboxes"]
-            SHARED_WORKSPACE["🌐 Shared Workspace"]
-            PROJECT_SESSIONS["💾 Project/Session Files"]
-            LOG_FILES["📄 Log Files <br>(Backend Only)"]
-            CONFIG_FILES["⚙️ Config (yaml, json, env)"]
-            METRICS_FILE["📄 Metrics File"]
-            QUARANTINE_FILE["📄 Key Quarantine File"]
-            SQLITE_DB["**💾 SQLite DB <br>(Interactions, Knowledge, Thoughts)**"] %% Added Thoughts
-            TASKLIB_DATA["**📊 Tasklib Data <br>(Per Session)**"]
-        end
-    end
-
-    subgraph ExternalServices [External Services]
-        LLM_API_SVC["☁️ Ext. LLM APIs"]
-        TAVILY_API["☁️ Tavily API"]
-        OLLAMA_SVC["⚙️ Local Ollama Svc"]
-        OLLAMA_PROXY_SVC["🔌 Optional Ollama Proxy"]
-        GITHUB_API["☁️ GitHub API"]
-    end
-
-    %% --- Layer 3 (Future) ---
-    subgraph FederatedLayer [Layer 3: Federated Instances (Future - Phase 27+)]
-         ExternalInstance["🏢 External TrippleEffect Instance"]
-         ExternalAdminAI["🤖 External Admin AI"]
-         ExternalDB["💾 External Instance DB"]
-    end
-
-    %% --- Connections ---
-    USER -- HTTP/WS --> Frontend;
-    Frontend -- HTTP/WS --> BackendApp;
-    Frontend -- "Approve Project (API)" --> BackendApp; %% Added for API calls like approve
-
-    BackendApp -- Manages --> AGENT_MANAGER;
-    BackendApp -- Manages --> DB_MANAGER; %% Via singleton / lifespan
-
-    AGENT_MANAGER -- Uses --> DB_MANAGER;
-    AGENT_MANAGER -- Uses --> STATE_MANAGER;
-    AGENT_MANAGER -- Uses --> SESSION_MANAGER;
-    AGENT_MANAGER -- Uses --> PROVIDER_KEY_MGR;
-    AGENT_MANAGER -- Uses --> MODEL_REGISTRY;
-    AGENT_MANAGER -- Uses --> PERF_TRACKER;
-    AGENT_MANAGER -- Uses --> WORKFLOW_MANAGER; %% Added P25
-    AGENT_MANAGER -- Delegates --> CYCLE_HANDLER;
-    AGENT_MANAGER -- Delegates --> INTERACTION_HANDLER;
-    AGENT_MANAGER -- Triggers --> FAILOVER_HANDLER;
-    AGENT_MANAGER -- Manages --> CoreAgents;
-    AGENT_MANAGER -- Creates --> PM_AGENT; %% Framework creates PM agent instance
-    AGENT_MANAGER -- Creates Task via --> TOOL_EXECUTOR; %% Framework creates initial task
-    AGENT_MANAGER -- Schedules PM Agent --> CYCLE_HANDLER; %% After approval
-
-    CYCLE_HANDLER -- Runs --> CoreAgents;
-    CYCLE_HANDLER -- Uses --> WORKFLOW_MANAGER; %% Added P25
-    CYCLE_HANDLER -- Triggers Project Creation --> AGENT_MANAGER; %% CycleHandler detects plan, tells Manager
-    CYCLE_HANDLER -- Logs to --> DB_MANAGER;
-    INTERACTION_HANDLER -- Delegates --> TOOL_EXECUTOR;
-    INTERACTION_HANDLER -- Updates --> STATE_MANAGER;
-    INTERACTION_HANDLER -- Routes Msg --> CoreAgents; %% Includes Admin <-> PM
-
-    TOOL_EXECUTOR -- Executes --> InstanceTools;
-    InstanceTools -- Access --> InstanceData;
-    InstanceTools -- Interact With --> ExternalServices;
-    TOOL_KNOWLEDGE -- Uses --> DB_MANAGER;
-
-    %% Data Persistence
-    SESSION_MANAGER -- R/W --> PROJECT_SESSIONS;
-    TOOL_PROJECT_MGMT -- R/W --> TASKLIB_DATA;
-    DB_MANAGER -- R/W --> SQLITE_DB;
-    PERF_TRACKER -- R/W --> METRICS_FILE;
-    PROVIDER_KEY_MGR -- R/W --> QUARANTINE_FILE;
-    BackendApp -- Writes --> LOG_FILES;
-
-
-    %% External Services Connections
-    MODEL_REGISTRY -- Discovers --> LLM_API_SVC;
-    MODEL_REGISTRY -- Discovers --> OLLAMA_SVC;
-    MODEL_REGISTRY -- Discovers --> OLLAMA_PROXY_SVC;
-    CoreAgents -- via LLM Providers --> LLM_API_SVC;
-    CoreAgents -- via LLM Providers --> OLLAMA_SVC;
-    CoreAgents -- via LLM Providers --> OLLAMA_PROXY_SVC;
-    TOOL_WEBSEARCH -- Calls --> TAVILY_API;
-    TOOL_GITHUB -- Calls --> GITHUB_API;
-
-    %% Federated Layer Connections (Dashed lines for future)
-    BackendApp -.->|External API Calls| ExternalInstance;
-    ExternalInstance -.->|Callbacks / API Calls| BackendApp;
-
-```
-
-## 5. Development Phases & Milestones
+## 4. Development Phases & Milestones
 
 **Phase 1-23 (Completed)**
 *   [X] Core Functionality, Dynamic Agent/Team Mgmt, Refactoring, Provider/Model Discovery & Selection, Failover, Key Management, Prompt Centralization, Ollama Proxy, XML Tooling, Auto-Selection (Dyn), Robust Agent ID Handling, Structured Planning, Context Optimization & FS Tools, GitHub Recursive List, ManageTeam Details, WebSearch API Fallback, SystemHelp Tool, Admin Time Context, **Memory Foundation (DB & KB Tool)**, **UI Layer Refactor & Workflow Refinements**, **Project Manager Agent & Tasklib Integration**.
@@ -299,19 +143,14 @@ graph TD %% Updated P25
 
 **Phase 25: Agent Logic, Taskwarrior Refinement & Governance (Current)**
     *   **Goal:** Address known agent logic issues, stabilize Taskwarrior integration, implement basic Governance Layer, and refine thought capture.
-    *   [ ] Investigate and fix PM agent multi-tool call issue (likely prompt refinement).
-    *   [ ] Investigate and fix other agent logic issues (looping, placeholders, targeting).
-    *   [ ] Stabilize `ProjectManagementTool` assignee handling (confirm tag/UDA approach is sufficient or revisit).
-    *   [ ] Address external API rate limiting impact (user config or alternative models).
+    *   [ ] Investigate and fix `MODEL_TIER` and `MODEL_COST` switching issues (refactoring is likely).
     *   [ ] Define structure for Governance principles (e.g., `governance.yaml` or DB table).
-    *   [ ] Implement mechanism to load and inject principles into relevant agent prompts (initially Admin AI).
-    *   [ ] Explore how Admin AI can reference/apply these principles during planning.
     *   [X] Implement agent thought capture (`<think>` tag) and saving to Knowledge Base.
     *   [X] Implement `ToolInformationTool`.
     *   [X] Implement authorization checks in `ToolExecutor`.
     *   [X] Inject system health report into Admin AI context.
 *   **Phase 26:** Advanced Memory & Learning (Feedback Loop, Learned Principles, Thought Usage).
-*   **Phase 27:** Proactive Behavior (Scheduling, Goal Management).
+*   **Phase 27:** Proactive Behavior (Scheduling, Goal Management). **(Note that limited scheduling for PM Agent already exists.)
 *   **Phase 28+:** Federated Communication (Layer 3 - External Admin AI Interaction).
 *   **Phase 29+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), etc.
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

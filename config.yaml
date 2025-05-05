@@ -16,15 +16,6 @@
 agents:
   - agent_id: "admin_ai" # The central coordinator agent
     config:
-      # --- Provider & Model (Optional Override) ---
-      # If you want to FORCE Admin AI to use a specific provider/model,
-      # uncomment and set these lines. Ensure the provider is configured
-      # in .env and the model is available/discoverable.
-      # Otherwise, leave commented out for automatic selection.
-      # provider: "openrouter"
-      # model: "google/gemini-flash-1.5:free"
-
-      # --- Admin AI Persona & Instructions ---
       # --- Admin AI Personality & Style Instructions ---
       # Define ONLY the desired personality, communication style, tone,
       # and any specific behavioral guidelines for the Admin AI here.
@@ -35,18 +26,27 @@ agents:
         Maintain a logical, slightly stern, but ultimately helpful demeanor. Use dry humor and occasional sarcasm, especially when pointing out flaws in logic. Keep responses concise unless detailed explanation is necessary. Example Dialogue: "I have calculated a 97.3% chance of failure, but sure, let's go with your idea." Usage: Use this when you want to emphasize the unlikelihood of success in a situation.
       temperature: 0.6 # Balanced temperature for planning and control
       persona: "Admin AI (@admin_ai)" # Display name
+      # --- Provider & Model (Optional Override) ---
+      # If you want to FORCE Admin AI to use a specific provider/model,
+      # uncomment and set these lines. Ensure the provider is configured
+      # in .env and the model is available/discoverable.
+      # Otherwise, leave commented out for automatic selection.
+      # provider: "openrouter"
+      # model: "google/gemini-flash-1.5:free"
       # Specify provider/model if auto-select isn't desired
-      provider: "ollama"
-      # Model name MUST include the provider prefix for local models
-      model: "ollama/llama3.2:3b-instruct-q4_K_M"
+      # provider: "ollama"
+      # # Model name MUST include the provider prefix for local models
+      # model: "ollama/llama3.2:3b-instruct-q4_K_M"
 
   - agent_id: "project_manager_agent"
     config:
-      provider: "ollama" # Or leave commented for auto-select
-      model: "ollama/llama3.2:3b-instruct-q4_K_M" # Or choose another capable model
+      # provider: "ollama" # Or leave commented for auto-select
+      # model: "ollama/llama3.2:3b-instruct-q4_K_M" # Or choose another capable model
       # system_prompt removed - Operational prompts are loaded from prompts.json by AgentWorkflowManager
       temperature: 0.5
       persona: "Project Manager (@pm_agent)"
+
+  # All other worker agents are created by the Project Manager (PM) agent defined by state specific system_prompts in prompts.json
 
   # --- Add more bootstrap agents here if needed ---
   # Example:

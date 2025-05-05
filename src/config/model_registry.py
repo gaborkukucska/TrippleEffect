@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # Default Ports and Public Endpoints
 DEFAULT_OLLAMA_PORT = 11434
 DEFAULT_LITELLM_PORT = 4000 # Adjust if your LiteLLM default is different
-OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+# REMOVED: OPENROUTER_MODELS_URL - Use settings or the direct URL in the function
 
 class ModelInfo(Dict):
     """Simple dictionary subclass for type hinting model info."""
@@ -29,7 +29,7 @@ class ModelRegistry:
     """
     Handles discovery, filtering, and storage of available LLM models
     from various providers. Includes local network scanning for Ollama/LiteLLM.
-    Applies filtering based on the MODEL_TIER environment variable.
+    Applies filtering based on the MODEL_TIER setting (LOCAL, FREE, ALL).
     Accepts settings object for configuration access.
     """
 
@@ -41,29 +41,18 @@ class ModelRegistry:
             settings_obj (Settings): The loaded application settings instance.
         """
         self.settings = settings_obj # Store settings instance
-        # Stores raw models before filtering, keyed by unique provider name (e.g., ollama-local-192-168-1-10)
         self._raw_models: Dict[str, List[ModelInfo]] = {}
-        # Stores models available *after* filtering and reachability checks
         self.available_models: Dict[str, List[ModelInfo]] = {}
-        # Stores reachable provider info: unique_provider_name -> base_url
         self._reachable_providers: Dict[str, str] = {}
-        # Tracks (service_type, port) for canonical local services already verified in this cycle
         self._verified_local_canonical_services: Set[Tuple[str, int]] = set()
-        # Use MODEL_TIER from the passed settings object
-        self._model_tier: str = getattr(self.settings, 'MODEL_TIER', 'ALL').upper()
-        self._model_cost: str = getattr(self.settings, 'MODEL_COST', 'ALL').upper()
-        logger.info(f"ModelRegistry initialized. MODEL_TIER='{self._model_tier}', MODEL_COST='{self._model_cost}'.")
-
-    async def discover_models_and_providers(self):
-        """ Coordinates provider reachability checks and model discovery, including local network scan. """
-        if self._model_tier == "FREE":
-            logger.info("MODEL_TIER is FREE, skipping remote provider discovery.")
-            self._reachable_providers = {}
+        self._model_tier: str = getattr(self.settings, 'MODEL_TIER', 'FREE').upper()
+        logger.info(f"ModelRegistry initialized. Effective MODEL_TIER='{self._model_tier}'.")
 
     async def _verify_and_fetch_models(self, base_url: str) -> Optional[Tuple[str, str, List[ModelInfo]]]:
         """
         Verifies a potential local API endpoint and fetches its models.
         Returns (unique_provider_name, verified_base_url, models_list) or None.
+        (No changes needed here for MODEL_TIER refactor)
         """
         logger.debug(f"Verifying potential local API at {base_url}...")
         verified_provider_name: Optional[str] = None
@@ -72,24 +61,14 @@ class ModelRegistry:
         # --- Generate unique provider name based on IP ---
         ip_suffix = "unknown-host" # Default
         try:
-            # Ensure http:// or https:// prefix for splitting
             if not base_url.startswith(('http://', 'https://')):
-                base_url_for_parse = f"http://{base_url}" # Assume http if missing
+                base_url_for_parse = f"http://{base_url}"
             else:
                 base_url_for_parse = base_url
-
             host = base_url_for_parse.split('//')[1].split('/')[0].split(':')[0]
-
-            if host.lower() == "localhost":
-                ip_suffix = "127-0-0-1" # Use loopback IP for localhost
-            else:
-                # Try parsing as IP address
-                ip_obj = ipaddress.ip_address(host)
-                # Sanitize IP for use in name
-                ip_suffix = str(ip_obj).replace('.', '-')
-        except Exception as e:
-            # Keep ip_suffix as "unknown-host" if parsing fails
-            logger.warning(f"Could not parse IP from host '{host}' in base_url {base_url} for naming: {e}")
+            if host.lower() == "localhost": ip_suffix = "127-0-0-1"
+            else: ip_obj = ipaddress.ip_address(host); ip_suffix = str(ip_obj).replace('.', '-')
+        except Exception as e: logger.warning(f"Could not parse IP from host '{host}' in base_url {base_url} for naming: {e}")
 
         # 1. Try Ollama check first (/api/tags)
         ollama_check_url = f"{base_url}/api/tags"
@@ -97,22 +76,17 @@ class ModelRegistry:
             async with aiohttp.ClientSession() as session:
                 async with session.get(ollama_check_url, timeout=5) as response:
                     if response.status == 200:
-                        data = await response.json(content_type=None) # Allow flexible content types
+                        data = await response.json(content_type=None)
                         models_data = data.get("models", [])
-                        if isinstance(models_data, list): # Check if it looks like Ollama's response
+                        if isinstance(models_data, list):
                             unique_provider_name = f"ollama-local-{ip_suffix}"
-                            # Store model ID only, provider name is the key in the dict
                             models_list = [ModelInfo(id=m.get("name")) for m in models_data if m.get("name")]
                             logger.info(f"Verified Ollama endpoint at {base_url} ({unique_provider_name}). Found {len(models_list)} models.")
-                            verified_provider_name = unique_provider_name # Mark as verified
-                        else:
-                            logger.debug(f"Endpoint {ollama_check_url} returned 200 but response format doesn't match Ollama /api/tags.")
-                    else:
-                        logger.debug(f"Ollama check failed for {base_url}. Status: {response.status}")
-        except (aiohttp.ClientConnectorError, asyncio.TimeoutError):
-            logger.debug(f"Ollama check: Connection failed or timed out for {base_url}.")
-        except Exception as e:
-            logger.warning(f"Error during Ollama check for {base_url}: {e}", exc_info=False)
+                            verified_provider_name = unique_provider_name
+                        else: logger.debug(f"Endpoint {ollama_check_url} returned 200 but response format doesn't match Ollama /api/tags.")
+                    else: logger.debug(f"Ollama check failed for {base_url}. Status: {response.status}")
+        except (aiohttp.ClientConnectorError, asyncio.TimeoutError): logger.debug(f"Ollama check: Connection failed or timed out for {base_url}.")
+        except Exception as e: logger.warning(f"Error during Ollama check for {base_url}: {e}", exc_info=False)
 
         # 2. If not verified as Ollama, try OpenAI standard check (/v1/models or /models)
         if not verified_provider_name:
@@ -123,33 +97,22 @@ class ModelRegistry:
                     async with aiohttp.ClientSession() as session:
                         async with session.get(check_url, timeout=5) as response:
                             if response.status == 200:
-                                data = await response.json(content_type=None) # Allow flexible content types
-                                models_data = data.get("data", []) # Standard OpenAI format
-                                # Check if it's a list and items have an 'id'
+                                data = await response.json(content_type=None)
+                                models_data = data.get("data", [])
                                 if isinstance(models_data, list) and models_data and isinstance(models_data[0], dict) and "id" in models_data[0]:
-                                    # Use a generic name like litellm-local-<ip> or similar
-                                    unique_provider_name = f"litellm-local-{ip_suffix}" # Assume LiteLLM or similar
-                                    # Store model ID only
+                                    unique_provider_name = f"litellm-local-{ip_suffix}"
                                     models_list = [ModelInfo(id=m.get("id")) for m in models_data if m.get("id")]
                                     logger.info(f"Verified OpenAI compatible endpoint at {base_url} ({unique_provider_name}). Found {len(models_list)} models.")
-                                    verified_provider_name = unique_provider_name # Mark as verified
-                                    break # Stop checking OpenAI endpoints if one works
-                                else:
-                                    logger.debug(f"Endpoint {check_url} returned 200 but response format doesn't match OpenAI /models.")
-                            else:
-                                logger.debug(f"OpenAI compatible check failed for {check_url}. Status: {response.status}")
-                except (aiohttp.ClientConnectorError, asyncio.TimeoutError):
-                     logger.debug(f"OpenAI compatible check: Connection failed or timed out for {check_url}.")
-                except Exception as e:
-                     logger.warning(f"Error during OpenAI compatible check for {check_url}: {e}", exc_info=False)
-                # If verified, break the inner loop
-                if verified_provider_name:
-                    break
+                                    verified_provider_name = unique_provider_name
+                                    break
+                                else: logger.debug(f"Endpoint {check_url} returned 200 but response format doesn't match OpenAI /models.")
+                            else: logger.debug(f"OpenAI compatible check failed for {check_url}. Status: {response.status}")
+                except (aiohttp.ClientConnectorError, asyncio.TimeoutError): logger.debug(f"OpenAI compatible check: Connection failed or timed out for {check_url}.")
+                except Exception as e: logger.warning(f"Error during OpenAI compatible check for {check_url}: {e}", exc_info=False)
+                if verified_provider_name: break
 
         if verified_provider_name and models_list:
-            # Add provider name to each model info dict for consistency if needed later
-            for model_info in models_list:
-                model_info['provider'] = verified_provider_name
+            for model_info in models_list: model_info['provider'] = verified_provider_name
             return verified_provider_name, base_url, models_list
         else:
             logger.debug(f"Could not verify {base_url} as either Ollama or OpenAI compatible.")
@@ -157,67 +120,62 @@ class ModelRegistry:
 
 
     async def discover_models_and_providers(self):
-        """ Coordinates provider reachability checks and model discovery, including local network scan. """
+        """ Coordinates provider reachability checks and model discovery, respecting MODEL_TIER setting. """
+        current_tier = self.settings.MODEL_TIER
+        logger.info(f"Model Registry: Starting discovery. Effective MODEL_TIER = {current_tier}")
+
         self._reachable_providers.clear()
-        self._raw_models = {} # Reset raw models completely
-        self._verified_local_canonical_services.clear() # Reset for this discovery cycle
-        logger.info("Starting provider reachability checks and discovery...")
+        self._raw_models = {}
+        self._verified_local_canonical_services.clear()
 
-        # --- 1. Discover Remote Providers (Based on .env config) ---
+        # --- 1. Discover Remote Providers (Conditional based on Tier) ---
         remote_discovery_tasks = []
-        if self.settings.is_provider_configured("openrouter"):
-            or_base = self.settings.OPENROUTER_BASE_URL or OPENROUTER_MODELS_URL.rsplit('/', 1)[0]
-            self._reachable_providers["openrouter"] = or_base.rstrip('/')
-            logger.debug(f"Adding OpenRouter for discovery (API key(s) present). Base: {self._reachable_providers['openrouter']}")
-            remote_discovery_tasks.append(self._discover_openrouter_models())
-        else:
-            logger.debug("Skipping OpenRouter discovery: No API key found in settings.")
+        if current_tier in ["FREE", "ALL"]:
+            logger.info(f"MODEL_TIER is {current_tier}, enabling remote provider discovery.")
+            if self.settings.is_provider_configured("openrouter"):
+                # ** FIX: Get base URL from settings object, which has default **
+                or_base = self.settings.OPENROUTER_BASE_URL
+                if or_base: # Ensure it's not None
+                    self._reachable_providers["openrouter"] = or_base.rstrip('/')
+                    logger.debug(f"Adding OpenRouter for discovery. Base: {self._reachable_providers['openrouter']}")
+                    remote_discovery_tasks.append(self._discover_openrouter_models())
+                else:
+                    logger.warning("OpenRouter base URL is None in settings, cannot add for discovery.")
+            else: logger.debug("Skipping OpenRouter discovery: Provider not configured in settings.")
 
-        if self.settings.is_provider_configured("openai"):
-            oa_base = self.settings.OPENAI_BASE_URL or "https://api.openai.com/v1"
-            self._reachable_providers["openai"] = oa_base.rstrip('/')
-            logger.debug(f"Adding OpenAI for discovery (API key(s) present). Base: {self._reachable_providers['openai']}")
-            remote_discovery_tasks.append(self._discover_openai_models())
-        else:
-            logger.debug("Skipping OpenAI discovery: No API key found in settings.")
-        # Add checks/discovery tasks for other remote providers similarly...
+            if self.settings.is_provider_configured("openai"):
+                # ** FIX: Get base URL from settings object **
+                oa_base = self.settings.OPENAI_BASE_URL or "https://api.openai.com/v1" # Fallback needed if None in settings
+                self._reachable_providers["openai"] = oa_base.rstrip('/')
+                logger.debug(f"Adding OpenAI for discovery. Base: {self._reachable_providers['openai']}")
+                remote_discovery_tasks.append(self._discover_openai_models())
+            else: logger.debug("Skipping OpenAI discovery: Provider not configured in settings.")
+        else: # current_tier == "LOCAL"
+             logger.info("MODEL_TIER=LOCAL, skipping remote provider discovery.")
 
-        # --- 2. Discover Local Providers (Check Localhost/Config, Scan Network, Verify All) ---
+        # --- 2. Discover Local Providers (Runs for all tiers) ---
+        # (No changes needed in local discovery itself)
         urls_to_verify = set()
-        processed_urls = set() # Track URLs successfully verified
-
-        # 2a. Add Localhost Defaults
+        processed_urls = set()
         logger.info("Adding default localhost endpoints for verification...")
         urls_to_verify.add(f"http://localhost:{DEFAULT_OLLAMA_PORT}")
         urls_to_verify.add(f"http://127.0.0.1:{DEFAULT_OLLAMA_PORT}")
         urls_to_verify.add(f"http://localhost:{DEFAULT_LITELLM_PORT}")
         urls_to_verify.add(f"http://127.0.0.1:{DEFAULT_LITELLM_PORT}")
 
-        # 2b. Add Explicitly Configured Local URLs (Optional - if you add such settings)
-        # Example: if self.settings.EXPLICIT_LOCAL_URLS: urls_to_verify.update(self.settings.EXPLICIT_LOCAL_URLS)
-
-        # 2c. Network Scan (If enabled)
         network_scan_urls = set()
         if self.settings.LOCAL_API_SCAN_ENABLED:
             logger.info("Starting network scan for local APIs...")
             try:
-                scanned_urls = await scan_for_local_apis(
-                    ports=self.settings.LOCAL_API_SCAN_PORTS,
-                    timeout=self.settings.LOCAL_API_SCAN_TIMEOUT
-                )
-                # Filter out localhost/loopback from scan results as they are added manually
+                scanned_urls = await scan_for_local_apis(ports=self.settings.LOCAL_API_SCAN_PORTS, timeout=self.settings.LOCAL_API_SCAN_TIMEOUT)
                 network_scan_urls = {url for url in scanned_urls if not ("localhost" in url or "127.0.0.1" in url)}
                 logger.info(f"Network scan completed. Found {len(network_scan_urls)} potential non-localhost endpoints.")
                 urls_to_verify.update(network_scan_urls)
-            except Exception as scan_err:
-                logger.error(f"Error during local network scan: {scan_err}", exc_info=True)
-        else:
-             logger.info("Local network scan is disabled in settings.")
+            except Exception as scan_err: logger.error(f"Error during local network scan: {scan_err}", exc_info=True)
+        else: logger.info("Local network scan is disabled in settings.")
 
-        # 2d. Verify All Unique Candidate URLs
         if urls_to_verify:
             logger.info(f"Verifying {len(urls_to_verify)} potential local endpoints...")
-            # Use list comprehension to avoid adding already processed URLs if the logic is complex
             urls_to_actually_verify = [url for url in urls_to_verify if url not in processed_urls]
             verification_tasks = [self._verify_and_fetch_models(url) for url in urls_to_actually_verify]
             verification_results = await asyncio.gather(*verification_tasks, return_exceptions=True)
@@ -226,114 +184,65 @@ class ModelRegistry:
                 if isinstance(result, tuple) and len(result) == 3:
                     provider_name, verified_url, models = result
                     if provider_name and verified_url and models:
-                        # --- Check for duplicate localhost/127.0.0.1 registration ---
                         try:
                             host_part = verified_url.split('//')[1].split('/')[0].split(':')[0]
-                            port_part_str = verified_url.split(':')[-1].split('/')[0] # Handle potential trailing slash
+                            port_part_str = verified_url.split(':')[-1].split('/')[0]
                             port_part = int(port_part_str)
                             is_loopback = host_part == "localhost" or host_part == "127.0.0.1"
-
                             if is_loopback:
-                                # Determine service type (e.g., 'ollama', 'litellm')
                                 service_type = "unknown"
                                 if provider_name.startswith("ollama-"): service_type = "ollama"
                                 elif provider_name.startswith("litellm-"): service_type = "litellm"
-                                # Add other types if needed
-
                                 canonical_service_id = (service_type, port_part)
-                                if canonical_service_id in self._verified_local_canonical_services:
-                                    logger.debug(f"Skipping registration for {verified_url}: Canonical service {canonical_service_id} already registered in this cycle.")
-                                    processed_urls.add(verified_url) # Still mark as processed to avoid re-verification attempts if logic changes
-                                    continue # Skip to the next result
-                                # Else, this is the first time we see this canonical service in this cycle
-                        except Exception as e:
-                             logger.warning(f"Error during duplicate check for {verified_url}: {e}. Proceeding with registration attempt.")
-                             is_loopback = False # Assume not loopback if parsing failed
+                                if canonical_service_id in self._verified_local_canonical_services: logger.debug(f"Skipping registration for {verified_url}: Canonical service {canonical_service_id} already registered."); processed_urls.add(verified_url); continue
+                        except Exception as e: logger.warning(f"Error during duplicate check for {verified_url}: {e}."); is_loopback = False
 
-                        # --- Proceed with registration if not a duplicate loopback ---
                         base_name = provider_name; counter = 1; unique_provider_name = provider_name
-                        while unique_provider_name in self._reachable_providers:
-                            unique_provider_name = f"{base_name}-{counter}"; counter += 1
-
-                        # Special handling for localhost Ollama to use canonical name 'ollama-local'
-                        if provider_name.startswith("ollama-local-") and is_loopback: # Use the is_loopback flag determined earlier
+                        while unique_provider_name in self._reachable_providers: unique_provider_name = f"{base_name}-{counter}"; counter += 1
+                        if provider_name.startswith("ollama-local-") and is_loopback:
                             canonical_name = "ollama-local"
-                            if canonical_name not in self._reachable_providers:
-                                 unique_provider_name = canonical_name # Use canonical name
-                                 logger.info(f"Assigning canonical name '{unique_provider_name}' to verified localhost Ollama at {verified_url}")
-                            else:
-                                 # This case should be less likely now due to the duplicate check above, but keep as safety
-                                 logger.warning(f"Canonical name '{canonical_name}' already assigned. Using dynamic name '{unique_provider_name}' for Ollama at {verified_url}")
+                            if canonical_name not in self._reachable_providers: unique_provider_name = canonical_name; logger.info(f"Assigning canonical name '{unique_provider_name}' to verified localhost Ollama at {verified_url}")
+                            else: logger.warning(f"Canonical name '{canonical_name}' already assigned. Using dynamic name '{unique_provider_name}' for Ollama at {verified_url}")
 
-                        # Register the provider
                         self._reachable_providers[unique_provider_name] = verified_url
-                        for m in models: m['provider'] = unique_provider_name # Ensure models have the final unique provider name
+                        for m in models: m['provider'] = unique_provider_name
                         self._raw_models[unique_provider_name] = models
-                        processed_urls.add(verified_url) # Mark URL as processed
-
-                        # If it was a successfully registered loopback, add to the tracking set and mark variations as processed
-                        if is_loopback:
-                            self._verified_local_canonical_services.add(canonical_service_id)
-                            processed_urls.add(f"http://localhost:{port_part}")
-                            processed_urls.add(f"http://127.0.0.1:{port_part}")
-
+                        processed_urls.add(verified_url)
+                        if is_loopback: self._verified_local_canonical_services.add(canonical_service_id); processed_urls.add(f"http://localhost:{port_part}"); processed_urls.add(f"http://127.0.0.1:{port_part}")
                         logger.info(f"Successfully registered discovered provider '{unique_provider_name}' at {verified_url} with {len(models)} models.")
-                elif isinstance(result, Exception):
-                    logger.error(f"Error during local API verification task: {result}", exc_info=result)
-                elif result is None:
-                    pass # Verification failed, already logged in _verify_and_fetch_models
-                else:
-                     logger.warning(f"Unexpected result type from verification task: {type(result)}")
-        else:
-             logger.info("No local endpoints found or configured to verify.")
+                elif isinstance(result, Exception): logger.error(f"Error during local API verification task: {result}", exc_info=result)
+                elif result is None: pass
+                else: logger.warning(f"Unexpected result type from verification task: {type(result)}")
+        else: logger.info("No local endpoints found or configured to verify.")
 
-        # --- 3. Handle Ollama Proxy (REMOVED) ---
-
-
-        # --- 4. Run Remote Discovery Tasks Concurrently ---
+        # --- 3. Run Remote Discovery Tasks Concurrently ---
         if remote_discovery_tasks:
             logger.info(f"Running {len(remote_discovery_tasks)} remote discovery tasks concurrently...")
             results = await asyncio.gather(*remote_discovery_tasks, return_exceptions=True)
-            # Log any errors from remote discovery tasks
             for i, result in enumerate(results):
                  if isinstance(result, Exception):
-                     # Attempt to identify which task failed (might be fragile)
-                     failed_task_provider = "Unknown Remote"
-                     # This mapping needs to be kept in sync with the order tasks are added
                      provider_map = []
-                     if self.settings.is_provider_configured("openrouter"): provider_map.append("openrouter")
-                     if self.settings.is_provider_configured("openai"): provider_map.append("openai")
-                     # Add other remote providers here if needed
-                     if i < len(provider_map):
-                         failed_task_provider = provider_map[i]
-
+                     if current_tier in ["FREE", "ALL"]:
+                        if self.settings.is_provider_configured("openrouter"): provider_map.append("openrouter")
+                        if self.settings.is_provider_configured("openai"): provider_map.append("openai")
+                     failed_task_provider = provider_map[i] if i < len(provider_map) else "Unknown Remote"
                      logger.error(f"Error during model discovery for provider '{failed_task_provider}': {result}", exc_info=result)
-        else:
-             logger.info("No remote discovery tasks to run.")
+        else: logger.info("No remote discovery tasks scheduled based on MODEL_TIER setting.")
 
-
-        # --- 5. Final Filtering and Logging ---
+        # --- 4. Final Filtering and Logging ---
         if not self._reachable_providers:
              logger.warning("No providers found reachable after all checks. Model registry will be empty.")
-             self.available_models = {}
-             return
+             self.available_models = {}; return
 
-        self._apply_filters()
+        self._apply_filters() # Call the refactored filtering method
         logger.info("Provider and model discovery/filtering complete.")
-        self._log_available_models() # Log the final list
+        self._log_available_models()
 
-    # --- Helper for Formatting/Logging ---
+    # --- Helper for Formatting/Logging (Unchanged) ---
     def _format_model_list_output(self, include_header: bool = True) -> str:
-        """ Formats the available models for display or logging. """
         if not self.available_models: return "Model Availability: No models discovered or available after filtering." if include_header else "No models available."
-
-        lines = []
-        if include_header: lines.append("**Currently Available Models (Based on config & tier):**")
-        found_any = False
-        # Group by base type for better display
-        provider_groups: Dict[str, List[Tuple[str, List[ModelInfo]]]] = {
-            "ollama": [], "litellm": [], "openrouter": [], "openai": [], "other": []
-        }
+        lines = []; found_any = False
+        provider_groups: Dict[str, List[Tuple[str, List[ModelInfo]]]] = {"ollama": [], "litellm": [], "openrouter": [], "openai": [], "other": []}
         for provider, models in self.available_models.items():
             base_type = "other"
             if provider.startswith("ollama"): base_type = "ollama"
@@ -341,178 +250,133 @@ class ModelRegistry:
             elif provider == "openrouter": base_type = "openrouter"
             elif provider == "openai": base_type = "openai"
             provider_groups[base_type].append((provider, models))
-
         try:
             for base_type in ["ollama", "litellm", "openrouter", "openai", "other"]:
-                group = sorted(provider_groups[base_type], key=lambda item: item[0]) # Sort instances alphabetically
+                group = sorted(provider_groups[base_type], key=lambda item: item[0])
                 if not group: continue
-
                 for provider, models in group:
                      model_names = sorted([m.get("id", "?") for m in models])
                      if model_names:
-                         # Determine tag (Local Discovered, Local Proxy, Remote)
-                         tag = ""
-                         if provider == "ollama-proxy": tag = " (Local Proxy)"
+                         tag = ""; prefix = ""
+                         if provider == "ollama-proxy": tag = " (Local Proxy)" # Keep proxy tag if it appears
                          elif "-local-" in provider: tag = " (Local Discovered)"
-                         elif provider in ["openrouter", "openai"]: tag = " (Remote)" # Add tag for remote
-
-                         # Add prefix for local models for clarity
-                         prefix = ""
-                         if tag: # Add prefix only if it's local or proxy
-                             prefix = provider.split('-local-')[0].split('-proxy')[0] + "/"
-
+                         elif provider in ["openrouter", "openai"]: tag = " (Remote)"
+                         if provider.startswith("ollama") or provider.startswith("litellm"): prefix = provider.split('-local-')[0].split('-proxy')[0] + "/"
                          display_names = [f"{prefix}{name}" for name in model_names]
-
-                         # Use different formatting for log vs. display
-                         if include_header: # Formatting for display (e.g., markdown)
-                              lines.append(f"- **{provider}{tag}**: `{', '.join(display_names)}`")
-                         else: # Formatting for logging
-                              lines.append(f"  {provider}{tag}: {len(display_names)} models -> {display_names}")
+                         if include_header: lines.append(f"- **{provider}{tag}**: `{', '.join(display_names)}`")
+                         else: lines.append(f"  {provider}{tag}: {len(display_names)} models -> {display_names}")
                          found_any = True
-
             if not found_any: return "Model Availability: No models discovered or available after filtering." if include_header else "No models available."
             return "\n".join(lines)
-        except Exception as e:
-             logger.error(f"Error formatting available models: {e}")
-             return "**Error:** Could not format available models list." if include_header else "Error formatting model list."
+        except Exception as e: logger.error(f"Error formatting available models: {e}"); return "**Error:** Could not format available models list." if include_header else "Error formatting model list."
 
-    # --- Keep existing model discovery methods for remote providers ---
+    # --- Remote Model Discovery Methods (Unchanged) ---
     async def _discover_openrouter_models(self):
-        """ Fetches models using the confirmed reachable URL and an API key. """
         logger.debug("Discovering OpenRouter models...")
         provider_url = self._reachable_providers.get("openrouter")
         if not provider_url: logger.warning("Skipping OpenRouter model discovery: provider not marked as reachable."); return
-
         openrouter_keys = self.settings.PROVIDER_API_KEYS.get("openrouter")
-        if not openrouter_keys:
-            logger.error("Cannot discover OpenRouter models: No API key found in settings.")
-            self._reachable_providers.pop("openrouter", None)
-            return
-        discovery_key = openrouter_keys[0]
-
-        models_url = f"{provider_url}/models"
-        headers = {"Authorization": f"Bearer {discovery_key}"}
-
+        if not openrouter_keys: logger.error("Cannot discover OpenRouter models: No API key found."); self._reachable_providers.pop("openrouter", None); return
+        discovery_key = openrouter_keys[0]; models_url = f"{provider_url}/models"; headers = {"Authorization": f"Bearer {discovery_key}"}
         try:
             async with aiohttp.ClientSession(headers=headers) as session:
                 logger.debug(f"Requesting OpenRouter models from {models_url} using key ending '...{discovery_key[-4:]}'")
                 async with session.get(models_url, timeout=20) as response:
                     if response.status == 200:
                         data = await response.json(); models_data = data.get("data", [])
-                        if models_data:
-                            # Store under the canonical 'openrouter' key
-                            self._raw_models["openrouter"] = [ModelInfo(id=m.get("id"), name=m.get("name"), description=m.get("description"), provider="openrouter") for m in models_data if m.get("id")]
-                            logger.info(f"Discovered {len(self._raw_models['openrouter'])} models from OpenRouter.")
+                        if models_data: self._raw_models["openrouter"] = [ModelInfo(id=m.get("id"), name=m.get("name"), description=m.get("description"), provider="openrouter") for m in models_data if m.get("id")]; logger.info(f"Discovered {len(self._raw_models['openrouter'])} models from OpenRouter.")
                         else: logger.warning("OpenRouter models endpoint returned empty data list.")
-                    else:
-                        error_text = await response.text()
-                        logger.error(f"Failed to fetch OpenRouter models from {models_url}. Status: {response.status}, Response: {error_text[:200]}")
-                        self._reachable_providers.pop("openrouter", None)
-                        logger.warning("Removed OpenRouter from reachable providers due to model discovery failure.")
-        except Exception as e:
-             logger.error(f"Error fetching OpenRouter models from {models_url}: {e}", exc_info=True)
-             self._reachable_providers.pop("openrouter", None)
-             logger.warning("Removed OpenRouter from reachable providers due to exception during model discovery.")
-
+                    else: error_text = await response.text(); logger.error(f"Failed to fetch OpenRouter models. Status: {response.status}, Response: {error_text[:200]}"); self._reachable_providers.pop("openrouter", None); logger.warning("Removed OpenRouter from reachable providers.")
+        except Exception as e: logger.error(f"Error fetching OpenRouter models: {e}", exc_info=True); self._reachable_providers.pop("openrouter", None); logger.warning("Removed OpenRouter from reachable providers.")
 
     async def _discover_openai_models(self):
-        """ Manually adds common OpenAI models if the provider is potentially reachable (key exists). """
         logger.debug("Checking for configured OpenAI...")
-        if "openai" not in self._reachable_providers:
-            logger.debug("Skipping OpenAI model adding: provider not marked as reachable.")
-            return
+        if "openai" not in self._reachable_providers: logger.debug("Skipping OpenAI model adding: provider not marked as reachable."); return
         common_openai = ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"]
-        # Ensure the key exists before adding
         if "openai" not in self._raw_models: self._raw_models["openai"] = []
         added_count = 0
         for model_name in common_openai:
-             if not any(existing_m.get('id') == model_name for existing_m in self._raw_models["openai"]):
-                 self._raw_models["openai"].append(ModelInfo(id=model_name, name=model_name, provider="openai"))
-                 added_count += 1
-        if added_count > 0: logger.info(f"Manually added {added_count} common models for potentially reachable OpenAI provider: {common_openai}")
+             if not any(existing_m.get('id') == model_name for existing_m in self._raw_models["openai"]): self._raw_models["openai"].append(ModelInfo(id=model_name, name=model_name, provider="openai")); added_count += 1
+        if added_count > 0: logger.info(f"Manually added {added_count} common models for OpenAI: {common_openai}")
         else: logger.debug("Common OpenAI models already present or none to add.")
 
 
+    # --- _apply_filters (REFACTORED for new MODEL_TIER logic) ---
     def _apply_filters(self):
-        """ Filters raw models based on reachability and tier using self._model_tier. """
+        """ Filters raw models based on reachability and the MODEL_TIER setting. """
         self.available_models = {} # Start fresh
-        logger.debug(f"Applying filters. Tier='{self._model_tier}'. Reachable providers: {list(self._reachable_providers.keys())}")
+        current_tier = self.settings.MODEL_TIER # Get tier from settings
+        logger.info(f"Model Registry: Applying filters. Tier='{current_tier}'. Reachable providers: {list(self._reachable_providers.keys())}")
 
         for provider, models in self._raw_models.items():
             if provider not in self._reachable_providers:
                 logger.warning(f"Provider '{provider}' found in raw models but not in reachable list. Skipping filtering.")
-                continue # Skip if provider somehow isn't marked reachable
+                continue
 
-            # Determine if it's a local provider based on naming convention or type
-            is_local = "-local-" in provider or provider == "ollama-proxy"
+            # Identify provider type (more robustly)
+            is_local = provider.startswith("ollama-local") or provider.startswith("litellm-local") or provider == "ollama-proxy"
+            logger.debug(f"Filtering provider '{provider}'. Identified as Local: {is_local}")
 
             if is_local:
-                 # Include all models for reachable local providers
+                 # Local providers are always included, regardless of tier.
                  self.available_models[provider] = models
-                 logger.debug(f"Included all {len(models)} discovered models for reachable local provider '{provider}'.")
-            elif provider in ["openrouter", "openai"]: # Handle known remote providers
+                 logger.info(f"Tier Filter ({current_tier}): Included all {len(models)} discovered models for reachable local provider '{provider}'.")
+            elif current_tier != "LOCAL": # Process remote providers only if tier is FREE or ALL
                 filtered_list = []
+                skipped_count = 0
                 for model in models:
-                    model_id = model.get("id", ""); is_free = ":free" in model_id.lower() if provider == "openrouter" else False
-                    if self._model_tier == "FREE":
-                        if is_free: filtered_list.append(model)
-                    elif self._model_tier == "ALL":
+                    model_id = model.get("id", "")
+                    # **FIX**: Assume only OpenRouter uses ':free' suffix for now
+                    is_free_remote = provider == "openrouter" and ":free" in model_id.lower()
+
+                    if current_tier == "FREE":
+                        if is_free_remote:
+                            filtered_list.append(model)
+                        else:
+                            # Log skipped non-free models when tier is FREE
+                            logger.debug(f"Tier Filter (FREE): Skipping remote model '{provider}/{model_id}' (not marked as free).")
+                            skipped_count += 1
+                    elif current_tier == "ALL":
+                        # Include all models (free and non-free) for reachable remote providers
                         filtered_list.append(model)
-                if filtered_list: # Only add provider if it has models after filtering
+
+                if filtered_list:
                     self.available_models[provider] = filtered_list
-                    logger.debug(f"Included {len(filtered_list)} models for reachable remote provider '{provider}' after tier filtering.")
-            else:
-                 # This case should ideally not happen if raw_models only contains reachable providers
-                 logger.warning(f"Provider '{provider}' found in raw models but not recognized as local or known remote during filtering. Skipping.")
+                    logger.info(f"Tier Filter ({current_tier}): Included {len(filtered_list)} models for reachable remote provider '{provider}'. Skipped: {skipped_count}.")
+                else:
+                    logger.info(f"Tier Filter ({current_tier}): No models included for remote provider '{provider}'. Skipped: {skipped_count}.")
+            # else: current_tier is LOCAL, remote providers were already skipped during discovery initiation
 
-        # Clean up empty provider entries just in case
+        # Clean up empty provider entries
+        original_count = len(self.available_models)
         self.available_models = {p: m for p, m in self.available_models.items() if m}
+        if len(self.available_models) < original_count:
+             logger.info(f"Removed {original_count - len(self.available_models)} providers with no available models after filtering.")
+
+        logger.info(f"Filtering complete. Final available provider count: {len(self.available_models)}")
 
 
-    # --- Getter Methods (Updated for dynamic local providers) ---
+    # --- Getter Methods (Unchanged) ---
     def get_available_models_list(self, provider: Optional[str] = None) -> List[str]:
         """ Gets a list of available model IDs, optionally filtered by provider (base name or specific instance). """
         model_ids = set()
-        provider_order = ["ollama", "litellm", "openrouter", "openai"] # Base types for ordering
-
-        # Handle specific provider request
+        provider_order = ["ollama", "litellm", "openrouter", "openai"]
         if provider:
-            # Check exact match first (e.g., 'openrouter', 'ollama-local-192-168-1-10')
-            if provider in self.available_models:
-                 return sorted([m.get("id", "unknown") for m in self.available_models[provider]])
+            if provider in self.available_models: return sorted([m.get("id", "unknown") for m in self.available_models[provider]])
             else:
-                 # Check if it's a base name for local providers (e.g., 'ollama')
                  matching_providers = [p for p in self.available_models if p.startswith(f"{provider}-local-") or p == f"{provider}-proxy"]
                  if matching_providers:
-                      for p_match in matching_providers:
-                           model_ids.update([m.get("id", "unknown") for m in self.available_models[p_match]])
+                      for p_match in matching_providers: model_ids.update([m.get("id", "unknown") for m in self.available_models[p_match]])
                       return sorted(list(model_ids))
-                 else:
-                      return [] # Provider not found
-
-        # Get all models if no specific provider requested, maintaining some order
-        processed_providers = set()
-        final_model_list = []
-
-        # Process known base types and their dynamic instances first
+                 else: return []
+        processed_providers = set(); final_model_list = []
         for p_base in provider_order:
-             # Add models from discovered local instances of this type
              matching_local = sorted([p for p in self.available_models if p.startswith(f"{p_base}-local-") or p == f"{p_base}-proxy"])
              for p_local in matching_local:
-                  if p_local not in processed_providers:
-                       final_model_list.extend([m.get("id", "unknown") for m in self.available_models[p_local]])
-                       processed_providers.add(p_local)
-             # Add models from the base remote provider if it exists (e.g., openrouter)
-             if p_base in self.available_models and p_base not in processed_providers:
-                  final_model_list.extend([m.get("id", "unknown") for m in self.available_models[p_base]])
-                  processed_providers.add(p_base)
-
-        # Add any remaining providers not in the standard order
+                  if p_local not in processed_providers: final_model_list.extend([m.get("id", "unknown") for m in self.available_models[p_local]]); processed_providers.add(p_local)
+             if p_base in self.available_models and p_base not in processed_providers: final_model_list.extend([m.get("id", "unknown") for m in self.available_models[p_base]]); processed_providers.add(p_base)
         for p_rem in sorted(self.available_models.keys()):
-            if p_rem not in processed_providers:
-                 final_model_list.extend([m.get("id", "unknown") for m in self.available_models[p_rem]])
-
-        # Return unique sorted list
+            if p_rem not in processed_providers: final_model_list.extend([m.get("id", "unknown") for m in self.available_models[p_rem]])
         return sorted(list(set(final_model_list)))
 
 
@@ -522,31 +386,16 @@ class ModelRegistry:
 
     def find_provider_for_model(self, model_id: str) -> Optional[str]:
         """ Finds the unique provider name (potentially dynamic) for a given model ID. """
-        target_model_name = model_id
-        provider_prefix_search = None
-
-        # Handle prefixed names like 'ollama/llama3'
-        if '/' in model_id:
-            provider_prefix_search, target_model_name = model_id.split('/', 1)
-
-        # Search all available providers
+        target_model_name = model_id; provider_prefix_search = None
+        if '/' in model_id: provider_prefix_search, target_model_name = model_id.split('/', 1)
         for provider_name, models in self.available_models.items():
-            # Check if the model exists under this provider
             if any(m.get("id") == target_model_name for m in models):
-                # If a prefix was provided, ensure it matches the provider's base type
                 if provider_prefix_search:
                     base_provider_type = provider_name.split('-local-')[0].split('-proxy')[0]
-                    if base_provider_type == provider_prefix_search:
-                        return provider_name
-                else:
-                    # No prefix provided, return the first match
-                    return provider_name
-
-        # If prefix search failed, maybe the prefix itself is the provider name (e.g., 'openrouter')
+                    if base_provider_type == provider_prefix_search: return provider_name
+                else: return provider_name
         if provider_prefix_search and provider_prefix_search in self.available_models:
-             if any(m.get("id") == target_model_name for m in self.available_models[provider_prefix_search]):
-                  return provider_prefix_search
-
+             if any(m.get("id") == target_model_name for m in self.available_models[provider_prefix_search]): return provider_prefix_search
         logger.debug(f"Could not find provider for model ID '{model_id}' (target name: '{target_model_name}')")
         return None
 
@@ -558,23 +407,25 @@ class ModelRegistry:
     def is_model_available(self, provider: str, model_id: str) -> bool:
         """ Checks if a specific model ID is available under a given provider name (potentially dynamic). """
         if provider not in self.available_models: return False
-        # Model IDs in the registry do not have prefixes
         return any(m.get("id") == model_id for m in self.available_models[provider])
 
     def get_reachable_provider_url(self, provider: str) -> Optional[str]:
         """ Gets the base URL for a reachable provider (potentially dynamic). """
         return self._reachable_providers.get(provider)
 
+    def is_provider_discovered(self, provider_name: str) -> bool:
+        """ Checks if a provider is discovered. """
+        return provider_name in self.available_models
+
+    # --- _log_available_models (Unchanged) ---
     def _log_available_models(self):
         """ Logs the available models using the helper method. """
         log_output = self._format_model_list_output(include_header=False)
         if log_output == "No models available.":
-             logger.warning(log_output)
+             logger.warning("Model Availability: No models discovered or available after filtering.")
         else:
-             logger.info("--- Available Models (from Reachable Providers) ---")
-             # Log each line from the formatted output
-             for line in log_output.splitlines():
-                 logger.info(line)
-             logger.info("--------------------------------------------------")
+             logger.info("--- Available Models (Filtered by Reachability & Tier) ---")
+             for line in log_output.splitlines(): logger.info(line)
+             logger.info("-------------------------------------------------------------")
 
 # END OF FILE src/config/model_registry.py

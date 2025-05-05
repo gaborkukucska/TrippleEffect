@@ -143,7 +143,9 @@ class ProviderKeyManager:
             self._unquarantine_expired_keys_sync()
             keys = self._provider_keys.get(provider)
             if not keys:
-                if provider in ["ollama", "litellm"]: return self._settings.get_provider_config(provider)
+                # For local providers or when no keys are configured, return base config
+                if provider in ["ollama", "ollama-local", "litellm", "litellm-local"]:
+                    return self._settings.get_provider_config(provider)
                 logger.debug(f"No API keys configured for provider: {provider}")
                 return None
 
@@ -181,6 +183,10 @@ class ProviderKeyManager:
 
     async def is_provider_depleted(self, provider: str) -> bool:
         """ Checks if all configured keys for a provider are quarantined. """
+        if provider in ["ollama", "ollama-local", "litellm", "litellm-local"]:
+            # Local providers are not considered depleted based on keys
+            return False
+
         async with self._lock:
             self._unquarantine_expired_keys_sync()
             keys = self._provider_keys.get(provider)

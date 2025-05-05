@@ -105,89 +105,74 @@ async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optiona
     )
     # --- END NEW SORT ---
 
-    # Try ranked models first (using the newly sorted list)
-    if ranked_models_sorted:
-        logger.debug(f"Ranking based selection: {len(ranked_models_sorted)} models ranked (Score then Size). Checking availability, keys, and tier...")
-        for provider_base, model_suffix, score, _ in ranked_models_sorted: # Use sorted list
-            # --- ADDED: Tier Check ---
-            is_free_tier_model = ":free" in model_suffix.lower()
-            if current_model_tier == "FREE" and not is_free_tier_model and provider_base == "openrouter": # Only OpenRouter has explicit free tier marking for now
-                 logger.debug(f"Auto-select skipping ranked {provider_base}/{model_suffix} (score {score}): Does not meet FREE tier requirement.")
-                 continue
-            # --- END Tier Check ---
+    if current_model_tier == "LOCAL":
+        logger.info("Automatic selection: MODEL_TIER=LOCAL - prioritizing local models")
+        # Prioritize local providers when MODEL_TIER=LOCAL
+        local_providers = [p for p in available_dict if p.endswith("-local") or p.endswith("-local-127-0-0-1")]
+        if local_providers:
+            first_local_provider = local_providers[0]
+            models = available_dict.get(first_local_provider, [])
+            if models:
+                first_model = models[0].get("id")
+                if first_model:
+                    logger.info(f"Automatic selection (LOCAL tier): Selected {first_local_provider}/{first_model}")
+                    return first_local_provider, first_model
+        logger.warning("Automatic selection: No local models found despite MODEL_TIER=LOCAL")
 
-            # Find a specific reachable instance for this base provider type
-            specific_provider_instance = None
-            # Look for dynamic local, proxy, or the base name itself if remote/configured directly
-            matching_providers = [p for p in model_registry._reachable_providers if p.startswith(f"{provider_base}-local-") or p == f"{provider_base}-proxy" or p == provider_base]
-            if not matching_providers:
-                 logger.debug(f"Auto-select skipping {provider_base}/{model_suffix} (score {score}): No reachable instance found for base provider.")
-                 continue
-            specific_provider_instance = matching_providers[0] # Take the first reachable one
-
-            # Check if the model suffix is available on that specific instance
-            if not model_registry.is_model_available(specific_provider_instance, model_suffix):
-                logger.debug(f"Auto-select skipping {provider_base}/{model_suffix} (score {score}): Model not available on reachable instance '{specific_provider_instance}'.")
-                continue
-
-            # Check key depletion for remote providers (using base name)
-            if provider_base not in ["ollama", "litellm"]:
-                 if await manager.key_manager.is_provider_depleted(provider_base):
-                     logger.debug(f"Auto-select skipping {provider_base}/{model_suffix} (score {score}): Provider keys depleted.")
-                     continue
-
-            logger.info(f"Automatic selection successful (Ranked): Selected {specific_provider_instance}/{model_suffix} (Score: {score})")
-            return specific_provider_instance, model_suffix
-        logger.warning("Automatic selection: No ranked models passed availability/key/tier checks. Falling back to registry order.")
-
-    # Fallback to registry order if ranking fails or no ranked models
-    provider_order = ["ollama", "litellm", "openrouter", "openai"] # Prioritize local base types
-    for provider_base in provider_order:
-        # Find reachable instances of this base type
-        matching_providers = sorted([p for p in available_dict if p.startswith(f"{provider_base}-local-") or p == f"{provider_base}-proxy" or p == provider_base])
-        if not matching_providers: continue # Skip if no instance of this type is reachable
-
-        # Check key depletion for remote base type
-        if provider_base not in ["ollama", "litellm"] and await manager.key_manager.is_provider_depleted(provider_base):
-            logger.debug(f"Fallback selection skipping base provider {provider_base}: depleted keys.")
-            continue
-
-        # --- MODIFIED: Iterate through models to find largest valid one ---
-        first_reachable_instance = matching_providers[0] # Still prioritize first reachable instance of this type
-        models_on_instance = available_dict.get(first_reachable_instance, [])
-        best_fallback_model_suffix = None
-        best_fallback_model_size = -1.0 # Initialize size tracker
-
-        if models_on_instance:
-            logger.debug(f"Fallback: Checking {len(models_on_instance)} models on instance '{first_reachable_instance}' for tier '{current_model_tier}'...")
-            for model_info in models_on_instance:
-                model_id_suffix = model_info.get("id")
-                if not model_id_suffix: continue
-
-                # Apply tier filter
-                is_free_tier_model = ":free" in model_id_suffix.lower()
-                if current_model_tier == "FREE" and not is_free_tier_model and provider_base == "openrouter":
-                    logger.debug(f"Fallback skipping model '{model_id_suffix}': Does not meet FREE tier requirement.")
+    # For FREE tier or when no local models are available
+    if current_model_tier == "FREE":
+        logger.info("Automatic selection: MODEL_TIER=FREE - checking free/local models")
+        # Try ranked models first
+        if ranked_models_sorted:
+            logger.debug(f"Ranking based selection: {len(ranked_models_sorted)} models ranked. Checking availability, keys, and tier...")
+            for provider_base, model_suffix, score, _ in ranked_models_sorted:
+                is_local = provider_base in ["ollama", "litellm"]
+                is_free_tier_model = ":free" in model_suffix.lower()
+                
+                if not is_free_tier_model and not is_local:
                     continue
 
-                # Extract size and compare
-                current_model_size = _extract_model_size_b(model_id_suffix)
-                if current_model_size > best_fallback_model_size:
-                    best_fallback_model_suffix = model_id_suffix
-                    best_fallback_model_size = current_model_size
-                    logger.debug(f"Fallback: Found new largest valid model '{model_id_suffix}' (Size: {current_model_size}b)")
+                matching_providers = [p for p in model_registry._reachable_providers 
+                                    if p.startswith(f"{provider_base}-local-") or 
+                                       p == f"{provider_base}-proxy" or 
+                                       p == provider_base]
+                
+                if not matching_providers:
+                    continue
+                    
+                specific_provider = matching_providers[0]
+                if model_registry.is_model_available(specific_provider, model_suffix):
+                    if is_local:
+                        canonical_id = f"{provider_base}/{model_suffix}"
+                    else:
+                        canonical_id = model_suffix
+                        
+                    if provider_base not in ["ollama", "litellm"]:
+                        if await manager.key_manager.is_provider_depleted(provider_base):
+                            continue
+                            
+                    logger.info(f"Automatic selection successful (Ranked): Selected {specific_provider}/{model_suffix}")
+                    return specific_provider, model_suffix
 
-            # After checking all models on this instance, select the best one found
-            if best_fallback_model_suffix:
-                logger.info(f"Automatic selection (Fallback): Selected largest valid model '{first_reachable_instance}/{best_fallback_model_suffix}' (Size: {best_fallback_model_size}b)")
-                return first_reachable_instance, best_fallback_model_suffix # Return specific instance and selected suffix
-            else:
-                 logger.debug(f"Fallback: No models meeting tier '{current_model_tier}' found on instance '{first_reachable_instance}'.")
-        else:
-             logger.debug(f"Fallback: No models listed for instance '{first_reachable_instance}'.")
-        # --- END MODIFIED ---
+        # Fallback to registry order for FREE tier
+        for provider_base in ["ollama", "litellm", "openrouter", "openai"]:
+            matching_providers = [p for p in available_dict if 
+                                p == provider_base or 
+                                p.startswith(f"{provider_base}-local-") or 
+                                p == f"{provider_base}-proxy"]
+            if matching_providers:
+                first_matching_provider = matching_providers[0]
+                models = available_dict.get(first_matching_provider, [])
+                for model_info in models:
+                    model_id = model_info.get("id")
+                    if model_id:
+                        is_free_tier = ":free" in model_id.lower()
+                        is_local = first_matching_provider.startswith(("ollama-local", "litellm-local")) or first_matching_provider.endswith("-proxy")
+                        if is_free_tier or is_local:
+                            logger.info(f"Automatic selection (FREE tier fallback): Selected {first_matching_provider}/{model_id}")
+                            return first_matching_provider, model_id
 
-    logger.error("Automatic selection failed: No available models found in registry fallback.")
+    logger.error("Automatic model selection failed: No available models found that match the MODEL_TIER requirements")
     return None, None
 # --- END Automatic Model Selection Logic ---
 
@@ -231,15 +216,27 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
         # --- Step 1: Attempt to use config.yaml values ---
         if config_provider and config_model:
             logger.info(f"Lifecycle: Agent '{agent_id}' defined in config.yaml: Provider='{config_provider}', Model='{config_model}'")
-            # Check if base provider type is configured in .env
-            provider_configured = settings.is_provider_configured(config_provider)
-            if not provider_configured:
-                logger.warning(f"Lifecycle: Base provider '{config_provider}' specified for agent '{agent_id}' is not configured in .env. Ignoring config.")
+        # Check if base provider type is configured/discovered
+        if config_provider:
+            if config_provider in ["ollama", "litellm"]:
+                # For local providers, check if they are discovered by ModelRegistry
+                discovered_providers = list(model_registry.available_models.keys())
+                matching_local_providers = [p for p in discovered_providers if p.startswith(f"{config_provider}-local-")]
+                if not matching_local_providers:
+                    logger.warning(f"Lifecycle: Local provider '{config_provider}' specified for agent '{agent_id}' is not discovered. Ignoring config.")
+                    use_config_value = False
+                else:
+                    use_config_value = True
             else:
+                # For remote providers, check if they are configured in .env
+                provider_configured = settings.is_provider_configured(config_provider)
+                if not provider_configured:
+                    use_config_value = False
+                else:
                 # Validate format and get model suffix
-                is_local_provider_cfg = config_provider in ["ollama", "litellm"]
-                model_id_suffix = None
-                format_valid = True
+                    is_local_provider_cfg = config_provider in ["ollama", "litellm"]
+                    model_id_suffix = None
+                    format_valid = True
 
                 if is_local_provider_cfg:
                     if config_model.startswith(f"{config_provider}/"):
@@ -321,9 +318,11 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
         # Check key depletion only for remote providers, using the base name
         base_provider_name = final_provider_for_creation.split('-local-')[0].split('-proxy')[0]
         if base_provider_name not in ["ollama", "litellm"]:
-             if await manager.key_manager.is_provider_depleted(base_provider_name):
-                  logger.error(f"Lifecycle: Cannot initialize '{agent_id}': All keys for selected provider '{base_provider_name}' (base for '{final_provider_for_creation}', method: {selection_method}) are quarantined. Skipping.")
-                  continue
+            if await manager.key_manager.is_provider_depleted(base_provider_name):
+                logger.error(f"Lifecycle: Cannot initialize '{agent_id}': All keys for selected provider '{base_provider_name}' (base for '{final_provider_for_creation}', method: {selection_method}) are quarantined. Skipping.")
+                continue
+        else:
+            logger.debug(f"Skipping key depletion check for local provider '{base_provider_name}'")
         # --- End Final Provider Checks ---
 
         # --- Step 4: Assemble Prompt (REMOVED Admin AI specific logic here) ---
@@ -465,17 +464,22 @@ async def _create_agent_internal(
     if not provider_name or not model_id_canonical:
          msg = f"Lifecycle Error: Missing final provider or model for agent '{agent_id}'."; logger.error(msg); return False, msg, None
 
-    # Check configuration/depletion using the *base* provider name if it's dynamic local
+        # Check configuration/depletion using the *base* provider name if it's dynamic local
     is_dynamic_local = "-local-" in provider_name or "-proxy" in provider_name
-    check_provider_name = provider_name.split('-local-')[0].split('-proxy')[0] if is_dynamic_local else provider_name
+    base_provider_name = provider_name.split('-local-')[0].split('-proxy')[0] if is_dynamic_local else provider_name
 
-    # Skip .env config check for dynamic local providers, as their config comes from discovery
-    if not is_dynamic_local and not settings.is_provider_configured(check_provider_name):
-        msg = f"Lifecycle: Provider '{check_provider_name}' (base for '{provider_name}', source: {selection_source}) not configured in .env settings."; logger.error(msg); return False, msg, None
+    if is_dynamic_local:
+            # For dynamic local providers, check if they are discovered by ModelRegistry
+            if not model_registry.is_provider_discovered(provider_name):
+                msg = f"Lifecycle: Local provider '{provider_name}' (base for '{base_provider_name}', source: {selection_source}) not discovered by ModelRegistry."; logger.error(msg); return False, msg, None
+    else:
+            # For remote providers, check if they are configured in .env
+            if not settings.is_provider_configured(base_provider_name):
+                msg = f"Lifecycle: Provider '{base_provider_name}' (base for '{provider_name}', source: {selection_source}) not configured in .env settings."; logger.error(msg); return False, msg, None
 
-    # Key depletion check still applies to the base provider name for remote providers
-    if check_provider_name not in ["ollama", "litellm"] and await manager.key_manager.is_provider_depleted(check_provider_name):
-        msg = f"Lifecycle: Cannot create agent '{agent_id}': All keys for '{check_provider_name}' (base for '{provider_name}', source: {selection_source}) are quarantined."; logger.error(msg); return False, msg, None
+            # Key depletion check still applies to the base provider name for remote providers
+            if base_provider_name not in ["ollama", "litellm"] and await manager.key_manager.is_provider_depleted(base_provider_name):
+                msg = f"Lifecycle: Cannot create agent '{agent_id}': All keys for '{base_provider_name}' (base for '{provider_name}', source: {selection_source}) are quarantined."; logger.error(msg); return False, msg, None
 
     # --- Corrected Validation Logic ---
     # Determine if the final provider is local based on its name
@@ -588,7 +592,7 @@ async def _create_agent_internal(
     # Instantiate Provider
     ProviderClass = PROVIDER_CLASS_MAP.get(provider_name)
     if not ProviderClass: # Handle dynamic local provider names
-        base_provider_type = provider_name.split('-local-')[0].split('-proxy')[0]
+        base_provider_type = provider_name.split('-local')[0].split('-proxy')[0]
         ProviderClass = PROVIDER_CLASS_MAP.get(base_provider_type)
 
     if not ProviderClass: msg = f"Lifecycle: Unknown provider type '{provider_name}'."; logger.error(msg); return False, msg, None

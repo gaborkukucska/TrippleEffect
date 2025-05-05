@@ -4,10 +4,6 @@ Based on the code analysis performed on 2025-04-27, here are suggestions for imp
 
 ## First of all
 
-Excellent refinement! Focusing on the AgentWorkflowManager and agent typing first is a solid approach to building a robust foundation before adding new states. Letting the LLM trigger the state change to work via a tag is also a good idea, keeping the control flow consistent.
-
-Here's the revised plan incorporating your feedback:
-
 Phase 1: Refactoring, Agent Typing, and State Change Mechanism
 
 Define Agent Types & Constants:
