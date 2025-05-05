@@ -115,7 +115,7 @@ chmod +x setup.sh run.sh
 
 2.  **Clone the repository:**
     ```bash
-    git clone https://github.com/gaborkukucska/TrippleEffect.git # Replace with actual repo URL
+    git clone https://github.com/gaborkukucska/TrippleEffect.git
     cd TrippleEffect
     ```
 
@@ -129,7 +129,7 @@ chmod +x setup.sh run.sh
     ```
     
     on Windows
-    ```
+    ```bash
     .venv\Scripts\activate
     pip install -r requirements.txt
     ```
