@@ -87,19 +87,15 @@
 
 **In Scope (Phase 25 - Current):**
 
+*   **Agent Logic Refinement:**
+    *   Investigating `MODEL_TIER` & `MODEL_COST` interference, need to refactor is likely.
+    *   Investigate and fix other potential logic issues (looping, placeholders, targeting).
+*   **Memory/Learning Foundation:**
+    *   Refine agent thought capture/usage.
 *   **Governance Layer Foundation:**
     *   Define a structure for representing core principles or a 'constitution'.
     *   Implement mechanisms to inject relevant principles into agent prompts.
     *   *Initial Goal:* Focus on structure and injection, not complex enforcement. Explore Admin AI use during planning/review.
-*   **Agent Logic Refinement:**
-    *   Investigate and fix PM agent multi-tool call issue.
-    *   Investigate and fix other potential logic issues (looping, placeholders, targeting).
-*   **Taskwarrior Integration Refinement:**
-    *   Stabilize `ProjectManagementTool` assignee handling (confirm tag/UDA approach or revisit).
-*   **Rate Limiting:**
-    *   Address external API rate limiting impact (user config or alternative models).
-*   **Memory/Learning Foundation:**
-    *   Refine agent thought capture/usage.
 
 **Out of Scope (Deferred to Future Phases 26+):**
 
@@ -125,6 +121,7 @@
 *   **Persistence:** JSON (session state - filesystem), SQLite (interactions, knowledge, thoughts), Taskwarrior files (project tasks via `tasklib`) %% Updated P25
 *   **Optional Proxy:** Node.js, Express, node-fetch
 *   **Data Handling/Validation:** Pydantic (via FastAPI)
+*   **Local Auto Discovery** nmap
 *   **Logging:** Standard library `logging`
 
 ## 4. Development Phases & Milestones
@@ -146,19 +143,14 @@
 
 **Phase 25: Agent Logic, Taskwarrior Refinement & Governance (Current)**
     *   **Goal:** Address known agent logic issues, stabilize Taskwarrior integration, implement basic Governance Layer, and refine thought capture.
-    *   [ ] Investigate and fix PM agent multi-tool call issue (likely prompt refinement).
-    *   [ ] Investigate and fix other agent logic issues (looping, placeholders, targeting).
-    *   [ ] Stabilize `ProjectManagementTool` assignee handling (confirm tag/UDA approach is sufficient or revisit).
-    *   [ ] Address external API rate limiting impact (user config or alternative models).
+    *   [ ] Investigate and fix `MODEL_TIER` and `MODEL_COST` switching issues (refactoring is likely).
     *   [ ] Define structure for Governance principles (e.g., `governance.yaml` or DB table).
-    *   [ ] Implement mechanism to load and inject principles into relevant agent prompts (initially Admin AI).
-    *   [ ] Explore how Admin AI can reference/apply these principles during planning.
     *   [X] Implement agent thought capture (`<think>` tag) and saving to Knowledge Base.
     *   [X] Implement `ToolInformationTool`.
     *   [X] Implement authorization checks in `ToolExecutor`.
     *   [X] Inject system health report into Admin AI context.
 *   **Phase 26:** Advanced Memory & Learning (Feedback Loop, Learned Principles, Thought Usage).
-*   **Phase 27:** Proactive Behavior (Scheduling, Goal Management).
+*   **Phase 27:** Proactive Behavior (Scheduling, Goal Management). **(Note that limited scheduling for PM Agent already exists.)
 *   **Phase 28+:** Federated Communication (Layer 3 - External Admin AI Interaction).
 *   **Phase 29+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), etc.
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->
