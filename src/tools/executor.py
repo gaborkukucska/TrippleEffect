@@ -207,6 +207,12 @@ class ToolExecutor:
     ) -> Any:
         """
         Executes the specified tool with the given arguments and context.
+        Maintains agent state during execution and ensures proper cleanup.
+        """
+        # Log tool execution start
+        logger.info(f"ToolExecutor: Starting tool execution for agent '{agent_id}' - tool '{tool_name}'")
+        """
+        Executes the specified tool with the given arguments and context.
         Arguments are pre-parsed. Validates arguments against the tool's schema.
         Passes context (project/session) to the tool's execute method.
         Returns raw dictionary result for ManageTeamTool, otherwise ensures string result.
@@ -231,7 +237,15 @@ class ToolExecutor:
             else:
                 return error_msg
 
-        # --- NEW: Authorization Check ---
+        # --- State Preservation ---
+        original_state = None
+        if manager and agent_id != "framework":
+            agent_instance = manager.agents.get(agent_id)
+            if agent_instance:
+                original_state = agent_instance.state
+                logger.debug(f"ToolExecutor: Preserved original state '{original_state}' for agent '{agent_id}'")
+
+        # --- Authorization Check ---
         is_authorized = False
         agent_type = "unknown" # Default agent type for logging if not framework or found agent
         tool_auth_level = getattr(tool, 'auth_level', 'worker') # Default to worker if missing
@@ -330,9 +344,25 @@ class ToolExecutor:
                     return "Error: Internal configuration error - manager instance missing for tool_information tool."
             # --- End ToolInformationTool specific logic ---
 
-            # Execute with validated arguments and context
-            result = await tool.execute(**execute_args)
-            # Removed duplicated call arguments below
+            # Execute tool with state preservation
+            try:
+                result = await tool.execute(**execute_args)
+                logger.info(f"ToolExecutor: Tool '{tool_name}' execution completed successfully for agent '{agent_id}'")
+                
+                # Restore original state if needed
+                if original_state and manager and agent_id != "framework":
+                    agent_instance = manager.agents.get(agent_id)
+                    if agent_instance and agent_instance.state != original_state:
+                        logger.debug(f"ToolExecutor: Restoring original state '{original_state}' for agent '{agent_id}'")
+                        agent_instance.state = original_state
+            except Exception as e:
+                # Ensure state is restored even on error
+                if original_state and manager and agent_id != "framework":
+                    agent_instance = manager.agents.get(agent_id)
+                    if agent_instance:
+                        logger.debug(f"ToolExecutor: Restoring original state '{original_state}' after tool error for agent '{agent_id}'")
+                        agent_instance.state = original_state
+                raise  # Re-raise the exception
 
             # Handle Result Formatting
             if tool_name == ManageTeamTool.name:

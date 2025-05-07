@@ -110,12 +110,6 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Lifespan: DatabaseManager initialized successfully.")
 
-
-    # --- Ollama Proxy Startup Section (REMOVED) ---
-    # The proxy system has been removed. Discovery handles local Ollama instances.
-    # --- End Ollama Proxy Startup Section ---
-
-
     logger.info("Instantiating AgentManager...")
     agent_manager_instance = AgentManager()
     logger.info("AgentManager instantiated.")
@@ -162,9 +156,7 @@ async def lifespan(app: FastAPI):
     else:
             logger.warning("Lifespan: AgentManager instance not found in app.state during shutdown.")
 
-    # 2. Stop Ollama Proxy (REMOVED)
-
-    # 3. Close Database Connection Pool (Important: Do this *after* AgentManager cleanup)
+    # 2. Close Database Connection Pool (Important: Do this *after* AgentManager cleanup)
     logger.info("Lifespan: Closing database connection pool...")
     try:
         await close_db_connection() # Call the close function from database_manager

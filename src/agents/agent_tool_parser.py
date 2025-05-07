@@ -114,11 +114,18 @@ def find_and_parse_xml_tool_calls(
     if markdown_xml_pattern:
         logger.debug(f"Agent {agent_id}: [PARSE_DEBUG] Searching for MARKDOWN XML...")
         try:
-             markdown_matches_found = list(markdown_xml_pattern.finditer(buffer_content))
-             logger.debug(f"Agent {agent_id}: [PARSE_DEBUG] Found {len(markdown_matches_found)} potential markdown XML matches.")
-             for m in markdown_matches_found:
-                 parsed = parse_single_match(m, True)
-                 if parsed: markdown_matches.append(parsed)
+            # Update the pattern to handle various fencing styles
+            # First remove any markdown code block fencing
+            buffer_content = re.sub(r'^```.*?$\n?', '', buffer_content, flags=re.MULTILINE)
+            buffer_content = re.sub(r'\n?```$', '', buffer_content, flags=re.MULTILINE)
+            
+            # Then search for raw XML
+            raw_xml_pattern = re.compile(r'<(\w+?)>.*?</\1>', re.DOTALL)
+            raw_matches_found = list(raw_xml_pattern.finditer(buffer_content))
+            logger.debug(f"Agent {agent_id}: [PARSE_DEBUG] Found {len(raw_matches_found)} potential XML matches after removing markdown fencing.")
+            for m in raw_matches_found:
+                parsed = parse_single_match(m, False)
+                if parsed: markdown_matches.append(parsed)
         except Exception as e:
              logger.error(f"Agent {agent_id}: [PARSE_DEBUG] Error during markdown XML finditer: {e}", exc_info=True)
 

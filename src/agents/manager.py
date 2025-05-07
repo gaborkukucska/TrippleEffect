@@ -470,6 +470,8 @@ class AgentManager:
                      pm_temp = pm_config_base.get("temperature") # Get temp if possible
                      # Get other kwargs, excluding ones handled by create_agent_instance or lifecycle
                      pm_extra_kwargs = {k: v for k, v in pm_config_base.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona']}
+                     pm_extra_kwargs['plan_description'] = plan_description  # Add plan_description to kwargs
+                     pm_extra_kwargs['task_description'] = plan_description  # Add task_description as well for compatibility
 
                      # Call create_agent_instance forcing auto-selection for provider/model
                      logger.info(f"Calling create_agent_instance for '{pm_instance_id}' with provider=None, model=None to force auto-selection.")

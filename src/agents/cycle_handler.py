@@ -565,15 +565,18 @@ class AgentCycleHandler:
                         if invalid_call_results:
                             for res in invalid_call_results:
                                  agent.message_history.append({"role": "tool", **res})
-                                 if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="tool", content=res.get("content"), tool_results=[res])
+                            if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="tool", content=res.get("content"), tool_results=[res])
 
                         calls_to_execute = mgmt_calls + other_calls; activation_tasks = []; manager_action_feedback = []; executed_tool_successfully_this_cycle = False
+                        state_changed_this_cycle = False
                         if calls_to_execute:
                             logger.info(f"CycleHandler: Executing {len(calls_to_execute)} tool(s) sequentially for '{agent_id}'.")
                             await self._manager.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Executing {len(calls_to_execute)} tool(s)..."})
                             for call in calls_to_execute:
                                  call_id = call['id']; tool_name = call['name']; tool_args = call['arguments']
+                                 logger.debug(f"CycleHandler: Starting execution of tool '{tool_name}' for agent '{agent_id}' with call ID '{call_id}'")
                                  result = await self._interaction_handler.execute_single_tool(agent, call_id, tool_name, tool_args, project_name=self._manager.current_project, session_name=self._manager.current_session)
+                                 logger.debug(f"CycleHandler: Completed execution of tool '{tool_name}' for agent '{agent_id}' with call ID '{call_id}'")
                                  if result:
                                      raw_content_hist = result.get("content", "[Tool Error: No content]"); tool_msg: MessageDict = {"role": "tool", "tool_call_id": call_id, "content": str(raw_content_hist)}
                                      if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("tool_call_id") != call_id: agent.message_history.append(tool_msg)
@@ -595,6 +598,10 @@ class AgentCycleHandler:
                                              action = raw_tool_output.get("action"); params = raw_tool_output.get("params", {}); act_success, act_msg, act_data = await self._interaction_handler.handle_manage_team_action(action, params, agent_id)
                                              feedback = {"call_id": call_id, "action": action, "success": act_success, "message": act_msg};
                                              if act_data: feedback["data"] = act_data; manager_action_feedback.append(feedback)
+                                             # Log state change if team management resulted in state change
+                                             if act_success and hasattr(agent, 'state') and agent.state != AGENT_STATE_CONVERSATION:
+                                                 state_changed_this_cycle = True
+                                                 logger.info(f"CycleHandler: State changed to '{agent.state}' after successful team management action")
                                          elif isinstance(raw_tool_output, dict): manager_action_feedback.append({"call_id": call_id, "action": raw_tool_output.get("action"), "success": False, "message": raw_tool_output.get("message", "Tool exec failed.")})
                                          else: manager_action_feedback.append({"call_id": call_id, "action": "unknown", "success": False, "message": "Unexpected tool result."})
                                      elif tool_name == SendMessageTool.name:
@@ -603,12 +610,46 @@ class AgentCycleHandler:
                                          if target_id and msg_content is not None:
                                                activation_task = await self._interaction_handler.route_and_activate_agent_message(agent_id, target_id, msg_content);
                                                if activation_task: activation_tasks.append(activation_task)
+                                               # Log state change if message sending resulted in state change
+                                               if activation_task and hasattr(agent, 'state') and agent.state != AGENT_STATE_CONVERSATION:
+                                                   state_changed_this_cycle = True
+                                                   logger.info(f"CycleHandler: State changed to '{agent.state}' after successful message sending")
                                          elif not target_id or msg_content is None: manager_action_feedback.append({"call_id": call_id, "action": "send_message", "success": False, "message": f"Validation Error: Missing {'target_agent_id' if not target_id else 'message_content'}."})
                                  else:
                                      manager_action_feedback.append({"call_id": call_id, "action": tool_name, "success": False, "message": "Tool execution failed (no result)."})
                                      if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="tool", content="[Tool Execution Error: Tool failed internally (no result)]", tool_results=[{"call_id": call_id, "content": "[Tool Execution Error: Tool failed internally (no result)]"}])
 
-                            if activation_tasks: await asyncio.gather(*activation_tasks); logger.info(f"CycleHandler: Completed activation tasks for '{agent_id}'.")
+                            if activation_tasks: 
+                                await asyncio.gather(*activation_tasks)
+                                logger.info(f"CycleHandler: Completed activation tasks for '{agent_id}'.")
+
+                            if manager_action_feedback:
+                                 feedback_appended = False
+                                 for fb in manager_action_feedback:
+                                     fb_content = f"[Manager Result for {fb.get('action', 'N/A')} (Call ID: {fb['call_id']})]: Success={fb['success']}. Message: {fb['message']}"
+                                     if fb.get("data"):
+                                         try: data_str = json.dumps(fb['data'], indent=2); fb_content += f"\nData:\n{data_str[:1500]}{'... (truncated)' if len(data_str) > 1500 else ''}"
+                                         except TypeError: fb_content += "\nData: [Unserializable]"
+                                     fb_msg: MessageDict = {"role": "tool", "tool_call_id": fb['call_id'], "content": fb_content}
+                                     if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("content") != fb_content: agent.message_history.append(fb_msg); feedback_appended = True
+                                     if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="system_feedback", content=fb_content, tool_results=[fb])
+                                     is_admin_creating_pm = (agent_id == self.BOOTSTRAP_AGENT_ID and fb.get('action') == 'create_agent')
+                                     if not is_admin_creating_pm:
+                                         await self._manager.send_to_ui({
+                                             "type": "system_feedback", 
+                                             "agent_id": agent_id,
+                                             "call_id": fb['call_id'],
+                                             "action": fb.get('action', 'N/A'),
+                                             "content": fb_content 
+                                         })
+
+                        if calls_to_execute:
+                            logger.debug(f"CycleHandler: Tools executed for '{agent_id}', checking if reactivation needed.");
+                            # Only reactivate if tools executed successfully and state wasn't changed
+                            if executed_tool_successfully_this_cycle and not state_changed_this_cycle:
+                                needs_reactivation_after_cycle = True
+                                logger.debug(f"CycleHandler: Reactivation needed for '{agent_id}' after successful tool execution")
+                            break # Break loop after tool execution
 
                             if manager_action_feedback:
                                  feedback_appended = False
@@ -634,10 +675,13 @@ class AgentCycleHandler:
                                      })
                                      # --- END NEW ---
 
+                        state_changed_this_cycle = False
                         if calls_to_execute:
-                            logger.debug(f"CycleHandler: Tools executed for '{agent_id}', breaking inner loop to allow reactivation check.");
-                            # REMOVED condition: if executed_tool_successfully_this_cycle:
-                            needs_reactivation_after_cycle = True # Now always runs if tools were executed
+                            logger.debug(f"CycleHandler: Tools executed for '{agent_id}', checking if reactivation needed.");
+                            # Only reactivate if tools executed successfully and state wasn't changed
+                            if executed_tool_successfully_this_cycle and not state_changed_this_cycle:
+                                needs_reactivation_after_cycle = True
+                                logger.debug(f"CycleHandler: Reactivation needed for '{agent_id}' after successful tool execution")
                             break # Break loop after tool execution
                     else: logger.warning(f"CycleHandler: Unknown event type '{event_type}' from '{agent_id}'.")
 
@@ -734,7 +778,7 @@ class AgentCycleHandler:
                         # No further action needed here, agent is already set to ERROR by failover handler
                     # --- END MODIFICATION ---
 
-                elif needs_reactivation_after_cycle: # Check reactivation SECOND (now FOURTH after failover check)
+                elif needs_reactivation_after_cycle: # Check reactivation after other conditions
                     # Determine reason for logging clarity
                     reactivation_reason = "unknown condition"
                     current_agent_state_in_finally = getattr(agent, 'state', None)

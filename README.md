@@ -1,6 +1,5 @@
 <!-- # START OF FILE README.md -->
 <!-- # IT IS CRITICAL THAT ALL AIs and LLMs FOLLOW THE DEVELOPMENT INSTRUCTIONS IN THE DEVELOPMENT_RULES.md FILE WHEN FURTHER DEVELOPING THIS FRAMEWORK!!! -->
-<!-- # IT IS CRITICAL THAT ALL AIs and LLMs FOLLOW THE DEVELOPMENT INSTRUCTIONS IN THE DEVELOPMENT_RULES.md FILE WHEN FURTHER DEVELOPING THIS FRAMEWORK!!! -->
 # TrippleEffect Multi-Agent Framework
 
 **Version:** 2.25 <!-- Updated Version -->
@@ -9,10 +8,6 @@
 
 ## Quick Start (using scripts)
 
-For a faster setup, you can use the provided shell scripts but make sure they are executable:
-```bash
-chmod +x setup.sh run.sh
-```
 For a faster setup, you can use the provided shell scripts but make sure they are executable:
 ```bash
 chmod +x setup.sh run.sh
@@ -32,10 +27,8 @@ chmod +x setup.sh run.sh
     *   Creates a project task in Taskwarrior using the title and plan.
     *   Creates a dedicated Project Manager agent (`pm_{project_title}_{session_id}`).
     *   Assigns the new PM to the initial project task.
-    *   Assigns the new PM to the initial project task.
     *   Notifies Admin AI and transitions it back to the `conversation` state.
 *   **Project Manager Agent:** Automatically created per project/session by the framework, this agent uses the `ProjectManagementTool` (backed by `tasklib`) to decompose the initial plan, create/assign sub-tasks (assigning via tags), monitor progress via `send_message`, and report status/completion back to Admin AI.
-*   **Dynamic Worker Agent Management:** The Project Manager agent (or Admin AI, depending on workflow evolution) uses `ManageTeamTool` to create worker agents as needed for specific sub-tasks.
 *   **Dynamic Worker Agent Management:** The Project Manager agent (or Admin AI, depending on workflow evolution) uses `ManageTeamTool` to create worker agents as needed for specific sub-tasks.
 *   **Intelligent Model Handling:**
     *   **Discovery:** Automatically finds reachable LLM providers (Ollama, OpenRouter, OpenAI) and available models at startup.
@@ -45,9 +38,7 @@ chmod +x setup.sh run.sh
     *   **Performance Tracking:** Records success rate and latency per model, persisting data (`data/model_performance_metrics.json`).
 *   **Tool-Based Interaction:** Agents use tools via an **XML format**. Tools include file system operations, inter-agent messaging, team management, web search, GitHub interaction, system information retrieval, and knowledge base operations.
 *   **Context Management:** Standardized instructions are injected, agents are guided to use file operations for large outputs. Admin AI receives current time context. **(Update v2.23):** Admin AI system prompt assembly streamlined to remove redundant static tool descriptions and model lists.
-*   **Persistence:** Session state (agents, teams, histories) can be saved/loaded (filesystem). Interactions and knowledge are logged to a database (`data/trippleeffect_memory.db`) **(Needs refinement)**.
 *   **Communication Layer Separation (UI):** The user interface visually separates direct User<->Admin AI interaction from internal Admin AI<->PM<->Worker communication and system events.
-*   **Context Management:** Standardized instructions are injected, agents are guided to use file operations for large outputs. Admin AI receives current time context. **(Update v2.23):** Admin AI system prompt assembly streamlined to remove redundant static tool descriptions and model lists.
 *   **Persistence:** Session state (agents, teams, histories) can be saved/loaded (filesystem). Interactions and knowledge are logged to a database (`data/trippleeffect_memory.db`) **(Needs refinement)**.
 *   **Communication Layer Separation (UI):** The user interface visually separates direct User<->Admin AI interaction from internal Admin AI<->PM<->Worker communication and system events.
 
@@ -78,16 +69,7 @@ chmod +x setup.sh run.sh
     *   `SystemHelpTool`: Get current time (UTC), Search application logs, **Get detailed tool usage info (`get_tool_info`)**.
     *   `KnowledgeBaseTool`: Save/Search distilled knowledge in the database.
     *   `ProjectManagementTool`: Add, list, modify, and complete project tasks (uses `tasklib` backend per session). **Assigns tasks via tags (`+agent_id`)** due to CLI UDA issues. Used primarily by the Project Manager agent.
-    *   `FileSystemTool`: Read, Write, List, Mkdir, Delete (File/Empty Dir), Find/Replace in private sandbox or shared workspace.
-    *   `GitHubTool`: List Repos, List Files (Recursive), Read File content using PAT.
-    *   `ManageTeamTool`: Create/Delete Agents/Teams, Assign Agents, List Agents/Teams, Get Agent Details.
-    *   `SendMessageTool`: Communicate between agents within a team or with Admin AI (using exact agent IDs).
-    *   `WebSearchTool`: Search the web (uses Tavily API if configured, falls back to DDG scraping).
-    *   `SystemHelpTool`: Get current time (UTC), Search application logs, **Get detailed tool usage info (`get_tool_info`)**.
-    *   `KnowledgeBaseTool`: Save/Search distilled knowledge in the database.
-    *   `ProjectManagementTool`: Add, list, modify, and complete project tasks (uses `tasklib` backend per session). **Assigns tasks via tags (`+agent_id`)** due to CLI UDA issues. Used primarily by the Project Manager agent.
     *   **On-Demand Tool Help:** Implemented `get_detailed_usage()` in tools and `get_tool_info` action in `SystemHelpTool` for dynamic help retrieval (full transition planned for Phase 27+).
-*   **Session Persistence:** Save and load agent states, histories, team structures, and **project task data** (filesystem, including `tasklib` data with assignee tags). **(Needs refinement)**
 *   **Session Persistence:** Save and load agent states, histories, team structures, and **project task data** (filesystem, including `tasklib` data with assignee tags). **(Needs refinement)**
 *   **Database Backend (SQLite):**
     *   Logs user, agent, tool, and system interactions.
@@ -102,7 +84,6 @@ chmod +x setup.sh run.sh
 *   **Sandboxing:** Agents operate within dedicated sandbox directories or a shared session workspace.
 *   **Context Optimization:** Agents guided to use files for large outputs. Admin AI prompts are now state-specific.
 *   **Admin AI Time Context:** Current UTC time is injected into Admin AI prompts.
-*   **Local Provider Integration:** Automatic network discovery (`LOCAL_API_DISCOVERY_SUBNETS="auto"`).
 *   **Local Provider Integration:** Automatic network discovery (`LOCAL_API_DISCOVERY_SUBNETS="auto"`).
 
 ## Technology Stack
@@ -122,20 +103,17 @@ chmod +x setup.sh run.sh
 *   **Persistence:** JSON (session state - filesystem), SQLite (interactions, knowledge), Taskwarrior files (project tasks via `tasklib`) %% Updated P24
 *   **Data Handling/Validation:** Pydantic (via FastAPI)
 *   **Local Auto Discovery** Nmap
-*   **Local Auto Discovery** Nmap
 *   **Logging:** Standard library `logging`
 
 ## Setup and Running (Detailed)
 
 1.  **Prerequisites:**
     *   Termux app if used on Android mobile devices.
-    *   Termux app if used on Android mobile devices.
     *   Python 3.9+
     *   Node.js and npm (only if using the optional Ollama proxy)
     *   Access to LLM APIs (OpenAI, OpenRouter) and/or a running local Ollama instance.
     *   Nmap to enable automatic local API provider discovery.
-    *   Nmap to enable automatic local API provider discovery.
-
+ 
 2.  **Clone the repository:**
     ```bash
     git clone https://github.com/gaborkukucska/TrippleEffect.git
@@ -145,8 +123,6 @@ chmod +x setup.sh run.sh
 3.  **Set up Python Environment:**
 
     On Linux/MacOS
-
-    On Linux/MacOS
     ```bash
     python -m venv .venv
     source .venv/bin/activate
@@ -154,7 +130,7 @@ chmod +x setup.sh run.sh
     ```
     
     on Windows
-    ```
+    ```bash
     .venv\Scripts\activate
     pip install -r requirements.txt
     ```
@@ -164,36 +140,24 @@ chmod +x setup.sh run.sh
     *   Edit `.env` and add your API keys (OpenAI, OpenRouter, GitHub PAT, Tavily API Key).
     *   Set `MODEL_TIER` (`LOCAL`, `FREE` or `ALL`).
     *   **Note:** While local LLMs (via Ollama & LiteLLM) are supported, smaller models may currently exhibit reliability issues with long and complex instructions or tool use especially if hosted weak hardware. For more consistent results, using a robust external provider like OpenRouter (configured in `.env`) might yield better results at this stage.
-    *   Set `MODEL_TIER` (`LOCAL`, `FREE` or `ALL`).
-    *   **Note:** While local LLMs (via Ollama & LiteLLM) are supported, smaller models may currently exhibit reliability issues with long and complex instructions or tool use especially if hosted weak hardware. For more consistent results, using a robust external provider like OpenRouter (configured in `.env`) might yield better results at this stage.
 
 5.  **Configure Bootstrap Agents (Optional):**
     *   Edit `config.yaml` to define the behavior and conversation style of the Admin AI.
     *   Add any bootstrap agents beyond the default Admin AI & PM Agent.
     *   You can optionally specify a provider/model for Admin AI & PM Agent here, otherwise it will be auto-selected.
-    *   Edit `config.yaml` to define the behavior and conversation style of the Admin AI.
-    *   Add any bootstrap agents beyond the default Admin AI & PM Agent.
-    *   You can optionally specify a provider/model for Admin AI & PM Agent here, otherwise it will be auto-selected.
 
-6.  **Run the Application:**
-    # Option 1: Use the run script (could be error some at times).
 6.  **Run the Application:**
     # Option 1: Use the run script (could be error some at times).
     ```bash
     chmod +x run.sh
     ./run.sh
-    chmod +x run.sh
-    ./run.sh
     ```
-    # Option 2: (Recommended) Run directly using Python
     # Option 2: (Recommended) Run directly using Python
     ```bash
     python -m src.main
     ```
     *(Alternatively, for development with auto-reload, use `uvicorn src.main:app --reload --port 8000`, but be aware reload might interfere with agent state.)*
-    *(Alternatively, for development with auto-reload, use `uvicorn src.main:app --reload --port 8000`, but be aware reload might interfere with agent state.)*
 
-7.  **Access the UI:** Open your web browser to `http://localhost:8000`.
 7.  **Access the UI:** Open your web browser to `http://localhost:8000`.
 
 ## Development Status
@@ -217,8 +181,6 @@ This project is licensed under the MIT License - see the `LICENSE` file for deta
 
 *   Inspired by AutoGen, CrewAI, and other multi-agent frameworks.
 *   Uses the powerful libraries FastAPI, Pydantic, SQLAlchemy, and the OpenAI Python client.
-*   Built with various LLMs like Google Gemini 2.5 Pro, Meta Llama 4, DeepSeek R1 and others.
-*   Special THANKS to Openrouter, Huggigface, and Google AI Studio
 *   Built with various LLMs like Google Gemini 2.5 Pro, Meta Llama 4, DeepSeek R1 and others.
 *   Special THANKS to Openrouter, Huggigface, and Google AI Studio
 <!-- # IT IS CRITICAL THAT ALL AIs and LLMs FOLLOW THE DEVELOPMENT INSTRUCTIONS IN THE DEVELOPMENT_RULES.md FILE WHEN FURTER DEVELOPING THIS FRAMEWORK!!! -->

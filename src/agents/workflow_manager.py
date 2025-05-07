@@ -168,6 +168,14 @@ class AgentWorkflowManager:
             formatting_context["team_id"] = team_id or "N/A"
             # Add current time
             formatting_context["current_time_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat(sep=' ', timespec='seconds')
+            # --- NEW: Add task_description/plan_description for PM in WORK state ---
+            if agent.agent_type == AGENT_TYPE_PM and agent.state == AGENT_STATE_WORK:
+                if hasattr(agent, 'plan_description'):
+                    formatting_context["task_description"] = agent.plan_description
+                    logger.debug(f"WorkflowManager: Added 'task_description' to formatting context for PM agent '{agent.agent_id}' in WORK state.")
+                else:
+                    logger.warning(f"WorkflowManager: PM agent '{agent.agent_id}' in WORK state missing 'plan_description' attribute.")
+            # --- END NEW ---
             # Add tool descriptions if needed by the prompt template
             if "{tool_descriptions_xml}" in prompt_template:
                  formatting_context["tool_descriptions_xml"] = getattr(manager, 'tool_descriptions_xml', "<!-- Tool descriptions unavailable -->")

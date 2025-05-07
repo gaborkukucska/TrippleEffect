@@ -101,37 +101,47 @@ class ToolInformationTool(BaseTool):
                 # Handle 'all' tools request (filtered by auth)
                 if tool_name_req.lower() == 'all':
                     all_usage_info = []
-                    authorized_tools = [] # Initialize the list here
+                    authorized_tools = [] 
                     all_tool_names = sorted(list(manager.tool_executor.tools.keys()))
 
                     for name in all_tool_names:
-                        # Correct indentation for the loop body starts here
                         tool_instance = manager.tool_executor.tools.get(name)
-                        if not tool_instance: continue
+                        if not tool_instance: 
+                            continue
 
                         tool_auth_level = getattr(tool_instance, 'auth_level', 'worker')
 
-                    # Check authorization based on agent type
-                    is_authorized = False
-                    if agent_type == AGENT_TYPE_ADMIN:
-                        is_authorized = True
-                    elif agent_type == AGENT_TYPE_PM:
-                        is_authorized = tool_auth_level in [AGENT_TYPE_PM, AGENT_TYPE_WORKER]
-                    elif agent_type == AGENT_TYPE_WORKER:
-                        is_authorized = tool_auth_level == AGENT_TYPE_WORKER
+                        # Check authorization based on agent type
+                        is_authorized = False
+                        if agent_type == AGENT_TYPE_ADMIN:
+                            is_authorized = True
+                        elif agent_type == AGENT_TYPE_PM:
+                            is_authorized = tool_auth_level in [AGENT_TYPE_PM, AGENT_TYPE_WORKER]
+                        elif agent_type == AGENT_TYPE_WORKER:
+                            is_authorized = tool_auth_level == AGENT_TYPE_WORKER
 
-                    if is_authorized:
-                        authorized_tools.append(name)
-                        if hasattr(tool_instance, 'get_detailed_usage'):
-                            try:
-                                usage = tool_instance.get_detailed_usage()
-                                # Include auth level in the output for clarity
-                                all_usage_info.append(f"--- Usage for Tool: {name} (Auth Level: {tool_auth_level}) ---\n{usage}\n--- End Usage ---\n")
-                            except Exception as tool_usage_err:
-                                logger.error(f"Error getting detailed usage for tool '{name}': {tool_usage_err}", exc_info=True)
-                                all_usage_info.append(f"--- Error getting usage for Tool: {name}: {type(tool_usage_err).__name__} ---\n")
-                        else:
-                             all_usage_info.append(f"--- Usage information unavailable for Tool: {name} ---\n")
+                        if is_authorized:
+                            authorized_tools.append(name)
+                            if hasattr(tool_instance, 'get_detailed_usage'):
+                                try:
+                                    usage = tool_instance.get_detailed_usage()
+                                    all_usage_info.append(f"--- Usage for Tool: {name} (Auth Level: {tool_auth_level}) ---\n{usage}\n--- End Usage ---\n")
+                                except Exception as tool_usage_err:
+                                    logger.error(f"Error getting detailed usage for tool '{name}': {tool_usage_err}", exc_info=True)
+                                    all_usage_info.append(f"--- Error getting usage for Tool: {name}: {type(tool_usage_err).__name__} ---\n")
+                            else:
+                                all_usage_info.append(f"--- Usage information unavailable for Tool: {name} ---\n")
+
+                    # Prepend the list of authorized tools
+                    all_usage_info.insert(0, f"Tools available to you (Agent Type: {agent_type}): {authorized_tools}\n")
+
+                    logger.info(f"{self.name}: Executed 'get_info' for 'all' (filtered) tools by agent {agent_id} (Type: {agent_type}).")
+                    # Join and limit total length
+                    MAX_ALL_USAGE_CHARS = 8000 
+                    final_output = "\n".join(all_usage_info)
+                    if len(final_output) > MAX_ALL_USAGE_CHARS:
+                        final_output = final_output[:MAX_ALL_USAGE_CHARS] + "\n\n[... Tool usage details truncated due to length limit ...]"
+                    return final_output
 
                 # Prepend the list of *authorized* tools
                 all_usage_info.insert(0, f"Tools available to you (Agent Type: {agent_type}): {authorized_tools}\n")

@@ -335,7 +335,7 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
         # --- End Prompt Assembly ---
 
         # --- Add logging before scheduling task ---
-        logger.debug(f"Lifecycle: Preparing to schedule creation task for bootstrap agent '{agent_id}' with final config: { {k: (v[:50]+'...' if k=='system_prompt' and isinstance(v, str) else v) for k,v in final_agent_config_data.items()} }")
+        logger.debug(f"Lifecycle: Preparing to schedule creation task for bootstrap agent '{agent_id}' with final config: { {k: v for k, v in final_agent_config_data.items()} }")
         # --- End added logging ---
 
         # Schedule agent creation task using the internal function
