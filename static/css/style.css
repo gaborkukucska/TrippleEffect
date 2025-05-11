@@ -231,14 +231,15 @@ body {
     margin-bottom: 0;
 }
 /* Timestamp styling (reused for internal comms area) */
-/* Now applies to any child with class .message inside elements styled as .system-log-area */
-.system-log-area .message .timestamp {
+.message .timestamp { /* Moved general timestamp style here */
     font-size: 0.8em;
     color: var(--text-color-muted);
     margin-right: 8px;
-    display: inline-block;
-    flex-shrink: 0; /* Prevent timestamp from wrapping weirdly */
+    display: block; /* Stack above other content */
+    margin-bottom: 4px;
+    flex-shrink: 0;
 }
+
 
 /* --- Message Styling --- */
 /* General message block */
@@ -254,17 +255,24 @@ body {
     background-color: var(--agent-msg-bg-base);
     align-self: flex-start; /* Default alignment */
     display: flex;
-    flex-direction: row; /* Default layout */
+    /* flex-direction: row; */ /* Default layout was row, now column by default for better internal comms */
+    flex-direction: column; /* Default to column for stacking timestamp, label, content */
+    align-items: flex-start; /* Align content to the start */
     flex-shrink: 0; /* Don't shrink messages */
 }
 .message p { margin: 0; } /* Remove default paragraph margin */
+
 /* Content containers inside a message */
-.message span:not(.timestamp),
-.message .message-content {
-    display: block; /* Change to block for better wrapping control */
-    white-space: pre-wrap; /* Preserve whitespace and wrap */
-    word-break: break-word; /* Break long words */
+.message span:not(.timestamp), /* General spans */
+.message .message-content { /* Specific content div */
+    display: block;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: break-word;
+    width: 100%; /* Take full width of the message bubble */
+    min-width: 0; /* Allow shrinking for flexbox wrapping */
 }
+
 /* Agent label (used in both conversation and internal comms) */
 .message .agent-label {
     font-weight: bold;
@@ -272,19 +280,32 @@ body {
     margin-bottom: 4px;
     font-size: 0.9em;
     flex-shrink: 0;
-    display: block; /* Ensure it's block for stacking */
+    display: block;
+    word-break: break-all; /* More aggressive break for long IDs */
+    overflow-wrap: break-word;
+    width: auto;
+    max-width: 100%;
 }
 /* Message content (used in both) */
 .message .message-content {
-    font-family: Menlo, Monaco, Consolas, "Courier New", monospace; /* Monospace for code/tool output */
-    padding-top: 2px;
-    width: 100%; /* Ensure content takes full width */
-    overflow-wrap: break-word;
+    font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+    /* padding-top: 2px; */ /* Removed, spacing handled by label margin */
 }
 
 /* Specifics for Conversation Area (#conversation-area) */
+.conversation-area .message {
+    /* Default for conversation messages is still row-like for user messages */
+    /* Overridden by .agent_response for column layout */
+    flex-direction: row;
+    align-items: flex-start; /* Align timestamp and content start */
+}
+.conversation-area .message .timestamp {
+    display: inline-block; /* Timestamp next to content for chat */
+    margin-bottom: 0;
+    margin-right: 8px;
+}
 .conversation-area .message.agent_response {
-    flex-direction: column; /* Stack label and content */
+    flex-direction: column; /* Stack label and content for agent responses */
     align-items: flex-start;
     margin-right: auto;
     align-self: flex-start;
@@ -293,13 +314,27 @@ body {
 }
 .conversation-area .message.user {
     background-color: var(--user-message-bg);
-    border-color: var(--user-message-bg); /* Match border */
-    margin-left: auto; /* Push to right */
+    border-color: var(--user-message-bg);
+    margin-left: auto;
     align-self: flex-end;
-    flex-direction: row; /* Keep user messages inline */
+    flex-direction: row; /* User messages are row */
+}
+.conversation-area .message.user .message-content {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; /* Non-monospace for user input */
 }
 
+
 /* Specifics for Internal Comms Area (styled via .system-log-area class) */
+.system-log-area .message {
+    /* Already flex-direction: column and align-items: flex-start from general .message style */
+    width: 100%; /* Make messages take full width of internal comms area */
+    max-width: 100%; /* Override general .message max-width */
+}
+/* .system-log-area .message .timestamp is handled by general .message .timestamp */
+/* .system-log-area .message .agent-label is handled by general .message .agent-label */
+/* .system-log-area .message .message-content is handled by general .message .message-content */
+
+
 /* Agent ID specific styling applies here too */
 .system-log-area .message[data-agent-id="admin_ai"] { border-left: 4px solid var(--accent-color-1); background-color: #2a3a4a; }
 .system-log-area .message[data-agent-id*="coder"] { border-left: 4px solid var(--accent-color-2); background-color: #2a4a3a; }
@@ -322,7 +357,7 @@ body {
     margin-right: auto;
     padding: 4px 10px;
     border-radius: 4px;
-    flex-direction: row;
+    flex-direction: row; /* Status messages are typically single line */
 }
 .message.status.initial-placeholder span {
     color: var(--text-color-muted);
@@ -339,7 +374,7 @@ body {
     margin-left: 5px;
     margin-right: 5px;
     padding: 6px 10px;
-    flex-direction: row;
+    flex-direction: row; /* Tool execution status is usually one line */
 }
 /* Error Messages (Apply in both areas) */
 .message.error,
@@ -353,11 +388,11 @@ body {
     margin-right: 0;
     padding: 6px 10px;
     border: 1px solid var(--accent-color-red);
-    flex-direction: row;
+    flex-direction: row; /* Error messages are usually single line */
 }
 /* Specifics for Internal Comms Area message types */
-.system-log-area .message.log-tool-use span:not(.timestamp) { color: #98FB98; } /* Pale green */
-.system-log-area .message.log-agent-message span:not(.timestamp) { color: #ADD8E6; } /* Light blue */
+.system-log-area .message.log-tool-use .message-content { color: #98FB98; } /* Pale green */
+.system-log-area .message.log-agent-message .message-content { color: #ADD8E6; } /* Light blue */
 
 
 /* --- Input Area (Chat View Only) --- */
