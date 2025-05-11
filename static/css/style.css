@@ -103,7 +103,6 @@ body {
     flex-grow: 1; /* Takes remaining space below header */
     padding: 10px;
     overflow-y: auto; /* THIS is where the main content scrolling happens */
-    /* overflow-x: hidden; */ /* Removed as it might interfere with some content */
     display: flex;
     flex-direction: column;
     min-height: 0; /* Flexbox fix */
@@ -119,7 +118,6 @@ body {
 #chat-view .chat-area-container {
     flex-grow: 1;
     min-height: 150px; /* Ensure minimum height for chat */
-    /* overflow: hidden; */ /* Let message-area handle scroll */
     display: flex; /* Use flex for message-area inside */
     margin-bottom: 10px;
 }
@@ -154,42 +152,34 @@ body {
 }
 
 /* --- Internal Comms & Config View Layouts --- */
-/* Shared styles for the main content area in these views */
 #internal-comms-view .view-content,
 #config-view .view-content {
-    padding: 10px; /* Consistent padding */
+    padding: 10px;
 }
 
-/* Specific container styles */
-#internal-comms-view .system-log-area, /* Use system-log-area class for styling target */
-#config-view .config-area { /* Config area container */
+#internal-comms-view .system-log-area,
+#config-view .config-area {
     flex-grow: 1;
-    margin-bottom: 0; /* No margin at bottom if it's the main element */
+    margin-bottom: 0;
     border: 1px solid var(--border-color);
     background-color: var(--bg-color-secondary);
     border-radius: 4px;
     display: flex;
     flex-direction: column;
-    /* overflow: hidden; */ /* REMOVED: Let .view-content handle outer scroll */
-    min-height: 0; /* Flexbox fix */
-    padding: 10px; /* Apply padding to the container */
+    min-height: 0;
+    padding: 10px;
 }
 
-/* Specific styling for the scrollable list inside internal comms (#internal-comms-area) */
 #internal-comms-area {
-    /* overflow-y: auto; */ /* REMOVED: Let parent (.view-content) scroll */
-    /* flex-grow: 1; */ /* REMOVED: Let it expand naturally */
-    padding: 0; /* Padding handled by parent (.system-log-area) */
+    padding: 0;
     margin: 0;
-    /* background inherited from parent */
 }
 
-/* Config View specific adjustments */
 #config-view .config-area {
-    padding: 10px 15px; /* Slightly more padding for config */
+    padding: 10px 15px;
 }
 #config-view #config-content {
-    overflow-y: auto; /* Allow scrolling specifically for the config items */
+    overflow-y: auto;
     flex-grow: 1;
     padding-top: 5px;
 }
@@ -214,194 +204,165 @@ body {
 }
 
 /* --- Message Area General Styling --- */
-/* Applies to #conversation-area and #internal-comms-area (now via .system-log-area class) */
-.message-area { /* This includes .conversation-area and .system-log-area */
+.message-area {
     background-color: var(--bg-color-tertiary);
-    overflow-y: auto; /* Allow vertical scrolling for the message area itself */
-    flex-grow: 1; /* Allow it to take available space */
-    display: flex; /* Use flexbox for children */
-    flex-direction: column; /* Stack messages vertically */
+    overflow-y: auto;
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
     padding: 10px;
     border: 1px solid var(--border-color);
     border-radius: 4px;
-    min-height: 100px; /* Minimum height */
+    min-height: 100px;
 }
-/* Remove bottom margin for conversation area in chat view */
 #chat-view .conversation-area {
     margin-bottom: 0;
 }
-/* Timestamp styling (reused for internal comms area) */
-.message .timestamp { /* Moved general timestamp style here */
-    font-size: 0.8em;
-    color: var(--text-color-muted);
-    margin-right: 8px;
-    display: block; /* Stack above other content */
-    margin-bottom: 4px;
-    flex-shrink: 0;
-}
-
 
 /* --- Message Styling --- */
-/* General message block */
 .message {
     margin-bottom: 10px;
     padding: 8px 12px;
     border-radius: 8px;
-    word-wrap: break-word;
+    word-wrap: break-word; /* Fallback */
+    overflow-wrap: break-word; /* Better word wrapping */
     max-width: 95%;
     border: 1px solid var(--border-color);
     box-sizing: border-box;
     color: var(--text-color-primary);
     background-color: var(--agent-msg-bg-base);
-    align-self: flex-start; /* Default alignment */
+    align-self: flex-start;
     display: flex;
-    /* flex-direction: row; */ /* Default layout was row, now column by default for better internal comms */
-    flex-direction: column; /* Default to column for stacking timestamp, label, content */
-    align-items: flex-start; /* Align content to the start */
-    flex-shrink: 0; /* Don't shrink messages */
+    flex-direction: row; /* Default to row */
+    align-items: flex-start; /* Align items at the start of the cross axis */
+    flex-shrink: 0;
 }
-.message p { margin: 0; } /* Remove default paragraph margin */
+.message p { margin: 0; }
 
-/* Content containers inside a message */
-.message span:not(.timestamp), /* General spans */
-.message .message-content { /* Specific content div */
-    display: block;
-    white-space: pre-wrap;
-    word-break: break-word;
-    overflow-wrap: break-word;
-    width: 100%; /* Take full width of the message bubble */
-    min-width: 0; /* Allow shrinking for flexbox wrapping */
+.message .timestamp {
+    font-size: 0.8em;
+    color: var(--text-color-muted);
+    margin-right: 8px;
+    white-space: nowrap; /* Prevent timestamp from wrapping */
+    flex-shrink: 0;
 }
 
-/* Agent label (used in both conversation and internal comms) */
+/* Container for label + content, to allow them to stack if message is column */
+.message .message-body {
+    display: flex;
+    flex-direction: column; /* Stack label and content */
+    min-width: 0; /* Allow shrinking to wrap content */
+    flex-grow: 1; /* Take remaining space */
+}
+
 .message .agent-label {
     font-weight: bold;
     color: var(--text-color-secondary);
     margin-bottom: 4px;
     font-size: 0.9em;
-    flex-shrink: 0;
     display: block;
-    word-break: break-all; /* More aggressive break for long IDs */
+    word-break: break-all; /* Break long agent IDs */
     overflow-wrap: break-word;
-    width: auto;
-    max-width: 100%;
-}
-/* Message content (used in both) */
-.message .message-content {
-    font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
-    /* padding-top: 2px; */ /* Removed, spacing handled by label margin */
 }
 
-/* Specifics for Conversation Area (#conversation-area) */
-.conversation-area .message {
-    /* Default for conversation messages is still row-like for user messages */
-    /* Overridden by .agent_response for column layout */
-    flex-direction: row;
-    align-items: flex-start; /* Align timestamp and content start */
+.message .message-content {
+    display: block;
+    white-space: pre-wrap;
+    word-break: break-word; /* Break long words in content */
+    overflow-wrap: break-word;
+    font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
 }
-.conversation-area .message .timestamp {
-    display: inline-block; /* Timestamp next to content for chat */
-    margin-bottom: 0;
-    margin-right: 8px;
-}
+
+/* Conversation Area Specifics */
 .conversation-area .message.agent_response {
-    flex-direction: column; /* Stack label and content for agent responses */
-    align-items: flex-start;
-    margin-right: auto;
-    align-self: flex-start;
-    background-color: var(--agent-msg-bg-base);
-    border-color: var(--border-color);
+    /* .message-body will stack label and content */
 }
 .conversation-area .message.user {
     background-color: var(--user-message-bg);
     border-color: var(--user-message-bg);
     margin-left: auto;
     align-self: flex-end;
-    flex-direction: row; /* User messages are row */
 }
 .conversation-area .message.user .message-content {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; /* Non-monospace for user input */
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
-
-/* Specifics for Internal Comms Area (styled via .system-log-area class) */
+/* Internal Comms Area Specifics */
 .system-log-area .message {
-    /* Already flex-direction: column and align-items: flex-start from general .message style */
-    width: 100%; /* Make messages take full width of internal comms area */
-    max-width: 100%; /* Override general .message max-width */
+    width: 100%;
+    max-width: 100%;
+    flex-direction: row; /* Keep timestamp side-by-side with message-body */
 }
-/* .system-log-area .message .timestamp is handled by general .message .timestamp */
-/* .system-log-area .message .agent-label is handled by general .message .agent-label */
-/* .system-log-area .message .message-content is handled by general .message .message-content */
+.system-log-area .message .message-body {
+    /* Already display: flex, flex-direction: column from .message-body general rule */
+}
 
-
-/* Agent ID specific styling applies here too */
+/* Agent ID specific styling (for internal comms) */
 .system-log-area .message[data-agent-id="admin_ai"] { border-left: 4px solid var(--accent-color-1); background-color: #2a3a4a; }
+.system-log-area .message[data-agent-id*="pm_"] { border-left: 4px solid var(--accent-color-magenta); background-color: #4a2a40; } /* PM Specific color */
 .system-log-area .message[data-agent-id*="coder"] { border-left: 4px solid var(--accent-color-2); background-color: #2a4a3a; }
 .system-log-area .message[data-agent-id*="analyst"] { border-left: 4px solid var(--accent-color-orange); background-color: #4a3a2a; }
 .system-log-area .message[data-agent-id*="creative"], .message[data-agent-id*="reviewer"] { border-left: 4px solid var(--accent-color-green); background-color: #3a4a2a; }
 .system-log-area .message[data-agent-id="default"] { border-left: 4px solid var(--text-color-muted); }
 .system-log-area .message[data-agent-id*="unknown_agent"] { border-left: 4px solid var(--text-color-secondary); }
 
-/* Status Messages (Apply in both areas) */
+
+/* Status Messages */
 .message.status {
     font-style: italic;
     color: var(--text-color-secondary);
     background-color: var(--status-bg);
     border: 1px dashed var(--border-color);
     text-align: center;
-    align-self: center; /* Center status messages */
-    width: auto; /* Fit content */
+    align-self: center;
+    width: auto;
     max-width: 95%;
     margin-left: auto;
     margin-right: auto;
     padding: 4px 10px;
     border-radius: 4px;
     flex-direction: row; /* Status messages are typically single line */
+    justify-content: center; /* Center content within status message */
+    align-items: center;
 }
 .message.status.initial-placeholder span {
     color: var(--text-color-muted);
 }
-/* Tool Execution Status (Apply in both areas) */
 .message.status.tool-execution {
-    background-color: #404030; /* Dark yellow/brown */
+    background-color: #404030;
     border-color: var(--accent-color-yellow);
     border-left: 3px solid var(--accent-color-yellow);
     color: var(--text-color-primary);
     font-style: normal;
     text-align: left;
-    align-self: stretch; /* Take full width */
+    align-self: stretch;
     margin-left: 5px;
     margin-right: 5px;
     padding: 6px 10px;
-    flex-direction: row; /* Tool execution status is usually one line */
 }
-/* Error Messages (Apply in both areas) */
 .message.error,
 .message.error span {
     color: var(--error-text) !important;
     background-color: var(--error-bg) !important;
     font-weight: bold;
-    align-self: stretch; /* Take full width */
+    align-self: stretch;
     text-align: center;
     margin-left: 0;
     margin-right: 0;
     padding: 6px 10px;
     border: 1px solid var(--accent-color-red);
-    flex-direction: row; /* Error messages are usually single line */
 }
-/* Specifics for Internal Comms Area message types */
-.system-log-area .message.log-tool-use .message-content { color: #98FB98; } /* Pale green */
-.system-log-area .message.log-agent-message .message-content { color: #ADD8E6; } /* Light blue */
+.system-log-area .message.log-tool-use .message-content { color: #98FB98; }
+.system-log-area .message.log-agent-message .message-content { color: #ADD8E6; }
 
 
 /* --- Input Area (Chat View Only) --- */
 .input-area {
     display: flex;
-    flex-shrink: 0; /* Prevent shrinking */
+    flex-shrink: 0;
     gap: 10px;
-    align-items: flex-end; /* Align textarea bottom and buttons */
-    margin-top: 10px; /* Space above input */
+    align-items: flex-end;
+    margin-top: 10px;
 }
 .input-area textarea {
     flex-grow: 1;
@@ -410,18 +371,18 @@ body {
     background-color: var(--input-bg);
     color: var(--text-color-primary);
     border-radius: 4px;
-    resize: vertical; /* Allow vertical resize */
-    min-height: 50px; /* Min height */
-    height: 60px; /* Default height */
-    max-height: 150px; /* Max height before scroll */
-    box-sizing: border-box; /* Include padding/border in height */
+    resize: vertical;
+    min-height: 50px;
+    height: 60px;
+    max-height: 150px;
+    box-sizing: border-box;
 }
 .input-area textarea::placeholder {
     color: var(--text-color-muted);
 }
 .input-controls {
     display: flex;
-    align-items: flex-end; /* Align buttons vertically */
+    align-items: flex-end;
     gap: 5px;
 }
 .input-controls button {
@@ -431,12 +392,12 @@ body {
     color: var(--button-text);
     border-radius: 4px;
     cursor: pointer;
-    height: 40px; /* Fixed height for alignment */
-    line-height: 1; /* Remove extra line height */
+    height: 40px;
+    line-height: 1;
 }
 #attach-file-button {
     background-color: var(--text-color-muted);
-    width: 40px; /* Square button */
+    width: 40px;
     font-size: 1.2em;
 }
 #attach-file-button:hover {
@@ -477,7 +438,7 @@ body {
     text-overflow: ellipsis;
     max-width: 80%;
 }
-.file-info-area button { /* Clear button */
+.file-info-area button {
     background: none;
     border: none;
     color: var(--accent-color-red);
@@ -521,7 +482,7 @@ body {
     margin-left: 5px;
     color: white;
     font-weight: bold;
-    min-width: 28px; /* Ensure icons fit */
+    min-width: 28px;
     line-height: 1.2;
 }
 .add-button { background-color: var(--accent-color-green); }
@@ -537,49 +498,47 @@ body {
     margin-bottom: 5px;
     padding: 4px 6px;
     border-radius: 4px;
-    border: 1px solid transparent; /* Base border */
-    border-left: 3px solid transparent; /* Status indicator border */
+    border: 1px solid transparent;
+    border-left: 3px solid transparent;
     transition: background-color 0.3s ease;
     background-color: var(--bg-color-tertiary);
     color: var(--text-color-primary);
-    /* Use flexbox for better alignment */
     display: flex;
     justify-content: space-between;
     align-items: center;
-    flex-wrap: wrap; /* Allow wrapping if content is too long */
+    flex-wrap: wrap;
 }
-.agent-status-item > span:first-child { /* Container for name/model/team */
-    display: inline-block; /* Allow wrapping within this span */
+.agent-status-item > span:first-child {
+    display: inline-block;
     margin-right: 10px;
 }
-.agent-status-item strong { color: var(--text-color-primary); } /* Persona */
+.agent-status-item strong { color: var(--text-color-primary); }
 .agent-status-item .agent-model {
     font-size: 0.9em;
     color: var(--text-color-secondary);
     margin-left: 2px;
     margin-right: 5px;
 }
-.agent-status-item .agent-team { /* Style for team info */
+.agent-status-item .agent-team {
      font-size: 0.85em;
      color: var(--text-color-muted);
      margin-left: 2px;
      font-style: italic;
 }
-.agent-status-item .agent-status { /* The status badge itself */
+.agent-status-item .agent-status {
     font-weight: bold;
     padding: 1px 5px;
     border-radius: 3px;
     color: white;
     margin-left: 5px;
-    flex-shrink: 0; /* Prevent badge shrinking */
-    white-space: nowrap; /* Prevent status text wrapping */
+    flex-shrink: 0;
+    white-space: nowrap;
 }
-/* Status specific colors */
 .agent-status-item.status-idle { border-left-color: var(--text-color-muted); }
 .agent-status-item.status-idle .agent-status { background-color: var(--text-color-muted); color: var(--bg-color-primary); }
 .agent-status-item.status-processing { border-left-color: var(--accent-color-1); }
 .agent-status-item.status-processing .agent-status { background-color: var(--accent-color-1); }
-.agent-status-item.status-planning { border-left-color: var(--accent-color-magenta); } /* Planning status color */
+.agent-status-item.status-planning { border-left-color: var(--accent-color-magenta); }
 .agent-status-item.status-planning .agent-status { background-color: var(--accent-color-magenta); }
 .agent-status-item.status-awaiting_tool_result { border-left-color: var(--accent-color-orange); }
 .agent-status-item.status-awaiting_tool_result .agent-status { background-color: var(--accent-color-orange); }
@@ -587,10 +546,8 @@ body {
 .agent-status-item.status-executing_tool .agent-status { background-color: var(--accent-color-yellow); color: var(--bg-color-primary); }
 .agent-status-item.status-error { border-left-color: var(--accent-color-red); }
 .agent-status-item.status-error .agent-status { background-color: var(--accent-color-red); }
-/* Removed user override status styling */
 .agent-status-item.status-unknown { border-left-color: var(--text-color-secondary); }
 .agent-status-item.status-unknown .agent-status { background-color: var(--text-color-secondary); color: var(--bg-color-primary); }
-/* Placeholder when no agents */
 .status-placeholder {
     color: var(--text-color-muted);
     font-style: italic;
@@ -601,24 +558,24 @@ body {
 
 /* --- Modal Styling --- */
 .modal {
-    display: none; /* Hidden by default */
-    position: fixed; /* Stay in place */
-    z-index: 1000; /* Sit on top */
+    display: none;
+    position: fixed;
+    z-index: 1000;
     left: 0;
     top: 0;
-    width: 100%; /* Full width */
-    height: 100%; /* Full height */
-    overflow: auto; /* Enable scroll if needed */
-    background-color: var(--modal-bg); /* Black w/ opacity */
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    background-color: var(--modal-bg);
 }
 .modal-content {
     background-color: var(--modal-content-bg);
     color: var(--text-color-primary);
-    margin: 8% auto; /* 8% from the top and centered */
+    margin: 8% auto;
     padding: 25px;
     border: 1px solid var(--modal-border-color);
-    width: 85%; /* Could be more or less, depending on screen size */
-    max-width: 550px; /* Maximum width */
+    width: 85%;
+    max-width: 550px;
     border-radius: 8px;
     position: relative;
     box-shadow: 0 5px 15px rgba(0,0,0,0.5);
@@ -644,7 +601,6 @@ body {
     padding-bottom: 10px;
 }
 #agent-form label,
-/* #override-form label, -- Removed override modal */
 .session-management-area label {
     display: block;
     margin-top: 12px;
@@ -657,8 +613,6 @@ body {
 #agent-form input[type="number"],
 #agent-form select,
 #agent-form textarea,
-/* #override-form input[type="text"], */
-/* #override-form select, */
 .session-management-area input[type="text"],
 .session-management-area select {
     width: 100%;
@@ -693,14 +647,13 @@ body {
 .modal-actions button[type="submit"]:hover {
     background-color: var(--button-hover-bg);
 }
-.modal-actions button[type="button"] { /* Cancel buttons */
+.modal-actions button[type="button"] {
     background-color: var(--text-color-muted);
     color: var(--text-color-primary);
 }
 .modal-actions button[type="button"]:hover {
     background-color: var(--text-color-secondary);
 }
-/* Restart note in agent modal */
 #agent-modal .restart-note {
     margin-top: 15px;
     font-size: 0.85em;
@@ -708,41 +661,36 @@ body {
     text-align: center;
     font-style: italic;
 }
-/* Override Modal Specific - REMOVED */
-/* #override-form p { ... } */
-/* #override-form code { ... } */
 
 
 /* --- Scrollbar Styling --- */
-/* Webkit (Chrome, Safari, Edge) */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: var(--scrollbar-track-bg); border-radius: 4px; }
 ::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb-bg); border-radius: 4px; border: 2px solid var(--scrollbar-track-bg); }
 ::-webkit-scrollbar-thumb:hover { background-color: var(--scrollbar-thumb-hover-bg); }
-/* Firefox */
 * { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb-bg) var(--scrollbar-track-bg); }
 
 
 /* --- Bottom Navigation Bar --- */
 #bottom-nav {
     display: flex;
-    justify-content: space-around; /* Distribute buttons evenly */
-    align-items: center; /* Center icons vertically */
+    justify-content: space-around;
+    align-items: center;
     background-color: var(--nav-bg);
     border-top: 1px solid var(--border-color);
-    padding: 5px 0; /* Padding top/bottom */
-    flex-shrink: 0; /* Don't shrink */
-    height: 55px; /* Fixed height */
+    padding: 5px 0;
+    flex-shrink: 0;
+    height: 55px;
 }
 .nav-button {
     background: none;
     border: none;
     color: var(--nav-button-inactive);
-    font-size: 1.8em; /* Adjust icon size */
+    font-size: 1.8em;
     cursor: pointer;
     padding: 5px 15px;
     transition: color 0.2s ease-in-out;
-    flex-grow: 1; /* Allow buttons to take equal space */
+    flex-grow: 1;
     text-align: center;
 }
 .nav-button:hover { color: var(--text-color-primary); }
@@ -751,12 +699,12 @@ body {
 
 /* --- Session Management View Styling --- */
 #session-view .view-content {
-    padding: 15px; /* More padding for this view */
+    padding: 15px;
 }
 .session-management-area {
     display: flex;
     flex-direction: column;
-    gap: 25px; /* Space between Load/Save sections */
+    gap: 25px;
 }
 .session-section {
     background-color: var(--bg-color-secondary);
@@ -771,10 +719,9 @@ body {
     padding-bottom: 8px;
     color: var(--text-color-primary);
 }
-/* Inputs and Selects inherit styles from modal rules above */
 .session-management-area select,
 .session-management-area input[type="text"] {
-    margin-bottom: 10px; /* Space below inputs/selects */
+    margin-bottom: 10px;
 }
 .session-management-area button {
     padding: 10px 15px;
@@ -782,10 +729,10 @@ body {
     border-radius: 4px;
     cursor: pointer;
     font-weight: bold;
-    margin-top: 5px; /* Space above button */
+    margin-top: 5px;
     background-color: var(--button-bg);
     color: var(--button-text);
-    width: 100%; /* Make buttons full width */
+    width: 100%;
     text-align: center;
 }
 .session-management-area button:hover {
@@ -796,21 +743,19 @@ body {
     cursor: not-allowed;
     color: var(--text-color-muted);
 }
-/* Style for dropdowns when disabled */
 .session-management-area select:disabled {
      background-color: var(--input-bg);
      color: var(--text-color-muted);
      cursor: not-allowed;
      opacity: 0.6;
 }
-/* Status Message Area */
 #session-status-message {
     margin-top: 15px;
     padding: 10px;
     border-radius: 4px;
     text-align: center;
     font-weight: bold;
-    display: none; /* Hidden by default */
+    display: none;
 }
 #session-status-message.success {
     background-color: var(--accent-color-green);
@@ -822,6 +767,3 @@ body {
     color: var(--error-text);
     display: block;
 }
-
-/* --- REMOVED LOGS VIEW STYLING --- */
-/* No styles related to #logs-view or #log-area were present */
