@@ -1,869 +1,768 @@
-# START OF FILE src/agents/cycle_handler.py
+# START OF FILE src/agents/agent_lifecycle.py
 import asyncio
-import json
+from typing import Dict, Any, Optional, List, Tuple
 import logging
+import uuid
 import time
-import datetime # Import datetime for timestamp
-import re # Import re for health report parsing
-from typing import TYPE_CHECKING, Dict, Any, Optional, List, AsyncGenerator
+import fnmatch
 
-# Import base types and Agent class
-from src.llm_providers.base import ToolResultDict, MessageDict
+import re # Import re for pattern matching if needed later
+# Import necessary components from other modules
 from src.agents.core import Agent
+from src.llm_providers.base import BaseLLMProvider
+# Import settings and model_registry, BASE_DIR
+from src.config.settings import settings, model_registry, BASE_DIR
+# --- Import centralized constants ---
+from src.agents.constants import BOOTSTRAP_AGENT_ID, KNOWN_OLLAMA_OPTIONS
+# --- End Import ---
 
-# --- NEW: Import status, state, and other constants ---
-from src.agents.constants import (
-    AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_PLANNING,
-    AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_AWAITING_TOOL,
-    AGENT_STATUS_ERROR,
-    # Workflow States (Import all for clarity)
-    ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK, # Admin-specific
-    PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE,
-    WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_WAIT,
-    # Agent Types
-    AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER, # Import all types
-    # Other Constants
-    REQUEST_STATE_TAG_PATTERN, # Import the compiled pattern
-    # Import retry/error constants
-    RETRYABLE_EXCEPTIONS, RETRYABLE_STATUS_CODES, KEY_RELATED_ERRORS, KEY_RELATED_STATUS_CODES
-)
-# --- END NEW ---
-
-# --- Import settings ---
-from src.config.settings import settings
-# --- End Import settings ---
-
-# Import tools for type checking/logic if needed
-from src.tools.manage_team import ManageTeamTool
-from src.tools.send_message import SendMessageTool
-from src.tools.tool_information import ToolInformationTool # Import ToolInformationTool
-
-# Import specific exception types
-import openai
-
-# Type hinting for AgentManager and InteractionHandler
+# Import PROVIDER_CLASS_MAP and BOOTSTRAP_AGENT_ID from the refactored manager
+# Avoid circular import using TYPE_CHECKING
+from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from src.agents.manager import AgentManager, BOOTSTRAP_AGENT_ID # Import BOOTSTRAP_AGENT_ID
-    from src.agents.interaction_handler import AgentInteractionHandler
+    from src.agents.manager import AgentManager
 
-# --- Define logger BEFORE potential use in except block ---
+# --- Import Specific Provider Classes ---
+from src.llm_providers.openai_provider import OpenAIProvider
+from src.llm_providers.ollama_provider import OllamaProvider # Corrected: OllamaProvider uses aiohttp
+from src.llm_providers.openrouter_provider import OpenRouterProvider
+# --- End Provider Imports ---
+
+# --- ***MOVED UP: Define PROVIDER_CLASS_MAP using imported classes ***---
+PROVIDER_CLASS_MAP: Dict[str, type[BaseLLMProvider]] = {
+    "openai": OpenAIProvider,
+    "ollama": OllamaProvider,
+    "openrouter": OpenRouterProvider,
+    # TODO: Add LiteLLMProvider when implemented
+    # "litellm": LiteLLMProvider,
+}
+# --- *** END MOVED UP *** ---
+
 logger = logging.getLogger(__name__)
-# --- End logger definition ---
 
-# --- NEW: Import PROVIDER_LEVEL_ERRORS ---
-# Import cautiously to avoid circular dependencies if possible,
-# though failover_handler doesn't import cycle_handler.
-try:
-    from src.agents.failover_handler import PROVIDER_LEVEL_ERRORS
-except ImportError:
-    logger.warning("Could not import PROVIDER_LEVEL_ERRORS from failover_handler. Redefining locally.") # logger is now defined
-    # Re-define locally as a fallback if import fails
-    import aiohttp, asyncio, openai
-    PROVIDER_LEVEL_ERRORS = (
-        aiohttp.ClientConnectorError,
-        asyncio.TimeoutError,
-        openai.APIConnectionError,
+# --- NEW: Helper function to extract model size ---
+def _extract_model_size_b(model_id: str) -> float:
+    """Extracts the parameter size in billions (e.g., 7b, 70b, 0.5b) from a model ID."""
+    if not isinstance(model_id, str):
+        return 0.0
+    # Regex to find patterns like -7b-, -70B-, -0.5b-, _7b_, etc.
+    # Handles optional decimal part and case-insensitive 'b'
+    match = re.search(r'[-_](\d+(?:\.\d+)?)[bB][-_]', model_id)
+    if match:
+        try:
+            return float(match.group(1))
+        except ValueError:
+            return 0.0 # Should not happen with regex, but safe fallback
+    # Fallback for models that might just end in size, e.g., model-7b
+    match_end = re.search(r'[-_](\d+(?:\.\d+)?)[bB]$', model_id)
+    if match_end:
+        try:
+            return float(match_end.group(1))
+        except ValueError:
+            return 0.0
+    return 0.0 # Return 0 if no size pattern found
+# --- END NEW HELPER ---
+
+# Define PREFERRED_ADMIN_MODELS here or import if moved elsewhere
+PREFERRED_ADMIN_MODELS = [
+    "ollama/llama3*", "litellm/llama3*", # Local prioritized
+    "anthropic/claude-3.5-sonnet", # Tier 1 Remote (Opus removed as default for cost)
+    "openai/gpt-4o",
+    "google/gemini-1.5-pro", # Use 1.5 Pro over 2.5 experimental for stability?
+    "google/gemini-1.5-flash", # Add Flash as a good free/cheap option
+    "mistralai/mistral-large-latest",
+    "anthropic/claude-3-haiku",
+    "meta-llama/llama-3.1-70b-instruct",
+    "meta-llama/llama-3.1-8b-instruct",
+    "google/gemma-2-9b-it:free", # Explicitly free tier from OpenRouter
+    "mistralai/mistral-7b-instruct:free",
+    "*", # Fallback to any available model
+]
+
+# --- Automatic Model Selection Logic ---
+async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optional[str], Optional[str]]:
+    """
+    Selects the best available and usable model based on performance ranking or registry order.
+
+    Args:
+        manager: The AgentManager instance.
+
+    Returns:
+        Tuple[Optional[str], Optional[str]]: (specific_provider_name, model_suffix) or (None, None)
+        Returns the specific provider instance name (e.g., ollama-local-...) and the model suffix.
+    """
+    logger.info("Attempting automatic model selection...")
+    ranked_models_perf = manager.performance_tracker.get_ranked_models(min_calls=0)
+    available_dict = model_registry.get_available_models_dict()
+    current_model_tier = settings.MODEL_TIER # Get tier setting
+
+    # --- NEW: Re-sort ranked models by score (desc) then size (desc) ---
+    ranked_models_sorted = sorted(
+        ranked_models_perf,
+        key=lambda item: (item[2], _extract_model_size_b(item[1])), # item[2] is score, item[1] is model_suffix
+        reverse=True # Sorts score desc, then size desc
     )
-# --- END NEW ---
+    # --- END NEW SORT ---
 
-# Constants
-HEALTH_REPORT_HISTORY_LOOKBACK = 10 # How many recent messages to check for the report
+    if current_model_tier == "LOCAL":
+        logger.info("Automatic selection: MODEL_TIER=LOCAL - prioritizing local models")
+        # Prioritize local providers when MODEL_TIER=LOCAL
+        local_providers = [p for p in available_dict if p.endswith("-local") or p.endswith("-local-127-0-0-1")]
+        if local_providers:
+            first_local_provider = local_providers[0]
+            models = available_dict.get(first_local_provider, [])
+            if models:
+                first_model = models[0].get("id")
+                if first_model:
+                    logger.info(f"Automatic selection (LOCAL tier): Selected {first_local_provider}/{first_model}")
+                    return first_local_provider, first_model
+        logger.warning("Automatic selection: No local models found despite MODEL_TIER=LOCAL")
 
-# Retry/Error constants imported above
+    # For FREE tier or when no local models are available
+    if current_model_tier == "FREE":
+        logger.info("Automatic selection: MODEL_TIER=FREE - checking free/local models")
+        # Try ranked models first
+        if ranked_models_sorted:
+            logger.debug(f"Ranking based selection: {len(ranked_models_sorted)} models ranked. Checking availability, keys, and tier...")
+            for provider_base, model_suffix, score, _ in ranked_models_sorted:
+                is_local = provider_base in ["ollama", "litellm"]
+                is_free_tier_model = ":free" in model_suffix.lower()
+                
+                if not is_free_tier_model and not is_local:
+                    continue
 
-
-class AgentCycleHandler:
-    """
-    Handles the agent execution cycle, including retries for transient errors
-    and triggering failover (via AgentManager) for persistent/fatal errors.
-    Handles the planning phase by auto-approving plans and reactivating the agent.
-    Records performance metrics. Passes exception objects to failover handler.
-    Injects current time context and a system health report for Admin AI calls.
-    Logs interactions to the database.
-    Allows multiple tool calls (of same or different types) in one turn.
-    Uses retry/failover limits from settings.
-    Handles initial mandatory tool call for PM agent in 'work' state.
-    Passes max_tokens override to Agent.process_message based on state.
-    Injects task description and tool list for worker's first 'work' cycle.
-    """
-    def __init__(self, manager: 'AgentManager', interaction_handler: 'AgentInteractionHandler'):
-        self._manager = manager
-        self._interaction_handler = interaction_handler
-        # Import BOOTSTRAP_AGENT_ID from manager to avoid module-level import issues potentially
-        from src.agents.manager import BOOTSTRAP_AGENT_ID
-        self.BOOTSTRAP_AGENT_ID = BOOTSTRAP_AGENT_ID
-        # Use the imported compiled pattern directly
-        self.request_state_pattern = REQUEST_STATE_TAG_PATTERN
-        if not self.request_state_pattern:
-             logger.error("REQUEST_STATE_TAG_PATTERN failed to compile during import!")
-        logger.info("AgentCycleHandler initialized.")
-
-    # --- System Health Report Helper ---
-    async def _generate_system_health_report(self, agent: Agent) -> Optional[str]:
-        """Generates a concise report based on the agent's recent history."""
-        if not agent or not agent.message_history: return None
-
-        try:
-            recent_messages = agent.message_history[-HEALTH_REPORT_HISTORY_LOOKBACK:]
-            tool_success_count = 0; tool_failure_count = 0; error_details = []; key_events = []
-
-            for msg in reversed(recent_messages):
-                role = msg.get("role"); content = msg.get("content", ""); call_id = msg.get("tool_call_id")
-                if role == 'assistant':
-                    # Stop looking after last assistant output unless it was just a plan or state request
-                    if '<plan>' not in content and '<request_state' not in content:
-                         break
-                elif role == 'tool':
-                     is_error = content.strip().lower().startswith(("[toolexec error:", "error:", "[manager error:"))
-                     if is_error:
-                         tool_failure_count += 1
-                         error_summary = content.split('\n')[0]; error_details.append(f"- Tool Call {call_id or 'N/A'}: {error_summary[:150]}{'...' if len(error_summary) > 150 else ''}")
-                     else: tool_success_count += 1
-                elif role == 'system_feedback':
-                     if '[Manager Result' in content:
-                         success_match = re.search(r'Success=(\w+)', content); action_match = re.search(r'for (\w+)', content); action_name = action_match.group(1) if action_match else 'unknown action'
-                         if success_match and success_match.group(1).lower() == 'true':
-                             tool_success_count += 1
-                             data_match = re.search(r'Data:\s*(\{.*?\})\s*$', content, re.DOTALL | re.IGNORECASE)
-                             if data_match:
-                                 try: data_dict = json.loads(data_match.group(1))
-                                 except json.JSONDecodeError: data_dict = None
-                                 if data_dict:
-                                      if 'created_agent_id' in data_dict: key_events.append(f"Agent '{data_dict['created_agent_id']}' created.")
-                                      elif 'created_team_id' in data_dict: key_events.append(f"Team '{data_dict['created_team_id']}' created.")
-                                      # Add more key events as needed
-                         elif success_match and success_match.group(1).lower() == 'false':
-                             tool_failure_count += 1; error_summary = content.split('Message: ')[-1]; error_details.append(f"- Feedback ({action_name}): {error_summary[:150]}{'...' if len(error_summary) > 150 else ''}")
-                         else: logger.debug(f"Could not parse success status from system_feedback: {content[:100]}"); tool_success_count += 1
-                elif role == 'system_error':
-                     tool_failure_count += 1; error_summary = content.split('\n')[0]; error_details.append(f"- System Error: {error_summary[:150]}{'...' if len(error_summary) > 150 else ''}")
-
-            if tool_failure_count == 0 and not key_events:
-                # Make the "OK" report less ambiguous for the LLM
-                return "[Framework Internal Status: Last turn OK. This is not a user query.]"
-
-            report_lines = ["[System Health Report - Previous Turn]"]
-            if tool_success_count > 0 or tool_failure_count > 0: report_lines.append(f"- Tool Executions: {tool_success_count} succeeded, {tool_failure_count} failed.")
-            if error_details: report_lines.append("- Errors/Warnings:"); report_lines.extend(error_details[:3]);
-            if len(error_details) > 3: report_lines.append("  ...")
-            if key_events: report_lines.append("- Key Events:"); report_lines.extend([f"  - {evt}" for evt in key_events[:3]]);
-            if len(key_events) > 3: report_lines.append("  ...")
-            return "\n".join(report_lines)
-        except Exception as e:
-            logger.error(f"Error generating system health report for agent {agent.agent_id}: {e}", exc_info=True)
-            return "[System Health Report - Error generating report]"
-    # --- End Health Report Helper ---
-
-    async def run_cycle(self, agent: Agent, retry_count: int = 0):
-        # --- VERY FIRST LINE LOGGING ---
-        logger.critical(f"!!! CycleHandler: run_cycle TASK STARTED for Agent '{agent.agent_id}' (Retry: {retry_count}) !!!")
-        # --- END VERY FIRST LINE LOGGING ---
-        # --- ADDED LOGGING ---
-        logger.info(f"CycleHandler: run_cycle ENTERED for Agent '{agent.agent_id}' (Retry: {retry_count}).")
-        # --- END ADDED LOGGING ---
-
-        # Uses imported constants
-        agent_id = agent.agent_id
-        state_before_cycle = agent.state # Store state at the beginning
-        current_provider = agent.provider_name
-        current_model = agent.model
-        # --- Use settings for limits ---
-        max_retries = settings.MAX_STREAM_RETRIES
-        retry_delay = settings.RETRY_DELAY_SECONDS
-        # --- End Use settings ---
-        logger.info(f"CycleHandler: Starting cycle for Agent '{agent_id}' (Model: {current_provider}/{current_model}, Retry: {retry_count}/{max_retries}).")
-
-        agent_generator: Optional[AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]] = None
-        manager_action_feedback: List[Dict] = []
-        cycle_completed_successfully = False
-        trigger_failover = False
-        last_error_obj: Optional[Exception] = None
-        last_error_content = ""
-        is_retryable_error_type = False
-        is_key_related_error = False
-        plan_approved_this_cycle = False # Reset flag for this cycle
-        state_request_match = None # Initialize here
-        generator_finished_normally = False # NEW FLAG
-
-        history_len_before = len(agent.message_history)
-        executed_tool_successfully_this_cycle = False # Reset flag for this cycle
-        # --- MODIFIED: Default needs_reactivation to FALSE ---
-        needs_reactivation_after_cycle = False
-        # --- END MODIFIED ---
-        start_time = time.perf_counter()
-        llm_call_duration_ms = 0.0
-        action_taken_this_cycle = False # NEW: Track if a tool call or state change was attempted
-
-        if not hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle = set()
-        current_model_key = f"{current_provider}/{current_model}"
-        agent._failed_models_this_cycle.add(current_model_key)
-        logger.debug(f"Agent '{agent_id}' attempting model '{current_model_key}'. Failed this sequence so far: {agent._failed_models_this_cycle}")
-
-        current_db_session_id = self._manager.current_session_db_id
-
-        # --- WRAP ENTIRE FUNCTION BODY ---
-        try:
-            # --- Inner try...finally block for core logic ---
-            try:
-                # --- NEW: Check for WORKER Agent's first cycle in WORK state ---
-                is_worker_first_work_cycle = (
-                    agent.agent_type == AGENT_TYPE_WORKER and
-                    agent.state == WORKER_STATE_WORK and
-                    getattr(agent, '_needs_initial_work_context', False) # Check flag set by InteractionHandler
-                )
-                skip_standard_prompt_fetch = False
-                final_system_prompt = "" # Initialize
-
-                if is_worker_first_work_cycle:
-                    logger.info(f"CycleHandler: Worker Agent '{agent_id}' first cycle in WORK state. Injecting task/tool context.")
-                    agent._needs_initial_work_context = False # Clear the flag
-
-                    # Retrieve task description and tool list (assuming stored on agent by InteractionHandler)
-                    task_description = getattr(agent, '_injected_task_description', "[Task description not injected]")
-                    available_tools_list_str = getattr(agent, '_injected_tools_list_str', "[Tool list not injected]")
-                    # Clear temporary attributes after use
-                    if hasattr(agent, '_injected_task_description'): delattr(agent, '_injected_task_description')
-                    if hasattr(agent, '_injected_tools_list_str'): delattr(agent, '_injected_tools_list_str')
-
-                    # Get the base prompt template
-                    # Ensure workflow_manager exists before accessing _prompt_map
-                    prompt_key = "worker_work_prompt" # Default key
-                    if hasattr(self._manager, 'workflow_manager') and hasattr(self._manager.workflow_manager, '_prompt_map'):
-                         prompt_key = self._manager.workflow_manager._prompt_map.get((AGENT_TYPE_WORKER, WORKER_STATE_WORK), "worker_work_prompt")
+                matching_providers = [p for p in model_registry._reachable_providers 
+                                    if p.startswith(f"{provider_base}-local-") or 
+                                       p == f"{provider_base}-proxy" or 
+                                       p == provider_base]
+                
+                if not matching_providers:
+                    continue
+                    
+                specific_provider = matching_providers[0]
+                if model_registry.is_model_available(specific_provider, model_suffix):
+                    if is_local:
+                        canonical_id = f"{provider_base}/{model_suffix}"
                     else:
-                         logger.error("WorkflowManager or its _prompt_map not found on AgentManager! Using default prompt key.")
+                        canonical_id = model_suffix
+                        
+                    if provider_base not in ["ollama", "litellm"]:
+                        if await manager.key_manager.is_provider_depleted(provider_base):
+                            continue
+                            
+                    logger.info(f"Automatic selection successful (Ranked): Selected {specific_provider}/{model_suffix}")
+                    return specific_provider, model_suffix
 
-                    prompt_template = settings.PROMPTS.get(prompt_key)
+        # Fallback to registry order for FREE tier
+        for provider_base in ["ollama", "litellm", "openrouter", "openai"]:
+            matching_providers = [p for p in available_dict if 
+                                p == provider_base or 
+                                p.startswith(f"{provider_base}-local-") or 
+                                p == f"{provider_base}-proxy"]
+            if matching_providers:
+                first_matching_provider = matching_providers[0]
+                models = available_dict.get(first_matching_provider, [])
+                for model_info in models:
+                    model_id = model_info.get("id")
+                    if model_id:
+                        is_free_tier = ":free" in model_id.lower()
+                        is_local = first_matching_provider.startswith(("ollama-local", "litellm-local")) or first_matching_provider.endswith("-proxy")
+                        if is_free_tier or is_local:
+                            logger.info(f"Automatic selection (FREE tier fallback): Selected {first_matching_provider}/{model_id}")
+                            return first_matching_provider, model_id
 
-                    if prompt_template:
-                        # Manually format the prompt with extra context
-                        formatting_context = {
-                            "agent_id": agent.agent_id,
-                            "persona": agent.persona,
-                            "project_name": getattr(self._manager, 'current_project', 'N/A'),
-                            "session_name": getattr(self._manager, 'current_session', 'N/A'),
-                            "team_id": self._manager.state_manager.get_agent_team(agent.agent_id) or "N/A",
-                            "current_time_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(sep=' ', timespec='seconds'),
-                            # --- Inject the specific task and tool list ---
-                            "task_description": task_description,
-                            "available_tools_list": available_tools_list_str
-                        }
-                        try:
-                            final_system_prompt = prompt_template.format(**formatting_context)
-                            skip_standard_prompt_fetch = True
-                            logger.debug(f"CycleHandler: Manually formatted prompt for worker '{agent_id}' first work cycle.")
-                        except KeyError as fmt_err:
-                            logger.error(f"CycleHandler: Failed to format worker first work prompt '{prompt_key}'. Missing key: {fmt_err}. Falling back.")
-                            final_system_prompt = settings.DEFAULT_SYSTEM_PROMPT # Fallback
-                        except Exception as e:
-                            logger.error(f"CycleHandler: Unexpected error formatting worker first work prompt '{prompt_key}': {e}. Falling back.", exc_info=True)
-                            final_system_prompt = settings.DEFAULT_SYSTEM_PROMPT # Fallback
-                    else:
-                        logger.error(f"CycleHandler: Prompt template for key '{prompt_key}' not found. Using absolute default.")
-                        final_system_prompt = settings.DEFAULT_SYSTEM_PROMPT
-                # --- End Worker First Cycle Check ---
+    logger.error("Automatic model selection failed: No available models found that match the MODEL_TIER requirements")
+    return None, None
+# --- END Automatic Model Selection Logic ---
 
-                # --- Prepare history for LLM call ---
-                history_for_call = agent.message_history.copy() # Start with current history
 
-                # --- Get State-Specific Prompt (if not handled above) ---
-                if not skip_standard_prompt_fetch: # Only fetch standard prompt if not worker's first work cycle
-                    if hasattr(self._manager, 'workflow_manager'):
-                        final_system_prompt = self._manager.workflow_manager.get_system_prompt(agent, self._manager)
-                        logger.debug(f"CycleHandler: Set system prompt for agent '{agent_id}' (Type: {agent.agent_type}, State: {agent.state}) via WorkflowManager.")
-                    else:
-                        logger.error("WorkflowManager not found on AgentManager! Cannot get state-specific prompt. Using agent's default.")
-                        final_system_prompt = agent.final_system_prompt # Fallback to agent's stored prompt
+# --- initialize_bootstrap_agents (Ensured full code included) ---
+async def initialize_bootstrap_agents(manager: 'AgentManager'):
+    """ Initializes bootstrap agents defined in settings. """
+    logger.info("Lifecycle: Initializing bootstrap agents...")
+    agent_configs_list = settings.AGENT_CONFIGURATIONS
+    if not agent_configs_list:
+        logger.warning("Lifecycle: No bootstrap agent configurations found.")
+        return
 
-                # Ensure system prompt is at the start of history
-                if not history_for_call or history_for_call[0].get("role") != "system":
-                    history_for_call.insert(0, {"role": "system", "content": final_system_prompt})
+    main_sandbox_dir = BASE_DIR / "sandboxes"
+    try:
+        await asyncio.to_thread(main_sandbox_dir.mkdir, parents=True, exist_ok=True)
+    except Exception as e:
+        logger.error(f"Lifecycle: Failed to create main sandboxes directory {main_sandbox_dir}: {e}")
+
+    tasks = []
+    formatted_available_models = model_registry.get_formatted_available_models()
+    logger.debug("Lifecycle: Retrieved formatted available models for Admin AI prompt.")
+
+    for agent_conf_entry in agent_configs_list:
+        agent_id = agent_conf_entry.get("agent_id")
+        if not agent_id:
+            logger.warning("Lifecycle: Skipping bootstrap agent due to missing 'agent_id'.")
+            continue
+
+        agent_config_data = agent_conf_entry.get("config", {})
+        final_agent_config_data = agent_config_data.copy()
+        selection_method = "config.yaml" # Assume config first
+        final_provider_for_creation = None # Store the specific provider instance name (e.g., ollama-local-...)
+        final_model_canonical = None # Store the canonical model ID (e.g., ollama/...)
+
+        logger.info(f"Lifecycle: Processing bootstrap agent '{agent_id}' configuration...")
+        config_provider = final_agent_config_data.get("provider") # Base name like 'ollama'
+        config_model = final_agent_config_data.get("model") # Canonical name like 'ollama/model...'
+        use_config_value = False
+
+        # --- Step 1: Attempt to use config.yaml values ---
+        if config_provider and config_model:
+            logger.info(f"Lifecycle: Agent '{agent_id}' defined in config.yaml: Provider='{config_provider}', Model='{config_model}'")
+        # Check if base provider type is configured/discovered
+        if config_provider:
+            if config_provider in ["ollama", "litellm"]:
+                # For local providers, check if they are discovered by ModelRegistry
+                discovered_providers = list(model_registry.available_models.keys())
+                matching_local_providers = [p for p in discovered_providers if p.startswith(f"{config_provider}-local-")]
+                if not matching_local_providers:
+                    logger.warning(f"Lifecycle: Local provider '{config_provider}' specified for agent '{agent_id}' is not discovered. Ignoring config.")
+                    use_config_value = False
                 else:
-                    history_for_call[0] = {"role": "system", "content": final_system_prompt} # Overwrite/set
+                    use_config_value = True
+            else:
+                # For remote providers, check if they are configured in .env
+                provider_configured = settings.is_provider_configured(config_provider)
+                if not provider_configured:
+                    use_config_value = False
+                else:
+                # Validate format and get model suffix
+                    is_local_provider_cfg = config_provider in ["ollama", "litellm"]
+                    model_id_suffix = None
+                    format_valid = True
 
-                # --- Inject System Health Report (Admin AI only) ---
-                # (This logic remains, but happens *after* the main system prompt is set)
-                if agent.agent_id == self.BOOTSTRAP_AGENT_ID: # Check agent ID, not type
-                    system_health_report = await self._generate_system_health_report(agent)
-                    if system_health_report: # Append health report if generated
-                        health_msg: MessageDict = {"role": "system", "content": system_health_report}
-                        # Insert *after* the main system prompt but before other history
-                        history_for_call.insert(1, health_msg)
-                        logger.debug(f"Injected system health report for {agent_id}")
-                # --- End History Preparation (Prompt + Health Report) ---
-
-                # --- Make LLM Call ---
-                # --- Pass max_tokens to process_message ---
-                agent_generator = agent.process_message(history_override=history_for_call) # Pass potentially modified history
-                # --- END ---
-
-                # --- Proceed with event loop ---
-                while True:
-                    event = None # Initialize event outside try
-                    try:
-                        event = await agent_generator.asend(None)
-                        # --- TEMP LOGGING: Event Received ---
-                        logger.debug(f"CYCLE HANDLER RECEIVED Event: {event}")
-                        # --- END TEMP LOGGING ---
-                    except StopAsyncIteration:
-                        logger.info(f"CycleHandler: Agent '{agent_id}' generator finished normally.")
-                        cycle_completed_successfully = True
-                        generator_finished_normally = True # Set flag
-
-                        # Log the final response normally if no state change was requested during the stream
-                        if not needs_reactivation_after_cycle and current_db_session_id is not None:
-                            final_content = agent.text_buffer.strip() # Get final content again
-                            if final_content: # Only log if there's actual content
-                                await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="assistant", content=final_content)
-                        # --- END NEW ---
-                        break # Exit inner loop as generator finished
-
-                    except Exception as gen_err:
-                        logger.error(f"CycleHandler: Generator error for '{agent_id}': {gen_err}", exc_info=True)
-                        last_error_obj = gen_err; last_error_content = f"[Manager Error: Unexpected error in generator handler - {gen_err}]"; is_retryable_error_type = False; is_key_related_error = False; trigger_failover = True; break
-
-                    event_type = event.get("type")
-
-                    # --- START STATE/PLAN/TOOL HANDLING ---
-
-                    # Handle plan submission (now specific to Admin AI AND only if in PLANNING state)
-                    if event_type == "admin_plan_submitted":
-                        action_taken_this_cycle = True # Mark action
-                        # --- NEW: Check if agent is actually in PLANNING state ---
-                        if agent.agent_id == self.BOOTSTRAP_AGENT_ID and getattr(agent, 'state', None) == ADMIN_STATE_PLANNING:
-                            plan_content = event.get("plan_content", "[No Plan Content]")
-                            agent_id_from_event = event.get("agent_id") # Should be admin_ai
-                            logger.info(f"CycleHandler: Received plan submission from agent '{agent_id_from_event}' (State: PLANNING).")
-
-                            # --- ADD LOGGING ---
-                            logger.debug(f"CycleHandler: Attempting to log plan to DB for session {current_db_session_id}...")
-                            # --- END LOGGING ---
-                            if current_db_session_id is not None:
-                                try:
-                                    await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="assistant_plan", content=plan_content) # Log the plan
-                                    # --- ADD LOGGING ---
-                                    logger.debug("CycleHandler: Plan logged to DB successfully.")
-                                    # --- END LOGGING ---
-                                except Exception as db_log_err:
-                                     logger.error(f"Failed to log admin plan to DB: {db_log_err}", exc_info=True)
-                            else:
-                                logger.warning("Cannot log admin plan to DB: current_session_db_id is None.")
-
-                            # --- Framework Project Creation Logic ---
-                            project_title = f"Project_{int(time.time())}" # Default title
-                            creation_success = False
-                            creation_message = f"[Framework Notification] Failed to initiate project '{project_title}'."
-                            pm_agent_id = None # Initialize pm_agent_id
-
-                            try:
-                                # Extract title
-                                title_match = re.search(r"<title>(.*?)</title>", plan_content, re.IGNORECASE | re.DOTALL)
-                                if title_match:
-                                    extracted_title = title_match.group(1).strip()
-                                    if extracted_title: # Ensure title is not empty
-                                        project_title = extracted_title
-                                        logger.info(f"Extracted project title: '{project_title}'")
-                                    else:
-                                        logger.warning("Extracted <title> was empty. Using default project title.")
-                                else:
-                                    logger.warning("Could not extract <title> from plan. Using default project title.")
-
-                                # --- Call AgentManager to handle creation ---
-                                # --- ADD LOGGING ---
-                                logger.debug(f"CycleHandler: Calling manager.create_project_and_pm_agent for title '{project_title}'...")
-                                # --- END LOGGING ---
-                                if hasattr(self._manager, 'create_project_and_pm_agent'):
-                                    creation_success, creation_message, pm_agent_id = await self._manager.create_project_and_pm_agent(
-                                        project_title=project_title, # Use original title for display/task name
-                                        plan_description=plan_content # Pass full plan as description
-                                    )
-                                    # --- ADD LOGGING ---
-                                    logger.debug(f"CycleHandler: manager.create_project_and_pm_agent returned: success={creation_success}, msg='{creation_message}', pm_id={pm_agent_id}")
-                                    # --- END LOGGING ---
-                                else:
-                                     logger.error("AgentManager does not have 'create_project_and_pm_agent' method!")
-                                     creation_message = "[Framework Error] Project creation function not implemented."
-
-                            except Exception as creation_err:
-                                logger.error(f"Error during framework project/PM creation: {creation_err}", exc_info=True)
-                                creation_message = f"[Framework Error] An error occurred during project creation: {creation_err}"
-                            # --- End Creation Call ---
-
-                            # --- Inject Confirmation & Set State ---
-                            # --- ADD LOGGING ---
-                            logger.debug(f"CycleHandler: Preparing to inject confirmation and set state back to conversation.")
-                            # --- END LOGGING ---
-                            # Use the potentially updated message from create_project_and_pm_agent
-                            confirm_msg: MessageDict = {"role": "system", "content": creation_message} # Keep confirmation message
-                            agent.message_history.append(confirm_msg)
-                            # --- UI notification is now sent from manager.py ---
-                            if hasattr(agent, 'set_state'):
-                                 # --- Ensure state is set to CONVERSATION after plan submission ---
-                                 agent.set_state(ADMIN_STATE_CONVERSATION) # Explicitly set to conversation
-                                 logger.info(f"CycleHandler: Set Admin AI state to '{ADMIN_STATE_CONVERSATION}' after plan submission.")
-                                 # Log state change?
-                                 if current_db_session_id is not None:
-                                      try:
-                                          await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="agent_state_change", content=f"State changed to: {ADMIN_STATE_CONVERSATION} after plan submission.")
-                                      except Exception as db_log_err:
-                                           logger.error(f"Failed to log state change to DB: {db_log_err}", exc_info=True)
-                            else:
-                                 logger.error("Cannot set Admin AI state back to conversation: set_state method missing.")
-                            # --- END State Setting ---
-
-                            # --- Ensure no automatic reactivation after plan submission ---
-                            # The Admin AI should wait for user input or PM updates in the conversation state.
-                            needs_reactivation_after_cycle = False # EXPLICITLY SET TO FALSE
-                            logger.debug("CycleHandler: Plan submitted, Admin AI state set to conversation, preventing immediate reactivation.")
-                            # --- END Reactivation Prevention ---
-                            break # Exit event loop after handling plan
-                        else:
-                             # Log warning if plan submitted in wrong state
-                             logger.warning(f"CycleHandler: Agent '{agent.agent_id}' submitted a plan but was not in PLANNING state. Ignoring plan.")
-                             # Continue processing other events? Or break? Let's break and reactivate.
-                             needs_reactivation_after_cycle = True
-                             break
-                    # --- END STATE/PLAN HANDLING ---
-                    # --- Handle agent_state_change_requested event ---
-                    elif event_type == "agent_state_change_requested":
-                        action_taken_this_cycle = True # Mark action
-                        requested_state = event.get("requested_state")
-                        logger.info(f"CycleHandler: Received state change request to '{requested_state}' from agent '{agent_id}'.")
-                        # Use WorkflowManager to handle the state change
-                        state_change_success = False
-                        if hasattr(self._manager, 'workflow_manager') and requested_state:
-                            state_change_success = self._manager.workflow_manager.change_state(agent, requested_state)
-                        else:
-                            logger.error(f"Cannot process state change request for agent '{agent_id}': WorkflowManager missing or requested_state empty.")
-
-                        if state_change_success:
-                             # --- MODIFIED: ALWAYS reactivate after successful state change ---
-                             needs_reactivation_after_cycle = True 
-                             logger.info(f"State change to '{requested_state}' successful for agent '{agent_id}'. Agent will be reactivated.")
-                             # --- END MODIFIED ---
-                        else:
-                             # Optionally send feedback if state change failed validation?
-                             logger.warning(f"State change to '{requested_state}' denied for agent '{agent_id}'. Agent remains in state '{agent.state}'.")
-                             # --- Reactivate on FAILED state change ---
-                             needs_reactivation_after_cycle = True
-                             # --- END ---
-                        break # Exit event loop, let finally handle reactivation (or lack thereof)
-                    # --- End state change handling ---
-                    # --- NEW: Handle agent_thought event ---
-                    elif event_type == "agent_thought":
-                        # action_taken_this_cycle = True # A thought doesn't count as an 'action' for reactivation logic
-                        thought_content = event.get("content")
-                        if thought_content:
-                            logger.info(f"CycleHandler: Received thought from agent '{agent_id}'. Saving to KB.")
-                            # Construct KB save arguments
-                            kb_key = f"thought_{agent_id}_{int(time.time())}"
-                            kb_entry = {
-                                "key": kb_key,
-                                "value": thought_content,
-                                "tags": ["temp_thought_log", f"agent:{agent_id}"] # Add agent ID tag
-                            }
-                            kb_args = {
-                                "action": "save_knowledge",
-                                "entry": kb_entry
-                            }
-                            # Execute KB save directly using ToolExecutor
-                            # Note: This bypasses normal tool result handling/history injection,
-                            # which is likely fine for internal logging.
-                            try:
-                                # Correctly call execute_tool, identifying as 'framework'
-                                kb_result = await self._manager.tool_executor.execute_tool(
-                                    agent_id="framework",   # Identify call as framework internal
-                                    agent_sandbox_path=agent.sandbox_path, # Still use agent's sandbox context
-                                    tool_name="knowledge_base",
-                                    tool_args=kb_args,      # Pass args via keyword 'tool_args'
-                                    project_name=self._manager.current_project, # Optional kwarg
-                                    session_name=self._manager.current_session, # Optional kwarg
-                                    manager=self._manager   # Pass manager explicitly if needed by auth check (though framework bypasses)
-                                )
-                                # Check result (knowledge_base returns string on success/error)
-                                if isinstance(kb_result, str) and kb_result.startswith("Error:"):
-                                    logger.error(f"Failed to save agent '{agent_id}' thought to KB. Result: {kb_result}")
-                                elif not isinstance(kb_result, str): # Should be string on success too
-                                     logger.warning(f"Unexpected result type saving thought to KB: {type(kb_result)}. Result: {kb_result}")
-
-                            except Exception as kb_err:
-                                logger.error(f"Exception saving agent '{agent_id}' thought to KB: {kb_err}", exc_info=True)
-                        # Continue: Allow loop to proceed naturally after handling thought
-                        continue
-                    # --- END NEW ---
-                    elif event_type in ["response_chunk", "status", "final_response"]:
-                        if "agent_id" not in event: event["agent_id"] = agent_id
-                        # --- TEMP LOGGING: Event Before Send ---
-                        logger.debug(f"CYCLE HANDLER SENDING Event: {event}")
-                        # --- END TEMP LOGGING ---
-                        await self._manager.send_to_ui(event)
-                        # Log final response normally
-                        if event_type == "final_response":
-                            final_content = event.get("content", "")
-                            if current_db_session_id is not None:
-                                 await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="assistant", content=final_content)
-                    elif event_type == "error":
-                        last_error_obj = event.get('_exception_obj', ValueError(event.get('content', 'Unknown Error')))
-                        last_error_content = event.get("content", "[Agent Error: Unknown error from provider]")
-                        logger.error(f"CycleHandler: Agent '{agent_id}' reported error event: {last_error_content}")
-
-                        # --- REVISED ERROR CHECKING ORDER ---
-                        # 1. Check for Provider-Level Errors (should trigger failover immediately)
-                        if isinstance(last_error_obj, PROVIDER_LEVEL_ERRORS):
-                            logger.warning(f"CycleHandler: Agent '{agent_id}' encountered provider-level error: {type(last_error_obj).__name__}. Triggering failover.")
-                            is_retryable_error_type = False
-                            is_key_related_error = False # Provider errors aren't key errors per se
-                            trigger_failover = True
-
-                        # 2. Check for Key-Related Errors (should trigger failover/key cycle)
-                        elif isinstance(last_error_obj, KEY_RELATED_ERRORS) or \
-                             (isinstance(last_error_obj, openai.APIStatusError) and last_error_obj.status_code in KEY_RELATED_STATUS_CODES):
-                            logger.warning(f"CycleHandler: Agent '{agent_id}' encountered key-related/rate-limit error: {type(last_error_obj).__name__}. Triggering failover/key cycle.")
-                            is_retryable_error_type = False
-                            is_key_related_error = True
-                            trigger_failover = True
-
-                        # 3. Check for other Retryable Errors (retry same config up to limit)
-                        elif isinstance(last_error_obj, RETRYABLE_EXCEPTIONS) or \
-                             (isinstance(last_error_obj, openai.APIStatusError) and last_error_obj.status_code in RETRYABLE_STATUS_CODES):
-                            logger.warning(f"CycleHandler: Agent '{agent_id}' encountered retryable error: {type(last_error_obj).__name__}. Will retry same config if limit not reached.")
-                            is_retryable_error_type = True
-                            is_key_related_error = False
-                            trigger_failover = False # Don't trigger fail 
-
-                        # 5. Check for Tool Execution Errors (should not trigger failover)
-                        # --- MODIFIED: Check for multi-tool attempt here as well ---
-                        elif "ToolExec Error" in last_error_content or event.get("multiple_tools_attempted", False):
-                            if event.get("multiple_tools_attempted", False):
-                                logger.warning(f"CycleHandler: Agent '{agent_id}' attempted multiple tools. Providing feedback, not triggering failover.")
-                                # Add feedback to history in the "tool_requests" block below
-                            else: # Regular ToolExec Error
-                                logger.warning(f"CycleHandler: Agent '{agent_id}' encountered tool execution error: {last_error_content}. Not triggering failover.")
-                            is_retryable_error_type = True # Still retryable from LLM perspective
-                            is_key_related_error = False
-                            trigger_failover = False
-                        # --- END MODIFIED ---
-
-                        # 4. All other errors (non-retryable, non-key, non-provider) -> Failover
-                        else:
-                            logger.warning(f"CycleHandler: Agent '{agent_id}' encountered non-retryable/unknown error: {type(last_error_obj).__name__}. Triggering failover.")
-                            is_retryable_error_type = False
-                            is_key_related_error = False
-                            trigger_failover = True
-
-                        if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="system_error", content=last_error_content)
-                        break # Exit the event processing loop on any error
-                    elif event_type == "tool_requests":
-                        action_taken_this_cycle = True # Mark action
-                        all_tool_calls: List[Dict] = event.get("calls", [])
-                        agent_response_content = event.get("raw_assistant_response")
-                        multiple_tools_attempted = event.get("multiple_tools_attempted", False) # Get the flag
-
-                        if not all_tool_calls: continue
-                        logger.info(f"CycleHandler: Agent '{agent_id}' yielded {len(all_tool_calls)} tool request(s). Multiple attempted: {multiple_tools_attempted}")
-                        if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="assistant", content=agent_response_content, tool_calls=all_tool_calls)
-                        else: logger.warning("Cannot log assistant tool request response to DB: current_session_db_id is None.")
-
-                        # --- MODIFIED: REMOVE BATCHING ENFORCEMENT (Agent Core now handles sending only first tool) ---
-                        # --- ADD Feedback for multiple tool attempts ---
-                        if multiple_tools_attempted:
-                            feedback_msg_content = "[Framework Feedback]: You attempted to call multiple tools in one response. I have processed only the first valid tool call. Please call tools one at a time."
-                            logger.warning(f"Agent '{agent_id}' attempted multiple tools. Adding feedback to history: {feedback_msg_content}")
-                            # Find the ID of the first tool call to associate the feedback
-                            first_call_id_for_feedback = all_tool_calls[0].get('id', f"multi_tool_feedback_{int(time.time())}")
-                            feedback_message: MessageDict = {
-                                "role": "tool", # Pretend it's a tool result from the system
-                                "tool_call_id": first_call_id_for_feedback,
-                                "content": feedback_msg_content
-                            }
-                            agent.message_history.append(feedback_message)
-                            if current_db_session_id is not None:
-                                await self._manager.db_manager.log_interaction(
-                                    session_id=current_db_session_id,
-                                    agent_id=agent_id,
-                                    role="system_feedback", # Use a specific role for this
-                                    content=feedback_msg_content,
-                                    tool_results=[{"call_id": first_call_id_for_feedback, "name": "framework_feedback", "content": feedback_msg_content}]
-                                )
-                            # Don't break here, proceed to execute the single tool call
-                        # --- END Feedback ---
-
-
-                        # --- Process all tool calls and provide feedback ---
-                        tool_results = []
-                        calls_to_execute = all_tool_calls # Should now be a list of 0 or 1 call
-                        executed_tool_successfully_this_cycle = False # Initialize here for this batch
-                        for call_index, call in enumerate(calls_to_execute): # Added call_index for logging
-                            call_id = call.get("id"); tool_name = call.get("name"); tool_args = call.get("arguments", {})
-                            logger.info(f"CycleHandler: Executing tool call {call_index + 1}/{len(calls_to_execute)} for agent '{agent_id}': Tool='{tool_name}', Args='{tool_args}'")
-
-                            # --- REMOVED: Defaulting 'action' for tool_information here. Let the tool or parser handle defaults. ---
-                            # if tool_name == "tool_information" and "action" not in tool_args:
-                            #     tool_args["action"] = "list_tools"
-                            #     logger.debug(f"CycleHandler: Defaulting 'action' to 'list_tools' for tool_information call from agent '{agent_id}'.")
-                            # --- END REMOVED ---
-
-                            if not (call_id and tool_name and isinstance(tool_args, dict)):
-                                # Invalid call format, generate failed tool result
-                                fail_res = await self._interaction_handler.failed_tool_result(call_id, tool_name)
-                                if fail_res: tool_results.append(fail_res)
-                            else:
-                                result = await self._interaction_handler.execute_single_tool(agent, call_id, tool_name, tool_args, project_name=self._manager.current_project, session_name=self._manager.current_session)
-                                tool_results.append(result)
-                                # Consider a tool execution successful if it doesn't start with "Error:"
-                                if isinstance(result, dict) and isinstance(result.get("content"), str) and not result.get("content", "").lower().startswith("error:"):
-                                    executed_tool_successfully_this_cycle = True # Set to true if ANY tool in batch succeeds
-
-                        # Append tool results to agent's message history and log to DB
-                        for res in tool_results:
-                            if res:
-                                tool_msg: MessageDict = {"role": "tool", "tool_call_id": res.get("call_id"), "content": str(res.get("content", ""))}
-                                agent.message_history.append(tool_msg)
-                                if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="tool", content=str(res.get("content", "")), tool_results=[res])
-
-                        # Send tool results to UI
-                        for res in tool_results:
-                            if res:
-                                await self._manager.send_to_ui({
-                                    "type": "tool_result",
-                                    "agent_id": agent_id,
-                                    "call_id": res.get("call_id"),
-                                    "name": res.get("name"), # Send tool name to UI
-                                    "content": str(res.get("content", ""))
-                                })
-
-                        # --- MODIFIED Reactivation Logic for Tool Execution ---
-                        if executed_tool_successfully_this_cycle or multiple_tools_attempted: # Reactivate also if multi-tool attempt feedback was given
-                            # Default to reactivating after successful tool use or multi-tool feedback
-                            needs_reactivation_after_cycle = True
-                            logger.debug(f"CycleHandler: Tool(s) executed or multi-tool feedback. Setting needs_reactivation_after_cycle=True initially for agent '{agent_id}'.")
-
-                            # Specific conditions to NOT reactivate (overrides the True above)
-                            if agent.agent_type == AGENT_TYPE_ADMIN and (agent.state in [ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION]):
-                                needs_reactivation_after_cycle = False
-                                logger.debug(f"CycleHandler: Not reactivating Admin AI '{agent_id}' in state '{agent.state}' after tool use.")
-                            elif agent.agent_type == AGENT_TYPE_PM and (agent.state == PM_STATE_MANAGE):
-                                needs_reactivation_after_cycle = False
-                                logger.debug(f"CycleHandler: Not reactivating PM Agent '{agent_id}' in state '{agent.state}' after tool use.")
-                            elif agent.agent_type == AGENT_TYPE_WORKER and (agent.state == WORKER_STATE_WAIT):
-                                needs_reactivation_after_cycle = False
-                                logger.debug(f"CycleHandler: Not reactivating Worker Agent '{agent_id}' in state '{agent.state}' after tool use.")
-                            # Check for specific "final step & stop" messages (less reliable)
-                            elif any(stop_phrase in agent_response_content.lower() for stop_phrase in ["final step & stop", "task complete. stopping."]):
-                                needs_reactivation_after_cycle = False
-                                logger.info(f"CycleHandler: Agent '{agent_id}' indicated task completion. Not reactivating.")
-                        else: # Tool execution failed (e.g., parsing error, actual tool error response)
-                            needs_reactivation_after_cycle = True
-                            logger.warning(f"CycleHandler: Tool execution failed or no successful tool ran for agent '{agent_id}'. Setting needs_reactivation_after_cycle=True.")
-                        # --- END MODIFIED Reactivation Logic ---
-
-                        # Manager action feedback (e.g., from manage_team)
-                        if manager_action_feedback:
-                             feedback_appended = False
-                             for fb in manager_action_feedback:
-                                 fb_content = f"[Manager Result for {fb.get('action', 'N/A')} (Call ID: {fb['call_id']})]: Success={fb['success']}. Message: {fb['message']}"
-                                 if fb.get("data"):
-                                     try: data_str = json.dumps(fb['data'], indent=2); fb_content += f"\nData:\n{data_str[:1500]}{'... (truncated)' if len(data_str) > 1500 else ''}"
-                                     except TypeError: fb_content += "\nData: [Unserializable]"
-                                 fb_msg: MessageDict = {"role": "tool", "tool_call_id": fb['call_id'], "content": fb_content}
-                                 if not agent.message_history or agent.message_history[-1].get("role") != "tool" or agent.message_history[-1].get("content") != fb_content: agent.message_history.append(fb_msg); feedback_appended = True
-                                 if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="system_feedback", content=fb_content, tool_results=[fb])
-
-                                 is_admin_creating_pm = (agent_id == self.BOOTSTRAP_AGENT_ID and fb.get('action') == 'create_agent')
-                                 if not is_admin_creating_pm:
-                                     await self._manager.send_to_ui({
-                                         "type": "system_feedback",
-                                         "agent_id": agent_id,
-                                         "call_id": fb['call_id'],
-                                         "action": fb.get('action', 'N/A'),
-                                         "content": fb_content
-                                     })
-                        break # Break event loop after tool processing
-                    else: logger.warning(f"CycleHandler: Unknown event type '{event_type}' from '{agent_id}'.")
-
-            # --- Inner Exception Handling ---
-            except Exception as e:
-                logger.error(f"CycleHandler: Error during core processing for '{agent_id}': {e}", exc_info=True)
-                last_error_obj = e; last_error_content = f"[Manager Error: Unexpected error in cycle handler - {e}]"; is_retryable_error_type = False; is_key_related_error = False; trigger_failover = True; cycle_completed_successfully = False
-                try: await self._manager.send_to_ui({"type": "error", "agent_id": agent_id, "content": last_error_content})
-                except Exception as ui_err: logger.error(f"Error sending error status to UI in cycle handler: {ui_err}")
-                if current_db_session_id is not None:
-                     try: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="system_error", content=last_error_content)
-                     except Exception as db_log_err: logger.error(f"Failed to log handler error to DB: {db_log_err}", exc_info=True)
-
-            finally:
-                # --- RE-ADD Explicit Generator Closing ---
-                logger.debug(f"CycleHandler: Reached finally block for '{agent_id}'. Generator finished normally: {generator_finished_normally}, Error caught: {bool(last_error_obj)}")
-                if agent_generator and not generator_finished_normally:
-                    try:
-                        logger.debug(f"Attempting explicit aclose() on generator for '{agent_id}' in finally block.")
-                        await agent_generator.aclose()
-                        logger.debug(f"Explicit aclose() successful for '{agent_id}' in finally block.")
-                    except RuntimeError as close_err:
-                        if "already running" in str(close_err): logger.warning(f"Generator aclose() error in finally (already running/closed?): {close_err}")
-                        else: raise # Re-raise unexpected RuntimeError
-                    except Exception as close_err: logger.error(f"Unexpected error during explicit aclose() in finally for '{agent_id}': {close_err}", exc_info=True)
-                # --- END RE-ADD ---
-
-                end_time = time.perf_counter(); llm_call_duration_ms = (end_time - start_time) * 1000
-                call_success_for_metrics = (cycle_completed_successfully or executed_tool_successfully_this_cycle) and not trigger_failover and not plan_approved_this_cycle
-
-                logger.debug(f"Cycle outcome for {current_provider}/{current_model} (Retry: {retry_count}): SuccessForMetrics={call_success_for_metrics}, TriggerFailover={trigger_failover}, PlanApproved={plan_approved_this_cycle}, NeedsReactivation={needs_reactivation_after_cycle}, Duration={llm_call_duration_ms:.2f}ms, Error? {bool(last_error_obj)}")
-
-                if not plan_approved_this_cycle:
-                     try: await self._manager.performance_tracker.record_call(provider=current_provider, model_id=current_model, duration_ms=llm_call_duration_ms, success=call_success_for_metrics)
-                     except Exception as record_err: logger.error(f"Failed to record performance metrics for {current_provider}/{current_model}: {record_err}", exc_info=True)
-
-                # --- Final Action Logic (Uses settings for retry/failover) ---
-                if trigger_failover:
-                    logger.warning(f"CycleHandler: Agent '{agent_id}' ({current_model_key}) requires failover. Error Type: {type(last_error_obj).__name__ if last_error_obj else 'N/A'}. Triggering failover handler.")
-                    if agent_generator and not generator_finished_normally:
-                        try:
-                            logger.debug(f"Attempting explicit aclose() on generator for '{agent_id}' before failover (redundant check).")
-                            await agent_generator.aclose()
-                            logger.debug(f"Explicit aclose() successful for '{agent_id}' before failover (redundant check).")
-                        except RuntimeError as close_err:
-                            if "already running" in str(close_err): logger.warning(f"Generator aclose() error before failover (redundant check, already running/closed?): {close_err}")
-                            else: raise # Re-raise unexpected RuntimeError
-                        except Exception as close_err: logger.error(f"Unexpected error during explicit aclose() before failover (redundant check) for '{agent_id}': {close_err}", exc_info=True)
-
-                    failover_successful = await self._manager.handle_agent_model_failover(agent_id, last_error_obj)
-                    logger.debug(f"CycleHandler: Received failover_successful = {failover_successful} from handle_agent_model_failover for agent '{agent_id}'.")
-                    if failover_successful:
-                        logger.info(f"CycleHandler: Failover successful for agent '{agent_id}'. Agent config updated. Re-scheduling cycle attempt with new config.")
-                        try:
-                            loop = asyncio.get_running_loop()
-                            if not loop.is_closed():
-                                loop.create_task(self.run_cycle(agent, 0))
-                                logger.info(f"CycleHandler: Re-scheduled run_cycle for agent '{agent_id}' with new configuration.")
-                            else:
-                                logger.warning(f"CycleHandler: Event loop closed. Cannot re-schedule cycle after successful failover for agent '{agent_id}'.")
-                        except RuntimeError as loop_err:
-                            logger.warning(f"CycleHandler: Could not get running loop to schedule failover retry cycle for agent '{agent_id}': {loop_err}")
-                        except Exception as schedule_err:
-                              logger.error(f"CycleHandler: FAILED to create asyncio task for re-scheduling cycle after failover of '{agent_id}': {schedule_err}", exc_info=True)
+                if is_local_provider_cfg:
+                    if config_model.startswith(f"{config_provider}/"):
+                        model_id_suffix = config_model[len(config_provider)+1:]
                     else:
-                        logger.error(f"CycleHandler: Failover handler exhausted all options for agent '{agent_id}'. Agent remains in ERROR state.")
+                        logger.warning(f"Lifecycle: Agent '{agent_id}' model '{config_model}' in config.yaml must start with '{config_provider}/'. Ignoring config.")
+                        format_valid = False
+                elif config_model.startswith("ollama/") or config_model.startswith("litellm/"):
+                     logger.warning(f"Lifecycle: Agent '{agent_id}' model '{config_model}' in config.yaml starts with local prefix, but provider is '{config_provider}'. Ignoring config.")
+                     format_valid = False
+                else: # Remote provider
+                     model_id_suffix = config_model # Use full name for check
 
-                elif needs_reactivation_after_cycle: # Check reactivation after other conditions
-                    reactivation_reason = "unknown condition"
-                    current_agent_state_in_finally = getattr(agent, 'state', None)
-                    if current_agent_state_in_finally == ADMIN_STATE_PLANNING: reactivation_reason = "state change to planning"
-                    elif current_agent_state_in_finally == ADMIN_STATE_CONVERSATION: reactivation_reason = "state change to conversation"
-                    elif current_agent_state_in_finally == ADMIN_STATE_WORK_DELEGATED: reactivation_reason = "state change to work_delegated"
-                    elif plan_approved_this_cycle: reactivation_reason = "plan approved by user"
-                    elif executed_tool_successfully_this_cycle: reactivation_reason = "successful tool execution"
-
-                    logger.info(f"CycleHandler: Reactivating agent '{agent_id}' ({current_model_key}) after {reactivation_reason}.")
-
-                    if agent_generator and not generator_finished_normally:
-                        try:
-                            logger.debug(f"Attempting explicit aclose() on generator for '{agent_id}' before reactivation (redundant check).")
-                            await agent_generator.aclose()
-                            logger.debug(f"Explicit aclose() successful for '{agent_id}' before reactivation (redundant check).")
-                        except RuntimeError as close_err:
-                            if "already running" in str(close_err): logger.warning(f"Generator aclose() error before reactivation (redundant check, already running/closed?): {close_err}")
-                            else: raise # Re-raise unexpected RuntimeError
-                        except Exception as close_err: logger.error(f"Unexpected error during explicit aclose() before reactivation (redundant check) for '{agent_id}': {close_err}", exc_info=True)
-
-                    agent.set_status(AGENT_STATUS_IDLE)
-                    await asyncio.sleep(0.01) # Small delay
-                    logger.debug(f"CycleHandler: Preparing to schedule next cycle for '{agent_id}' via asyncio.create_task...")
-                    current_agent_state_in_finally = getattr(agent, 'state', 'N/A')
-                    logger.info(f"CycleHandler: Agent '{agent_id}' state in finally block *before* scheduling reactivation: {current_agent_state_in_finally}")
-
-                    try:
-                        loop = asyncio.get_running_loop()
-                        if not loop.is_closed():
-                            task = loop.create_task(self._manager.schedule_cycle(agent, 0)) # Use loop.create_task
-                            logger.info(f"CycleHandler: Successfully created asyncio task {task.get_name()} for next cycle of '{agent_id}'.")
-                            await asyncio.sleep(0) # Yield control briefly
-                            logger.debug(f"CycleHandler: asyncio.sleep(0) completed after scheduling task for {agent_id}.")
+                # Check availability if format was valid
+                if format_valid and model_id_suffix is not None:
+                    found_on_specific_provider = None
+                    if is_local_provider_cfg:
+                        # Search discovered local providers for this model suffix
+                        matching_providers = [p for p in model_registry.get_available_models_dict() if p.startswith(f"{config_provider}-local-") or p == f"{config_provider}-proxy"]
+                        for specific_provider_name in matching_providers:
+                            if model_registry.is_model_available(specific_provider_name, model_id_suffix):
+                                found_on_specific_provider = specific_provider_name
+                                break # Found it
+                        if not found_on_specific_provider:
+                            logger.warning(f"Lifecycle: Model suffix '{model_id_suffix}' (from '{config_model}') for agent '{agent_id}' not found under any discovered '{config_provider}-local-*' or '{config_provider}-proxy' providers. Ignoring config.")
                         else:
-                            logger.warning(f"CycleHandler: Event loop closed. Cannot schedule next cycle for agent '{agent_id}'.")
-                    except RuntimeError as loop_err: # Catch 'no running loop' error specifically
-                        logger.warning(f"CycleHandler: Could not get running loop to schedule next cycle for agent '{agent_id}': {loop_err}")
-                    except Exception as schedule_err:
-                        logger.error(f"CycleHandler: FAILED to create asyncio task for next cycle of '{agent_id}': {schedule_err}", exc_info=True)
-
-                elif is_retryable_error_type and retry_count < settings.MAX_STREAM_RETRIES: # Check retry THIRD
-                     logger.warning(f"CycleHandler: Transient error for '{agent_id}' on {current_model_key}. Retrying same model/key in {settings.RETRY_DELAY_SECONDS:.1f}s ({retry_count + 1}/{settings.MAX_STREAM_RETRIES})... Last Error: {last_error_content}")
-                     await self._manager.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Provider issue... Retrying '{current_model}' (Attempt {retry_count + 2})..."})
-                     await asyncio.sleep(settings.RETRY_DELAY_SECONDS) # Use settings
-                     agent.set_status(AGENT_STATUS_IDLE)
-                     try:
-                         loop = asyncio.get_running_loop()
-                         if not loop.is_closed():
-                             loop.create_task(self._manager.schedule_cycle(agent, retry_count + 1))
-                         else:
-                             logger.warning(f"CycleHandler: Event loop closed. Cannot schedule retry cycle for agent '{agent_id}'.")
-                     except RuntimeError as loop_err:
-                         logger.warning(f"CycleHandler: Could not get running loop to schedule retry cycle for agent '{agent_id}': {loop_err}")
-                     except Exception as schedule_err:
-                         logger.error(f"CycleHandler: FAILED to create asyncio task for retry cycle of '{agent_id}': {schedule_err}", exc_info=True)
-
-                # --- MODIFIED: Special reactivation logic for PM in startup if no action was taken ---
-                elif agent.agent_type == AGENT_TYPE_PM and agent.state == PM_STATE_STARTUP and not action_taken_this_cycle and call_success_for_metrics:
-                    logger.warning(f"CycleHandler: PM agent '{agent_id}' in PM_STARTUP finished cleanly but took NO ACTION (no tool call/state change). Reactivating to enforce startup workflow.")
-                    if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear() # Clear if it was a good model but bad output
-                    agent.set_status(AGENT_STATUS_IDLE)
-                    asyncio.create_task(self._manager.schedule_cycle(agent, 0)) # Reactivate
-                # --- END MODIFIED ---
-
-                elif call_success_for_metrics: # Check normal completion FOURTH (but after PM startup check)
-                    history_len_after = len(agent.message_history)
-                    if history_len_after > history_len_before and agent.message_history[-1].get("role") == "user":
-                        logger.info(f"CycleHandler: Agent '{agent_id}' ({current_model_key}) finished cleanly, but new user message detected. Reactivating.")
-                        if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear()
-                        agent.set_status(AGENT_STATUS_IDLE)
-                        asyncio.create_task(self._manager.schedule_cycle(agent, 0))
-                    else:
-                        logger.info(f"CycleHandler: Agent '{agent_id}' ({current_model_key}) finished cycle cleanly, no reactivation needed.")
-                        if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear()
-                        if agent.status != AGENT_STATUS_ERROR: agent.set_status(AGENT_STATUS_IDLE)
-
-                else: # Fallback case (e.g., max retries reached for retryable error, or other unexpected end)
-                     if is_retryable_error_type and retry_count >= settings.MAX_STREAM_RETRIES:
-                          logger.error(f"CycleHandler: Agent '{agent_id}' ({current_model_key}) reached max retries ({settings.MAX_STREAM_RETRIES}) for retryable errors. Triggering failover.")
-                          failover_successful = await self._manager.handle_agent_model_failover(agent_id, last_error_obj or ValueError("Max retries reached"))
-                          logger.debug(f"CycleHandler: Received failover_successful = {failover_successful} from handle_agent_model_failover (after max retries) for agent '{agent_id}'.")
-                          if failover_successful:
-                              logger.info(f"CycleHandler: Failover successful for agent '{agent_id}' after max retries. Re-scheduling cycle attempt with new config.")
-                              try:
-                                  loop = asyncio.get_running_loop()
-                                  if not loop.is_closed():
-                                      loop.create_task(self.run_cycle(agent, 0))
-                                      logger.info(f"CycleHandler: Re-scheduled run_cycle for agent '{agent_id}' with new configuration after max retries.")
-                                  else:
-                                      logger.warning(f"CycleHandler: Event loop closed. Cannot re-schedule cycle after successful failover (max retries) for agent '{agent_id}'.")
-                              except RuntimeError as loop_err:
-                                  logger.warning(f"CycleHandler: Could not get running loop to schedule failover retry cycle for agent '{agent_id}': {loop_err}")
-                              except Exception as schedule_err:
-                                  logger.error(f"CycleHandler: FAILED to create asyncio task for re-scheduling cycle after failover (max retries) of '{agent_id}': {schedule_err}", exc_info=True)
-                          else:
-                              logger.error(f"CycleHandler: Failover handler exhausted all options for agent '{agent_id}' after max retries. Agent remains in ERROR state.")
-                     elif not trigger_failover: # If not failover and not other conditions met (like max retries handled above), just set idle
-                          logger.warning(f"CycleHandler: Agent '{agent_id}' cycle ended without explicit success or trigger. Setting Idle. Last Error: {last_error_content}")
-                          if agent.status != AGENT_STATUS_ERROR: agent.set_status(AGENT_STATUS_IDLE)
-
-                log_level = logging.ERROR if agent.status == AGENT_STATUS_ERROR else logging.INFO
-                logger.log(log_level, f"CycleHandler: Finished cycle logic for Agent '{agent_id}'. Final status for this attempt: {agent.status}")
-        except Exception as outer_err:
-            # --- CATCH ALL ERRORS WITHIN run_cycle ---
-            logger.critical(f"!!! CycleHandler: UNCAUGHT EXCEPTION in run_cycle for Agent '{agent_id}': {outer_err} !!!", exc_info=True)
-            try:
-                agent.set_status(AGENT_STATUS_ERROR) # Try setting status first
-                if self._manager:
-                    try:
-                        loop = asyncio.get_running_loop()
-                        if not loop.is_closed():
-                            await self._manager.send_to_ui({"type": "error", "agent_id": agent_id, "content": f"[Framework Error] Critical error in agent cycle: {outer_err}"})
+                            logger.info(f"Lifecycle: Using agent '{agent_id}' model '{model_id_suffix}' from config on discovered provider '{found_on_specific_provider}'.")
+                            final_provider_for_creation = found_on_specific_provider
+                            final_model_canonical = config_model # Keep original canonical name
+                            use_config_value = True
+                    else: # Remote provider check
+                        if not model_registry.is_model_available(config_provider, model_id_suffix):
+                             logger.warning(f"Lifecycle: Model '{model_id_suffix}' (from '{config_model}') specified for agent '{agent_id}' in config is not available via registry for provider '{config_provider}'. Ignoring config.")
                         else:
-                            logger.warning("Event loop closed, cannot send critical error UI message.")
-                    except RuntimeError as loop_err:
-                        logger.warning(f"Could not get running loop to send critical error UI message: {loop_err}")
-                    except Exception as ui_err:
-                        logger.error(f"Error sending critical error UI message: {ui_err}")
-            except Exception as final_err:
-                logger.error(f"Error setting agent status during critical run_cycle exception handling: {final_err}")
-        # --- END WRAP ---
+                             logger.info(f"Lifecycle: Using agent '{agent_id}' provider/model specified in config.yaml: {config_provider}/{config_model}")
+                             final_provider_for_creation = config_provider
+                             final_model_canonical = config_model
+                             use_config_value = True
+
+        # --- Step 2: Fallback to automatic selection if config wasn't valid, specified, or available ---
+        if not use_config_value:
+            logger.info(f"Lifecycle: Agent '{agent_id}' provider/model not specified or invalid/unavailable in config.yaml. Attempting automatic selection...")
+            selected_provider, selected_model_suffix = await _select_best_available_model(manager) # Returns specific instance name for local
+            selection_method = "automatic"
+
+            if not selected_model_suffix or not selected_provider:
+                logger.error(f"Lifecycle: Could not automatically select any available/configured/non-depleted model for agent '{agent_id}'! Check .env configurations and model discovery logs.")
+                continue # Skip creating this agent
+
+            final_provider_for_creation = selected_provider
+            # Determine canonical model ID for storage/logging
+            base_provider_type = selected_provider.split('-local-')[0].split('-proxy')[0]
+            if base_provider_type in ["ollama", "litellm"]:
+                final_model_canonical = f"{base_provider_type}/{selected_model_suffix}"
+            else:
+                final_model_canonical = selected_model_suffix
+            # Update the config data that will be passed to _create_agent_internal
+            final_agent_config_data["provider"] = final_provider_for_creation # Store the specific provider name used
+            final_agent_config_data["model"] = final_model_canonical
+            logger.info(f"Lifecycle: Automatically selected {final_model_canonical} (Provider: {final_provider_for_creation}) for agent '{agent_id}'.")
+        else:
+             # If using config value, ensure final_provider_for_creation and final_model_canonical are set
+             if not final_provider_for_creation: final_provider_for_creation = config_provider
+             if not final_model_canonical: final_model_canonical = config_model
+             # Ensure the final config reflects the provider being used
+             final_agent_config_data["provider"] = final_provider_for_creation
+             final_agent_config_data["model"] = final_model_canonical
+
+        # --- Step 3: Final Provider/Model Checks (Common for both paths) ---
+        if not final_provider_for_creation or not final_model_canonical:
+            logger.error(f"Lifecycle: Cannot initialize '{agent_id}': Final provider or model is missing after selection/validation ({selection_method}). Skipping.")
+            continue
+
+        # Check if the selected provider is actually reachable
+        if final_provider_for_creation not in model_registry._reachable_providers:
+             logger.error(f"Lifecycle: Cannot initialize '{agent_id}': Final provider '{final_provider_for_creation}' ({selection_method}) is not in the list of reachable providers found during discovery. Skipping.")
+             continue
+
+        # Check key depletion only for remote providers, using the base name
+        base_provider_name = final_provider_for_creation.split('-local-')[0].split('-proxy')[0]
+        if base_provider_name not in ["ollama", "litellm"]:
+            if await manager.key_manager.is_provider_depleted(base_provider_name):
+                logger.error(f"Lifecycle: Cannot initialize '{agent_id}': All keys for selected provider '{base_provider_name}' (base for '{final_provider_for_creation}', method: {selection_method}) are quarantined. Skipping.")
+                continue
+        else:
+            logger.debug(f"Skipping key depletion check for local provider '{base_provider_name}'")
+        # --- End Final Provider Checks ---
+
+        # --- Step 4: Assemble Prompt (REMOVED Admin AI specific logic here) ---
+        # Prompt assembly, including personality injection, is now handled by AgentWorkflowManager.
+        # We just ensure the system_prompt field exists in the config passed to _create_agent_internal,
+        # even if it's empty for Admin AI at this stage.
+        if "system_prompt" not in final_agent_config_data:
+             final_agent_config_data["system_prompt"] = "" # Ensure key exists
+        logger.info(f"Lifecycle: Passing system prompt from config (or empty) for bootstrap agent '{agent_id}' to _create_agent_internal.")
+        # --- End Prompt Assembly ---
+
+        # --- Add logging before scheduling task ---
+        logger.debug(f"Lifecycle: Preparing to schedule creation task for bootstrap agent '{agent_id}' with final config: { {k: v for k, v in final_agent_config_data.items()} }")
+        # --- End added logging ---
+
+        # Schedule agent creation task using the internal function
+            # tool_desc = manager.tool_descriptions_xml # No longer needed here
+
+            # --- Load the INITIAL Conversation Prompt for Admin AI ---
+            # The CycleHandler will load the state-appropriate prompt later.
+        prompt_key = "admin_ai_conversation_prompt"
+        initial_conversation_prompt = settings.PROMPTS.get(prompt_key, f"--- {prompt_key} Instructions Missing ---")                
+        logger.info(f"Lifecycle: Set INITIAL system prompt for '{BOOTSTRAP_AGENT_ID}' to '{prompt_key}'. State-specific prompts will be loaded by CycleHandler.")
+            # --- End Initial Prompt Loading ---
+
+            # Inject max_tokens if needed (logic remains the same, based on final provider)
+        is_local_provider_selected = final_provider_for_creation.startswith("ollama-local-") or \
+                                         final_provider_for_creation.startswith("litellm-local-") or \
+                                         final_provider_for_creation.endswith("-proxy")
+        if is_local_provider_selected:
+                if "max_tokens" not in final_agent_config_data and "num_predict" not in final_agent_config_data:
+                    final_agent_config_data["max_tokens"] = settings.ADMIN_AI_LOCAL_MAX_TOKENS
+                    logger.info(f"Lifecycle: Injecting default max_tokens ({settings.ADMIN_AI_LOCAL_MAX_TOKENS}) for local Admin AI.")
+                else:
+                    logger.debug(f"Lifecycle: max_tokens/num_predict already set for local Admin AI, skipping injection.")
+        else:
+             # For other bootstrap agents, ensure system_prompt exists but don't modify it here
+             logger.info(f"Lifecycle: Using system prompt from config for bootstrap agent '{agent_id}'.")
+             if "system_prompt" not in final_agent_config_data:
+                  final_agent_config_data["system_prompt"] = ""
+        # --- End Prompt Assembly ---
+
+        tasks.append(_create_agent_internal(
+            manager,
+            agent_id_requested=agent_id,
+            agent_config_data=final_agent_config_data, # Pass potentially modified config
+            is_bootstrap=True
+            ))
+
+    # Gather results
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    # --- Add logging for gathered results ---
+    logger.debug(f"Lifecycle: Gathered bootstrap agent creation results (Count: {len(results)}): {results}")
+    # --- End added logging ---
+    successful_ids = []
+    num_expected_tasks = len([cfg for cfg in agent_configs_list if cfg.get("agent_id")])
+    if len(results) != num_expected_tasks:
+        logger.error(f"Lifecycle: Mismatch between expected bootstrap tasks ({num_expected_tasks}) and results received ({len(results)}). Some initializations might have failed early.")
+    else:
+        processed_configs = [cfg for cfg in agent_configs_list if cfg.get("agent_id")]
+        for i, result in enumerate(results):
+             original_agent_id_attempted = processed_configs[i].get("agent_id", f"unknown_index_{i}")
+             try:
+                 if isinstance(result, tuple) and result[0]:
+                     created_agent_id = result[2];
+                     if created_agent_id:
+                         if created_agent_id not in manager.bootstrap_agents: manager.bootstrap_agents.append(created_agent_id); successful_ids.append(created_agent_id); logger.info(f"--- Lifecycle: Bootstrap agent '{created_agent_id}' initialized. ---")
+                         else: logger.warning(f"Lifecycle: Bootstrap agent '{created_agent_id}' appears to be already initialized. Skipping duplicate add.")
+                     else: logger.error(f"--- Lifecycle: Failed bootstrap init '{original_agent_id_attempted}': {result[1]} (Success reported but no ID?) ---")
+                 elif isinstance(result, Exception): logger.error(f"--- Lifecycle: Failed bootstrap init '{original_agent_id_attempted}': {result} ---", exc_info=result)
+                 else: error_msg = result[1] if isinstance(result, tuple) else str(result); logger.error(f"--- Lifecycle: Failed bootstrap init '{original_agent_id_attempted}': {error_msg} ---")
+             except Exception as gather_err: logger.error(f"Lifecycle: Unexpected error processing bootstrap result for '{original_agent_id_attempted}': {gather_err}", exc_info=True)
+    logger.info(f"Lifecycle: Finished bootstrap initialization. Active: {successful_ids}")
+    if BOOTSTRAP_AGENT_ID not in manager.agents: logger.critical(f"CRITICAL: Admin AI ('{BOOTSTRAP_AGENT_ID}') failed to initialize! Check previous errors.")
+# --- END initialize_bootstrap_agents ---
+
+
+# --- _create_agent_internal (with corrected validation) ---
+async def _create_agent_internal(
+    manager: 'AgentManager',
+    agent_id_requested: Optional[str],
+    agent_config_data: Dict[str, Any],
+    is_bootstrap: bool = False,
+    team_id: Optional[str] = None,
+    loading_from_session: bool = False
+    ) -> Tuple[bool, str, Optional[str]]:
+    """ Internal method for creating agent instances. Now supports automatic model selection. """
+    agent_id: Optional[str] = None;
+    if agent_id_requested and agent_id_requested in manager.agents:
+        msg = f"Lifecycle: Agent ID '{agent_id_requested}' already exists."
+        logger.error(msg); return False, msg, None
+    elif agent_id_requested: agent_id = agent_id_requested
+    else: agent_id = _generate_unique_agent_id(manager)
+
+    if not agent_id: return False, "Lifecycle: Failed to determine Agent ID.", None
+
+    logger.debug(f"Lifecycle: Creating agent '{agent_id}' (Bootstrap: {is_bootstrap}, SessionLoad: {loading_from_session}, Team: {team_id})")
+
+    # --- Model/Provider Handling ---
+    provider_name = agent_config_data.get("provider") # This might be specific like 'ollama-local-...' if set by bootstrap init
+    model_id_canonical = agent_config_data.get("model") # This should be canonical like 'ollama/...'
+    persona = agent_config_data.get("persona")
+    selection_source = "specified" if not is_bootstrap else agent_config_data.get("_selection_method", "specified") # Track source if bootstrap
+
+    if not persona:
+         msg = f"Lifecycle Error: Missing persona for agent '{agent_id}'."
+         logger.error(msg); return False, msg, None
+
+    # Auto-selection only for non-bootstrap agents if needed
+    if not provider_name or not model_id_canonical:
+        if is_bootstrap:
+             # This case should ideally not be reached due to checks in initialize_bootstrap_agents
+             msg = f"Lifecycle Error: Bootstrap agent '{agent_id}' reached _create_agent_internal without provider/model."
+             logger.critical(msg); return False, msg, None
+        logger.info(f"Lifecycle: Provider or model not specified for dynamic agent '{agent_id}'. Attempting automatic selection...")
+        selected_provider, selected_model_suffix = await _select_best_available_model(manager); selection_source = "automatic"
+        if not selected_provider or not selected_model_suffix:
+            msg = f"Lifecycle Error: Automatic model selection failed for agent '{agent_id}'. No suitable model found."
+            logger.error(msg); return False, msg, None
+        provider_name = selected_provider # This is the specific instance name (e.g., ollama-local-...)
+        # Construct canonical ID carefully, avoid double prefix
+        base_provider_type = provider_name.split('-local-')[0].split('-proxy')[0]
+        if base_provider_type in ["ollama", "litellm"]:
+             if selected_model_suffix.startswith(f"{base_provider_type}/"):
+                  model_id_canonical = selected_model_suffix
+                  logger.warning(f"Auto-selected model suffix '{selected_model_suffix}' unexpectedly contained prefix for provider '{provider_name}'. Using suffix directly.")
+             else:
+                  model_id_canonical = f"{base_provider_type}/{selected_model_suffix}" # Add prefix
+        else: # Remote provider
+             model_id_canonical = selected_model_suffix # Use suffix directly
+        # Update config data passed to this function
+        agent_config_data["provider"] = provider_name
+        agent_config_data["model"] = model_id_canonical
+        logger.info(f"Lifecycle: Automatically selected {model_id_canonical} (Provider: {provider_name}) for agent '{agent_id}'.")
+    # --- End Model/Provider Handling ---
+
+
+    # --- Provider/Model Validation ---
+    if not provider_name or not model_id_canonical:
+         msg = f"Lifecycle Error: Missing final provider or model for agent '{agent_id}'."; logger.error(msg); return False, msg, None
+
+        # Check configuration/depletion using the *base* provider name if it's dynamic local
+    is_dynamic_local = "-local-" in provider_name or "-proxy" in provider_name
+    base_provider_name = provider_name.split('-local-')[0].split('-proxy')[0] if is_dynamic_local else provider_name
+
+    if is_dynamic_local:
+            # For dynamic local providers, check if they are discovered by ModelRegistry
+            if not model_registry.is_provider_discovered(provider_name):
+                msg = f"Lifecycle: Local provider '{provider_name}' (base for '{base_provider_name}', source: {selection_source}) not discovered by ModelRegistry."; logger.error(msg); return False, msg, None
+    else:
+            # For remote providers, check if they are configured in .env
+            if not settings.is_provider_configured(base_provider_name):
+                msg = f"Lifecycle: Provider '{base_provider_name}' (base for '{provider_name}', source: {selection_source}) not configured in .env settings."; logger.error(msg); return False, msg, None
+
+            # Key depletion check still applies to the base provider name for remote providers
+            if base_provider_name not in ["ollama", "litellm"] and await manager.key_manager.is_provider_depleted(base_provider_name):
+                msg = f"Lifecycle: Cannot create agent '{agent_id}': All keys for '{base_provider_name}' (base for '{provider_name}', source: {selection_source}) are quarantined."; logger.error(msg); return False, msg, None
+
+    # --- Corrected Validation Logic ---
+    # Determine if the final provider is local based on its name
+    is_local_provider = "-local-" in provider_name or "-proxy" in provider_name
+    model_id_for_provider = None # ID to pass to the provider class (without prefix)
+    validation_passed = True
+    error_msg_val = None
+    error_prefix = f"Lifecycle Error ({selection_source} model '{model_id_canonical}' for provider '{provider_name}'):"
+
+    if is_local_provider:
+        # Expect canonical ID like "ollama/model_name" or "litellm/model_name"
+        # Provider name might be dynamic (e.g., ollama-local-127-0-0-1)
+        base_provider_type = provider_name.split('-local-')[0].split('-proxy')[0] # Get 'ollama' or 'litellm'
+        if model_id_canonical.startswith(f"{base_provider_type}/"):
+            model_id_for_provider = model_id_canonical[len(base_provider_type)+1:] # Strip prefix
+        else:
+            error_msg_val = f"{error_prefix} Local model ID must start with prefix '{base_provider_type}/'."
+            validation_passed = False
+    else: # Remote provider
+        # Expect canonical ID like "google/gemma..." - it should NOT start with a local prefix
+        if model_id_canonical.startswith("ollama/") or model_id_canonical.startswith("litellm/"):
+             error_msg_val = f"{error_prefix} Remote model ID should not start with 'ollama/' or 'litellm/'."
+             validation_passed = False
+        else:
+             # Remote IDs (like OpenRouter's) can contain slashes, use the canonical ID directly
+             model_id_for_provider = model_id_canonical
+
+    if not validation_passed:
+        logger.error(error_msg_val); return False, error_msg_val, None
+
+    # Final availability check using the model ID format the provider expects
+    # Use the potentially dynamic provider_name for the check
+    if not model_registry.is_model_available(provider_name, model_id_for_provider):
+        available_list_str = ", ".join(model_registry.get_available_models_list(provider=provider_name)) or "(None available)"
+        msg = f"Lifecycle: Model '{model_id_for_provider}' (derived from '{model_id_canonical}', source: {selection_source}) not available for provider '{provider_name}'. Available: [{available_list_str}]"
+        logger.error(msg); return False, msg, None
+    # --- End Corrected Validation ---
+
+    logger.info(f"Lifecycle: Final model validated: Provider='{provider_name}', Model='{model_id_for_provider}'. Canonical stored: '{model_id_canonical}'.")
+
+    # Assemble System Prompt
+    role_specific_prompt = agent_config_data.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
+    final_system_prompt = role_specific_prompt
+    if not loading_from_session and not is_bootstrap:
+        logger.debug(f"Lifecycle: Constructing final prompt for dynamic agent '{agent_id}'...")
+        standard_info_template = settings.PROMPTS.get("standard_framework_instructions", "--- Standard Instructions Missing ---")
+        tool_desc = manager.tool_descriptions_xml
+        standard_info = standard_info_template.replace("{tool_descriptions_xml}", tool_desc); standard_info = standard_info.replace("{tool_descriptions_json}", "")
+        try: standard_info = standard_info.format(agent_id=agent_id, team_id=team_id or "N/A")
+        except KeyError as fmt_err: logger.error(f"Failed to format agent_id/team_id into standard instructions: {fmt_err}")
+        # Use the already defined final_system_prompt which holds the role-specific part
+        final_system_prompt = standard_info + "\n\n--- Your Specific Role & Task ---\n" + final_system_prompt
+        logger.info(f"Lifecycle: Injected standard framework instructions (XML format) for dynamic agent '{agent_id}'.")
+    elif loading_from_session:
+        # Use the prompt stored in config data, fallback to default if missing
+        final_system_prompt = agent_config_data.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
+        logger.debug(f"Lifecycle: Using stored prompt for loaded agent '{agent_id}'.")
+    elif is_bootstrap:
+        # Use the prompt stored in config data, fallback to default if missing
+        final_system_prompt = agent_config_data.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
+        logger.debug(f"Lifecycle: Using pre-assembled prompt for bootstrap agent '{agent_id}'.")
+
+    # Prepare Provider Arguments
+    final_provider_args: Dict[str, Any] = {}; api_key_used = None
+    is_final_provider_local = "-local-" in provider_name or "-proxy" in provider_name
+
+    if is_final_provider_local:
+        # Get base URL from registry
+        base_url = model_registry.get_reachable_provider_url(provider_name)
+        if base_url:
+             final_provider_args['base_url'] = base_url
+
+        # Check if keys are configured for the base type (e.g., 'ollama')
+        base_provider_type = provider_name.split('-local-')[0].split('-proxy')[0]
+        if base_provider_type in settings.PROVIDER_API_KEYS and settings.PROVIDER_API_KEYS[base_provider_type]:
+            logger.debug(f"API keys found for local provider base type '{base_provider_type}'. Attempting to get active key.")
+            key_config = await manager.key_manager.get_active_key_config(base_provider_type)
+            if key_config is None:
+                msg = f"Lifecycle: Failed to get active API key for local provider '{provider_name}' (base type '{base_provider_type}') - keys might be configured but all quarantined."
+                logger.error(msg); return False, msg, None
+            final_provider_args.update(key_config) # Merge key config
+            api_key_used = final_provider_args.get('api_key')
+            logger.info(f"Using configured API key ending '...{api_key_used[-4:]}' for local provider '{provider_name}'.")
+        else:
+            # No keys configured for base type, proceed without key (except special ollama case)
+            logger.debug(f"No API keys configured for local provider base type '{base_provider_type}'. Proceeding without key for '{provider_name}'.")
+            ProviderClassCheck = PROVIDER_CLASS_MAP.get(base_provider_type) # Check base type class
+            if base_provider_type == 'ollama' and ProviderClassCheck == OllamaProvider:
+                 final_provider_args['api_key'] = 'ollama' # Add special key if needed by class
+
+    else: # Remote provider
+        # Get base config (e.g., referer) from settings
+        final_provider_args = settings.get_provider_config(provider_name)
+        # Get an active API key config
+        key_config = await manager.key_manager.get_active_key_config(provider_name)
+        if key_config is None:
+            msg = f"Lifecycle: Failed to get active API key for remote provider '{provider_name}'."; logger.error(msg); return False, msg, None
+        final_provider_args.update(key_config) # Merge key config
+        api_key_used = final_provider_args.get('api_key')
+
+    temperature = agent_config_data.get("temperature", settings.DEFAULT_TEMPERATURE)
+    
+    # --- MODIFIED: Stricter filtering of kwargs for provider init ---
+    OPENAI_CLIENT_VALID_KWARGS = {"timeout", "http_client", "organization", "project"} 
+    
+    allowed_provider_keys = ['api_key', 'base_url', 'referer']
+    framework_agent_config_keys = {'provider', 'model', 'system_prompt', 'temperature', 'persona', 'agent_type', 'team_id', 'plan_description', '_selection_method'}
+
+    client_init_kwargs = {}
+    api_call_options = {} 
+
+    for k, v in agent_config_data.items():
+        if k in framework_agent_config_keys or k in allowed_provider_keys:
+            continue 
+        # Use base_provider_name for checking against KNOWN_OLLAMA_OPTIONS
+        if base_provider_name == "ollama" and k in KNOWN_OLLAMA_OPTIONS:
+            api_call_options[k] = v 
+        elif base_provider_name in ["openai", "openrouter"] and k in OPENAI_CLIENT_VALID_KWARGS:
+            client_init_kwargs[k] = v 
+        else:
+            # Log if not explicitly handled and add to api_call_options for provider to potentially use
+            if not (base_provider_name == "ollama" and k in KNOWN_OLLAMA_OPTIONS) and \
+               not (base_provider_name in ["openai", "openrouter"] and k in OPENAI_CLIENT_VALID_KWARGS):
+                logger.debug(f"Lifecycle: Kwarg '{k}' from agent_config_data not explicitly handled for client init for provider '{base_provider_name}'. Will be passed as api_call_option.")
+            api_call_options[k] = v
+
+
+    # Merge client_init_kwargs into final_provider_args 
+    final_provider_args = {**final_provider_args, **client_init_kwargs}
+    final_provider_args = {k: v for k, v in final_provider_args.items() if v is not None}
+    # --- END MODIFIED ---
+
+
+    # Create final agent config entry for storage/state - Use canonical ID
+    # Store api_call_options here so agent can use them when calling the provider
+    final_agent_config_entry = {
+        "agent_id": agent_id,
+        "config": {
+            "provider": provider_name,
+            "model": model_id_canonical,
+            "system_prompt": final_system_prompt,
+            "persona": persona,
+            "temperature": temperature,
+            **api_call_options, # Store these for the agent's process_message
+            **client_init_kwargs # Also store client init args for reference, though not used by agent.process_message
+        }
+    }
+
+
+    # Instantiate Provider
+    ProviderClass = PROVIDER_CLASS_MAP.get(provider_name)
+    if not ProviderClass: # Handle dynamic local provider names
+        base_provider_type_for_class = provider_name.split('-local')[0].split('-proxy')[0] # Use a different var name
+        ProviderClass = PROVIDER_CLASS_MAP.get(base_provider_type_for_class)
+
+
+    if not ProviderClass: msg = f"Lifecycle: Unknown provider type '{provider_name}'."; logger.error(msg); return False, msg, None
+    try: llm_provider_instance = ProviderClass(**final_provider_args)
+    except Exception as e: msg = f"Lifecycle: Provider init failed for {provider_name}: {e}"; logger.error(msg, exc_info=True); return False, msg, None
+    logger.info(f"  Lifecycle: Instantiated provider {ProviderClass.__name__} for '{agent_id}'.")
+
+    # --- Determine Agent Type ---
+    from src.agents.constants import AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER
+    agent_type = AGENT_TYPE_WORKER # Default
+    if agent_id == BOOTSTRAP_AGENT_ID:
+        agent_type = AGENT_TYPE_ADMIN
+    elif agent_id.startswith("pm_"):
+        agent_type = AGENT_TYPE_PM
+    logger.debug(f"Determined agent_type for '{agent_id}' as '{agent_type}'.")
+    # Add agent_type to the config entry
+    final_agent_config_entry["config"]["agent_type"] = agent_type
+    # --- End Determine Agent Type ---
+
+    # Instantiate Agent
+    try:
+        # Pass the full config entry which now includes agent_type
+        agent = Agent(agent_config=final_agent_config_entry, llm_provider=llm_provider_instance, manager=manager)
+        agent.model = model_id_for_provider # Use adjusted ID for provider calls
+        if api_key_used: agent._last_api_key_used = api_key_used
+    except Exception as e: msg = f"Lifecycle: Agent instantiation failed: {e}"; logger.error(msg, exc_info=True); await manager._close_provider_safe(llm_provider_instance); return False, msg, None
+    logger.info(f"  Lifecycle: Instantiated Agent object for '{agent_id}'.")
+        # --- Set initial state based on type ---
+        # (Deferring state setting via workflow_manager until that's integrated)
+        # For now, set state directly based on type
+    if agent_type == AGENT_TYPE_ADMIN:
+            from src.agents.constants import ADMIN_STATE_STARTUP # Import locally
+            agent.set_state(ADMIN_STATE_STARTUP)
+            logger.info(f"Lifecycle: Set initial state for Admin AI '{agent_id}' to '{ADMIN_STATE_STARTUP}'.")
+    if agent_type == AGENT_TYPE_PM: # PMs start in the general startup state
+            from src.agents.constants import PM_STATE_STARTUP # Use the correct general conversation state constant
+            agent.set_state(PM_STATE_STARTUP) # Use PM_STATE_STARTUP
+            # --- Store plan_description on PM agent if provided ---
+            if 'plan_description' in agent_config_data:
+                agent.plan_description = agent_config_data['plan_description']
+                logger.info(f"Lifecycle: Stored plan_description on PM agent '{agent_id}'.")
+            # --- End store plan_description ---
+            logger.info(f"Lifecycle: Set initial state for {agent_type} agent '{agent_id}' to '{PM_STATE_STARTUP}'.") # Log correct state
+    if agent_type == AGENT_TYPE_WORKER: # Workers start in the general startup state
+            from src.agents.constants import WORKER_STATE_STARTUP # Use the correct general conversation state constant
+            agent.set_state(WORKER_STATE_STARTUP) # Use WORKER_STATE_STARTUP
+            logger.info(f"Lifecycle: Set initial state for {agent_type} agent '{agent_id}' to '{WORKER_STATE_STARTUP}'.") # Log correct state
+        # --- End initial state setting ---
+
+    # Final steps
+    try: await asyncio.to_thread(agent.ensure_sandbox_exists)
+    except Exception as e: logger.error(f"  Lifecycle: Error ensuring sandbox for '{agent_id}': {e}", exc_info=True)
+    # --- Add logging before and after adding to manager ---
+    logger.debug(f"Lifecycle: Attempting to add agent '{agent_id}' to manager.agents dictionary...")
+    manager.agents[agent_id] = agent;
+    logger.info(f"  Lifecycle: Successfully added agent '{agent_id}' to manager.agents dict. Current keys: {list(manager.agents.keys())}")
+    # --- End added logging ---
+    team_add_msg_suffix = ""
+    if team_id:
+        team_add_success, team_add_msg = await manager.state_manager.add_agent_to_team(agent_id, team_id)
+        if not team_add_success: team_add_msg_suffix = f" (Warning adding to team: {team_add_msg})"
+        logger.info(f"Lifecycle: Agent '{agent_id}' state added to team '{team_id}'.{team_add_msg_suffix}")
+    message = f"Agent '{agent_id}' ({persona}) created successfully using {model_id_canonical} ({selection_source})." + team_add_msg_suffix
+    return True, message, agent_id
+# --- END _create_agent_internal ---
+
+
+# --- create_agent_instance (Ensured full code included) ---
+async def create_agent_instance(
+    manager: 'AgentManager',
+    agent_id_requested: Optional[str],
+    provider: Optional[str], # Optional
+    model: Optional[str],    # Optional
+    system_prompt: str, persona: str, # Required
+    team_id: Optional[str] = None, temperature: Optional[float] = None,
+    **kwargs # Accept arbitrary kwargs
+    ) -> Tuple[bool, str, Optional[str]]:
+    """ Creates a dynamic agent instance, allowing provider/model to be omitted for auto-selection. """
+    if not all([system_prompt, persona]):
+        msg = "Lifecycle Error: Missing required arguments (system_prompt, persona) for creating dynamic agent."
+        logger.error(msg); return False, msg, None
+    
+    # Start with essential args
+    agent_config_data = { "system_prompt": system_prompt, "persona": persona }
+    
+    # Add optional args if provided
+    if provider: agent_config_data["provider"] = provider
+    if model: agent_config_data["model"] = model
+    if temperature is not None: agent_config_data["temperature"] = temperature
+    
+    # Merge any other kwargs passed (e.g., plan_description)
+    agent_config_data.update(kwargs)
+    
+    # Call the internal creation logic
+    success, message, created_agent_id = await _create_agent_internal(
+        manager,
+        agent_id_requested=agent_id_requested,
+        agent_config_data=agent_config_data, # Pass the combined config
+        is_bootstrap=False,
+        team_id=team_id,
+        loading_from_session=False
+    )
+    
+    if success and created_agent_id:
+        agent = manager.agents.get(created_agent_id); team = manager.state_manager.get_agent_team(created_agent_id)
+        config_ui = agent.agent_config.get("config", {}) if agent else {}
+        await manager.send_to_ui({ "type": "agent_added", "agent_id": created_agent_id, "config": config_ui, "team": team })
+        await manager.push_agent_status_update(created_agent_id)
+    return success, message, created_agent_id
+# --- END create_agent_instance ---
+
+
+# --- delete_agent_instance (Ensured full code included) ---
+async def delete_agent_instance(manager: 'AgentManager', agent_id: str) -> Tuple[bool, str]:
+    """ Deletes a dynamic agent instance. """
+    if not agent_id: return False, "Lifecycle Error: Agent ID empty."
+    if agent_id not in manager.agents: return False, f"Lifecycle Error: Agent '{agent_id}' not found."
+    if agent_id in manager.bootstrap_agents: return False, f"Lifecycle Error: Cannot delete bootstrap agent '{agent_id}'."
+    agent_instance = manager.agents.pop(agent_id, None); manager.state_manager.remove_agent_from_all_teams_state(agent_id)
+    if agent_instance and agent_instance.llm_provider: await manager._close_provider_safe(agent_instance.llm_provider)
+    message = f"Agent '{agent_id}' deleted."; logger.info(f"Lifecycle: {message}")
+    await manager.send_to_ui({"type": "agent_deleted", "agent_id": agent_id}); return True, message
+# --- END delete_agent_instance ---
+
+
+# --- _generate_unique_agent_id (Ensured full code included) ---
+def _generate_unique_agent_id(manager: 'AgentManager', prefix="agent") -> str:
+    """ Generates a unique agent ID. """
+    timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4]
+    while True:
+        new_id = f"{prefix}_{timestamp}_{short_uuid}".replace(":", "_");
+        if new_id not in manager.agents: return new_id
+        time.sleep(0.001); timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4]
