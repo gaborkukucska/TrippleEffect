@@ -7,32 +7,37 @@ import aiohttp # For retryable exceptions
 BOOTSTRAP_AGENT_ID = "admin_ai"
 
 # --- Agent Type Constants ---
-AGENT_TYPE_ADMIN = "admin"
-AGENT_TYPE_PM = "pm"
-AGENT_TYPE_WORKER = "worker"
+AGENT_TYPE_ADMIN = "admin" # The Admin AI of the framework.
+AGENT_TYPE_PM = "pm" # Project Manager Agents
+AGENT_TYPE_WORKER = "worker" # Worker Agents
 
-# --- Agent Workflow State Constants ---
-# General Agent States
-AGENT_STATE_CONVERSATION = "conversation" # Default state for PM/Worker
-AGENT_STATE_WORK = "work"                 # State for active tool use/task execution for PM/Worker
-AGENT_STATE_MANAGE = "manage"             # State for PM monitoring/management tasks
+# --- Default Workflow State ---
+DEFAULT_STATE = "default" # The default backup state
 
-# Admin-Specific States
-ADMIN_STATE_STARTUP = "startup"
+# --- Admin AI Workflow States ---
+ADMIN_STATE_STARTUP = "startup" # Admin startup state is where the framework starts after booting up
 ADMIN_STATE_CONVERSATION = "admin_conversation" # Distinct conversation state for Admin
-ADMIN_STATE_PLANNING = "planning"
+ADMIN_STATE_PLANNING = "planning" # The planning state for the Admin AI which initiates the planning workflow
 ADMIN_STATE_WORK_DELEGATED = "work_delegated"
+ADMIN_STATE_WORK = "work" # The work state for the Admin AI
 
-# --- Agent Operational Status Constants ---
+# --- PM Agent Workflow State Constants ---
+PM_STATE_STARTUP = "pm_startup" # Startup state for PM
+PM_STATE_WORK = "pm_work" # State for active tool use/task execution for PM
+PM_STATE_MANAGE = "pm_manage" # State for PM monitoring/management tasks
+
+# --- WORKER Agent Workflow State Constants ---
+WORKER_STATE_STARTUP = "worker_startup" # Startup state for Worker
+WORKER_STATE_WORK = "worker_work" # State for active tool use/task execution for Worker
+WORKER_STATE_WAIT = "worker_wait" # State for worker waiting
+
+# --- Agent Operational Status Constants (Distinct from agent states!) ---
 AGENT_STATUS_IDLE = "idle"
 AGENT_STATUS_PROCESSING = "processing"
-AGENT_STATUS_PLANNING = "planning" # Agent is generating a plan (distinct from Admin AI state)
+AGENT_STATUS_PLANNING = "planning"
 AGENT_STATUS_AWAITING_TOOL = "awaiting_tool_result"
 AGENT_STATUS_EXECUTING_TOOL = "executing_tool"
 AGENT_STATUS_ERROR = "error"
-
-# --- Admin AI Workflow States ---
-# ADMIN_STATE_STARTUP, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED defined above
 
 # --- LLM Provider Interaction Constants ---
 

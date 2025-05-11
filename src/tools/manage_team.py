@@ -30,7 +30,7 @@ class ManageTeamTool(BaseTool):
     Provider/model are optional for create_agent; framework will select if omitted.
     """
     name: str = "manage_team" # Changed from ManageTeamTool to match XML tag
-    auth_level: str = "pm" # Admin only
+    auth_level: str = "pm" # PM & Admin only
     summary: Optional[str] = "Manages agents and teams (create, delete, list, assign). (Admin only)"
     description: str = ( # Updated description
         "Manages agents and teams dynamically within the system. "

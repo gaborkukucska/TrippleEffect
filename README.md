@@ -4,7 +4,7 @@
 
 **Version:** 2.25 <!-- Updated Version -->
 
-**TrippleEffect** is an asynchronous, collaborative multi-agent framework built with Python, FastAPI, and WebSockets. It features a central **Admin AI** that initiates projects and a dedicated **Project Manager** agent per session that handles detailed task tracking and team coordination. This framework is predominantly developed by various LLMs guided by Gabby.
+**TrippleEffect** is an asynchronous, collaborative multi-agent framework built with Python, FastAPI, and WebSockets. It features a central **Admin AI** that initiates projects and a dedicated **Project Manager** agent per session that handles detailed task creation/tracking and agent/team creation/coordination. This framework is predominantly developed by various LLMs guided by Gabby.
 
 ## Quick Start (using scripts)
 
@@ -28,7 +28,7 @@ chmod +x setup.sh run.sh
     *   Creates a dedicated Project Manager agent (`pm_{project_title}_{session_id}`).
     *   Assigns the new PM to the initial project task.
     *   Notifies Admin AI and transitions it back to the `conversation` state.
-*   **Project Manager Agent:** Automatically created per project/session by the framework, this agent uses the `ProjectManagementTool` (backed by `tasklib`) to decompose the initial plan, create/assign sub-tasks (assigning via tags), monitor progress via `send_message`, and report status/completion back to Admin AI.
+*   **Project Manager Agent:** Automatically created per project/session by the framework, this agent uses the `ProjectManagementTool` (backed by `tasklib`) to decompose the initial plan, create a team, specialised worker agents, create/assign sub-tasks to worker agents, monitor progress via `send_message` tool, and report status/completion back to Admin AI.
 *   **Dynamic Worker Agent Management:** The Project Manager agent (or Admin AI, depending on workflow evolution) uses `ManageTeamTool` to create worker agents as needed for specific sub-tasks.
 *   **Intelligent Model Handling:**
     *   **Discovery:** Automatically finds reachable LLM providers (Ollama, OpenRouter, OpenAI) and available models at startup.

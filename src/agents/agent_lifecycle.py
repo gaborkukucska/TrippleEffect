@@ -618,21 +618,24 @@ async def _create_agent_internal(
         agent = Agent(agent_config=final_agent_config_entry, llm_provider=llm_provider_instance, manager=manager)
         agent.model = model_id_for_provider # Use adjusted ID for provider calls
         if api_key_used: agent._last_api_key_used = api_key_used
-
+    except Exception as e: msg = f"Lifecycle: Agent instantiation failed: {e}"; logger.error(msg, exc_info=True); await manager._close_provider_safe(llm_provider_instance); return False, msg, None
+    logger.info(f"  Lifecycle: Instantiated Agent object for '{agent_id}'.")
         # --- Set initial state based on type ---
         # (Deferring state setting via workflow_manager until that's integrated)
         # For now, set state directly based on type
-        if agent_type == AGENT_TYPE_ADMIN:
+    if agent_type == AGENT_TYPE_ADMIN:
             from src.agents.constants import ADMIN_STATE_STARTUP # Import locally
             agent.set_state(ADMIN_STATE_STARTUP)
             logger.info(f"Lifecycle: Set initial state for Admin AI '{agent_id}' to '{ADMIN_STATE_STARTUP}'.")
-        else: # PMs and Workers start in the general conversation state
-             from src.agents.constants import AGENT_STATE_CONVERSATION # Use the correct general conversation state constant
-             agent.set_state(AGENT_STATE_CONVERSATION) # Use AGENT_STATE_CONVERSATION
-             logger.info(f"Lifecycle: Set initial state for {agent_type} agent '{agent_id}' to '{AGENT_STATE_CONVERSATION}'.") # Log correct state
+    if agent_type == AGENT_TYPE_PM: # PMs start in the general startup state
+            from src.agents.constants import PM_STATE_STARTUP # Use the correct general conversation state constant
+            agent.set_state(PM_STATE_STARTUP) # Use PM_STATE_STARTUP
+            logger.info(f"Lifecycle: Set initial state for {agent_type} agent '{agent_id}' to '{PM_STATE_STARTUP}'.") # Log correct state
+    if agent_type == AGENT_TYPE_WORKER: # Workers start in the general startup state
+            from src.agents.constants import WORKER_STATE_STARTUP # Use the correct general conversation state constant
+            agent.set_state(WORKER_STATE_STARTUP) # Use WORKER_STATE_STARTUP
+            logger.info(f"Lifecycle: Set initial state for {agent_type} agent '{agent_id}' to '{WORKER_STATE_STARTUP}'.") # Log correct state
         # --- End initial state setting ---
-    except Exception as e: msg = f"Lifecycle: Agent instantiation failed: {e}"; logger.error(msg, exc_info=True); await manager._close_provider_safe(llm_provider_instance); return False, msg, None
-    logger.info(f"  Lifecycle: Instantiated Agent object for '{agent_id}'.")
 
     # Final steps
     try: await asyncio.to_thread(agent.ensure_sandbox_exists)

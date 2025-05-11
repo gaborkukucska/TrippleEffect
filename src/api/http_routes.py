@@ -25,8 +25,10 @@ from src.agents.manager import AgentManager
 from src.agents.constants import (
     AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_PLANNING,
     AGENT_STATUS_AWAITING_TOOL, AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_ERROR,
-    AGENT_STATE_CONVERSATION, AGENT_STATE_WORK, ADMIN_STATE_CONVERSATION,
-    ADMIN_STATE_STARTUP, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED
+    ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK,
+    PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE,
+    WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_WAIT,
+    DEFAULT_STATE
 )
 # --- END NEW ---
 import asyncio # Import asyncio
@@ -315,26 +317,26 @@ async def approve_project_start(
             logger.warning(f"Approval failed: PM Agent '{pm_agent_id}' is not idle (Status: {agent_to_start.status}). Cannot start.")
             raise HTTPException(status_code=409, detail=f"Project Manager agent '{pm_agent_id}' is currently busy (Status: {agent_to_start.status}) and cannot be started.")
 
-        # --- NEW: Change state to 'work' before scheduling ---
-        logger.info(f"Setting PM agent '{pm_agent_id}' state to '{AGENT_STATE_WORK}'...")
+        # --- NEW: Change state to 'startup' before scheduling ---
+        logger.info(f"Setting PM agent '{pm_agent_id}' state to '{PM_STATE_STARTUP}'...")
         state_change_success = False
         if hasattr(manager, 'workflow_manager'):
-            state_change_success = manager.workflow_manager.change_state(agent_to_start, AGENT_STATE_WORK)
+            state_change_success = manager.workflow_manager.change_state(agent_to_start, PM_STATE_STARTUP)
         else:
             logger.error("WorkflowManager not found on AgentManager! Cannot change PM state.")
             raise HTTPException(status_code=500, detail="Internal Server Error: Workflow Manager unavailable.")
 
         if not state_change_success:
-            logger.error(f"Failed to change PM agent '{pm_agent_id}' state to '{AGENT_STATE_WORK}'. Cannot start cycle.")
-            raise HTTPException(status_code=500, detail=f"Failed to set PM agent state to '{AGENT_STATE_WORK}'.")
+            logger.error(f"Failed to change PM agent '{pm_agent_id}' state to '{PM_STATE_STARTUP}'. Cannot start cycle.")
+            raise HTTPException(status_code=500, detail=f"Failed to set PM agent state to '{PM_STATE_STARTUP}'.")
 
         # --- NEW: Clear the approval flag before scheduling ---
         agent_to_start._awaiting_project_approval = False
         logger.info(f"Cleared _awaiting_project_approval flag for PM agent '{pm_agent_id}'.")
         # --- END NEW ---
 
-        # Schedule the agent's first cycle now that it's in the work state
-        logger.info(f"PM agent '{pm_agent_id}' state set to '{AGENT_STATE_WORK}'. Scheduling initial cycle...")
+        # Schedule the agent's first cycle now that it's in the startup state
+        logger.info(f"PM agent '{pm_agent_id}' state set to '{PM_STATE_STARTUP}'. Scheduling initial cycle...")
         asyncio.create_task(manager.schedule_cycle(agent_to_start)) # Use asyncio.create_task
 
         # Send confirmation to UI

@@ -84,7 +84,7 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 
 ## **Agent Constants (`src/agents/`)**
 
-*   `src/agents/constants.py` - Defines constants for agent operational statuses (`AGENT_STATUS_*`), workflow states (`ADMIN_STATE_*`, `AGENT_STATE_*`), agent types (`AGENT_TYPE_*`), retry/failover logic, and regex patterns.
+*   `src/agents/constants.py` - Defines constants for agent operational statuses (`AGENT_STATUS_*`), workflow states (`ADMIN_STATE_*`, `PM_STATE_*`, `WORKER_STATE_*`), agent types (`AGENT_TYPE_*`), retry/failover logic, and regex patterns.
 
 ## **Agent Core (`src/agents/`)**
 

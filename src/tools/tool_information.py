@@ -101,12 +101,12 @@ class ToolInformationTool(BaseTool):
                 # Handle 'all' tools request (filtered by auth)
                 if tool_name_req.lower() == 'all':
                     all_usage_info = []
-                    authorized_tools = [] 
+                    authorized_tools = []
                     all_tool_names = sorted(list(manager.tool_executor.tools.keys()))
 
                     for name in all_tool_names:
                         tool_instance = manager.tool_executor.tools.get(name)
-                        if not tool_instance: 
+                        if not tool_instance:
                             continue
 
                         tool_auth_level = getattr(tool_instance, 'auth_level', 'worker')
@@ -137,60 +137,52 @@ class ToolInformationTool(BaseTool):
 
                     logger.info(f"{self.name}: Executed 'get_info' for 'all' (filtered) tools by agent {agent_id} (Type: {agent_type}).")
                     # Join and limit total length
-                    MAX_ALL_USAGE_CHARS = 8000 
+                    MAX_ALL_USAGE_CHARS = 8000
                     final_output = "\n".join(all_usage_info)
                     if len(final_output) > MAX_ALL_USAGE_CHARS:
                         final_output = final_output[:MAX_ALL_USAGE_CHARS] + "\n\n[... Tool usage details truncated due to length limit ...]"
                     return final_output
 
-                # Prepend the list of *authorized* tools
-                all_usage_info.insert(0, f"Tools available to you (Agent Type: {agent_type}): {authorized_tools}\n")
+                # Removed the problematic block that was here.
+                # The `else` block below correctly handles specific tool requests.
 
-                logger.info(f"{self.name}: Executed 'get_info' for 'all' (filtered) tools by agent {agent_id} (Type: {agent_type}).")
-                # Join and limit total length
-                MAX_ALL_USAGE_CHARS = 8000 # Limit response size
-                final_output = "\n".join(all_usage_info)
-                if len(final_output) > MAX_ALL_USAGE_CHARS:
-                     final_output = final_output[:MAX_ALL_USAGE_CHARS] + "\n\n[... Tool usage details truncated due to length limit ...]"
-                return final_output
+                # Handle specific tool request
+                else: # This `else` is for `if tool_name_req.lower() == 'all':`
+                    target_tool = manager.tool_executor.tools.get(tool_name_req)
+                    if not target_tool:
+                        # List only tools *authorized* for the calling agent
+                        authorized_tools_list = []
+                        all_tool_names = sorted(list(manager.tool_executor.tools.keys()))
+                        for name in all_tool_names:
+                            tool_instance = manager.tool_executor.tools.get(name)
+                            if not tool_instance: continue
+                            tool_auth_level = getattr(tool_instance, 'auth_level', 'worker')
+                            is_authorized = False
+                            if agent_type == AGENT_TYPE_ADMIN: is_authorized = True
+                            elif agent_type == AGENT_TYPE_PM: is_authorized = tool_auth_level in [AGENT_TYPE_PM, AGENT_TYPE_WORKER]
+                            elif agent_type == AGENT_TYPE_WORKER: is_authorized = tool_auth_level == AGENT_TYPE_WORKER
+                            if is_authorized: authorized_tools_list.append(name)
 
-            # Handle specific tool request
-            else:
-                target_tool = manager.tool_executor.tools.get(tool_name_req)
-                if not target_tool:
-                    # List only tools *authorized* for the calling agent
-                    authorized_tools_list = []
-                    all_tool_names = sorted(list(manager.tool_executor.tools.keys()))
-                    for name in all_tool_names:
-                        tool_instance = manager.tool_executor.tools.get(name)
-                        if not tool_instance: continue
-                        tool_auth_level = getattr(tool_instance, 'auth_level', 'worker')
-                        is_authorized = False
-                        if agent_type == AGENT_TYPE_ADMIN: is_authorized = True
-                        elif agent_type == AGENT_TYPE_PM: is_authorized = tool_auth_level in [AGENT_TYPE_PM, AGENT_TYPE_WORKER]
-                        elif agent_type == AGENT_TYPE_WORKER: is_authorized = tool_auth_level == AGENT_TYPE_WORKER
-                        if is_authorized: authorized_tools_list.append(name)
+                        return f"Error: Tool '{tool_name_req}' not found or not authorized for your agent type ({agent_type}). Available authorized tools: {authorized_tools_list}"
 
-                    return f"Error: Tool '{tool_name_req}' not found or not authorized for your agent type ({agent_type}). Available authorized tools: {authorized_tools_list}"
+                    # Check authorization for the specific tool
+                    tool_auth_level = getattr(target_tool, 'auth_level', 'worker')
+                    is_authorized = False
+                    if agent_type == AGENT_TYPE_ADMIN: is_authorized = True
+                    elif agent_type == AGENT_TYPE_PM: is_authorized = tool_auth_level in [AGENT_TYPE_PM, AGENT_TYPE_WORKER]
+                    elif agent_type == AGENT_TYPE_WORKER: is_authorized = tool_auth_level == AGENT_TYPE_WORKER
 
-                # Check authorization for the specific tool
-                tool_auth_level = getattr(target_tool, 'auth_level', 'worker')
-                is_authorized = False
-                if agent_type == AGENT_TYPE_ADMIN: is_authorized = True
-                elif agent_type == AGENT_TYPE_PM: is_authorized = tool_auth_level in [AGENT_TYPE_PM, AGENT_TYPE_WORKER]
-                elif agent_type == AGENT_TYPE_WORKER: is_authorized = tool_auth_level == AGENT_TYPE_WORKER
+                    if not is_authorized:
+                         return f"Error: Agent type '{agent_type}' is not authorized to access tool '{tool_name_req}' (requires level '{tool_auth_level}')."
 
-                if not is_authorized:
-                     return f"Error: Agent type '{agent_type}' is not authorized to access tool '{tool_name_req}' (requires level '{tool_auth_level}')."
-
-                # Get and return usage info if authorized
-                try:
-                    usage_info = target_tool.get_detailed_usage()
-                    logger.info(f"{self.name}: Executed 'get_info' for tool '{tool_name_req}' by agent {agent_id}.")
-                    return f"--- Detailed Usage for Tool: {tool_name_req} (Auth Level: {tool_auth_level}) ---\n{usage_info}\n--- End Usage ---"
-                except Exception as tool_usage_err:
-                    logger.error(f"Error getting detailed usage for tool '{tool_name_req}': {tool_usage_err}", exc_info=True)
-                    return f"Error retrieving usage for tool '{tool_name_req}': {type(tool_usage_err).__name__}"
+                    # Get and return usage info if authorized
+                    try:
+                        usage_info = target_tool.get_detailed_usage()
+                        logger.info(f"{self.name}: Executed 'get_info' for tool '{tool_name_req}' by agent {agent_id}.")
+                        return f"--- Detailed Usage for Tool: {tool_name_req} (Auth Level: {tool_auth_level}) ---\n{usage_info}\n--- End Usage ---"
+                    except Exception as tool_usage_err:
+                        logger.error(f"Error getting detailed usage for tool '{tool_name_req}': {tool_usage_err}", exc_info=True)
+                        return f"Error retrieving usage for tool '{tool_name_req}': {type(tool_usage_err).__name__}"
 
         except Exception as e:
             logger.error(f"Unexpected error executing {self.name} (Action: {action}) for agent {agent_id}: {e}", exc_info=True)

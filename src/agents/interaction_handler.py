@@ -11,11 +11,12 @@ from src.llm_providers.base import ToolResultDict, MessageDict
 from src.tools.manage_team import ManageTeamTool
 from src.tools.send_message import SendMessageTool
 from src.tools.project_management import ProjectManagementTool # Import ProjectManagementTool
+from src.tools.tool_parser import parse_tool_call
 
 # Import status constants and agent types
 from src.agents.constants import (
     AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_EXECUTING_TOOL,
-    AGENT_TYPE_WORKER, AGENT_STATE_WORK # Import worker type and state
+    AGENT_TYPE_WORKER, WORKER_STATE_WORK # Import worker type and state
 )
 
 # Import helper for prompt update
@@ -217,12 +218,18 @@ class AgentInteractionHandler:
         ) -> Optional[Dict]:
         """
         Executes a single tool call via the ToolExecutor, passing necessary context including project/session names.
+        The AgentCycleHandler is responsible for any subsequent agent reactivation.
         """
-        if not self._manager.tool_executor: logger.error("InteractionHandler: ToolExecutor unavailable in AgentManager. Cannot execute tool."); return {"call_id": call_id, "content": "[ToolExec Error: ToolExecutor unavailable]", "_raw_result": None}
-        tool_info = {"name": tool_name, "call_id": call_id}; agent.set_status(AGENT_STATUS_EXECUTING_TOOL, tool_info=tool_info); raw_result: Optional[Any] = None; result_content: str = "[Tool Execution Error: Unknown]"
+        if not self._manager.tool_executor:
+            logger.error("InteractionHandler: ToolExecutor unavailable in AgentManager. Cannot execute tool.")
+            return {"call_id": call_id, "name": tool_name, "content": "[ToolExec Error: ToolExecutor unavailable]", "_raw_result": None} # Added name
+
+        tool_info = {"name": tool_name, "call_id": call_id}
+        agent.set_status(AGENT_STATUS_EXECUTING_TOOL, tool_info=tool_info)
+        raw_result: Optional[Any] = None
+        result_content: str = "[Tool Execution Error: Unknown]"
         try:
             logger.debug(f"InteractionHandler: Executing tool '{tool_name}' (ID: {call_id}) for '{agent.agent_id}' with context Project: {project_name}, Session: {session_name}")
-            # Pass the manager instance to execute_tool
             raw_result = await self._manager.tool_executor.execute_tool(
                 agent_id=agent.agent_id,
                 agent_sandbox_path=agent.sandbox_path,
@@ -230,21 +237,30 @@ class AgentInteractionHandler:
                 tool_args=tool_args,
                 project_name=project_name,
                 session_name=session_name,
-                manager=self._manager # Pass the manager instance
+                manager=self._manager
             )
             logger.debug(f"InteractionHandler: Tool '{tool_name}' completed execution.")
-            if tool_name == ManageTeamTool.name: result_content = raw_result.get("message", str(raw_result)) if isinstance(raw_result, dict) else str(raw_result)
-            elif isinstance(raw_result, str): result_content = raw_result
+            if tool_name == ManageTeamTool.name:
+                result_content = raw_result.get("message", str(raw_result)) if isinstance(raw_result, dict) else str(raw_result)
+            elif isinstance(raw_result, str):
+                result_content = raw_result
             else:
                  try: result_content = json.dumps(raw_result, indent=2)
                  except TypeError: result_content = str(raw_result)
-        except Exception as e: error_msg = f"InteractionHandler: Error executing tool '{tool_name}': {type(e).__name__} - {e}"; logger.error(error_msg, exc_info=True); result_content = f"[ToolExec Error: {error_msg}]"; raw_result = None
+        except Exception as e:
+            error_msg = f"InteractionHandler: Error executing tool '{tool_name}': {type(e).__name__} - {e}"
+            logger.error(error_msg, exc_info=True)
+            result_content = f"[ToolExec Error: {error_msg}]"
+            raw_result = None
         finally:
-            if agent.status == AGENT_STATUS_EXECUTING_TOOL and agent.current_tool_info and agent.current_tool_info.get("call_id") == call_id: agent.set_status(AGENT_STATUS_PROCESSING)
+            # Reset status to PROCESSING, CycleHandler will decide if it should be IDLE or reactivated.
+            if agent.status == AGENT_STATUS_EXECUTING_TOOL and agent.current_tool_info and agent.current_tool_info.get("call_id") == call_id:
+                agent.set_status(AGENT_STATUS_PROCESSING)
+                logger.debug(f"InteractionHandler: Set agent '{agent.agent_id}' status to PROCESSING after tool '{tool_name}'.")
 
-            # --- NEW: Worker Activation on Task Assignment ---
+            # Worker activation logic (if task assigned successfully)
             if tool_name == ProjectManagementTool.name and isinstance(raw_result, dict) and raw_result.get("status") == "success":
-                action = tool_args.get("action") # Get the action performed
+                action = tool_args.get("action")
                 assignee_id = raw_result.get("assignee")
                 task_description = raw_result.get("description")
 
@@ -253,45 +269,44 @@ class AgentInteractionHandler:
                     assigned_agent = self._manager.agents.get(assignee_id)
                     if assigned_agent and assigned_agent.agent_type == AGENT_TYPE_WORKER and assigned_agent.status == AGENT_STATUS_IDLE:
                         logger.info(f"Activating idle worker agent '{assignee_id}' for assigned task.")
-                        # Set flag and inject context
                         assigned_agent._needs_initial_work_context = True
                         assigned_agent._injected_task_description = task_description
-                        # Get tool list string (assuming ToolExecutor has this method)
                         try:
-                            # Ensure tool_executor exists before calling
                             if hasattr(self._manager, 'tool_executor') and hasattr(self._manager.tool_executor, 'get_available_tools_list_str'):
                                 assigned_agent._injected_tools_list_str = self._manager.tool_executor.get_available_tools_list_str(assigned_agent.agent_type)
                             else:
-                                logger.error(f"ToolExecutor or get_available_tools_list_str not found on manager for worker {assignee_id}.")
+                                logger.error(f"ToolExecutor or get_available_tools_list_str not found for worker {assignee_id}.")
                                 assigned_agent._injected_tools_list_str = "[Error retrieving tool list: ToolExecutor unavailable]"
                         except Exception as tool_list_err:
                              logger.error(f"Failed to get tool list for worker {assignee_id}: {tool_list_err}")
                              assigned_agent._injected_tools_list_str = "[Error retrieving tool list]"
 
-                        # Change state and schedule
                         state_changed = False
                         if hasattr(self._manager, 'workflow_manager'):
-                             state_changed = self._manager.workflow_manager.change_state(assigned_agent, AGENT_STATE_WORK)
+                             state_changed = self._manager.workflow_manager.change_state(assigned_agent, WORKER_STATE_WORK)
                         else:
                              logger.error("WorkflowManager not found on AgentManager. Cannot change worker state.")
 
                         if state_changed:
-                            asyncio.create_task(self._manager.schedule_cycle(assigned_agent, 0))
+                            # CycleHandler will handle reactivation if appropriate after this tool's result is processed
+                            logger.info(f"Worker '{assignee_id}' state set to WORK. CycleHandler will manage next cycle.")
+                            # asyncio.create_task(self._manager.schedule_cycle(assigned_agent, 0)) # REMOVED - CycleHandler will do this
                         else:
                             logger.error(f"Failed to change state to WORK for activated worker '{assignee_id}'.")
-                            # Clear flag if state change failed
                             assigned_agent._needs_initial_work_context = False
                     elif assigned_agent and assigned_agent.agent_type == AGENT_TYPE_WORKER:
                          logger.info(f"Worker agent '{assignee_id}' assigned task but is not IDLE (Status: {assigned_agent.status}). Will process when available.")
                     elif not assigned_agent:
                          logger.error(f"Assignee agent ID '{assignee_id}' from task assignment not found.")
-            # --- END NEW ---
 
-        return {"call_id": call_id, "content": result_content, "_raw_result": raw_result}
+        # IMPORTANT: Do NOT schedule cycle from here anymore. AgentCycleHandler will do it.
+        return {"call_id": call_id, "name": tool_name, "content": result_content, "_raw_result": raw_result} # Added name
 
 
     async def failed_tool_result(self, call_id: Optional[str], tool_name: Optional[str]) -> Optional[ToolResultDict]:
         """
         Generates a formatted error result dictionary for failed tool dispatch/validation.
         """
-        error_content = f"[ToolExec Error: Failed dispatch for '{tool_name or 'unknown'}'. Invalid format or arguments.]"; final_call_id = call_id or f"invalid_call_{int(time.time())}"; return {"call_id": final_call_id, "content": error_content, "_raw_result": {"status": "error", "message": error_content}}
+        error_content = f"[ToolExec Error: Failed dispatch for '{tool_name or 'unknown'}'. Invalid format or arguments.]";
+        final_call_id = call_id or f"invalid_call_{int(time.time())}";
+        return {"call_id": final_call_id, "name": tool_name or "unknown_tool", "content": error_content, "_raw_result": {"status": "error", "message": error_content}} # Added name

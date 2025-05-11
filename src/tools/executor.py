@@ -10,6 +10,7 @@ import html
 import logging
 
 from src.tools.base import BaseTool
+from src.tools.tool_parser import parse_tool_call
 from src.tools.manage_team import ManageTeamTool
 # --- NEW: Import agent type constants ---
 from src.agents.constants import AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER
@@ -303,12 +304,30 @@ class ToolExecutor:
                         missing_required.append(param_name)
 
             if missing_required:
-                error_msg = f"Error: Tool '{tool_name}' execution failed. Missing required parameters: {', '.join(missing_required)}"
+                error_msg = f"Error: Tool '{tool_name}' execution failed. Missing required parameters: {', '.join(missing_required)}. Please check the tool's documentation for required parameters."
                 logger.error(error_msg)
                 if tool_name == ManageTeamTool.name:
                     return {"status": "error", "action": tool_args.get("action"), "message": error_msg}
                 else:
                     return error_msg
+
+            # Additional validation for type mismatches
+            for param_name, param_value in tool_args.items():
+                param_info = next((p for p in schema['parameters'] if p['name'] == param_name), None)
+                if param_info:
+                    expected_type = param_info['type']
+                    if expected_type == 'integer' and not isinstance(param_value, int):
+                        error_msg = f"Error: Tool '{tool_name}' parameter '{param_name}' expects an integer, but received {type(param_value).__name__}."
+                        logger.error(error_msg)
+                        return error_msg
+                    elif expected_type == 'boolean' and not isinstance(param_value, bool):
+                        error_msg = f"Error: Tool '{tool_name}' parameter '{param_name}' expects a boolean, but received {type(param_value).__name__}."
+                        logger.error(error_msg)
+                        return error_msg
+                    elif expected_type == 'float' and not isinstance(param_value, (int, float)):
+                        error_msg = f"Error: Tool '{tool_name}' parameter '{param_name}' expects a float, but received {type(param_value).__name__}."
+                        logger.error(error_msg)
+                        return error_msg
 
             # Prepare kwargs for tool execution (validated tool-specific args)
             kwargs_for_tool = validated_args.copy()

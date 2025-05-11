@@ -23,8 +23,8 @@ logging.info("manager.py: Imported database_manager.")
 # --- Agent Status/Type/ID Constants ---
 logging.info("manager.py: Importing constants...")
 from src.agents.constants import (
-    AGENT_STATUS_IDLE, AGENT_STATUS_ERROR, BOOTSTRAP_AGENT_ID,
-    AGENT_TYPE_PM, AGENT_STATE_CONVERSATION, AGENT_STATE_MANAGE # Add PM states/type
+    AGENT_STATUS_IDLE, AGENT_STATUS_ERROR, BOOTSTRAP_AGENT_ID, ADMIN_STATE_CONVERSATION,
+    AGENT_TYPE_PM, PM_STATE_WORK, PM_STATE_MANAGE # Add PM states/type
 )
 logging.info("manager.py: Imported constants.")
 
@@ -358,55 +358,7 @@ class AgentManager:
             # Even if DB update fails, FS save succeeded, so return True but with error message
             return True, f"{fs_message} but failed to update database session record."
 
-        # --- Auto-create Project Manager Agent for the new session ---
-        pm_creation_message = ""
-        try:
-            import re # Import re locally for sanitization
-            # Sanitize names for use in agent ID
-            sanitized_project = re.sub(r'\W+', '_', project_name)
-            sanitized_session = re.sub(r'\W+', '_', session_name)
-            pm_instance_id = f"pm_{sanitized_project}_{sanitized_session}"
-            pm_bootstrap_id = "project_manager_agent" # ID from config.yaml
-
-            if pm_instance_id not in self.agents:
-                 logger.info(f"Attempting to auto-create Project Manager '{pm_instance_id}' for session '{project_name}/{session_name}'...")
-                 pm_config = settings.get_agent_config_by_id(pm_bootstrap_id)
-                 if pm_config:
-                     pm_persona = pm_config.get("persona", "Project Manager") + f" ({project_name}/{session_name})" # Unique persona
-                     pm_system_prompt = pm_config.get("system_prompt", "Manage project tasks.")
-                     pm_provider = pm_config.get("provider")
-                     pm_model = pm_config.get("model")
-                     pm_temp = pm_config.get("temperature")
-                     pm_extra_kwargs = {k: v for k, v in pm_config.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona']}
-
-                     pm_create_success, pm_create_msg, pm_created_id = await self.create_agent_instance(
-                         agent_id_requested=pm_instance_id,
-                         provider=pm_provider,
-                         model=pm_model,
-                         system_prompt=pm_system_prompt,
-                         persona=pm_persona,
-                         team_id=None, # PM agent is not assigned to a team initially
-                         temperature=pm_temp,
-                         **pm_extra_kwargs
-                     )
-                     if pm_create_success and pm_created_id:
-                         logger.info(f"Successfully auto-created Project Manager agent '{pm_created_id}' for session.")
-                         pm_creation_message = f" [Auto-created Project Manager: '{pm_created_id}'.]"
-                     else:
-                         logger.error(f"Failed to auto-create Project Manager agent for session: {pm_create_msg}")
-                         pm_creation_message = f" [Warning: Failed to auto-create Project Manager: {pm_create_msg}]"
-                 else:
-                     logger.warning(f"Could not find configuration for bootstrap agent '{pm_bootstrap_id}'. Cannot auto-create Project Manager.")
-                     pm_creation_message = f" [Warning: Config for '{pm_bootstrap_id}' not found, cannot auto-create PM.]"
-            else:
-                logger.info(f"Project Manager agent '{pm_instance_id}' already exists for this session. Skipping auto-creation.")
-                pm_creation_message = f" [Note: Project Manager '{pm_instance_id}' already exists.]"
-        except Exception as pm_err:
-            logger.error(f"Error during Project Manager auto-creation: {pm_err}", exc_info=True)
-            pm_creation_message = f" [Error during PM auto-creation: {pm_err}]"
-        # --- End Auto-create ---
-
-        final_message = f"{fs_message} Session context and DB record updated." + pm_creation_message
+        final_message = f"{fs_message} Session context and DB record updated."
         return True, final_message
 
 
@@ -420,14 +372,14 @@ class AgentManager:
              fs_message += " (Warning: DB session record not found/created)"
         return True, fs_message
 
-    # --- NEW: Framework-driven Project/PM Creation ---
+    # --- Framework-driven Project/PM Creation ---
     async def create_project_and_pm_agent(self, project_title: str, plan_description: str) -> Tuple[bool, str, Optional[str]]:
         """
          Handles the automatic creation of a project task and its dedicated PM agent.
          Called by CycleHandler when Admin AI submits a plan.
          """
         from src.tools.project_management import ProjectManagementTool, TASKLIB_AVAILABLE, Task # Import Task locally
-        from src.agents.constants import ADMIN_STATE_CONVERSATION # Import locally
+        # from src.agents.constants import ADMIN_STATE_CONVERSATION # Import locally
         import re # Import re locally for sanitization
 
         logger.info(f"Framework attempting to create project '{project_title}' and PM agent.")
@@ -436,9 +388,7 @@ class AgentManager:
             logger.error(msg)
             return False, msg, None
 
-        # --- REMOVED Old Task Creation Logic ---
-
-        # 2. Create PM Agent Instance (Keep this part)
+        # 2. Create PM Agent Instance
         pm_agent_id = None
         pm_creation_success = False
         pm_creation_message = f"Failed to create PM agent for project '{project_title}'."
@@ -448,6 +398,7 @@ class AgentManager:
             sanitized_session = re.sub(r'\W+', '_', self.current_session)
             pm_instance_id = f"pm_{sanitized_project}_{sanitized_session}"
             pm_bootstrap_id = "project_manager_agent" # ID from config.yaml
+            pm_startup_prompt = "pm_startup_prompt"
 
             if pm_instance_id not in self.agents:
                  logger.info(f"Attempting to create Project Manager '{pm_instance_id}' for project '{project_title}'...")
@@ -460,9 +411,10 @@ class AgentManager:
                      pm_persona = pm_persona_base + f" ({project_title})" # Unique persona
 
                      # Try getting prompt from prompts.json first (key assumed to match bootstrap ID)
-                     pm_system_prompt = settings.PROMPTS.get(pm_bootstrap_id)
-                     if not pm_system_prompt:
-                         pm_system_prompt = pm_config_base.get("system_prompt") # Fallback to config
+                     pm_system_prompt = settings.PROMPTS.get(pm_startup_prompt)
+                     logger.info(f"The system_prompt for '{pm_instance_id}' is set from prompts.json successfuly.")
+                     # if not pm_system_prompt: # REMOVED
+                     #    pm_system_prompt = pm_config_base.get("system_prompt")  # REMOVED
                      if not pm_system_prompt:
                          pm_system_prompt = "Manage project tasks." # Hardcoded default fallback
                          logger.warning(f"Could not find system prompt for '{pm_bootstrap_id}' in prompts.json or config. Using default.")
@@ -471,7 +423,6 @@ class AgentManager:
                      # Get other kwargs, excluding ones handled by create_agent_instance or lifecycle
                      pm_extra_kwargs = {k: v for k, v in pm_config_base.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona']}
                      pm_extra_kwargs['plan_description'] = plan_description  # Add plan_description to kwargs
-                     pm_extra_kwargs['task_description'] = plan_description  # Add task_description as well for compatibility
 
                      # Call create_agent_instance forcing auto-selection for provider/model
                      logger.info(f"Calling create_agent_instance for '{pm_instance_id}' with provider=None, model=None to force auto-selection.")
@@ -592,15 +543,6 @@ class AgentManager:
             "message": f"Project '{project_title}' is planned ({'Task OK' if task_creation_success else 'Task Failed'}). Please approve to start execution."
         })
 
-        # --- REMOVED: Auto-scheduling of PM agent ---
-        # pm_agent = self.agents.get(pm_agent_id)
-        # if pm_agent:
-        #     logger.info(f"Scheduling initial cycle for new PM agent '{pm_agent_id}'...")
-        #     asyncio.create_task(self.schedule_cycle(pm_agent))
-        # else:
-        #     logger.error(f"Could not find newly created PM agent '{pm_agent_id}' in manager to schedule cycle!")
-        # --- END REMOVED ---
-
         return True, final_status_message, pm_agent_id # Use the correct variable name
     # --- END NEW ---
 
@@ -650,7 +592,7 @@ class AgentManager:
                 for agent in agents_snapshot:
                     if (agent.agent_type == AGENT_TYPE_PM and
                         agent.status == AGENT_STATUS_IDLE and
-                        agent.state == AGENT_STATE_CONVERSATION): # Only activate idle PMs in conversation state
+                        agent.state == PM_STATE_MANAGE): # Only activate idle PMs in MANAGE state
                         idle_pms_to_activate.append(agent)
 
                 if idle_pms_to_activate:
@@ -665,7 +607,7 @@ class AgentManager:
                         logger.debug(f"Attempting to transition PM '{pm_agent.agent_id}' to MANAGE state.")
                         state_changed = False
                         if hasattr(self, 'workflow_manager'):
-                            state_changed = self.workflow_manager.change_state(pm_agent, AGENT_STATE_MANAGE)
+                            state_changed = self.workflow_manager.change_state(pm_agent, PM_STATE_MANAGE)
                         else:
                             logger.error("WorkflowManager not found on AgentManager. Cannot change PM state.")
 

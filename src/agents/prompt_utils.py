@@ -10,12 +10,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# --- REMOVED Hardcoded Prompt Constants ---
-# STANDARD_FRAMEWORK_INSTRUCTIONS is now loaded from prompts.json into settings.PROMPTS["standard_framework_instructions"]
-# ADMIN_AI_OPERATIONAL_INSTRUCTIONS is now loaded from prompts.json into settings.PROMPTS["admin_ai_operational_instructions"]
-# --- END REMOVAL ---
-
-
 async def update_agent_prompt_team_id(manager: 'AgentManager', agent_id: str, new_team_id: Optional[str]):
     """
     Updates the team ID placeholder within an existing agent's system prompt string.
