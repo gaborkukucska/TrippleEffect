@@ -581,13 +581,56 @@ async def _create_agent_internal(
         api_key_used = final_provider_args.get('api_key')
 
     temperature = agent_config_data.get("temperature", settings.DEFAULT_TEMPERATURE)
-    allowed_provider_keys = ['api_key', 'base_url', 'referer']; agent_config_keys_to_exclude = ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'project_name', 'session_name'] + allowed_provider_keys
-    client_init_kwargs = {k: v for k, v in agent_config_data.items() if k not in agent_config_keys_to_exclude and k not in KNOWN_OLLAMA_OPTIONS}
-    api_call_options = {k: v for k, v in agent_config_data.items() if k not in agent_config_keys_to_exclude and k in KNOWN_OLLAMA_OPTIONS}
-    final_provider_args = {**final_provider_args, **client_init_kwargs}; final_provider_args = {k: v for k, v in final_provider_args.items() if v is not None}
+    
+    # --- MODIFIED: Stricter filtering of kwargs for provider init ---
+    # Define a set of known valid kwargs for OpenAI client (add more if other clients are used with many options)
+    # This is a simple approach; a more robust way would be to inspect the __init__ signature of the ProviderClass.
+    OPENAI_CLIENT_VALID_KWARGS = {"timeout", "http_client", "organization", "project"} # Add more as needed
+    
+    allowed_provider_keys = ['api_key', 'base_url', 'referer']
+    # These are our framework's standard config keys for an agent, not for the provider client
+    framework_agent_config_keys = {'provider', 'model', 'system_prompt', 'temperature', 'persona', 'agent_type', 'team_id', 'plan_description', '_selection_method'}
+
+    client_init_kwargs = {}
+    api_call_options = {} # For options like Ollama's num_predict, etc.
+
+    for k, v in agent_config_data.items():
+        if k in framework_agent_config_keys or k in allowed_provider_keys:
+            continue # Skip framework keys and already handled provider keys
+        if base_provider_name == "ollama" and k in KNOWN_OLLAMA_OPTIONS:
+            api_call_options[k] = v # Store as an API call option for Ollama
+        elif base_provider_name in ["openai", "openrouter"] and k in OPENAI_CLIENT_VALID_KWARGS:
+            client_init_kwargs[k] = v # Valid for OpenAI client init
+        # Add elif for other providers if they have specific client init or call options
+        else:
+            # If not a known Ollama option or OpenAI client kwarg, and not a framework key,
+            # it might be a generic call option. For now, log if it's not explicitly handled.
+            # We will merge remaining into api_call_options later for providers to pick up if they support them.
+            logger.debug(f"Lifecycle: Kwarg '{k}' from agent_config_data not explicitly handled for client init. Will be passed as api_call_option if not used by provider.")
+            api_call_options[k] = v
+
+
+    # Merge client_init_kwargs into final_provider_args (which already contains api_key, base_url, referer)
+    final_provider_args = {**final_provider_args, **client_init_kwargs}
+    final_provider_args = {k: v for k, v in final_provider_args.items() if v is not None}
+    # --- END MODIFIED ---
+
 
     # Create final agent config entry for storage/state - Use canonical ID
-    final_agent_config_entry = { "agent_id": agent_id, "config": { "provider": provider_name, "model": model_id_canonical, "system_prompt": final_system_prompt, "persona": persona, "temperature": temperature, **api_call_options, **client_init_kwargs } }
+    # Store api_call_options here so agent can use them when calling the provider
+    final_agent_config_entry = {
+        "agent_id": agent_id,
+        "config": {
+            "provider": provider_name,
+            "model": model_id_canonical,
+            "system_prompt": final_system_prompt,
+            "persona": persona,
+            "temperature": temperature,
+            **api_call_options, # Store these for the agent's process_message
+            **client_init_kwargs # Also store client init args for reference, though not used by agent.process_message
+        }
+    }
+
 
     # Instantiate Provider
     ProviderClass = PROVIDER_CLASS_MAP.get(provider_name)
@@ -630,6 +673,11 @@ async def _create_agent_internal(
     if agent_type == AGENT_TYPE_PM: # PMs start in the general startup state
             from src.agents.constants import PM_STATE_STARTUP # Use the correct general conversation state constant
             agent.set_state(PM_STATE_STARTUP) # Use PM_STATE_STARTUP
+            # --- Store plan_description on PM agent if provided ---
+            if 'plan_description' in agent_config_data:
+                agent.plan_description = agent_config_data['plan_description']
+                logger.info(f"Lifecycle: Stored plan_description on PM agent '{agent_id}'.")
+            # --- End store plan_description ---
             logger.info(f"Lifecycle: Set initial state for {agent_type} agent '{agent_id}' to '{PM_STATE_STARTUP}'.") # Log correct state
     if agent_type == AGENT_TYPE_WORKER: # Workers start in the general startup state
             from src.agents.constants import WORKER_STATE_STARTUP # Use the correct general conversation state constant
@@ -663,20 +711,34 @@ async def create_agent_instance(
     model: Optional[str],    # Optional
     system_prompt: str, persona: str, # Required
     team_id: Optional[str] = None, temperature: Optional[float] = None,
-    **kwargs
+    **kwargs # Accept arbitrary kwargs
     ) -> Tuple[bool, str, Optional[str]]:
     """ Creates a dynamic agent instance, allowing provider/model to be omitted for auto-selection. """
     if not all([system_prompt, persona]):
         msg = "Lifecycle Error: Missing required arguments (system_prompt, persona) for creating dynamic agent."
         logger.error(msg); return False, msg, None
+    
+    # Start with essential args
     agent_config_data = { "system_prompt": system_prompt, "persona": persona }
+    
+    # Add optional args if provided
     if provider: agent_config_data["provider"] = provider
     if model: agent_config_data["model"] = model
     if temperature is not None: agent_config_data["temperature"] = temperature
-    known_args = ['action', 'agent_id', 'team_id', 'provider', 'model', 'system_prompt', 'persona', 'temperature', 'project_name', 'session_name']
-    extra_kwargs = {k: v for k, v in kwargs.items() if k not in known_args}
-    agent_config_data.update(extra_kwargs)
-    success, message, created_agent_id = await _create_agent_internal( manager, agent_id_requested=agent_id_requested, agent_config_data=agent_config_data, is_bootstrap=False, team_id=team_id, loading_from_session=False )
+    
+    # Merge any other kwargs passed (e.g., plan_description)
+    agent_config_data.update(kwargs)
+    
+    # Call the internal creation logic
+    success, message, created_agent_id = await _create_agent_internal(
+        manager,
+        agent_id_requested=agent_id_requested,
+        agent_config_data=agent_config_data, # Pass the combined config
+        is_bootstrap=False,
+        team_id=team_id,
+        loading_from_session=False
+    )
+    
     if success and created_agent_id:
         agent = manager.agents.get(created_agent_id); team = manager.state_manager.get_agent_team(created_agent_id)
         config_ui = agent.agent_config.get("config", {}) if agent else {}
