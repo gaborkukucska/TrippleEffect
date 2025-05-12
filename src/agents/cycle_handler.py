@@ -437,7 +437,10 @@ class AgentCycleHandler:
                             logger.error(f"Cannot process state change request for agent '{agent_id}': WorkflowManager missing or requested_state empty.")
 
                         if state_change_success:
-                             needs_reactivation_after_cycle = True # Reactivate after successful state change
+                             # --- MODIFIED: ALWAYS reactivate after successful state change ---
+                             needs_reactivation_after_cycle = True 
+                             logger.info(f"State change to '{requested_state}' successful for agent '{agent_id}'. Agent will be reactivated.")
+                             # --- END MODIFIED ---
                         else:
                              # Optionally send feedback if state change failed validation?
                              logger.warning(f"State change to '{requested_state}' denied for agent '{agent_id}'. Agent remains in state '{agent.state}'.")
@@ -529,11 +532,17 @@ class AgentCycleHandler:
                             trigger_failover = False # Don't trigger fail 
 
                         # 5. Check for Tool Execution Errors (should not trigger failover)
-                        elif "ToolExec Error" in last_error_content:
-                            logger.warning(f"CycleHandler: Agent '{agent_id}' encountered tool execution error: {last_error_content}. Not triggering failover.")
+                        # --- MODIFIED: Check for multi-tool attempt here as well ---
+                        elif "ToolExec Error" in last_error_content or event.get("multiple_tools_attempted", False):
+                            if event.get("multiple_tools_attempted", False):
+                                logger.warning(f"CycleHandler: Agent '{agent_id}' attempted multiple tools. Providing feedback, not triggering failover.")
+                                # Add feedback to history in the "tool_requests" block below
+                            else: # Regular ToolExec Error
+                                logger.warning(f"CycleHandler: Agent '{agent_id}' encountered tool execution error: {last_error_content}. Not triggering failover.")
                             is_retryable_error_type = True # Still retryable from LLM perspective
                             is_key_related_error = False
                             trigger_failover = False
+                        # --- END MODIFIED ---
 
                         # 4. All other errors (non-retryable, non-key, non-provider) -> Failover
                         else:
@@ -548,30 +557,41 @@ class AgentCycleHandler:
                         action_taken_this_cycle = True # Mark action
                         all_tool_calls: List[Dict] = event.get("calls", [])
                         agent_response_content = event.get("raw_assistant_response")
+                        multiple_tools_attempted = event.get("multiple_tools_attempted", False) # Get the flag
+
                         if not all_tool_calls: continue
-                        logger.info(f"CycleHandler: Agent '{agent_id}' yielded {len(all_tool_calls)} tool request(s).")
+                        logger.info(f"CycleHandler: Agent '{agent_id}' yielded {len(all_tool_calls)} tool request(s). Multiple attempted: {multiple_tools_attempted}")
                         if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="assistant", content=agent_response_content, tool_calls=all_tool_calls)
                         else: logger.warning("Cannot log assistant tool request response to DB: current_session_db_id is None.")
 
-                        # --- MODIFIED: REMOVE BATCHING ENFORCEMENT ---
-                        # tool_names_in_batch = {call.get("name") for call in all_tool_calls if call.get("name")}
-                        # if len(tool_names_in_batch) > 1:
-                        #     violation_msg = f"Error: Agent '{agent_id}' attempted to call multiple tool types in one turn ({', '.join(sorted(tool_names_in_batch))}). Only one tool type per response is allowed."
-                        #     logger.error(violation_msg)
-                        #     first_call_id = all_tool_calls[0].get('id', f"batch_violation_{int(time.time())}")
-                        #     tool_feedback: Optional[ToolResultDict] = await self._interaction_handler.failed_tool_result(first_call_id, ", ".join(sorted(tool_names_in_batch)))
-                        #     if tool_feedback:
-                        #          tool_feedback["content"] = f"[Framework Rule Violation]: {violation_msg}"
-                        #          agent.message_history.append({"role": "tool", **tool_feedback})
-                        #          if current_db_session_id is not None: await self._manager.db_manager.log_interaction(session_id=current_db_session_id, agent_id=agent_id, role="system_feedback", content=tool_feedback["content"], tool_results=[tool_feedback])
-                        #     needs_reactivation_after_cycle = True; break
-                        # --- END MODIFIED: REMOVE BATCHING ENFORCEMENT ---
-                        logger.info(f"CycleHandler: Agent '{agent_id}' requested {len(all_tool_calls)} tools. Executing sequentially.")
+                        # --- MODIFIED: REMOVE BATCHING ENFORCEMENT (Agent Core now handles sending only first tool) ---
+                        # --- ADD Feedback for multiple tool attempts ---
+                        if multiple_tools_attempted:
+                            feedback_msg_content = "[Framework Feedback]: You attempted to call multiple tools in one response. I have processed only the first valid tool call. Please call tools one at a time."
+                            logger.warning(f"Agent '{agent_id}' attempted multiple tools. Adding feedback to history: {feedback_msg_content}")
+                            # Find the ID of the first tool call to associate the feedback
+                            first_call_id_for_feedback = all_tool_calls[0].get('id', f"multi_tool_feedback_{int(time.time())}")
+                            feedback_message: MessageDict = {
+                                "role": "tool", # Pretend it's a tool result from the system
+                                "tool_call_id": first_call_id_for_feedback,
+                                "content": feedback_msg_content
+                            }
+                            agent.message_history.append(feedback_message)
+                            if current_db_session_id is not None:
+                                await self._manager.db_manager.log_interaction(
+                                    session_id=current_db_session_id,
+                                    agent_id=agent_id,
+                                    role="system_feedback", # Use a specific role for this
+                                    content=feedback_msg_content,
+                                    tool_results=[{"call_id": first_call_id_for_feedback, "name": "framework_feedback", "content": feedback_msg_content}]
+                                )
+                            # Don't break here, proceed to execute the single tool call
+                        # --- END Feedback ---
 
 
                         # --- Process all tool calls and provide feedback ---
                         tool_results = []
-                        calls_to_execute = all_tool_calls
+                        calls_to_execute = all_tool_calls # Should now be a list of 0 or 1 call
                         executed_tool_successfully_this_cycle = False # Initialize here for this batch
                         for call_index, call in enumerate(calls_to_execute): # Added call_index for logging
                             call_id = call.get("id"); tool_name = call.get("name"); tool_args = call.get("arguments", {})
@@ -589,6 +609,24 @@ class AgentCycleHandler:
                                 if fail_res: tool_results.append(fail_res)
                             else:
                                 result = await self._interaction_handler.execute_single_tool(agent, call_id, tool_name, tool_args, project_name=self._manager.current_project, session_name=self._manager.current_session)
+                                # --- Inject detailed usage on parameter error ---
+                                if isinstance(result, dict) and \
+                                   isinstance(result.get("content"), str) and \
+                                   result.get("content", "").lower().startswith("error:") and \
+                                   ("missing required parameter" in result.get("content", "").lower() or \
+                                    "invalid parameter" in result.get("content", "").lower()): # Check for param errors
+                                    
+                                    logger.info(f"Tool '{tool_name}' failed due to parameter issue for agent '{agent_id}'. Injecting usage instructions.")
+                                    failed_tool_instance = self._manager.tool_executor.tools.get(tool_name)
+                                    if failed_tool_instance and hasattr(failed_tool_instance, 'get_detailed_usage'):
+                                        try:
+                                            detailed_usage = failed_tool_instance.get_detailed_usage()
+                                            # Append usage to the original error content
+                                            result["content"] += f"\n\n--- Tool Usage for '{tool_name}' ---\n{detailed_usage}\n--- End Tool Usage ---"
+                                            logger.debug(f"Appended usage info to error result for tool '{tool_name}'.")
+                                        except Exception as usage_err:
+                                            logger.error(f"Error getting detailed usage for failed tool '{tool_name}': {usage_err}")
+                                # --- End inject detailed usage ---
                                 tool_results.append(result)
                                 # Consider a tool execution successful if it doesn't start with "Error:"
                                 if isinstance(result, dict) and isinstance(result.get("content"), str) and not result.get("content", "").lower().startswith("error:"):
@@ -613,12 +651,12 @@ class AgentCycleHandler:
                                 })
 
                         # --- MODIFIED Reactivation Logic for Tool Execution ---
-                        if executed_tool_successfully_this_cycle:
-                            # Default to reactivating after successful tool use
+                        if executed_tool_successfully_this_cycle or multiple_tools_attempted: # Reactivate also if multi-tool attempt feedback was given
+                            # Default to reactivating after successful tool use or multi-tool feedback
                             needs_reactivation_after_cycle = True
-                            logger.debug(f"CycleHandler: Tool(s) executed. Setting needs_reactivation_after_cycle=True initially for agent '{agent_id}'.")
+                            logger.debug(f"CycleHandler: Tool(s) executed or multi-tool feedback. Setting needs_reactivation_after_cycle=True initially for agent '{agent_id}'.")
 
-                            # Specific conditions to NOT reactivate
+                            # Specific conditions to NOT reactivate (overrides the True above)
                             if agent.agent_type == AGENT_TYPE_ADMIN and (agent.state in [ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION]):
                                 needs_reactivation_after_cycle = False
                                 logger.debug(f"CycleHandler: Not reactivating Admin AI '{agent_id}' in state '{agent.state}' after tool use.")
@@ -632,8 +670,7 @@ class AgentCycleHandler:
                             elif any(stop_phrase in agent_response_content.lower() for stop_phrase in ["final step & stop", "task complete. stopping."]):
                                 needs_reactivation_after_cycle = False
                                 logger.info(f"CycleHandler: Agent '{agent_id}' indicated task completion. Not reactivating.")
-                        else:
-                            # If tool execution failed (e.g., parsing error, tool error response), always reactivate to let agent try again or report.
+                        else: # Tool execution failed (e.g., parsing error, actual tool error response)
                             needs_reactivation_after_cycle = True
                             logger.warning(f"CycleHandler: Tool execution failed or no successful tool ran for agent '{agent_id}'. Setting needs_reactivation_after_cycle=True.")
                         # --- END MODIFIED Reactivation Logic ---

@@ -235,21 +235,30 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
     # --- Initialize Failover State ---
     # Use a dictionary attached to the agent instance to track state across potential retries *within* the failover sequence.
     if not hasattr(agent, '_failover_state') or not agent._failover_state:
-         agent._failover_state = {
-             "original_provider": agent.provider_name,
-             "original_model": agent.model,
-             "last_error_obj": last_error_obj, # Store the error that triggered this
-             "tried_local_providers": set(), # Stores unique provider names (e.g., ollama-local-...)
-             "tried_models_per_local_provider": {}, # NEW: Dict[str, Set[str]] - Tracks models tried per specific local provider instance
-             "tried_external_providers": set(), # Stores base provider names (e.g., openrouter)
-             "tried_keys_per_external_provider": {}, # NEW: Dict[str, Set[str]] - Tracks keys tried per external provider base name
-             "tried_models_per_external_key": {}, # NEW: Dict[str, Set[str]] - Tracks models tried per specific API key
-             "failover_attempt_count": 0, # Overall attempts across providers/keys/models
-             "current_external_provider": None, # Track which external provider we are cycling keys for
-             # "external_key_index": {} # REMOVED: Key cycling now handled by ProviderKeyManager and tracking tried keys
-         }
-    else: # Update error if this is somehow re-entrant (shouldn't be with current cycle logic)
-         agent._failover_state["last_error_obj"] = last_error_obj
+        agent._failover_state = {
+          "original_provider": agent.provider_name,
+          "original_model": agent.model,
+          "last_error_obj": last_error_obj, # Store the error that triggered this
+          "tried_local_providers": set(), # Stores unique provider names (e.g., ollama-local-...)
+          "tried_models_per_local_provider": {}, # Dict[str, Set[str]]
+          "tried_external_providers": set(), # Stores base provider names (e.g., openrouter)
+          "tried_keys_per_external_provider": {}, # Dict[str, Set[str]]
+          "tried_models_per_external_key": {}, # Dict[str, Set[str]]
+          "failover_attempt_count": 0, 
+          "current_external_provider": None,
+          # --- ADD THESE TWO LINES ---
+          "tried_keys_on_current_external": set(), # Initialize as empty set
+          "tried_models_on_current_external_key": set() # Initialize as empty set
+          # --- END ADDED LINES ---
+      }
+    else: # Update error if this is somehow re-entrant
+        agent._failover_state["last_error_obj"] = last_error_obj
+    # --- ALSO INITIALIZE IF MISSING ON RE-ENTRY (DEFENSIVE) ---
+        if "tried_keys_on_current_external" not in agent._failover_state:
+            agent._failover_state["tried_keys_on_current_external"] = set()
+        if "tried_models_on_current_external_key" not in agent._failover_state:
+            agent._failover_state["tried_models_on_current_external_key"] = set()
+    # --- END DEFENSIVE INITIALIZATION ---
 
     failover_state = agent._failover_state
     failover_state["failover_attempt_count"] += 1

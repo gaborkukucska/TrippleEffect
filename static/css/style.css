@@ -273,10 +273,6 @@ body {
     font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
 }
 
-/* Conversation Area Specifics */
-.conversation-area .message.agent_response {
-    /* .message-body will stack label and content */
-}
 .conversation-area .message.user {
     background-color: var(--user-message-bg);
     border-color: var(--user-message-bg);
@@ -292,9 +288,6 @@ body {
     width: 100%;
     max-width: 100%;
     flex-direction: row; /* Keep timestamp side-by-side with message-body */
-}
-.system-log-area .message .message-body {
-    /* Already display: flex, flex-direction: column from .message-body general rule */
 }
 
 /* Agent ID specific styling (for internal comms) */
@@ -352,6 +345,52 @@ body {
     padding: 6px 10px;
     border: 1px solid var(--accent-color-red);
 }
+
+/* Error Messages (Apply in both areas) */
+.message.error {
+    background-color: var(--error-bg) !important;
+    border: 1px solid var(--accent-color-red) !important; /* General border */
+    border-left: 4px solid var(--accent-color-red) !important; /* Stronger left border indicator */
+    color: var(--error-text) !important; /* Default text color for the block */
+    font-weight: normal; /* Reset general font-weight, apply to specific parts if needed */
+    align-self: stretch !important; /* Take full width */
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+    padding: 8px 12px !important; /* Use standard message padding */
+    flex-direction: row; /* Keep timestamp side-by-side with body */
+    text-align: left !important; /* Errors are usually better left-aligned */
+}
+
+/* Ensure all direct text content within the error message body inherits error color */
+.message.error .message-body,
+.message.error .message-body .agent-label,
+.message.error .message-body .message-content,
+.message.error .message-body span { /* Catch-all for other spans */
+    color: var(--error-text) !important;
+    font-weight: normal; /* Reset if not specifically bolded */
+}
+
+/* Make the label bold within an error message */
+.message.error .message-body .agent-label {
+    font-weight: bold;
+}
+
+/* Make the main content potentially bold too, if desired, or keep normal */
+.message.error .message-body .message-content {
+     font-weight: bold; /* Or keep 'normal' if only label should be bold */
+}
+
+/* Timestamp for error messages */
+.message.error .timestamp {
+    color: var(--error-text) !important;
+    opacity: 0.8; /* Slightly less prominent timestamp within errors */
+}
+
+/* Override any specific background from agent data-id styling */
+.system-log-area .message.error[data-agent-id] {
+    background-color: var(--error-bg) !important;
+}
+
 .system-log-area .message.log-tool-use .message-content { color: #98FB98; }
 .system-log-area .message.log-agent-message .message-content { color: #ADD8E6; }
 

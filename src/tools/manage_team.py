@@ -6,9 +6,19 @@ from src.tools.base import BaseTool, ToolParameter
 import logging
 import json # For potentially validating JSON config strings later
 
+# Import agent type and state constants to list them in usage
+from src.agents.constants import (
+    AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER,
+    PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE,
+    WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_WAIT,
+    ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED,
+    BOOTSTRAP_AGENT_ID, DEFAULT_STATE
+)
+
+
 logger = logging.getLogger(__name__)
 
-# Define valid actions - Added get_agent_details
+# Define valid actions - Added get_agent_details and set_agent_state
 VALID_ACTIONS = [
     "create_agent",
     "delete_agent",
@@ -18,24 +28,26 @@ VALID_ACTIONS = [
     "remove_agent_from_team",
     "list_agents",
     "list_teams",
-    "get_agent_details", # New action
+    "get_agent_details",
+    "set_agent_state", # New action
 ]
 
 class ManageTeamTool(BaseTool):
     """
-    Tool used by the Admin AI to dynamically manage agents and teams.
+    Tool used by the Admin AI or PM to dynamically manage agents and teams.
     This tool validates the request based on the specific action and signals
-    the AgentManager to perform the actual action.
+    the AgentManager/InteractionHandler to perform the actual action.
     It does NOT modify state directly. NO RESTART NEEDED.
     Provider/model are optional for create_agent; framework will select if omitted.
+    Can now set agent states (e.g., to activate workers), but NOT for Admin AI.
     """
-    name: str = "manage_team" # Changed from ManageTeamTool to match XML tag
-    auth_level: str = "pm" # PM & Admin only
-    summary: Optional[str] = "Manages agents and teams (create, delete, list, assign). (Admin only)"
-    description: str = ( # Updated description
-        "Manages agents and teams dynamically within the system. "
-        f"Use one of the valid actions: {', '.join(VALID_ACTIONS)}. "
-        "Provide required parameters based on the specific action chosen. For 'create_agent', 'provider' and 'model' are optional (system selects if omitted). Use 'get_agent_details' to retrieve detailed information about a specific agent. NO application restart is needed."
+    name: str = "manage_team"
+    auth_level: str = "pm" # PMs and Admins can use this
+    summary: Optional[str] = "Manages agents/teams (CRUD, list, assign) and can set agent states (not Admin AI)."
+    description: str = (
+        "Manages agents and teams dynamically. "
+        f"Valid actions: {', '.join(VALID_ACTIONS)}. "
+        "Provide required parameters based on the action. For 'create_agent', 'provider' and 'model' are optional. 'set_agent_state' can change an agent's workflow state (e.g., to 'work' or 'worker_wait'), but CANNOT be used to change the state of the Admin AI ('admin_ai')."
     )
     parameters: List[ToolParameter] = [
         ToolParameter(
@@ -47,7 +59,7 @@ class ManageTeamTool(BaseTool):
         ToolParameter(
             name="agent_id",
             type="string",
-            description="Agent ID. Required for: delete_agent, add_agent_to_team, remove_agent_from_team, get_agent_details. Optional for create_agent.", # Added get_agent_details requirement
+            description="Agent ID. Required for: delete_agent, add_agent_to_team, remove_agent_from_team, get_agent_details, set_agent_state.",
             required=False, # Not universally required
         ),
         ToolParameter(
@@ -86,25 +98,32 @@ class ManageTeamTool(BaseTool):
             description="Optional temperature setting for create_agent.",
             required=False,
         ),
+        # --- NEW Parameter for set_agent_state ---
+        ToolParameter(
+            name="new_state",
+            type="string",
+            description="The target state for the agent (e.g., 'work', 'worker_wait', 'conversation'). Required for 'set_agent_state'. See tool usage for valid states per agent type.",
+            required=False,
+        ),
+        # --- End NEW Parameter ---
     ]
 
     async def execute(self, agent_id: str, agent_sandbox_path: Path, **kwargs: Any) -> Any:
         """
         Validates parameters based on the specific management action requested.
-        Returns a structured dictionary signaling the AgentManager to perform the action,
+        Returns a structured dictionary signaling the AgentManager/InteractionHandler to perform the action,
         OR returns a specific error message if validation fails for the given action.
         """
         action = kwargs.get("action")
-        params = kwargs # Store all provided args (tool parser already extracted them)
+        params = kwargs 
 
         logger.info(f"'{agent_id}' requested ManageTeamTool action '{action}' with params: {params}")
 
         if not action or action not in VALID_ACTIONS:
             error_msg = f"Error: Invalid or missing 'action'. Must be one of: {', '.join(VALID_ACTIONS)}."
             logger.error(error_msg)
-            return {"status": "error", "action": action, "message": error_msg}
+            return {"status": "error", "action_requested": action, "message": error_msg, "result_data": None}
 
-        # --- Action-Specific Parameter Validation ---
         error_message = None
         missing = []
 
@@ -126,93 +145,109 @@ class ManageTeamTool(BaseTool):
             if not params.get("agent_id"): missing.append("'agent_id'")
             if not params.get("team_id"): missing.append("'team_id'")
             if missing: error_message = f"Error: Missing required parameter(s) for 'remove_agent_from_team': {', '.join(missing)}."
-        # --- NEW: Validation for get_agent_details ---
         elif action == "get_agent_details":
              if not params.get("agent_id"): error_message = "Error: Missing required 'agent_id' parameter for 'get_agent_details'."
-        # --- End NEW Validation ---
-        # list_agents and list_teams have no specific required params checked here
+        elif action == "set_agent_state":
+            target_agent_id_for_state_change = params.get("agent_id")
+            if not target_agent_id_for_state_change: missing.append("'agent_id'")
+            if not params.get("new_state"): missing.append("'new_state'")
+            if missing: error_message = f"Error: Missing required parameter(s) for 'set_agent_state': {', '.join(missing)}."
+            # --- NEW: Restrict changing Admin AI's state ---
+            elif target_agent_id_for_state_change == BOOTSTRAP_AGENT_ID:
+                error_message = f"Error: Action 'set_agent_state' cannot be used to change the state of the Admin AI ('{BOOTSTRAP_AGENT_ID}'). Admin AI manages its own state."
+            # --- END NEW Restriction ---
 
-        # Check for validation error
+
         if error_message:
             logger.error(f"ManageTeamTool validation failed for agent '{agent_id}', action '{action}': {error_message}")
-            return {"status": "error", "action": action, "message": error_message}
+            return {"status": "error", "action_requested": action, "message": error_message, "result_data": None}
 
-        # If validation passes for the specific action, return success signal
-        success_msg = f"Request for action '{action}' validated. Signaling manager to proceed."
+        success_msg = f"Request for action '{action}' validated. Signaling InteractionHandler to proceed."
         logger.info(success_msg)
         return {
-            "status": "success",
-            "action": action,
-            "params": params, # Pass all original params parsed by core
-            "message": success_msg
+            "status": "success_signal_to_handler", 
+            "action_to_perform": action, 
+            "action_params": params, 
+            "message": success_msg 
         }
 
-    # --- Detailed Usage Method ---
     def get_detailed_usage(self) -> str:
         """Returns detailed usage instructions for the manage_team tool."""
-        usage = """
+        # Define valid states for PMs and Workers to list in the usage instructions
+        valid_pm_states = [PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE, DEFAULT_STATE] # Could add ADMIN_STATE_CONVERSATION if PMs can go idle that way
+        valid_worker_states = [WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_WAIT, DEFAULT_STATE]
+
+        usage = f"""
         **Tool Name:** manage_team
 
-        **Description:** Dynamically manages agents and teams within the system. Does not require application restart.
+        **Description:** Dynamically manages agents and teams, and can set agent workflow states (except for the Admin AI).
 
         **Actions & Parameters:**
 
         1.  **create_agent:** Creates a new agent.
-            *   `<persona>` (string, required): Display name for the agent (e.g., 'Python Coder', 'Report Writer').
-            *   `<system_prompt>` (string, required): The instructions defining the agent's role and task.
-            *   `<agent_id>` (string, optional): Specify a custom ID. If omitted, a unique ID will be generated.
-            *   `<team_id>` (string, optional): If provided, adds the new agent directly to this team.
-            *   `<provider>` (string, optional): Specify LLM provider (e.g., 'openai', 'ollama', 'openrouter'). If omitted, the system selects automatically.
-            *   `<model>` (string, optional): Specify LLM model (e.g., 'gpt-4o', 'ollama/llama3.2:8b'). If omitted, the system selects automatically. Must be valid for the chosen provider if specified.
-            *   `<temperature>` (float, optional): Set model temperature (e.g., 0.7). Defaults vary.
-            *   Example:
-                ```xml
-                <manage_team>
-                  <action>create_agent</action>
-                  <persona>Data Analyst</persona>
-                  <system_prompt>Analyze the provided CSV data, identify trends, and generate a summary report.</system_prompt>
-                  <team_id>data_analysis_team</team_id>
-                  <model>openai/gpt-4o</model>
-                </manage_team>
-                ```
+            *   `<persona>` (string, required): Display name.
+            *   `<system_prompt>` (string, required): Agent's role instructions.
+            *   `<agent_id>` (string, optional): Custom ID, else generated.
+            *   `<team_id>` (string, optional): Assigns to this team if provided.
+            *   `<provider>` (string, optional): LLM provider (e.g., 'ollama', 'openrouter'). Auto-selected if omitted.
+            *   `<model>` (string, optional): LLM model (e.g., 'ollama/llama3.2:8b'). Auto-selected if omitted.
+            *   `<temperature>` (float, optional): Model temperature.
+            *   Example: `<manage_team><action>create_agent</action><persona>Researcher</persona><system_prompt>Research topics and provide summaries.</system_prompt><team_id>research_team</team_id></manage_team>`
 
-        2.  **delete_agent:** Deletes an existing agent. Cannot delete bootstrap agents (like 'admin_ai').
-            *   `<agent_id>` (string, required): The exact ID of the agent to delete.
-            *   Example: `<manage_team><action>delete_agent</action><agent_id>agent_171...</agent_id></manage_team>`
+        2.  **delete_agent:** Deletes an existing agent (not bootstrap agents).
+            *   `<agent_id>` (string, required): Exact ID of the agent.
+            *   Example: `<manage_team><action>delete_agent</action><agent_id>researcher_xyz</agent_id></manage_team>`
 
-        3.  **create_team:** Creates a new, empty team.
-            *   `<team_id>` (string, required): The unique ID for the new team (e.g., 'web_dev_crew').
-            *   Example: `<manage_team><action>create_team</action><team_id>research_group</team_id></manage_team>`
+        3.  **create_team:** Creates a new team.
+            *   `<team_id>` (string, required): Unique ID for the team.
+            *   Example: `<manage_team><action>create_team</action><team_id>project_alpha_team</team_id></manage_team>`
 
-        4.  **delete_team:** Deletes an existing team. Agents within the team are NOT deleted but become team-less.
-            *   `<team_id>` (string, required): The ID of the team to delete.
-            *   Example: `<manage_team><action>delete_team</action><team_id>old_project_team</team_id></manage_team>`
+        4.  **delete_team:** Deletes an existing team.
+            *   `<team_id>` (string, required): ID of the team to delete.
+            *   Example: `<manage_team><action>delete_team</action><team_id>old_team</team_id></manage_team>`
 
-        5.  **add_agent_to_team:** Adds an existing agent to a team.
-            *   `<agent_id>` (string, required): The ID of the agent to add.
-            *   `<team_id>` (string, required): The ID of the team to add the agent to.
-            *   Example: `<manage_team><action>add_agent_to_team</action><agent_id>agent_abc...</agent_id><team_id>frontend_devs</team_id></manage_team>`
+        5.  **add_agent_to_team:** Adds an agent to a team.
+            *   `<agent_id>` (string, required): Agent ID.
+            *   `<team_id>` (string, required): Team ID.
+            *   Example: `<manage_team><action>add_agent_to_team</action><agent_id>researcher_xyz</agent_id><team_id>project_alpha_team</team_id></manage_team>`
 
-        6.  **remove_agent_from_team:** Removes an agent from a team. The agent remains active but team-less.
-            *   `<agent_id>` (string, required): The ID of the agent to remove.
-            *   `<team_id>` (string, required): The ID of the team to remove the agent from.
-            *   Example: `<manage_team><action>remove_agent_from_team</action><agent_id>agent_xyz...</agent_id><team_id>backend_devs</team_id></manage_team>`
+        6.  **remove_agent_from_team:** Removes an agent from a team.
+            *   `<agent_id>` (string, required): Agent ID.
+            *   `<team_id>` (string, required): Team ID.
+            *   Example: `<manage_team><action>remove_agent_from_team</action><agent_id>researcher_xyz</agent_id><team_id>project_alpha_team</team_id></manage_team>`
 
-        7.  **list_agents:** Lists currently active agents.
-            *   `<team_id>` (string, optional): If provided, lists only agents in that specific team. Otherwise, lists all active agents.
-            *   Example (List all): `<manage_team><action>list_agents</action></manage_team>`
-            *   Example (List team): `<manage_team><action>list_agents</action><team_id>design_team</team_id></manage_team>`
+        7.  **list_agents:** Lists active agents.
+            *   `<team_id>` (string, optional): Filters by team.
+            *   Example (all): `<manage_team><action>list_agents</action></manage_team>`
+            *   Example (team): `<manage_team><action>list_agents</action><team_id>project_alpha_team</team_id></manage_team>`
 
-        8.  **list_teams:** Lists all currently defined teams.
-            *   No parameters needed.
+        8.  **list_teams:** Lists all defined teams.
             *   Example: `<manage_team><action>list_teams</action></manage_team>`
 
-        9.  **get_agent_details:** Retrieves detailed information about a specific agent (config, status, history summary).
-            *   `<agent_id>` (string, required): The exact ID of the agent to get details for.
-            *   Example: `<manage_team><action>get_agent_details</action><agent_id>admin_ai</agent_id></manage_team>`
+        9.  **get_agent_details:** Retrieves detailed info about an agent.
+            *   `<agent_id>` (string, required): Agent ID.
+            *   Example: `<manage_team><action>get_agent_details</action><agent_id>pm_project_alpha</agent_id></manage_team>`
 
-        **Important Notes:**
-        *   Use exact `agent_id`s obtained from `create_agent` feedback or `list_agents` for reliable targeting.
-        *   Team management actions (`create_team`, `delete_team`, `add_agent_to_team`, `remove_agent_from_team`) only affect team structures, not the agents themselves (except for team assignment).
+        10. **set_agent_state:** Changes a non-Admin AI agent's workflow state and activates it if idle.
+            *   `<agent_id>` (string, required): The ID of the agent whose state to change. **Cannot be '{BOOTSTRAP_AGENT_ID}'**.
+            *   `<new_state>` (string, required): The target state.
+                *   Valid states for Project Managers (PMs): {', '.join(valid_pm_states)}
+                *   Valid states for Worker Agents: {', '.join(valid_worker_states)}
+            *   Example (Activate a worker to 'work' state):
+                ```xml
+                <manage_team>
+                  <action>set_agent_state</action>
+                  <agent_id>worker_coder_123</agent_id>
+                  <new_state>work</new_state>
+                </manage_team>
+                ```
+            *   Example (Set PM to 'pm_manage' state):
+                ```xml
+                <manage_team>
+                  <action>set_agent_state</action>
+                  <agent_id>pm_project_alpha</agent_id>
+                  <new_state>pm_manage</new_state>
+                </manage_team>
+                ```
         """
         return usage.strip()
