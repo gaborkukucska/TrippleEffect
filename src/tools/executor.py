@@ -332,7 +332,6 @@ class ToolExecutor:
             # Prepare kwargs for tool execution (validated tool-specific args)
             kwargs_for_tool = validated_args.copy()
             # Remove context args if they happen to be in kwargs (they are passed directly)
-            kwargs_for_tool.pop('agent_id', None)
             kwargs_for_tool.pop('agent_sandbox_path', None)
             kwargs_for_tool.pop('project_name', None)
             kwargs_for_tool.pop('session_name', None)
