@@ -521,24 +521,31 @@ async def _create_agent_internal(
 
     # Assemble System Prompt
     role_specific_prompt = agent_config_data.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
+    # Allow empty string for system_prompt if AgentWorkflowManager will set it
+    if role_specific_prompt is None: # Ensure it's at least an empty string if missing from config
+        role_specific_prompt = ""
+
     final_system_prompt = role_specific_prompt
     if not loading_from_session and not is_bootstrap:
         logger.debug(f"Lifecycle: Constructing final prompt for dynamic agent '{agent_id}'...")
-        standard_info_template = settings.PROMPTS.get("standard_framework_instructions", "--- Standard Instructions Missing ---")
-        tool_desc = manager.tool_descriptions_xml
-        standard_info = standard_info_template.replace("{tool_descriptions_xml}", tool_desc); standard_info = standard_info.replace("{tool_descriptions_json}", "")
-        try: standard_info = standard_info.format(agent_id=agent_id, team_id=team_id or "N/A")
-        except KeyError as fmt_err: logger.error(f"Failed to format agent_id/team_id into standard instructions: {fmt_err}")
-        # Use the already defined final_system_prompt which holds the role-specific part
-        final_system_prompt = standard_info + "\n\n--- Your Specific Role & Task ---\n" + final_system_prompt
-        logger.info(f"Lifecycle: Injected standard framework instructions (XML format) for dynamic agent '{agent_id}'.")
+        # Use the agent_type determined earlier to get standard instructions
+        from src.agents.constants import AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER # Local import
+        determined_agent_type = AGENT_TYPE_WORKER # Default for dynamic agents
+        if agent_id == BOOTSTRAP_AGENT_ID: determined_agent_type = AGENT_TYPE_ADMIN
+        elif agent_id.startswith("pm_"): determined_agent_type = AGENT_TYPE_PM
+        
+        standard_instr_key = manager.workflow_manager._standard_instructions_map.get(determined_agent_type, "standard_framework_instructions") # Fallback
+        standard_info_template = settings.PROMPTS.get(standard_instr_key, "--- Standard Instructions Missing ---")
+        
+        # Address book and other context will be formatted by WorkflowManager when it sets the final prompt.
+        # Here, we just ensure the `system_prompt` field (role_specific_prompt) is present.
+        final_system_prompt = role_specific_prompt # For dynamic agents, this is often minimal initially.
+        logger.info(f"Lifecycle: Using role-specific prompt for dynamic agent '{agent_id}'. WorkflowManager will finalize.")
     elif loading_from_session:
-        # Use the prompt stored in config data, fallback to default if missing
         final_system_prompt = agent_config_data.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
         logger.debug(f"Lifecycle: Using stored prompt for loaded agent '{agent_id}'.")
     elif is_bootstrap:
-        # Use the prompt stored in config data, fallback to default if missing
-        final_system_prompt = agent_config_data.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
+        final_system_prompt = agent_config_data.get("system_prompt", "") # Use the one from config for bootstrap (might be empty)
         logger.debug(f"Lifecycle: Using pre-assembled prompt for bootstrap agent '{agent_id}'.")
 
     # Prepare Provider Arguments
@@ -546,150 +553,101 @@ async def _create_agent_internal(
     is_final_provider_local = "-local-" in provider_name or "-proxy" in provider_name
 
     if is_final_provider_local:
-        # Get base URL from registry
         base_url = model_registry.get_reachable_provider_url(provider_name)
-        if base_url:
-             final_provider_args['base_url'] = base_url
-
-        # Check if keys are configured for the base type (e.g., 'ollama')
+        if base_url: final_provider_args['base_url'] = base_url
         base_provider_type = provider_name.split('-local-')[0].split('-proxy')[0]
         if base_provider_type in settings.PROVIDER_API_KEYS and settings.PROVIDER_API_KEYS[base_provider_type]:
-            logger.debug(f"API keys found for local provider base type '{base_provider_type}'. Attempting to get active key.")
             key_config = await manager.key_manager.get_active_key_config(base_provider_type)
             if key_config is None:
                 msg = f"Lifecycle: Failed to get active API key for local provider '{provider_name}' (base type '{base_provider_type}') - keys might be configured but all quarantined."
                 logger.error(msg); return False, msg, None
-            final_provider_args.update(key_config) # Merge key config
-            api_key_used = final_provider_args.get('api_key')
-            logger.info(f"Using configured API key ending '...{api_key_used[-4:]}' for local provider '{provider_name}'.")
+            final_provider_args.update(key_config); api_key_used = final_provider_args.get('api_key')
+            logger.info(f"Using configured API key ending '...{api_key_used[-4:] if api_key_used else 'N/A'}' for local provider '{provider_name}'.")
         else:
-            # No keys configured for base type, proceed without key (except special ollama case)
-            logger.debug(f"No API keys configured for local provider base type '{base_provider_type}'. Proceeding without key for '{provider_name}'.")
-            ProviderClassCheck = PROVIDER_CLASS_MAP.get(base_provider_type) # Check base type class
-            if base_provider_type == 'ollama' and ProviderClassCheck == OllamaProvider:
-                 final_provider_args['api_key'] = 'ollama' # Add special key if needed by class
-
+            ProviderClassCheck = PROVIDER_CLASS_MAP.get(base_provider_type)
+            if base_provider_type == 'ollama' and ProviderClassCheck == OllamaProvider: final_provider_args['api_key'] = 'ollama'
     else: # Remote provider
-        # Get base config (e.g., referer) from settings
         final_provider_args = settings.get_provider_config(provider_name)
-        # Get an active API key config
         key_config = await manager.key_manager.get_active_key_config(provider_name)
         if key_config is None:
             msg = f"Lifecycle: Failed to get active API key for remote provider '{provider_name}'."; logger.error(msg); return False, msg, None
-        final_provider_args.update(key_config) # Merge key config
-        api_key_used = final_provider_args.get('api_key')
+        final_provider_args.update(key_config); api_key_used = final_provider_args.get('api_key')
 
     temperature = agent_config_data.get("temperature", settings.DEFAULT_TEMPERATURE)
     
-    # --- MODIFIED: Stricter filtering of kwargs for provider init ---
     OPENAI_CLIENT_VALID_KWARGS = {"timeout", "http_client", "organization", "project"} 
-    
     allowed_provider_keys = ['api_key', 'base_url', 'referer']
-    framework_agent_config_keys = {'provider', 'model', 'system_prompt', 'temperature', 'persona', 'agent_type', 'team_id', 'plan_description', '_selection_method'}
-
-    client_init_kwargs = {}
-    api_call_options = {} 
+    framework_agent_config_keys = {'provider', 'model', 'system_prompt', 'temperature', 'persona', 'agent_type', 'team_id', 'plan_description', '_selection_method', 'project_name_context', 'initial_plan_description'}
+    client_init_kwargs = {}; api_call_options = {} 
 
     for k, v in agent_config_data.items():
-        if k in framework_agent_config_keys or k in allowed_provider_keys:
-            continue 
-        # Use base_provider_name for checking against KNOWN_OLLAMA_OPTIONS
-        if base_provider_name == "ollama" and k in KNOWN_OLLAMA_OPTIONS:
-            api_call_options[k] = v 
-        elif base_provider_name in ["openai", "openrouter"] and k in OPENAI_CLIENT_VALID_KWARGS:
-            client_init_kwargs[k] = v 
+        if k in framework_agent_config_keys or k in allowed_provider_keys: continue 
+        if base_provider_name == "ollama" and k in KNOWN_OLLAMA_OPTIONS: api_call_options[k] = v 
+        elif base_provider_name in ["openai", "openrouter"] and k in OPENAI_CLIENT_VALID_KWARGS: client_init_kwargs[k] = v 
         else:
-            # Log if not explicitly handled and add to api_call_options for provider to potentially use
             if not (base_provider_name == "ollama" and k in KNOWN_OLLAMA_OPTIONS) and \
                not (base_provider_name in ["openai", "openrouter"] and k in OPENAI_CLIENT_VALID_KWARGS):
                 logger.debug(f"Lifecycle: Kwarg '{k}' from agent_config_data not explicitly handled for client init for provider '{base_provider_name}'. Will be passed as api_call_option.")
             api_call_options[k] = v
-
-
-    # Merge client_init_kwargs into final_provider_args 
     final_provider_args = {**final_provider_args, **client_init_kwargs}
     final_provider_args = {k: v for k, v in final_provider_args.items() if v is not None}
-    # --- END MODIFIED ---
 
-
-    # Create final agent config entry for storage/state - Use canonical ID
-    # Store api_call_options here so agent can use them when calling the provider
     final_agent_config_entry = {
         "agent_id": agent_id,
         "config": {
-            "provider": provider_name,
-            "model": model_id_canonical,
-            "system_prompt": final_system_prompt,
-            "persona": persona,
-            "temperature": temperature,
-            **api_call_options, # Store these for the agent's process_message
-            **client_init_kwargs # Also store client init args for reference, though not used by agent.process_message
+            "provider": provider_name, "model": model_id_canonical,
+            "system_prompt": final_system_prompt, "persona": persona,
+            "temperature": temperature, **api_call_options, **client_init_kwargs
         }
     }
-
-
-    # Instantiate Provider
     ProviderClass = PROVIDER_CLASS_MAP.get(provider_name)
-    if not ProviderClass: # Handle dynamic local provider names
-        base_provider_type_for_class = provider_name.split('-local')[0].split('-proxy')[0] # Use a different var name
+    if not ProviderClass:
+        base_provider_type_for_class = provider_name.split('-local')[0].split('-proxy')[0]
         ProviderClass = PROVIDER_CLASS_MAP.get(base_provider_type_for_class)
-
-
     if not ProviderClass: msg = f"Lifecycle: Unknown provider type '{provider_name}'."; logger.error(msg); return False, msg, None
     try: llm_provider_instance = ProviderClass(**final_provider_args)
     except Exception as e: msg = f"Lifecycle: Provider init failed for {provider_name}: {e}"; logger.error(msg, exc_info=True); return False, msg, None
     logger.info(f"  Lifecycle: Instantiated provider {ProviderClass.__name__} for '{agent_id}'.")
 
-    # --- Determine Agent Type ---
     from src.agents.constants import AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER
-    agent_type = AGENT_TYPE_WORKER # Default
-    if agent_id == BOOTSTRAP_AGENT_ID:
-        agent_type = AGENT_TYPE_ADMIN
-    elif agent_id.startswith("pm_"):
-        agent_type = AGENT_TYPE_PM
+    agent_type = AGENT_TYPE_WORKER
+    if agent_id == BOOTSTRAP_AGENT_ID: agent_type = AGENT_TYPE_ADMIN
+    elif agent_id.startswith("pm_"): agent_type = AGENT_TYPE_PM
     logger.debug(f"Determined agent_type for '{agent_id}' as '{agent_type}'.")
-    # Add agent_type to the config entry
     final_agent_config_entry["config"]["agent_type"] = agent_type
-    # --- End Determine Agent Type ---
+    
+    # Pass initial_plan_description from agent_config_data to final_agent_config_entry
+    if 'initial_plan_description' in agent_config_data:
+        final_agent_config_entry["config"]["initial_plan_description"] = agent_config_data['initial_plan_description']
+    if 'project_name_context' in agent_config_data:
+        final_agent_config_entry["config"]["project_name_context"] = agent_config_data['project_name_context']
 
-    # Instantiate Agent
+
     try:
-        # Pass the full config entry which now includes agent_type
         agent = Agent(agent_config=final_agent_config_entry, llm_provider=llm_provider_instance, manager=manager)
-        agent.model = model_id_for_provider # Use adjusted ID for provider calls
+        agent.model = model_id_for_provider
         if api_key_used: agent._last_api_key_used = api_key_used
     except Exception as e: msg = f"Lifecycle: Agent instantiation failed: {e}"; logger.error(msg, exc_info=True); await manager._close_provider_safe(llm_provider_instance); return False, msg, None
     logger.info(f"  Lifecycle: Instantiated Agent object for '{agent_id}'.")
-        # --- Set initial state based on type ---
-        # (Deferring state setting via workflow_manager until that's integrated)
-        # For now, set state directly based on type
-    if agent_type == AGENT_TYPE_ADMIN:
-            from src.agents.constants import ADMIN_STATE_STARTUP # Import locally
-            agent.set_state(ADMIN_STATE_STARTUP)
-            logger.info(f"Lifecycle: Set initial state for Admin AI '{agent_id}' to '{ADMIN_STATE_STARTUP}'.")
-    if agent_type == AGENT_TYPE_PM: # PMs start in the general startup state
-            from src.agents.constants import PM_STATE_STARTUP # Use the correct general conversation state constant
-            agent.set_state(PM_STATE_STARTUP) # Use PM_STATE_STARTUP
-            # --- Store plan_description on PM agent if provided ---
-            if 'plan_description' in agent_config_data:
-                agent.plan_description = agent_config_data['plan_description']
-                logger.info(f"Lifecycle: Stored plan_description on PM agent '{agent_id}'.")
-            # --- End store plan_description ---
-            logger.info(f"Lifecycle: Set initial state for {agent_type} agent '{agent_id}' to '{PM_STATE_STARTUP}'.") # Log correct state
-    if agent_type == AGENT_TYPE_WORKER: # Workers start in the general startup state
-            from src.agents.constants import WORKER_STATE_STARTUP # Use the correct general conversation state constant
-            agent.set_state(WORKER_STATE_STARTUP) # Use WORKER_STATE_STARTUP
-            logger.info(f"Lifecycle: Set initial state for {agent_type} agent '{agent_id}' to '{WORKER_STATE_STARTUP}'.") # Log correct state
-        # --- End initial state setting ---
+    
+    from src.agents.constants import ADMIN_STATE_STARTUP, PM_STATE_STARTUP, WORKER_STATE_STARTUP
+    initial_state_to_set = None
+    if agent_type == AGENT_TYPE_ADMIN: initial_state_to_set = ADMIN_STATE_STARTUP
+    elif agent_type == AGENT_TYPE_PM: initial_state_to_set = PM_STATE_STARTUP
+    elif agent_type == AGENT_TYPE_WORKER: initial_state_to_set = WORKER_STATE_STARTUP
+    if initial_state_to_set:
+        if hasattr(manager, 'workflow_manager'):
+            manager.workflow_manager.change_state(agent, initial_state_to_set)
+            logger.info(f"Lifecycle: Set initial state for {agent_type} agent '{agent_id}' to '{initial_state_to_set}' via WorkflowManager.")
+        else:
+            logger.error("WorkflowManager not available on manager. Cannot set initial agent state.")
+            agent.set_state(initial_state_to_set) # Fallback to direct set_state if WM fails
 
-    # Final steps
     try: await asyncio.to_thread(agent.ensure_sandbox_exists)
     except Exception as e: logger.error(f"  Lifecycle: Error ensuring sandbox for '{agent_id}': {e}", exc_info=True)
-    # --- Add logging before and after adding to manager ---
     logger.debug(f"Lifecycle: Attempting to add agent '{agent_id}' to manager.agents dictionary...")
     manager.agents[agent_id] = agent;
     logger.info(f"  Lifecycle: Successfully added agent '{agent_id}' to manager.agents dict. Current keys: {list(manager.agents.keys())}")
-    # --- End added logging ---
     team_add_msg_suffix = ""
     if team_id:
         team_add_success, team_add_msg = await manager.state_manager.add_agent_to_team(agent_id, team_id)
@@ -706,14 +664,17 @@ async def create_agent_instance(
     agent_id_requested: Optional[str],
     provider: Optional[str], # Optional
     model: Optional[str],    # Optional
-    system_prompt: str, persona: str, # Required
+    system_prompt: str, # Modified: This can be an empty string if WM sets it later
+    persona: str, # Required
     team_id: Optional[str] = None, temperature: Optional[float] = None,
     **kwargs # Accept arbitrary kwargs
     ) -> Tuple[bool, str, Optional[str]]:
     """ Creates a dynamic agent instance, allowing provider/model to be omitted for auto-selection. """
-    if not all([system_prompt, persona]):
-        msg = "Lifecycle Error: Missing required arguments (system_prompt, persona) for creating dynamic agent."
+    # --- MODIFIED: Allow empty system_prompt, but persona is required ---
+    if not persona: # system_prompt can be empty if WorkflowManager sets it later
+        msg = "Lifecycle Error: Missing required argument 'persona' for creating dynamic agent."
         logger.error(msg); return False, msg, None
+    # --- END MODIFICATION ---
     
     # Start with essential args
     agent_config_data = { "system_prompt": system_prompt, "persona": persona }

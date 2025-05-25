@@ -10,24 +10,15 @@ import html
 import logging
 
 from src.tools.base import BaseTool
-from src.tools.tool_parser import parse_tool_call
 from src.tools.manage_team import ManageTeamTool
-# --- NEW: Import agent type constants ---
 from src.agents.constants import AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER
-# --- END NEW ---
+from src.tools.project_management import ProjectManagementTool
+
 
 logger = logging.getLogger(__name__)
 
 class ToolExecutor:
-    """
-    Manages and executes available tools for agents.
-    - Dynamically discovers tools in the 'src/tools' directory.
-    - Provides schemas/descriptions of available tools in XML or JSON format for prompts.
-    - Executes the requested tool, passing necessary context (agent ID, sandbox, project, session).
-    """
-
     def __init__(self):
-        """Initializes the ToolExecutor and dynamically discovers/registers available tools."""
         self.tools: Dict[str, BaseTool] = {}
         self._register_available_tools()
         if not self.tools:
@@ -36,15 +27,13 @@ class ToolExecutor:
              logger.info(f"ToolExecutor initialized with dynamically discovered tools: {list(self.tools.keys())}")
 
     def _register_available_tools(self):
-        """Dynamically scans the 'src/tools' directory, imports modules,
-           and registers classes inheriting from BaseTool."""
         logger.info("Dynamically discovering and registering tools...")
         tools_dir = Path(__file__).parent
-        package_name = "src.tools"
+        package_name = "src.tools" 
 
         for filepath in tools_dir.glob("*.py"):
             module_name_local = filepath.stem
-            if module_name_local.startswith("_") or module_name_local == "base":
+            if module_name_local.startswith("_") or module_name_local == "base" or module_name_local == "tool_parser":
                 logger.debug(f"Skipping module: {module_name_local}")
                 continue
 
@@ -56,10 +45,10 @@ class ToolExecutor:
                 for name, cls in inspect.getmembers(module, inspect.isclass):
                     if (issubclass(cls, BaseTool) and
                             cls is not BaseTool and
-                            cls.__module__ == module_name_full):
+                            cls.__module__ == module_name_full): 
                         logger.debug(f"  Found potential tool class: {name} in {module_name_full}")
                         try:
-                            instance = cls()
+                            instance = cls() 
                             if instance.name in self.tools:
                                 logger.warning(f"  Tool name conflict: '{instance.name}' from {module_name_full} already registered. Overwriting.")
                             self.tools[instance.name] = instance
@@ -68,12 +57,11 @@ class ToolExecutor:
                             logger.error(f"  Error instantiating tool class {cls.__name__} from {module_name_full}: {e}", exc_info=True)
             except ImportError as e:
                 logger.error(f"Error importing module {module_name_full}: {e}", exc_info=True)
-            except Exception as e:
+            except Exception as e: 
                 logger.error(f"Unexpected error processing module {module_name_full}: {e}", exc_info=True)
 
 
     def register_tool(self, tool_instance: BaseTool):
-        """Manually registers a tool instance."""
         if not isinstance(tool_instance, BaseTool):
             logger.error(f"Error: Cannot register object of type {type(tool_instance)}. Must be subclass of BaseTool.")
             return
@@ -83,12 +71,11 @@ class ToolExecutor:
         logger.info(f"Manually registered tool: {tool_instance.name}")
 
     def get_formatted_tool_descriptions_xml(self) -> str:
-        """Generates an XML string describing available tools and their parameters."""
         if not self.tools:
             return "<!-- No tools available -->"
         root = ET.Element("tools")
         root.text = "\nYou have access to the following tools. Use the specified XML format to call them. ONLY ONE tool call per response message, placed at the very end.\n"
-        sorted_tool_names = sorted(self.tools.keys())
+        sorted_tool_names = sorted(list(self.tools.keys()))
         for tool_name in sorted_tool_names:
             tool = self.tools[tool_name]
             schema = tool.get_schema()
@@ -97,6 +84,12 @@ class ToolExecutor:
             name_el.text = schema['name']
             desc_el = ET.SubElement(tool_element, "description")
             desc_el.text = schema['description'].strip()
+            if schema.get('summary') and schema['summary'] != schema['description']:
+                summary_el = ET.SubElement(tool_element, "summary")
+                summary_el.text = schema['summary'].strip()
+            auth_el = ET.SubElement(tool_element, "auth_level")
+            auth_el.text = schema.get('auth_level', 'worker') 
+
             params_el = ET.SubElement(tool_element, "parameters")
             if schema['parameters']:
                  sorted_params = sorted(schema['parameters'], key=lambda p: p['name'])
@@ -112,20 +105,22 @@ class ToolExecutor:
                      param_desc.text = param_data['description'].strip()
             else:
                  params_el.text = "<!-- This tool takes no parameters -->"
+            
+            usage_example_str = "<!-- Example not available -->"
+            if hasattr(tool, 'get_detailed_usage') and callable(tool.get_detailed_usage):
+                try:
+                    detailed_usage = tool.get_detailed_usage()
+                    example_match = re.search(r"```xml\s*(<"+re.escape(schema['name'])+r">[\s\S]*?</"+re.escape(schema['name'])+r">)\s*```", detailed_usage, re.DOTALL)
+                    if example_match:
+                        usage_example_str = example_match.group(1)
+                    else: 
+                        usage_example_str = f"\n<{schema['name']}>\n  <!-- Refer to 'get_tool_info' for parameter details -->\n</{schema['name']}>\n"
+                except Exception as e_usage:
+                    logger.warning(f"Could not generate usage example for tool {schema['name']}: {e_usage}")
+            
             usage_el = ET.SubElement(tool_element, "usage_example")
-            usage_str = f"\n<{schema['name']}>\n"
-            if schema['parameters']:
-                 sorted_params_usage = sorted(schema['parameters'], key=lambda p: p['name'])
-                 for param_data in sorted_params_usage:
-                    placeholder = "..."
-                    if param_data['type'] == 'integer': placeholder = "123"
-                    elif param_data['type'] == 'boolean': placeholder = "true"
-                    elif param_data['type'] == 'float': placeholder = "1.23"
-                    usage_str += f"  <{param_data['name']}>{placeholder}</{param_data['name']}>\n"
-            else:
-                 usage_str += f"  <!-- No parameters needed -->\n"
-            usage_str += f"</{schema['name']}>\n"
-            usage_el.text = f"<![CDATA[{usage_str}]]>"
+            usage_el.text = f"<![CDATA[{usage_example_str}]]>"
+
         instructions_el = ET.SubElement(root, "general_instructions")
         instructions_el.text = (
             "\nTool Call Format Guidance:\n"
@@ -136,28 +131,27 @@ class ToolExecutor:
             "5. Do not include any text after the closing tool tag."
         )
         try:
-             # Attempt to indent for readability
              ET.indent(root, space="  ")
              xml_string = ET.tostring(root, encoding='unicode', method='xml')
-        except Exception:
-             # Fallback if indent fails (e.g., older Python versions)
+        except Exception: 
              xml_string = ET.tostring(root, encoding='unicode', method='xml')
         final_description = xml_string
         return final_description
 
     def get_formatted_tool_descriptions_json(self) -> str:
-        """Generates a JSON string describing available tools and their parameters."""
         if not self.tools:
             return json.dumps({"tools": [], "error": "No tools available"}, indent=2)
 
         tool_list = []
-        sorted_tool_names = sorted(self.tools.keys())
+        sorted_tool_names = sorted(list(self.tools.keys()))
         for tool_name in sorted_tool_names:
             tool = self.tools[tool_name]
             schema = tool.get_schema()
             tool_info = {
                 "name": schema['name'],
                 "description": schema['description'].strip(),
+                "summary": schema.get('summary', schema['description'].strip()), 
+                "auth_level": schema.get('auth_level', 'worker'), 
                 "parameters": []
             }
             if schema['parameters']:
@@ -171,7 +165,6 @@ class ToolExecutor:
                     })
             tool_list.append(tool_info)
 
-        # Add general instructions within the JSON structure
         instructions = (
             "Tool Call Format Guidance:\n"
             "1. Enclose your SINGLE tool call in a ```json ... ``` code block.\n"
@@ -187,109 +180,111 @@ class ToolExecutor:
         }
 
         try:
-            # Use ensure_ascii=False for better readability if non-ASCII chars are present
             json_string = json.dumps(final_json_structure, indent=2, ensure_ascii=False)
             return json_string
         except Exception as e:
             logger.error(f"Error formatting tool descriptions as JSON: {e}", exc_info=True)
-            # Fallback JSON
             return json.dumps({"tools": [], "error": f"Failed to format tools: {e}"}, indent=2)
 
+    def get_available_tools_list_str(self, agent_type: str) -> str:
+        if not self.tools:
+            return "No tools are currently available."
+
+        authorized_tools_summary = []
+        all_tool_names = sorted(list(self.tools.keys()))
+
+        for name in all_tool_names:
+            tool_instance = self.tools.get(name)
+            if not tool_instance: continue
+
+            tool_auth_level = getattr(tool_instance, 'auth_level', 'worker')
+            is_authorized = False
+            if agent_type == AGENT_TYPE_ADMIN: is_authorized = True
+            elif agent_type == AGENT_TYPE_PM: is_authorized = tool_auth_level in [AGENT_TYPE_PM, AGENT_TYPE_WORKER]
+            elif agent_type == AGENT_TYPE_WORKER: is_authorized = tool_auth_level == AGENT_TYPE_WORKER
+
+            if is_authorized:
+                summary = getattr(tool_instance, 'summary', None) or tool_instance.description
+                authorized_tools_summary.append(f"- {name}: {summary.strip()}")
+        
+        if not authorized_tools_summary:
+            return f"No tools are accessible for your agent type ({agent_type})."
+        return f"Tools available to you (Agent Type: {agent_type}):\n" + "\n".join(authorized_tools_summary)
 
     async def execute_tool(
         self,
         agent_id: str,
         agent_sandbox_path: Path,
         tool_name: str,
-        tool_args: Dict[str, Any], # Arguments are pre-parsed by Agent Core
-        project_name: Optional[str] = None, # Added context
-        session_name: Optional[str] = None,  # Added context
-        manager: Optional[Any] = None # Pass manager instance for specific tools like system_help
+        tool_args: Dict[str, Any], 
+        project_name: Optional[str] = None, 
+        session_name: Optional[str] = None,  
+        manager: Optional[Any] = None # Type hint as 'AgentManager' if possible, else Any
     ) -> Any:
-        """
-        Executes the specified tool with the given arguments and context.
-        Maintains agent state during execution and ensures proper cleanup.
-        """
-        # Log tool execution start
-        logger.info(f"ToolExecutor: Starting tool execution for agent '{agent_id}' - tool '{tool_name}'")
-        """
-        Executes the specified tool with the given arguments and context.
-        Arguments are pre-parsed. Validates arguments against the tool's schema.
-        Passes context (project/session) to the tool's execute method.
-        Returns raw dictionary result for ManageTeamTool, otherwise ensures string result.
-
-        Args:
-            agent_id: The ID of the agent initiating the call.
-            agent_sandbox_path: The sandbox path for the agent.
-            tool_name: The name of the tool to execute.
-            tool_args: The pre-parsed arguments dictionary for the tool.
-            project_name: Current project context.
-            session_name: Current session context.
-
-        Returns:
-            Any: The result of the tool execution.
-        """
         tool = self.tools.get(tool_name)
         if not tool:
             error_msg = f"Error: Tool '{tool_name}' not found."
             logger.error(error_msg)
-            if tool_name == ManageTeamTool.name:
+            if tool_name == ManageTeamTool.name: 
                 return {"status": "error", "action": tool_args.get("action"), "message": error_msg}
             else:
                 return error_msg
 
-        # --- State Preservation ---
         original_state = None
-        if manager and agent_id != "framework":
-            agent_instance = manager.agents.get(agent_id)
-            if agent_instance:
-                original_state = agent_instance.state
-                logger.debug(f"ToolExecutor: Preserved original state '{original_state}' for agent '{agent_id}'")
+        current_agent_instance_for_tool_call = None 
 
-        # --- Authorization Check ---
+        # --- Authorization Check Section ---
         is_authorized = False
-        agent_type = "unknown" # Default agent type for logging if not framework or found agent
-        tool_auth_level = getattr(tool, 'auth_level', 'worker') # Default to worker if missing
+        agent_type_for_auth = "unknown" 
+        tool_auth_level = getattr(tool, 'auth_level', 'worker') 
 
-        # Explicitly allow framework calls
-        if agent_id == "framework":
+        if agent_id == "framework": 
             is_authorized = True
-            agent_type = "framework" # Set type for logging
-            logger.debug(f"Executor: Allowing tool '{tool_name}' for internal framework call.")
-        else:
-            # Check agent-based authorization
-            agent_instance = manager.agents.get(agent_id) if manager else None
-            if not agent_instance:
-                 # This might happen if agent was deleted mid-process
-                 logger.warning(f"Executor: Could not find agent instance for '{agent_id}' during authorization check. Denying tool use.")
-                 # is_authorized remains False
+            agent_type_for_auth = "framework" 
+            logger.debug(f"ToolExecutor: Allowing tool '{tool_name}' for internal framework call by '{agent_id}'.")
+        elif manager and hasattr(manager, 'agents') and isinstance(manager.agents, dict):
+            # --- MORE DETAILED LOGGING FOR THE MANAGER AND AGENTS DICT ITSELF ---
+            logger.critical(f"ToolExecutor: Auth: Manager object received by execute_tool: id={id(manager)}, type={type(manager)}")
+            logger.critical(f"ToolExecutor: Auth: manager.agents dictionary ID: {id(manager.agents)}")
+            logger.critical(f"ToolExecutor: Auth: Attempting lookup for agent_id='{agent_id}' (type: {type(agent_id)}, repr: {repr(agent_id)})")
+            current_manager_agents_keys = list(manager.agents.keys()) # Snapshot before get
+            logger.critical(f"ToolExecutor: Auth: Keys in manager.agents ({len(current_manager_agents_keys)}) BEFORE get: {current_manager_agents_keys}")
+            
+            current_agent_instance_for_tool_call = manager.agents.get(agent_id) # THE LOOKUP
+            
+            is_key_present_after_get = agent_id in manager.agents # Check again after get, though unlikely to change
+            logger.critical(f"ToolExecutor: Auth: Is agent_id='{agent_id}' in manager.agents keys AFTER get? {is_key_present_after_get}")
+            # --- END MORE DETAILED LOGGING ---
+            
+            if current_agent_instance_for_tool_call:
+                original_state = current_agent_instance_for_tool_call.state
+                agent_type_for_auth = getattr(current_agent_instance_for_tool_call, 'agent_type', AGENT_TYPE_WORKER) 
+                logger.info(f"ToolExecutor: Auth: Found agent instance for '{agent_id}'. Original state: '{original_state}', Determined Type for Auth: '{agent_type_for_auth}'")
+
+                if agent_type_for_auth == AGENT_TYPE_ADMIN:
+                    is_authorized = True 
+                elif agent_type_for_auth == AGENT_TYPE_PM:
+                    is_authorized = tool_auth_level in [AGENT_TYPE_PM, AGENT_TYPE_WORKER]
+                elif agent_type_for_auth == AGENT_TYPE_WORKER:
+                    is_authorized = tool_auth_level == AGENT_TYPE_WORKER
+                else: 
+                    logger.warning(f"ToolExecutor: Auth: Unknown agent type '{agent_type_for_auth}' for agent '{agent_id}'. Denying tool use.")
             else:
-                 agent_type = getattr(agent_instance, 'agent_type', AGENT_TYPE_WORKER) # Get agent type, default to worker
+                logger.warning(f"ToolExecutor: Auth: Agent instance for '{agent_id}' NOT FOUND in manager.agents dict. Denying tool use.")
+        else:
+            logger.error(f"ToolExecutor: Auth: Manager object missing (is None: {manager is None}), or manager.agents not a dict (hasattr: {hasattr(manager, 'agents')}, isinstance: {isinstance(getattr(manager, 'agents', None), dict) if manager else 'N/A'}). Cannot perform authorization.")
+        # --- End Authorization Check Section ---
 
-                 # Perform authorization check based on agent type and tool level
-                 if agent_type == AGENT_TYPE_ADMIN:
-                     is_authorized = True # Admin can use any tool
-                 elif agent_type == AGENT_TYPE_PM:
-                     is_authorized = tool_auth_level in [AGENT_TYPE_PM, AGENT_TYPE_WORKER]
-                 elif agent_type == AGENT_TYPE_WORKER:
-                     is_authorized = tool_auth_level == AGENT_TYPE_WORKER
-                 else: # Unknown agent type
-                      logger.warning(f"Executor: Unknown agent type '{agent_type}' for agent '{agent_id}'. Denying tool use.")
-                      # is_authorized remains False
-
-        # Final check on authorization status before proceeding
         if not is_authorized:
-            error_msg = f"Error: Agent '{agent_id}' (type: {agent_type}) is not authorized to use tool '{tool_name}' (required level: {tool_auth_level})."
+            error_msg = f"Error: Agent '{agent_id}' (type: {agent_type_for_auth}) is not authorized to use tool '{tool_name}' (required level: {tool_auth_level})."
             logger.error(error_msg)
             if tool_name == ManageTeamTool.name:
                 return {"status": "error", "action": tool_args.get("action"), "message": error_msg}
             else:
                 return error_msg
-        # --- END Authorization Check ---
-
-        logger.info(f"Executor: Executing tool '{tool_name}' for agent '{agent_id}' (Type: {agent_type}, Auth Level: {tool_auth_level}) with args: {tool_args} (Project: {project_name}, Session: {session_name})")
+        
+        logger.info(f"Executor: Executing tool '{tool_name}' for agent '{agent_id}' (Type: {agent_type_for_auth}, Auth Level: {tool_auth_level}) with args: {tool_args} (Project: {project_name}, Session: {session_name})")
         try:
-            # Argument Validation (using tool.get_schema())
             schema = tool.get_schema()
             validated_args = {}
             missing_required = []
@@ -297,7 +292,6 @@ class ToolExecutor:
                 for param_info in schema['parameters']:
                     param_name = param_info['name']
                     is_required = param_info.get('required', True)
-
                     if param_name in tool_args:
                         validated_args[param_name] = tool_args[param_name]
                     elif is_required:
@@ -311,98 +305,88 @@ class ToolExecutor:
                 else:
                     return error_msg
 
-            # Additional validation for type mismatches
-            for param_name, param_value in tool_args.items():
+            for param_name, param_value in tool_args.items(): 
                 param_info = next((p for p in schema['parameters'] if p['name'] == param_name), None)
                 if param_info:
                     expected_type = param_info['type']
-                    if expected_type == 'integer' and not isinstance(param_value, int):
-                        error_msg = f"Error: Tool '{tool_name}' parameter '{param_name}' expects an integer, but received {type(param_value).__name__}."
-                        logger.error(error_msg)
-                        return error_msg
-                    elif expected_type == 'boolean' and not isinstance(param_value, bool):
-                        error_msg = f"Error: Tool '{tool_name}' parameter '{param_name}' expects a boolean, but received {type(param_value).__name__}."
-                        logger.error(error_msg)
-                        return error_msg
-                    elif expected_type == 'float' and not isinstance(param_value, (int, float)):
-                        error_msg = f"Error: Tool '{tool_name}' parameter '{param_name}' expects a float, but received {type(param_value).__name__}."
-                        logger.error(error_msg)
-                        return error_msg
-
-            # Prepare kwargs for tool execution (validated tool-specific args)
+                    if expected_type == 'integer':
+                        if not isinstance(param_value, int):
+                            try: validated_args[param_name] = int(param_value)
+                            except (ValueError, TypeError):
+                                error_msg = f"Error: Tool '{tool_name}' parameter '{param_name}' expects an integer, but received {type(param_value).__name__} ('{param_value}') and could not convert."
+                                logger.error(error_msg); return error_msg
+                    elif expected_type == 'boolean':
+                        if not isinstance(param_value, bool):
+                            if isinstance(param_value, str) and param_value.lower() in ['true', 'false']:
+                                validated_args[param_name] = param_value.lower() == 'true'
+                            else:
+                                error_msg = f"Error: Tool '{tool_name}' parameter '{param_name}' expects a boolean (true/false), but received {type(param_value).__name__} ('{param_value}')."
+                                logger.error(error_msg); return error_msg
+                    elif expected_type == 'float':
+                         if not isinstance(param_value, (int, float)): 
+                            try: validated_args[param_name] = float(param_value)
+                            except (ValueError, TypeError):
+                                error_msg = f"Error: Tool '{tool_name}' parameter '{param_name}' expects a float, but received {type(param_value).__name__} ('{param_value}') and could not convert."
+                                logger.error(error_msg); return error_msg
+                    elif expected_type == 'list' and not isinstance(param_value, list):
+                        logger.warning(f"Tool '{tool_name}' parameter '{param_name}' expects a list, but received {type(param_value).__name__}. Tool should handle parsing if it's a string representation of a list.")
+            
             kwargs_for_tool = validated_args.copy()
-            # Remove context args if they happen to be in kwargs (they are passed directly)
+            kwargs_for_tool.pop('agent_id', None) 
             kwargs_for_tool.pop('agent_sandbox_path', None)
             kwargs_for_tool.pop('project_name', None)
             kwargs_for_tool.pop('session_name', None)
-            kwargs_for_tool.pop('manager', None) # Ensure manager isn't passed via kwargs
+            kwargs_for_tool.pop('manager', None) 
 
-            # Prepare arguments for the tool's execute method
             execute_args = {
-                "agent_id": agent_id,
+                "agent_id": agent_id, 
                 "agent_sandbox_path": agent_sandbox_path,
                 "project_name": project_name,
                 "session_name": session_name,
-                **kwargs_for_tool # Pass the validated tool-specific args
+                **kwargs_for_tool 
             }
 
-            # --- Pass manager specifically to SystemHelpTool ---
-            if tool_name == "system_help":
-                if manager:
-                    execute_args["manager"] = manager
+            if tool_name == "system_help" or tool_name == "tool_information":
+                if manager: execute_args["manager"] = manager
                 else:
-                    logger.error("ToolExecutor: Manager instance not provided, cannot execute 'get_tool_info' in SystemHelpTool.")
-                    return "Error: Internal configuration error - manager instance missing for system_help tool."
-            # --- Pass manager to ToolInformationTool ---
-            elif tool_name == "tool_information":
-                if manager:
-                    execute_args["manager"] = manager
-                else:
-                    logger.error("ToolExecutor: Manager instance not provided, cannot execute ToolInformationTool.")
-                    return "Error: Internal configuration error - manager instance missing for tool_information tool."
-            # --- End ToolInformationTool specific logic ---
-
-            # Execute tool with state preservation
+                    error_msg = f"Error: Internal configuration error - manager instance missing for '{tool_name}' tool."
+                    logger.error(f"ToolExecutor: {error_msg}")
+                    return error_msg
+            
             try:
                 result = await tool.execute(**execute_args)
                 logger.info(f"ToolExecutor: Tool '{tool_name}' execution completed successfully for agent '{agent_id}'")
-                
-                # Restore original state if needed
-                if original_state and manager and agent_id != "framework":
-                    agent_instance = manager.agents.get(agent_id)
-                    if agent_instance and agent_instance.state != original_state:
-                        logger.debug(f"ToolExecutor: Restoring original state '{original_state}' for agent '{agent_id}'")
-                        agent_instance.state = original_state
+                if original_state and current_agent_instance_for_tool_call and \
+                   hasattr(current_agent_instance_for_tool_call, 'state') and \
+                   current_agent_instance_for_tool_call.state != original_state :
+                    logger.debug(f"ToolExecutor: Restoring original state '{original_state}' for agent '{agent_id}' after tool execution.")
+                    current_agent_instance_for_tool_call.state = original_state
             except Exception as e:
-                # Ensure state is restored even on error
-                if original_state and manager and agent_id != "framework":
-                    agent_instance = manager.agents.get(agent_id)
-                    if agent_instance:
-                        logger.debug(f"ToolExecutor: Restoring original state '{original_state}' after tool error for agent '{agent_id}'")
-                        agent_instance.state = original_state
-                raise  # Re-raise the exception
+                if original_state and current_agent_instance_for_tool_call and \
+                   hasattr(current_agent_instance_for_tool_call, 'state'): 
+                    logger.debug(f"ToolExecutor: Restoring original state '{original_state}' after tool error for agent '{agent_id}'")
+                    current_agent_instance_for_tool_call.state = original_state
+                raise 
 
-            # Handle Result Formatting
-            if tool_name == ManageTeamTool.name:
+            if tool_name == ManageTeamTool.name or tool_name == ProjectManagementTool.name: 
                  if not isinstance(result, dict):
-                      logger.error(f"ManageTeamTool execution returned unexpected type: {type(result)}. Expected dict.")
-                      return {"status": "error", "action": tool_args.get("action"), "message": f"Internal Error: ManageTeamTool returned unexpected type {type(result)}."}
-                 logger.info(f"Executor: Tool '{tool_name}' execution returned result: {result}")
-                 return result # Return the dict directly
+                      logger.error(f"{tool_name} execution returned unexpected type: {type(result)}. Expected dict.")
+                      action_taken = tool_args.get("action", "unknown_action")
+                      return {"status": "error", "action": action_taken, "message": f"Internal Error: {tool_name} returned unexpected type {type(result)}."}
+                 logger.info(f"Executor: Tool '{tool_name}' execution returned result: {json.dumps(result, default=str)[:200]}...") 
+                 return result 
             else:
-                 # For other tools, ensure result is string
                  if not isinstance(result, str):
                      try: result_str = json.dumps(result, indent=2)
                      except TypeError: result_str = str(result)
-                 else:
-                     result_str = result
+                 else: result_str = result
                  logger.info(f"Executor: Tool '{tool_name}' execution successful. Result (stringified, first 100 chars): {result_str[:100]}...")
                  return result_str
 
-        except Exception as e:
+        except Exception as e: 
             error_msg = f"Executor: Error executing tool '{tool_name}': {type(e).__name__} - {e}"
             logger.error(error_msg, exc_info=True)
-            if tool_name == ManageTeamTool.name:
+            if tool_name == ManageTeamTool.name or tool_name == ProjectManagementTool.name: 
                  return {"status": "error", "action": tool_args.get("action"), "message": error_msg}
             else:
                  return error_msg

@@ -22,9 +22,12 @@ ADMIN_STATE_WORK_DELEGATED = "work_delegated"
 ADMIN_STATE_WORK = "work" # The work state for the Admin AI
 
 # --- PM Agent Workflow State Constants ---
-PM_STATE_STARTUP = "pm_startup" # Startup state for PM
-PM_STATE_WORK = "pm_work" # State for active tool use/task execution for PM
-PM_STATE_MANAGE = "pm_manage" # State for PM monitoring/management tasks
+PM_STATE_STARTUP = "pm_startup" # Initial entry point for a new PM
+PM_STATE_PLAN_DECOMPOSITION = "pm_plan_decomposition" # NEW: For decomposing Admin's plan
+PM_STATE_BUILD_TEAM_TASKS = "pm_build_team_tasks"     # NEW: For creating tasks, team, agents
+PM_STATE_ACTIVATE_WORKERS = "pm_activate_workers"   # NEW: For assigning tasks and activating workers
+PM_STATE_MANAGE = "pm_manage" # State for PM monitoring/management tasks (ongoing)
+PM_STATE_WORK = "pm_work" # Generic work state for PM if needed outside structured phases (can be reviewed later)
 
 # --- WORKER Agent Workflow State Constants ---
 WORKER_STATE_STARTUP = "worker_startup" # Startup state for Worker
@@ -34,7 +37,7 @@ WORKER_STATE_WAIT = "worker_wait" # State for worker waiting
 # --- Agent Operational Status Constants (Distinct from agent states!) ---
 AGENT_STATUS_IDLE = "idle"
 AGENT_STATUS_PROCESSING = "processing"
-AGENT_STATUS_PLANNING = "planning"
+AGENT_STATUS_PLANNING = "planning" # This is an operational status, distinct from Admin's planning *state*
 AGENT_STATUS_AWAITING_TOOL = "awaiting_tool_result"
 AGENT_STATUS_EXECUTING_TOOL = "executing_tool"
 AGENT_STATUS_ERROR = "error"
@@ -71,7 +74,7 @@ KEY_RELATED_STATUS_CODES = [401, 403, 429] # Unauthorized, Forbidden, Too Many R
 
 # Regex for Admin AI state change requests in responses
 # Modified regex to accept both self-closing (/>) and non-self-closing (>) tags
-REQUEST_STATE_TAG_PATTERN = re.compile(r"<request_state\s+state=['\"](\w+)['\"]\s*/?>")
+REQUEST_STATE_TAG_PATTERN = re.compile(r"<request_state\s+state=['\"]([\w_]+)['\"]\s*/?>") # Allow underscore in state names
 
 # --- Ollama Specific Constants ---
 
