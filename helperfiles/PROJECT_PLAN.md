@@ -44,8 +44,8 @@
 *   Refactor UI for Communication Layers and refine Admin AI memory usage prompts. *(Completed in P22)*
 *   Fix UI message interleaving issue during concurrent streaming. *(Completed in P22)*
 *   Increase internal comms message history limit. *(Completed in P22)*
-*   **(Current Goal - Phase 25)** Address agent logic issues (PM multi-tool calls, looping, placeholders, targeting), investigate Taskwarrior UDA issues, address rate limiting. Implement basic Governance Layer. Refine agent thought capture/usage.
-*   **(Future Goals)** **Advanced Memory & Learning** (P26), **Proactive Behavior** (Scheduling - P27), **Federated Communication** (Layer 3 - P28+), Enhance Admin AI planning (few-shot examples), use tracked performance metrics for ranking, implement new Admin AI tools, resource management, advanced collaboration patterns, DB integration, **Full transition to on-demand tool help** (removing static descriptions from prompts - P28+).
+*   **(Current Goal - Phase 25)** Address agent logic issues, Taskwarrior UDA issues, rate limiting. Implement basic Governance Layer. Refine agent thought capture/usage. Model selection refinement.
+*   **(Future Goals)** **Advanced Memory & Learning** (P26), **Proactive Behavior** (Scheduling - P27), **Federated Communication** (Layer 3 - P28+), Enhance Admin AI planning (few-shot examples), implement new Admin AI tools, resource management, advanced collaboration patterns, DB integration, **Full transition to on-demand tool help** (removing static descriptions from prompts - P28+).
 
 ## 2. Scope
 
@@ -143,14 +143,67 @@
 
 **Phase 25: Agent Logic, Taskwarrior Refinement & Governance (Current)**
     *   **Goal:** Address known agent logic issues, stabilize Taskwarrior integration, implement basic Governance Layer, and refine thought capture.
-    *   [ ] Investigate and fix `MODEL_TIER` and `MODEL_COST` switching issues (refactoring is likely).
-    *   [ ] Define structure for Governance principles (e.g., `governance.yaml` or DB table).
-    *   [X] Implement agent thought capture (`<think>` tag) and saving to Knowledge Base.
+    *   [~] Investigate and fix `MODEL_TIER` and `MODEL_COST` switching issues (Partially addressed: Model selection logic refactored to include performance and then model size (parameter count), improving clarity and introducing new selection priority: Tier -> Size (larger preferred) -> Performance Score -> ID).
+    *   [X] Address agent logic issues: "PM multi-tool calls" now supported via sequential execution of all detected tools in a single turn, with results aggregated and fed back to the agent. (Other items like looping, placeholders, targeting still pending).
+    *   [X] Refine agent thought capture/usage: Implemented smarter keyword generation for thoughts saved to Knowledge Base and added a `search_agent_thoughts` action to `KnowledgeBaseTool`.
+    *   [X] Implement basic Governance Layer: Principles are now loaded from `governance.yaml` (PyYAML added as dependency) and injected into agent system prompts based on applicability.
+    *   [X] Implement `ToolInformationTool`. (Moved from previous phase as it was completed in P25)
+    *   [X] Implement authorization checks in `ToolExecutor`. (Moved from previous phase as it was completed in P25)
+    *   [X] Inject system health report into Admin AI context. (Moved from previous phase as it was completed in P25)
+    *   [X] Comprehensive unit tests added for model selection, `num_parameters` handling in `ModelRegistry`, governance loading/injection, and multi-tool call processing.
+*   **Phase 26:** Advanced Memory & Learning (Feedback Loop, Learned Principles, Advanced Thought Usage).
+*   **Phase 27:** Proactive Behavior (Scheduling, Goal Management).
+*   **Phase 28+:** Federated Communication (Layer 3 - External Admin AI Interaction).
+*   **Phase 29+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), etc.
+
+## 3. Technology Stack
+*   **Backend:** Python 3.9+, FastAPI, Uvicorn
+*   **Asynchronous Operations:** `asyncio`
+*   **WebSockets:** `websockets` library integrated with FastAPI
+*   **Database:** `SQLAlchemy` (Core, Asyncio), `aiosqlite` (for SQLite driver)
+*   **Task Management:** `tasklib` (Python Taskwarrior library)
+*   **LLM Interaction:** `openai` library, `aiohttp`
+*   **Frontend:** HTML5, CSS3, Vanilla JavaScript
+*   **Configuration:** YAML (`PyYAML`), `.env` (`python-dotenv`), JSON (`prompts.json`), `governance.yaml` (`PyYAML`) <!-- Updated P25 -->
+*   **Tooling APIs:** `tavily-python`
+*   **Parsing:** `BeautifulSoup4` (HTML), `re`, `html` (XML)
+*   **Model Discovery & Management:** Custom `ModelRegistry` class (now includes model parameter size) <!-- Updated P25 -->
+*   **Performance Tracking:** Custom `ModelPerformanceTracker` class (JSON)
+*   **Persistence:** JSON (session state - filesystem), SQLite (interactions, knowledge, thoughts), Taskwarrior files (project tasks via `tasklib`)
+*   **Optional Proxy:** Node.js, Express, node-fetch
+*   **Data Handling/Validation:** Pydantic (via FastAPI)
+*   **Local Auto Discovery** nmap
+*   **Logging:** Standard library `logging`
+
+## 4. Development Phases & Milestones
+
+**Phase 1-23 (Completed)**
+*   [X] Core Functionality, Dynamic Agent/Team Mgmt, Refactoring, Provider/Model Discovery & Selection, Failover, Key Management, Prompt Centralization, Ollama Proxy, XML Tooling, Auto-Selection (Dyn), Robust Agent ID Handling, Structured Planning, Context Optimization & FS Tools, GitHub Recursive List, ManageTeam Details, WebSearch API Fallback, SystemHelp Tool, Admin Time Context, **Memory Foundation (DB & KB Tool)**, **UI Layer Refactor & Workflow Refinements**, **Project Manager Agent & Tasklib Integration**.
+
+**Phase 24: Admin AI State Machine & Framework-Driven Project Init (Completed)**
+*   **Goal:** Refactor Admin AI workflow into distinct states and automate project/PM creation by the framework, requiring user approval.
+*   [X] Add Admin AI states (`conversation`, `planning`) and `AgentWorkflowManager` for state logic.
+*   [X] Create state-specific prompts (`prompts.json`) used by `AgentWorkflowManager`.
+*   [X] Require `<title>` tag in Admin AI plans.
+*   [X] Implement framework logic (`CycleHandler`, `AgentManager`) to intercept Admin AI plans, extract title, automatically create PM agent and initial project task (via `ToolExecutor` calling `ProjectManagementTool`), assign PM via tags/UDA, and transition Admin AI state.
+*   [X] Implement UI notification for **user approval** of project start.
+*   [X] Implement API endpoint (`/approve`) and logic in `AgentManager` to schedule PM agent upon approval.
+*   [X] Update `SessionManager` to save/load Admin AI state.
+*   [X] Fix bootstrap agent initialization fallback logic (`agent_lifecycle.py`).
+*   [X] Correct `AgentManager` check for initial task creation result.
+
+**Phase 25: Agent Logic, Taskwarrior Refinement & Governance (Current)**
+    *   **Goal:** Address known agent logic issues, stabilize Taskwarrior integration, implement basic Governance Layer, refine thought capture, and enhance model selection.
+    *   [~] Investigate and fix `MODEL_TIER` and `MODEL_COST` switching issues (Partially addressed: Model selection logic refactored. New priority: Tier -> Size (larger preferred) -> Performance Score -> ID. Model parameter count (`num_parameters`) now discovered and stored for OpenRouter and Ollama models.).
+    *   [X] Address agent logic issues: "PM multi-tool calls" now supported. Agents can have multiple tools execute sequentially in one "turn", with results aggregated and fed back.
+    *   [X] Refine agent thought capture/usage: Implemented smarter keyword generation for thoughts saved to Knowledge Base. Added `search_agent_thoughts` action to `KnowledgeBaseTool`.
+    *   [X] Implement basic Governance Layer: Principles loaded from `governance.yaml` (using `PyYAML`) and injected into agent system prompts.
     *   [X] Implement `ToolInformationTool`.
     *   [X] Implement authorization checks in `ToolExecutor`.
     *   [X] Inject system health report into Admin AI context.
-*   **Phase 26:** Advanced Memory & Learning (Feedback Loop, Learned Principles, Thought Usage).
-*   **Phase 27:** Proactive Behavior (Scheduling, Goal Management). **(Note that limited scheduling for PM Agent already exists.)
+    *   [X] Added comprehensive unit tests for model selection refinements, `num_parameters` handling, governance layer loading/injection, and multi-tool call processing.
+*   **Phase 26:** Advanced Memory & Learning (Feedback Loop, Learned Principles, Advanced Thought Usage).
+*   **Phase 27:** Proactive Behavior (Scheduling, Goal Management).
 *   **Phase 28+:** Federated Communication (Layer 3 - External Admin AI Interaction).
 *   **Phase 29+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), etc.
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

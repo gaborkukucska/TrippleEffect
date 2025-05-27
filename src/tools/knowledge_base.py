@@ -22,14 +22,15 @@ class KnowledgeBaseTool(BaseTool):
     description: str = (
         "Interacts with the long-term knowledge base. Actions: "
         "'save_knowledge' (saves a summary of learned information with keywords), "
-        "'search_knowledge' (searches for relevant knowledge using keywords). "
-        "Use this to persist important conclusions or retrieve relevant context from past sessions/interactions."
+        "'search_knowledge' (searches for relevant knowledge using keywords), "
+        "'search_agent_thoughts' (searches for past thoughts of a specific agent). "
+        "Use this to persist important conclusions or retrieve relevant context from past sessions/interactions, including specific agent thoughts."
     )
     parameters: List[ToolParameter] = [
         ToolParameter(
             name="action",
             type="string",
-            description="The operation to perform: 'save_knowledge' or 'search_knowledge'.",
+            description="The operation to perform: 'save_knowledge', 'search_knowledge', or 'search_agent_thoughts'.",
             required=True,
         ),
         # Parameters for save_knowledge
@@ -67,7 +68,20 @@ class KnowledgeBaseTool(BaseTool):
         ToolParameter(
             name="max_results",
             type="integer",
-            description="Optional: Maximum number of results to return for 'search_knowledge'. Defaults to 5.",
+            description="Optional: Maximum number of results to return for 'search_knowledge' or 'search_agent_thoughts'. Defaults to 5.",
+            required=False,
+        ),
+        # Parameters for search_agent_thoughts
+        ToolParameter(
+            name="agent_identifier",
+            type="string",
+            description="The ID or unique identifier of the agent whose thoughts are being searched. Required for 'search_agent_thoughts'.",
+            required=False, # Dynamically required
+        ),
+        ToolParameter(
+            name="additional_keywords",
+            type="string",
+            description="Optional: Comma-separated string of additional keywords to narrow down the thought search for 'search_agent_thoughts'.",
             required=False,
         ),
     ]
@@ -89,8 +103,8 @@ class KnowledgeBaseTool(BaseTool):
         """Executes the knowledge base action."""
         action = kwargs.get("action")
         logger.info(f"Agent {agent_id} requesting KnowledgeBaseTool action '{action}' with params: {kwargs}")
-        if not action or action not in ["save_knowledge", "search_knowledge"]:
-            return "Error: Invalid or missing 'action'. Must be 'save_knowledge' or 'search_knowledge'."
+        if not action or action not in ["save_knowledge", "search_knowledge", "search_agent_thoughts"]:
+            return "Error: Invalid or missing 'action'. Must be 'save_knowledge', 'search_knowledge', or 'search_agent_thoughts'."
         # --- Get DB Session ID (Best effort - Requires Manager modification ideally) ---
         # This is a temporary workaround. Ideally, ToolExecutor would get session_db_id from manager
         # and pass it here explicitly.
@@ -185,7 +199,55 @@ class KnowledgeBaseTool(BaseTool):
                     output_lines.append(
                         f"  - ID: {item.id}, Score: {item.importance_score:.2f}, Keywords: '{item.keywords}'\n    Summary: {summary_preview}"
                     )
+                return "\n".join(output_lines)
+            
+            elif action == "search_agent_thoughts":
+                agent_identifier = kwargs.get("agent_identifier")
+                additional_keywords_str = kwargs.get("additional_keywords")
+                max_results_str = kwargs.get("max_results", "5") # Default to 5 for thoughts as well
 
+                if not agent_identifier:
+                    return "Error: 'agent_identifier' parameter is required for 'search_agent_thoughts'."
+
+                # Base keywords for searching thoughts
+                search_keywords = ["agent_thought", str(agent_identifier).strip()] # Ensure agent_identifier is a string
+
+                # Add additional keywords if provided
+                if additional_keywords_str:
+                    parsed_additional_keywords = [kw.strip() for kw in additional_keywords_str.split(',') if kw.strip()]
+                    if parsed_additional_keywords:
+                        search_keywords.extend(parsed_additional_keywords)
+                
+                logger.debug(f"Searching agent thoughts for agent '{agent_identifier}' with keywords: {search_keywords}")
+
+                try:
+                    max_results = int(max_results_str)
+                    if max_results <= 0: max_results = 5
+                except ValueError:
+                    logger.warning(f"Invalid 'max_results' value '{max_results_str}' for search_agent_thoughts by {agent_id}. Defaulting to 5.")
+                    max_results = 5
+                
+                # For thoughts, min_importance might not be as relevant, or we could use a low default.
+                # For now, not explicitly setting min_importance, letting db_manager.search_knowledge use its default or None.
+                min_importance_for_thoughts = None # Or a low value like 0.1 if desired
+
+                found_items = await db_manager.search_knowledge(
+                    query_keywords=search_keywords,
+                    min_importance=min_importance_for_thoughts, 
+                    max_results=max_results
+                )
+
+                if not found_items:
+                    return f"No thoughts found for agent '{agent_identifier}' matching keywords: '{', '.join(search_keywords)}'."
+                
+                output_lines = [f"Found {len(found_items)} thought(s) for agent '{agent_identifier}' (Keywords: {', '.join(search_keywords)}):"]
+                MAX_SUMMARY_LEN = 200 # Consistent with search_knowledge
+                for item in found_items:
+                    # Thoughts are saved with their content in the 'summary' field of KnowledgeItem
+                    thought_preview = item.summary[:MAX_SUMMARY_LEN] + ('...' if len(item.summary) > MAX_SUMMARY_LEN else '')
+                    output_lines.append(
+                        f"  - ID: {item.id}, Saved: {item.timestamp.strftime('%Y-%m-%d %H:%M:%S') if item.timestamp else 'N/A'}, Keywords: '{item.keywords}'\n    Thought: {thought_preview}"
+                    )
                 return "\n".join(output_lines)
 
         except Exception as e:
@@ -198,7 +260,7 @@ class KnowledgeBaseTool(BaseTool):
         usage = """
         **Tool Name:** knowledge_base
 
-        **Description:** Saves or searches for information in the long-term knowledge base. Useful for remembering past learnings, procedures, or context across sessions.
+        **Description:** Saves or searches for information in the long-term knowledge base. Useful for remembering past learnings, procedures, or context across sessions. Also allows searching for specific agent thoughts.
 
         **Actions & Parameters:**
 
@@ -229,9 +291,24 @@ class KnowledgeBaseTool(BaseTool):
                   <min_importance>0.7</min_importance>
                 </knowledge_base>
                 ```
+        
+        3.  **search_agent_thoughts:** Searches for past thoughts of a specific agent.
+            *   `<agent_identifier>` (string, required): The ID of the agent whose thoughts are being searched (e.g., "agent_xyz123").
+            *   `<additional_keywords>` (string, optional): Comma-separated keywords to further refine the search within the agent's thoughts (e.g., "planning,file_system").
+            *   `<max_results>` (integer, optional): Maximum number of thoughts to return. Defaults to 5.
+            *   Example:
+                ```xml
+                <knowledge_base>
+                  <action>search_agent_thoughts</action>
+                  <agent_identifier>agent_alpha_7</agent_identifier>
+                  <additional_keywords>project_omega,database_schema</additional_keywords>
+                  <max_results>3</max_results>
+                </knowledge_base>
+                ```
 
         **Important Notes:**
-        *   Use `save_knowledge` after successful complex tasks or when significant learning occurs.
+        *   Use `save_knowledge` after successful complex tasks or when significant learning occurs. Agent thoughts are often automatically saved with relevant keywords.
         *   Use `search_knowledge` *before* planning complex tasks to leverage past information.
+        *   Use `search_agent_thoughts` to recall specific past reasoning or context from an agent, which can be useful for understanding past decisions or resuming tasks.
         """
         return usage.strip()

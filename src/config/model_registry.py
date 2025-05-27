@@ -19,11 +19,18 @@ logger = logging.getLogger(__name__)
 # Default Ports and Public Endpoints
 DEFAULT_OLLAMA_PORT = 11434
 DEFAULT_LITELLM_PORT = 4000 # Adjust if your LiteLLM default is different
-# REMOVED: OPENROUTER_MODELS_URL - Use settings or the direct URL in the function
 
-class ModelInfo(Dict):
-    """Simple dictionary subclass for type hinting model info."""
-    pass
+# --- NEW: TypedDict for ModelInfo ---
+from typing import TypedDict
+
+class ModelInfo(TypedDict, total=False):
+    """Structure for storing model information."""
+    id: str
+    name: Optional[str]
+    description: Optional[str]
+    provider: str
+    num_parameters: Optional[int] # New field for parameter count
+# --- END NEW ---
 
 class ModelRegistry:
     """
@@ -48,15 +55,45 @@ class ModelRegistry:
         self._model_tier: str = getattr(self.settings, 'MODEL_TIER', 'FREE').upper()
         logger.info(f"ModelRegistry initialized. Effective MODEL_TIER='{self._model_tier}'.")
 
+    def _parse_ollama_parameter_string_to_int(self, param_str: str) -> Optional[int]:
+        """
+        Parses Ollama's parameter string (e.g., "7B", "13B", "3.5M", "180K") into an integer.
+        Returns None if parsing fails.
+        """
+        if not param_str or not isinstance(param_str, str):
+            return None
+        
+        param_str = param_str.upper().strip()
+        multiplier = 1
+        
+        if param_str.endswith('K'):
+            multiplier = 1_000
+            param_str = param_str[:-1]
+        elif param_str.endswith('M'):
+            multiplier = 1_000_000
+            param_str = param_str[:-1]
+        elif param_str.endswith('B') or param_str.endswith('G'): # G for some models, e.g. Llama variants
+            multiplier = 1_000_000_000
+            param_str = param_str[:-1]
+            
+        try:
+            # Allow for float values like "3.5B"
+            num_value = float(param_str)
+            return int(num_value * multiplier)
+        except ValueError:
+            logger.warning(f"Could not parse parameter string '{param_str}' to number.")
+            return None
+
     async def _verify_and_fetch_models(self, base_url: str) -> Optional[Tuple[str, str, List[ModelInfo]]]:
         """
         Verifies a potential local API endpoint and fetches its models.
+        For Ollama, it also attempts to get parameter counts for each model.
         Returns (unique_provider_name, verified_base_url, models_list) or None.
-        (No changes needed here for MODEL_TIER refactor)
         """
         logger.debug(f"Verifying potential local API at {base_url}...")
         verified_provider_name: Optional[str] = None
-        models_list: List[ModelInfo] = []
+        raw_models_list: List[Dict[str, Any]] = [] # Store raw model data from /api/tags
+        final_models_list: List[ModelInfo] = []
 
         # --- Generate unique provider name based on IP ---
         ip_suffix = "unknown-host" # Default
@@ -76,44 +113,77 @@ class ModelRegistry:
             async with aiohttp.ClientSession() as session:
                 async with session.get(ollama_check_url, timeout=5) as response:
                     if response.status == 200:
-                        data = await response.json(content_type=None)
-                        models_data = data.get("models", [])
-                        if isinstance(models_data, list):
+                        data = await response.json(content_type=None) # Ollama might not set content_type correctly
+                        raw_models_data = data.get("models", [])
+                        if isinstance(raw_models_data, list):
                             unique_provider_name = f"ollama-local-{ip_suffix}"
-                            models_list = [ModelInfo(id=m.get("name")) for m in models_data if m.get("name")]
-                            logger.info(f"Verified Ollama endpoint at {base_url} ({unique_provider_name}). Found {len(models_list)} models.")
-                            verified_provider_name = unique_provider_name
+                            # Store raw data to fetch details later
+                            raw_models_list = [m for m in raw_models_data if m.get("name")] 
+                            logger.info(f"Verified Ollama endpoint at {base_url} ({unique_provider_name}). Found {len(raw_models_list)} models from /api/tags.")
+                            verified_provider_name = unique_provider_name # Mark as Ollama for detailed fetching
+
+                            # Now fetch details for each model using /api/show
+                            for raw_model_data in raw_models_list:
+                                model_name = raw_model_data.get("name")
+                                if not model_name: continue
+
+                                model_info_dict: ModelInfo = {"id": model_name, "provider": unique_provider_name, "name": model_name}
+                                try:
+                                    show_url = f"{base_url}/api/show"
+                                    async with session.post(show_url, json={"name": model_name}, timeout=10) as show_response: # Use POST as per Ollama docs
+                                        if show_response.status == 200:
+                                            details_data = await show_response.json(content_type=None)
+                                            param_str = details_data.get("details", {}).get("parameter_size")
+                                            if param_str:
+                                                num_params = self._parse_ollama_parameter_string_to_int(param_str)
+                                                if num_params is not None:
+                                                    model_info_dict["num_parameters"] = num_params
+                                                    logger.debug(f"Ollama model '{model_name}': parameters '{param_str}' -> {num_params}")
+                                                else:
+                                                    logger.debug(f"Ollama model '{model_name}': could not parse parameter string '{param_str}'.")
+                                            else:
+                                                logger.debug(f"Ollama model '{model_name}': 'parameter_size' not found in /api/show details.")
+                                        else:
+                                            logger.warning(f"Failed to get details for Ollama model '{model_name}' from {show_url}. Status: {show_response.status}")
+                                except Exception as detail_err:
+                                    logger.warning(f"Error fetching details for Ollama model '{model_name}': {detail_err}", exc_info=False)
+                                final_models_list.append(model_info_dict)
+                            if not final_models_list and raw_models_list: # If detail fetching failed for all but tags worked
+                                logger.warning(f"Ollama endpoint {base_url}: Failed to fetch details for any models, using names from /api/tags only.")
+                                final_models_list = [ModelInfo(id=m.get("name"), provider=unique_provider_name) for m in raw_models_list if m.get("name")]
+
                         else: logger.debug(f"Endpoint {ollama_check_url} returned 200 but response format doesn't match Ollama /api/tags.")
                     else: logger.debug(f"Ollama check failed for {base_url}. Status: {response.status}")
         except (aiohttp.ClientConnectorError, asyncio.TimeoutError): logger.debug(f"Ollama check: Connection failed or timed out for {base_url}.")
         except Exception as e: logger.warning(f"Error during Ollama check for {base_url}: {e}", exc_info=False)
 
         # 2. If not verified as Ollama, try OpenAI standard check (/v1/models or /models)
-        if not verified_provider_name:
+        if not verified_provider_name: # Only proceed if not already identified as Ollama
             openai_check_urls = [f"{base_url}/v1/models", f"{base_url}/models"]
             for check_url in openai_check_urls:
                 logger.debug(f"Trying OpenAI compatible check: {check_url}")
                 try:
-                    async with aiohttp.ClientSession() as session:
+                    async with aiohttp.ClientSession() as session: # New session for LiteLLM check
                         async with session.get(check_url, timeout=5) as response:
                             if response.status == 200:
                                 data = await response.json(content_type=None)
-                                models_data = data.get("data", [])
-                                if isinstance(models_data, list) and models_data and isinstance(models_data[0], dict) and "id" in models_data[0]:
-                                    unique_provider_name = f"litellm-local-{ip_suffix}"
-                                    models_list = [ModelInfo(id=m.get("id")) for m in models_data if m.get("id")]
-                                    logger.info(f"Verified OpenAI compatible endpoint at {base_url} ({unique_provider_name}). Found {len(models_list)} models.")
+                                models_data_openai = data.get("data", [])
+                                if isinstance(models_data_openai, list) and models_data_openai and isinstance(models_data_openai[0], dict) and "id" in models_data_openai[0]:
+                                    unique_provider_name = f"litellm-local-{ip_suffix}" # Assume LiteLLM if OpenAI compatible
+                                    # LiteLLM typically doesn't provide param counts via this endpoint
+                                    final_models_list = [ModelInfo(id=m.get("id"), provider=unique_provider_name) for m in models_data_openai if m.get("id")]
+                                    logger.info(f"Verified OpenAI compatible endpoint (assumed LiteLLM) at {base_url} ({unique_provider_name}). Found {len(final_models_list)} models.")
                                     verified_provider_name = unique_provider_name
-                                    break
+                                    break 
                                 else: logger.debug(f"Endpoint {check_url} returned 200 but response format doesn't match OpenAI /models.")
                             else: logger.debug(f"OpenAI compatible check failed for {check_url}. Status: {response.status}")
                 except (aiohttp.ClientConnectorError, asyncio.TimeoutError): logger.debug(f"OpenAI compatible check: Connection failed or timed out for {check_url}.")
                 except Exception as e: logger.warning(f"Error during OpenAI compatible check for {check_url}: {e}", exc_info=False)
-                if verified_provider_name: break
+                if verified_provider_name: break # Exit loop if verified
 
-        if verified_provider_name and models_list:
-            for model_info in models_list: model_info['provider'] = verified_provider_name
-            return verified_provider_name, base_url, models_list
+        if verified_provider_name and final_models_list:
+            # Provider already set in model_info_dict during creation
+            return verified_provider_name, base_url, final_models_list
         else:
             logger.debug(f"Could not verify {base_url} as either Ollama or OpenAI compatible.")
             return None
@@ -284,7 +354,30 @@ class ModelRegistry:
                 async with session.get(models_url, timeout=20) as response:
                     if response.status == 200:
                         data = await response.json(); models_data = data.get("data", [])
-                        if models_data: self._raw_models["openrouter"] = [ModelInfo(id=m.get("id"), name=m.get("name"), description=m.get("description"), provider="openrouter") for m in models_data if m.get("id")]; logger.info(f"Discovered {len(self._raw_models['openrouter'])} models from OpenRouter.")
+                        if models_data:
+                            processed_models = []
+                            for m_data in models_data:
+                                if m_data.get("id"):
+                                    model_info: ModelInfo = {
+                                        "id": m_data.get("id"),
+                                        "name": m_data.get("name"),
+                                        "description": m_data.get("description"),
+                                        "provider": "openrouter"
+                                    }
+                                    # Attempt to get parameter count for OpenRouter models
+                                    # This path might vary; common is architecture.n_parameters or similar
+                                    architecture = m_data.get("architecture", {})
+                                    if isinstance(architecture, dict):
+                                        n_params = architecture.get("n_parameters")
+                                        if isinstance(n_params, (int, float)): # Can be float for e.g. scientific notation
+                                            model_info["num_parameters"] = int(n_params)
+                                            logger.debug(f"OpenRouter model '{model_info['id']}': parameters {model_info['num_parameters']}")
+                                        # Fallback: 'modality_max_tokens' is not num_params, but sometimes related to size
+                                        # else:
+                                        # context_length = m_data.get("context_length") # Example of another field
+                                    processed_models.append(model_info)
+                            self._raw_models["openrouter"] = processed_models
+                            logger.info(f"Discovered {len(self._raw_models['openrouter'])} models from OpenRouter.")
                         else: logger.warning("OpenRouter models endpoint returned empty data list.")
                     else: error_text = await response.text(); logger.error(f"Failed to fetch OpenRouter models. Status: {response.status}, Response: {error_text[:200]}"); self._reachable_providers.pop("openrouter", None); logger.warning("Removed OpenRouter from reachable providers.")
         except Exception as e: logger.error(f"Error fetching OpenRouter models: {e}", exc_info=True); self._reachable_providers.pop("openrouter", None); logger.warning("Removed OpenRouter from reachable providers.")
@@ -295,9 +388,13 @@ class ModelRegistry:
         common_openai = ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"]
         if "openai" not in self._raw_models: self._raw_models["openai"] = []
         added_count = 0
+        # OpenAI API does not directly provide parameter counts for standard models via /v1/models
+        # So, num_parameters will remain None for these unless manually added or fetched differently.
         for model_name in common_openai:
-             if not any(existing_m.get('id') == model_name for existing_m in self._raw_models["openai"]): self._raw_models["openai"].append(ModelInfo(id=model_name, name=model_name, provider="openai")); added_count += 1
-        if added_count > 0: logger.info(f"Manually added {added_count} common models for OpenAI: {common_openai}")
+             if not any(existing_m.get('id') == model_name for existing_m in self._raw_models["openai"]):
+                 self._raw_models["openai"].append(ModelInfo(id=model_name, name=model_name, provider="openai", num_parameters=None))
+                 added_count += 1
+        if added_count > 0: logger.info(f"Manually added {added_count} common models for OpenAI: {common_openai} (parameter counts not available from API).")
         else: logger.debug("Common OpenAI models already present or none to add.")
 
 

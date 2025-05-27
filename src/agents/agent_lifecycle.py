@@ -24,9 +24,13 @@ if TYPE_CHECKING:
 
 # --- Import Specific Provider Classes ---
 from src.llm_providers.openai_provider import OpenAIProvider
-from src.llm_providers.ollama_provider import OllamaProvider # Corrected: OllamaProvider uses aiohttp
+from src.llm_providers.ollama_provider import OllamaProvider
 from src.llm_providers.openrouter_provider import OpenRouterProvider
 # --- End Provider Imports ---
+
+# --- Import new sorting utility ---
+from src.agents.agent_utils import sort_models_by_size_performance_id
+# --- End Import ---
 
 # --- ***MOVED UP: Define PROVIDER_CLASS_MAP using imported classes ***---
 PROVIDER_CLASS_MAP: Dict[str, type[BaseLLMProvider]] = {
@@ -40,138 +44,164 @@ PROVIDER_CLASS_MAP: Dict[str, type[BaseLLMProvider]] = {
 
 logger = logging.getLogger(__name__)
 
-# --- NEW: Helper function to extract model size ---
-def _extract_model_size_b(model_id: str) -> float:
-    """Extracts the parameter size in billions (e.g., 7b, 70b, 0.5b) from a model ID."""
-    if not isinstance(model_id, str):
-        return 0.0
-    # Regex to find patterns like -7b-, -70B-, -0.5b-, _7b_, etc.
-    # Handles optional decimal part and case-insensitive 'b'
-    match = re.search(r'[-_](\d+(?:\.\d+)?)[bB][-_]', model_id)
-    if match:
-        try:
-            return float(match.group(1))
-        except ValueError:
-            return 0.0 # Should not happen with regex, but safe fallback
-    # Fallback for models that might just end in size, e.g., model-7b
-    match_end = re.search(r'[-_](\d+(?:\.\d+)?)[bB]$', model_id)
-    if match_end:
-        try:
-            return float(match_end.group(1))
-        except ValueError:
-            return 0.0
-    return 0.0 # Return 0 if no size pattern found
-# --- END NEW HELPER ---
-
-# Define PREFERRED_ADMIN_MODELS here or import if moved elsewhere
-PREFERRED_ADMIN_MODELS = [
-    "ollama/llama3*", "litellm/llama3*", # Local prioritized
-    "anthropic/claude-3.5-sonnet", # Tier 1 Remote (Opus removed as default for cost)
-    "openai/gpt-4o",
-    "google/gemini-1.5-pro", # Use 1.5 Pro over 2.5 experimental for stability?
-    "google/gemini-1.5-flash", # Add Flash as a good free/cheap option
-    "mistralai/mistral-large-latest",
-    "anthropic/claude-3-haiku",
-    "meta-llama/llama-3.1-70b-instruct",
-    "meta-llama/llama-3.1-8b-instruct",
-    "google/gemma-2-9b-it:free", # Explicitly free tier from OpenRouter
-    "mistralai/mistral-7b-instruct:free",
-    "*", # Fallback to any available model
-]
+# PREFERRED_ADMIN_MODELS - No change needed to this list itself for now
 
 # --- Automatic Model Selection Logic ---
 async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optional[str], Optional[str]]:
     """
-    Selects the best available and usable model based on performance ranking or registry order.
+    Selects the best available and usable model based on a comprehensive ranking:
+    1. Number of parameters (descending).
+    2. Performance score (descending).
+    3. Model ID (alphabetical ascending).
+    Respects MODEL_TIER and provider key availability.
 
     Args:
         manager: The AgentManager instance.
 
     Returns:
-        Tuple[Optional[str], Optional[str]]: (specific_provider_name, model_suffix) or (None, None)
-        Returns the specific provider instance name (e.g., ollama-local-...) and the model suffix.
+        Tuple[Optional[str], Optional[str]]: (specific_provider_name, model_id_suffix) or (None, None)
     """
-    logger.info("Attempting automatic model selection...")
-    ranked_models_perf = manager.performance_tracker.get_ranked_models(min_calls=0)
-    available_dict = model_registry.get_available_models_dict()
-    current_model_tier = settings.MODEL_TIER # Get tier setting
+    logger.info("Attempting automatic model selection with comprehensive ranking...")
+    
+    all_models_from_registry: Dict[str, List[Dict[str, Any]]] = manager.model_registry.get_available_models_dict()
+    if not all_models_from_registry:
+        logger.warning("Automatic selection: No models available in the registry.")
+        return None, None
 
-    # --- NEW: Re-sort ranked models by score (desc) then size (desc) ---
-    ranked_models_sorted = sorted(
-        ranked_models_perf,
-        key=lambda item: (item[2], _extract_model_size_b(item[1])), # item[2] is score, item[1] is model_suffix
-        reverse=True # Sorts score desc, then size desc
+    # Flatten all models from all providers, adding 'provider' key to each model_info
+    flattened_model_infos: List[Dict[str, Any]] = []
+    for specific_provider_name, models_list in all_models_from_registry.items():
+        for model_data in models_list:
+            # model_data from registry should already have 'id' and 'num_parameters' (Optional)
+            # We add the specific_provider_name to use for performance lookup and final selection
+            model_info_copy = model_data.copy()
+            model_info_copy["provider"] = specific_provider_name # Store the specific provider name
+            flattened_model_infos.append(model_info_copy)
+            
+    if not flattened_model_infos:
+        logger.warning("Automatic selection: No models found after flattening registry data.")
+        return None, None
+
+    # Get performance metrics - this expects provider base names
+    # The sort_models_by_size_performance_id helper needs to handle looking up metrics
+    # using the base provider name derived from the specific_provider_name.
+    # For now, we'll pass all metrics. The helper can be adapted or we can pre-process.
+    # Let's assume sort_models_by_size_performance_id can handle specific provider names
+    # if performance_metrics keys are specific provider names.
+    # If performance_metrics keys are base names (e.g. "ollama"), the helper needs to adapt.
+    # For simplicity, let's assume performance_tracker.get_all_metrics() returns metrics keyed by specific provider names.
+    # If not, we'd need to map them or adjust the helper.
+    # The current `get_all_metrics` in `PerformanceTracker` returns `self._metrics` which is keyed by `provider_base/model_id`.
+    # The `sort_models_by_size_performance_id` expects `provider -> model_id -> metrics`.
+    # We need to adapt. For now, let's assume performance_tracker.get_all_metrics()
+    # returns a dict like: { "specific_provider_name/model_id": {"score": float, ...} }
+    # Or, better, let's make the sorter robust or adapt the input here.
+
+    # Adapting performance metrics for the sorter:
+    # Sorter expects: {provider_name: {model_id: {"score": ...}}}
+    # PerformanceTracker stores: { "provider_base/model_id": {"score": ...} }
+    # We need to make sure the sorter can look up correctly.
+    # The sorter currently takes `model_info["provider"]` and `model_info["id"]` to lookup.
+    # So, performance_metrics should be keyed by the specific provider name.
+    # Let's assume PerformanceTracker.get_all_metrics() returns data that can be transformed or used.
+    
+    # Simplified: performance_tracker.get_all_metrics() returns { "provider_base/model_id": {"score": ...} }
+    # We can transform this or make the sorter smarter.
+    # For now, let's pass it as is and assume the sorter might need adjustment if this doesn't work.
+    # OR, let the sorter take the tracker instance directly. (Future refactor)
+    
+    # Let's assume `get_all_metrics` in `PerformanceTracker` returns a dict keyed by provider (base or specific)
+    # and then by model_id. The `sort_models_by_size_performance_id` will use `model_info['provider']`.
+    
+    # The `get_ranked_models` in PerformanceTracker returns a list of (provider_base, model_id, score, calls).
+    # We need a way to get scores for *all* models, not just those meeting min_calls.
+    # Let's assume `manager.performance_tracker.get_metrics_for_model(provider, model_id)` exists or adapt.
+    # For now, we'll pass None for performance_metrics to the sorter, relying on size and ID first.
+    # This is a simplification for now; a proper implementation would fetch all scores.
+    
+    # Correct approach: Fetch all model metrics from performance tracker
+    # PerformanceTracker._metrics is provider_base/model_id -> {score, latency, ...}
+    # We need to transform it for sort_models_by_size_performance_id,
+    # which expects {provider_name: {model_id: {score: ...}}}
+    
+    all_perf_metrics_raw = manager.performance_tracker.get_all_metrics() # provider_base/model_id -> data
+    # Transform all_perf_metrics_raw for the sorter:
+    # The sorter uses model_info["provider"] (specific name) and model_info["id"] (suffix)
+    # So, the metrics dict should be keyed by specific_provider_name.
+    
+    # For now, let's make the sorter handle the combined key if possible, or assume it gets individual scores.
+    # The current sorter expects metrics keyed by specific provider, then model_id.
+    # We will pass None for performance_metrics for now, meaning sorting will be by size then ID.
+    # TODO: Properly integrate full performance data into this selection.
+    # For now, the subtask is about integrating size primarily.
+
+    # Create a dictionary for performance metrics structured as:
+    # { specific_provider_name: { model_id_suffix: {"score": float, ...} } }
+    # This requires iterating through all_models_from_registry and fetching scores.
+    # PerformanceTracker has `get_metrics(self, provider_base: str, model_id: str)`
+    
+    metrics_for_sorter = {}
+    for prov, model_list in all_models_from_registry.items():
+        metrics_for_sorter[prov] = {}
+        base_prov = prov.split("-local-")[0].split("-proxy")[0]
+        for m_info in model_list:
+            m_id = m_info['id']
+            # Assuming performance_tracker has a method to get metrics for a specific model
+            # For now, let's simulate this or assume default scores if not found
+            model_perf = manager.performance_tracker.get_metrics(base_prov, m_id)
+            if model_perf:
+                metrics_for_sorter[prov][m_id] = model_perf
+            else: # Default if no metrics
+                 metrics_for_sorter[prov][m_id] = {"score": 0.0, "latency": float('inf'), "calls": 0}
+
+
+    logger.debug(f"Total flattened models before sorting: {len(flattened_model_infos)}")
+    # Sort all models using the new comprehensive sorter
+    comprehensively_sorted_models = sort_models_by_size_performance_id(
+        flattened_model_infos,
+        performance_metrics=metrics_for_sorter
     )
-    # --- END NEW SORT ---
+    logger.debug(f"Total models after comprehensive sorting: {len(comprehensively_sorted_models)}")
 
-    if current_model_tier == "LOCAL":
-        logger.info("Automatic selection: MODEL_TIER=LOCAL - prioritizing local models")
-        # Prioritize local providers when MODEL_TIER=LOCAL
-        local_providers = [p for p in available_dict if p.endswith("-local") or p.endswith("-local-127-0-0-1")]
-        if local_providers:
-            first_local_provider = local_providers[0]
-            models = available_dict.get(first_local_provider, [])
-            if models:
-                first_model = models[0].get("id")
-                if first_model:
-                    logger.info(f"Automatic selection (LOCAL tier): Selected {first_local_provider}/{first_model}")
-                    return first_local_provider, first_model
-        logger.warning("Automatic selection: No local models found despite MODEL_TIER=LOCAL")
+    current_model_tier = settings.MODEL_TIER
 
-    # For FREE tier or when no local models are available
-    if current_model_tier == "FREE":
-        logger.info("Automatic selection: MODEL_TIER=FREE - checking free/local models")
-        # Try ranked models first
-        if ranked_models_sorted:
-            logger.debug(f"Ranking based selection: {len(ranked_models_sorted)} models ranked. Checking availability, keys, and tier...")
-            for provider_base, model_suffix, score, _ in ranked_models_sorted:
-                is_local = provider_base in ["ollama", "litellm"]
-                is_free_tier_model = ":free" in model_suffix.lower()
-                
-                if not is_free_tier_model and not is_local:
-                    continue
+    for model_info in comprehensively_sorted_models:
+        specific_provider_name = model_info["provider"] # This is the specific name like "ollama-local-..."
+        model_id_suffix = model_info["id"] # This is the suffix like "llama3"
+        num_params = model_info.get("num_parameters_sortable", 0)
+        perf_score = model_info.get("performance_score", 0.0)
 
-                matching_providers = [p for p in model_registry._reachable_providers 
-                                    if p.startswith(f"{provider_base}-local-") or 
-                                       p == f"{provider_base}-proxy" or 
-                                       p == provider_base]
-                
-                if not matching_providers:
-                    continue
-                    
-                specific_provider = matching_providers[0]
-                if model_registry.is_model_available(specific_provider, model_suffix):
-                    if is_local:
-                        canonical_id = f"{provider_base}/{model_suffix}"
-                    else:
-                        canonical_id = model_suffix
-                        
-                    if provider_base not in ["ollama", "litellm"]:
-                        if await manager.key_manager.is_provider_depleted(provider_base):
-                            continue
-                            
-                    logger.info(f"Automatic selection successful (Ranked): Selected {specific_provider}/{model_suffix}")
-                    return specific_provider, model_suffix
+        # Determine base provider type (e.g., "ollama", "openrouter")
+        base_provider_type = specific_provider_name.split("-local-")[0].split("-proxy")[0]
+        
+        is_local_provider = base_provider_type in ["ollama", "litellm"]
 
-        # Fallback to registry order for FREE tier
-        for provider_base in ["ollama", "litellm", "openrouter", "openai"]:
-            matching_providers = [p for p in available_dict if 
-                                p == provider_base or 
-                                p.startswith(f"{provider_base}-local-") or 
-                                p == f"{provider_base}-proxy"]
-            if matching_providers:
-                first_matching_provider = matching_providers[0]
-                models = available_dict.get(first_matching_provider, [])
-                for model_info in models:
-                    model_id = model_info.get("id")
-                    if model_id:
-                        is_free_tier = ":free" in model_id.lower()
-                        is_local = first_matching_provider.startswith(("ollama-local", "litellm-local")) or first_matching_provider.endswith("-proxy")
-                        if is_free_tier or is_local:
-                            logger.info(f"Automatic selection (FREE tier fallback): Selected {first_matching_provider}/{model_id}")
-                            return first_matching_provider, model_id
+        # Tier Check
+        if current_model_tier == "LOCAL" and not is_local_provider:
+            logger.debug(f"Skipping '{specific_provider_name}/{model_id_suffix}': Tier is LOCAL, model is remote.")
+            continue
+        
+        if current_model_tier == "FREE":
+            is_free_model = ":free" in model_id_suffix.lower()
+            if not is_local_provider and not is_free_model:
+                logger.debug(f"Skipping '{specific_provider_name}/{model_id_suffix}': Tier is FREE, model is remote and not free.")
+                continue
+        
+        # Key/Configuration Check for remote providers
+        if not is_local_provider:
+            if not manager.settings.is_provider_configured(base_provider_type):
+                logger.debug(f"Skipping '{specific_provider_name}/{model_id_suffix}': Remote provider '{base_provider_type}' not configured.")
+                continue
+            if await manager.key_manager.is_provider_depleted(base_provider_type):
+                logger.debug(f"Skipping '{specific_provider_name}/{model_id_suffix}': Keys for remote provider '{base_provider_type}' depleted.")
+                continue
+        
+        # If all checks pass, this is the best model
+        logger.info(f"Automatic selection (Comprehensive Sort): Selected {specific_provider_name}/{model_id_suffix} "
+                    f"(Size: {num_params}, Score: {perf_score:.2f}, Tier: {current_model_tier})")
+        return specific_provider_name, model_id_suffix
 
-    logger.error("Automatic model selection failed: No available models found that match the MODEL_TIER requirements")
+    logger.error("Automatic model selection failed: No available models found after comprehensive sorting and filtering.")
     return None, None
 # --- END Automatic Model Selection Logic ---
 

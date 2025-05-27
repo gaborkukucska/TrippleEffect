@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 import logging
 import json
+import yaml # For loading governance principles
 import re # Import regex for key matching
 
 # Define base directory relative to this file's location
@@ -12,6 +13,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent # Define BASE_DIR here 
 
 # Define path to the prompts file
 PROMPTS_FILE_PATH = BASE_DIR / 'prompts.json'
+GOVERNANCE_FILE_PATH = BASE_DIR / 'governance.yaml' # Path for governance principles
 
 # Explicitly load .env file from the project root directory
 dotenv_path = BASE_DIR / '.env'
@@ -148,6 +150,11 @@ class Settings:
 
         # --- Load Prompts from JSON ---
         self._load_prompts_from_json()
+        
+        # --- Load Governance Principles from YAML ---
+        self.GOVERNANCE_PRINCIPLES: List[Dict[str, Any]] = [] # Initialize attribute
+        self._load_governance_principles()
+
 
         # --- Default Agent Configuration ---
         self.DEFAULT_AGENT_PROVIDER: str = os.getenv("DEFAULT_AGENT_PROVIDER", "openrouter")
@@ -243,6 +250,36 @@ class Settings:
              logger.info(f"Ensured projects directory exists at: {self.PROJECTS_BASE_DIR}")
         except Exception as e:
              logger.error(f"Error creating projects directory at {self.PROJECTS_BASE_DIR}: {e}")
+
+    # --- Loading Governance Principles from YAML ---
+    def _load_governance_principles(self):
+        """Loads governance principles from governance.yaml."""
+        self.GOVERNANCE_PRINCIPLES: List[Dict[str, Any]] = [] # Ensure attribute is initialized
+        try:
+            if GOVERNANCE_FILE_PATH.exists():
+                with open(GOVERNANCE_FILE_PATH, 'r', encoding='utf-8') as f:
+                    data = yaml.safe_load(f) # Use safe_load for security
+                    if isinstance(data, dict) and "principles" in data and isinstance(data["principles"], list):
+                        self.GOVERNANCE_PRINCIPLES = data["principles"]
+                        logger.info(f"Successfully loaded {len(self.GOVERNANCE_PRINCIPLES)} governance principles from {GOVERNANCE_FILE_PATH}.")
+                        # Optional: Validate structure of each principle if needed
+                        for i, principle in enumerate(self.GOVERNANCE_PRINCIPLES):
+                            if not isinstance(principle, dict) or not all(k in principle for k in ["id", "name", "text", "applies_to", "enabled"]):
+                                logger.warning(f"Governance principle at index {i} is missing required keys or is not a dict: {principle.get('id', 'Unknown ID')}")
+                                # Optionally remove or skip invalid principles
+                    else:
+                        logger.error(f"Governance file {GOVERNANCE_FILE_PATH} has incorrect structure. Expected a dictionary with a 'principles' list. Using empty list.")
+                        self.GOVERNANCE_PRINCIPLES = []
+            else:
+                logger.warning(f"Governance principles file not found at {GOVERNANCE_FILE_PATH}. Using empty list.")
+                self.GOVERNANCE_PRINCIPLES = []
+        except yaml.YAMLError as e:
+            logger.error(f"Error decoding YAML from {GOVERNANCE_FILE_PATH}: {e}. Using empty list for governance principles.")
+            self.GOVERNANCE_PRINCIPLES = []
+        except Exception as e:
+            logger.error(f"Unexpected error loading governance principles file {GOVERNANCE_FILE_PATH}: {e}. Using empty list.", exc_info=True)
+            self.GOVERNANCE_PRINCIPLES = []
+    # --- END Loading Governance Principles ---
 
     def _check_required_keys(self):
         """Checks provider configuration status based on found keys/URLs, respecting MODEL_TIER."""

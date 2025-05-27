@@ -339,6 +339,26 @@ class AgentWorkflowManager:
         standard_instructions_key = self._standard_instructions_map.get(agent.agent_type)
         standard_instructions_template = settings.PROMPTS.get(standard_instructions_key, "Error: Standard instructions template missing.")
 
+        # --- Governance Principles Injection ---
+        governance_principles_str = ""
+        if hasattr(manager.settings, 'GOVERNANCE_PRINCIPLES') and manager.settings.GOVERNANCE_PRINCIPLES:
+            applicable_principles = []
+            for principle in manager.settings.GOVERNANCE_PRINCIPLES:
+                if principle.get("enabled", False):
+                    applies_to_list = principle.get("applies_to", [])
+                    if "all_agents" in applies_to_list or agent.agent_type in applies_to_list:
+                        applicable_principles.append(
+                            f"Principle: {principle.get('name', 'N/A')} (ID: {principle.get('id', 'N/A')})\n{principle.get('text', 'N/A')}"
+                        )
+            
+            if applicable_principles:
+                governance_principles_str = "\n\n--- Governance Principles ---\n" + "\n\n".join(applicable_principles) + "\n--- End Governance Principles ---"
+            else:
+                # Optional: Message if no specific principles apply but some are loaded
+                # governance_principles_str = "\n\n--- Governance Principles ---\nNo specific governance principles apply to your current role beyond standard operational guidelines.\n--- End Governance Principles ---"
+                pass # Or just omit the section if none apply
+        # --- End Governance Principles Injection ---
+
         address_book_content = self._build_address_book(agent, manager)
         agent_project_name_for_context = self._get_agent_project_name(agent, manager)
         available_workflow_trigger_info = ""
@@ -361,6 +381,9 @@ class AgentWorkflowManager:
         }
         try: formatted_standard_instructions = standard_instructions_template.format(**standard_formatting_context)
         except Exception as e: logger.error(f"Error formatting standard instructions: {e}"); formatted_standard_instructions = standard_instructions_template
+        
+        # Inject governance principles after standard instructions
+        formatted_standard_instructions += governance_principles_str
 
         state_prompt_key = self._prompt_map.get((agent.agent_type, agent.state)) or self._prompt_map.get((agent.agent_type, DEFAULT_STATE))
         if not state_prompt_key: return settings.PROMPTS.get("default_system_prompt", "Error: Default prompt missing.")
