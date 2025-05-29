@@ -189,7 +189,7 @@ async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optiona
         
         # Key/Configuration Check for remote providers
         if not is_local_provider:
-            if not manager.settings.is_provider_configured(base_provider_type):
+            if not settings.is_provider_configured(base_provider_type):
                 logger.debug(f"Skipping '{specific_provider_name}/{model_id_suffix}': Remote provider '{base_provider_type}' not configured.")
                 continue
             if await manager.key_manager.is_provider_depleted(base_provider_type):
