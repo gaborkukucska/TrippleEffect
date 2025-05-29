@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class ConfigManager:
     """
     Manages reading and writing of the agent configuration file (config.yaml),
-    including 'agents', 'teams', and 'allowed_sub_agent_models'.
+    including 'agents'.
     Provides async-safe methods for CRUD operations on agent configurations
     using asyncio.Lock and atomic file writes.
     Includes a basic backup mechanism before writing.
@@ -36,8 +36,7 @@ class ConfigManager:
         # Store the entire loaded config data now
         # Initialize with expected keys, even if empty
         self._config_data: Dict[str, Any] = {
-            "agents": [],
-            "allowed_sub_agent_models": {}
+            "agents": []
         }
         self._lock = asyncio.Lock() # Use asyncio.Lock for async safety
         # Initial load is done synchronously here for simplicity during startup.
@@ -47,7 +46,7 @@ class ConfigManager:
         """Synchronous initial load for use during startup. Loads the *entire* config."""
         logger.info(f"[Sync Load] Attempting to load full configuration from: {self.config_path}")
         # Default structure if file is missing or invalid
-        default_structure = {"agents": [], "allowed_sub_agent_models": {}}
+        default_structure = {"agents": []}
 
         if not self.config_path.exists():
             logger.warning(f"[Sync Load] Configuration file not found at {self.config_path}. Initializing empty structure.")
@@ -77,23 +76,9 @@ class ConfigManager:
                             else:
                                 logger.warning(f"[Sync Load] Invalid agent entry at index {i} in {self.config_path}. Skipping.")
                         self._config_data["agents"] = valid_agents
-
-                    if "allowed_sub_agent_models" not in self._config_data or not isinstance(self._config_data.get("allowed_sub_agent_models"), dict):
-                        logger.warning(f"[Sync Load] 'allowed_sub_agent_models' key missing or invalid in {self.config_path}. Initializing empty dict.")
-                        self._config_data["allowed_sub_agent_models"] = {}
-                    else:
-                        # Validate allowed models structure (dict of lists of strings)
-                        valid_allowed = {}
-                        for provider, models in self._config_data["allowed_sub_agent_models"].items():
-                            if isinstance(models, list):
-                                valid_allowed[provider] = [m for m in models if isinstance(m, str)]
-                            else:
-                                logger.warning(f"[Sync Load] Invalid models list for provider '{provider}' in allowed_sub_agent_models. Resetting provider list.")
-                                valid_allowed[provider] = []
-                        self._config_data["allowed_sub_agent_models"] = valid_allowed
                     # --- End Validation ---
 
-                    logger.info(f"[Sync Load] Successfully loaded configuration: {len(self._config_data['agents'])} agents, {len(self._config_data['allowed_sub_agent_models'])} allowed provider sections.")
+                    logger.info(f"[Sync Load] Successfully loaded configuration: {len(self._config_data['agents'])} agents.")
 
                 else:
                     logger.warning(f"[Sync Load] Configuration file {self.config_path} does not contain a valid dictionary structure. Initializing empty.")
@@ -115,7 +100,6 @@ class ConfigManager:
         async with self._lock:
             logger.info(f"Attempting to load full configuration from: {self.config_path}")
             # Don't use default_structure here, rely on the existing self._config_data as the fallback
-            # default_structure = {"agents": [], "teams": {}, "allowed_sub_agent_models": {}}
 
             if not self.config_path.exists():
                 logger.warning(f"Configuration file not found at {self.config_path}. Returning current internal state.")
@@ -148,20 +132,10 @@ class ConfigManager:
                              else: logger.warning(f"Invalid agent entry at index {i} in loaded data. Skipping.")
                          temp_config_data["agents"] = valid_agents
 
-                    if "allowed_sub_agent_models" not in temp_config_data or not isinstance(temp_config_data.get("allowed_sub_agent_models"), dict):
-                         logger.warning(f"'allowed_sub_agent_models' key missing or invalid in loaded data. Keeping previous state.")
-                         temp_config_data["allowed_sub_agent_models"] = self._config_data.get("allowed_sub_agent_models", {})
-                    else: # Validate allowed models structure
-                         valid_allowed = {}
-                         for provider, models in temp_config_data["allowed_sub_agent_models"].items():
-                             if isinstance(models, list): valid_allowed[provider] = [m for m in models if isinstance(m, str)]
-                             else: logger.warning(f"Invalid models list for provider '{provider}' in loaded data."); valid_allowed[provider] = []
-                         temp_config_data["allowed_sub_agent_models"] = valid_allowed
-
                     # If structure seems valid enough, update the internal state
                     # if valid_structure: # Or decide to always update with validated data
                     self._config_data = temp_config_data
-                    logger.info(f"Successfully loaded and validated configuration: {len(self._config_data['agents'])} agents, {len(self._config_data['allowed_sub_agent_models'])} allowed providers.")
+                    logger.info(f"Successfully loaded and validated configuration: {len(self._config_data['agents'])} agents.")
 
                 else:
                     logger.warning(f"Configuration file {self.config_path} does not contain a valid dictionary structure. Using previous internal state.")
@@ -196,8 +170,7 @@ class ConfigManager:
         back to the YAML file atomically. Assumes lock is held.
         """
         agents_count = len(self._config_data.get('agents', []))
-        allowed_count = len(self._config_data.get('allowed_sub_agent_models', {}))
-        logger.info(f"Attempting to save config ({agents_count} agents, {allowed_count} allowed providers) to: {self.config_path}")
+        logger.info(f"Attempting to save config ({agents_count} agents) to: {self.config_path}")
 
         if not await self._backup_config():
              logger.error("Aborting save due to backup failure.")
@@ -208,8 +181,6 @@ class ConfigManager:
             # Use a temporary file for atomic write
             # Ensure config_to_save has all necessary top-level keys before dumping
             config_to_save = {
-                # Ensure order for readability if possible (might depend on PyYAML version/settings)
-                "allowed_sub_agent_models": self._config_data.get("allowed_sub_agent_models", {}),
                 "agents": self._config_data.get("agents", [])
             }
 
