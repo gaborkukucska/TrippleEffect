@@ -341,9 +341,9 @@ class AgentWorkflowManager:
 
         # --- Governance Principles Injection ---
         governance_principles_str = ""
-        if hasattr(manager.settings, 'GOVERNANCE_PRINCIPLES') and manager.settings.GOVERNANCE_PRINCIPLES:
+        if hasattr(settings, 'GOVERNANCE_PRINCIPLES') and settings.GOVERNANCE_PRINCIPLES:
             applicable_principles = []
-            for principle in manager.settings.GOVERNANCE_PRINCIPLES:
+            for principle in settings.GOVERNANCE_PRINCIPLES:
                 if principle.get("enabled", False):
                     applies_to_list = principle.get("applies_to", [])
                     if "all_agents" in applies_to_list or agent.agent_type in applies_to_list:

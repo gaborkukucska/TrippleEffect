@@ -75,7 +75,7 @@ class CycleContext(BaseModel):
             # For Pydantic v2, localns are implicitly available or passed differently.
             # The `force=True` might be needed if there are complex circular dependencies
             # that Pydantic can't resolve automatically.
-            cls.model_rebuild(force=True) # Pass localns if model_rebuild signature allows
+            cls.model_rebuild(_types_namespace=localns, force=True) # Pass localns if model_rebuild signature allows
         elif hasattr(cls, 'update_forward_refs'): # Pydantic v1
             cls.update_forward_refs(**localns)
         else:
