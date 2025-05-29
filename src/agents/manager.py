@@ -111,6 +111,8 @@ class AgentManager:
         logger.info("AgentManager __init__: Instantiating ModelPerformanceTracker...");
         self.performance_tracker = ModelPerformanceTracker()
         
+        self.model_registry = model_registry
+
         self._ensure_projects_dir()
         self._pm_manage_task: Optional[asyncio.Task] = None
         logger.info("AgentManager __init__: Initialized synchronously.")
