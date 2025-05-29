@@ -120,11 +120,11 @@ async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optiona
     # This is a simplification for now; a proper implementation would fetch all scores.
     
     # Correct approach: Fetch all model metrics from performance tracker
-    # PerformanceTracker._metrics is provider_base/model_id -> {score, latency, ...}
+    # PerformanceTracker._metrics is provider_base -> model_id -> {score, latency, ...}
     # We need to transform it for sort_models_by_size_performance_id,
     # which expects {provider_name: {model_id: {score: ...}}}
     
-    all_perf_metrics_raw = manager.performance_tracker.get_all_metrics() # provider_base/model_id -> data
+    all_perf_metrics_raw = manager.performance_tracker.get_metrics() # Fetches all metrics: provider_base -> model_id -> data
     # Transform all_perf_metrics_raw for the sorter:
     # The sorter uses model_info["provider"] (specific name) and model_info["id"] (suffix)
     # So, the metrics dict should be keyed by specific_provider_name.
@@ -145,14 +145,14 @@ async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optiona
         metrics_for_sorter[prov] = {}
         base_prov = prov.split("-local-")[0].split("-proxy")[0]
         for m_info in model_list:
-            m_id = m_info['id']
-            # Assuming performance_tracker has a method to get metrics for a specific model
-            # For now, let's simulate this or assume default scores if not found
-            model_perf = manager.performance_tracker.get_metrics(base_prov, m_id)
-            if model_perf:
+            m_id = m_info['id'] # model_id_suffix
+            
+            model_perf = all_perf_metrics_raw.get(base_prov, {}).get(m_id) # Use the pre-fetched data
+
+            if model_perf: # model_perf is now ModelMetrics dict or None
                 metrics_for_sorter[prov][m_id] = model_perf
-            else: # Default if no metrics
-                 metrics_for_sorter[prov][m_id] = {"score": 0.0, "latency": float('inf'), "calls": 0}
+            else: # Default if no metrics for this specific_provider/model_id_suffix combination
+                 metrics_for_sorter[prov][m_id] = {"score": 0.0, "latency": float('inf'), "calls": 0, "success_count": 0, "failure_count": 0, "total_duration_ms": 0.0}
 
 
     logger.debug(f"Total flattened models before sorting: {len(flattened_model_infos)}")

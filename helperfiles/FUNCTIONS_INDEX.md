@@ -14,7 +14,7 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 
 ## **Configuration (`src/config/`)**
 
-*   `src/config/config_manager.py::ConfigManager` (Class) - Manages reading/writing of `config.yaml` (bootstrap agents, teams, etc.). (Note: Currently seems unused by core logic, settings are loaded directly in `settings.py`).
+*   `src/config/config_manager.py::ConfigManager` (Class) - Manages reading/writing of `config.yaml` (bootstrap agents, teams, etc.). (Note: `settings.py` uses `ConfigManager` for the initial load of `config.yaml`. API routes also use `ConfigManager` to update `config.yaml` at runtime; however, these runtime changes require an application restart to be reflected in the active `settings` object and agent behaviors derived from it.)
 *   `src/config/model_registry.py::ModelInfo` (Class) - Simple dictionary subclass for type hinting.
 *   `src/config/model_registry.py::ModelRegistry` (Class) - Handles discovery, filtering, storage of available models from reachable providers (Ollama, OpenRouter, OpenAI).
 *   `src/config/model_registry.py::ModelRegistry.__init__(settings_obj)` - Initializes registry with settings.
