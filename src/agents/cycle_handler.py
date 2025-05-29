@@ -18,6 +18,10 @@ from src.agents.constants import (
     WORKER_STATE_WAIT, REQUEST_STATE_TAG_PATTERN
 )
 
+# Import for keyword extraction
+from src.utils.text_utils import extract_keywords_from_text
+from src.tools.knowledge_base import KnowledgeBaseTool # Assuming this is the correct tool name
+
 from src.agents.cycle_components import (
     CycleContext,
     PromptAssembler,
@@ -158,8 +162,78 @@ class AgentCycleHandler:
 
                 elif event_type == "agent_thought":
                     context.action_taken_this_cycle = True; context.thought_produced_this_cycle = True
-                    if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant_thought", content=event.get("content"))
-                    await self._manager.send_to_ui(event)
+                    thought_content = event.get("content")
+                    if not thought_content:
+                        logger.warning(f"Agent {agent.agent_id} produced an empty thought. Skipping KB save.")
+                    else:
+                        # Log thought to main DB
+                        if context.current_db_session_id:
+                            await self._manager.db_manager.log_interaction(
+                                session_id=context.current_db_session_id,
+                                agent_id=agent.agent_id,
+                                role="assistant_thought",
+                                content=thought_content
+                            )
+                        
+                        # Send thought to UI
+                        await self._manager.send_to_ui(event)
+
+                        # --- Save thought to Knowledge Base with extracted keywords ---
+                        try:
+                            extracted_keywords_list = extract_keywords_from_text(thought_content, max_keywords=5)
+                            
+                            default_keywords = ["agent_thought", agent.agent_id]
+                            if agent.persona:
+                                default_keywords.append(agent.persona.lower().replace(" ", "_"))
+                            if agent.agent_type:
+                                default_keywords.append(agent.agent_type.lower())
+
+                            combined_keywords = list(set(default_keywords + extracted_keywords_list))
+                            # Filter out any None or empty strings that might have slipped in
+                            final_keywords_list = [kw for kw in combined_keywords if kw and kw.strip()]
+                            
+                            final_keywords_str = ",".join(final_keywords_list)
+                            
+                            logger.info(f"Agent {agent.agent_id} saving thought to KB. Keywords: '{final_keywords_str}'")
+
+                            kb_tool_args = {
+                                "action": "save_knowledge",
+                                "content": thought_content,
+                                "keywords": final_keywords_str,
+                                "title": f"Agent Thought by {agent.agent_id} ({agent.persona}) at {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                            }
+                            
+                            # Assuming KnowledgeBaseTool.name is defined and tool_executor is available
+                            if hasattr(self._manager.tool_executor, 'execute_tool') and hasattr(KnowledgeBaseTool, 'name'):
+                                # Generate a unique call_id for this internal tool call
+                                kb_call_id = f"internal_kb_save_{agent.agent_id}_{int(time.time() * 1000)}"
+                                
+                                # Execute directly via interaction_handler's method if suitable, or tool_executor
+                                # For simplicity, using tool_executor directly, assuming it handles context correctly for internal calls
+                                # Note: execute_single_tool in interaction_handler changes agent status, which might not be desired here.
+                                # Let's construct a direct call to tool_executor's execute_tool or a similar method.
+                                # For now, we'll simulate the direct execution path or assume a simplified internal call.
+                                
+                                kb_save_result = await self._manager.tool_executor.execute_tool(
+                                    agent_id=agent.agent_id, # or a system/KB agent ID
+                                    agent_sandbox_path=agent.sandbox_path, # KB tool might not need sandbox
+                                    tool_name=KnowledgeBaseTool.name,
+                                    tool_args=kb_tool_args,
+                                    project_name=self._manager.current_project, # Pass current project/session context
+                                    session_name=self._manager.current_session,
+                                    manager=self._manager # Pass manager for context
+                                )
+                                if isinstance(kb_save_result, str) and "Error" in kb_save_result:
+                                     logger.error(f"Agent {agent.agent_id}: Failed to save thought to KB. Result: {kb_save_result}")
+                                elif isinstance(kb_save_result, dict) and kb_save_result.get("status") == "error":
+                                     logger.error(f"Agent {agent.agent_id}: Failed to save thought to KB. Result: {kb_save_result.get('message')}")
+                                else:
+                                     logger.info(f"Agent {agent.agent_id}: Thought successfully saved to KB.")
+                            else:
+                                logger.warning(f"Agent {agent.agent_id}: KnowledgeBaseTool or tool_executor not properly configured for saving thought.")
+                        except Exception as kb_exc:
+                            logger.error(f"Agent {agent.agent_id}: Exception while saving thought to KB: {kb_exc}", exc_info=True)
+                        # --- End KB Save ---
 
                 elif event_type == "agent_state_change_requested":
                     context.action_taken_this_cycle = True; context.state_change_requested_this_cycle = True
@@ -183,20 +257,85 @@ class AgentCycleHandler:
                     if context.current_db_session_id and raw_assistant_response:
                         await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=raw_assistant_response, tool_calls=tool_calls)
                     
-                    tool_results_for_history: List[ToolResultDict] = []
+                    all_tool_results_for_history: List[MessageDict] = [] # Stores formatted results for agent history
                     any_tool_success = False
-                    for call_data in tool_calls:
-                        result_dict = await self._interaction_handler.execute_single_tool(agent, call_data.get("id"), call_data.get("name"), call_data.get("arguments", {}), self._manager.current_project, self._manager.current_session)
-                        if result_dict:
-                            tool_results_for_history.append({"role": "tool", "tool_call_id": result_dict.get("call_id", "unknown"), "name": result_dict.get("name", call_data.get("name")), "content": str(result_dict.get("content", ""))})
-                            if not str(result_dict.get("content", "")).lower().startswith("error:"): any_tool_success = True
-                        if context.current_db_session_id and result_dict: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="tool", content=str(result_dict.get("content","")), tool_results=[result_dict])
-                        if result_dict: await self._manager.send_to_ui({**result_dict, "type": "tool_result", "agent_id": agent.agent_id})
                     
-                    for res_hist_item in tool_results_for_history: agent.message_history.append(res_hist_item)
+                    if len(tool_calls) > 1:
+                        logger.info(f"CycleHandler '{agent.agent_id}': Processing {len(tool_calls)} tool calls sequentially.")
+
+                    for i, call_data in enumerate(tool_calls):
+                        tool_name = call_data.get("name")
+                        tool_id = call_data.get("id")
+                        tool_args = call_data.get("arguments", {})
+                        
+                        logger.info(f"CycleHandler '{agent.agent_id}': Executing tool {i+1}/{len(tool_calls)}: Name='{tool_name}', ID='{tool_id}'")
+                        
+                        # interaction_handler.execute_single_tool sets agent status to EXECUTING_TOOL
+                        # and then back to PROCESSING. This is fine.
+                        result_dict = await self._interaction_handler.execute_single_tool(
+                            agent, 
+                            tool_id, 
+                            tool_name, 
+                            tool_args, 
+                            self._manager.current_project, 
+                            self._manager.current_session
+                        )
+                        
+                        if result_dict:
+                            # Format for agent's message history
+                            history_item: MessageDict = { # Ensure it's MessageDict compatible
+                                "role": "tool",
+                                "tool_call_id": result_dict.get("call_id", tool_id or "unknown_id_in_loop"),
+                                "name": result_dict.get("name", tool_name or "unknown_tool_in_loop"), # Use original name if result doesn't have it
+                                "content": str(result_dict.get("content", "[Tool Error: No content]"))
+                            }
+                            all_tool_results_for_history.append(history_item)
+                            
+                            result_content_str = str(result_dict.get("content", ""))
+                            if not result_content_str.lower().startswith("[toolerror") and \
+                               not result_content_str.lower().startswith("error:") and \
+                               not result_content_str.lower().startswith("[toolexec error"):
+                                any_tool_success = True
+                                logger.info(f"CycleHandler '{agent.agent_id}': Tool '{tool_name}' (ID: {tool_id}) executed successfully.")
+                            else:
+                                logger.warning(f"CycleHandler '{agent.agent_id}': Tool '{tool_name}' (ID: {tool_id}) executed with error/failure: {result_content_str[:100]}...")
+
+                            # Log individual tool result to DB
+                            if context.current_db_session_id:
+                                await self._manager.db_manager.log_interaction(
+                                    session_id=context.current_db_session_id,
+                                    agent_id=agent.agent_id,
+                                    role="tool", # Individual tool execution
+                                    content=result_content_str, # The content of this specific tool's result
+                                    tool_results=[result_dict] # Pass the single result_dict in a list
+                                )
+                            
+                            # Send individual tool result to UI
+                            await self._manager.send_to_ui({
+                                **result_dict, 
+                                "type": "tool_result", 
+                                "agent_id": agent.agent_id,
+                                "tool_sequence": f"{i+1}_of_{len(tool_calls)}" # Add sequence info
+                            })
+                        else:
+                            # Handle case where execute_single_tool might return None (should be rare)
+                            logger.error(f"CycleHandler '{agent.agent_id}': Tool '{tool_name}' (ID: {tool_id}) execution returned None.")
+                            history_item: MessageDict = {
+                                "role": "tool", 
+                                "tool_call_id": tool_id or f"unknown_call_{i}", 
+                                "name": tool_name or f"unknown_tool_{i}", 
+                                "content": "[Tool Error: Execution returned no result object]"
+                            }
+                            all_tool_results_for_history.append(history_item)
+                    
+                    # Append all collected tool results to the agent's history
+                    for res_hist_item in all_tool_results_for_history:
+                        agent.message_history.append(res_hist_item)
+                    
                     context.executed_tool_successfully_this_cycle = any_tool_success
-                    context.needs_reactivation_after_cycle = True 
-                    break 
+                    context.needs_reactivation_after_cycle = True # Agent needs to process the aggregated results
+                    logger.info(f"CycleHandler '{agent.agent_id}': Finished processing {len(tool_calls)} tool calls. Any success: {any_tool_success}. Needs reactivation.")
+                    break # Break from the agent_generator loop, as this cycle's LLM turn is done.
 
                 elif event_type in ["response_chunk", "status", "final_response", "invalid_state_request_output"]:
                     if event_type == "final_response" and context.current_db_session_id and event.get("content"):

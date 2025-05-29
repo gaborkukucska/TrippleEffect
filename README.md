@@ -33,14 +33,15 @@ chmod +x setup.sh run.sh
 *   **Intelligent Model Handling:**
     *   **Discovery:** Automatically finds reachable LLM providers (Ollama, OpenRouter, OpenAI) and available models at startup.
     *   **Filtering:** Filters discovered models based on the `MODEL_TIER` setting (`.env`).
-    *   **Auto-Selection:** Automatically selects the best model for Admin AI (at startup) and dynamic agents (at creation if not specified) based on performance metrics and availability.
-    *   **Failover:** Automatic API key cycling and model/provider failover (Local -> Free -> Paid tiers) on persistent errors during generation.
+    *   **Auto-Selection:** Automatically selects the best model for Admin AI (at startup) and dynamic agents (at creation if not specified). Selection priority is now Tier -> Model Size (parameter count, larger preferred) -> Performance Score -> ID. `num_parameters` are discovered for providers like OpenRouter and Ollama where available.
+    *   **Failover:** Automatic API key cycling and model/provider failover (Local -> Free -> Paid tiers) on persistent errors during generation. Model selection during failover also respects the new Size/Performance priority.
     *   **Performance Tracking:** Records success rate and latency per model, persisting data (`data/model_performance_metrics.json`).
-*   **Tool-Based Interaction:** Agents use tools via an **XML format**. Tools include file system operations, inter-agent messaging, team management, web search, GitHub interaction, system information retrieval, and knowledge base operations.
-*   **Context Management:** Standardized instructions are injected, agents are guided to use file operations for large outputs. Admin AI receives current time context. **(Update v2.23):** Admin AI system prompt assembly streamlined to remove redundant static tool descriptions and model lists.
+*   **Tool-Based Interaction:** Agents use tools via an **XML format**. The framework can now process multiple distinct tool calls found in a single agent response; these are executed sequentially, and all results are then fed back to the agent in the next turn.
+*   **Context Management:** Standardized instructions are injected, agents are guided to use file operations for large outputs. Admin AI receives current time context.
 *   **Communication Layer Separation (UI):** The user interface visually separates direct User<->Admin AI interaction from internal Admin AI<->PM<->Worker communication and system events.
-*   **Persistence:** Session state (agents, teams, histories) can be saved/loaded (filesystem). Interactions and knowledge are logged to a database (`data/trippleeffect_memory.db`) **(Needs refinement)**.
-*   **Communication Layer Separation (UI):** The user interface visually separates direct User<->Admin AI interaction from internal Admin AI<->PM<->Worker communication and system events.
+*   **Persistence:** Session state (agents, teams, histories) can be saved/loaded (filesystem). Interactions and knowledge are logged to a database (`data/trippleeffect_memory.db`).
+*   **KnowledgeBaseTool Enhancements:** Agent thoughts are saved with automatically generated keywords. A new `search_agent_thoughts` action allows targeted retrieval of past agent reasoning.
+*   **Basic Governance Layer:** System principles can be defined in `governance.yaml` and are automatically injected into relevant agent prompts to guide behavior.
 
 ## Features
 
@@ -50,7 +51,7 @@ chmod +x setup.sh run.sh
 *   **Configurable Model Selection:**
     *   Dynamic discovery of providers/models (Ollama, OpenRouter, OpenAI).
     *   Filtering based on `MODEL_TIER` (.env: `FREE` or `ALL`).
-    *   Automatic model selection for Admin AI and dynamic agents using performance data.
+    *   Automatic model selection for Admin AI and dynamic agents, now prioritizing Tier -> Size -> Performance Score -> ID. `num_parameters` are discovered for some providers (e.g., OpenRouter, Ollama).
 *   **Robust Error Handling:**
     *   Automatic retries for transient LLM API errors.
     *   Multi-key support and key cycling for providers (`PROVIDER_API_KEY_N` in `.env`).
@@ -67,13 +68,15 @@ chmod +x setup.sh run.sh
     *   `SendMessageTool`: Communicate between agents within a team or with Admin AI (using exact agent IDs).
     *   `WebSearchTool`: Search the web (uses Tavily API if configured, falls back to DDG scraping).
     *   `SystemHelpTool`: Get current time (UTC), Search application logs, **Get detailed tool usage info (`get_tool_info`)**.
-    *   `KnowledgeBaseTool`: Save/Search distilled knowledge in the database.
+    *   `KnowledgeBaseTool`: Save/Search distilled knowledge in the database. Now includes smarter keyword generation for saved thoughts and a `search_agent_thoughts` action.
     *   `ProjectManagementTool`: Add, list, modify, and complete project tasks (uses `tasklib` backend per session). **Assigns tasks via tags (`+agent_id`)** due to CLI UDA issues. Used primarily by the Project Manager agent.
     *   **On-Demand Tool Help:** Implemented `get_detailed_usage()` in tools and `get_tool_info` action in `SystemHelpTool` for dynamic help retrieval (full transition planned for Phase 27+).
-*   **Session Persistence:** Save and load agent states, histories, team structures, and **project task data** (filesystem, including `tasklib` data with assignee tags). **(Needs refinement)**
+*   **Sequential Tool Execution:** The framework can now process multiple tool calls from a single agent response, executing them sequentially and returning all results.
+*   **Session Persistence:** Save and load agent states, histories, team structures, and **project task data** (filesystem, including `tasklib` data with assignee tags).
 *   **Database Backend (SQLite):**
     *   Logs user, agent, tool, and system interactions.
-    *   Stores long-term knowledge summaries via `KnowledgeBaseTool`.
+    *   Stores long-term knowledge summaries and agent thoughts via `KnowledgeBaseTool`.
+*   **Governance Layer (Foundation):** System principles from `governance.yaml` are injected into agent prompts.
 *   **Refined Web UI (Phase 22):**
     *   Separated view for User <-> Admin AI chat (`Chat` view).
     *   Dedicated view for internal Admin AI <-> Agent communication, tool usage, and system status updates (`Internal Comms` view).
@@ -95,14 +98,14 @@ chmod +x setup.sh run.sh
 *   **Task Management:** `tasklib` (Python Taskwarrior library) %% Added P24
 *   **LLM Interaction:** `openai` library, `aiohttp`
 *   **Frontend:** HTML5, CSS3, Vanilla JavaScript
-*   **Configuration:** YAML (`PyYAML`), `.env` (`python-dotenv`), JSON (`prompts.json`)
+    *   **Configuration:** YAML (`PyYAML`), `.env` (`python-dotenv`), JSON (`prompts.json`), `governance.yaml` (`PyYAML`)
 *   **Tooling APIs:** `tavily-python`
 *   **Parsing:** `BeautifulSoup4` (HTML), `re`, `html` (XML)
-*   **Model Discovery & Management:** Custom `ModelRegistry` class
+    *   **Model Discovery & Management:** Custom `ModelRegistry` class (now includes model parameter size discovery).
 *   **Performance Tracking:** Custom `ModelPerformanceTracker` class (JSON)
-*   **Persistence:** JSON (session state - filesystem), SQLite (interactions, knowledge), Taskwarrior files (project tasks via `tasklib`) %% Updated P24
+    *   **Persistence:** JSON (session state - filesystem), SQLite (interactions, knowledge, thoughts), Taskwarrior files (project tasks via `tasklib`)
 *   **Data Handling/Validation:** Pydantic (via FastAPI)
-*   **Local Auto Discovery** Nmap
+    *   **Local Auto Discovery:** Nmap
 *   **Logging:** Standard library `logging`
 
 ## Setup and Running (Detailed)
@@ -162,10 +165,19 @@ chmod +x setup.sh run.sh
 
 ## Development Status
 
-*   **Current Version:** 2.25 <!-- Updated Version -->
-*   **Completed Phases:** 1-24. **Recent Fixes/Enhancements (v2.25):** Corrected `project_management` tool's Taskwarrior CLI usage for task creation (using tags for assignment workaround), fixed `AgentManager` initial task creation check logic. Ollama integration fixes, enhanced network discovery, initial on-demand tool help mechanism, PM agent workflow, `tasklib` integration, Bootstrap agent init fixes, Admin AI state machine, Framework project/PM creation.
-*   **Current Phase (25):** Advanced Memory & Learning (incl. fixing known agent logic issues - PM agent multi-tool calls, looping, placeholders, targeting). Investigating Taskwarrior CLI UDA issues. Addressing external API rate limits.
-*   **Future Plans:** Proactive Behavior (Phase 26), Federated Communication (Phase 27+), New Admin tools, LiteLLM provider, advanced collaboration, resource limits, DB/Vector Stores, **Full transition to on-demand tool help** (removing static descriptions from prompts - Phase 28+).
+*   **Current Version:** 2.25
+*   **Completed Phases:** 1-24. 
+*   **Recent Fixes/Enhancements (v2.25):** 
+    *   Refined model selection logic (Tier, Size, Performance).
+    *   Enabled sequential execution of multiple tools per agent turn.
+    *   Improved thought saving (smarter keywords) and retrieval (`search_agent_thoughts` action).
+    *   Added foundational Governance Layer (principles injected from `governance.yaml`).
+    *   Expanded unit test coverage for new features.
+    *   Corrected `project_management` tool's Taskwarrior CLI usage.
+    *   Fixed `AgentManager` initial task creation check logic.
+    *   Ollama integration fixes, enhanced network discovery.
+*   **Current Phase (25 Target Completion):** Address remaining agent logic issues (looping, placeholders, targeting), investigate Taskwarrior CLI UDA issues, address external API rate limits.
+*   **Future Plans:** Advanced Memory & Learning (Phase 26), Proactive Behavior (Phase 27), Federated Communication (Phase 28+), New Admin tools, LiteLLM provider, advanced collaboration, resource limits, DB/Vector Stores, **Full transition to on-demand tool help** (removing static descriptions from prompts - Phase 28+).
 
 See `helperfiles/PROJECT_PLAN.md` for detailed phase information.
 

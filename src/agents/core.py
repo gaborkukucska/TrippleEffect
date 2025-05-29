@@ -233,23 +233,37 @@ class Agent:
                             remaining_text_after_processing_tags = remaining_text_after_processing_tags.replace(state_request_tag, '', 1).strip()
                 
                 final_cleaned_response_for_tools_or_text = remaining_text_after_processing_tags
-                filtered_tool_calls = []
+                
+                # This list will hold the final, potentially filtered, tool call(s) to be executed.
+                tool_requests_to_yield = []
+
                 if self.manager.tool_executor and self.raw_xml_tool_call_pattern: 
+                    # tool_calls_found_in_buffer is a list of tuples: (tool_name, tool_args, raw_xml_call_string)
                     tool_calls_found_in_buffer = find_and_parse_xml_tool_calls(
                         final_cleaned_response_for_tools_or_text, self.manager.tool_executor.tools,
                         self.raw_xml_tool_call_pattern, self.markdown_xml_tool_call_pattern, self.agent_id
                     )
+
                     if tool_calls_found_in_buffer:
-                        for call_data in tool_calls_found_in_buffer:
-                            tool_name_call, tool_args, _ = call_data 
+                        # Process all valid tool calls found
+                        calls_to_process = tool_calls_found_in_buffer
+                        
+                        if len(calls_to_process) > 1:
+                             logger.info(f"Agent {self.agent_id} found {len(calls_to_process)} tool calls in a single response. Processing all.")
+
+                        for call_data in calls_to_process:
+                            tool_name_call, tool_args, _ = call_data # Unpack the tuple
                             if tool_name_call in self.manager.tool_executor.tools:
                                 call_id = f"xml_call_{self.agent_id}_{int(time.time() * 1000)}_{os.urandom(2).hex()}"
-                                filtered_tool_calls.append({"id": call_id, "name": tool_name_call, "arguments": tool_args})
-                            else: logger.warning(f"Skipping invalid tool name '{tool_name_call}' for agent '{self.agent_id}'.")
+                                tool_requests_to_yield.append({"id": call_id, "name": tool_name_call, "arguments": tool_args})
+                            else:
+                                # This warning is for a tool name that was parsed but isn't in the executor's known tools.
+                                logger.warning(f"Agent {self.agent_id}: Tool name '{tool_name_call}' parsed from LLM output, but not found in ToolExecutor. Skipping this call.")
                 
-                if filtered_tool_calls:
+                if tool_requests_to_yield:
+                    logger.debug(f"Agent {self.agent_id} preparing to yield {len(tool_requests_to_yield)} tool requests.")
                     response_for_history = original_complete_response 
-                    yield {"type": "tool_requests", "calls": filtered_tool_calls, "raw_assistant_response": response_for_history, "agent_id": self.agent_id}; return
+                    yield {"type": "tool_requests", "calls": tool_requests_to_yield, "raw_assistant_response": response_for_history, "agent_id": self.agent_id}; return
                 else:
                     if final_cleaned_response_for_tools_or_text:
                         yield {"type": "final_response", "content": final_cleaned_response_for_tools_or_text, "agent_id": self.agent_id}; return

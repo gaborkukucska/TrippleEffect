@@ -22,6 +22,8 @@ from src.agents.core import Agent
 from src.llm_providers.base import BaseLLMProvider
 from src.config.settings import settings, model_registry # Import settings and registry
 from src.agents.agent_lifecycle import PROVIDER_CLASS_MAP # Import map ONLY
+from src.agents.agent_utils import sort_models_by_size_performance_id # Import the new sorter
+from src.config.model_registry import ModelInfo # For type hinting
 
 # Type hint AgentManager
 if TYPE_CHECKING:
@@ -82,22 +84,83 @@ async def _select_alternate_models(
     max_alternates: int = 3
 ) -> List[str]:
     """Selects up to max_alternates different models from the same provider."""
-    alternates = []
-    available_provider_models = model_registry.get_available_models_dict().get(provider, [])
-    if not available_provider_models:
+    logger.debug(f"Selecting alternate models for provider '{provider}', original: '{original_model}', tried: {tried_models_on_key}, max: {max_alternates}")
+    
+    candidate_model_infos: List[ModelInfo] = []
+    all_provider_models_from_registry = model_registry.get_available_models_dict().get(provider, [])
+
+    for model_data in all_provider_models_from_registry:
+        model_id = model_data.get("id")
+        if not model_id:
+            continue
+
+        if model_id == original_model:
+            logger.debug(f"Skipping '{model_id}' for alternates: same as original_model.")
+            continue
+        if model_id in tried_models_on_key:
+            logger.debug(f"Skipping '{model_id}' for alternates: already in tried_models_on_key.")
+            continue
+
+        # Tier check
+        tier_compatible = True
+        if settings.MODEL_TIER == "FREE" and provider == "openrouter":
+            if ":free" not in model_id.lower():
+                logger.debug(f"Skipping '{model_id}' for alternates: Does not match FREE tier for openrouter.")
+                tier_compatible = False
+        # Add other provider/tier specific checks if necessary for 'FREE' tier
+        # elif settings.MODEL_TIER == "FREE" and provider == "some_other_provider":
+        #     if "free_indicator" not in model_id.lower(): tier_compatible = False
+        
+        if tier_compatible:
+            # Ensure 'provider' key is in model_data for the sorter
+            model_data_copy = model_data.copy()
+            model_data_copy["provider"] = provider # The specific provider name
+            candidate_model_infos.append(model_data_copy)
+        else:
+            logger.debug(f"Skipping '{model_id}' due to tier incompatibility with '{settings.MODEL_TIER}'.")
+
+    if not candidate_model_infos:
+        logger.info(f"No suitable candidate models found for provider '{provider}' after initial filtering.")
         return []
 
-    # Filter out already tried models and the original model
-    potential_alternates = [
-        m['id'] for m in available_provider_models
-        if m['id'] != original_model and m['id'] not in tried_models_on_key
-    ]
+    # Fetch performance metrics for the specific provider
+    # The sorter expects metrics format: {provider_name: {model_id: {"score": ...}}}
+    # PerformanceTracker stores by "base_provider/model_id"
+    # We need to prepare metrics for the sorter for the *specific provider instance*.
+    provider_metrics = {}
+    base_provider_name = provider.split("-local-")[0].split("-proxy")[0] # Get base name like "ollama"
+    
+    all_metrics = manager.performance_tracker.get_all_metrics()
+    provider_specific_metrics_for_sorter = {}
 
-    # TODO: Enhance selection based on performance/characteristics if available
-    # For now, just shuffle and pick
-    random.shuffle(potential_alternates)
-    alternates = potential_alternates[:max_alternates]
-    logger.debug(f"Selected alternates for provider '{provider}': {alternates} (from {len(potential_alternates)} potential)")
+    for model_info_dict in candidate_model_infos:
+        model_id_suffix = model_info_dict["id"]
+        # Construct the key as used in PerformanceTracker
+        # However, performance_tracker.get_metrics expects base_provider and model_id suffix.
+        metrics = manager.performance_tracker.get_metrics(base_provider_name, model_id_suffix)
+        if metrics:
+            if provider not in provider_specific_metrics_for_sorter:
+                provider_specific_metrics_for_sorter[provider] = {}
+            provider_specific_metrics_for_sorter[provider][model_id_suffix] = metrics
+        else: # Ensure a default entry if no metrics found, so sorter doesn't break
+            if provider not in provider_specific_metrics_for_sorter:
+                provider_specific_metrics_for_sorter[provider] = {}
+            provider_specific_metrics_for_sorter[provider][model_id_suffix] = {"score": 0.0, "latency": float('inf'), "calls": 0}
+
+
+    logger.debug(f"Candidate models for provider '{provider}' before sorting: {[m['id'] for m in candidate_model_infos]}")
+    
+    sorted_model_infos = sort_models_by_size_performance_id(
+        candidate_model_infos,
+        performance_metrics=provider_specific_metrics_for_sorter
+    )
+    
+    logger.debug(f"Sorted models for provider '{provider}': {[m['id'] for m in sorted_model_infos]}")
+
+    # Extract just the model IDs for the result, up to max_alternates
+    alternates = [model_info["id"] for model_info in sorted_model_infos[:max_alternates]]
+    
+    logger.info(f"Selected {len(alternates)} alternates for provider '{provider}': {alternates} (sorted by size, perf, id)")
     return alternates
 
 # --- Helper Function to Attempt Switching Agent ---
@@ -372,45 +435,73 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
                 continue # Move to the next local provider
 
         # --- Proceed only if provider seems healthy ---
-        logger.info(f"Trying models on local provider: {local_provider}") # Changed log level
-        local_models = all_available.get(local_provider, [])
-        sorted_local_models = sorted([m['id'] for m in local_models])
-        models_available_on_provider = False # Track if we find any untried model
+        logger.info(f"Trying models on local provider: {local_provider}")
+        
+        # Initialize tried_models_per_local_provider for the current provider if not already
+        if local_provider not in failover_state["tried_models_per_local_provider"]:
+            failover_state["tried_models_per_local_provider"][local_provider] = set()
+        tried_on_this_provider = failover_state["tried_models_per_local_provider"][local_provider]
 
-        for local_model in sorted_local_models:
-            # Construct canonical ID for checking against failover state if needed, though model ID should be sufficient here
-            # canonical_local_id = f"{local_provider.split('-local-')[0].split('-proxy')[0]}/{local_model}"
-
-            # Initialize the set for this provider if it doesn't exist (redundant check after initial mark, but safe)
-            if local_provider not in failover_state["tried_models_per_local_provider"]:
-                failover_state["tried_models_per_local_provider"][local_provider] = set()
-
-            # Initialize the set for this provider if it doesn't exist (redundant check after initial mark, but safe)
-            if local_provider not in failover_state["tried_models_per_local_provider"]:
-                failover_state["tried_models_per_local_provider"][local_provider] = set()
-
-            # Skip if already tried *for this specific provider*
-            if local_model in failover_state["tried_models_per_local_provider"][local_provider]:
-                logger.debug(f"Skipping model '{local_model}' on provider '{local_provider}': already tried.")
+        # Get all models for this specific local provider instance
+        all_models_for_this_local_provider_raw = all_available.get(local_provider, [])
+        
+        candidate_local_model_infos: List[ModelInfo] = []
+        for model_data in all_models_for_this_local_provider_raw:
+            model_id = model_data.get("id")
+            if not model_id: continue
+            if model_id in tried_on_this_provider:
+                logger.debug(f"Skipping local model '{model_id}' on '{local_provider}': already tried.")
                 continue
+            
+            model_data_copy = model_data.copy()
+            model_data_copy["provider"] = local_provider # Specific provider name
+            candidate_local_model_infos.append(model_data_copy)
 
-            models_available_on_provider = True # Found at least one untried model
-            # Attempt the switch configuration
-            logger.debug(f"Failover: Attempting switch to local model: {local_provider}/{local_model}") # ADDED LOGGING
-            switched = await _try_switch_agent(manager, agent, local_provider, local_model, None)
-            if switched:
-                logger.info(f"Failover handler successfully reconfigured agent '{agent_id}' to try '{local_provider}/{local_model}'.")
-                return True
-            else: # ADDED LOGGING
-                logger.warning(f"Failover: _try_switch_agent failed for local model: {local_provider}/{local_model}") # ADDED LOGGING
+        if not candidate_local_model_infos:
+            logger.warning(f"No untried models found for local provider '{local_provider}'.")
+        else:
+            # Prepare performance metrics for these candidates
+            local_provider_metrics_for_sorter = {}
+            base_local_provider_name = local_provider.split("-local-")[0].split("-proxy")[0]
+            
+            for m_info_dict in candidate_local_model_infos:
+                m_id_suffix = m_info_dict["id"]
+                metrics = manager.performance_tracker.get_metrics(base_local_provider_name, m_id_suffix)
+                if metrics:
+                    if local_provider not in local_provider_metrics_for_sorter:
+                         local_provider_metrics_for_sorter[local_provider] = {}
+                    local_provider_metrics_for_sorter[local_provider][m_id_suffix] = metrics
+                else: # Default if no metrics found
+                    if local_provider not in local_provider_metrics_for_sorter:
+                         local_provider_metrics_for_sorter[local_provider] = {}
+                    local_provider_metrics_for_sorter[local_provider][m_id_suffix] = {"score": 0.0, "latency": float('inf'), "calls": 0}
 
-            # If _try_switch_agent itself failed, mark model as tried *for this provider*
-            failover_state["tried_models_per_local_provider"][local_provider].add(local_model)
-            # failover_state["failover_attempt_count"] += 1 # REMOVE: Don't increment overall count for model switch failure
+            logger.debug(f"Sorting {len(candidate_local_model_infos)} candidate models for local provider '{local_provider}'.")
+            sorted_local_models_to_try = sort_models_by_size_performance_id(
+                candidate_local_model_infos,
+                performance_metrics=local_provider_metrics_for_sorter
+            )
 
-        # If loop finishes without returning True, all models on this provider were tried or switch failed
-        if not models_available_on_provider:
-             logger.warning(f"No untried models found or switch failed for all models on local provider: {local_provider}")
+            models_available_on_provider_tried = False
+            for sorted_model_info in sorted_local_models_to_try:
+                local_model_id_to_try = sorted_model_info["id"]
+                # Redundant check, already filtered, but defensive:
+                if local_model_id_to_try in tried_on_this_provider: continue
+
+                models_available_on_provider_tried = True
+                logger.info(f"Failover: Attempting switch to (comprehensively sorted) local model: {local_provider}/{local_model_id_to_try} "
+                            f"(Size: {sorted_model_info.get('num_parameters_sortable', 0)}, Score: {sorted_model_info.get('performance_score', 0.0):.2f})")
+                switched = await _try_switch_agent(manager, agent, local_provider, local_model_id_to_try, None)
+                if switched:
+                    logger.info(f"Failover handler successfully reconfigured agent '{agent_id}' to try '{local_provider}/{local_model_id_to_try}'.")
+                    return True
+                else:
+                    logger.warning(f"Failover: _try_switch_agent failed for local model: {local_provider}/{local_model_id_to_try}")
+                    failover_state["tried_models_per_local_provider"][local_provider].add(local_model_id_to_try)
+            
+            if not models_available_on_provider_tried:
+                 logger.warning(f"No untried models found or switch failed for all models on local provider: {local_provider} after comprehensive sort.")
+        
         # Mark the provider as fully tried *only after checking all its models*
         failover_state["tried_local_providers"].add(local_provider) # Mark provider tried after exhausting its models
         logger.warning(f"Exhausted all models for local provider: {local_provider}")
@@ -485,23 +576,112 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
 
             # Try initial model (or a default) with this key
             initial_model_to_try = None
-            provider_models = all_available.get(external_provider, [])
-            # Prefer original model if available and suitable for tier
-            if any(m['id'] == original_model for m in provider_models):
-                 if current_model_tier == "ALL" or (current_model_tier == "FREE" and ":free" in original_model.lower()):
-                      initial_model_to_try = original_model
-            # Fallback to first available model respecting tier
-            if not initial_model_to_try and provider_models:
-                 for m_info in provider_models:
-                      m_id = m_info['id']
-                      if current_model_tier == "ALL" or (current_model_tier == "FREE" and ":free" in m_id.lower()):
-                           initial_model_to_try = m_id
-                           break
+            
+            # --- 1. Attempt to select initial model using comprehensive sort ---
+            logger.debug(f"Attempting to select initial model for '{external_provider}' using comprehensive sort.")
+            
+            all_external_provider_models_raw = all_available.get(external_provider, [])
+            candidate_external_model_infos: List[ModelInfo] = []
 
-            model_switch_successful = False
+            for model_data in all_external_provider_models_raw:
+                m_id = model_data.get("id")
+                if not m_id: continue
+
+                if m_id in failover_state["tried_models_on_current_external_key"]:
+                    logger.debug(f"Skipping model '{m_id}' for initial try on '{external_provider}': already tried on current key.")
+                    continue
+
+                tier_compatible = False
+                if current_model_tier == "ALL": tier_compatible = True
+                elif current_model_tier == "FREE" and external_provider == "openrouter" and ":free" in m_id.lower(): tier_compatible = True
+                # Add other tier/provider specific checks if needed for FREE tier
+
+                if not tier_compatible:
+                    logger.debug(f"Skipping model '{m_id}' for initial try on '{external_provider}': not compatible with tier '{current_model_tier}'.")
+                    continue
+                
+                model_data_copy = model_data.copy()
+                model_data_copy["provider"] = external_provider # Specific provider name
+                candidate_external_model_infos.append(model_data_copy)
+
+            if candidate_external_model_infos:
+                # Prepare performance metrics for these candidates
+                external_provider_metrics_for_sorter = {}
+                # Base name for external provider is the provider name itself
+                for m_info_dict_ext in candidate_external_model_infos:
+                    m_id_suffix_ext = m_info_dict_ext["id"]
+                    metrics_ext = manager.performance_tracker.get_metrics(external_provider, m_id_suffix_ext)
+                    if metrics_ext:
+                        if external_provider not in external_provider_metrics_for_sorter:
+                             external_provider_metrics_for_sorter[external_provider] = {}
+                        external_provider_metrics_for_sorter[external_provider][m_id_suffix_ext] = metrics_ext
+                    else: # Default if no metrics
+                        if external_provider not in external_provider_metrics_for_sorter:
+                             external_provider_metrics_for_sorter[external_provider] = {}
+                        external_provider_metrics_for_sorter[external_provider][m_id_suffix_ext] = {"score": 0.0, "latency": float('inf'), "calls": 0}
+
+
+                sorted_external_models = sort_models_by_size_performance_id(
+                    candidate_external_model_infos,
+                    performance_metrics=external_provider_metrics_for_sorter
+                )
+                if sorted_external_models:
+                    initial_model_to_try = sorted_external_models[0]["id"]
+                    logger.info(f"Selected initial model '{initial_model_to_try}' for '{external_provider}' based on comprehensive sort "
+                                f"(Size: {sorted_external_models[0].get('num_parameters_sortable',0)}, Score: {sorted_external_models[0].get('performance_score',0.0):.2f}).")
+                else:
+                    logger.debug(f"Comprehensive sort yielded no models for '{external_provider}'.")
+            else:
+                logger.debug(f"No candidate models for comprehensive sort for '{external_provider}' after filtering.")
+
+            # --- 2. Fallback logic if comprehensive sort yields no model ---
+            if not initial_model_to_try:
+                logger.debug(f"Initial model not found by comprehensive sort for '{external_provider}'. Using existing fallback logic.")
+                # Fallback A: Prefer original model if available, suitable for tier, and not tried on this key
+                # Note: provider_models_info was all_external_provider_models_raw
+                if any(m_info['id'] == original_model for m_info in all_external_provider_models_raw):
+                    original_model_suitable_tier = False
+                    if current_model_tier == "ALL": original_model_suitable_tier = True
+                    elif current_model_tier == "FREE" and external_provider == "openrouter" and ":free" in original_model.lower(): original_model_suitable_tier = True
+                    
+                    if original_model_suitable_tier and original_model not in failover_state["tried_models_on_current_external_key"]:
+                        initial_model_to_try = original_model
+                        logger.info(f"Selected initial model '{initial_model_to_try}' (agent's original) for '{external_provider}' by fallback A.")
+                    # Logging for why original might not be chosen is already in previous version, can be kept or removed for brevity
+
+                # Fallback B: If original model not used, try first available model from registry (respecting tier and not tried)
+                if not initial_model_to_try and all_external_provider_models_raw:
+                    logger.debug(f"Original model not used as initial. Searching for first available model from registry for '{external_provider}' (fallback B).")
+                    # This part should iterate through all_external_provider_models_raw, check tier and not tried.
+                    # The existing code for Fallback B already does this, using 'provider_models_info' which is 'all_external_provider_models_raw'.
+                    # No need to repeat that specific loop here, just ensure the logic flow.
+                    # The existing code has a loop: for m_info in provider_models_info:
+                    # This will run if initial_model_to_try is still None.
+                    # We need to ensure this fallback respects the comprehensive sort's failure to find a model.
+                    # The current structure of this part of the code is a bit nested.
+                    # Let's assume the old Fallback B logic is still fine if initial_model_to_try is None after sort.
+                    # The original code for Fallback B:
+                    if not initial_model_to_try: # Check again, as it might have been set by Fallback A
+                        for m_info_fb in all_external_provider_models_raw: # Renamed to avoid clash
+                            m_id_fb = m_info_fb['id']
+                            model_suitable_tier_fb = False
+                            if current_model_tier == "ALL": model_suitable_tier_fb = True
+                            elif current_model_tier == "FREE" and external_provider == "openrouter" and ":free" in m_id_fb.lower(): model_suitable_tier_fb = True
+
+                            if not model_suitable_tier_fb: continue
+                            if m_id_fb in failover_state["tried_models_on_current_external_key"]: continue
+                            
+                            initial_model_to_try = m_id_fb
+                            logger.info(f"Selected initial model '{initial_model_to_try}' for '{external_provider}' by fallback B (first from registry).")
+                            break
+            
+            model_switch_successful = False # This variable seems unused before this point in the original code.
             if initial_model_to_try:
-                 logger.info(f"Attempting initial model '{initial_model_to_try}' with current key.")
-                 logger.debug(f"Failover: Attempting switch to external initial model: {external_provider}/{initial_model_to_try}") # ADDED LOGGING
+                 logger.info(f"Attempting initial model '{initial_model_to_try}' with current key for provider '{external_provider}'.")
+                 # Ensure this model is added to tried_models_on_current_external_key BEFORE the attempt,
+                 # so if _try_switch_agent fails and we re-enter selection, we don't pick it again.
+                 # However, _try_switch_agent might lead to success, and we want to retry IT, not alternates yet.
+                 # The current logic adds to tried_models_on_current_external_key AFTER _try_switch_agent fails, which is correct.
                  switched = await _try_switch_agent(manager, agent, external_provider, initial_model_to_try, next_key_config)
                  if switched: # Reconfiguration successful
                       logger.info(f"Failover handler successfully reconfigured agent '{agent_id}' to try '{external_provider}/{initial_model_to_try}'.")
