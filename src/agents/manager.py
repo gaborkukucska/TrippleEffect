@@ -27,6 +27,10 @@ logging.info("manager.py: Importing Agent core...")
 from src.agents.core import Agent
 logging.info("manager.py: Imported Agent core.")
 
+logging.info("manager.py: Importing CycleContext...")
+from src.agents.cycle_components.cycle_context import CycleContext
+logging.info("manager.py: Imported CycleContext.")
+
 logging.info("manager.py: Importing settings...")
 from src.config.settings import settings, model_registry, BASE_DIR
 logging.info("manager.py: Imported settings.")
@@ -293,3 +297,6 @@ class AgentManager:
         else: logger.info("PM manage timer task not running or already stopped.")
 
 logging.info("manager.py: Module loading finished.")
+
+# Resolve forward references for CycleContext
+CycleContext.update_refs(AgentManager=AgentManager, Agent=Agent)

@@ -1,11 +1,9 @@
 # START OF FILE src/agents/cycle_components/__init__.py
 from src.agents.core import Agent
-from src.agents.manager import AgentManager
 from src.agents.cycle_components.cycle_context import CycleContext
 
 # Resolve forward references for CycleContext
-# This ensures that Pydantic can correctly validate types involving Agent and AgentManager.
-CycleContext.update_refs(Agent=Agent, AgentManager=AgentManager)
+# This ensures that Pydantic can correctly validate types involving Agent.
 
 # Make components available for import if needed, e.g.:
 # from .cycle_context import CycleContext
