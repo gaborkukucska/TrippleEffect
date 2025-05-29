@@ -194,7 +194,6 @@ class Settings:
 
         self.AGENT_CONFIGURATIONS: List[Dict[str, Any]] = raw_config_data.get("agents", [])
         if not isinstance(self.AGENT_CONFIGURATIONS, list): logger.error("Config error: 'agents' not a list."); self.AGENT_CONFIGURATIONS = []
-        self.TEAMS_CONFIG: Dict[str, List[str]] = raw_config_data.get("teams", {}) # Deprecated
 
         # --- Log Loaded Config Summary ---
         if not self.AGENT_CONFIGURATIONS: print("Warning: No bootstrap agent configurations loaded.")

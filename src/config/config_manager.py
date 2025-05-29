@@ -37,7 +37,6 @@ class ConfigManager:
         # Initialize with expected keys, even if empty
         self._config_data: Dict[str, Any] = {
             "agents": [],
-            "teams": {},
             "allowed_sub_agent_models": {}
         }
         self._lock = asyncio.Lock() # Use asyncio.Lock for async safety
@@ -48,7 +47,7 @@ class ConfigManager:
         """Synchronous initial load for use during startup. Loads the *entire* config."""
         logger.info(f"[Sync Load] Attempting to load full configuration from: {self.config_path}")
         # Default structure if file is missing or invalid
-        default_structure = {"agents": [], "teams": {}, "allowed_sub_agent_models": {}}
+        default_structure = {"agents": [], "allowed_sub_agent_models": {}}
 
         if not self.config_path.exists():
             logger.warning(f"[Sync Load] Configuration file not found at {self.config_path}. Initializing empty structure.")
@@ -79,21 +78,6 @@ class ConfigManager:
                                 logger.warning(f"[Sync Load] Invalid agent entry at index {i} in {self.config_path}. Skipping.")
                         self._config_data["agents"] = valid_agents
 
-                    if "teams" not in self._config_data or not isinstance(self._config_data.get("teams"), dict):
-                        logger.warning(f"[Sync Load] 'teams' key missing or invalid in {self.config_path}. Initializing empty dict.")
-                        self._config_data["teams"] = {}
-                    else:
-                        # Validate team structure (dict of lists)
-                        valid_teams = {}
-                        for team_id, members in self._config_data["teams"].items():
-                            if isinstance(members, list):
-                                valid_teams[team_id] = [m for m in members if isinstance(m, str)] # Ensure members are strings
-                            else:
-                                logger.warning(f"[Sync Load] Invalid members list for team '{team_id}' in {self.config_path}. Resetting team.")
-                                valid_teams[team_id] = []
-                        self._config_data["teams"] = valid_teams
-
-
                     if "allowed_sub_agent_models" not in self._config_data or not isinstance(self._config_data.get("allowed_sub_agent_models"), dict):
                         logger.warning(f"[Sync Load] 'allowed_sub_agent_models' key missing or invalid in {self.config_path}. Initializing empty dict.")
                         self._config_data["allowed_sub_agent_models"] = {}
@@ -109,7 +93,7 @@ class ConfigManager:
                         self._config_data["allowed_sub_agent_models"] = valid_allowed
                     # --- End Validation ---
 
-                    logger.info(f"[Sync Load] Successfully loaded configuration: {len(self._config_data['agents'])} agents, {len(self._config_data['teams'])} teams, {len(self._config_data['allowed_sub_agent_models'])} allowed provider sections.")
+                    logger.info(f"[Sync Load] Successfully loaded configuration: {len(self._config_data['agents'])} agents, {len(self._config_data['allowed_sub_agent_models'])} allowed provider sections.")
 
                 else:
                     logger.warning(f"[Sync Load] Configuration file {self.config_path} does not contain a valid dictionary structure. Initializing empty.")
@@ -164,17 +148,6 @@ class ConfigManager:
                              else: logger.warning(f"Invalid agent entry at index {i} in loaded data. Skipping.")
                          temp_config_data["agents"] = valid_agents
 
-
-                    if "teams" not in temp_config_data or not isinstance(temp_config_data.get("teams"), dict):
-                         logger.warning(f"'teams' key missing or invalid in loaded data. Keeping previous state.")
-                         temp_config_data["teams"] = self._config_data.get("teams", {})
-                    else: # Validate team structure
-                         valid_teams = {}
-                         for team_id, members in temp_config_data["teams"].items():
-                             if isinstance(members, list): valid_teams[team_id] = [m for m in members if isinstance(m, str)]
-                             else: logger.warning(f"Invalid members list for team '{team_id}' in loaded data."); valid_teams[team_id] = []
-                         temp_config_data["teams"] = valid_teams
-
                     if "allowed_sub_agent_models" not in temp_config_data or not isinstance(temp_config_data.get("allowed_sub_agent_models"), dict):
                          logger.warning(f"'allowed_sub_agent_models' key missing or invalid in loaded data. Keeping previous state.")
                          temp_config_data["allowed_sub_agent_models"] = self._config_data.get("allowed_sub_agent_models", {})
@@ -188,7 +161,7 @@ class ConfigManager:
                     # If structure seems valid enough, update the internal state
                     # if valid_structure: # Or decide to always update with validated data
                     self._config_data = temp_config_data
-                    logger.info(f"Successfully loaded and validated configuration: {len(self._config_data['agents'])} agents, {len(self._config_data['teams'])} teams, {len(self._config_data['allowed_sub_agent_models'])} allowed providers.")
+                    logger.info(f"Successfully loaded and validated configuration: {len(self._config_data['agents'])} agents, {len(self._config_data['allowed_sub_agent_models'])} allowed providers.")
 
                 else:
                     logger.warning(f"Configuration file {self.config_path} does not contain a valid dictionary structure. Using previous internal state.")
@@ -223,9 +196,8 @@ class ConfigManager:
         back to the YAML file atomically. Assumes lock is held.
         """
         agents_count = len(self._config_data.get('agents', []))
-        teams_count = len(self._config_data.get('teams', {}))
         allowed_count = len(self._config_data.get('allowed_sub_agent_models', {}))
-        logger.info(f"Attempting to save config ({agents_count} agents, {teams_count} teams, {allowed_count} allowed providers) to: {self.config_path}")
+        logger.info(f"Attempting to save config ({agents_count} agents, {allowed_count} allowed providers) to: {self.config_path}")
 
         if not await self._backup_config():
              logger.error("Aborting save due to backup failure.")
@@ -238,12 +210,8 @@ class ConfigManager:
             config_to_save = {
                 # Ensure order for readability if possible (might depend on PyYAML version/settings)
                 "allowed_sub_agent_models": self._config_data.get("allowed_sub_agent_models", {}),
-                "agents": self._config_data.get("agents", []),
-                "teams": self._config_data.get("teams", {})
+                "agents": self._config_data.get("agents", [])
             }
-            # Remove empty teams just before saving for cleaner output
-            config_to_save["teams"] = {k: v for k, v in config_to_save["teams"].items() if v}
-
 
             temp_fd, temp_path_str = tempfile.mkstemp(suffix=".tmp", prefix=self.config_path.name + '_', dir=self.config_path.parent)
             temp_file_path = Path(temp_path_str)
@@ -278,12 +246,6 @@ class ConfigManager:
         async with self._lock:
             agents_list = self._config_data.get("agents", [])
             return copy.deepcopy(agents_list)
-
-    async def get_teams(self) -> Dict[str, List[str]]:
-        """Returns a deep copy of the currently loaded teams configuration. Async-safe."""
-        async with self._lock:
-             teams_dict = self._config_data.get("teams", {})
-             return copy.deepcopy(teams_dict)
 
     async def get_full_config(self) -> Dict[str, Any]:
         """Returns a deep copy of the entire loaded configuration data. Async-safe."""
@@ -376,42 +338,19 @@ class ConfigManager:
 
             # Backup original state for rollback
             original_agents = copy.deepcopy(agents_list)
-            original_teams = copy.deepcopy(self._config_data.get("teams", {}))
 
             # Perform deletion
             deleted_entry = agents_list.pop(index)
             logger.info(f"Agent '{agent_id}' removed internally from 'agents' list.")
 
-            # Remove agent from teams
-            teams_modified = False
-            current_teams = self._config_data.get("teams", {})
-            if isinstance(current_teams, dict):
-                 new_teams = {}
-                 for team_name, members in current_teams.items():
-                     if isinstance(members, list):
-                         original_members = list(members) # Copy before modifying
-                         if agent_id in members:
-                             members.remove(agent_id)
-                             teams_modified = True
-                             logger.info(f"Removing deleted agent '{agent_id}' from team '{team_name}'.")
-                         # Keep team even if empty for now, _save_config_safe can prune later
-                         new_teams[team_name] = members
-                     else:
-                         new_teams[team_name] = members # Keep malformed entry? Or skip? Let's keep.
-                 self._config_data["teams"] = new_teams
-            else:
-                 logger.warning("Could not find valid 'teams' structure to clean up deleted agent ID.")
-
-
             # Attempt to save
             if await self._save_config_safe():
-                logger.info(f"Successfully deleted agent '{agent_id}' (and removed from teams if applicable) and saved configuration.")
+                logger.info(f"Successfully deleted agent '{agent_id}' and saved configuration.")
                 return True
             else:
-                # Rollback deletion and team changes
+                # Rollback deletion
                 self._config_data["agents"] = original_agents
-                self._config_data["teams"] = original_teams
-                logger.error(f"Failed to save configuration after deleting agent '{agent_id}'. Deletion and team changes rolled back.")
+                logger.error(f"Failed to save configuration after deleting agent '{agent_id}'. Deletion rolled back.")
                 return False
 
 
