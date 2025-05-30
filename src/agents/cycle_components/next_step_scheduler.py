@@ -6,6 +6,7 @@ import json # <<< --- ADDED IMPORT ---
 
 from src.agents.constants import (
     AGENT_STATUS_IDLE, AGENT_STATUS_ERROR,
+    AGENT_STATUS_AWAITING_USER_REVIEW_CG, # Added for CG logic
     AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER,
     ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED,
     PM_STATE_STARTUP, PM_STATE_MANAGE, PM_STATE_WORK,
@@ -118,12 +119,19 @@ class NextStepScheduler:
                 logger.info(f"NextStepScheduler: Agent '{agent_id}' ({context.current_model_key_for_tracking}) finished cycle cleanly, no specific reactivation needed by this scheduler.")
                 if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear()
                 if agent.status != AGENT_STATUS_ERROR:
-                    agent.set_status(AGENT_STATUS_IDLE)
+                    # Only set to IDLE if not awaiting user decision on a CG concern
+                    if not (agent.status == AGENT_STATUS_AWAITING_USER_REVIEW_CG and getattr(agent, 'cg_awaiting_user_decision', False)):
+                        agent.set_status(AGENT_STATUS_IDLE)
         else:
+            # This block handles cases where cycle_completed_successfully is False,
+            # but it's not a retryable error and not triggering failover.
+            # E.g. an internal workflow error that doesn't fit other categories.
             if not context.trigger_failover and not context.is_retryable_error_type:
-                logger.warning(f"NextStepScheduler: Agent '{agent_id}' cycle ended without explicit success or trigger. Status: {agent.status}. Last Error: {context.last_error_content[:100]}. Setting Idle if not Error.")
+                logger.warning(f"NextStepScheduler: Agent '{agent_id}' cycle ended without explicit success or trigger. Status: {agent.status}. Last Error: {context.last_error_content[:100]}. Setting Idle if not Error and not awaiting CG review.")
                 if agent.status != AGENT_STATUS_ERROR:
-                    agent.set_status(AGENT_STATUS_IDLE)
+                    # Only set to IDLE if not awaiting user decision on a CG concern
+                    if not (agent.status == AGENT_STATUS_AWAITING_USER_REVIEW_CG and getattr(agent, 'cg_awaiting_user_decision', False)):
+                        agent.set_status(AGENT_STATUS_IDLE)
         
         self._log_end_of_schedule_next_step(agent, "Path E - Default End")
 

@@ -113,12 +113,21 @@ class AgentCycleHandler:
             stripped_verdict = full_verdict_text.strip()
             logger.info(f"CG Verdict received (from stream): '{stripped_verdict}'")
             
-            # Basic validation of verdict format
-            if not stripped_verdict.startswith("<OK/>") and not stripped_verdict.startswith("<CONCERN>"):
-                logger.warning(f"CG verdict '{stripped_verdict}' is not in the expected format. Defaulting to <CONCERN> for safety.")
-                return f"<CONCERN>CG verdict was not in the expected format. Original verdict: {stripped_verdict}</CONCERN>"
-            
-            return stripped_verdict if stripped_verdict else "<OK/>" # Fail open if empty response after stripping
+            if stripped_verdict.startswith("<CONCERN>") and stripped_verdict.endswith("</CONCERN>"):
+                # Extract content from <CONCERN>...</CONCERN>
+                concern_detail = stripped_verdict[len("<CONCERN>"):-len("</CONCERN>")].strip()
+                if not concern_detail: # Empty concern tag
+                    logger.warning("CG returned an empty <CONCERN> tag. Treating as a generic concern.")
+                    return "Constitutional Guardian raised an unspecified concern."
+                return concern_detail # Return only the detail
+            elif stripped_verdict == "<OK/>":
+                return "<OK/>"
+            elif not stripped_verdict: # Empty response from LLM
+                logger.warning("CG returned an empty response. Failing open as <OK/>.")
+                return "<OK/>"
+            else: # Malformed or unexpected verdict
+                logger.warning(f"CG verdict '{stripped_verdict}' is not in the expected <OK/> or <CONCERN>...</CONCERN> format. Treating as a concern.")
+                return f"Malformed CG verdict. Details: {stripped_verdict}"
 
         except Exception as e:
             logger.error(f"Error during Constitutional Guardian LLM call: {e}", exc_info=True)
@@ -361,16 +370,19 @@ class AgentCycleHandler:
                         if final_content and agent.agent_id != CONSTITUTIONAL_GUARDIAN_AGENT_ID:
                             cg_verdict = await self._get_cg_verdict(final_content)
 
-                            if cg_verdict is None or cg_verdict.startswith("<OK/>"):
+                            if cg_verdict == "<OK/>": # Explicitly check for <OK/>
                                 logger.info(f"CG Verdict OK for agent '{agent.agent_id}'. Proceeding normally.")
-                                # Process final response normally (log to DB, send to UI)
                                 if context.current_db_session_id:
                                     if not agent.message_history or not agent.message_history[-1].get("tool_calls"):
                                         await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content)
                                 await self._manager.send_to_ui(original_event_data)
-                            elif cg_verdict.startswith("<CONCERN>"):
+                            else: # Any other string is a concern (either extracted detail or "Malformed..." string)
                                 logger.info(f"CG CONCERN for agent '{agent.agent_id}'. Pausing agent and notifying UI.")
-                                concern_details = cg_verdict 
+                                concern_details = cg_verdict # This is now the extracted concern string or malformed message
+                                agent.cg_original_text = final_content
+                                agent.cg_concern_details = concern_details
+                                agent.cg_original_event_data = original_event_data
+                                agent.cg_awaiting_user_decision = True
                                 agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG)
                                 await self._manager.send_to_ui({
                                     "type": "cg_concern",
@@ -381,12 +393,6 @@ class AgentCycleHandler:
                                 context.action_taken_this_cycle = True
                                 context.needs_reactivation_after_cycle = False
                                 break 
-                            else: 
-                                logger.warning(f"Unknown CG verdict format: '{cg_verdict}'. Proceeding with original message for safety.")
-                                if context.current_db_session_id: 
-                                    if not agent.message_history or not agent.message_history[-1].get("tool_calls"):
-                                        await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content)
-                                await self._manager.send_to_ui(original_event_data)
                         else: # No content in final_response, or it's the CG agent itself
                             if context.current_db_session_id and final_content: 
                                 if not agent.message_history or not agent.message_history[-1].get("tool_calls"):
@@ -412,14 +418,18 @@ class AgentCycleHandler:
                     if agent.agent_id != CONSTITUTIONAL_GUARDIAN_AGENT_ID:
                         cg_verdict = await self._get_cg_verdict(final_content_from_buffer)
 
-                        if cg_verdict is None or cg_verdict.startswith("<OK/>"):
+                        if cg_verdict == "<OK/>": # Explicitly check for <OK/>
                             logger.info(f"CG Verdict OK for agent '{agent.agent_id}' (from buffer). Proceeding normally.")
                             if context.current_db_session_id:
                                 await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content_from_buffer)
                             await self._manager.send_to_ui(mock_event_data)
-                        elif cg_verdict.startswith("<CONCERN>"):
+                        else: # Any other string is a concern
                             logger.info(f"CG CONCERN for agent '{agent.agent_id}' (from buffer). Pausing agent and notifying UI.")
                             concern_details = cg_verdict
+                            agent.cg_original_text = final_content_from_buffer
+                            agent.cg_concern_details = concern_details
+                            agent.cg_original_event_data = mock_event_data
+                            agent.cg_awaiting_user_decision = True
                             agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG)
                             await self._manager.send_to_ui({
                                 "type": "cg_concern",
@@ -429,11 +439,6 @@ class AgentCycleHandler:
                             })
                             context.action_taken_this_cycle = True
                             context.needs_reactivation_after_cycle = False
-                        else: 
-                            logger.warning(f"Unknown CG verdict format (from buffer): '{cg_verdict}'. Proceeding with original message.")
-                            if context.current_db_session_id:
-                                await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content_from_buffer)
-                            await self._manager.send_to_ui(mock_event_data)
                     else: 
                         if final_content_from_buffer: 
                             if context.current_db_session_id:
