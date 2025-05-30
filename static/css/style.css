@@ -807,115 +807,101 @@ body {
     display: block;
 }
 
-/* --- Constitutional Concern Message Styling --- */
-.message.constitutional_concern_message {
-    background-color: #3d3524; /* Darker yellow for dark mode */
-    border-left: 5px solid var(--accent-color-yellow); /* Amber border from variables */
-    padding: 10px 15px;
+/* --- CG Concern Message Styling (replaces old constitutional_concern styles) --- */
+.message.cg_concern_message {
+    background-color: var(--bg-color-secondary); /* Slightly different from default agent messages */
+    border-left: 5px solid var(--accent-color-orange);
+    padding: 12px 15px;
     margin-bottom: 10px;
     border-radius: 4px;
-    /* Override default agent message background if necessary, though specific class should be enough */
-    background-color: var(--agent-msg-bg-base); /* Keep default agent message bg */
-    border-color: var(--accent-color-yellow); /* Prominent border */
+    box-shadow: 0 1px 3px rgba(0,0,0,0.15); /* A bit more shadow for dark theme */
+    /* Ensure it uses the full width of the message body for its content */
+    display: flex; /* if .message-body is not already flex full width */
 }
 
-/* The HTML from handlers.js puts the message directly in .message-content */
-/* The "Constitutional Concern:" part is wrapped in <strong> inside a <p> */
-.constitutional_concern_message .message-content p strong {
+.cg_concern_message .message-content {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    white-space: normal; /* Allow normal text flow, not pre-wrap from default .message-content */
+    width: 100%; /* Ensure the inner div takes full width */
+}
+
+/* Title/Persona: Targets <p><strong>${displayPersonaForUI} says:</strong></p> */
+.cg_concern_message .message-content > div > p:first-child strong {
     font-weight: bold;
-    color: var(--accent-color-yellow); /* Amber color for emphasis */
-    display: block; /* Makes it take its own line, or use inline-block if preferred */
-    margin-bottom: 5px;
-}
-/* Style the rest of the paragraph text if needed */
-.constitutional_concern_message .message-content p {
-    color: var(--text-color-primary); /* Ensure readability */
-    margin-bottom: 8px; /* Space before details or buttons */
+    color: var(--accent-color-orange); /* Make persona stand out */
+    display: block;
+    margin-bottom: 8px;
 }
 
-
-.constitutional_concern_message details {
-    margin-top: 10px; /* Space above details section */
-    margin-bottom: 10px; /* Space below details, before buttons */
-    background-color: rgba(0,0,0,0.1); /* Slightly different bg for details block */
-    padding: 8px;
-    border-radius: 3px;
-    border: 1px solid var(--border-color);
-}
-.constitutional_concern_message details summary {
-    cursor: pointer;
-    font-weight: bold;
-    color: var(--text-color-secondary);
-    margin-bottom: 6px;
-    outline: none; /* Remove default focus outline for summary if desired */
-}
-.constitutional_concern_message details summary:hover {
+/* Concern Details Text: Targets <p>${guardianReportDetails}</p> */
+.cg_concern_message .message-content > div > p:nth-child(2) {
+    margin-bottom: 10px;
+    line-height: 1.5;
     color: var(--text-color-primary);
 }
-/* The details content in handlers.js is a <p><small>...</small></p> */
-.constitutional_concern_message details p {
-    margin-top: 5px;
-    margin-bottom: 0; /* No extra margin for the paragraph inside details */
-}
-.constitutional_concern_message details p small {
-    background-color: var(--bg-color-tertiary); /* Darker background for pre-like content */
-    padding: 8px;
-    border-radius: 3px;
-    white-space: pre-wrap; /* Allow wrapping */
-    font-size: 0.9em;
-    color: var(--text-color-primary); /* Ensure text is light on dark bg */
-    display: block; /* Make small take full width */
+
+/* Details Section for Original Text */
+.cg_concern_message .message-content details {
+    margin-top: 12px;
+    background-color: var(--bg-color-tertiary); /* Darker background for details block */
     border: 1px solid var(--border-color);
-    font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+    border-radius: 4px;
+    padding: 8px 10px; /* Padding for the details element itself */
 }
 
-.constitutional_concern_message .options {
-    margin-top: 10px;
+.cg_concern_message .message-content details summary {
+    cursor: pointer;
+    font-weight: 600;
+    padding: 4px 0; /* Minimal padding for summary */
+    color: var(--text-color-secondary);
+    outline: none;
+}
+.cg_concern_message .message-content details summary:hover {
+    color: var(--text-color-primary);
+}
+
+.cg_concern_message .message-content details pre {
+    background-color: var(--input-bg); /* Even darker for pre block, or var(--bg-color-primary) */
+    padding: 10px;
+    border-radius: 3px;
+    white-space: pre-wrap;
+    font-size: 0.9em;
+    color: var(--text-color-primary); /* Ensure text is readable */
+    margin-top: 8px;
+    border: 1px solid var(--border-color); /* Add a border to the pre block */
+    max-height: 150px; /* Limit height of pre block */
+    overflow-y: auto; /* Allow scrolling for long original text */
+}
+
+/* Options Container */
+.cg_concern_message .message-content .options-container {
     display: flex;
-    flex-wrap: wrap; /* Allow buttons to wrap on smaller screens */
-    gap: 8px; /* Spacing between buttons */
+    flex-wrap: wrap;
+    gap: 10px; /* Increased gap for better separation */
+    margin-top: 15px; /* More space above buttons */
 }
 
-.constitutional_concern_message .message-button {
-    background-color: var(--accent-color-green);
-    color: white;
-    padding: 8px 12px;
-    /* margin: 5px 5px 5px 0; (gap property on .options replaces this) */
+/* Buttons */
+.cg_concern_message .message-content .message-button {
+    background-color: var(--button-bg); /* Use theme's primary button color (accent-color-1 / blue) */
+    color: var(--button-text);
+    padding: 8px 15px;
     border: none;
     border-radius: 4px;
     cursor: pointer;
     font-size: 0.9em;
-    transition: background-color 0.2s ease;
+    font-weight: 500; /* Slightly less bold than default button perhaps */
+    transition: background-color 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.2);
 }
-.constitutional_concern_message .message-button:hover {
-    background-color: #1c7430; /* Darker green */
+.cg_concern_message .message-content .message-button:hover {
+    background-color: var(--button-hover-bg); /* Darker shade of primary button color */
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
 }
-.constitutional_concern_message .message-button:disabled {
-    background-color: var(--button-disabled-bg); /* Use existing disabled variable */
-    color: var(--text-color-muted);
+.cg_concern_message .message-content .message-button:disabled {
+    background-color: var(--button-disabled-bg);
+    color: var(--text-color-muted); /* Muted text for disabled state */
     cursor: not-allowed;
-    opacity: 0.7;
-}
-
-/* Ensure the .constitutional_concern_message itself handles its content flow */
-.message.constitutional_concern_message .message-body {
-    /* The message-body in the default .message structure is flex-direction: column.
-       This should be fine as .message-content (which contains the concern HTML)
-       is a child of .message-body.
-       The HTML generated for concerns is:
-       <div class="constitutional-concern">
-           <p><strong>Concern:</strong> msg</p>
-           <details>...</details>
-           <div class="options">...</div>
-       </div>
-       This entire block is passed as `displayContent` to ui.displayMessage,
-       which then places it inside .message-content.
-    */
-    width: 100%; /* Ensure it takes full width within the message bubble */
-}
-
-/* Adjust the content part of the constitutional message for better layout */
-.constitutional_concern_message .message-content {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; /* Use standard UI font */
-    white-space: normal; /* Override pre-wrap if it was inherited, to allow normal flow */
+    opacity: 0.6; /* Slightly more opacity for disabled state */
+    box-shadow: none;
 }

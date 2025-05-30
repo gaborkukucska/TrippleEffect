@@ -148,32 +148,41 @@ export const handleWebSocketMessage = (data) => {
                 shouldDisplay = true; // Let displayMessage handle it
                 break;
 
-            case 'constitutional_concern':
-                console.log("Handler: Formatting constitutional_concern for main chat");
-                const concernId = data.concern_id;
-                const concernMessage = escapeHTML(data.message);
-                const concernDetails = data.details ? escapeHTML(data.details) : '';
-                const options = data.options || [];
-                displayAgentId = escapeHTML(data.agent_id || 'system'); // Agent providing the concern
+            case 'cg_concern': // Renamed from constitutional_concern
+                console.log("Handler: Formatting cg_concern for main chat", data);
+                // Fields based on observed log: { agent_id, concern_details, original_text, type: "cg_concern" }
+                displayAgentId = escapeHTML(data.agent_id || 'system');
                 displayPersonaForUI = escapeHTML(data.persona || 'Constitutional Guardian');
 
+                const guardianReportDetails = escapeHTML(data.concern_details || "No details provided.");
+                const originalReviewedText = data.original_text ? escapeHTML(data.original_text) : ''; // Already escaped if not empty
+
+                const defaultOptions = [
+                    { text: "Acknowledge", command: "acknowledge_cg_concern" },
+                    { text: "Revise Plan", command: "revise_plan_cg_concern" },
+                    { text: "Provide Feedback", command: "feedback_cg_concern" }
+                ];
+
                 let buttonsHTML = '';
-                options.forEach(option => {
-                    const text = escapeHTML(option.text);
-                    const command = escapeHTML(option.command);
-                    const payload = option.payload ? escapeHTML(JSON.stringify(option.payload)) : '';
-                    buttonsHTML += `<button class="message-button" data-command="${command}" data-concern-id="${escapeHTML(concernId)}" data-payload='${payload}'>${text}</button>`;
+                defaultOptions.forEach(option => {
+                    buttonsHTML += `<button class="message-button" data-command="${escapeHTML(option.command)}" data-original-text="${originalReviewedText}">${escapeHTML(option.text)}</button>`;
                 });
 
                 displayContent = `
-                    <div class="constitutional-concern">
-                        <p><strong>Constitutional Concern:</strong> ${concernMessage}</p>
-                        ${concernDetails ? `<details><summary>Details</summary><p><small>${concernDetails}</small></p></details>` : ''}
-                        <div class="options">${buttonsHTML}</div>
+                    <div>
+                        <p><strong>${displayPersonaForUI} says:</strong></p>
+                        <p>${guardianReportDetails}</p>
+                        ${originalReviewedText ? `
+                        <details>
+                            <summary>View Original Text Reviewed</summary>
+                            <pre>${originalReviewedText}</pre> {/* originalReviewedText is already escaped */}
+                        </details>
+                        ` : ''}
+                        <div class="options-container">${buttonsHTML}</div>
                     </div>
                 `;
                 targetAreaId = 'conversation-area';
-                displayType = 'constitutional_concern_message'; // Specific type for styling
+                displayType = 'cg_concern_message'; // New specific display type
                 shouldDisplay = true;
                 break;
 
@@ -208,13 +217,13 @@ export const handleWebSocketMessage = (data) => {
                      displayType = 'agent_response'; // Style as agent response
                  } else {
                     // Check if it's a constitutional agent's final response, should not go to internal-comms
-                    if (agentId !== data.agent_id || messageType !== 'constitutional_concern') { // Avoid double display or wrong routing for constitutional concerns
+                    if (agentId !== data.agent_id || messageType !== 'cg_concern') { // Avoid double display or wrong routing for constitutional concerns
                         targetAreaId = 'internal-comms-area';
                         displayType = 'log';
                     } else {
-                        // This case should ideally be handled by 'constitutional_concern' block if that's the final message format
+                        // This case should ideally be handled by 'cg_concern' block if that's the final message format
                         // If not, and it's a final response from constitutional agent meant for chat, this might need adjustment
-                        // For now, prevent display if it's a duplicate or misrouted constitutional message
+                        // For now, prevent display if it's a duplicate or misrouted cg_concern message
                         shouldDisplay = false;
                     }
                  }
@@ -290,25 +299,41 @@ export const handleMessageButtonClick = (event) => {
     // Use event delegation - check if the clicked element is a button with the correct class
     if (event.target.tagName === 'BUTTON' && event.target.classList.contains('message-button')) {
         const button = event.target;
-        const command = button.getAttribute('data-command');
-        const concernId = button.getAttribute('data-concern-id');
-        const payloadString = button.getAttribute('data-payload');
-        const buttonText = button.textContent; // Get button text for context
-        console.log(`Handler: Message button clicked. Command: '${command}', Concern ID: '${concernId}', Payload: '${payloadString}', Text: '${buttonText}'`);
+        const command = button.dataset.command; // Use .dataset for data attributes
+        const originalText = button.dataset.originalText; // For cg_concern
+        const concernId = button.dataset.concernId;     // For older constitutional_response
+        const payloadString = button.dataset.payload;   // For older constitutional_response
+        const buttonText = button.textContent;
+
+        console.log(`Handler: Message button clicked. Command: '${command}', OriginalText: '${originalText}', ConcernID: '${concernId}', Payload: '${payloadString}', Text: '${buttonText}'`);
 
         if (command) {
             let messageToSend;
-            // If there's a concernId, it implies a structured response related to the concern
-            if (concernId) {
-                const messageObject = {
-                    type: "constitutional_response", // Updated type
-                    action: command,                 // Renamed from command to action
+            let messageObject;
+
+            if (originalText !== undefined) { // Check for undefined, as empty string is a valid value for originalText
+                // This is a cg_concern button click
+                messageObject = {
+                    type: "cg_concern_response",
+                    action: command,
+                    original_text: originalText, // originalText is already escaped when set in data attribute
+                    user_feedback: null
+                };
+                messageToSend = JSON.stringify(messageObject);
+                ui.displayMessage(escapeHTML(`You chose to: ${buttonText}`), 'user', 'conversation-area', 'human_user');
+
+            } else if (concernId) {
+                // This is likely an older constitutional_response button click
+                console.log("Handler: Handling button click with data-concern-id (older constitutional_response flow).");
+                messageObject = {
+                    type: "constitutional_response",
+                    action: command,
                     concern_id: concernId,
-                    user_feedback: null,             // Added user_feedback field
+                    user_feedback: null,
                 };
                 if (payloadString) {
                     try {
-                        messageObject.payload = JSON.parse(payloadString); // Payload remains the same
+                        messageObject.payload = JSON.parse(payloadString);
                     } catch (e) {
                         console.error("Handler: Failed to parse payload JSON for button command:", payloadString, e);
                         // Potentially notify user or send without payload
@@ -329,10 +354,12 @@ export const handleMessageButtonClick = (event) => {
             // Optional: Disable the button or all buttons in the group after click
             // button.disabled = true;
             // button.textContent = 'Processing...';
-            // Consider disabling all buttons in the same .options div
-            const parentOptionsDiv = button.closest('.options');
-            if (parentOptionsDiv) {
-                parentOptionsDiv.querySelectorAll('.message-button').forEach(btn => {
+
+            // Disable all buttons in the same options container
+            // Handles both .options (older) and .options-container (newer for cg_concern)
+            const parentOptionsContainer = button.closest('.options-container') || button.closest('.options');
+            if (parentOptionsContainer) {
+                parentOptionsContainer.querySelectorAll('.message-button').forEach(btn => {
                     btn.disabled = true;
                     btn.style.opacity = '0.5';
                 });
@@ -343,7 +370,7 @@ export const handleMessageButtonClick = (event) => {
         }
     } else if (event.target.tagName === 'BUTTON' && event.target.classList.contains('approve-project-btn')) {
         // --- SPECIFIC Handler for existing Approve button ---
-        const pmId = event.target.getAttribute('data-pm-id');
+        const pmId = button.dataset.pmId; // Use .dataset
         const commandText = `approve project ${pmId}`; // Construct command
         console.log(`Handler: Approve Project button clicked for PM: ${pmId}`);
 
