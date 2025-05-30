@@ -806,3 +806,116 @@ body {
     color: var(--error-text);
     display: block;
 }
+
+/* --- Constitutional Concern Message Styling --- */
+.message.constitutional_concern_message {
+    background-color: #3d3524; /* Darker yellow for dark mode */
+    border-left: 5px solid var(--accent-color-yellow); /* Amber border from variables */
+    padding: 10px 15px;
+    margin-bottom: 10px;
+    border-radius: 4px;
+    /* Override default agent message background if necessary, though specific class should be enough */
+    background-color: var(--agent-msg-bg-base); /* Keep default agent message bg */
+    border-color: var(--accent-color-yellow); /* Prominent border */
+}
+
+/* The HTML from handlers.js puts the message directly in .message-content */
+/* The "Constitutional Concern:" part is wrapped in <strong> inside a <p> */
+.constitutional_concern_message .message-content p strong {
+    font-weight: bold;
+    color: var(--accent-color-yellow); /* Amber color for emphasis */
+    display: block; /* Makes it take its own line, or use inline-block if preferred */
+    margin-bottom: 5px;
+}
+/* Style the rest of the paragraph text if needed */
+.constitutional_concern_message .message-content p {
+    color: var(--text-color-primary); /* Ensure readability */
+    margin-bottom: 8px; /* Space before details or buttons */
+}
+
+
+.constitutional_concern_message details {
+    margin-top: 10px; /* Space above details section */
+    margin-bottom: 10px; /* Space below details, before buttons */
+    background-color: rgba(0,0,0,0.1); /* Slightly different bg for details block */
+    padding: 8px;
+    border-radius: 3px;
+    border: 1px solid var(--border-color);
+}
+.constitutional_concern_message details summary {
+    cursor: pointer;
+    font-weight: bold;
+    color: var(--text-color-secondary);
+    margin-bottom: 6px;
+    outline: none; /* Remove default focus outline for summary if desired */
+}
+.constitutional_concern_message details summary:hover {
+    color: var(--text-color-primary);
+}
+/* The details content in handlers.js is a <p><small>...</small></p> */
+.constitutional_concern_message details p {
+    margin-top: 5px;
+    margin-bottom: 0; /* No extra margin for the paragraph inside details */
+}
+.constitutional_concern_message details p small {
+    background-color: var(--bg-color-tertiary); /* Darker background for pre-like content */
+    padding: 8px;
+    border-radius: 3px;
+    white-space: pre-wrap; /* Allow wrapping */
+    font-size: 0.9em;
+    color: var(--text-color-primary); /* Ensure text is light on dark bg */
+    display: block; /* Make small take full width */
+    border: 1px solid var(--border-color);
+    font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+}
+
+.constitutional_concern_message .options {
+    margin-top: 10px;
+    display: flex;
+    flex-wrap: wrap; /* Allow buttons to wrap on smaller screens */
+    gap: 8px; /* Spacing between buttons */
+}
+
+.constitutional_concern_message .message-button {
+    background-color: var(--accent-color-green);
+    color: white;
+    padding: 8px 12px;
+    /* margin: 5px 5px 5px 0; (gap property on .options replaces this) */
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9em;
+    transition: background-color 0.2s ease;
+}
+.constitutional_concern_message .message-button:hover {
+    background-color: #1c7430; /* Darker green */
+}
+.constitutional_concern_message .message-button:disabled {
+    background-color: var(--button-disabled-bg); /* Use existing disabled variable */
+    color: var(--text-color-muted);
+    cursor: not-allowed;
+    opacity: 0.7;
+}
+
+/* Ensure the .constitutional_concern_message itself handles its content flow */
+.message.constitutional_concern_message .message-body {
+    /* The message-body in the default .message structure is flex-direction: column.
+       This should be fine as .message-content (which contains the concern HTML)
+       is a child of .message-body.
+       The HTML generated for concerns is:
+       <div class="constitutional-concern">
+           <p><strong>Concern:</strong> msg</p>
+           <details>...</details>
+           <div class="options">...</div>
+       </div>
+       This entire block is passed as `displayContent` to ui.displayMessage,
+       which then places it inside .message-content.
+    */
+    width: 100%; /* Ensure it takes full width within the message bubble */
+}
+
+/* Adjust the content part of the constitutional message for better layout */
+.constitutional_concern_message .message-content {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; /* Use standard UI font */
+    white-space: normal; /* Override pre-wrap if it was inherited, to allow normal flow */
+}

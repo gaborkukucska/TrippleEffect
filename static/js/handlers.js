@@ -148,6 +148,35 @@ export const handleWebSocketMessage = (data) => {
                 shouldDisplay = true; // Let displayMessage handle it
                 break;
 
+            case 'constitutional_concern':
+                console.log("Handler: Formatting constitutional_concern for main chat");
+                const concernId = data.concern_id;
+                const concernMessage = escapeHTML(data.message);
+                const concernDetails = data.details ? escapeHTML(data.details) : '';
+                const options = data.options || [];
+                displayAgentId = escapeHTML(data.agent_id || 'system'); // Agent providing the concern
+                displayPersonaForUI = escapeHTML(data.persona || 'Constitutional Guardian');
+
+                let buttonsHTML = '';
+                options.forEach(option => {
+                    const text = escapeHTML(option.text);
+                    const command = escapeHTML(option.command);
+                    const payload = option.payload ? escapeHTML(JSON.stringify(option.payload)) : '';
+                    buttonsHTML += `<button class="message-button" data-command="${command}" data-concern-id="${escapeHTML(concernId)}" data-payload='${payload}'>${text}</button>`;
+                });
+
+                displayContent = `
+                    <div class="constitutional-concern">
+                        <p><strong>Constitutional Concern:</strong> ${concernMessage}</p>
+                        ${concernDetails ? `<details><summary>Details</summary><p><small>${concernDetails}</small></p></details>` : ''}
+                        <div class="options">${buttonsHTML}</div>
+                    </div>
+                `;
+                targetAreaId = 'conversation-area';
+                displayType = 'constitutional_concern_message'; // Specific type for styling
+                shouldDisplay = true;
+                break;
+
             // --- Project Approved Confirmation (Main Chat Area) ---
              case 'project_approved':
                  displayContent = `✅ Project Approved: ${escapeHTML(data.message || `Project for PM ${data.pm_agent_id} started.`)}`;
@@ -162,7 +191,7 @@ export const handleWebSocketMessage = (data) => {
                      targetAreaId = 'internal-comms-area'; // <<< CORRECT: Chunks go to internal comms
                      displayType = 'response_chunk'; // Style as chunk
                  } else {
-                     // Other agents' chunks also go to internal comms
+                     // Other agents' chunks also go to internal comms for now
                      targetAreaId = 'internal-comms-area';
                      displayType = 'response_chunk';
                  }
@@ -178,9 +207,16 @@ export const handleWebSocketMessage = (data) => {
                      targetAreaId = 'conversation-area'; // <<< CORRECT: Final message goes to main chat
                      displayType = 'agent_response'; // Style as agent response
                  } else {
-                     // Final/Agent responses from other agents go to internal comms as logs
-                     targetAreaId = 'internal-comms-area';
-                     displayType = 'log';
+                    // Check if it's a constitutional agent's final response, should not go to internal-comms
+                    if (agentId !== data.agent_id || messageType !== 'constitutional_concern') { // Avoid double display or wrong routing for constitutional concerns
+                        targetAreaId = 'internal-comms-area';
+                        displayType = 'log';
+                    } else {
+                        // This case should ideally be handled by 'constitutional_concern' block if that's the final message format
+                        // If not, and it's a final response from constitutional agent meant for chat, this might need adjustment
+                        // For now, prevent display if it's a duplicate or misrouted constitutional message
+                        shouldDisplay = false;
+                    }
                  }
                  // Handle empty final messages
                  if (displayContent === undefined || displayContent === null) {
@@ -253,26 +289,60 @@ export const handleWebSocketMessage = (data) => {
 export const handleMessageButtonClick = (event) => {
     // Use event delegation - check if the clicked element is a button with the correct class
     if (event.target.tagName === 'BUTTON' && event.target.classList.contains('message-button')) {
-        const command = event.target.getAttribute('data-command');
-        const buttonText = event.target.textContent; // Get button text for context
-        console.log(`Handler: Message button clicked. Command: '${command}', Text: '${buttonText}'`);
+        const button = event.target;
+        const command = button.getAttribute('data-command');
+        const concernId = button.getAttribute('data-concern-id');
+        const payloadString = button.getAttribute('data-payload');
+        const buttonText = button.textContent; // Get button text for context
+        console.log(`Handler: Message button clicked. Command: '${command}', Concern ID: '${concernId}', Payload: '${payloadString}', Text: '${buttonText}'`);
 
         if (command) {
-            // Simulate user sending the command as a message
-            // Display the command locally as if the user typed it
-            ui.displayMessage(escapeHTML(command), 'user', 'conversation-area', 'human_user');
-            // Send the command via WebSocket
-            ws.sendMessage(command);
+            let messageToSend;
+            // If there's a concernId, it implies a structured response related to the concern
+            if (concernId) {
+                const messageObject = {
+                    type: "constitutional_response", // Updated type
+                    action: command,                 // Renamed from command to action
+                    concern_id: concernId,
+                    user_feedback: null,             // Added user_feedback field
+                };
+                if (payloadString) {
+                    try {
+                        messageObject.payload = JSON.parse(payloadString); // Payload remains the same
+                    } catch (e) {
+                        console.error("Handler: Failed to parse payload JSON for button command:", payloadString, e);
+                        // Potentially notify user or send without payload
+                    }
+                }
+                messageToSend = JSON.stringify(messageObject);
+                // Display a more contextual message for the user
+                ui.displayMessage(escapeHTML(`Decision: ${buttonText} (for concern ${concernId})`), 'user', 'conversation-area', 'human_user');
 
-            // Optional: Disable the button after click?
-            // event.target.disabled = true;
-            // event.target.textContent = 'Processing...';
+            } else {
+                // Fallback for generic commands if any button uses this class without concern context
+                messageToSend = command;
+                ui.displayMessage(escapeHTML(command), 'user', 'conversation-area', 'human_user');
+            }
+
+            ws.sendMessage(messageToSend);
+
+            // Optional: Disable the button or all buttons in the group after click
+            // button.disabled = true;
+            // button.textContent = 'Processing...';
+            // Consider disabling all buttons in the same .options div
+            const parentOptionsDiv = button.closest('.options');
+            if (parentOptionsDiv) {
+                parentOptionsDiv.querySelectorAll('.message-button').forEach(btn => {
+                    btn.disabled = true;
+                    btn.style.opacity = '0.5';
+                });
+            }
+
         } else {
             console.warn("Handler: Clicked message button has no data-command attribute.");
         }
     } else if (event.target.tagName === 'BUTTON' && event.target.classList.contains('approve-project-btn')) {
         // --- SPECIFIC Handler for existing Approve button ---
-        // This can be merged into the generic handler later if we standardize attributes
         const pmId = event.target.getAttribute('data-pm-id');
         const commandText = `approve project ${pmId}`; // Construct command
         console.log(`Handler: Approve Project button clicked for PM: ${pmId}`);
