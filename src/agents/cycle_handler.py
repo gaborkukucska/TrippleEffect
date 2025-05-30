@@ -12,7 +12,7 @@ from src.config.settings import settings
 from src.agents.constants import (
     AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_PLANNING,
     AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_AWAITING_TOOL,
-    AGENT_STATUS_AWAITING_CG_REVIEW, # Added for CG
+    AGENT_STATUS_AWAITING_CG_REVIEW, AGENT_STATUS_AWAITING_USER_REVIEW_CG, # Added for CG
     AGENT_STATUS_ERROR, AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER,
     ADMIN_STATE_PLANNING, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STARTUP,
     PM_STATE_STARTUP, PM_STATE_MANAGE, PM_STATE_WORK, PM_STATE_BUILD_TEAM_TASKS,
@@ -53,72 +53,68 @@ class AgentCycleHandler:
         self.request_state_pattern = REQUEST_STATE_TAG_PATTERN 
         logger.info("AgentCycleHandler initialized.")
 
-    async def _request_cg_review(self, original_agent: Agent, original_agent_final_text: str, cycle_context: CycleContext) -> bool:
+    async def _get_cg_verdict(self, original_agent_final_text: str) -> Optional[str]:
         """
-        Requests a review from the Constitutional Guardian agent.
-        Sets the original agent's status to AGENT_STATUS_AWAITING_CG_REVIEW.
-        Schedules the CG agent to review the provided text.
+        Directly calls the Constitutional Guardian agent's LLM provider to get a verdict.
+        This method bypasses the usual agent scheduling and cycle handling for the CG agent
+        to get an immediate verdict.
         """
-        cg_agent_id = CONSTITUTIONAL_GUARDIAN_AGENT_ID
+        cg_agent = self._manager.agents.get(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
 
-        if original_agent.agent_id == cg_agent_id:
-            logger.warning(f"Agent '{original_agent.agent_id}' is the Constitutional Guardian and cannot review itself. Skipping CG review.")
-            return False
-
-        cg_agent = self._manager.agents.get(cg_agent_id)
         if not cg_agent:
-            logger.error(f"Constitutional Guardian agent '{cg_agent_id}' not found. Skipping review for agent '{original_agent.agent_id}'.")
-            # Potentially set original agent to an error state or allow it to proceed without review based on policy
-            return False
+            logger.error(f"Constitutional Guardian agent '{CONSTITUTIONAL_GUARDIAN_AGENT_ID}' not found. Failing open (assuming <OK/>).")
+            return "<OK/>"
         
-        if cg_agent.status != AGENT_STATUS_IDLE:
-            logger.warning(f"Constitutional Guardian agent '{cg_agent_id}' is not idle (current status: {cg_agent.status}). Skipping review for '{original_agent.agent_id}'.")
-            # TODO: Consider queuing the review or notifying admin
-            return False
+        if not cg_agent.llm_provider:
+            logger.error(f"Constitutional Guardian agent '{CONSTITUTIONAL_GUARDIAN_AGENT_ID}' has no LLM provider. Failing open (assuming <OK/>).")
+            return "<OK/>"
 
         # Format governance principles text
         text_parts = []
         if hasattr(settings, 'GOVERNANCE_PRINCIPLES') and settings.GOVERNANCE_PRINCIPLES:
             for principle in settings.GOVERNANCE_PRINCIPLES:
-                if principle.get("enabled", False): # Only include enabled principles
+                if principle.get("enabled", False):
                     text_parts.append(f"Principle: {principle.get('name', 'N/A')} (ID: {principle.get('id', 'N/A')})\n{principle.get('text', 'N/A')}")
         
-        if not text_parts:
-            logger.warning("No enabled governance principles found in settings. CG review might be ineffective.")
-            governance_text = "No specific governance principles provided."
-        else:
-            governance_text = "\n\n---\n\n".join(text_parts)
+        governance_text = "\n\n---\n\n".join(text_parts) if text_parts else "No specific governance principles provided."
 
         cg_prompt_template = settings.PROMPTS.get("cg_system_prompt", "")
         if not cg_prompt_template:
-            logger.error("System prompt for Constitutional Guardian (cg_system_prompt) not found in prompts.json. Cannot proceed with review.")
-            return False
+            logger.error("System prompt for Constitutional Guardian (cg_system_prompt) not found. Failing open (assuming <OK/>).")
+            return "<OK/>"
 
         formatted_cg_system_prompt = cg_prompt_template.format(governance_principles_text=governance_text)
         
-        # History for the CG agent
         cg_history: List[MessageDict] = [
             {"role": "system", "content": formatted_cg_system_prompt},
-            {"role": "user", "content": original_agent_final_text} 
+            {"role": "user", "content": original_agent_final_text}
         ]
 
-        logger.info(f"Initiating Constitutional Guardian review for agent '{original_agent.agent_id}' (text: '{original_agent_final_text[:100]}...').")
-        
-        # Set original agent's status
-        original_agent.set_status(AGENT_STATUS_AWAITING_CG_REVIEW)
-        # Agent.set_status already calls push_agent_status_update
+        max_tokens_for_verdict = 150 # Verdicts should be concise
 
-        # Schedule the CG agent
-        cg_agent.message_history = cg_history # Override history directly for CG
-        # Ensure CG agent's internal state is reset for a clean cycle if necessary
-        cg_agent.text_buffer = "" 
-        cg_agent.last_error = None
-        # cg_agent.set_status(AGENT_STATUS_IDLE) # Ensure it's idle before scheduling, though we checked earlier
-        
-        await self._manager.schedule_cycle(cg_agent, retry_count=0)
-        logger.info(f"Constitutional Guardian agent '{cg_agent_id}' scheduled to review output from '{original_agent.agent_id}'. Original agent is now {AGENT_STATUS_AWAITING_CG_REVIEW}.")
-        
-        return True
+        try:
+            logger.info(f"Requesting CG verdict for text: '{original_agent_final_text[:100]}...'")
+            verdict_text = await cg_agent.llm_provider.get_completion(
+                messages=cg_history,
+                model=cg_agent.model,
+                temperature=cg_agent.temperature, # Use CG agent's configured temperature (should be low for consistency)
+                max_tokens=max_tokens_for_verdict
+            )
+            stripped_verdict = verdict_text.strip() if verdict_text else ""
+            logger.info(f"CG Verdict received: '{stripped_verdict}'")
+            
+            # Basic validation of verdict format
+            if not stripped_verdict.startswith("<OK/>") and not stripped_verdict.startswith("<CONCERN>"):
+                logger.warning(f"CG verdict '{stripped_verdict}' is not in the expected format. Defaulting to <CONCERN> for safety.")
+                return f"<CONCERN>CG verdict was not in the expected format. Original verdict: {stripped_verdict}</CONCERN>"
+            
+            return stripped_verdict if stripped_verdict else "<OK/>" # Fail open if empty response after stripping
+
+        except Exception as e:
+            logger.error(f"Error during Constitutional Guardian LLM call: {e}", exc_info=True)
+            return "<OK/>" # Fail open/safe on error
+
+    # Removed _request_cg_review method as its functionality is integrated into _get_cg_verdict and run_cycle
 
     async def run_cycle(self, agent: Agent, retry_count: int = 0):
         logger.critical(f"!!! CycleHandler: run_cycle TASK STARTED for Agent '{agent.agent_id}' (Retry: {retry_count}) !!!")
@@ -158,9 +154,7 @@ class AgentCycleHandler:
                     context.action_taken_this_cycle = True 
                     workflow_result_data = event.get("result_data")
                     
-                    # --- ADD LOGGING FOR workflow_result_data ---
                     logger.critical(f"CycleHandler '{agent.agent_id}': workflow_executed event data: {workflow_result_data}")
-                    # --- END LOGGING ---
 
                     if not workflow_result_data or not isinstance(workflow_result_data, dict): 
                         logger.error(f"CycleHandler '{agent.agent_id}': 'workflow_executed' event missing or malformed 'result_data'. Cannot process workflow outcome. Data: {workflow_result_data}")
@@ -196,37 +190,26 @@ class AgentCycleHandler:
                                 logger.warning(f"CycleHandler '{agent.agent_id}': Workflow '{workflow_result.workflow_name}' requested scheduling for an invalid/None agent. Task agent: {task_agent}")
                     else:
                         logger.info(f"CycleHandler '{agent.agent_id}': Workflow result for '{workflow_result.workflow_name}' has no tasks_to_schedule.")
-
                     
                     if workflow_result.success:
                          context.cycle_completed_successfully = True 
-                         # If workflow explicitly schedules the current agent, needs_reactivation_after_cycle can be false.
-                         # Otherwise, if it was successful and didn't schedule the current agent, it might need reactivation
-                         # if no state change occurred that would naturally lead to idling or further triggers.
-                         # For now, if successful, assume workflow handles next steps.
                          if workflow_result.tasks_to_schedule and any(ts_agent.agent_id == agent.agent_id for ts_agent, _ in workflow_result.tasks_to_schedule):
                              context.needs_reactivation_after_cycle = False
                          elif not workflow_result.next_agent_state and not workflow_result.tasks_to_schedule:
-                             # Successful workflow, no state change, no tasks scheduled FOR THIS AGENT.
-                             # This might imply the agent should take another turn based on the new context.
-                             # However, the default workflow model is one action per output.
-                             context.needs_reactivation_after_cycle = False # Default to false for successful workflow
+                             context.needs_reactivation_after_cycle = False 
                              logger.debug(f"CycleHandler: Successful workflow '{workflow_result.workflow_name}' for agent '{agent.agent_id}' completed. No explicit reschedule of current agent. Agent goes idle in new/current state.")
                          else:
                              context.needs_reactivation_after_cycle = False
-
-                    else: # Workflow failed
+                    else: 
                          context.last_error_content = f"Workflow '{workflow_result.workflow_name}' failed: {workflow_result.message}"
                          context.last_error_obj = ValueError(context.last_error_content)
-                         # If workflow failed but specified tasks_to_schedule (e.g. to retry itself)
                          if workflow_result.tasks_to_schedule and any(ts_agent.agent_id == agent.agent_id for ts_agent, _ in workflow_result.tasks_to_schedule):
-                             context.needs_reactivation_after_cycle = False # Workflow handles retry
+                             context.needs_reactivation_after_cycle = False 
                          elif not workflow_result.tasks_to_schedule and not workflow_result.next_agent_state and workflow_result.next_agent_status != AGENT_STATUS_ERROR:
                              logger.info(f"CycleHandler: Workflow '{workflow_result.workflow_name}' failed for agent '{agent.agent_id}' but did not specify next steps or error status. Marking for reactivation to potentially retry/correct.")
                              context.needs_reactivation_after_cycle = True
                          else:
                              context.needs_reactivation_after_cycle = False 
-
                     break 
 
                 elif event_type == "agent_thought":
@@ -235,7 +218,6 @@ class AgentCycleHandler:
                     if not thought_content:
                         logger.warning(f"Agent {agent.agent_id} produced an empty thought. Skipping KB save.")
                     else:
-                        # Log thought to main DB
                         if context.current_db_session_id:
                             await self._manager.db_manager.log_interaction(
                                 session_id=context.current_db_session_id,
@@ -243,54 +225,30 @@ class AgentCycleHandler:
                                 role="assistant_thought",
                                 content=thought_content
                             )
-                        
-                        # Send thought to UI
                         await self._manager.send_to_ui(event)
-
-                        # --- Save thought to Knowledge Base with extracted keywords ---
                         try:
                             extracted_keywords_list = extract_keywords_from_text(thought_content, max_keywords=5)
-                            
                             default_keywords = ["agent_thought", agent.agent_id]
-                            if agent.persona:
-                                default_keywords.append(agent.persona.lower().replace(" ", "_"))
-                            if agent.agent_type:
-                                default_keywords.append(agent.agent_type.lower())
-
-                            combined_keywords = list(set(default_keywords + extracted_keywords_list))
-                            # Filter out any None or empty strings that might have slipped in
-                            final_keywords_list = [kw for kw in combined_keywords if kw and kw.strip()]
-                            
+                            if agent.persona: default_keywords.append(agent.persona.lower().replace(" ", "_"))
+                            if agent.agent_type: default_keywords.append(agent.agent_type.lower())
+                            final_keywords_list = [kw for kw in list(set(default_keywords + extracted_keywords_list)) if kw and kw.strip()]
                             final_keywords_str = ",".join(final_keywords_list)
-                            
                             logger.info(f"Agent {agent.agent_id} saving thought to KB. Keywords: '{final_keywords_str}'")
-
                             kb_tool_args = {
                                 "action": "save_knowledge",
                                 "content": thought_content,
                                 "keywords": final_keywords_str,
                                 "title": f"Agent Thought by {agent.agent_id} ({agent.persona}) at {time.strftime('%Y-%m-%d %H:%M:%S')}"
                             }
-                            
-                            # Assuming KnowledgeBaseTool.name is defined and tool_executor is available
                             if hasattr(self._manager.tool_executor, 'execute_tool') and hasattr(KnowledgeBaseTool, 'name'):
-                                # Generate a unique call_id for this internal tool call
-                                kb_call_id = f"internal_kb_save_{agent.agent_id}_{int(time.time() * 1000)}"
-                                
-                                # Execute directly via interaction_handler's method if suitable, or tool_executor
-                                # For simplicity, using tool_executor directly, assuming it handles context correctly for internal calls
-                                # Note: execute_single_tool in interaction_handler changes agent status, which might not be desired here.
-                                # Let's construct a direct call to tool_executor's execute_tool or a similar method.
-                                # For now, we'll simulate the direct execution path or assume a simplified internal call.
-                                
                                 kb_save_result = await self._manager.tool_executor.execute_tool(
-                                    agent_id=agent.agent_id, # or a system/KB agent ID
-                                    agent_sandbox_path=agent.sandbox_path, # KB tool might not need sandbox
+                                    agent_id=agent.agent_id, 
+                                    agent_sandbox_path=agent.sandbox_path,
                                     tool_name=KnowledgeBaseTool.name,
                                     tool_args=kb_tool_args,
-                                    project_name=self._manager.current_project, # Pass current project/session context
+                                    project_name=self._manager.current_project,
                                     session_name=self._manager.current_session,
-                                    manager=self._manager # Pass manager for context
+                                    manager=self._manager
                                 )
                                 if isinstance(kb_save_result, str) and "Error" in kb_save_result:
                                      logger.error(f"Agent {agent.agent_id}: Failed to save thought to KB. Result: {kb_save_result}")
@@ -302,7 +260,6 @@ class AgentCycleHandler:
                                 logger.warning(f"Agent {agent.agent_id}: KnowledgeBaseTool or tool_executor not properly configured for saving thought.")
                         except Exception as kb_exc:
                             logger.error(f"Agent {agent.agent_id}: Exception while saving thought to KB: {kb_exc}", exc_info=True)
-                        # --- End KB Save ---
 
                 elif event_type == "agent_state_change_requested":
                     context.action_taken_this_cycle = True; context.state_change_requested_this_cycle = True
@@ -326,7 +283,7 @@ class AgentCycleHandler:
                     if context.current_db_session_id and raw_assistant_response:
                         await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=raw_assistant_response, tool_calls=tool_calls)
                     
-                    all_tool_results_for_history: List[MessageDict] = [] # Stores formatted results for agent history
+                    all_tool_results_for_history: List[MessageDict] = [] 
                     any_tool_success = False
                     
                     if len(tool_calls) > 1:
@@ -339,27 +296,19 @@ class AgentCycleHandler:
                         
                         logger.info(f"CycleHandler '{agent.agent_id}': Executing tool {i+1}/{len(tool_calls)}: Name='{tool_name}', ID='{tool_id}'")
                         
-                        # interaction_handler.execute_single_tool sets agent status to EXECUTING_TOOL
-                        # and then back to PROCESSING. This is fine.
                         result_dict = await self._interaction_handler.execute_single_tool(
-                            agent, 
-                            tool_id, 
-                            tool_name, 
-                            tool_args, 
-                            self._manager.current_project, 
-                            self._manager.current_session
+                            agent, tool_id, tool_name, tool_args, 
+                            self._manager.current_project, self._manager.current_session
                         )
                         
                         if result_dict:
-                            # Format for agent's message history
-                            history_item: MessageDict = { # Ensure it's MessageDict compatible
+                            history_item: MessageDict = { 
                                 "role": "tool",
                                 "tool_call_id": result_dict.get("call_id", tool_id or "unknown_id_in_loop"),
-                                "name": result_dict.get("name", tool_name or "unknown_tool_in_loop"), # Use original name if result doesn't have it
+                                "name": result_dict.get("name", tool_name or "unknown_tool_in_loop"), 
                                 "content": str(result_dict.get("content", "[Tool Error: No content]"))
                             }
                             all_tool_results_for_history.append(history_item)
-                            
                             result_content_str = str(result_dict.get("content", ""))
                             if not result_content_str.lower().startswith("[toolerror") and \
                                not result_content_str.lower().startswith("error:") and \
@@ -368,66 +317,74 @@ class AgentCycleHandler:
                                 logger.info(f"CycleHandler '{agent.agent_id}': Tool '{tool_name}' (ID: {tool_id}) executed successfully.")
                             else:
                                 logger.warning(f"CycleHandler '{agent.agent_id}': Tool '{tool_name}' (ID: {tool_id}) executed with error/failure: {result_content_str[:100]}...")
-
-                            # Log individual tool result to DB
                             if context.current_db_session_id:
                                 await self._manager.db_manager.log_interaction(
-                                    session_id=context.current_db_session_id,
-                                    agent_id=agent.agent_id,
-                                    role="tool", # Individual tool execution
-                                    content=result_content_str, # The content of this specific tool's result
-                                    tool_results=[result_dict] # Pass the single result_dict in a list
+                                    session_id=context.current_db_session_id, agent_id=agent.agent_id, role="tool",
+                                    content=result_content_str, tool_results=[result_dict]
                                 )
-                            
-                            # Send individual tool result to UI
                             await self._manager.send_to_ui({
-                                **result_dict, 
-                                "type": "tool_result", 
-                                "agent_id": agent.agent_id,
-                                "tool_sequence": f"{i+1}_of_{len(tool_calls)}" # Add sequence info
+                                **result_dict, "type": "tool_result", "agent_id": agent.agent_id,
+                                "tool_sequence": f"{i+1}_of_{len(tool_calls)}"
                             })
                         else:
-                            # Handle case where execute_single_tool might return None (should be rare)
                             logger.error(f"CycleHandler '{agent.agent_id}': Tool '{tool_name}' (ID: {tool_id}) execution returned None.")
                             history_item: MessageDict = {
-                                "role": "tool", 
-                                "tool_call_id": tool_id or f"unknown_call_{i}", 
+                                "role": "tool", "tool_call_id": tool_id or f"unknown_call_{i}", 
                                 "name": tool_name or f"unknown_tool_{i}", 
                                 "content": "[Tool Error: Execution returned no result object]"
                             }
                             all_tool_results_for_history.append(history_item)
                     
-                    # Append all collected tool results to the agent's history
                     for res_hist_item in all_tool_results_for_history:
                         agent.message_history.append(res_hist_item)
                     
                     context.executed_tool_successfully_this_cycle = any_tool_success
-                    context.needs_reactivation_after_cycle = True # Agent needs to process the aggregated results
+                    context.needs_reactivation_after_cycle = True 
                     logger.info(f"CycleHandler '{agent.agent_id}': Finished processing {len(tool_calls)} tool calls. Any success: {any_tool_success}. Needs reactivation.")
-                    break # Break from the agent_generator loop, as this cycle's LLM turn is done.
+                    break 
 
                 elif event_type in ["response_chunk", "status", "final_response", "invalid_state_request_output"]:
                     if event_type == "final_response":
                         final_content = event.get("content")
-                        if final_content:
-                            logger.info(f"Agent '{agent.agent_id}' produced final_response event. Processing for CG review.")
-                            cg_review_initiated = await self._request_cg_review(agent, final_content, context)
-                            if cg_review_initiated:
-                                context.action_taken_this_cycle = True
-                                context.needs_reactivation_after_cycle = False
-                                break # Agent's turn is paused pending CG review
-                            else:
-                                # CG review not initiated, proceed with normal final_response handling
+                        original_event_data = event # Store original event
+
+                        if final_content and agent.agent_id != CONSTITUTIONAL_GUARDIAN_AGENT_ID:
+                            cg_verdict = await self._get_cg_verdict(final_content)
+
+                            if cg_verdict is None or cg_verdict.startswith("<OK/>"):
+                                logger.info(f"CG Verdict OK for agent '{agent.agent_id}'. Proceeding normally.")
+                                # Process final response normally (log to DB, send to UI)
                                 if context.current_db_session_id:
-                                    # Log to DB only if it's a direct response, not following tool calls
                                     if not agent.message_history or not agent.message_history[-1].get("tool_calls"):
                                         await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content)
-                                await self._manager.send_to_ui(event) # Send original event to UI
-                        else: # final_response event but no content
-                            await self._manager.send_to_ui(event) # Still send to UI
+                                await self._manager.send_to_ui(original_event_data)
+                            elif cg_verdict.startswith("<CONCERN>"):
+                                logger.info(f"CG CONCERN for agent '{agent.agent_id}'. Pausing agent and notifying UI.")
+                                concern_details = cg_verdict 
+                                agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG)
+                                await self._manager.send_to_ui({
+                                    "type": "cg_concern",
+                                    "agent_id": agent.agent_id,
+                                    "original_text": final_content,
+                                    "concern_details": concern_details 
+                                })
+                                context.action_taken_this_cycle = True
+                                context.needs_reactivation_after_cycle = False
+                                break 
+                            else: 
+                                logger.warning(f"Unknown CG verdict format: '{cg_verdict}'. Proceeding with original message for safety.")
+                                if context.current_db_session_id: 
+                                    if not agent.message_history or not agent.message_history[-1].get("tool_calls"):
+                                        await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content)
+                                await self._manager.send_to_ui(original_event_data)
+                        else: # No content in final_response, or it's the CG agent itself
+                            if context.current_db_session_id and final_content: 
+                                if not agent.message_history or not agent.message_history[-1].get("tool_calls"):
+                                    await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content)
+                            await self._manager.send_to_ui(original_event_data)
                     elif event_type == "invalid_state_request_output":
                         context.action_taken_this_cycle = True
-                        context.needs_reactivation_after_cycle = True # Agent needs to retry or be corrected
+                        context.needs_reactivation_after_cycle = True 
                         if context.current_db_session_id:
                             await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="system_warning", content=f"Agent attempted invalid state change: {event.get('content')}")
                         await self._manager.send_to_ui(event)
@@ -436,35 +393,49 @@ class AgentCycleHandler:
                 else:
                     logger.warning(f"CycleHandler: Unknown event type '{event_type}' from agent '{agent.agent_id}'.")
             
-            # This block handles cases where the agent yields no specific actionable events (like tool_requests or state_change)
-            # but might have accumulated text in its buffer that constitutes a final response.
-            if not context.last_error_obj and not context.action_taken_this_cycle: # If no other action was taken
+            if not context.last_error_obj and not context.action_taken_this_cycle: 
                 final_content_from_buffer = agent.text_buffer.strip()
                 if final_content_from_buffer:
-                    logger.info(f"Agent '{agent.agent_id}' has final content from buffer and no other action was taken. Processing for CG review.")
-                    cg_review_initiated_buffer = await self._request_cg_review(agent, final_content_from_buffer, context)
-                    agent.text_buffer = "" # Clear buffer after content is retrieved
+                    agent.text_buffer = "" 
+                    mock_event_data = {"type": "final_response", "content": final_content_from_buffer, "agent_id": agent.agent_id}
 
-                    if cg_review_initiated_buffer:
-                        context.action_taken_this_cycle = True # Review initiation is an action
-                        context.needs_reactivation_after_cycle = False # Agent is paused awaiting review
-                        # No break needed, already outside the main event loop
-                    else:
-                        # CG review not initiated, proceed with normal final response handling for buffer content
-                        if context.current_db_session_id:
-                            await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content_from_buffer)
-                        await self._manager.send_to_ui({"type": "final_response", "content": final_content_from_buffer, "agent_id": agent.agent_id})
-                        # context.cycle_completed_successfully = True # This is set later
+                    if agent.agent_id != CONSTITUTIONAL_GUARDIAN_AGENT_ID:
+                        cg_verdict = await self._get_cg_verdict(final_content_from_buffer)
+
+                        if cg_verdict is None or cg_verdict.startswith("<OK/>"):
+                            logger.info(f"CG Verdict OK for agent '{agent.agent_id}' (from buffer). Proceeding normally.")
+                            if context.current_db_session_id:
+                                await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content_from_buffer)
+                            await self._manager.send_to_ui(mock_event_data)
+                        elif cg_verdict.startswith("<CONCERN>"):
+                            logger.info(f"CG CONCERN for agent '{agent.agent_id}' (from buffer). Pausing agent and notifying UI.")
+                            concern_details = cg_verdict
+                            agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG)
+                            await self._manager.send_to_ui({
+                                "type": "cg_concern",
+                                "agent_id": agent.agent_id,
+                                "original_text": final_content_from_buffer,
+                                "concern_details": concern_details
+                            })
+                            context.action_taken_this_cycle = True
+                            context.needs_reactivation_after_cycle = False
+                        else: 
+                            logger.warning(f"Unknown CG verdict format (from buffer): '{cg_verdict}'. Proceeding with original message.")
+                            if context.current_db_session_id:
+                                await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content_from_buffer)
+                            await self._manager.send_to_ui(mock_event_data)
+                    else: 
+                        if final_content_from_buffer: 
+                            if context.current_db_session_id:
+                                await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content_from_buffer)
+                            await self._manager.send_to_ui(mock_event_data)
                 else:
-                    # Buffer is empty and no action taken, this implies a truly empty response or only whitespace.
                     logger.info(f"Agent '{agent.agent_id}' cycle resulted in no errors, no actions, and no text_buffer content.")
-
 
             if agent_generator and not context.last_error_obj and not context.action_taken_this_cycle : 
                 context.cycle_completed_successfully = True
             elif not context.last_error_obj and context.action_taken_this_cycle: 
                 context.cycle_completed_successfully = True
-
 
         except Exception as e:
             logger.critical(f"CycleHandler: UNHANDLED EXCEPTION during agent '{agent.agent_id}' cycle: {e}", exc_info=True)
@@ -477,14 +448,12 @@ class AgentCycleHandler:
         finally:
             if agent_generator:
                 try: 
-                    # Check if the generator is not already closed or exhausted
                     if not agent_generator.ag_running and agent_generator.ag_frame is not None:
                         await agent_generator.aclose()
                     elif agent_generator.ag_running:
                         logger.warning(f"Agent generator for '{agent.agent_id}' was still running in finally block, attempting to close.")
                         await agent_generator.aclose()
-
-                except RuntimeError as r_err: # Specifically catch "aclose(): asynchronous generator is already running"
+                except RuntimeError as r_err: 
                     if "aclose(): asynchronous generator is already running" in str(r_err):
                         logger.warning(f"Agent generator for '{agent.agent_id}' was already closing: {r_err}")
                     else:
