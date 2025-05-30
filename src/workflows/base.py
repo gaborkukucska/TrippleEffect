@@ -27,18 +27,24 @@ class WorkflowResult(BaseModel):
 
     @classmethod
     def update_refs(cls, **localns: Any) -> None:
-        if 'Agent' not in localns:
-            import logging as temp_logging_wf
-            temp_logger_wf = temp_logging_wf.getLogger("WorkflowResult_ForwardRef_Check")
-            temp_logger_wf.warning("'Agent' type not found in localns for WorkflowResult.update_refs.")
-        if hasattr(cls, 'update_forward_refs'):
+        """
+        Class method to update forward references.
+        Pydantic v1 uses update_forward_refs, v2 uses model_rebuild.
+        This provides a consistent way to call it.
+        """
+        if hasattr(cls, 'model_rebuild'): # Pydantic v2+
+            # For Pydantic v2, _types_namespace is used to pass in the local/global namespace
+            cls.model_rebuild(_types_namespace=localns, force=True)
+        elif hasattr(cls, 'update_forward_refs'): # Pydantic v1
             cls.update_forward_refs(**localns)
-        elif hasattr(cls, 'model_rebuild'):
-            cls.model_rebuild(force=True)
         else:
+            # Fallback logging if neither method is found
             import logging as temp_logging
-            temp_logger = temp_logging.getLogger("WorkflowResult_ForwardRef_Call")
-            temp_logger.warning("Could not find 'update_forward_refs' or 'model_rebuild' on WorkflowResult model.")
+            temp_logger_ref = temp_logging.getLogger("WorkflowResult_ForwardRef_Update")
+            temp_logger_ref.warning(
+                "Could not find 'model_rebuild' (Pydantic v2+) or 'update_forward_refs' (Pydantic v1) "
+                "on WorkflowResult model. ForwardRef resolution might fail."
+            )
 
 
 class BaseWorkflow(ABC):
