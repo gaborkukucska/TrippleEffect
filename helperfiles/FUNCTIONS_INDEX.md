@@ -42,8 +42,10 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 *   `src/config/settings.py::Settings.is_provider_configured(provider_name)` -> `bool` - Checks if provider has essential config.
 *   `src/config/settings.py::Settings.get_agent_config_by_id(agent_id)` -> `Optional[Dict]` - Retrieves bootstrap agent's config from initial load.
 *   `src/config/settings.py::Settings.get_formatted_allowed_models()` -> `str` - Delegates to `model_registry`.
+*   `src/config/settings.py::Settings.__init__()` - Initializes settings, loads env vars, prompts, initial config, checks required keys. Loads governance principles from `governance.yaml` into `self.GOVERNANCE_PRINCIPLES`. Does not load `TEAMS_CONFIG` (removed).
 *   `src/config/settings.py::settings` (Instance) - Singleton settings instance.
 *   `src/config/settings.py::model_registry` (Instance) - Singleton ModelRegistry instance.
+*   **Prompts (`prompts.json`)** - Defines various system prompts. Recently added `cg_system_prompt` for the Constitutional Guardian agent. `admin_ai_startup_prompt` was refined for more explicit state change instructions.
 
 ## **API Routes (`src/api/`)**
 
@@ -84,16 +86,16 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 
 ## **Agent Constants (`src/agents/`)**
 
-*   `src/agents/constants.py` - Defines constants for agent operational statuses (`AGENT_STATUS_*`), workflow states (`ADMIN_STATE_*`, `PM_STATE_*`, `WORKER_STATE_*`), agent types (`AGENT_TYPE_*`), retry/failover logic, and regex patterns.
+*   `src/agents/constants.py` - Defines constants for agent operational statuses (`AGENT_STATUS_*`), workflow states (`ADMIN_STATE_*`, `PM_STATE_*`, `WORKER_STATE_*`), agent types (`AGENT_TYPE_*`), retry/failover logic, and regex patterns. Includes `CONSTITUTIONAL_GUARDIAN_AGENT_ID`, and agent statuses `AGENT_STATUS_AWAITING_CG_REVIEW`, `AGENT_STATUS_AWAITING_USER_REVIEW_CG`.
 
 ## **Agent Core (`src/agents/`)**
 
 *   `src/agents/core.py::Agent` (Class) - Represents individual LLM agent. Parses XML tool calls, detects plans/thoughts/state requests.
-*   `src/agents/core.py::Agent.__init__(agent_config, llm_provider, manager)` - Initializes agent state, message history, compiles regex patterns. Sets `agent_type`.
+*   `src/agents/core.py::Agent.__init__(agent_config, llm_provider, manager)` - Initializes agent state, message history, compiles regex patterns. Sets `agent_type`. Initializes attributes for Constitutional Guardian (CG) review context: `cg_original_text`, `cg_concern_details`, `cg_original_event_data`, `cg_awaiting_user_decision`.
 *   `src/agents/core.py::Agent.set_status(new_status, tool_info=None, plan_info=None)` - Updates operational status, clears/sets `current_tool_info` or `current_plan`, pushes UI update.
 *   `src/agents/core.py::Agent.set_state(new_state)` - **(NEW)** Updates agent's workflow state (e.g., `conversation`, `planning`).
 *   `src/agents/core.py::Agent.ensure_sandbox_exists()` -> `bool` - Creates the agent's sandbox directory.
-*   `src/agents/core.py::Agent.process_message(history_override=None)` (Async Generator) - Main agent processing loop. Calls LLM provider, processes stream, detects `<request_state>`, `<think>`, `<plan>` tags, calls external `find_and_parse_xml_tool_calls`, yields events (`response_chunk`, `agent_state_change_requested`, `agent_thought`, `admin_plan_submitted`, `tool_requests`, `final_response`, `error`).
+*   `src/agents/core.py::Agent.process_message(history_override=None)` (Async Generator) - Main agent processing loop. Calls LLM provider, processes stream, detects `<request_state>`, `<think>`, `<plan>` tags, calls external `find_and_parse_xml_tool_calls`, yields events (`response_chunk`, `agent_state_change_requested`, `agent_thought`, `admin_plan_submitted`, `tool_requests`, `final_response`, `error`). Yields multiple `tool_requests` if multiple XML tool calls are found in a single LLM response.
 *   `src/agents/core.py::Agent.get_state()` -> `Dict` - Returns agent state, includes operational status, workflow state, type, etc.
 *   `src/agents/core.py::Agent.clear_history()` - Clears message history, keeps system prompt.
 
@@ -155,7 +157,8 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 *   `src/agents/cycle_handler.py::AgentCycleHandler` (Class) - Handles agent's execution cycle, retries, failover triggering, state/plan/tool processing.
 *   `src/agents/cycle_handler.py::AgentCycleHandler.__init__(manager, interaction_handler)` - Initializes cycle handler.
 *   `src/agents/cycle_handler.py::AgentCycleHandler._generate_system_health_report(agent)` (Async Internal) -> `Optional[str]` - Generates system health report for Admin AI based on recent history.
-*   `src/agents/cycle_handler.py::AgentCycleHandler.run_cycle(agent, retry_count)` (Async) - Manages agent's `process_message` loop. Gets state-specific prompt via `WorkflowManager`, injects health report (Admin), handles events (`response_chunk`, `error`, `tool_requests`, `admin_plan_submitted`, `agent_state_change_requested`, `agent_thought`), processes tool results via `InteractionHandler`, records metrics, triggers failover, ensures reactivation.
+*   `src/agents/cycle_handler.py::AgentCycleHandler.run_cycle(agent, retry_count)` (Async) - Manages agent's `process_message` loop. Gets state-specific prompt via `WorkflowManager`, injects health report (Admin), handles events (`response_chunk`, `error`, `tool_requests`, `admin_plan_submitted`, `agent_state_change_requested`, `agent_thought`), processes tool results via `InteractionHandler`, records metrics, triggers failover, ensures reactivation. Integrates Constitutional Guardian (CG) review for final text outputs: intercepts output, calls CG, and if concern is raised, pauses the original agent by setting status to `AGENT_STATUS_AWAITING_USER_REVIEW_CG` and storing context. Handles sequential execution of multiple tool calls if present in a single LLM response.
+*   `src/agents/cycle_handler.py::AgentCycleHandler._get_cg_verdict(original_agent_final_text)` (Async Internal) -> `Optional[str]` - Directly calls the CG agent's LLM provider (using `stream_completion` and accumulating the result) to get a review verdict (`<OK/>` or concern details) on the provided text against governance principles.
 
 ## **Agent Failover Handler (`src/agents/`)**
 
@@ -183,6 +186,7 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 *   `src/agents/agent_lifecycle.py::_create_agent_internal(manager, agent_id_requested, agent_config_data, is_bootstrap, team_id, loading_from_session)` (Async Internal) -> `Tuple[bool, str, Optional[str]]` - Core agent creation logic. Selects model if needed, creates `Agent` instance, sets initial state.
 *   `src/agents/agent_lifecycle.py::create_agent_instance(manager, agent_id_requested, provider, model, system_prompt, persona, team_id, temperature, **kwargs)` (Async) -> `Tuple[bool, str, Optional[str]]` - Public method for dynamic agents.
 *   `src/agents/agent_lifecycle.py::delete_agent_instance(manager, agent_id)` (Async) -> `Tuple[bool, str]` - Removes agent and cleans up resources (state manager).
+*   `src/agents/agent_lifecycle.py::_select_best_available_model(manager)` (Async Internal) -> `Tuple[Optional[str], Optional[str]]` - Selects best model based on comprehensive ranking (tier, size from `num_parameters`, performance score, ID). Uses global `settings` for configuration checks. `num_parameters` are discovered where available (e.g. OpenRouter, Ollama).
 *   `src/agents/agent_lifecycle.py::_generate_unique_agent_id(manager, prefix)` -> `str` - Generates unique agent ID.
 
 ## **Agent Workflow Manager (`src/agents/`)**
@@ -191,12 +195,12 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 *   `src/agents/workflow_manager.py::AgentWorkflowManager.__init__()` - Initializes valid states per agent type and prompt mapping.
 *   `src/agents/workflow_manager.py::AgentWorkflowManager.is_valid_state(agent_type, state)` -> `bool` - Checks if a state is valid for an agent type.
 *   `src/agents/workflow_manager.py::AgentWorkflowManager.change_state(agent, requested_state)` -> `bool` - Attempts to change agent's state, validating against allowed states.
-*   `src/agents/workflow_manager.py::AgentWorkflowManager.get_system_prompt(agent, manager)` -> `str` - Gets the appropriate system prompt based on agent type/state, formats with context (incl. time, tools), prepends user-defined part for Admin AI in specific states.
+*   `src/agents/workflow_manager.py::AgentWorkflowManager.get_system_prompt(agent, manager)` -> `str` - Gets the appropriate system prompt based on agent type/state, formats with context (incl. time, tools), prepends user-defined part for Admin AI in specific states. Governance Principles are no longer globally injected here; this is now handled by the Constitutional Guardian agent flow.
 
 ## **Agent Manager (Coordinator) (`src/agents/`)**
 
 *   `src/agents/manager.py::AgentManager` (Class) - Central coordinator. Instantiates components.
-*   `src/agents/manager.py::AgentManager.__init__(websocket_manager=None)` - Initializes manager, instantiates handlers, managers, tracker, executor. Instantiates `AgentWorkflowManager`. Starts default DB session task.
+*   `src/agents/manager.py::AgentManager.__init__(websocket_manager=None)` - Initializes manager, instantiates handlers, managers, tracker, executor. Instantiates `AgentWorkflowManager`. Starts default DB session task. Ensures `self.model_registry` is assigned from global `model_registry`.
 *   `src/agents/manager.py::AgentManager._ensure_default_db_session()` (Async Internal) - Ensures default project/session exists in DB on startup.
 *   `src/agents/manager.py::AgentManager.set_project_session_context(project_name, session_name, loading=False)` (Async) - Sets current project/session context and updates DB records.
 *   `src/agents/manager.py::AgentManager._ensure_projects_dir()` (Internal) - Ensures projects directory exists.
@@ -215,6 +219,9 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 *   `src/agents/manager.py::AgentManager.get_agent_info_list_sync(filter_team_id=None)` -> `List[Dict]` - Synchronously gets a list of basic agent info.
 *   `src/agents/manager.py::AgentManager.cleanup_providers()` (Async) - Ends final DB session, cleans up provider resources, saves metrics and quarantine state.
 *   `src/agents/manager.py::AgentManager._close_provider_safe(provider)` (Async Internal) - Safely closes provider session if applicable.
+*   `src/agents/manager.py::AgentManager.resolve_cg_concern_approve(agent_id)` (Async) - Handles user approval of an agent's output after a Constitutional Guardian (CG) concern. Processes original output, resets CG flags, sets agent to IDLE.
+*   `src/agents/manager.py::AgentManager.resolve_cg_concern_stop(agent_id)` (Async) - Handles user decision to stop an agent after a CG concern. Sets agent to ERROR, resets CG flags.
+*   `src/agents/manager.py::AgentManager.resolve_cg_concern_retry(agent_id, user_feedback)` (Async) - Handles user request for an agent to retry after a CG concern. Appends feedback to history, resets CG flags, sets agent to IDLE, and reschedules.
 
 ## **LLM Providers Base (`src/llm_providers/`)**
 
@@ -267,6 +274,11 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 *   `src/utils/network_utils.py::find_available_port(start_port, end_port)` -> `Optional[int]` - Finds an available network port.
 *   `src/utils/network_utils.py::is_port_in_use(port)` -> `bool` - Checks if a port is currently in use.
 *   `src/utils/network_utils.py::discover_local_api_endpoints(subnets, port, path, scheme)` (Async) -> `List[str]` - Attempts to discover local API endpoints (e.g., Ollama) on specified subnets.
+*   `src/utils/text_utils.py::extract_keywords_from_text(text, max_keywords)` -> `List[str]` - Extracts relevant keywords from text for better searchability.
+
+## **Workflows Base (`src/workflows/`)**
+
+*   `src/workflows/base.py::WorkflowResult.update_refs(**localns)` - Resolves Pydantic forward references, compatible with Pydantic v1 (`update_forward_refs`) and v2+ (`model_rebuild` using `_types_namespace`).
 
 ## **Frontend Logic (`static/js/`)**
 

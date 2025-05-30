@@ -2,7 +2,7 @@
 <!-- # IT IS CRITICAL THAT ALL AIs and LLMs FOLLOW THE DEVELOPMENT INSTRUCTIONS IN THE DEVELOPMENT_RULES.md FILE WHEN FURTHER DEVELOPING THIS FRAMEWORK!!! -->
 # TrippleEffect Multi-Agent Framework
 
-**Version:** 2.25 <!-- Updated Version -->
+**Version:** 2.30 <!-- Updated Version -->
 
 **TrippleEffect** is an asynchronous, collaborative multi-agent framework built with Python, FastAPI, and WebSockets. It features a central **Admin AI** that initiates projects and a dedicated **Project Manager** agent per session that handles detailed task creation/tracking and agent/team creation/coordination. This framework is predominantly developed by various LLMs guided by Gabby.
 
@@ -30,10 +30,11 @@ chmod +x setup.sh run.sh
     *   Notifies Admin AI and transitions it back to the `conversation` state.
 *   **Project Manager Agent:** Automatically created per project/session by the framework, this agent uses the `ProjectManagementTool` (backed by `tasklib`) to decompose the initial plan, create a team, specialised worker agents, create/assign sub-tasks to worker agents, monitor progress via `send_message` tool, and report status/completion back to Admin AI.
 *   **Dynamic Worker Agent Management:** The Project Manager agent (or Admin AI, depending on workflow evolution) uses `ManageTeamTool` to create worker agents as needed for specific sub-tasks.
+*   **Constitutional Guardian (CG) Agent:** A specialized agent (`constitutional_guardian_ai`) reviews final textual outputs of other agents against predefined governance principles (from `governance.yaml`). If a concern is raised, the original agent's output is paused, and a UI notification is generated, allowing for user intervention (approve, stop agent, or provide feedback for retry). This feature's backend logic is implemented; UI/API for full user interaction is pending.
 *   **Intelligent Model Handling:**
     *   **Discovery:** Automatically finds reachable LLM providers (Ollama, OpenRouter, OpenAI) and available models at startup.
     *   **Filtering:** Filters discovered models based on the `MODEL_TIER` setting (`.env`).
-    *   **Auto-Selection:** Automatically selects the best model for Admin AI (at startup) and dynamic agents (at creation if not specified). Selection priority is now Tier -> Model Size (parameter count, larger preferred) -> Performance Score -> ID. `num_parameters` are discovered for providers like OpenRouter and Ollama where available.
+    *   **Auto-Selection:** Automatically selects the best model for Admin AI (at startup) and dynamic agents (at creation if not specified). Selection priority is Tier -> Model Size (parameter count, larger preferred) -> Performance Score -> ID. `num_parameters` are discovered for providers like OpenRouter and Ollama where available.
     *   **Failover:** Automatic API key cycling and model/provider failover (Local -> Free -> Paid tiers) on persistent errors during generation. Model selection during failover also respects the new Size/Performance priority.
     *   **Performance Tracking:** Records success rate and latency per model, persisting data (`data/model_performance_metrics.json`).
 *   **Tool-Based Interaction:** Agents use tools via an **XML format**. The framework can now process multiple distinct tool calls found in a single agent response; these are executed sequentially, and all results are then fed back to the agent in the next turn.
@@ -41,7 +42,7 @@ chmod +x setup.sh run.sh
 *   **Communication Layer Separation (UI):** The user interface visually separates direct User<->Admin AI interaction from internal Admin AI<->PM<->Worker communication and system events.
 *   **Persistence:** Session state (agents, teams, histories) can be saved/loaded (filesystem). Interactions and knowledge are logged to a database (`data/trippleeffect_memory.db`).
 *   **KnowledgeBaseTool Enhancements:** Agent thoughts are saved with automatically generated keywords. A new `search_agent_thoughts` action allows targeted retrieval of past agent reasoning.
-*   **Basic Governance Layer:** System principles can be defined in `governance.yaml` and are automatically injected into relevant agent prompts to guide behavior.
+*   **Basic Governance Layer:** System principles defined in `governance.yaml` are now primarily used by the Constitutional Guardian (CG) agent for its review process. Global injection of these principles into all agent prompts has been removed.
 
 ## Features
 
@@ -51,7 +52,7 @@ chmod +x setup.sh run.sh
 *   **Configurable Model Selection:**
     *   Dynamic discovery of providers/models (Ollama, OpenRouter, OpenAI).
     *   Filtering based on `MODEL_TIER` (.env: `FREE` or `ALL`).
-    *   Automatic model selection for Admin AI and dynamic agents, now prioritizing Tier -> Size -> Performance Score -> ID. `num_parameters` are discovered for some providers (e.g., OpenRouter, Ollama).
+    *   Automatic model selection for Admin AI and dynamic agents, now prioritizing: Tier -> Model Size (parameter count, larger preferred) -> Performance Score -> ID. `num_parameters` are discovered for some providers (e.g., OpenRouter, Ollama).
 *   **Robust Error Handling:**
     *   Automatic retries for transient LLM API errors.
     *   Multi-key support and key cycling for providers (`PROVIDER_API_KEY_N` in `.env`).
@@ -71,12 +72,19 @@ chmod +x setup.sh run.sh
     *   `KnowledgeBaseTool`: Save/Search distilled knowledge in the database. Now includes smarter keyword generation for saved thoughts and a `search_agent_thoughts` action.
     *   `ProjectManagementTool`: Add, list, modify, and complete project tasks (uses `tasklib` backend per session). **Assigns tasks via tags (`+agent_id`)** due to CLI UDA issues. Used primarily by the Project Manager agent.
     *   **On-Demand Tool Help:** Implemented `get_detailed_usage()` in tools and `get_tool_info` action in `SystemHelpTool` for dynamic help retrieval (full transition planned for Phase 27+).
-*   **Sequential Tool Execution:** The framework can now process multiple tool calls from a single agent response, executing them sequentially and returning all results.
+*   **Sequential Tool Execution:** Supports sequential execution of multiple tool calls from a single agent response.
+*   **Constitutional Guardian (CG) System (Backend Implemented):**
+    *   Dedicated CG agent (`constitutional_guardian_ai`) reviews agent outputs against `governance.yaml` principles.
+    *   Uses a specific `cg_system_prompt`.
+    *   `AgentCycleHandler` intercepts final responses for CG review via a direct LLM call.
+    *   Original agents are paused (status `AGENT_STATUS_AWAITING_USER_REVIEW_CG`) if a concern is raised by CG.
+    *   Backend methods in `AgentManager` (`resolve_cg_concern_approve`, `stop`, `retry`) are implemented to handle user decisions on concerns.
+    *   *UI/API for full user interaction with CG concerns is a pending development item.*
 *   **Session Persistence:** Save and load agent states, histories, team structures, and **project task data** (filesystem, including `tasklib` data with assignee tags).
 *   **Database Backend (SQLite):**
     *   Logs user, agent, tool, and system interactions.
     *   Stores long-term knowledge summaries and agent thoughts via `KnowledgeBaseTool`.
-*   **Governance Layer (Foundation):** System principles from `governance.yaml` are injected into agent prompts.
+*   **Governance Review via CG Agent:** System principles from `governance.yaml` are reviewed by the dedicated Constitutional Guardian (CG) agent, replacing the previous global prompt injection method.
 *   **Refined Web UI (Phase 22):**
     *   Separated view for User <-> Admin AI chat (`Chat` view).
     *   Dedicated view for internal Admin AI <-> Agent communication, tool usage, and system status updates (`Internal Comms` view).
@@ -165,19 +173,21 @@ chmod +x setup.sh run.sh
 
 ## Development Status
 
-*   **Current Version:** 2.25
-*   **Completed Phases:** 1-24. 
-*   **Recent Fixes/Enhancements (v2.25):** 
+*   **Current Version:** 2.30
+*   **Completed Phases:** 1-25. (Phase 25 focused on Governance Layer foundation, model selection, multi-tool execution, thought refinement, and various fixes).
+*   **Recent Fixes/Enhancements (v2.25 - v2.30):** 
+    *   **Constitutional Guardian (CG) Agent Backend:** Implemented core logic for CG agent review, including new agent statuses, `AgentManager` methods for handling user decisions on CG concerns, and modifications to `AgentCycleHandler` to integrate CG checks.
     *   Refined model selection logic (Tier, Size, Performance).
     *   Enabled sequential execution of multiple tools per agent turn.
     *   Improved thought saving (smarter keywords) and retrieval (`search_agent_thoughts` action).
-    *   Added foundational Governance Layer (principles injected from `governance.yaml`).
+    *   Governance Layer: Principles loaded from `governance.yaml`; global prompt injection removed in favor of CG-specific use.
+    *   Refined Pydantic v1/v2 forward reference handling (`CycleContext`, `WorkflowResult`).
+    *   Corrected various `AttributeError` instances related to `manager.settings`.
+    *   Refined `admin_ai_startup_prompt` and `cg_system_prompt`.
+    *   Removed unused `TEAMS_CONFIG` and `allowed_sub_agent_models` from `ConfigManager`.
     *   Expanded unit test coverage for new features.
-    *   Corrected `project_management` tool's Taskwarrior CLI usage.
-    *   Fixed `AgentManager` initial task creation check logic.
-    *   Ollama integration fixes, enhanced network discovery.
-*   **Current Phase (25 Target Completion):** Address remaining agent logic issues (looping, placeholders, targeting), investigate Taskwarrior CLI UDA issues, address external API rate limits.
-*   **Future Plans:** Advanced Memory & Learning (Phase 26), Proactive Behavior (Phase 27), Federated Communication (Phase 28+), New Admin tools, LiteLLM provider, advanced collaboration, resource limits, DB/Vector Stores, **Full transition to on-demand tool help** (removing static descriptions from prompts - Phase 28+).
+*   **Current Phase (26 Target Completion):** Focus on UI/API for Constitutional Guardian interaction, further agent logic refinements, and starting Advanced Memory & Learning explorations.
+*   **Future Plans:** Advanced Memory & Learning (Phase 27), Proactive Behavior (Phase 28), Federated Communication (Phase 29+), New Admin tools, LiteLLM provider, advanced collaboration, resource limits, DB/Vector Stores, **Full transition to on-demand tool help** (removing static descriptions from prompts - Phase 29+).
 
 See `helperfiles/PROJECT_PLAN.md` for detailed phase information.
 

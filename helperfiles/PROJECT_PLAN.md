@@ -164,7 +164,7 @@
 *   **Task Management:** `tasklib` (Python Taskwarrior library)
 *   **LLM Interaction:** `openai` library, `aiohttp`
 *   **Frontend:** HTML5, CSS3, Vanilla JavaScript
-*   **Configuration:** YAML (`PyYAML`), `.env` (`python-dotenv`), JSON (`prompts.json`), `governance.yaml` (`PyYAML`) <!-- Updated P25 -->
+*   **Configuration:** YAML (`PyYAML`), `.env` (`python-dotenv`), JSON (`prompts.json`), `governance.yaml` (`PyYAML`)
 *   **Tooling APIs:** `tavily-python`
 *   **Parsing:** `BeautifulSoup4` (HTML), `re`, `html` (XML)
 *   **Model Discovery & Management:** Custom `ModelRegistry` class (now includes model parameter size) <!-- Updated P25 -->
@@ -192,18 +192,44 @@
 *   [X] Fix bootstrap agent initialization fallback logic (`agent_lifecycle.py`).
 *   [X] Correct `AgentManager` check for initial task creation result.
 
-**Phase 25: Agent Logic, Taskwarrior Refinement & Governance (Current)**
+**Phase 25: Agent Logic, Taskwarrior Refinement & Governance Layer Foundation (Completed/Advanced)**
     *   **Goal:** Address known agent logic issues, stabilize Taskwarrior integration, implement basic Governance Layer, refine thought capture, and enhance model selection.
-    *   [~] Investigate and fix `MODEL_TIER` and `MODEL_COST` switching issues (Partially addressed: Model selection logic refactored. New priority: Tier -> Size (larger preferred) -> Performance Score -> ID. Model parameter count (`num_parameters`) now discovered and stored for OpenRouter and Ollama models.).
-    *   [X] Address agent logic issues: "PM multi-tool calls" now supported. Agents can have multiple tools execute sequentially in one "turn", with results aggregated and fed back.
-    *   [X] Refine agent thought capture/usage: Implemented smarter keyword generation for thoughts saved to Knowledge Base. Added `search_agent_thoughts` action to `KnowledgeBaseTool`.
-    *   [X] Implement basic Governance Layer: Principles loaded from `governance.yaml` (using `PyYAML`) and injected into agent system prompts.
-    *   [X] Implement `ToolInformationTool`.
-    *   [X] Implement authorization checks in `ToolExecutor`.
-    *   [X] Inject system health report into Admin AI context.
-    *   [X] Added comprehensive unit tests for model selection refinements, `num_parameters` handling, governance layer loading/injection, and multi-tool call processing.
-*   **Phase 26:** Advanced Memory & Learning (Feedback Loop, Learned Principles, Advanced Thought Usage).
-*   **Phase 27:** Proactive Behavior (Scheduling, Goal Management).
-*   **Phase 28+:** Federated Communication (Layer 3 - External Admin AI Interaction).
-*   **Phase 29+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), etc.
+    *   [X] Enhanced Model Selection Logic: Model selection logic refactored. New priority: Tier -> Size (larger preferred, `num_parameters` discovered for OpenRouter/Ollama) -> Performance Score -> ID.
+    *   [X] Sequential Multi-Action Execution: Agents can have multiple tools execute sequentially in one "turn", with results aggregated and fed back.
+    *   [X] Refined Thought Usage: Implemented smarter keyword generation (using `src/utils/text_utils.py::extract_keywords_from_text`) for thoughts saved to Knowledge Base. (Assuming `search_agent_thoughts` was part of this or an earlier completion).
+    *   [X] Governance Layer Foundation: Principles loaded from `governance.yaml`. Global injection into agent prompts has been REMOVED; principles are now intended for use by the Constitutional Guardian (CG) agent.
+    *   [X] `ToolInformationTool` implemented.
+    *   [X] Authorization checks in `ToolExecutor` implemented.
+    *   [X] System health report injected into Admin AI context.
+    *   [X] Pydantic forward references for `CycleContext` and `WorkflowResult` updated for v1/v2 compatibility.
+    *   [X] Corrected `manager.settings` AttributeErrors by using global `settings` object where appropriate.
+    *   [X] Refined `admin_ai_startup_prompt` for more explicit state change instructions.
+    *   [X] Removed `TEAMS_CONFIG` and `allowed_sub_agent_models` handling from `ConfigManager` as they were unused.
+    *   [X] Comprehensive unit tests added/updated for model selection, `num_parameters` handling, governance loading, and multi-tool call processing.
+
+**Phase 26: Constitutional Guardian - Backend Implementation (Newly Added)**
+    *   **Goal:** Implement the backend infrastructure for a Constitutional Guardian (CG) agent to review agent outputs.
+    *   [X] CG Agent Definition: `constitutional_guardian_ai` configured by user (via `config.yaml`), specific `cg_system_prompt` added to `prompts.json` detailing its review task and output format (`<OK/>` or `<CONCERN>details</CONCERN>`). Prompt refined to expect user message as text to review.
+    *   [X] Core Logic in `AgentCycleHandler`: Implemented `_get_cg_verdict` for direct LLM call to CG (using `stream_completion`). `run_cycle` modified to intercept final agent text outputs, call CG, and if concern is raised, original agent status set to `AGENT_STATUS_AWAITING_USER_REVIEW_CG`, its output is paused, and a `cg_concern` UI message is generated.
+    *   [X] Agent State for CG: Added `cg_original_text`, `cg_concern_details`, `cg_original_event_data`, `cg_awaiting_user_decision` attributes to `Agent` class (`core.py`). New constants `CONSTITUTIONAL_GUARDIAN_AGENT_ID`, `AGENT_STATUS_AWAITING_CG_REVIEW` (now unused, effectively replaced by direct call), `AGENT_STATUS_AWAITING_USER_REVIEW_CG` added.
+    *   [X] User Decision Handling (Backend): Implemented `AgentManager` methods (`resolve_cg_concern_approve`, `resolve_cg_concern_stop`, `resolve_cg_concern_retry`) to process user's response to a CG concern.
+    *   [X] Scheduler Adjustment: `NextStepScheduler` modified to ensure agents awaiting user review (`AGENT_STATUS_AWAITING_USER_REVIEW_CG` with `cg_awaiting_user_decision = True`) are not prematurely idled.
+    *   **Note:** UI and API endpoint implementation for user interaction with CG concerns are required for full functionality and are external to these backend changes.
+
+*   **Phase 27:** Advanced Memory & Learning (Feedback Loop, Learned Principles, Advanced Thought Usage).
+*   **Phase 28:** Proactive Behavior (Scheduling, Goal Management).
+*   **Phase 29+:** Federated Communication (Layer 3 - External Admin AI Interaction).
+*   **Phase 30+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), etc.
+*   Enhanced Model Selection (Tier -> Size -> Performance -> ID)
+*   Sequential Multi-Action Execution for tools.
+*   Constitutional Guardian (CG) Agent - Backend Foundation.
+
+**Out of Scope (Deferred to Future Phases 27+):**
+
+*   Global Governance Principle Injection (Removed, replaced by CG review).
+*   `TEAMS_CONFIG` and `allowed_sub_agent_models` (Removed from `ConfigManager`).
+*   **Phase 27: Advanced Memory & Learning.** (Feedback Loop, Learned Principles).
+*   **Phase 28: Proactive Behavior.** (Scheduling, Goal Management).
+*   **Phase 29+: Federated Communication (Layer 3).** (External Admin AI interaction - protocol, security, discovery).
+*   **Phase 30+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), etc.
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->
