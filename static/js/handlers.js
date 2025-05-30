@@ -296,22 +296,29 @@ export const handleWebSocketMessage = (data) => {
 
 // --- NEW: Generic Button Click Handler ---
 export const handleMessageButtonClick = (event) => {
-    // Use event delegation - check if the clicked element is a button with the correct class
-    if (event.target.tagName === 'BUTTON' && event.target.classList.contains('message-button')) {
-        const button = event.target;
-        const command = button.dataset.command; // Use .dataset for data attributes
-        const originalText = button.dataset.originalText; // For cg_concern
-        const concernId = button.dataset.concernId;     // For older constitutional_response
-        const payloadString = button.dataset.payload;   // For older constitutional_response
-        const buttonText = button.textContent;
+    console.log("Handler: handleMessageButtonClick triggered.", event); // Log 1: Function triggered
+    const clickedElement = event.target;
+    console.log("Handler: Clicked element:", clickedElement); // Log 2: Clicked element
 
-        console.log(`Handler: Message button clicked. Command: '${command}', OriginalText: '${originalText}', ConcernID: '${concernId}', Payload: '${payloadString}', Text: '${buttonText}'`);
+    // Use event delegation - check if the clicked element is a button with the correct class
+    if (clickedElement.tagName === 'BUTTON' && clickedElement.classList.contains('message-button')) {
+        console.log("Handler: Clicked element dataset:", clickedElement.dataset); // Log 3: Dataset if it's a message-button
+
+        const command = clickedElement.dataset.command;
+        const originalText = clickedElement.dataset.originalText;
+        const concernId = clickedElement.dataset.concernId;
+        const payloadString = clickedElement.dataset.payload;
+        const buttonText = clickedElement.textContent;
+
+        // Log 4: Values being checked (originalText specifically for cg_concern path)
+        console.log("Handler: Checking for originalText. Command:", command, "OriginalText:", originalText);
 
         if (command) {
             let messageToSend;
             let messageObject;
 
             if (originalText !== undefined) { // Check for undefined, as empty string is a valid value for originalText
+                console.log("Handler: 'originalText' condition met. Processing as cg_concern button."); // Log 5a: Outcome of originalText check
                 // This is a cg_concern button click
                 messageObject = {
                     type: "cg_concern_response",
@@ -319,10 +326,12 @@ export const handleMessageButtonClick = (event) => {
                     original_text: originalText, // originalText is already escaped when set in data attribute
                     user_feedback: null
                 };
+                console.log("Handler: Preparing to send WebSocket message:", messageObject); // Log 6: Before sending
                 messageToSend = JSON.stringify(messageObject);
                 ui.displayMessage(escapeHTML(`You chose to: ${buttonText}`), 'user', 'conversation-area', 'human_user');
 
             } else if (concernId) {
+                console.log("Handler: 'originalText' condition NOT met. Checking for 'concernId'."); // Log 5b: Outcome if originalText not met
                 // This is likely an older constitutional_response button click
                 console.log("Handler: Handling button click with data-concern-id (older constitutional_response flow).");
                 messageObject = {
@@ -339,17 +348,26 @@ export const handleMessageButtonClick = (event) => {
                         // Potentially notify user or send without payload
                     }
                 }
+                console.log("Handler: Preparing to send WebSocket message:", messageObject); // Log 6: Before sending
                 messageToSend = JSON.stringify(messageObject);
                 // Display a more contextual message for the user
                 ui.displayMessage(escapeHTML(`Decision: ${buttonText} (for concern ${concernId})`), 'user', 'conversation-area', 'human_user');
 
             } else {
+                console.log("Handler: Clicked element does not seem to be a cg_concern or other known message button with concernId."); // Log 5c: If neither
                 // Fallback for generic commands if any button uses this class without concern context
-                messageToSend = command;
+                messageToSend = command; // This might be just a string if no messageObject was formed
+                // No specific messageObject to log here if it's just a raw command string
+                console.log("Handler: Preparing to send raw command string via WebSocket:", messageToSend);
                 ui.displayMessage(escapeHTML(command), 'user', 'conversation-area', 'human_user');
             }
 
-            ws.sendMessage(messageToSend);
+            // Ensure messageToSend is defined before sending
+            if (messageToSend) {
+                ws.sendMessage(messageToSend);
+            } else {
+                console.warn("Handler: messageToSend was not defined, WebSocket message aborted.", "Command was:", command);
+            }
 
             // Optional: Disable the button or all buttons in the group after click
             // button.disabled = true;
