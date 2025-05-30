@@ -12,10 +12,12 @@ from src.config.settings import settings
 from src.agents.constants import (
     AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_PLANNING,
     AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_AWAITING_TOOL,
+    AGENT_STATUS_AWAITING_CG_REVIEW, # Added for CG
     AGENT_STATUS_ERROR, AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER,
     ADMIN_STATE_PLANNING, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STARTUP,
-    PM_STATE_STARTUP, PM_STATE_MANAGE, PM_STATE_WORK, PM_STATE_BUILD_TEAM_TASKS, # Added PM_STATE_BUILD_TEAM_TASKS
-    WORKER_STATE_WAIT, REQUEST_STATE_TAG_PATTERN
+    PM_STATE_STARTUP, PM_STATE_MANAGE, PM_STATE_WORK, PM_STATE_BUILD_TEAM_TASKS,
+    WORKER_STATE_WAIT, REQUEST_STATE_TAG_PATTERN,
+    CONSTITUTIONAL_GUARDIAN_AGENT_ID # Added for CG
 )
 
 # Import for keyword extraction
@@ -50,6 +52,73 @@ class AgentCycleHandler:
         
         self.request_state_pattern = REQUEST_STATE_TAG_PATTERN 
         logger.info("AgentCycleHandler initialized.")
+
+    async def _request_cg_review(self, original_agent: Agent, original_agent_final_text: str, cycle_context: CycleContext) -> bool:
+        """
+        Requests a review from the Constitutional Guardian agent.
+        Sets the original agent's status to AGENT_STATUS_AWAITING_CG_REVIEW.
+        Schedules the CG agent to review the provided text.
+        """
+        cg_agent_id = CONSTITUTIONAL_GUARDIAN_AGENT_ID
+
+        if original_agent.agent_id == cg_agent_id:
+            logger.warning(f"Agent '{original_agent.agent_id}' is the Constitutional Guardian and cannot review itself. Skipping CG review.")
+            return False
+
+        cg_agent = self._manager.agents.get(cg_agent_id)
+        if not cg_agent:
+            logger.error(f"Constitutional Guardian agent '{cg_agent_id}' not found. Skipping review for agent '{original_agent.agent_id}'.")
+            # Potentially set original agent to an error state or allow it to proceed without review based on policy
+            return False
+        
+        if cg_agent.status != AGENT_STATUS_IDLE:
+            logger.warning(f"Constitutional Guardian agent '{cg_agent_id}' is not idle (current status: {cg_agent.status}). Skipping review for '{original_agent.agent_id}'.")
+            # TODO: Consider queuing the review or notifying admin
+            return False
+
+        # Format governance principles text
+        text_parts = []
+        if hasattr(settings, 'GOVERNANCE_PRINCIPLES') and settings.GOVERNANCE_PRINCIPLES:
+            for principle in settings.GOVERNANCE_PRINCIPLES:
+                if principle.get("enabled", False): # Only include enabled principles
+                    text_parts.append(f"Principle: {principle.get('name', 'N/A')} (ID: {principle.get('id', 'N/A')})\n{principle.get('text', 'N/A')}")
+        
+        if not text_parts:
+            logger.warning("No enabled governance principles found in settings. CG review might be ineffective.")
+            governance_text = "No specific governance principles provided."
+        else:
+            governance_text = "\n\n---\n\n".join(text_parts)
+
+        cg_prompt_template = settings.PROMPTS.get("cg_system_prompt", "")
+        if not cg_prompt_template:
+            logger.error("System prompt for Constitutional Guardian (cg_system_prompt) not found in prompts.json. Cannot proceed with review.")
+            return False
+
+        formatted_cg_system_prompt = cg_prompt_template.format(governance_principles_text=governance_text)
+        
+        # History for the CG agent
+        cg_history: List[MessageDict] = [
+            {"role": "system", "content": formatted_cg_system_prompt},
+            {"role": "user", "content": original_agent_final_text} 
+        ]
+
+        logger.info(f"Initiating Constitutional Guardian review for agent '{original_agent.agent_id}' (text: '{original_agent_final_text[:100]}...').")
+        
+        # Set original agent's status
+        original_agent.set_status(AGENT_STATUS_AWAITING_CG_REVIEW)
+        # Agent.set_status already calls push_agent_status_update
+
+        # Schedule the CG agent
+        cg_agent.message_history = cg_history # Override history directly for CG
+        # Ensure CG agent's internal state is reset for a clean cycle if necessary
+        cg_agent.text_buffer = "" 
+        cg_agent.last_error = None
+        # cg_agent.set_status(AGENT_STATUS_IDLE) # Ensure it's idle before scheduling, though we checked earlier
+        
+        await self._manager.schedule_cycle(cg_agent, retry_count=0)
+        logger.info(f"Constitutional Guardian agent '{cg_agent_id}' scheduled to review output from '{original_agent.agent_id}'. Original agent is now {AGENT_STATUS_AWAITING_CG_REVIEW}.")
+        
+        return True
 
     async def run_cycle(self, agent: Agent, retry_count: int = 0):
         logger.critical(f"!!! CycleHandler: run_cycle TASK STARTED for Agent '{agent.agent_id}' (Retry: {retry_count}) !!!")
@@ -338,20 +407,58 @@ class AgentCycleHandler:
                     break # Break from the agent_generator loop, as this cycle's LLM turn is done.
 
                 elif event_type in ["response_chunk", "status", "final_response", "invalid_state_request_output"]:
-                    if event_type == "final_response" and context.current_db_session_id and event.get("content"):
-                        if not agent.message_history or not agent.message_history[-1].get("tool_calls"): 
-                            await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=event.get("content"))
+                    if event_type == "final_response":
+                        final_content = event.get("content")
+                        if final_content:
+                            logger.info(f"Agent '{agent.agent_id}' produced final_response event. Processing for CG review.")
+                            cg_review_initiated = await self._request_cg_review(agent, final_content, context)
+                            if cg_review_initiated:
+                                context.action_taken_this_cycle = True
+                                context.needs_reactivation_after_cycle = False
+                                break # Agent's turn is paused pending CG review
+                            else:
+                                # CG review not initiated, proceed with normal final_response handling
+                                if context.current_db_session_id:
+                                    # Log to DB only if it's a direct response, not following tool calls
+                                    if not agent.message_history or not agent.message_history[-1].get("tool_calls"):
+                                        await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content)
+                                await self._manager.send_to_ui(event) # Send original event to UI
+                        else: # final_response event but no content
+                            await self._manager.send_to_ui(event) # Still send to UI
                     elif event_type == "invalid_state_request_output":
-                        context.action_taken_this_cycle = True; context.needs_reactivation_after_cycle = True
-                        if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="system_warning", content=f"Agent attempted invalid state change: {event.get('content')}")
-                    await self._manager.send_to_ui(event)
+                        context.action_taken_this_cycle = True
+                        context.needs_reactivation_after_cycle = True # Agent needs to retry or be corrected
+                        if context.current_db_session_id:
+                            await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="system_warning", content=f"Agent attempted invalid state change: {event.get('content')}")
+                        await self._manager.send_to_ui(event)
+                    else: # For "response_chunk", "status"
+                        await self._manager.send_to_ui(event)
                 else:
                     logger.warning(f"CycleHandler: Unknown event type '{event_type}' from agent '{agent.agent_id}'.")
             
-            if not context.last_error_obj and agent.text_buffer.strip() and not context.action_taken_this_cycle:
-                final_content_from_buffer = agent.text_buffer.strip(); agent.text_buffer = ""
-                if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content_from_buffer)
-                await self._manager.send_to_ui({"type": "final_response", "content": final_content_from_buffer, "agent_id": agent.agent_id})
+            # This block handles cases where the agent yields no specific actionable events (like tool_requests or state_change)
+            # but might have accumulated text in its buffer that constitutes a final response.
+            if not context.last_error_obj and not context.action_taken_this_cycle: # If no other action was taken
+                final_content_from_buffer = agent.text_buffer.strip()
+                if final_content_from_buffer:
+                    logger.info(f"Agent '{agent.agent_id}' has final content from buffer and no other action was taken. Processing for CG review.")
+                    cg_review_initiated_buffer = await self._request_cg_review(agent, final_content_from_buffer, context)
+                    agent.text_buffer = "" # Clear buffer after content is retrieved
+
+                    if cg_review_initiated_buffer:
+                        context.action_taken_this_cycle = True # Review initiation is an action
+                        context.needs_reactivation_after_cycle = False # Agent is paused awaiting review
+                        # No break needed, already outside the main event loop
+                    else:
+                        # CG review not initiated, proceed with normal final response handling for buffer content
+                        if context.current_db_session_id:
+                            await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content_from_buffer)
+                        await self._manager.send_to_ui({"type": "final_response", "content": final_content_from_buffer, "agent_id": agent.agent_id})
+                        # context.cycle_completed_successfully = True # This is set later
+                else:
+                    # Buffer is empty and no action taken, this implies a truly empty response or only whitespace.
+                    logger.info(f"Agent '{agent.agent_id}' cycle resulted in no errors, no actions, and no text_buffer content.")
+
 
             if agent_generator and not context.last_error_obj and not context.action_taken_this_cycle : 
                 context.cycle_completed_successfully = True
