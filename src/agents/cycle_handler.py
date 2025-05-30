@@ -93,15 +93,25 @@ class AgentCycleHandler:
         max_tokens_for_verdict = 150 # Verdicts should be concise
 
         try:
-            logger.info(f"Requesting CG verdict for text: '{original_agent_final_text[:100]}...'")
-            verdict_text = await cg_agent.llm_provider.get_completion(
+            logger.info(f"Requesting CG verdict via stream_completion for text: '{original_agent_final_text[:100]}...'")
+            provider_stream = cg_agent.llm_provider.stream_completion(
                 messages=cg_history,
                 model=cg_agent.model,
-                temperature=cg_agent.temperature, # Use CG agent's configured temperature (should be low for consistency)
+                temperature=cg_agent.temperature,
                 max_tokens=max_tokens_for_verdict
             )
-            stripped_verdict = verdict_text.strip() if verdict_text else ""
-            logger.info(f"CG Verdict received: '{stripped_verdict}'")
+            
+            full_verdict_text = ""
+            async for event in provider_stream:
+                if event.get("type") == "response_chunk":
+                    full_verdict_text += event.get("content", "")
+                elif event.get("type") == "error":
+                    logger.error(f"Error during CG LLM stream: {event.get('content')}", exc_info=event.get('_exception_obj'))
+                    full_verdict_text = "<OK/>" # Fail-open
+                    break
+            
+            stripped_verdict = full_verdict_text.strip()
+            logger.info(f"CG Verdict received (from stream): '{stripped_verdict}'")
             
             # Basic validation of verdict format
             if not stripped_verdict.startswith("<OK/>") and not stripped_verdict.startswith("<CONCERN>"):
