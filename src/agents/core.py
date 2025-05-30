@@ -84,6 +84,12 @@ class Agent:
         self.markdown_xml_tool_call_pattern = None
         self.think_pattern = ROBUST_THINK_TAG_PATTERN
         self.initial_plan_description: Optional[str] = config.get("initial_plan_description")
+        
+        # Attributes for Constitutional Guardian interaction
+        self.cg_original_text: Optional[str] = None
+        self.cg_concern_details: Optional[str] = None
+        self.cg_original_event_data: Optional[Dict[str, Any]] = None
+        self.cg_awaiting_user_decision: bool = False
 
         if self.manager and self.manager.tool_executor and self.manager.tool_executor.tools:
             tool_names = list(self.manager.tool_executor.tools.keys())

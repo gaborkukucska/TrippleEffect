@@ -19,7 +19,8 @@ logging.info("manager.py: Imported database_manager.")
 logging.info("manager.py: Importing constants...")
 from src.agents.constants import (
     AGENT_STATUS_IDLE, AGENT_STATUS_ERROR, BOOTSTRAP_AGENT_ID, ADMIN_STATE_CONVERSATION,
-    AGENT_TYPE_PM, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_STARTUP
+    AGENT_TYPE_PM, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_STARTUP,
+    AGENT_STATUS_AWAITING_USER_REVIEW_CG # Added for CG concern resolution
 )
 logging.info("manager.py: Imported constants.")
 
@@ -295,6 +296,101 @@ class AgentManager:
             except asyncio.CancelledError: logger.info("PM manage timer task cancelled.")
             self._pm_manage_task = None
         else: logger.info("PM manage timer task not running or already stopped.")
+
+    async def resolve_cg_concern_approve(self, agent_id: str):
+        agent = self.agents.get(agent_id)
+        if not agent:
+            logger.error(f"resolve_cg_concern_approve: Agent '{agent_id}' not found.")
+            return False, f"Agent '{agent_id}' not found."
+
+        if not (agent.status == AGENT_STATUS_AWAITING_USER_REVIEW_CG and agent.cg_awaiting_user_decision):
+            logger.warning(f"resolve_cg_concern_approve: Agent '{agent_id}' is not awaiting user decision on a CG concern. Status: {agent.status}, Flag: {agent.cg_awaiting_user_decision}")
+            return False, f"Agent '{agent_id}' is not in the correct state for this action."
+
+        logger.info(f"User approved original output for agent '{agent_id}' despite CG concern.")
+        
+        original_text = agent.cg_original_text
+        original_event_data = agent.cg_original_event_data
+
+        if original_text is not None and original_event_data is not None:
+            # Process original output: Log to DB, Send to UI as original final_response
+            if self.current_session_db_id: # Ensure session context for DB logging
+                is_direct_response = not agent.message_history or not agent.message_history[-1].get("tool_calls")
+                if is_direct_response: 
+                     await self.db_manager.log_interaction(
+                         session_id=self.current_session_db_id,
+                         agent_id=agent.agent_id,
+                         role="assistant",
+                         content=original_text
+                     )
+            await self.send_to_ui(original_event_data) 
+
+            if not any(msg['role'] == 'assistant' and msg['content'] == original_text for msg in reversed(agent.message_history[-2:])):
+                 agent.message_history.append({"role": "assistant", "content": original_text})
+
+        agent.cg_original_text = None
+        agent.cg_concern_details = None
+        agent.cg_original_event_data = None
+        agent.cg_awaiting_user_decision = False
+        agent.set_status(AGENT_STATUS_IDLE) 
+
+        logger.info(f"Agent '{agent_id}' output approved by user. Status set to IDLE.")
+        return True, f"Agent '{agent_id}' output approved and processed."
+
+    async def resolve_cg_concern_stop(self, agent_id: str):
+        agent = self.agents.get(agent_id)
+        if not agent:
+            logger.error(f"resolve_cg_concern_stop: Agent '{agent_id}' not found.")
+            return False, f"Agent '{agent_id}' not found."
+
+        if not (agent.status == AGENT_STATUS_AWAITING_USER_REVIEW_CG and agent.cg_awaiting_user_decision):
+            logger.warning(f"resolve_cg_concern_stop: Agent '{agent_id}' is not awaiting user decision on a CG concern. Status: {agent.status}, Flag: {agent.cg_awaiting_user_decision}")
+            return False, f"Agent '{agent_id}' is not in the correct state for this action."
+
+        logger.info(f"User stopped agent '{agent_id}' due to CG concern: {agent.cg_concern_details}")
+        
+        agent.set_status(AGENT_STATUS_ERROR) 
+        
+        agent.cg_original_text = None
+        agent.cg_concern_details = None
+        agent.cg_original_event_data = None
+        agent.cg_awaiting_user_decision = False
+        
+        return True, f"Agent '{agent_id}' stopped by user due to CG concern."
+
+    async def resolve_cg_concern_retry(self, agent_id: str, user_feedback: str):
+        agent = self.agents.get(agent_id)
+        if not agent:
+            logger.error(f"resolve_cg_concern_retry: Agent '{agent_id}' not found.")
+            return False, f"Agent '{agent_id}' not found."
+
+        if not (agent.status == AGENT_STATUS_AWAITING_USER_REVIEW_CG and agent.cg_awaiting_user_decision):
+            logger.warning(f"resolve_cg_concern_retry: Agent '{agent_id}' is not awaiting user decision on a CG concern. Status: {agent.status}, Flag: {agent.cg_awaiting_user_decision}")
+            return False, f"Agent '{agent_id}' is not in the correct state for this action."
+
+        logger.info(f"User requested retry for agent '{agent_id}' with feedback, following CG concern.")
+
+        feedback_message_content = (
+            f"[Framework Feedback for Retry]\n"
+            f"Your previous response was: '{agent.cg_original_text}'\n"
+            f"A concern was raised by the Constitutional Guardian: '{agent.cg_concern_details}'\n"
+            f"User Feedback: '{user_feedback}'\n"
+            f"Please revise your response to address these points and retry your previous turn's objective."
+        )
+        
+        agent.message_history.append({"role": "system", "content": feedback_message_content})
+        
+        agent.cg_original_text = None
+        agent.cg_concern_details = None
+        agent.cg_original_event_data = None
+        agent.cg_awaiting_user_decision = False
+        
+        agent.set_status(AGENT_STATUS_IDLE) 
+
+        await self.schedule_cycle(agent, retry_count=0) 
+        
+        logger.info(f"Agent '{agent_id}' set to IDLE and rescheduled for retry with user and CG feedback.")
+        return True, f"Agent '{agent_id}' will retry with feedback."
 
 logging.info("manager.py: Module loading finished.")
 

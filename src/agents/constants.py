@@ -5,6 +5,7 @@ import aiohttp # For retryable exceptions
 
 # --- Core Agent/Framework IDs ---
 BOOTSTRAP_AGENT_ID = "admin_ai"
+CONSTITUTIONAL_GUARDIAN_AGENT_ID = "constitutional_guardian_ai"
 
 # --- Agent Type Constants ---
 AGENT_TYPE_ADMIN = "admin" # The Admin AI of the framework.
@@ -40,6 +41,8 @@ AGENT_STATUS_PROCESSING = "processing"
 AGENT_STATUS_PLANNING = "planning" # This is an operational status, distinct from Admin's planning *state*
 AGENT_STATUS_AWAITING_TOOL = "awaiting_tool_result"
 AGENT_STATUS_EXECUTING_TOOL = "executing_tool"
+AGENT_STATUS_AWAITING_CG_REVIEW = "awaiting_cg_review"
+AGENT_STATUS_AWAITING_USER_REVIEW_CG = "awaiting_user_review_cg"
 AGENT_STATUS_ERROR = "error"
 
 # --- LLM Provider Interaction Constants ---
