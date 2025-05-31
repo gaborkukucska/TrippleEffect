@@ -375,7 +375,7 @@ export const handleMessageButtonClick = (event) => {
 
             // Disable all buttons in the same options container
             // Handles both .options (older) and .options-container (newer for cg_concern)
-            const parentOptionsContainer = button.closest('.options-container') || button.closest('.options');
+            const parentOptionsContainer = clickedElement.closest('.options-container') || clickedElement.closest('.options');
             if (parentOptionsContainer) {
                 parentOptionsContainer.querySelectorAll('.message-button').forEach(btn => {
                     btn.disabled = true;
@@ -386,10 +386,11 @@ export const handleMessageButtonClick = (event) => {
         } else {
             console.warn("Handler: Clicked message button has no data-command attribute.");
         }
-    } else if (event.target.tagName === 'BUTTON' && event.target.classList.contains('approve-project-btn')) {
+    } else if (clickedElement.tagName === 'BUTTON' && clickedElement.classList.contains('approve-project-btn')) {
         // --- SPECIFIC Handler for existing Approve button ---
-        const pmId = button.dataset.pmId; // Use .dataset
-        const commandText = `approve project ${pmId}`; // Construct command
+        // Ensure 'clickedElement' is used here as well, as 'button' might not be in this scope if the first if was false.
+        const pmId = clickedElement.dataset.pmId;
+        const commandText = `approve project ${pmId}`;
         console.log(`Handler: Approve Project button clicked for PM: ${pmId}`);
 
         // Display locally and send
