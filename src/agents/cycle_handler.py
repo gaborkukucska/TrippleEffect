@@ -59,6 +59,10 @@ class AgentCycleHandler:
         This method bypasses the usual agent scheduling and cycle handling for the CG agent
         to get an immediate verdict.
         """
+        if not original_agent_final_text or original_agent_final_text.isspace():
+            logger.warning("CG review requested for empty or whitespace-only text. Skipping LLM call and returning <OK/>.")
+            return "<OK/>"
+
         cg_agent = self._manager.agents.get(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
 
         if not cg_agent:
@@ -87,10 +91,10 @@ class AgentCycleHandler:
         
         cg_history: List[MessageDict] = [
             {"role": "system", "content": formatted_cg_system_prompt},
-            {"role": "user", "content": original_agent_final_text}
+            {"role": "system", "content": f"---\nText for Constitutional Review:\n---\n{original_agent_final_text}"}
         ]
 
-        max_tokens_for_verdict = 150 # Verdicts should be concise
+        max_tokens_for_verdict = 250 # Verdicts should be concise
 
         try:
             logger.info(f"Requesting CG verdict via stream_completion for text: '{original_agent_final_text[:100]}...'")
@@ -123,11 +127,22 @@ class AgentCycleHandler:
             elif stripped_verdict == "<OK/>":
                 return "<OK/>"
             elif not stripped_verdict: # Empty response from LLM
-                logger.warning("CG returned an empty response. Failing open as <OK/>.")
-                return "<OK/>"
-            else: # Malformed or unexpected verdict
-                logger.warning(f"CG verdict '{stripped_verdict}' is not in the expected <OK/> or <CONCERN>...</CONCERN> format. Treating as a concern.")
-                return f"Malformed CG verdict. Details: {stripped_verdict}"
+                logger.warning("CG returned an empty string verdict. This will be treated as a CONCERN.")
+                return "<CONCERN>Constitutional Guardian returned an empty verdict. This indicates a potential issue with the CG model's response generation. The original text was not validated.</CONCERN>"
+            else: # Malformed, conversational, or unexpected verdict
+                # Check for truncated <CONCERN> first
+                if stripped_verdict.startswith("<CONCERN>") and not stripped_verdict.endswith("</CONCERN>"):
+                    logger.warning(f"CG verdict '{stripped_verdict}' appears to be a truncated concern. Extracting content.")
+                    concern_detail = stripped_verdict[len("<CONCERN>"):]
+                    return f"Potential Concern (truncated/malformed verdict): {concern_detail.strip()}"
+                # Check for non-tagged / conversational responses (not <OK/>, not empty, not starting with <CONCERN>)
+                elif not stripped_verdict.startswith("<CONCERN>"): # This implies it's also not "<OK/>" due to prior checks
+                    logger.warning(f"CG provided a non-standard response (did not use OK/CONCERN tags): '{stripped_verdict}'. Treating as a CONCERN.")
+                    return f"<CONCERN>Constitutional Guardian provided a non-standard response (did not use OK/CONCERN tags as instructed). Full response: {stripped_verdict}</CONCERN>"
+                # Fallback for other malformations if any (e.g. contains <CONCERN> but is still not right)
+                else:
+                    logger.warning(f"CG verdict '{stripped_verdict}' is malformed and not caught by specific handlers. Treating as a generic concern.")
+                    return f"Malformed CG verdict. Details: {stripped_verdict}"
 
         except Exception as e:
             logger.error(f"Error during Constitutional Guardian LLM call: {e}", exc_info=True)
