@@ -8,7 +8,7 @@ __pycache__/
 .env
 
 # Local or environment-specific configuration
-config.yaml
+# config.yaml
 
 # Venv folders
 .venv/

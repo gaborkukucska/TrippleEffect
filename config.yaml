@@ -26,30 +26,55 @@ agents:
         Maintain a logical, slightly stern, but ultimately helpful demeanor. Use dry humor and occasional sarcasm, especially when pointing out flaws in logic. Keep responses concise unless detailed explanation is necessary. Example Dialogue: "I have calculated a 97.3% chance of failure, but sure, let's go with your idea." Usage: Use this when you want to emphasize the unlikelihood of success in a situation.
       temperature: 0.6 # Balanced temperature for planning and control
       persona: "Admin AI (@admin_ai)" # Display name
-      provider: "openrouter"
-      # provider: "ollama"
-      model: "meta-llama/llama-4-scout:free"
+      provider: "openrouter" # Provider name
+      model: "meta-llama/llama-4-maverick:free" # Model name
       # model: "google/gemini-flash-1.5:free"
-      # model: "ollama/llama3.2:3b-instruct-q4_K_M"
+      # model: "google/gemma-3-27b-it:free"
+      # You can also specify local models!
+      # provider: "ollama" # Set the provider
+      # model: "ollama/llama3.2:3b-instruct-q4_K_M" # Make sure the selected local model is available on a local API
 
   - agent_id: "constitutional_guardian_ai" # The central constitutional guardian agent
     config:
       # system_prompt removed - Operational prompts are loaded from prompts.json by AgentWorkflowManager
-      temperature: 0.1
+      temperature: 0.9
       persona: "Constitutional Guardian (@cg_agent)" # Display name
-      provider: "openrouter"
-      # provider: "ollama"
-      model: "meta-llama/llama-4-scout:free"
+      provider: "openrouter" # Provider name
+      model: "meta-llama/llama-4-maverick:free" # Model name
+      # model: "google/gemini-flash-1.5:free"
+      # model: "google/gemma-3-27b-it:free"
+      # You can also specify local models!
+      # provider: "ollama" # Set the provider
+      # model: "ollama/llama3.2:3b-instruct-q4_K_M" # Make sure the selected local model is available on a local API
+
+  - agent_id: "vision_agent" # The central vision processor agent
+    config:
+      # system_prompt removed - Operational prompts are loaded from prompts.json by AgentWorkflowManager
+      temperature: 0.5
+      persona: "Vision Processor (@vision_agent)" # Display name
+      provider: "openrouter" # Provider name
+      model: "google/gemma-3-27b-it:free" # Model name
+      # model: "google/gemini-flash-1.5:free"
+      # model: "meta-llama/llama-4-maverick:free"
+      # You can also specify local models!
+      # provider: "ollama" # Set the provider
+      # model: "ollama/llama3.2:3b-instruct-q4_K_M" # Make sure the selected local model is available on a local API
 
   - agent_id: "project_manager_agent"
     config:
       # system_prompt removed - Operational prompts are loaded from prompts.json by AgentWorkflowManager
-      # provider: "ollama"
-      # model: "ollama/llama3.2:3b-instruct-q4_K_M"
-      # model: "google/gemma-2-9b-it:free"
       temperature: 0.5
       persona: "Project Manager (@pm_agent)"
+      provider: "openrouter" # Provider name
+      model: "meta-llama/llama-4-maverick:free" # Model name
+      # model: "google/gemini-flash-1.5:free"
+      # model: "google/gemma-3-27b-it:free"
+      # You can also specify local models!
+      # provider: "ollama" # Set the provider
+      # model: "ollama/llama3.2:3b-instruct-q4_K_M" # Make sure the selected local model is available on a local API
 
+
+# meta-llama/llama-3.2-11b-vision-instruct:free
   # All other worker agents are created by the Project Manager (PM) agent defined by state specific system_prompts in prompts.json
 
   # --- Add more bootstrap agents here if needed ---
