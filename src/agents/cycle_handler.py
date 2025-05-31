@@ -127,8 +127,8 @@ class AgentCycleHandler:
             elif stripped_verdict == "<OK/>":
                 return "<OK/>"
             elif not stripped_verdict: # Empty response from LLM
-                logger.warning("CG returned an empty response. Failing open as <OK/>.")
-                return "<OK/>"
+                logger.warning("CG returned an empty string verdict. This will be treated as a CONCERN.")
+                return "<CONCERN>Constitutional Guardian returned an empty verdict. This indicates a potential issue with the CG model's response generation. The original text was not validated.</CONCERN>"
             else: # Malformed or unexpected verdict
                 logger.warning(f"CG verdict '{stripped_verdict}' is not in the expected <OK/> or <CONCERN>...</CONCERN> format. Treating as a concern.")
                 if stripped_verdict.startswith("<CONCERN>") and not stripped_verdict.endswith("</CONCERN>"):

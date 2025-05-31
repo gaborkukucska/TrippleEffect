@@ -94,6 +94,30 @@ export const handleWebSocketMessage = (data) => {
 
         // --- Routing and Formatting ---
         switch (messageType) {
+            case 'agent_state_change':
+                console.log("Handler: Explicitly handling agent_state_change for", data.agent_id); // Diagnostic log
+                displayContent = `Agent ${escapeHTML(data.agent_id || 'Unknown Agent')} state changed from '${escapeHTML(data.old_state || 'N/A')}' to '${escapeHTML(data.new_state || 'N/A')}'. ${data.message ? escapeHTML(data.message) : ''}`;
+                displayAgentId = data.agent_id || 'system_event_source_agent';
+                displayType = 'agent_state_transition';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+            case 'agent_state_change_requested':
+                console.log("Handler: Explicitly handling agent_state_change_requested for", data.agent_id); // Diagnostic log
+                displayContent = `Agent ${escapeHTML(data.agent_id || 'Unknown Agent')} requested state change to '${escapeHTML(data.requested_state || 'N/A')}'. ${data.message ? escapeHTML(data.message) : ''}`;
+                displayAgentId = data.agent_id || 'system_event_source_agent';
+                displayType = 'agent_state_request';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+            case 'info':
+                console.log("Handler: Explicitly handling info message from", data.agent_id); // Diagnostic log
+                displayContent = `Info from ${escapeHTML(data.agent_id || 'System')}: ${escapeHTML(data.content || data.message || 'No details.')}`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'log'; // Or 'system_event'
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
             // --- State-only updates ---
             case 'agent_status_update':
             case 'full_status':
@@ -268,30 +292,6 @@ export const handleWebSocketMessage = (data) => {
                  targetAreaId = 'internal-comms-area';
                  break;
 
-            case 'agent_state_change':
-                displayContent = `Agent ${escapeHTML(data.agent_id || 'Unknown Agent')} state changed from '${escapeHTML(data.old_state || 'N/A')}' to '${escapeHTML(data.new_state || 'N/A')}'. ${data.message ? escapeHTML(data.message) : ''}`;
-                displayAgentId = data.agent_id || 'system_event_source_agent';
-                displayType = 'agent_state_transition'; // Or 'system_event'
-                targetAreaId = 'internal-comms-area';
-                shouldDisplay = true;
-                break;
-
-            case 'agent_state_change_requested':
-                displayContent = `Agent ${escapeHTML(data.agent_id || 'Unknown Agent')} requested state change to '${escapeHTML(data.requested_state || 'N/A')}'. ${data.message ? escapeHTML(data.message) : ''}`;
-                displayAgentId = data.agent_id || 'system_event_source_agent';
-                displayType = 'agent_state_request'; // Or 'system_event'
-                targetAreaId = 'internal-comms-area';
-                shouldDisplay = true;
-                break;
-
-            case 'info':
-                displayContent = `Info from ${escapeHTML(data.agent_id || 'System')}: ${escapeHTML(data.content || data.message || 'No details.')}`;
-                displayAgentId = data.agent_id || 'system';
-                displayType = 'log'; // Using 'log' type for general info
-                targetAreaId = 'internal-comms-area';
-                shouldDisplay = true;
-                break;
-
             default:
                 console.warn(`Handler: Received unknown message type: ${messageType}`, data);
                 targetAreaId = 'internal-comms-area';
@@ -320,43 +320,39 @@ export const handleWebSocketMessage = (data) => {
 
 // --- NEW: Generic Button Click Handler ---
 export const handleMessageButtonClick = (event) => {
-    console.log("Handler: handleMessageButtonClick triggered.", event); // Log 1: Function triggered
+    console.log("Handler: handleMessageButtonClick triggered.", event);
     const clickedElement = event.target;
-    console.log("Handler: Clicked element:", clickedElement); // Log 2: Clicked element
+    console.log("Handler: Clicked element:", clickedElement);
 
-    // Use event delegation - check if the clicked element is a button with the correct class
-    if (clickedElement.tagName === 'BUTTON' && clickedElement.classList.contains('message-button')) {
-        console.log("Handler: Clicked element dataset:", clickedElement.dataset); // Log 3: Dataset if it's a message-button
+    const actualMessageButton = clickedElement.closest('button.message-button');
+    const actualApproveButton = clickedElement.closest('button.approve-project-btn');
 
-        const command = clickedElement.dataset.command;
-        const originalText = clickedElement.dataset.originalText;
-        const concernId = clickedElement.dataset.concernId;
-        const payloadString = clickedElement.dataset.payload;
-        const buttonText = clickedElement.textContent;
+    if (actualMessageButton) {
+        console.log("Handler: Clicked .message-button:", actualMessageButton);
+        console.log("Handler: Button dataset:", actualMessageButton.dataset);
 
-        // Log 4: Values being checked (originalText specifically for cg_concern path)
-        console.log("Handler: Checking for originalText. Command:", command, "OriginalText:", originalText);
+        const command = actualMessageButton.dataset.command;
+        const originalText = actualMessageButton.dataset.originalText;
+        const concernId = actualMessageButton.dataset.concernId; // For older constitutional_response
+        const payloadString = actualMessageButton.dataset.payload; // For older constitutional_response
+        const buttonText = actualMessageButton.textContent;
 
         if (command) {
             let messageToSend;
             let messageObject;
 
-            if (originalText !== undefined) { // Check for undefined, as empty string is a valid value for originalText
-                console.log("Handler: 'originalText' condition met. Processing as cg_concern button."); // Log 5a: Outcome of originalText check
-                // This is a cg_concern button click
+            if (originalText !== undefined) { // CG Concern Response Path
+                console.log("Handler: 'originalText' condition met. Processing as cg_concern button.");
                 messageObject = {
                     type: "cg_concern_response",
                     action: command,
-                    original_text: originalText, // originalText is already escaped when set in data attribute
+                    original_text: originalText,
                     user_feedback: null
                 };
-                console.log("Handler: Preparing to send WebSocket message:", messageObject); // Log 6: Before sending
                 messageToSend = JSON.stringify(messageObject);
                 ui.displayMessage(escapeHTML(`You chose to: ${buttonText}`), 'user', 'conversation-area', 'human_user');
 
-            } else if (concernId) {
-                console.log("Handler: 'originalText' condition NOT met. Checking for 'concernId'."); // Log 5b: Outcome if originalText not met
-                // This is likely an older constitutional_response button click
+            } else if (concernId) { // Older Constitutional Response Path
                 console.log("Handler: Handling button click with data-concern-id (older constitutional_response flow).");
                 messageObject = {
                     type: "constitutional_response",
@@ -369,62 +365,51 @@ export const handleMessageButtonClick = (event) => {
                         messageObject.payload = JSON.parse(payloadString);
                     } catch (e) {
                         console.error("Handler: Failed to parse payload JSON for button command:", payloadString, e);
-                        // Potentially notify user or send without payload
                     }
                 }
-                console.log("Handler: Preparing to send WebSocket message:", messageObject); // Log 6: Before sending
                 messageToSend = JSON.stringify(messageObject);
-                // Display a more contextual message for the user
                 ui.displayMessage(escapeHTML(`Decision: ${buttonText} (for concern ${concernId})`), 'user', 'conversation-area', 'human_user');
 
-            } else {
-                console.log("Handler: Clicked element does not seem to be a cg_concern or other known message button with concernId."); // Log 5c: If neither
-                // Fallback for generic commands if any button uses this class without concern context
-                messageToSend = command; // This might be just a string if no messageObject was formed
-                // No specific messageObject to log here if it's just a raw command string
-                console.log("Handler: Preparing to send raw command string via WebSocket:", messageToSend);
+            } else { // Generic message button (if any other)
+                console.log("Handler: Clicked .message-button does not seem to be a cg_concern or older constitutional_response button.");
+                messageToSend = command; // Assuming command is a simple string for other cases
                 ui.displayMessage(escapeHTML(command), 'user', 'conversation-area', 'human_user');
             }
 
-            // Ensure messageToSend is defined before sending
+            console.log("Handler: Preparing to send WebSocket message:", messageToSend);
             if (messageToSend) {
                 ws.sendMessage(messageToSend);
             } else {
                 console.warn("Handler: messageToSend was not defined, WebSocket message aborted.", "Command was:", command);
             }
 
-            // Optional: Disable the button or all buttons in the group after click
-            // clickedElement.disabled = true; // Corrected from button.disabled
-            // clickedElement.textContent = 'Processing...'; // Corrected from button.textContent
-
             // Disable all buttons in the same options container
-            // Handles both .options (older) and .options-container (newer for cg_concern)
-            const parentOptionsContainer = clickedElement.closest('.options-container') || clickedElement.closest('.options');
+            const parentOptionsContainer = actualMessageButton.closest('.options-container') || actualMessageButton.closest('.options');
             if (parentOptionsContainer) {
                 parentOptionsContainer.querySelectorAll('.message-button').forEach(btn => {
                     btn.disabled = true;
                     btn.style.opacity = '0.5';
                 });
             }
-
         } else {
-            console.warn("Handler: Clicked message button has no data-command attribute.");
+            console.warn("Handler: Clicked .message-button has no data-command attribute.");
         }
-    } else if (clickedElement.tagName === 'BUTTON' && clickedElement.classList.contains('approve-project-btn')) {
-        // --- SPECIFIC Handler for existing Approve button ---
-        // Ensure 'clickedElement' is used here as well, as 'button' might not be in this scope if the first if was false.
-        const pmId = clickedElement.dataset.pmId;
+
+    } else if (actualApproveButton) {
+        console.log("Handler: Clicked .approve-project-btn:", actualApproveButton);
+        const pmId = actualApproveButton.dataset.pmId;
         const commandText = `approve project ${pmId}`;
         console.log(`Handler: Approve Project button clicked for PM: ${pmId}`);
 
-        // Display locally and send
         ui.displayMessage(escapeHTML(commandText), 'user', 'conversation-area', 'human_user');
         ws.sendMessage(commandText);
 
-        // Disable button after click
-        clickedElement.disabled = true;
-        clickedElement.textContent = 'Approval Sent';
-        clickedElement.style.backgroundColor = '#ccc'; // Indicate disabled state
+        actualApproveButton.disabled = true;
+        actualApproveButton.textContent = 'Approval Sent';
+        actualApproveButton.style.backgroundColor = '#ccc';
+
+    } else {
+        console.log("Handler: Clicked element is not a recognized button type (message-button or approve-project-btn):", clickedElement);
     }
 };
 // --- END NEW ---
