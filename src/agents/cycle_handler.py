@@ -129,12 +129,20 @@ class AgentCycleHandler:
             elif not stripped_verdict: # Empty response from LLM
                 logger.warning("CG returned an empty string verdict. This will be treated as a CONCERN.")
                 return "<CONCERN>Constitutional Guardian returned an empty verdict. This indicates a potential issue with the CG model's response generation. The original text was not validated.</CONCERN>"
-            else: # Malformed or unexpected verdict
-                logger.warning(f"CG verdict '{stripped_verdict}' is not in the expected <OK/> or <CONCERN>...</CONCERN> format. Treating as a concern.")
+            else: # Malformed, conversational, or unexpected verdict
+                # Check for truncated <CONCERN> first
                 if stripped_verdict.startswith("<CONCERN>") and not stripped_verdict.endswith("</CONCERN>"):
+                    logger.warning(f"CG verdict '{stripped_verdict}' appears to be a truncated concern. Extracting content.")
                     concern_detail = stripped_verdict[len("<CONCERN>"):]
                     return f"Potential Concern (truncated/malformed verdict): {concern_detail.strip()}"
-                return f"Malformed CG verdict. Details: {stripped_verdict}"
+                # Check for non-tagged / conversational responses (not <OK/>, not empty, not starting with <CONCERN>)
+                elif not stripped_verdict.startswith("<CONCERN>"): # This implies it's also not "<OK/>" due to prior checks
+                    logger.warning(f"CG provided a non-standard response (did not use OK/CONCERN tags): '{stripped_verdict}'. Treating as a CONCERN.")
+                    return f"<CONCERN>Constitutional Guardian provided a non-standard response (did not use OK/CONCERN tags as instructed). Full response: {stripped_verdict}</CONCERN>"
+                # Fallback for other malformations if any (e.g. contains <CONCERN> but is still not right)
+                else:
+                    logger.warning(f"CG verdict '{stripped_verdict}' is malformed and not caught by specific handlers. Treating as a generic concern.")
+                    return f"Malformed CG verdict. Details: {stripped_verdict}"
 
         except Exception as e:
             logger.error(f"Error during Constitutional Guardian LLM call: {e}", exc_info=True)

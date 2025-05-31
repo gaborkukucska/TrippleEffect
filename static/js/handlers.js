@@ -95,7 +95,7 @@ export const handleWebSocketMessage = (data) => {
         // --- Routing and Formatting ---
         switch (messageType) {
             case 'agent_state_change':
-                console.log("Handler: Explicitly handling agent_state_change for", data.agent_id); // Diagnostic log
+                console.log('DEBUG: Entered agent_state_change case for agent:', data.agent_id); // Diagnostic log
                 displayContent = `Agent ${escapeHTML(data.agent_id || 'Unknown Agent')} state changed from '${escapeHTML(data.old_state || 'N/A')}' to '${escapeHTML(data.new_state || 'N/A')}'. ${data.message ? escapeHTML(data.message) : ''}`;
                 displayAgentId = data.agent_id || 'system_event_source_agent';
                 displayType = 'agent_state_transition';
@@ -103,7 +103,7 @@ export const handleWebSocketMessage = (data) => {
                 shouldDisplay = true;
                 break;
             case 'agent_state_change_requested':
-                console.log("Handler: Explicitly handling agent_state_change_requested for", data.agent_id); // Diagnostic log
+                console.log('DEBUG: Entered agent_state_change_requested case for agent:', data.agent_id); // Diagnostic log
                 displayContent = `Agent ${escapeHTML(data.agent_id || 'Unknown Agent')} requested state change to '${escapeHTML(data.requested_state || 'N/A')}'. ${data.message ? escapeHTML(data.message) : ''}`;
                 displayAgentId = data.agent_id || 'system_event_source_agent';
                 displayType = 'agent_state_request';
@@ -111,7 +111,7 @@ export const handleWebSocketMessage = (data) => {
                 shouldDisplay = true;
                 break;
             case 'info':
-                console.log("Handler: Explicitly handling info message from", data.agent_id); // Diagnostic log
+                console.log('DEBUG: Entered info message case from agent:', data.agent_id); // Diagnostic log
                 displayContent = `Info from ${escapeHTML(data.agent_id || 'System')}: ${escapeHTML(data.content || data.message || 'No details.')}`;
                 displayAgentId = data.agent_id || 'system';
                 displayType = 'log'; // Or 'system_event'
@@ -322,20 +322,33 @@ export const handleWebSocketMessage = (data) => {
 export const handleMessageButtonClick = (event) => {
     console.log("Handler: handleMessageButtonClick triggered.", event);
     const clickedElement = event.target;
-    console.log("Handler: Clicked element:", clickedElement);
+    console.log("Handler: Clicked element (event.target):", clickedElement);
 
-    const actualMessageButton = clickedElement.closest('button.message-button');
-    const actualApproveButton = clickedElement.closest('button.approve-project-btn');
+    const targetButton = clickedElement.closest('button.message-button, button.approve-project-btn');
 
-    if (actualMessageButton) {
-        console.log("Handler: Clicked .message-button:", actualMessageButton);
-        console.log("Handler: Button dataset:", actualMessageButton.dataset);
+    // If the click was on the container or something else not a button,
+    // check if it's a click on a summary element (for <details>) and allow it to proceed for toggling.
+    // Otherwise, log and exit.
+    if (!targetButton) {
+        if (clickedElement.tagName === 'SUMMARY' || clickedElement.closest('summary')) {
+            // Allow default action for summary elements (toggling details)
+            return;
+        }
+        console.log("Handler: Clicked element is not a recognized button or summary:", clickedElement);
+        return; // Exit if not a relevant button or summary
+    }
+    // From this point, use 'targetButton' to refer to the button for all operations.
+    console.log("Handler: Target button found:", targetButton);
 
-        const command = actualMessageButton.dataset.command;
-        const originalText = actualMessageButton.dataset.originalText;
-        const concernId = actualMessageButton.dataset.concernId; // For older constitutional_response
-        const payloadString = actualMessageButton.dataset.payload; // For older constitutional_response
-        const buttonText = actualMessageButton.textContent;
+    if (targetButton.classList.contains('message-button')) {
+        console.log("Handler: Clicked .message-button:", targetButton);
+        console.log("Handler: Button dataset:", targetButton.dataset);
+
+        const command = targetButton.dataset.command;
+        const originalText = targetButton.dataset.originalText;
+        const concernId = targetButton.dataset.concernId; // For older constitutional_response
+        const payloadString = targetButton.dataset.payload; // For older constitutional_response
+        const buttonText = targetButton.textContent;
 
         if (command) {
             let messageToSend;
@@ -383,33 +396,39 @@ export const handleMessageButtonClick = (event) => {
                 console.warn("Handler: messageToSend was not defined, WebSocket message aborted.", "Command was:", command);
             }
 
-            // Disable all buttons in the same options container
-            const parentOptionsContainer = actualMessageButton.closest('.options-container') || actualMessageButton.closest('.options');
+            // Disable all buttons in the same options container OR the button itself if standalone
+            const parentOptionsContainer = targetButton.closest('.options-container') || targetButton.closest('.options');
             if (parentOptionsContainer) {
-                parentOptionsContainer.querySelectorAll('.message-button').forEach(btn => {
+                parentOptionsContainer.querySelectorAll('button.message-button').forEach(btn => {
                     btn.disabled = true;
                     btn.style.opacity = '0.5';
                 });
+            } else { // If it's a message button but not in an options container
+                targetButton.disabled = true; // Disable the button itself
+                targetButton.style.opacity = '0.5'; // Optionally dim it
             }
         } else {
             console.warn("Handler: Clicked .message-button has no data-command attribute.");
         }
 
-    } else if (actualApproveButton) {
-        console.log("Handler: Clicked .approve-project-btn:", actualApproveButton);
-        const pmId = actualApproveButton.dataset.pmId;
+    } else if (targetButton.classList.contains('approve-project-btn')) {
+        console.log("Handler: Clicked .approve-project-btn:", targetButton);
+        const pmId = targetButton.dataset.pmId;
         const commandText = `approve project ${pmId}`;
         console.log(`Handler: Approve Project button clicked for PM: ${pmId}`);
 
         ui.displayMessage(escapeHTML(commandText), 'user', 'conversation-area', 'human_user');
         ws.sendMessage(commandText);
 
-        actualApproveButton.disabled = true;
-        actualApproveButton.textContent = 'Approval Sent';
-        actualApproveButton.style.backgroundColor = '#ccc';
+        targetButton.disabled = true;
+        targetButton.textContent = 'Approval Sent';
+        targetButton.style.backgroundColor = '#ccc';
 
     } else {
-        console.log("Handler: Clicked element is not a recognized button type (message-button or approve-project-btn):", clickedElement);
+        // This case should ideally not be reached if targetButton is guaranteed by the initial .closest()
+        // and the if/else if covers all selector possibilities from the combined query.
+        // However, it's a good fallback for unexpected scenarios.
+        console.log("Handler: targetButton did not match expected classes (message-button or approve-project-btn):", targetButton);
     }
 };
 // --- END NEW ---
@@ -699,3 +718,5 @@ console.log("Frontend handlers module loaded.");
 //         console.error("Could not attach message button listener: conversationArea not found.");
 //     }
 // });
+
+[end of static/js/handlers.js]
