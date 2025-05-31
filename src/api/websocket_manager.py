@@ -112,6 +112,55 @@ async def websocket_endpoint(websocket: WebSocket):
                      file_info = f"[Attached File: {message_data.get('filename', 'N/A')}]\n```\n{message_data.get('file_content', '')}\n```\n\n"
                      combined_message = file_info + message_data.get('text', '')
                      asyncio.create_task(agent_manager_instance.handle_user_message(combined_message, client_id=client_host))
+                elif message_type == "cg_concern_response":
+                    logger.info(f"Received cg_concern_response from {client_host}.")
+                    action = message_data.get("action")
+                    original_text = message_data.get("original_text")
+                    user_feedback = message_data.get("user_feedback")
+
+                    # Assumption: The response is for the 'admin_ai' agent, which is the one that gets paused.
+                    # A more robust solution might involve the frontend sending the agent_id or the backend tracking it.
+                    agent_id_for_cg_response = "admin_ai"
+
+                    if action and original_text is not None: # user_feedback can be None
+                        if action == "acknowledge_cg_concern":
+                            if agent_manager_instance and hasattr(agent_manager_instance, 'resolve_cg_concern_approve'):
+                                logger.debug(f"Forwarding 'acknowledge' for CG concern for agent '{agent_id_for_cg_response}' to AgentManager.")
+                                asyncio.create_task(
+                                    agent_manager_instance.resolve_cg_concern_approve(agent_id=agent_id_for_cg_response)
+                                )
+                            else:
+                                logger.error(f"AgentManager not available or missing 'resolve_cg_concern_approve' method for cg_concern_response from {client_host}.")
+                                await websocket.send_text(json.dumps({
+                                    "type": "error",
+                                    "content": "Backend cannot process CG concern approval at this time."
+                                }))
+                        elif action in ["revise_plan_cg_concern", "feedback_cg_concern"]:
+                            if agent_manager_instance and hasattr(agent_manager_instance, 'resolve_cg_concern_retry'):
+                                feedback_for_retry = user_feedback if user_feedback is not None else original_text
+                                logger.debug(f"Forwarding 'retry/feedback' for CG concern for agent '{agent_id_for_cg_response}' to AgentManager with feedback.")
+                                asyncio.create_task(
+                                    agent_manager_instance.resolve_cg_concern_retry(agent_id=agent_id_for_cg_response, user_feedback=feedback_for_retry)
+                                )
+                            else:
+                                logger.error(f"AgentManager not available or missing 'resolve_cg_concern_retry' method for cg_concern_response from {client_host}.")
+                                await websocket.send_text(json.dumps({
+                                    "type": "error",
+                                    "content": "Backend cannot process CG concern retry/feedback at this time."
+                                }))
+                        else:
+                            logger.warning(f"Unknown action '{action}' received in cg_concern_response from {client_host}.")
+                            await websocket.send_text(json.dumps({
+                                "type": "error",
+                                "content": f"Unknown action '{action}' for constitutional guardian response."
+                            }))
+                    else:
+                        logger.warning(f"Received incomplete cg_concern_response from {client_host}: {message_data}")
+                        # Optionally notify client of error
+                        await websocket.send_text(json.dumps({
+                            "type": "error",
+                            "content": "Incomplete constitutional guardian response received."
+                        }))
                 else:
                     # Handle other potential JSON message types if added later
                     logger.warning(f"Received unknown JSON message type '{message_type}' from {client_host}.")
