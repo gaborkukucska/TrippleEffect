@@ -59,6 +59,10 @@ class AgentCycleHandler:
         This method bypasses the usual agent scheduling and cycle handling for the CG agent
         to get an immediate verdict.
         """
+        if not original_agent_final_text or original_agent_final_text.isspace():
+            logger.warning("CG review requested for empty or whitespace-only text. Skipping LLM call and returning <OK/>.")
+            return "<OK/>"
+
         cg_agent = self._manager.agents.get(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
 
         if not cg_agent:
@@ -87,7 +91,7 @@ class AgentCycleHandler:
         
         cg_history: List[MessageDict] = [
             {"role": "system", "content": formatted_cg_system_prompt},
-            {"role": "user", "content": original_agent_final_text}
+            {"role": "system", "content": f"---\nText for Constitutional Review:\n---\n{original_agent_final_text}"}
         ]
 
         max_tokens_for_verdict = 250 # Verdicts should be concise

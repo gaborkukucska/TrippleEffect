@@ -269,17 +269,25 @@ export const handleWebSocketMessage = (data) => {
                  break;
 
             case 'agent_state_change':
-                displayContent = `Agent ${escapeHTML(agentId)} state changed from ${escapeHTML(data.old_state)} to ${escapeHTML(data.new_state)}. ${data.message ? escapeHTML(data.message) : ''}`;
-                displayAgentId = agentId || 'system_event_source_agent';
+                displayContent = `Agent ${escapeHTML(data.agent_id || 'Unknown Agent')} state changed from '${escapeHTML(data.old_state || 'N/A')}' to '${escapeHTML(data.new_state || 'N/A')}'. ${data.message ? escapeHTML(data.message) : ''}`;
+                displayAgentId = data.agent_id || 'system_event_source_agent';
                 displayType = 'agent_state_transition'; // Or 'system_event'
                 targetAreaId = 'internal-comms-area';
                 shouldDisplay = true;
                 break;
 
             case 'agent_state_change_requested':
-                displayContent = `Agent ${escapeHTML(agentId)} requested state change to ${escapeHTML(data.requested_state)}. ${data.message ? escapeHTML(data.message) : ''}`;
-                displayAgentId = agentId || 'system_event_source_agent';
+                displayContent = `Agent ${escapeHTML(data.agent_id || 'Unknown Agent')} requested state change to '${escapeHTML(data.requested_state || 'N/A')}'. ${data.message ? escapeHTML(data.message) : ''}`;
+                displayAgentId = data.agent_id || 'system_event_source_agent';
                 displayType = 'agent_state_request'; // Or 'system_event'
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
+            case 'info':
+                displayContent = `Info from ${escapeHTML(data.agent_id || 'System')}: ${escapeHTML(data.content || data.message || 'No details.')}`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'log'; // Using 'log' type for general info
                 targetAreaId = 'internal-comms-area';
                 shouldDisplay = true;
                 break;
@@ -414,9 +422,9 @@ export const handleMessageButtonClick = (event) => {
         ws.sendMessage(commandText);
 
         // Disable button after click
-        event.target.disabled = true;
-        event.target.textContent = 'Approval Sent';
-        event.target.style.backgroundColor = '#ccc'; // Indicate disabled state
+        clickedElement.disabled = true;
+        clickedElement.textContent = 'Approval Sent';
+        clickedElement.style.backgroundColor = '#ccc'; // Indicate disabled state
     }
 };
 // --- END NEW ---
