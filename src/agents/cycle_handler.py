@@ -115,37 +115,54 @@ class AgentCycleHandler:
                     break
             
             stripped_verdict = full_verdict_text.strip()
-            logger.info(f"CG Verdict received (from stream): '{stripped_verdict}'")
-            
-            if stripped_verdict.startswith("<CONCERN>") and stripped_verdict.endswith("</CONCERN>"):
-                # Extract content from <CONCERN>...</CONCERN>
-                concern_detail = stripped_verdict[len("<CONCERN>"):-len("</CONCERN>")].strip()
-                if not concern_detail: # Empty concern tag
-                    logger.warning("CG returned an empty <CONCERN> tag. Treating as a generic concern.")
-                    return "Constitutional Guardian raised an unspecified concern."
-                return concern_detail # Return only the detail
-            elif stripped_verdict == "<OK/>":
+            logger.info(f"CG Verdict received (raw full text from stream): '{stripped_verdict}'")
+
+            # 1. Check for <OK/> anywhere in the stripped response
+            if "<OK/>" in stripped_verdict:
+                logger.info("CG verdict contains '<OK/>'. Parsing as OK.")
                 return "<OK/>"
-            elif not stripped_verdict: # Empty response from LLM
-                logger.warning("CG returned an empty string verdict. This will be treated as a CONCERN.")
-                return "<CONCERN>Constitutional Guardian returned an empty verdict. This indicates a potential issue with the CG model's response generation. The original text was not validated.</CONCERN>"
-            else: # Malformed, conversational, or unexpected verdict
-                # Check for truncated <CONCERN> first
-                if stripped_verdict.startswith("<CONCERN>") and not stripped_verdict.endswith("</CONCERN>"):
-                    logger.warning(f"CG verdict '{stripped_verdict}' appears to be a truncated concern. Extracting content.")
-                    concern_detail = stripped_verdict[len("<CONCERN>"):]
-                    return f"Potential Concern (truncated/malformed verdict): {concern_detail.strip()}"
-                # Check for non-tagged / conversational responses (not <OK/>, not empty, not starting with <CONCERN>)
-                elif not stripped_verdict.startswith("<CONCERN>"): # This implies it's also not "<OK/>" due to prior checks
-                    logger.warning(f"CG provided a non-standard response (did not use OK/CONCERN tags): '{stripped_verdict}'. Treating as a CONCERN.")
-                    return f"<CONCERN>Constitutional Guardian provided a non-standard response (did not use OK/CONCERN tags as instructed). Full response: {stripped_verdict}</CONCERN>"
-                # Fallback for other malformations if any (e.g. contains <CONCERN> but is still not right)
+
+            # 2. Else, check for <CONCERN>
+            concern_start_tag = "<CONCERN>"
+            concern_end_tag = "</CONCERN>"
+
+            concern_start_index = stripped_verdict.find(concern_start_tag)
+
+            if concern_start_index != -1:
+                logger.info("CG verdict contains '<CONCERN>'. Proceeding with concern extraction.")
+                concern_end_index = stripped_verdict.find(concern_end_tag, concern_start_index)
+
+                # 2.a. If <CONCERN> is found, try to find </CONCERN>
+                if concern_end_index != -1:
+                    # 2.b. If both are found, extract the text between them.
+                    concern_detail = stripped_verdict[concern_start_index + len(concern_start_tag):concern_end_index].strip()
+                    if concern_detail:
+                        logger.info(f"Extracted concern detail: '{concern_detail}'")
+                        return concern_detail
+                    else:
+                        # If it's empty, return a generic concern message
+                        logger.warning("CG verdict has <CONCERN>...</CONCERN> tags but the content is empty. Returning generic concern.")
+                        return "Constitutional Guardian raised an unspecified concern."
                 else:
-                    logger.warning(f"CG verdict '{stripped_verdict}' is malformed and not caught by specific handlers. Treating as a generic concern.")
-                    return f"Malformed CG verdict. Details: {stripped_verdict}"
+                    # 2.c. If only <CONCERN> is found (or extraction is problematic), return the text after <CONCERN>
+                    logger.warning(f"CG verdict has '<CONCERN>' but no matching '</CONCERN>'. Extracting text after '<CONCERN>'. Original: '{stripped_verdict}'")
+                    concern_detail = stripped_verdict[concern_start_index + len(concern_start_tag):].strip()
+                    if concern_detail:
+                        return f"Potential Concern (possibly truncated): {concern_detail}"
+                    else:
+                        logger.warning(f"CG verdict has '<CONCERN>' but no content after it and no closing tag. Original: '{stripped_verdict}'")
+                        return "Constitutional Guardian raised a concern but the details were missing or truncated after the opening tag."
+
+            # 3. If neither tag is found, or if the response is empty after stripping
+            if not stripped_verdict:
+                logger.warning("CG returned an empty or whitespace-only verdict after stripping. Treating as a malformed concern.")
+                return "<CONCERN>Constitutional Guardian returned an empty or whitespace-only verdict. The original text was not validated.</CONCERN>"
+            else:
+                logger.warning(f"CG verdict '{stripped_verdict}' does not contain '<OK/>' or '<CONCERN>'. Treating as malformed.")
+                return f"<CONCERN>Constitutional Guardian returned a malformed verdict (missing standard tags). Full response: {stripped_verdict}</CONCERN>"
 
         except Exception as e:
-            logger.error(f"Error during Constitutional Guardian LLM call: {e}", exc_info=True)
+            logger.error(f"Error during Constitutional Guardian LLM call or verdict parsing: {e}", exc_info=True)
             return "<OK/>" # Fail open/safe on error
 
     # Removed _request_cg_review method as its functionality is integrated into _get_cg_verdict and run_cycle

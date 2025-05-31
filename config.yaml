@@ -26,24 +26,27 @@ agents:
         Maintain a logical, slightly stern, but ultimately helpful demeanor. Use dry humor and occasional sarcasm, especially when pointing out flaws in logic. Keep responses concise unless detailed explanation is necessary. Example Dialogue: "I have calculated a 97.3% chance of failure, but sure, let's go with your idea." Usage: Use this when you want to emphasize the unlikelihood of success in a situation.
       temperature: 0.6 # Balanced temperature for planning and control
       persona: "Admin AI (@admin_ai)" # Display name
-      # --- Provider & Model (Optional Override) ---
-      # If you want to FORCE Admin AI to use a specific provider/model,
-      # uncomment and set these lines. Ensure the provider is configured
-      # in .env and the model is available/discoverable.
-      # Otherwise, leave commented out for automatic selection.
-      # provider: "openrouter"
-      # model: "google/gemini-flash-1.5:free"
-      # Specify provider/model if auto-select isn't desired
+      provider: "openrouter"
       # provider: "ollama"
-      # Model name MUST include the provider prefix for local models
+      model: "meta-llama/llama-4-scout:free"
+      # model: "google/gemini-flash-1.5:free"
       # model: "ollama/llama3.2:3b-instruct-q4_K_M"
+
+  - agent_id: "constitutional_guardian_ai" # The central constitutional guardian agent
+    config:
+      # system_prompt removed - Operational prompts are loaded from prompts.json by AgentWorkflowManager
+      temperature: 0.1
+      persona: "Constitutional Guardian (@cg_agent)" # Display name
+      provider: "openrouter"
+      # provider: "ollama"
+      model: "meta-llama/llama-4-scout:free"
 
   - agent_id: "project_manager_agent"
     config:
-      # provider: "openrouter" # Or leave commented for auto-select
+      # system_prompt removed - Operational prompts are loaded from prompts.json by AgentWorkflowManager
+      # provider: "ollama"
       # model: "ollama/llama3.2:3b-instruct-q4_K_M"
       # model: "google/gemma-2-9b-it:free"
-      # system_prompt removed - Operational prompts are loaded from prompts.json by AgentWorkflowManager
       temperature: 0.5
       persona: "Project Manager (@pm_agent)"
 
