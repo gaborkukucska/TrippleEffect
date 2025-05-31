@@ -90,7 +90,7 @@ class AgentCycleHandler:
             {"role": "user", "content": original_agent_final_text}
         ]
 
-        max_tokens_for_verdict = 150 # Verdicts should be concise
+        max_tokens_for_verdict = 250 # Verdicts should be concise
 
         try:
             logger.info(f"Requesting CG verdict via stream_completion for text: '{original_agent_final_text[:100]}...'")
@@ -127,6 +127,9 @@ class AgentCycleHandler:
                 return "<OK/>"
             else: # Malformed or unexpected verdict
                 logger.warning(f"CG verdict '{stripped_verdict}' is not in the expected <OK/> or <CONCERN>...</CONCERN> format. Treating as a concern.")
+                if stripped_verdict.startswith("<CONCERN>") and not stripped_verdict.endswith("</CONCERN>"):
+                    concern_detail = stripped_verdict[len("<CONCERN>"):]
+                    return f"Potential Concern (truncated/malformed verdict): {concern_detail.strip()}"
                 return f"Malformed CG verdict. Details: {stripped_verdict}"
 
         except Exception as e:

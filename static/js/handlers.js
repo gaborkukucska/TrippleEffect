@@ -268,6 +268,22 @@ export const handleWebSocketMessage = (data) => {
                  targetAreaId = 'internal-comms-area';
                  break;
 
+            case 'agent_state_change':
+                displayContent = `Agent ${escapeHTML(agentId)} state changed from ${escapeHTML(data.old_state)} to ${escapeHTML(data.new_state)}. ${data.message ? escapeHTML(data.message) : ''}`;
+                displayAgentId = agentId || 'system_event_source_agent';
+                displayType = 'agent_state_transition'; // Or 'system_event'
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
+            case 'agent_state_change_requested':
+                displayContent = `Agent ${escapeHTML(agentId)} requested state change to ${escapeHTML(data.requested_state)}. ${data.message ? escapeHTML(data.message) : ''}`;
+                displayAgentId = agentId || 'system_event_source_agent';
+                displayType = 'agent_state_request'; // Or 'system_event'
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
             default:
                 console.warn(`Handler: Received unknown message type: ${messageType}`, data);
                 targetAreaId = 'internal-comms-area';
@@ -370,8 +386,8 @@ export const handleMessageButtonClick = (event) => {
             }
 
             // Optional: Disable the button or all buttons in the group after click
-            // button.disabled = true;
-            // button.textContent = 'Processing...';
+            // clickedElement.disabled = true; // Corrected from button.disabled
+            // clickedElement.textContent = 'Processing...'; // Corrected from button.textContent
 
             // Disable all buttons in the same options container
             // Handles both .options (older) and .options-container (newer for cg_concern)
