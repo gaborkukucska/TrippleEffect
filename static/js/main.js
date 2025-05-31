@@ -167,6 +167,14 @@ const initializeApp = () => {
     document.body.addEventListener('click', handleApproveButtonClick);
     // --- END Attach ---
 
+    // Add delegated event listener for message buttons in conversation area
+    if (DOM.conversationArea) {
+        console.log("Main: Attaching delegated click listener for message buttons to conversationArea...");
+        DOM.conversationArea.addEventListener('click', handlers.handleMessageButtonClick);
+    } else {
+        console.error("Main: conversationArea not found, cannot attach message button click listener.");
+    }
+
     console.log("Main: Application initialization sequence complete."); // Log 6: End Init
 };
 

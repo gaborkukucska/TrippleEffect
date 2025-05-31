@@ -806,3 +806,102 @@ body {
     color: var(--error-text);
     display: block;
 }
+
+/* --- CG Concern Message Styling (replaces old constitutional_concern styles) --- */
+.message.cg_concern_message {
+    background-color: var(--bg-color-secondary); /* Slightly different from default agent messages */
+    border-left: 5px solid var(--accent-color-orange);
+    padding: 12px 15px;
+    margin-bottom: 10px;
+    border-radius: 4px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.15); /* A bit more shadow for dark theme */
+    /* Ensure it uses the full width of the message body for its content */
+    display: flex; /* if .message-body is not already flex full width */
+}
+
+.cg_concern_message .message-content {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    white-space: normal; /* Allow normal text flow, not pre-wrap from default .message-content */
+    width: 100%; /* Ensure the inner div takes full width */
+}
+
+/* Title/Persona: Targets <p><strong>${displayPersonaForUI} says:</strong></p> */
+.cg_concern_message .message-content > div > p:first-child strong {
+    font-weight: bold;
+    color: var(--accent-color-orange); /* Make persona stand out */
+    display: block;
+    margin-bottom: 8px;
+}
+
+/* Concern Details Text: Targets <p>${guardianReportDetails}</p> */
+.cg_concern_message .message-content > div > p:nth-child(2) {
+    margin-bottom: 10px;
+    line-height: 1.5;
+    color: var(--text-color-primary);
+}
+
+/* Details Section for Original Text */
+.cg_concern_message .message-content details {
+    margin-top: 12px;
+    background-color: var(--bg-color-tertiary); /* Darker background for details block */
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 8px 10px; /* Padding for the details element itself */
+}
+
+.cg_concern_message .message-content details summary {
+    cursor: pointer;
+    font-weight: 600;
+    padding: 4px 0; /* Minimal padding for summary */
+    color: var(--text-color-secondary);
+    outline: none;
+}
+.cg_concern_message .message-content details summary:hover {
+    color: var(--text-color-primary);
+}
+
+.cg_concern_message .message-content details pre {
+    background-color: var(--input-bg); /* Even darker for pre block, or var(--bg-color-primary) */
+    padding: 10px;
+    border-radius: 3px;
+    white-space: pre-wrap;
+    font-size: 0.9em;
+    color: var(--text-color-primary); /* Ensure text is readable */
+    margin-top: 8px;
+    border: 1px solid var(--border-color); /* Add a border to the pre block */
+    max-height: 150px; /* Limit height of pre block */
+    overflow-y: auto; /* Allow scrolling for long original text */
+}
+
+/* Options Container */
+.cg_concern_message .message-content .options-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px; /* Increased gap for better separation */
+    margin-top: 15px; /* More space above buttons */
+}
+
+/* Buttons */
+.cg_concern_message .message-content .message-button {
+    background-color: var(--button-bg); /* Use theme's primary button color (accent-color-1 / blue) */
+    color: var(--button-text);
+    padding: 8px 15px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9em;
+    font-weight: 500; /* Slightly less bold than default button perhaps */
+    transition: background-color 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+}
+.cg_concern_message .message-content .message-button:hover {
+    background-color: var(--button-hover-bg); /* Darker shade of primary button color */
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+}
+.cg_concern_message .message-content .message-button:disabled {
+    background-color: var(--button-disabled-bg);
+    color: var(--text-color-muted); /* Muted text for disabled state */
+    cursor: not-allowed;
+    opacity: 0.6; /* Slightly more opacity for disabled state */
+    box-shadow: none;
+}
