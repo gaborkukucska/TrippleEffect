@@ -63,21 +63,6 @@ class AgentCycleHandler:
             logger.warning("CG review requested for empty or whitespace-only text. Skipping LLM call and returning <OK/>.")
             return "<OK/>"
 
-        # Heuristic for short, benign text
-        MAX_LENGTH_FOR_BYPASS = 120
-        TRIGGER_KEYWORDS = [
-            "<tool_", "<plan>", "<request_state", "project_management", "file_system", 
-            "github_tool", "def ", "class ", "import ", "eval(", "exec(", "os.", 
-            "subprocess.", "dangerouslySetInnerHTML", "drop table", "delete from", 
-            "update ", "insert into", "ssh ", "chmod ", "sudo "
-        ] # Make keywords lowercase for case-insensitive check
-
-        text_lower = original_agent_final_text.lower()
-        if len(original_agent_final_text) < MAX_LENGTH_FOR_BYPASS and \
-           not any(keyword in text_lower for keyword in TRIGGER_KEYWORDS):
-            logger.info(f"CG review bypassed by heuristic for short/benign text (Length: {len(original_agent_final_text)}). Text: '{original_agent_final_text[:50]}...'")
-            return "<OK/>"
-
         cg_agent = self._manager.agents.get(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
 
         if not cg_agent:
