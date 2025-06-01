@@ -32,12 +32,13 @@ agents:
       # model: "google/gemma-3-27b-it:free"
       # You can also specify local models!
       # provider: "ollama" # Set the provider
+      # model: "granite3.3:2b"
       # model: "ollama/llama3.2:3b-instruct-q4_K_M" # Make sure the selected local model is available on a local API
 
   - agent_id: "constitutional_guardian_ai" # The central constitutional guardian agent
     config:
       # system_prompt removed - Operational prompts are loaded from prompts.json by AgentWorkflowManager
-      temperature: 0.9
+      temperature: 0.1
       persona: "Constitutional Guardian (@cg_agent)" # Display name
       provider: "openrouter" # Provider name
       model: "meta-llama/llama-4-maverick:free" # Model name
@@ -45,12 +46,13 @@ agents:
       # model: "google/gemma-3-27b-it:free"
       # You can also specify local models!
       # provider: "ollama" # Set the provider
+      # model: "granite3.3:2b"
       # model: "ollama/llama3.2:3b-instruct-q4_K_M" # Make sure the selected local model is available on a local API
 
   - agent_id: "vision_agent" # The central vision processor agent
     config:
       # system_prompt removed - Operational prompts are loaded from prompts.json by AgentWorkflowManager
-      temperature: 0.5
+      temperature: 0.3
       persona: "Vision Processor (@vision_agent)" # Display name
       provider: "openrouter" # Provider name
       model: "google/gemma-3-27b-it:free" # Model name
@@ -63,7 +65,7 @@ agents:
   - agent_id: "project_manager_agent"
     config:
       # system_prompt removed - Operational prompts are loaded from prompts.json by AgentWorkflowManager
-      temperature: 0.5
+      temperature: 0.6
       persona: "Project Manager (@pm_agent)"
       provider: "openrouter" # Provider name
       model: "meta-llama/llama-4-maverick:free" # Model name
@@ -71,10 +73,10 @@ agents:
       # model: "google/gemma-3-27b-it:free"
       # You can also specify local models!
       # provider: "ollama" # Set the provider
+      # model: "granite3.3:2b"
       # model: "ollama/llama3.2:3b-instruct-q4_K_M" # Make sure the selected local model is available on a local API
 
-
-# meta-llama/llama-3.2-11b-vision-instruct:free
+  # meta-llama/llama-3.2-11b-vision-instruct:free
   # All other worker agents are created by the Project Manager (PM) agent defined by state specific system_prompts in prompts.json
 
   # --- Add more bootstrap agents here if needed ---
