@@ -367,5 +367,101 @@ export const displaySessionStatus = (message, isSuccess) => {
     }, 5000); // Hide after 5 seconds
 };
 
+/**
+ * Scrolls a given element to its bottom.
+ * @param {HTMLElement} element The element to scroll.
+ */
+export const scrollToBottom = (element) => {
+    if (element) {
+        element.scrollTop = element.scrollHeight;
+    }
+};
+
+export const displayCGConcern = (agentId, originalText, concernDetails) => {
+    if (!DOM || !DOM.internalCommsArea) {
+        console.error("DOM elements (internalCommsArea) not available for displayCGConcern.");
+        return;
+    }
+
+    console.log(`UI: Displaying CG Concern for Agent ${agentId}`);
+
+    const concernContainer = document.createElement('div');
+    concernContainer.className = 'message system-message cg-concern-message'; // Add a specific class
+    concernContainer.setAttribute('data-agent-id', agentId);
+    concernContainer.id = `cg-concern-msg-${agentId}`; // Unique ID for the message
+
+    const titleElement = document.createElement('h4');
+    titleElement.innerHTML = `Constitutional Guardian Review Needed for Agent: <strong>${escapeHTML(agentId)}</strong>`;
+    concernContainer.appendChild(titleElement);
+
+    const detailsPara = document.createElement('p');
+    detailsPara.innerHTML = `<strong>Concern:</strong> ${escapeHTML(concernDetails)}`;
+    concernContainer.appendChild(detailsPara);
+
+    const originalTextContainer = document.createElement('div');
+    originalTextContainer.className = 'cg-original-text-container';
+
+    const originalTextHeader = document.createElement('p');
+    originalTextHeader.innerHTML = '<strong>Original Proposed Output:</strong>';
+    originalTextContainer.appendChild(originalTextHeader);
+
+    const originalTextPre = document.createElement('pre');
+    originalTextPre.textContent = originalText; // Use textContent for pre to preserve formatting
+    originalTextContainer.appendChild(originalTextPre);
+    concernContainer.appendChild(originalTextContainer);
+
+    // Action Buttons Container
+    const actionsContainer = document.createElement('div');
+    actionsContainer.className = 'cg-actions-container';
+
+    // Approve Button
+    const approveButton = document.createElement('button');
+    approveButton.id = `cg-approve-${agentId}`;
+    approveButton.className = 'cg-action-button approve-button';
+    approveButton.textContent = 'Approve Output';
+    approveButton.dataset.agentId = agentId;
+    actionsContainer.appendChild(approveButton);
+
+    // Stop Button
+    const stopButton = document.createElement('button');
+    stopButton.id = `cg-stop-${agentId}`;
+    stopButton.className = 'cg-action-button stop-button';
+    stopButton.textContent = 'Stop Agent';
+    stopButton.dataset.agentId = agentId;
+    actionsContainer.appendChild(stopButton);
+
+    // Retry Button
+    const retryButton = document.createElement('button');
+    retryButton.id = `cg-retry-${agentId}`;
+    retryButton.className = 'cg-action-button retry-button';
+    retryButton.textContent = 'Retry with Feedback';
+    retryButton.dataset.agentId = agentId;
+    actionsContainer.appendChild(retryButton);
+
+    // Feedback Textarea (initially hidden or styled as such)
+    const feedbackTextarea = document.createElement('textarea');
+    feedbackTextarea.id = `cg-feedback-input-${agentId}`;
+    feedbackTextarea.className = 'cg-feedback-textarea'; // Add class for styling
+    feedbackTextarea.placeholder = 'Provide feedback for retry...';
+    feedbackTextarea.style.display = 'none'; // Initially hidden
+    feedbackTextarea.style.width = '90%'; // Basic styling
+    feedbackTextarea.style.minHeight = '40px';
+    feedbackTextarea.style.marginTop = '5px';
+    actionsContainer.appendChild(feedbackTextarea);
+
+    concernContainer.appendChild(actionsContainer);
+    DOM.internalCommsArea.appendChild(concernContainer);
+    scrollToBottom(DOM.internalCommsArea); // Use the new helper
+
+    // Add event listener to toggle textarea visibility for retry button
+    retryButton.addEventListener('click', () => {
+        const isHidden = feedbackTextarea.style.display === 'none';
+        feedbackTextarea.style.display = isHidden ? 'block' : 'none';
+        if (isHidden) {
+            feedbackTextarea.focus();
+        }
+    });
+};
+
 
 console.log("Frontend UI module loaded.");

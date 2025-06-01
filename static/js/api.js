@@ -98,5 +98,48 @@ export const approveProject = async (pmAgentId) => {
     return makeApiCall(endpoint, 'POST');
 };
 
+export const callApproveCGConcern = async (agentId) => {
+    const endpoint = `/api/agents/${agentId}/cg/approve`;
+    try {
+        const responseData = await makeApiCall(endpoint, 'POST');
+        console.log('CG Concern approved:', responseData);
+        // ui.displayMessage(responseData.message || `Output approved for agent ${agentId}.`, 'success', 'internal-comms-area');
+        return responseData;
+    } catch (error) {
+        // Error is already logged and displayed by makeApiCall
+        // ui.displayMessage(`Error approving output for ${agentId}: ${error.message || 'Unknown error'}`, 'error', 'internal-comms-area');
+        return null; // Or rethrow error if preferred by calling code
+    }
+};
+
+export const callStopCGConcern = async (agentId) => {
+    const endpoint = `/api/agents/${agentId}/cg/stop`;
+    try {
+        const responseData = await makeApiCall(endpoint, 'POST');
+        console.log('Agent stopped via CG:', responseData);
+        // ui.displayMessage(responseData.message || `Agent ${agentId} stopped.`, 'success', 'internal-comms-area');
+        return responseData;
+    } catch (error) {
+        // Error is already logged and displayed by makeApiCall
+        // ui.displayMessage(`Error stopping agent ${agentId}: ${error.message || 'Unknown error'}`, 'error', 'internal-comms-area');
+        return null;
+    }
+};
+
+export const callRetryCGConcern = async (agentId, feedback) => {
+    const endpoint = `/api/agents/${agentId}/cg/retry`;
+    const body = { user_feedback: feedback };
+    try {
+        const responseData = await makeApiCall(endpoint, 'POST', body);
+        console.log('Agent retry requested via CG:', responseData);
+        // ui.displayMessage(responseData.message || `Retry requested for agent ${agentId}.`, 'success', 'internal-comms-area');
+        return responseData;
+    } catch (error) {
+        // Error is already logged and displayed by makeApiCall
+        // ui.displayMessage(`Error requesting retry for ${agentId}: ${error.message || 'Unknown error'}`, 'error', 'internal-comms-area');
+        return null;
+    }
+};
+
 
 console.log("Frontend API module loaded.");

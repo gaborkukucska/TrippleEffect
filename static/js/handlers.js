@@ -172,46 +172,39 @@ export const handleWebSocketMessage = (data) => {
                 shouldDisplay = true; // Let displayMessage handle it
                 break;
 
-            case 'cg_concern': // Renamed from constitutional_concern
-                console.log("Handler: Formatting cg_concern for main chat", data);
-                // Fields based on observed log: { agent_id, concern_details, original_text, type: "cg_concern" }
-                displayAgentId = escapeHTML(data.agent_id || 'system');
-                displayPersonaForUI = escapeHTML(data.persona || 'Constitutional Guardian');
+            case 'cg_concern':
+                console.log("CG Concern received:", data);
+                if (data.agent_id && data.original_text && data.concern_details) {
+                    // Ensure the ui module and displayCGConcern function exist
+                    if (ui && typeof ui.displayCGConcern === 'function') {
+                        ui.displayCGConcern(
+                            data.agent_id,
+                            data.original_text,
+                            data.concern_details
+                        );
+                    } else {
+                        console.error("ui.displayCGConcern is not available.");
+                        // Fallback: display a generic alert or console message
+                        alert(`Constitutional Guardian Concern for ${data.agent_id}:
+${data.concern_details}
 
-                const guardianReportDetails = escapeHTML(data.concern_details || "No details provided.");
-                const originalReviewedText = data.original_text ? escapeHTML(data.original_text) : ''; // Already escaped if not empty
+Original Text:
+${data.original_text}`);
+                    }
 
-                const defaultOptions = [
-                    { text: "Acknowledge", command: "acknowledge_cg_concern" },
-                    { text: "Revise Plan", command: "revise_plan_cg_concern" },
-                    { text: "Provide Feedback", command: "feedback_cg_concern" }
-                ];
-
-                let buttonsHTML = '';
-                defaultOptions.forEach(option => {
-                    buttonsHTML += `<button class="message-button" data-command="${escapeHTML(option.command)}" data-original-text="${originalReviewedText}">${escapeHTML(option.text)}</button>`;
-                });
-
-                displayContent = `
-                    <div>
-                        <p><strong>${displayPersonaForUI} says:</strong></p>
-                        <p>${guardianReportDetails}</p>
-                        ${originalReviewedText ? `
-                        <details>
-                            <summary>View Original Text Reviewed</summary>
-                            <pre>${originalReviewedText}</pre> {/* originalReviewedText is already escaped */}
-                        </details>
-                        ` : ''}
-                        <div class="options-container">${buttonsHTML}</div>
-                    </div>
-                `;
-                targetAreaId = 'conversation-area';
-                displayType = 'cg_concern_message'; // New specific display type
-                shouldDisplay = true;
+                    // Optionally, update agent status locally if not handled by a subsequent agent_status_update message
+                    // This assumes AGENT_STATUS_AWAITING_USER_REVIEW_CG is a known constant or string
+                    // state.updateAgentStatus(data.agent_id, { status: 'awaiting_user_review_cg' });
+                    // ui.updateAgentStatusList(); // Or however status list is refreshed
+                    // For now, we'll rely on the backend to send an agent_status_update for the status change.
+                } else {
+                    console.error("Received incomplete cg_concern message:", data);
+                }
+                shouldDisplay = false; // Prevent default display logic, as ui.displayCGConcern handles it
                 break;
 
             // --- Project Approved Confirmation (Main Chat Area) ---
-             case 'project_approved':
+             case 'project_approved': // THIS CASE IS DUPLICATED, one of them (likely the one in system events) should be removed or merged.
                  displayContent = `✅ Project Approved: ${escapeHTML(data.message || `Project for PM ${data.pm_agent_id} started.`)}`;
                  displayAgentId = 'system';
                  displayType = 'system_confirmation'; // Use a specific class
