@@ -1,7 +1,7 @@
 <!-- # START OF FILE helperfiles/FUNCTIONS_INDEX.md -->
-# Functions Index (v2.25)
+# Functions Index (v2.30)
 
-This file tracks the core functions/methods defined within the TrippleEffect framework (as of v2.25), categorized by component. It helps in understanding the codebase and navigating between different parts.
+This file tracks the core functions/methods defined within the TrippleEffect framework (as of v2.30), categorized by component. It helps in understanding the codebase and navigating between different parts.
 
 *   **Format:** `[File Path]::[Class Name]::[Method Name](parameters) - Description` or `[File Path]::[Function Name](parameters) - Description`
 
