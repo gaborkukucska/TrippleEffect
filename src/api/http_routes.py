@@ -98,6 +98,10 @@ class AgentConfigCreate(BaseModel):
     config: AgentConfigInput = Field(..., description="The configuration settings for the agent.")
 
 
+class CGRetryPayload(BaseModel):
+    user_feedback: str
+
+
 # --- HTTP Routes ---
 
 @router.get("/", response_class=HTMLResponse)
@@ -354,3 +358,30 @@ async def approve_project_start(
         logger.error(f"Unexpected error approving project for PM '{pm_agent_id}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Unexpected error approving project: {e}")
 # --- END NEW ---
+
+# --- CG Concern Resolution Endpoints ---
+
+@router.post("/agents/{agent_id}/cg/approve", response_model=GeneralResponse)
+async def resolve_cg_approve(agent_id: str, manager: AgentManager = Depends(get_agent_manager_dependency)):
+    success, message = await manager.resolve_cg_concern_approve(agent_id)
+    if success:
+        return GeneralResponse(success=True, message=message)
+    else:
+        raise HTTPException(status_code=400, detail=message)
+
+@router.post("/agents/{agent_id}/cg/stop", response_model=GeneralResponse)
+async def resolve_cg_stop(agent_id: str, manager: AgentManager = Depends(get_agent_manager_dependency)):
+    success, message = await manager.resolve_cg_concern_stop(agent_id)
+    if success:
+        return GeneralResponse(success=True, message=message)
+    else:
+        raise HTTPException(status_code=400, detail=message)
+
+@router.post("/agents/{agent_id}/cg/retry", response_model=GeneralResponse)
+async def resolve_cg_retry(agent_id: str, payload: CGRetryPayload, manager: AgentManager = Depends(get_agent_manager_dependency)):
+    success, message = await manager.resolve_cg_concern_retry(agent_id, payload.user_feedback)
+    if success:
+        return GeneralResponse(success=True, message=message)
+    else:
+        raise HTTPException(status_code=400, detail=message)
+# --- END CG Concern Resolution Endpoints ---
