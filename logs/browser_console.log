@@ -1,0 +1,377 @@
+ Frontend config loaded: Object
+ Frontend state module initialized.
+ Frontend utils module loaded.
+ Frontend UI module loaded.
+ Frontend API module loaded.
+ Frontend session module loaded.
+ Frontend configView module loaded.
+ Frontend handlers module loaded.
+ Frontend websocket module loaded.
+ Frontend main.js loaded and initializing...
+ Main: DOM fully loaded and parsed. Initializing app...
+ Main: Attempting to assign DOM elements...
+ DOM Assign: Starting element assignment...
+ DOM Assign: Element selection complete. Validating critical elements...
+ DOM Assign: Critical Element Found: conversationArea
+ DOM Assign: Critical Element Found: internalCommsArea
+ DOM Assign: Critical Element Found: messageInput
+ DOM Assign: Critical Element Found: sendButton
+ DOM Assign: Critical Element Found: viewPanels
+ DOM Assign: Critical Element Found: navButtons
+ DOM Assign: All critical elements validated successfully.
+ DOM element assignment complete.
+ Main: DOM element assignment function executed.
+ Main: Attempting to set up event listeners...
+ Main: Setting up primary event listeners...
+ Main: Attaching listener to Send button...
+ Main: Attaching listeners to Message input...
+ Main: Attaching listener to Attach File button...
+ Main: Attaching listener to File input change...
+ Main: Attaching listeners to 4 Nav buttons...
+ Main: Attaching listener to Refresh Config button...
+ Main: Attaching listener to Add Agent button...
+ Main: Attaching listener to Agent Form submit...
+ Main: Attaching listener to Project Select change...
+ Main: Attaching listener to Load Session button...
+ Main: Attaching listener to Save Session button...
+ Main: Globally exposed functions (if any) under window.uiModule
+ Main: Primary event listeners setup complete.
+ Main: Event listener setup function executed.
+ UI: Attempting to switch view to: chat-view
+ UI: View switched successfully to: chat-view
+ State: Reconnect delay set to 1000ms
+ Attempting WebSocket connection to ws://localhost:8000/ws...
+ UI: Display request in #internal-comms-area. Type: status, Agent: system
+ UI: Creating new message element for type status in #internal-comms-area.
+ State: WebSocket instance updated.
+ Main: Attaching delegated click listener for message buttons to conversationArea...
+ Main: Application initialization sequence complete.
+ WebSocket onopen event fired.
+ State: Connection status changed to true
+ State: Reconnect delay set to 1000ms
+ UI: Display request in #internal-comms-area. Type: status, Agent: system
+ UI: Creating new message element for type status in #internal-comms-area.
+ WebSocket connection established.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: status, Agent: system
+ Handler: Final display call: target=internal-comms-area, type=status, agentId=system
+ UI: Display request in #internal-comms-area. Type: status, Agent: system
+ UI: Creating new message element for type status in #internal-comms-area.
+ Handler: Send button clicked or Enter pressed.
+ Sent message: Hello!...
+ UI: Display request in #conversation-area. Type: user, Agent: human_user
+ UI: Creating new message element for type user in #conversation-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: agent_status_update, Agent: admin_ai
+ Handler: Handling agent_status_update for admin_ai
+ State: Updating known status for agent admin_ai
+ Handler: Triggering agent status UI redraw.
+ UI: Updating agent status list from cached state Object
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will create new message element for chunk from agent admin_ai in #internal-comms-area. No suitable prior chunk found.
+ UI: Creating new message element for type response_chunk in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: cg_concern, Agent: admin_ai
+ Handler: Formatting cg_concern for main chat Object
+ Handler: Final display call: target=conversation-area, type=cg_concern_message, agentId=admin_ai
+ UI: Display request in #conversation-area. Type: cg_concern_message, Agent: admin_ai
+ UI: Creating new message element for type cg_concern_message in #conversation-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: agent_status_update, Agent: admin_ai
+ Handler: Handling agent_status_update for admin_ai
+ State: Updating known status for agent admin_ai
+ Handler: Triggering agent status UI redraw.
+ UI: Updating agent status list from cached state Object
+ Handler: handleMessageButtonClick triggered. PointerEvent
+ Handler: Clicked element: 
+ Handler: Clicked element is not a recognized button type (message-button or approve-project-btn): 
+ Handler: handleMessageButtonClick triggered. PointerEvent
+ Handler: Clicked element: 
+ Handler: Clicked .message-button: 
+ Handler: Button dataset: DOMStringMap
+ Handler: 'originalText' condition met. Processing as cg_concern button.
+ UI: Display request in #conversation-area. Type: user, Agent: human_user
+ UI: Creating new message element for type user in #conversation-area.
+ Handler: Preparing to send WebSocket message: {"type":"cg_concern_response","action":"acknowledge_cg_concern","original_text":"Hello! It\\'s nice to meet you. Is there something I can help you with or would you like to chat?","user_feedback":null}
+ Sent message: {"type":"cg_concern_response","action":"acknowledge_cg_concern","original_text":"Hello! It\\'s nice ...
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: final_response, Agent: admin_ai
+ Handler: Final display call: target=conversation-area, type=agent_response, agentId=admin_ai
+ UI: Display request in #conversation-area. Type: agent_response, Agent: admin_ai
+ UI: Creating new message element for type agent_response in #conversation-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: agent_status_update, Agent: admin_ai
+ Handler: Handling agent_status_update for admin_ai
+ State: Updating known status for agent admin_ai
+ Handler: Triggering agent status UI redraw.
+ UI: Updating agent status list from cached state Object
+ Handler: Enter pressed in message input.
+ Handler: Send button clicked or Enter pressed.
+ Sent message: Please develop a cool browser based snake game. Thanks!...
+ UI: Display request in #conversation-area. Type: user, Agent: human_user
+ UI: Creating new message element for type user in #conversation-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: agent_status_update, Agent: admin_ai
+ Handler: Handling agent_status_update for admin_ai
+ State: Updating known status for agent admin_ai
+ Handler: Triggering agent status UI redraw.
+ UI: Updating agent status list from cached state Object
+ Handler: Nav button clicked for view: internal-comms-view
+ UI: Attempting to switch view to: internal-comms-view
+ State: Current view changed from chat-view to internal-comms-view
+ UI: View switched successfully to: internal-comms-view
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: admin_ai
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
+ UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: final_response, Agent: admin_ai
+ Handler: Final display call: target=conversation-area, type=agent_response, agentId=admin_ai
+ UI: Display request in #conversation-area. Type: agent_response, Agent: admin_ai
+ UI: Creating new message element for type agent_response in #conversation-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: agent_status_update, Agent: admin_ai
+ Handler: Handling agent_status_update for admin_ai
+ State: Updating known status for agent admin_ai
+ Handler: Triggering agent status UI redraw.
+ UI: Updating agent status list from cached state Object
+ Handler: Nav button clicked for view: chat-view
+ UI: Attempting to switch view to: chat-view
+ State: Current view changed from internal-comms-view to chat-view
+ UI: View switched successfully to: chat-view
+ WebSocket onclose event fired. Code: 1012, Reason: 'No reason given'
+ State: Connection status changed to false
+ State: WebSocket instance updated.
+ UI: Display request in #internal-comms-area. Type: error, Agent: system
+ UI: Creating new message element for type error in #internal-comms-area.
+ State: Reconnect delay set to 2000ms
+ Attempting WebSocket connection to ws://localhost:8000/ws...
+ UI: Display request in #internal-comms-area. Type: status, Agent: system
+ UI: Creating new message element for type status in #internal-comms-area.
+ State: WebSocket instance updated.
+ WebSocket connection to 'ws://localhost:8000/ws' failed: 
+connectWebSocket @ websocket.js:31
+ WebSocket onerror event fired: Event
+ws.onerror @ websocket.js:58
+ UI: Display request in #internal-comms-area. Type: error, Agent: system
+ UI: Creating new message element for type error in #internal-comms-area.
+ WebSocket onclose event fired. Code: 1006, Reason: 'No reason given'
+ State: WebSocket instance updated.
+ UI: Display request in #internal-comms-area. Type: error, Agent: system
+ UI: Creating new message element for type error in #internal-comms-area.
+ State: Reconnect delay set to 4000ms
+ Attempting WebSocket connection to ws://localhost:8000/ws...
+ UI: Display request in #internal-comms-area. Type: status, Agent: system
+ UI: Creating new message element for type status in #internal-comms-area.
+ State: WebSocket instance updated.
+ WebSocket connection to 'ws://localhost:8000/ws' failed: 
+connectWebSocket @ websocket.js:31
+ WebSocket onerror event fired: Event
