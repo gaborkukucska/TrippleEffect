@@ -140,28 +140,25 @@ class AgentCycleHandler:
                         logger.info(f"Extracted concern detail: '{concern_detail}'")
                         return f"{concern_start_tag}{concern_detail}{concern_end_tag}" # Return with tags
                     else:
-                        logger.warning("CG verdict has <CONCERN>...</CONCERN> tags but the content is empty. Returning generic concern.")
-                        return "Constitutional Guardian returned <CONCERN> tags with empty content."
+                        # <CONCERN></CONCERN> with empty content
+                        logger.warning("CG verdict has <CONCERN>...</CONCERN> tags but the content is empty. Returning generic malformed/inconclusive message.")
+                        return "Constitutional Guardian returned a malformed or inconclusive verdict."
                 else:
                     # <CONCERN> found, but no </CONCERN>
                     logger.warning(f"CG verdict has '{concern_start_tag}' but no matching '{concern_end_tag}'. Original: '{stripped_verdict}'")
-                    # In this case, we cannot reliably extract the concern.
                     return "Constitutional Guardian returned a malformed or inconclusive verdict."
 
-
-            # If neither tag is found, or if the response is empty or malformed
+            # If the response is empty, or contains neither <OK/> nor a well-formed <CONCERN>...</CONCERN> block
             if not stripped_verdict:
                 logger.warning("CG returned an empty or whitespace-only verdict. Treating as malformed/inconclusive.")
-            else:
-                logger.warning(f"CG verdict '{stripped_verdict}' does not contain recognized tags. Treating as malformed/inconclusive.")
-
+            else: # Fallthrough for any other case (e.g. natural language, unknown tags)
+                logger.warning(f"CG verdict '{stripped_verdict}' does not contain <OK/> or a well-formed, non-empty <CONCERN> block. Treating as malformed/inconclusive.")
+            
             return "Constitutional Guardian returned a malformed or inconclusive verdict."
 
         except Exception as e:
             logger.error(f"Error during Constitutional Guardian LLM call or verdict parsing: {e}", exc_info=True)
-            # Failing open might be too permissive if CG is critical.
-            # However, if CG itself errors out, we might not want to block all actions.
-            # For now, returning a generic concern message to indicate CG failure.
+            # Return a generic concern message to indicate CG failure.
             return "Constitutional Guardian encountered an error during verdict processing."
 
     # Removed _request_cg_review method as its functionality is integrated into _get_cg_verdict and run_cycle
