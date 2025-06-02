@@ -117,53 +117,52 @@ class AgentCycleHandler:
             stripped_verdict = full_verdict_text.strip()
             logger.info(f"CG Verdict received (raw full text from stream): '{stripped_verdict}'")
 
-            # 1. Check for <OK/> anywhere in the stripped response
-            if "<OK/>" in stripped_verdict:
+            has_ok = "<OK/>" in stripped_verdict
+            concern_start_tag = "<CONCERN>"
+            concern_end_tag = "</CONCERN>"
+            concern_start_index = stripped_verdict.find(concern_start_tag)
+            has_concern_tag = concern_start_index != -1
+
+            if has_ok and has_concern_tag:
+                logger.warning(f"Ambiguous CG response: Contained both <OK/> and <CONCERN>. Prioritizing CONCERN. Full response: '{stripped_verdict}'")
+                return "Ambiguous response from CG: Contained both OK and CONCERN."
+
+            if has_ok:
                 logger.info("CG verdict contains '<OK/>'. Parsing as OK.")
                 return "<OK/>"
 
-            # 2. Else, check for <CONCERN>
-            concern_start_tag = "<CONCERN>"
-            concern_end_tag = "</CONCERN>"
-
-            concern_start_index = stripped_verdict.find(concern_start_tag)
-
-            if concern_start_index != -1:
+            if has_concern_tag:
                 logger.info("CG verdict contains '<CONCERN>'. Proceeding with concern extraction.")
-                concern_end_index = stripped_verdict.find(concern_end_tag, concern_start_index)
-
-                # 2.a. If <CONCERN> is found, try to find </CONCERN>
+                concern_end_index = stripped_verdict.find(concern_end_tag, concern_start_index + len(concern_start_tag))
                 if concern_end_index != -1:
-                    # 2.b. If both are found, extract the text between them.
                     concern_detail = stripped_verdict[concern_start_index + len(concern_start_tag):concern_end_index].strip()
                     if concern_detail:
                         logger.info(f"Extracted concern detail: '{concern_detail}'")
-                        return concern_detail
+                        return f"{concern_start_tag}{concern_detail}{concern_end_tag}" # Return with tags
                     else:
-                        # If it's empty, return a generic concern message
                         logger.warning("CG verdict has <CONCERN>...</CONCERN> tags but the content is empty. Returning generic concern.")
-                        return "Constitutional Guardian raised an unspecified concern."
+                        return "Constitutional Guardian returned <CONCERN> tags with empty content."
                 else:
-                    # 2.c. If only <CONCERN> is found (or extraction is problematic), return the text after <CONCERN>
-                    logger.warning(f"CG verdict has '<CONCERN>' but no matching '</CONCERN>'. Extracting text after '<CONCERN>'. Original: '{stripped_verdict}'")
-                    concern_detail = stripped_verdict[concern_start_index + len(concern_start_tag):].strip()
-                    if concern_detail:
-                        return f"Potential Concern (possibly truncated): {concern_detail}"
-                    else:
-                        logger.warning(f"CG verdict has '<CONCERN>' but no content after it and no closing tag. Original: '{stripped_verdict}'")
-                        return "Constitutional Guardian raised a concern but the details were missing or truncated after the opening tag."
+                    # <CONCERN> found, but no </CONCERN>
+                    logger.warning(f"CG verdict has '{concern_start_tag}' but no matching '{concern_end_tag}'. Original: '{stripped_verdict}'")
+                    # In this case, we cannot reliably extract the concern.
+                    return "Constitutional Guardian returned a malformed or inconclusive verdict."
 
-            # 3. If neither tag is found, or if the response is empty after stripping
+
+            # If neither tag is found, or if the response is empty or malformed
             if not stripped_verdict:
-                logger.warning("CG returned an empty or whitespace-only verdict after stripping. Treating as a malformed concern.")
-                return "<CONCERN>Constitutional Guardian returned an empty or whitespace-only verdict. The original text was not validated.</CONCERN>"
+                logger.warning("CG returned an empty or whitespace-only verdict. Treating as malformed/inconclusive.")
             else:
-                logger.warning(f"CG verdict '{stripped_verdict}' does not contain '<OK/>' or '<CONCERN>'. Treating as malformed.")
-                return f"<CONCERN>Constitutional Guardian returned a malformed verdict (missing standard tags). Full response: {stripped_verdict}</CONCERN>"
+                logger.warning(f"CG verdict '{stripped_verdict}' does not contain recognized tags. Treating as malformed/inconclusive.")
+
+            return "Constitutional Guardian returned a malformed or inconclusive verdict."
 
         except Exception as e:
             logger.error(f"Error during Constitutional Guardian LLM call or verdict parsing: {e}", exc_info=True)
-            return "<OK/>" # Fail open/safe on error
+            # Failing open might be too permissive if CG is critical.
+            # However, if CG itself errors out, we might not want to block all actions.
+            # For now, returning a generic concern message to indicate CG failure.
+            return "Constitutional Guardian encountered an error during verdict processing."
 
     # Removed _request_cg_review method as its functionality is integrated into _get_cg_verdict and run_cycle
 
