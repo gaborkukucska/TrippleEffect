@@ -1,8 +1,8 @@
 <!-- # START OF FILE helperfiles/PROJECT_PLAN.md -->
 # Project Plan: TrippleEffect
 
-**Version:** 2.25 <!-- Updated Version -->
-**Date:** 2025-04-28 <!-- Updated Date -->
+**Version:** 2.35
+**Date:** 2025-06-03
 
 ## 1. Project Goals
 
@@ -141,57 +141,6 @@
 *   [X] Fix bootstrap agent initialization fallback logic (`agent_lifecycle.py`).
 *   [X] Correct `AgentManager` check for initial task creation result.
 
-**Phase 25: Agent Logic, Taskwarrior Refinement & Governance (Current)**
-    *   **Goal:** Address known agent logic issues, stabilize Taskwarrior integration, implement basic Governance Layer, and refine thought capture.
-    *   [~] Investigate and fix `MODEL_TIER` and `MODEL_COST` switching issues (Partially addressed: Model selection logic refactored to include performance and then model size (parameter count), improving clarity and introducing new selection priority: Tier -> Size (larger preferred) -> Performance Score -> ID).
-    *   [X] Address agent logic issues: "PM multi-tool calls" now supported via sequential execution of all detected tools in a single turn, with results aggregated and fed back to the agent. (Other items like looping, placeholders, targeting still pending).
-    *   [X] Refine agent thought capture/usage: Implemented smarter keyword generation for thoughts saved to Knowledge Base and added a `search_agent_thoughts` action to `KnowledgeBaseTool`.
-    *   [X] Implement basic Governance Layer: Principles are now loaded from `governance.yaml` (PyYAML added as dependency) and injected into agent system prompts based on applicability.
-    *   [X] Implement `ToolInformationTool`. (Moved from previous phase as it was completed in P25)
-    *   [X] Implement authorization checks in `ToolExecutor`. (Moved from previous phase as it was completed in P25)
-    *   [X] Inject system health report into Admin AI context. (Moved from previous phase as it was completed in P25)
-    *   [X] Comprehensive unit tests added for model selection, `num_parameters` handling in `ModelRegistry`, governance loading/injection, and multi-tool call processing.
-*   **Phase 26:** Advanced Memory & Learning (Feedback Loop, Learned Principles, Advanced Thought Usage).
-*   **Phase 27:** Proactive Behavior (Scheduling, Goal Management).
-*   **Phase 28+:** Federated Communication (Layer 3 - External Admin AI Interaction).
-*   **Phase 29+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), etc.
-
-## 3. Technology Stack
-*   **Backend:** Python 3.9+, FastAPI, Uvicorn
-*   **Asynchronous Operations:** `asyncio`
-*   **WebSockets:** `websockets` library integrated with FastAPI
-*   **Database:** `SQLAlchemy` (Core, Asyncio), `aiosqlite` (for SQLite driver)
-*   **Task Management:** `tasklib` (Python Taskwarrior library)
-*   **LLM Interaction:** `openai` library, `aiohttp`
-*   **Frontend:** HTML5, CSS3, Vanilla JavaScript
-*   **Configuration:** YAML (`PyYAML`), `.env` (`python-dotenv`), JSON (`prompts.json`), `governance.yaml` (`PyYAML`)
-*   **Tooling APIs:** `tavily-python`
-*   **Parsing:** `BeautifulSoup4` (HTML), `re`, `html` (XML)
-*   **Model Discovery & Management:** Custom `ModelRegistry` class (now includes model parameter size) <!-- Updated P25 -->
-*   **Performance Tracking:** Custom `ModelPerformanceTracker` class (JSON)
-*   **Persistence:** JSON (session state - filesystem), SQLite (interactions, knowledge, thoughts), Taskwarrior files (project tasks via `tasklib`)
-*   **Optional Proxy:** Node.js, Express, node-fetch
-*   **Data Handling/Validation:** Pydantic (via FastAPI)
-*   **Local Auto Discovery** nmap
-*   **Logging:** Standard library `logging`
-
-## 4. Development Phases & Milestones
-
-**Phase 1-23 (Completed)**
-*   [X] Core Functionality, Dynamic Agent/Team Mgmt, Refactoring, Provider/Model Discovery & Selection, Failover, Key Management, Prompt Centralization, Ollama Proxy, XML Tooling, Auto-Selection (Dyn), Robust Agent ID Handling, Structured Planning, Context Optimization & FS Tools, GitHub Recursive List, ManageTeam Details, WebSearch API Fallback, SystemHelp Tool, Admin Time Context, **Memory Foundation (DB & KB Tool)**, **UI Layer Refactor & Workflow Refinements**, **Project Manager Agent & Tasklib Integration**.
-
-**Phase 24: Admin AI State Machine & Framework-Driven Project Init (Completed)**
-*   **Goal:** Refactor Admin AI workflow into distinct states and automate project/PM creation by the framework, requiring user approval.
-*   [X] Add Admin AI states (`conversation`, `planning`) and `AgentWorkflowManager` for state logic.
-*   [X] Create state-specific prompts (`prompts.json`) used by `AgentWorkflowManager`.
-*   [X] Require `<title>` tag in Admin AI plans.
-*   [X] Implement framework logic (`CycleHandler`, `AgentManager`) to intercept Admin AI plans, extract title, automatically create PM agent and initial project task (via `ToolExecutor` calling `ProjectManagementTool`), assign PM via tags/UDA, and transition Admin AI state.
-*   [X] Implement UI notification for **user approval** of project start.
-*   [X] Implement API endpoint (`/approve`) and logic in `AgentManager` to schedule PM agent upon approval.
-*   [X] Update `SessionManager` to save/load Admin AI state.
-*   [X] Fix bootstrap agent initialization fallback logic (`agent_lifecycle.py`).
-*   [X] Correct `AgentManager` check for initial task creation result.
-
 **Phase 25: Agent Logic, Taskwarrior Refinement & Governance Layer Foundation (Completed/Advanced)**
     *   **Goal:** Address known agent logic issues, stabilize Taskwarrior integration, implement basic Governance Layer, refine thought capture, and enhance model selection.
     *   [X] Enhanced Model Selection Logic: Model selection logic refactored. New priority: Tier -> Size (larger preferred, `num_parameters` discovered for OpenRouter/Ollama) -> Performance Score -> ID.
@@ -207,7 +156,7 @@
     *   [X] Removed `TEAMS_CONFIG` and `allowed_sub_agent_models` handling from `ConfigManager` as they were unused.
     *   [X] Comprehensive unit tests added/updated for model selection, `num_parameters` handling, governance loading, and multi-tool call processing.
 
-**Phase 26: Constitutional Guardian - Backend Implementation (Newly Added)**
+**Phase 26: Constitutional Guardian - Backend Implementation (Completed)**
     *   **Goal:** Implement the backend infrastructure for a Constitutional Guardian (CG) agent to review agent outputs.
     *   [X] CG Agent Definition: `constitutional_guardian_ai` configured by user (via `config.yaml`), specific `cg_system_prompt` added to `prompts.json` detailing its review task and output format (`<OK/>` or `<CONCERN>details</CONCERN>`). Prompt refined to expect user message as text to review.
     *   [X] Core Logic in `AgentCycleHandler`: Implemented `_get_cg_verdict` for direct LLM call to CG (using `stream_completion`). `run_cycle` modified to intercept final agent text outputs, call CG, and if concern is raised, original agent status set to `AGENT_STATUS_AWAITING_USER_REVIEW_CG`, its output is paused, and a `cg_concern` UI message is generated.
@@ -215,6 +164,13 @@
     *   [X] User Decision Handling (Backend): Implemented `AgentManager` methods (`resolve_cg_concern_approve`, `resolve_cg_concern_stop`, `resolve_cg_concern_retry`) to process user's response to a CG concern.
     *   [X] Scheduler Adjustment: `NextStepScheduler` modified to ensure agents awaiting user review (`AGENT_STATUS_AWAITING_USER_REVIEW_CG` with `cg_awaiting_user_decision = True`) are not prematurely idled.
     *   **Note:** UI and API endpoint implementation for user interaction with CG concerns are required for full functionality and are external to these backend changes.
+
+**Phase 26a: PM Workflow & UI Interaction Refinements (Completed)**
+    *   **Goal:** Improve reliability of Project Manager (PM) agent workflows, CG concern handling, and UI message display.
+    *   [X] PM Startup Workflow: Addressed issue where PM in `PM_STATE_STARTUP` outputting only a `<think>` block would not proceed correctly. Implemented specific error handling for this case to provide feedback and force retry, bypassing unnecessary CG review. (Modified `src/agents/core.py`, `src/agents/cycle_handler.py`).
+    *   [X] CG Concern Targeting: Corrected logic to ensure CG concern resolutions (approve, retry) are targeted to the correct agent whose output caused the concern, instead of defaulting to `admin_ai`. (Modified `static/js/ui.js`, `static/js/handlers.js`, `src/api/websocket_manager.py`).
+    *   [X] UI Chunking: Improved UI message chunk handling in `internal-comms-area` by implementing direct tracking of active streaming elements per agent, making chunk appending more robust. (Modified `static/js/ui.js`).
+    *   [X] PM Prompting: Strengthened `pm_build_team_tasks_prompt` to be more directive about the initial team creation tool call. (Modified `prompts.json`).
 
 *   **Phase 27:** Advanced Memory & Learning (Feedback Loop, Learned Principles, Advanced Thought Usage).
 *   **Phase 28:** Proactive Behavior (Scheduling, Goal Management).
