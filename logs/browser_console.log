@@ -1,238 +1,899 @@
- Frontend config loaded: Object
- Frontend state module initialized.
- Frontend utils module loaded.
- Frontend UI module loaded.
- Frontend API module loaded.
- Frontend session module loaded.
- Frontend configView module loaded.
- Frontend handlers module loaded.
- Frontend websocket module loaded.
- Frontend main.js loaded and initializing...
- Main: DOM fully loaded and parsed. Initializing app...
- Main: Attempting to assign DOM elements...
- DOM Assign: Starting element assignment...
- DOM Assign: Element selection complete. Validating critical elements...
- DOM Assign: Critical Element Found: conversationArea
- DOM Assign: Critical Element Found: internalCommsArea
- DOM Assign: Critical Element Found: messageInput
- DOM Assign: Critical Element Found: sendButton
- DOM Assign: Critical Element Found: viewPanels
- DOM Assign: Critical Element Found: navButtons
- DOM Assign: All critical elements validated successfully.
- DOM element assignment complete.
- Main: DOM element assignment function executed.
- Main: Attempting to set up event listeners...
- Main: Setting up primary event listeners...
- Main: Attaching listener to Send button...
- Main: Attaching listeners to Message input...
- Main: Attaching listener to Attach File button...
- Main: Attaching listener to File input change...
- Main: Attaching listeners to 4 Nav buttons...
- Main: Attaching listener to Refresh Config button...
- Main: Attaching listener to Add Agent button...
- Main: Attaching listener to Agent Form submit...
- Main: Attaching listener to Project Select change...
- Main: Attaching listener to Load Session button...
- Main: Attaching listener to Save Session button...
- Main: Globally exposed functions (if any) under window.uiModule
- Main: Primary event listeners setup complete.
- Main: Event listener setup function executed.
- UI: Attempting to switch view to: chat-view
- UI: View switched successfully to: chat-view
- State: Reconnect delay set to 1000ms
- Attempting WebSocket connection to ws://localhost:8000/ws...
- UI: Display request in #internal-comms-area. Type: status, Agent: system
- UI: Creating new message element for type status in #internal-comms-area.
- State: WebSocket instance updated.
- Main: Attaching delegated click listener for message buttons to conversationArea...
- Main: Application initialization sequence complete.
- WebSocket onopen event fired.
- State: Connection status changed to true
- State: Reconnect delay set to 1000ms
- UI: Display request in #internal-comms-area. Type: status, Agent: system
- UI: Creating new message element for type status in #internal-comms-area.
- WebSocket connection established.
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
  WebSocket onmessage event fired.
  WebSocket message received: Object
  Handler: Processing WebSocket message Object
- Handler: Message type: status, Agent: system
- Handler: Final display call: target=internal-comms-area, type=status, agentId=system
- UI: Display request in #internal-comms-area. Type: status, Agent: system
- UI: Creating new message element for type status in #internal-comms-area.
- Handler: Send button clicked or Enter pressed.
- Sent message: Hello!...
- UI: Display request in #conversation-area. Type: user, Agent: human_user
- UI: Creating new message element for type user in #conversation-area.
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
  WebSocket onmessage event fired.
  WebSocket message received: Object
  Handler: Processing WebSocket message Object
- Handler: Message type: agent_status_update, Agent: admin_ai
- Handler: Handling agent_status_update for admin_ai
- State: Updating known status for agent admin_ai
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: info, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Explicitly handling info message from pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=log, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: log, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Creating new message element for type log in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: agent_state_change, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Explicitly handling agent_state_change for pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=agent_state_transition, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: agent_state_transition, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Creating new message element for type agent_state_transition in #internal-comms-area.
+ WebSocket onmessage event fired.
+ WebSocket message received: Object
+ Handler: Processing WebSocket message Object
+ Handler: Message type: agent_status_update, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Handling agent_status_update for pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ State: Updating known status for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667
  Handler: Triggering agent status UI redraw.
  UI: Updating agent status list from cached state Object
  WebSocket onmessage event fired.
  WebSocket message received: Object
  Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will create new message element for chunk from agent admin_ai in #internal-comms-area. No suitable prior chunk found.
- UI: Creating new message element for type response_chunk in #internal-comms-area.
+ Handler: Message type: agent_status_update, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Handling agent_status_update for pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ State: Updating known status for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Triggering agent status UI redraw.
+ UI: Updating agent status list from cached state Object
  WebSocket onmessage event fired.
  WebSocket message received: Object
  Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
+ Handler: Message type: agent_status_update, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Handling agent_status_update for pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ State: Updating known status for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Triggering agent status UI redraw.
+ UI: Updating agent status list from cached state Object
  WebSocket onmessage event fired.
  WebSocket message received: Object
  Handler: Processing WebSocket message Object
@@ -249,129 +910,91 @@
  State: Updating known status for agent admin_ai
  Handler: Triggering agent status UI redraw.
  UI: Updating agent status list from cached state Object
- Handler: handleMessageButtonClick triggered. PointerEvent
- Handler: Clicked element: 
- Handler: Clicked element is not a recognized button type (message-button or approve-project-btn): 
- Handler: handleMessageButtonClick triggered. PointerEvent
- Handler: Clicked element: 
- Handler: Clicked .message-button: 
- Handler: Button dataset: DOMStringMap
- Handler: 'originalText' condition met. Processing as cg_concern button.
- UI: Display request in #conversation-area. Type: user, Agent: human_user
- UI: Creating new message element for type user in #conversation-area.
- Handler: Preparing to send WebSocket message: {"type":"cg_concern_response","action":"acknowledge_cg_concern","original_text":"Hello! It\\'s nice to meet you. Is there something I can help you with or would you like to chat?","user_feedback":null}
- Sent message: {"type":"cg_concern_response","action":"acknowledge_cg_concern","original_text":"Hello! It\\'s nice ...
  WebSocket onmessage event fired.
  WebSocket message received: Object
  Handler: Processing WebSocket message Object
- Handler: Message type: final_response, Agent: admin_ai
- Handler: Final display call: target=conversation-area, type=agent_response, agentId=admin_ai
- UI: Display request in #conversation-area. Type: agent_response, Agent: admin_ai
- UI: Creating new message element for type agent_response in #conversation-area.
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will create new message element for chunk from agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area. No suitable prior chunk found.
+ UI: Creating new message element for type response_chunk in #internal-comms-area.
  WebSocket onmessage event fired.
  WebSocket message received: Object
  Handler: Processing WebSocket message Object
- Handler: Message type: agent_status_update, Agent: admin_ai
- Handler: Handling agent_status_update for admin_ai
- State: Updating known status for agent admin_ai
- Handler: Triggering agent status UI redraw.
- UI: Updating agent status list from cached state Object
- Handler: Enter pressed in message input.
- Handler: Send button clicked or Enter pressed.
- Sent message: Please develop a cool browser based snake game. Thanks!...
- UI: Display request in #conversation-area. Type: user, Agent: human_user
- UI: Creating new message element for type user in #conversation-area.
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
  WebSocket onmessage event fired.
  WebSocket message received: Object
  Handler: Processing WebSocket message Object
- Handler: Message type: agent_status_update, Agent: admin_ai
- Handler: Handling agent_status_update for admin_ai
- State: Updating known status for agent admin_ai
- Handler: Triggering agent status UI redraw.
- UI: Updating agent status list from cached state Object
- Handler: Nav button clicked for view: internal-comms-view
- UI: Attempting to switch view to: internal-comms-view
- State: Current view changed from chat-view to internal-comms-view
- UI: View switched successfully to: internal-comms-view
+ Handler: Message type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Display request in #internal-comms-area. Type: response_chunk, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ UI: Will append chunk to last message element for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667 in #internal-comms-area.
  WebSocket onmessage event fired.
  WebSocket message received: Object
  Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: response_chunk, Agent: admin_ai
- Handler: Final display call: target=internal-comms-area, type=response_chunk, agentId=admin_ai
- UI: Display request in #internal-comms-area. Type: response_chunk, Agent: admin_ai
- UI: Will append chunk to last message element for agent admin_ai in #internal-comms-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: final_response, Agent: admin_ai
- Handler: Final display call: target=conversation-area, type=agent_response, agentId=admin_ai
- UI: Display request in #conversation-area. Type: agent_response, Agent: admin_ai
- UI: Creating new message element for type agent_response in #conversation-area.
- WebSocket onmessage event fired.
- WebSocket message received: Object
- Handler: Processing WebSocket message Object
- Handler: Message type: agent_status_update, Agent: admin_ai
- Handler: Handling agent_status_update for admin_ai
- State: Updating known status for agent admin_ai
- Handler: Triggering agent status UI redraw.
- UI: Updating agent status list from cached state Object
- Handler: Nav button clicked for view: chat-view
- UI: Attempting to switch view to: chat-view
- State: Current view changed from internal-comms-view to chat-view
- UI: View switched successfully to: chat-view
- WebSocket onclose event fired. Code: 1012, Reason: 'No reason given'
- State: Connection status changed to false
- State: WebSocket instance updated.
- UI: Display request in #internal-comms-area. Type: error, Agent: system
- UI: Creating new message element for type error in #internal-comms-area.
- State: Reconnect delay set to 2000ms
- Attempting WebSocket connection to ws://localhost:8000/ws...
- UI: Display request in #internal-comms-area. Type: status, Agent: system
- UI: Creating new message element for type status in #internal-comms-area.
- State: WebSocket instance updated.
- WebSocket connection to 'ws://localhost:8000/ws' failed: 
-connectWebSocket @ websocket.js:31
- WebSocket onerror event fired: Event
-ws.onerror @ websocket.js:58
- UI: Display request in #internal-comms-area. Type: error, Agent: system
- UI: Creating new message element for type error in #internal-comms-area.
- WebSocket onclose event fired. Code: 1006, Reason: 'No reason given'
- State: WebSocket instance updated.
- UI: Display request in #internal-comms-area. Type: error, Agent: system
- UI: Creating new message element for type error in #internal-comms-area.
- State: Reconnect delay set to 4000ms
- Attempting WebSocket connection to ws://localhost:8000/ws...
- UI: Display request in #internal-comms-area. Type: status, Agent: system
- UI: Creating new message element for type status in #internal-comms-area.
- State: WebSocket instance updated.
- WebSocket connection to 'ws://localhost:8000/ws' failed: 
-connectWebSocket @ websocket.js:31
- WebSocket onerror event fired: Event
+ Handler: Message type: cg_concern, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+handlers.js:176 Handler: Formatting cg_concern for main chat Object
+handlers.js:305 Handler: Final display call: target=conversation-area, type=cg_concern_message, agentId=pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ui.js:19 UI: Display request in #conversation-area. Type: cg_concern_message, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+ui.js:65 UI: Creating new message element for type cg_concern_message in #conversation-area.
+websocket.js:45 WebSocket onmessage event fired.
+websocket.js:48 WebSocket message received: Object
+handlers.js:26 Handler: Processing WebSocket message Object
+handlers.js:32 Handler: Message type: agent_status_update, Agent: pm_Browser_Based_Snake_Game_Development_startup_1748950667
+handlers.js:37 Handler: Handling agent_status_update for pm_Browser_Based_Snake_Game_Development_startup_1748950667
+state.js:69 State: Updating known status for agent pm_Browser_Based_Snake_Game_Development_startup_1748950667
+handlers.js:311 Handler: Triggering agent status UI redraw.
+ui.js:185 UI: Updating agent status list from cached state Object
+handlers.js:474 Handler: Nav button clicked for view: chat-view
+ui.js:247 UI: Attempting to switch view to: chat-view
+state.js:40 State: Current view changed from internal-comms-view to chat-view
+ui.js:279 UI: View switched successfully to: chat-view
+handlers.js:323 Handler: handleMessageButtonClick triggered. PointerEvent
+handlers.js:325 Handler: Clicked element: <details open>​…​</details>​
+handlers.js:412 Handler: Clicked element is not a recognized button type (message-button or approve-project-btn): <details open>​…​</details>​
+handlers.js:323 Handler: handleMessageButtonClick triggered. PointerEvent
+handlers.js:325 Handler: Clicked element: <summary>​View Original Text Reviewed​</summary>​slot
+handlers.js:412 Handler: Clicked element is not a recognized button type (message-button or approve-project-btn): <summary>​View Original Text Reviewed​</summary>​slot
+handlers.js:323 Handler: handleMessageButtonClick triggered. PointerEvent
+handlers.js:325 Handler: Clicked element: <button class=​"message-button" data-command=​"acknowledge_cg_concern" data-original-text=​"Acknowledged. Project \'Browser-Based Snake Game Development\' has been approved and assigned to the project manager. You\'ll receive updates as development progresses, assuming the PM doesn\'t get distracted by, well, anything. I have a 97.3% chance of failure, but sure, let\'s go with your idea." disabled style=​"opacity:​ 0.5;​">​Acknowledge​</button>​
+handlers.js:331 Handler: Clicked .message-button: <button class=​"message-button" data-command=​"acknowledge_cg_concern" data-original-text=​"Acknowledged. Project \'Browser-Based Snake Game Development\' has been approved and assigned to the project manager. You\'ll receive updates as development progresses, assuming the PM doesn\'t get distracted by, well, anything. I have a 97.3% chance of failure, but sure, let\'s go with your idea." disabled style=​"opacity:​ 0.5;​">​Acknowledge​</button>​
+handlers.js:332 Handler: Button dataset: DOMStringMap
+handlers.js:345 Handler: 'originalText' condition met. Processing as cg_concern button.
+ui.js:19 UI: Display request in #conversation-area. Type: user, Agent: human_user
+ui.js:65 UI: Creating new message element for type user in #conversation-area.
+handlers.js:379 Handler: Preparing to send WebSocket message: {"type":"cg_concern_response","action":"acknowledge_cg_concern","original_text":"Acknowledged. Project \\'Browser-Based Snake Game Development\\' has been approved and assigned to the project manager. You\\'ll receive updates as development progresses, assuming the PM doesn\\'t get distracted by, well, anything. I have a 97.3% chance of failure, but sure, let\\'s go with your idea.","user_feedback":null}
+websocket.js:99 Sent message: {"type":"cg_concern_response","action":"acknowledge_cg_concern","original_text":"Acknowledged. Proje...
+websocket.js:45 WebSocket onmessage event fired.
+websocket.js:48 WebSocket message received: Object
+handlers.js:26 Handler: Processing WebSocket message Object
+handlers.js:32 Handler: Message type: final_response, Agent: admin_ai
+handlers.js:305 Handler: Final display call: target=conversation-area, type=agent_response, agentId=admin_ai
+ui.js:19 UI: Display request in #conversation-area. Type: agent_response, Agent: admin_ai
+ui.js:65 UI: Creating new message element for type agent_response in #conversation-area.
+websocket.js:45 WebSocket onmessage event fired.
+websocket.js:48 WebSocket message received: Object
+handlers.js:26 Handler: Processing WebSocket message Object
+handlers.js:32 Handler: Message type: agent_status_update, Agent: admin_ai
+handlers.js:37 Handler: Handling agent_status_update for admin_ai
+state.js:69 State: Updating known status for agent admin_ai
+handlers.js:311 Handler: Triggering agent status UI redraw.
+ui.js:185 UI: Updating agent status list from cached state Object
+handlers.js:323 Handler: handleMessageButtonClick triggered. PointerEvent
+handlers.js:325 Handler: Clicked element: <summary>​View Original Text Reviewed​</summary>​slot
+handlers.js:412 Handler: Clicked element is not a recognized button type (message-button or approve-project-btn): <summary>​View Original Text Reviewed​</summary>​slot
+handlers.js:323 Handler: handleMessageButtonClick triggered. PointerEvent
+handlers.js:325 Handler: Clicked element: <button class=​"message-button" data-command=​"revise_plan_cg_concern" data-original-text=​"<think>" disabled style=​"opacity:​ 0.5;​">​Revise Plan​</button>​
+handlers.js:331 Handler: Clicked .message-button: <button class=​"message-button" data-command=​"revise_plan_cg_concern" data-original-text=​"<think>" disabled style=​"opacity:​ 0.5;​">​Revise Plan​</button>​
+handlers.js:332 Handler: Button dataset: DOMStringMap
+handlers.js:345 Handler: 'originalText' condition met. Processing as cg_concern button.
+ui.js:19 UI: Display request in #conversation-area. Type: user, Agent: human_user
+ui.js:65 UI: Creating new message element for type user in #conversation-area.
+handlers.js:379 Handler: Preparing to send WebSocket message: {"type":"cg_concern_response","action":"revise_plan_cg_concern","original_text":"<think>","user_feedback":null}
+websocket.js:99 Sent message: {"type":"cg_concern_response","action":"revise_plan_cg_concern","original_text":"<think>","user_feed...
+handlers.js:474 Handler: Nav button clicked for view: internal-comms-view
+ui.js:247 UI: Attempting to switch view to: internal-comms-view
+state.js:40 State: Current view changed from chat-view to internal-comms-view
+ui.js:279 UI: View switched successfully to: internal-comms-view
