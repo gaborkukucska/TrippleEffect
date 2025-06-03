@@ -195,6 +195,19 @@ class Agent:
                         yield {"type": "agent_thought", "content": extracted_think_content, "agent_id": self.agent_id}
                     remaining_text_after_processing_tags = remaining_text_after_processing_tags.replace(full_think_block, '', 1).strip()
 
+                # --- PM Startup Missing Task List Check ---
+                if think_content_extracted and \
+                   (not remaining_text_after_processing_tags or remaining_text_after_processing_tags.isspace()) and \
+                   self.agent_type == AGENT_TYPE_PM and \
+                   self.state == PM_STATE_STARTUP:
+                    logger.warning(
+                        f"Agent {self.agent_id} (PM) in state '{self.state}' provided only a <think> tag "
+                        f"and no further content, but a task list is expected. Yielding specific event."
+                    )
+                    yield {"type": "pm_startup_missing_task_list_after_think", "agent_id": self.agent_id}
+                    return
+                # --- END PM Startup Missing Task List Check ---
+
                 state_request_tag = None; requested_state = None
                 cycle_handler_instance = getattr(self.manager, 'cycle_handler', None)
                 manager_request_state_pattern = getattr(cycle_handler_instance, 'request_state_pattern', None) if cycle_handler_instance else None
