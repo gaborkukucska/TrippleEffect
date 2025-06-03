@@ -127,6 +127,8 @@ class PMKickoffWorkflow(BaseWorkflow):
         
         if all_tasks_created_successfully:
             logger.info(f"PMKickoffWorkflow: All tasks created for PM '{agent.agent_id}'. Preparing successful result with reschedule.")
+            agent.clear_history()
+            logger.info(f"PMKickoffWorkflow: Cleared history for PM agent '{agent.agent_id}' before transitioning to PM_STATE_BUILD_TEAM_TASKS.")
             return WorkflowResult(
                 success=True,
                 message=f"All {len(task_descriptions)} kick-off tasks created successfully by PM '{agent.agent_id}'. Details: {'; '.join(created_tasks_info)}",
