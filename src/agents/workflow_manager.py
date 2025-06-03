@@ -141,66 +141,101 @@ class AgentWorkflowManager:
             logger.debug("Agent type or state not set, cannot process for workflow.")
             return None
 
-        content_to_process = llm_output.strip()
+        initial_content_to_process = llm_output.strip()
         was_fenced = False
+        content_to_process_for_xml_tag_search = initial_content_to_process
 
-        # Try to strip common Markdown fences like ```xml ... ``` or ``` ... ```
-        fenced_match = re.match(r"^```(?:xml)?\s*([\s\S]+?)\s*```$", content_to_process, re.DOTALL)
-        if fenced_match:
-            content_to_process = fenced_match.group(1).strip()
+        # Robust Fence Detection: Use regex to find a markdown fence *anywhere*
+        # Non-greedy `+?` is important for `([\s\S]+?)`
+        markdown_fence_pattern = r"```(?:xml)?\s*([\s\S]+?)\s*```"
+        fence_search_match = re.search(markdown_fence_pattern, initial_content_to_process, re.DOTALL)
+
+        if fence_search_match:
             was_fenced = True
-            logger.debug(f"WorkflowManager: Stripped outer Markdown fences. Content for workflow processing: '{content_to_process[:200]}...'")
-        
+            # The new content_to_process_for_xml_tag_search becomes the *inner content* of this first detected fence
+            content_to_process_for_xml_tag_search = fence_search_match.group(1).strip()
+            logger.debug(f"WorkflowManager: Found Markdown fence. Inner content for XML tag search: '{content_to_process_for_xml_tag_search[:200]}...'")
+        else:
+            # No fence found, content_to_process_for_xml_tag_search remains the original stripped input
+            logger.debug(f"WorkflowManager: No Markdown fence found. Processing original stripped input for XML tags: '{content_to_process_for_xml_tag_search[:200]}...'")
+
         for (allowed_type, allowed_state, trigger_tag), workflow_instance in self._workflow_triggers.items():
             if agent.agent_type == allowed_type and agent.state == allowed_state:
                 try:
                     escaped_trigger_tag = re.escape(trigger_tag)
-                    # Regex to find the trigger tag and capture its attributes and inner content.
                     pattern_str = rf"(<\s*{escaped_trigger_tag}(\s+[^>]*)?>([\s\S]*?)</\s*{escaped_trigger_tag}\s*>)"
                     
-                    # Search for the pattern within the (potentially unfenced) content_to_process
-                    match = re.search(pattern_str, content_to_process, re.IGNORECASE | re.DOTALL)
+                    # Search for the XML pattern within the (potentially unfenced) content_to_process_for_xml_tag_search
+                    match = re.search(pattern_str, content_to_process_for_xml_tag_search, re.IGNORECASE | re.DOTALL)
 
                     if match:
-                        xml_full_trigger_block = match.group(1).strip() 
-                        xml_inner_content = match.group(3).strip()    
+                        xml_full_trigger_block = match.group(1).strip()
+                        xml_inner_content = match.group(3).strip()
                         
-                        # Check text *before* and *after* the found XML block within content_to_process
-                        text_before_match = content_to_process[:match.start()].strip()
-                        text_after_match = content_to_process[match.end():].strip()
+                        text_before_xml_tag = content_to_process_for_xml_tag_search[:match.start()].strip()
+                        text_after_xml_tag = content_to_process_for_xml_tag_search[match.end():].strip()
                         
                         # Define what is considered "insignificant" surrounding text.
-                        MAX_INSIGNIFICANT_TEXT_LEN = 15 # Allow short pleasantries or minor punctuation
-                        # Allows some letters, spaces, and common punctuation for short surrounding text.
-                        INSIGNIFICANT_TEXT_PATTERN = r"^[A-Za-z0-9\s\.,;:!?'\"\(\)\[\]\{\}]{0," + str(MAX_INSIGNIFICANT_TEXT_LEN) + r"}$"
+                        MAX_INSIGNIFICANT_TEXT_LEN_DEFAULT = 15 # For non-fenced content
+                        INSIGNIFICANT_TEXT_PATTERN_DEFAULT = r"^[A-Za-z0-9\s\.,;:!?'\"\(\)\[\]\{\}]{0," + str(MAX_INSIGNIFICANT_TEXT_LEN_DEFAULT) + r"}$"
 
+                        MAX_INSIGNIFICANT_TEXT_LEN_FENCED = 1 # Allow potential single newline or space if strip() didn't catch it
+                        INSIGNIFICANT_TEXT_PATTERN_FENCED = r"^\s?$" # Allows empty or a single whitespace char
 
-                        # If the original output was fenced, any remaining text before/after the XML block
-                        # (within the unfenced content_to_process) is problematic.
                         if was_fenced:
-                            if text_before_match or text_after_match:
-                                logger.debug(f"Workflow trigger '{trigger_tag}' for agent '{agent.agent_id}' found within fenced content, but has surrounding text *inside* the fence. Before: '{text_before_match[:50]}', After: '{text_after_match[:50]}'. Skipping.")
+                            # Inside a fence, text before/after the XML tag must be very minimal (ideally empty)
+                            is_problematic_before_fenced = not (len(text_before_xml_tag) <= MAX_INSIGNIFICANT_TEXT_LEN_FENCED and \
+                                                               re.fullmatch(INSIGNIFICANT_TEXT_PATTERN_FENCED, text_before_xml_tag))
+                            is_problematic_after_fenced = not (len(text_after_xml_tag) <= MAX_INSIGNIFICANT_TEXT_LEN_FENCED and \
+                                                              re.fullmatch(INSIGNIFICANT_TEXT_PATTERN_FENCED, text_after_xml_tag))
+                            if is_problematic_before_fenced or is_problematic_after_fenced:
+                                logger.warning(f"Workflow trigger '{trigger_tag}' found within fenced content for agent '{agent.agent_id}', but has non-minimal surrounding text *inside* the fence. Before: '{text_before_xml_tag}', After: '{text_after_xml_tag}'. Skipping.")
                                 continue
-                        else: # Not originally fenced
-                            # Check for problematic text after
-                            is_problematic_after = not (len(text_after_match) <= MAX_INSIGNIFICANT_TEXT_LEN and \
-                                                       re.fullmatch(INSIGNIFICANT_TEXT_PATTERN, text_after_match, re.IGNORECASE)) \
-                                                   and text_after_match
+                        # Logic for non-fenced content or content where the fence itself might contain the surrounding text
+                        else:
+                            # Default problematic flags
+                            is_problematic_before = False
+                            is_problematic_after = False
+
+                            # General check for text_after_xml_tag (applies to all non-fenced)
+                            if text_after_xml_tag: # Only check if there's actually text after
+                                if not (len(text_after_xml_tag) <= MAX_INSIGNIFICANT_TEXT_LEN_DEFAULT and \
+                                        re.fullmatch(INSIGNIFICANT_TEXT_PATTERN_DEFAULT, text_after_xml_tag, re.IGNORECASE)):
+                                    is_problematic_after = True
+
                             if is_problematic_after:
-                                logger.debug(f"Workflow trigger '{trigger_tag}' for agent '{agent.agent_id}' found, but problematic trailing text detected after XML block: '{text_after_match[:50]}...'. Skipping.")
+                                logger.debug(f"Workflow trigger '{trigger_tag}' for agent '{agent.agent_id}' found, but problematic trailing text detected: '{text_after_xml_tag[:50]}...'. Skipping.")
                                 continue
 
-                            # For Admin AI's "plan", we are more lenient with prefix.
-                            # For other workflows (like PM's "task_list"), the prefix should be insignificant.
-                            if not (agent.agent_type == AGENT_TYPE_ADMIN and trigger_tag == "plan"):
-                                is_problematic_before = not (len(text_before_match) <= MAX_INSIGNIFICANT_TEXT_LEN and \
-                                                            re.fullmatch(INSIGNIFICANT_TEXT_PATTERN, text_before_match, re.IGNORECASE)) \
-                                                        and text_before_match
-                                if is_problematic_before:
-                                    logger.debug(f"Workflow trigger '{trigger_tag}' for agent '{agent.agent_id}' (not Admin's plan) found, but has problematic prefix: '{text_before_match[:50]}...'. Skipping.")
-                                    continue
+                            # Specific check for PM in startup state with "task_list" trigger
+                            if agent.agent_type == AGENT_TYPE_PM and \
+                               agent.state == PM_STATE_STARTUP and \
+                               trigger_tag == "task_list":
+
+                                if text_before_xml_tag: # Only check if there's actually text before
+                                    think_block_pattern = r"^\s*<think>[\s\S]+?</think>\s*$" # Allows surrounding whitespace around think block itself
+                                    is_just_a_think_block = bool(re.fullmatch(think_block_pattern, text_before_xml_tag))
+
+                                    if not is_just_a_think_block:
+                                        # If it's not just a think block, check if it's insignificant text
+                                        if not (len(text_before_xml_tag) <= MAX_INSIGNIFICANT_TEXT_LEN_DEFAULT and \
+                                                re.fullmatch(INSIGNIFICANT_TEXT_PATTERN_DEFAULT, text_before_xml_tag, re.IGNORECASE)):
+                                            is_problematic_before = True
+                                    # If it is_just_a_think_block, is_problematic_before remains False (it's allowed)
+                                    else:
+                                        logger.info(f"PM in startup with '{trigger_tag}': Allowed <think> block prefix: '{text_before_xml_tag[:100]}...'")
+
+                            # General checks for text_before_xml_tag for other cases
+                            elif not (agent.agent_type == AGENT_TYPE_ADMIN and trigger_tag == "plan"): # Admin plan has general leniency for prefix
+                                if text_before_xml_tag: # Only check if there's actually text before
+                                    if not (len(text_before_xml_tag) <= MAX_INSIGNIFICANT_TEXT_LEN_DEFAULT and \
+                                            re.fullmatch(INSIGNIFICANT_TEXT_PATTERN_DEFAULT, text_before_xml_tag, re.IGNORECASE)):
+                                        is_problematic_before = True
+
+                            if is_problematic_before:
+                                logger.debug(f"Workflow trigger '{trigger_tag}' for agent '{agent.agent_id}' found, but problematic prefix detected: '{text_before_xml_tag[:50]}...'. Skipping.")
+                                continue
                         
-                        # If all checks passed, proceed to execute
                         logger.info(f"Workflow trigger '{trigger_tag}' matched cleanly for agent '{agent.agent_id}' in state '{agent.state}'. Executing workflow '{workflow_instance.name}'.")
                         xml_element_for_workflow: Optional[ET.Element] = None
                         

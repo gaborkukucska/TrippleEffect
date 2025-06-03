@@ -334,8 +334,28 @@ class AgentManager:
         agent.cg_awaiting_user_decision = False
         agent.set_status(AGENT_STATUS_IDLE) 
 
-        logger.info(f"Agent '{agent_id}' output approved by user. Status set to IDLE.")
-        return True, f"Agent '{agent_id}' output approved and processed."
+        logger.info(f"Agent '{agent_id}' status set to IDLE after CG concern approval by user.") # Log message modified as per instruction (kept level as info)
+
+        # New part: Re-process the approved output for workflows
+        if original_text: # original_text is agent.cg_original_text, which was agent.last_response_for_cg_review
+            logger.info(f"Re-processing user-approved output of agent '{agent_id}' for workflows (original output was: '{original_text[:100]}...').")
+            # Create a new task for the workflow processing.
+            # This ensures it doesn't block the current operation.
+            asyncio.create_task(
+                self.workflow_manager.process_agent_output_for_workflow(
+                    manager=self, # process_agent_output_for_workflow expects manager as first arg
+                    agent=agent,
+                    llm_output=original_text # Parameter is named llm_output in the method
+                )
+            )
+            logger.debug(f"Scheduled workflow processing task for agent '{agent_id}'.")
+        else:
+            logger.warning(f"Original text for agent '{agent_id}' was empty/None after CG concern approval; cannot process for workflows.")
+
+        # Websocket updates would typically be here if this method directly sent them,
+        # but status updates are pushed via agent.set_status and other UI messages directly.
+        # The final return indicates success of this resolution step.
+        return True, f"Agent '{agent_id}' output approved and processed. Workflow re-processing initiated if applicable."
 
     async def resolve_cg_concern_stop(self, agent_id: str):
         agent = self.agents.get(agent_id)

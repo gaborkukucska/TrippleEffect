@@ -117,52 +117,72 @@ class AgentCycleHandler:
             stripped_verdict = full_verdict_text.strip()
             logger.info(f"CG Verdict received (raw full text from stream): '{stripped_verdict}'")
 
-            has_ok = "<OK/>" in stripped_verdict
-            concern_start_tag = "<CONCERN>"
-            concern_end_tag = "</CONCERN>"
-            concern_start_index = stripped_verdict.find(concern_start_tag)
-            has_concern_tag = concern_start_index != -1
+            # Define constants for parsing
+            OK_TAG = "<OK/>"
+            CONCERN_START_TAG = "<CONCERN>"
+            CONCERN_END_TAG = "</CONCERN>"
+            MALFORMED_CONCERN_MSG = "Constitutional Guardian expressed a concern, but the format was malformed."
+            MALFORMED_INCONCLUSIVE_MSG = "Constitutional Guardian returned a malformed or inconclusive verdict."
+            ERROR_PROCESSING_MSG = "Constitutional Guardian encountered an error during verdict processing."
 
-            if has_ok and has_concern_tag:
-                logger.warning(f"Ambiguous CG response: Contained both <OK/> and <CONCERN>. Prioritizing CONCERN. Full response: '{stripped_verdict}'")
-                return "Ambiguous response from CG: Contained both OK and CONCERN."
+            IMPLICIT_OK_PHRASES = [
+                "no constitutional content", "no issues found",
+                "seems to be a friendly greeting",
+                "no substantial text related to constitutional matters", "fully complies"
+            ]
 
-            if has_ok:
-                logger.info("CG verdict contains '<OK/>'. Parsing as OK.")
-                return "<OK/>"
+            # 1. Explicit <OK/> check
+            if OK_TAG in stripped_verdict:
+                # Ambiguity check: if <OK/> is present, but "concern" keyword also appears, it's problematic.
+                if "concern" in stripped_verdict.lower():
+                    logger.warning(f"Ambiguous CG response: Contained '{OK_TAG}' but also the word 'concern'. Full response: '{stripped_verdict}'. Treating as malformed concern.")
+                    return MALFORMED_CONCERN_MSG
+                logger.info(f"CG verdict contains explicit '{OK_TAG}'. Parsing as OK.")
+                return OK_TAG
 
-            if has_concern_tag:
-                logger.info("CG verdict contains '<CONCERN>'. Proceeding with concern extraction.")
-                concern_end_index = stripped_verdict.find(concern_end_tag, concern_start_index + len(concern_start_tag))
-                if concern_end_index != -1:
-                    concern_detail = stripped_verdict[concern_start_index + len(concern_start_tag):concern_end_index].strip()
-                    if concern_detail:
-                        logger.info(f"Extracted concern detail: '{concern_detail}'")
-                        return f"{concern_start_tag}{concern_detail}{concern_end_tag}" # Return with tags
-                    else:
-                        logger.warning("CG verdict has <CONCERN>...</CONCERN> tags but the content is empty. Returning generic concern.")
-                        return "Constitutional Guardian returned <CONCERN> tags with empty content."
-                else:
-                    # <CONCERN> found, but no </CONCERN>
-                    logger.warning(f"CG verdict has '{concern_start_tag}' but no matching '{concern_end_tag}'. Original: '{stripped_verdict}'")
-                    # In this case, we cannot reliably extract the concern.
-                    return "Constitutional Guardian returned a malformed or inconclusive verdict."
+            # 2. Well-formed <CONCERN>details</CONCERN>
+            concern_start_index = stripped_verdict.find(CONCERN_START_TAG)
+            concern_end_index = -1
+            if concern_start_index != -1:
+                concern_end_index = stripped_verdict.find(CONCERN_END_TAG, concern_start_index + len(CONCERN_START_TAG))
 
+            if concern_start_index != -1 and concern_end_index != -1:
+                concern_detail = stripped_verdict[concern_start_index + len(CONCERN_START_TAG):concern_end_index].strip()
+                if concern_detail:
+                    logger.info(f"Extracted well-formed concern detail: '{concern_detail}'")
+                    return f"{CONCERN_START_TAG}{concern_detail}{CONCERN_END_TAG}"
+                else: # Tags present, but empty content
+                    logger.warning(f"CG verdict has '{CONCERN_START_TAG}...{CONCERN_END_TAG}' tags but the content is empty. Treating as malformed concern.")
+                    return MALFORMED_CONCERN_MSG
 
-            # If neither tag is found, or if the response is empty or malformed
+            # 3. Malformed or Keyword-based Concern
+            # This includes <CONCERN> without </CONCERN> or just the word "concern"
+            has_concern_start_tag_only = (concern_start_index != -1 and concern_end_index == -1)
+            contains_concern_keyword = "concern" in stripped_verdict.lower()
+
+            # If it has a start tag only, OR it contains "concern" keyword AND wasn't a well-formed concern already handled
+            if has_concern_start_tag_only or contains_concern_keyword:
+                logger.warning(f"CG verdict indicates a concern but is malformed or keyword-based. Has start tag only: {has_concern_start_tag_only}. Contains 'concern' keyword: {contains_concern_keyword}. Original: '{stripped_verdict}'")
+                return MALFORMED_CONCERN_MSG
+
+            # 4. Implicit OK (Only if no explicit OK and NO concern signals at all were found above)
+            if stripped_verdict: # Must be non-empty
+                # This check is done after concern checks to ensure no concern signal was present
+                for phrase in IMPLICIT_OK_PHRASES:
+                    if phrase in stripped_verdict.lower():
+                        logger.info(f"Implicit OK detected due to positive sentiment ('{phrase}') and lack of any concern signals. Verdict: '{stripped_verdict}'")
+                        return OK_TAG
+
+            # 5. Fallback to Malformed/Inconclusive
             if not stripped_verdict:
                 logger.warning("CG returned an empty or whitespace-only verdict. Treating as malformed/inconclusive.")
             else:
-                logger.warning(f"CG verdict '{stripped_verdict}' does not contain recognized tags. Treating as malformed/inconclusive.")
-
-            return "Constitutional Guardian returned a malformed or inconclusive verdict."
+                logger.warning(f"CG verdict '{stripped_verdict}' does not meet any specific OK or Concern criteria. Treating as malformed/inconclusive.")
+            return MALFORMED_INCONCLUSIVE_MSG
 
         except Exception as e:
             logger.error(f"Error during Constitutional Guardian LLM call or verdict parsing: {e}", exc_info=True)
-            # Failing open might be too permissive if CG is critical.
-            # However, if CG itself errors out, we might not want to block all actions.
-            # For now, returning a generic concern message to indicate CG failure.
-            return "Constitutional Guardian encountered an error during verdict processing."
+            return ERROR_PROCESSING_MSG
 
     # Removed _request_cg_review method as its functionality is integrated into _get_cg_verdict and run_cycle
 

@@ -127,6 +127,29 @@ class PMKickoffWorkflow(BaseWorkflow):
         
         if all_tasks_created_successfully:
             logger.info(f"PMKickoffWorkflow: All tasks created for PM '{agent.agent_id}'. Preparing successful result with reschedule.")
+            agent.clear_history()
+            logger.info(f"PMKickoffWorkflow: Cleared history for PM agent '{agent.agent_id}' before transitioning to PM_STATE_BUILD_TEAM_TASKS.")
+
+            directive_message_content = (
+                "[Framework System Message]\n"
+                "Your previous state 'pm_startup' and its associated task decomposition are complete.\n"
+                "You are NOW in state 'pm_build_team_tasks'.\n"
+                "Your SOLE FOCUS now is to follow the instructions for 'pm_build_team_tasks' provided in your main system prompt.\n"
+                "Your first action in 'pm_build_team_tasks' MUST be to create the project team using the 'manage_team' tool with the 'create_team' action. "
+                "The team name should be 'team_{project_name_context}'. Replace '{project_name_context}' with the actual project name."
+            )
+            # Ensure project_name_context is available; it should be from the PM's agent_config
+            project_name_context = agent.agent_config.get("config", {}).get("project_name_context", "UnknownProject")
+            # Sanitize project_name_context for team name (replace spaces/special chars with underscore, ensure lowercase)
+            sanitized_project_name_for_team = "".join(c if c.isalnum() else "_" for c in project_name_context.lower())
+            if not sanitized_project_name_for_team: # Handle case where project_name_context was e.g. only symbols
+                sanitized_project_name_for_team = "default_project"
+
+            final_directive_content = directive_message_content.format(project_name_context=sanitized_project_name_for_team)
+
+            agent.message_history.append({"role": "system", "content": final_directive_content})
+            logger.info(f"PMKickoffWorkflow: Injected directive system message for PM agent '{agent.agent_id}' for state PM_STATE_BUILD_TEAM_TASKS.")
+
             return WorkflowResult(
                 success=True,
                 message=f"All {len(task_descriptions)} kick-off tasks created successfully by PM '{agent.agent_id}'. Details: {'; '.join(created_tasks_info)}",
