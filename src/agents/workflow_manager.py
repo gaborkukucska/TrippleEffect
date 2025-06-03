@@ -178,7 +178,7 @@ class AgentWorkflowManager:
                         # Define what is considered "insignificant" surrounding text.
                         MAX_INSIGNIFICANT_TEXT_LEN_DEFAULT = 15 # For non-fenced content
                         INSIGNIFICANT_TEXT_PATTERN_DEFAULT = r"^[A-Za-z0-9\s\.,;:!?'\"\(\)\[\]\{\}]{0," + str(MAX_INSIGNIFICANT_TEXT_LEN_DEFAULT) + r"}$"
-                        
+
                         MAX_INSIGNIFICANT_TEXT_LEN_FENCED = 1 # Allow potential single newline or space if strip() didn't catch it
                         INSIGNIFICANT_TEXT_PATTERN_FENCED = r"^\s?$" # Allows empty or a single whitespace char
 
@@ -191,21 +191,50 @@ class AgentWorkflowManager:
                             if is_problematic_before_fenced or is_problematic_after_fenced:
                                 logger.warning(f"Workflow trigger '{trigger_tag}' found within fenced content for agent '{agent.agent_id}', but has non-minimal surrounding text *inside* the fence. Before: '{text_before_xml_tag}', After: '{text_after_xml_tag}'. Skipping.")
                                 continue
-                        else: # Not originally fenced, use default leniency
-                            is_problematic_after = not (len(text_after_xml_tag) <= MAX_INSIGNIFICANT_TEXT_LEN_DEFAULT and \
-                                                       re.fullmatch(INSIGNIFICANT_TEXT_PATTERN_DEFAULT, text_after_xml_tag, re.IGNORECASE)) \
-                                                   and text_after_xml_tag
+                        # Logic for non-fenced content or content where the fence itself might contain the surrounding text
+                        else:
+                            # Default problematic flags
+                            is_problematic_before = False
+                            is_problematic_after = False
+
+                            # General check for text_after_xml_tag (applies to all non-fenced)
+                            if text_after_xml_tag: # Only check if there's actually text after
+                                if not (len(text_after_xml_tag) <= MAX_INSIGNIFICANT_TEXT_LEN_DEFAULT and \
+                                        re.fullmatch(INSIGNIFICANT_TEXT_PATTERN_DEFAULT, text_after_xml_tag, re.IGNORECASE)):
+                                    is_problematic_after = True
+
                             if is_problematic_after:
                                 logger.debug(f"Workflow trigger '{trigger_tag}' for agent '{agent.agent_id}' found, but problematic trailing text detected: '{text_after_xml_tag[:50]}...'. Skipping.")
                                 continue
 
-                            if not (agent.agent_type == AGENT_TYPE_ADMIN and trigger_tag == "plan"): # Admin plan can have more prefix
-                                is_problematic_before = not (len(text_before_xml_tag) <= MAX_INSIGNIFICANT_TEXT_LEN_DEFAULT and \
-                                                            re.fullmatch(INSIGNIFICANT_TEXT_PATTERN_DEFAULT, text_before_xml_tag, re.IGNORECASE)) \
-                                                        and text_before_xml_tag
-                                if is_problematic_before:
-                                    logger.debug(f"Workflow trigger '{trigger_tag}' for agent '{agent.agent_id}' (not Admin's plan) found, but has problematic prefix: '{text_before_xml_tag[:50]}...'. Skipping.")
-                                    continue
+                            # Specific check for PM in startup state with "task_list" trigger
+                            if agent.agent_type == AGENT_TYPE_PM and \
+                               agent.state == PM_STATE_STARTUP and \
+                               trigger_tag == "task_list":
+
+                                if text_before_xml_tag: # Only check if there's actually text before
+                                    think_block_pattern = r"^\s*<think>[\s\S]+?</think>\s*$" # Allows surrounding whitespace around think block itself
+                                    is_just_a_think_block = bool(re.fullmatch(think_block_pattern, text_before_xml_tag))
+
+                                    if not is_just_a_think_block:
+                                        # If it's not just a think block, check if it's insignificant text
+                                        if not (len(text_before_xml_tag) <= MAX_INSIGNIFICANT_TEXT_LEN_DEFAULT and \
+                                                re.fullmatch(INSIGNIFICANT_TEXT_PATTERN_DEFAULT, text_before_xml_tag, re.IGNORECASE)):
+                                            is_problematic_before = True
+                                    # If it is_just_a_think_block, is_problematic_before remains False (it's allowed)
+                                    else:
+                                        logger.info(f"PM in startup with '{trigger_tag}': Allowed <think> block prefix: '{text_before_xml_tag[:100]}...'")
+
+                            # General checks for text_before_xml_tag for other cases
+                            elif not (agent.agent_type == AGENT_TYPE_ADMIN and trigger_tag == "plan"): # Admin plan has general leniency for prefix
+                                if text_before_xml_tag: # Only check if there's actually text before
+                                    if not (len(text_before_xml_tag) <= MAX_INSIGNIFICANT_TEXT_LEN_DEFAULT and \
+                                            re.fullmatch(INSIGNIFICANT_TEXT_PATTERN_DEFAULT, text_before_xml_tag, re.IGNORECASE)):
+                                        is_problematic_before = True
+
+                            if is_problematic_before:
+                                logger.debug(f"Workflow trigger '{trigger_tag}' for agent '{agent.agent_id}' found, but problematic prefix detected: '{text_before_xml_tag[:50]}...'. Skipping.")
+                                continue
                         
                         logger.info(f"Workflow trigger '{trigger_tag}' matched cleanly for agent '{agent.agent_id}' in state '{agent.state}'. Executing workflow '{workflow_instance.name}'.")
                         xml_element_for_workflow: Optional[ET.Element] = None

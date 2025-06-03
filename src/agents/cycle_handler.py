@@ -145,7 +145,7 @@ class AgentCycleHandler:
             concern_end_index = -1
             if concern_start_index != -1:
                 concern_end_index = stripped_verdict.find(CONCERN_END_TAG, concern_start_index + len(CONCERN_START_TAG))
-            
+
             if concern_start_index != -1 and concern_end_index != -1:
                 concern_detail = stripped_verdict[concern_start_index + len(CONCERN_START_TAG):concern_end_index].strip()
                 if concern_detail:
@@ -164,7 +164,7 @@ class AgentCycleHandler:
             if has_concern_start_tag_only or contains_concern_keyword:
                 logger.warning(f"CG verdict indicates a concern but is malformed or keyword-based. Has start tag only: {has_concern_start_tag_only}. Contains 'concern' keyword: {contains_concern_keyword}. Original: '{stripped_verdict}'")
                 return MALFORMED_CONCERN_MSG
-                
+
             # 4. Implicit OK (Only if no explicit OK and NO concern signals at all were found above)
             if stripped_verdict: # Must be non-empty
                 # This check is done after concern checks to ensure no concern signal was present
@@ -172,7 +172,7 @@ class AgentCycleHandler:
                     if phrase in stripped_verdict.lower():
                         logger.info(f"Implicit OK detected due to positive sentiment ('{phrase}') and lack of any concern signals. Verdict: '{stripped_verdict}'")
                         return OK_TAG
-            
+
             # 5. Fallback to Malformed/Inconclusive
             if not stripped_verdict:
                 logger.warning("CG returned an empty or whitespace-only verdict. Treating as malformed/inconclusive.")

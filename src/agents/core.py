@@ -254,20 +254,20 @@ class Agent:
                             if hasattr(wf_instance, 'name') and wf_instance.name == "pm_project_kickoff":
                                 pm_kickoff_trigger_tag = trigger_key[2] # (agent_type, agent_state, trigger_tag_name)
                                 break
-                    
+
                     if f"<{pm_kickoff_trigger_tag}>" not in final_cleaned_response_for_tools_or_text:
                         logger.warning(
                             f"Agent {self.agent_id} (PM) in state '{self.state}' did not output the expected '<{pm_kickoff_trigger_tag}>' tag. "
                             f"Forcing retry by re-requesting current state with feedback. Output was: '{final_cleaned_response_for_tools_or_text[:200]}...'"
                         )
-                        
+
                         feedback_content = (
                             f"[Framework Feedback for PM Retry]\n"
                             f"Your previous output did not contain the required '<{pm_kickoff_trigger_tag}>' XML structure. "
                             f"Please review your instructions for the '{self.state}' state and ensure your entire response is the XML task list as specified."
                         )
                         self.message_history.append({"role": "system", "content": feedback_content})
-                        
+
                         yield {"type": "agent_state_change_requested", "requested_state": PM_STATE_STARTUP, "agent_id": self.agent_id}
                         return
 

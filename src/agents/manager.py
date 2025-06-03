@@ -341,7 +341,7 @@ class AgentManager:
             logger.info(f"Re-processing user-approved output of agent '{agent_id}' for workflows (original output was: '{original_text[:100]}...').")
             # Create a new task for the workflow processing.
             # This ensures it doesn't block the current operation.
-            asyncio.create_task( 
+            asyncio.create_task(
                 self.workflow_manager.process_agent_output_for_workflow(
                     manager=self, # process_agent_output_for_workflow expects manager as first arg
                     agent=agent,
@@ -351,7 +351,7 @@ class AgentManager:
             logger.debug(f"Scheduled workflow processing task for agent '{agent_id}'.")
         else:
             logger.warning(f"Original text for agent '{agent_id}' was empty/None after CG concern approval; cannot process for workflows.")
-        
+
         # Websocket updates would typically be here if this method directly sent them,
         # but status updates are pushed via agent.set_status and other UI messages directly.
         # The final return indicates success of this resolution step.
