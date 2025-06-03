@@ -1,5 +1,7 @@
 // START OF FILE static/js/ui.js
 
+let currentStreamingMessageElements = {}; // Added module-level variable
+
 import { escapeHTML, getCurrentTimestamp } from './utils.js';
 import * as config from './config.js';
 import * as DOM from './domElements.js'; // Import all exported elements
@@ -32,24 +34,59 @@ export const displayMessage = (text, type, targetAreaId, agentId = null, agentPe
 
         let messageToAppendTo = null;
 
-        // --- REVISED Logic for grouping response chunks in internal comms ---
+        // --- NEW Logic for grouping response chunks using currentStreamingMessageElements ---
         if (type === 'response_chunk' && targetAreaId === 'internal-comms-area' && agentId) {
-            // Find the last message element specifically from this agent
-            const agentMessages = messageArea.querySelectorAll(`.message[data-agent-id="${agentId}"]`);
-            const lastAgentMessage = agentMessages.length > 0 ? agentMessages[agentMessages.length - 1] : null;
+            messageToAppendTo = currentStreamingMessageElements[agentId];
 
-            // Check if that last message from this agent was also a response chunk
-            if (lastAgentMessage && lastAgentMessage.classList.contains('response_chunk')) {
-                messageToAppendTo = lastAgentMessage;
-                console.debug(`UI: Will append chunk to last message element for agent ${agentId} in #${targetAreaId}.`);
+            if (messageToAppendTo) {
+                // Validate the tracked element
+                const stillInDom = document.body.contains(messageToAppendTo);
+                const stillChunk = messageToAppendTo.classList.contains('response_chunk');
+                if (!stillInDom || !stillChunk) {
+                    console.log(`UI_CHUNK_DEBUG: Tracked element for ${agentId} is no longer valid (InDOM: ${stillInDom}, IsChunk: ${stillChunk}). ID: ${messageToAppendTo.getAttribute('data-message-id') || 'N/A'}`);
+                    messageToAppendTo = null;
+                    currentStreamingMessageElements[agentId] = null; // Clear invalid tracking
+                } else {
+                    console.log(`UI_CHUNK_DEBUG: Using valid tracked element for ${agentId}. ID: ${messageToAppendTo.getAttribute('data-message-id')}`);
+                }
             } else {
-                 console.debug(`UI: Will create new message element for chunk from agent ${agentId} in #${targetAreaId}. No suitable prior chunk found.`);
+                 console.log(`UI_CHUNK_DEBUG: No actively tracked streaming element for ${agentId}. Will create new or find previous.`);
+                 // Fallback to previous logic if no actively tracked element (e.g., after page reload or if logic was different)
+                 // This also covers the case where an agent might have multiple "streams" if not cleared properly.
+                 // For now, we want the new logic to be primary for active streams.
+                 // The old debug logs can remain for comparison during testing.
+                const agentMessages = messageArea.querySelectorAll(`.message[data-agent-id="${agentId}"]`);
+                const lastAgentMessage = agentMessages.length > 0 ? agentMessages[agentMessages.length - 1] : null;
+
+                if (lastAgentMessage) {
+                    console.log(`UI_CHUNK_DEBUG (Fallback): Found lastAgentMessage for ${agentId}. ID: ${lastAgentMessage.getAttribute('data-message-id') || 'N/A'}, Classes: ${lastAgentMessage.className}, HTML: ${lastAgentMessage.outerHTML.substring(0, 150)}`);
+                    console.log(`UI_CHUNK_DEBUG (Fallback): lastAgentMessage.classList.contains('response_chunk') is ${lastAgentMessage.classList.contains('response_chunk')}`);
+                    if (lastAgentMessage.classList.contains('response_chunk')) {
+                        // messageToAppendTo = lastAgentMessage; // Do not set here, let new element be created and tracked
+                        console.log(`UI_CHUNK_DEBUG (Fallback): lastAgentMessage for ${agentId} is a chunk, but new tracking logic will create a new element as primary.`);
+                    }
+                } else {
+                    console.log(`UI_CHUNK_DEBUG (Fallback): No lastAgentMessage found for ${agentId}.`);
+                }
             }
         }
-        // --- End REVISED chunk grouping logic ---
+        // --- End NEW chunk grouping logic ---
 
-        if (messageToAppendTo) {
-            // Append content to the existing message element's content span
+        // If any message for internal-comms with an agentId is NOT a response_chunk,
+        // or if it IS a response_chunk BUT we are about to create a new element for it (messageToAppendTo is null),
+        // then we should clear the tracked streaming element for that agent.
+        if (targetAreaId === 'internal-comms-area' && agentId) {
+            if (type !== 'response_chunk' || !messageToAppendTo) {
+                if (currentStreamingMessageElements[agentId]) {
+                    console.log(`UI_CHUNK_DEBUG: Clearing tracked stream element for ${agentId} due to new message type '${type}' or new chunk element creation.`);
+                    currentStreamingMessageElements[agentId] = null;
+                }
+            }
+        }
+
+
+        if (messageToAppendTo) { // This means we are appending to an existing, valid, tracked element
+            console.log(`UI_CHUNK_DEBUG: Appending text to tracked stream element for ${agentId}. ID: ${messageToAppendTo.getAttribute('data-message-id')}`);
             const contentSpan = messageToAppendTo.querySelector('.message-content');
             if (contentSpan) {
                 // Append text content
@@ -72,6 +109,8 @@ export const displayMessage = (text, type, targetAreaId, agentId = null, agentPe
 
             const messageElement = document.createElement('div');
             messageElement.classList.add('message', type); // Use original type for class
+            // Add unique message ID
+            messageElement.setAttribute('data-message-id', `msg-${Date.now()}-${Math.floor(Math.random() * 1000)}`);
             if (agentId) {
                 messageElement.setAttribute('data-agent-id', agentId);
                 // Keep specific class for agent responses in conversation for potential specific styling
@@ -126,6 +165,12 @@ export const displayMessage = (text, type, targetAreaId, agentId = null, agentPe
             messageElement.appendChild(contentSpan); // Append the content span
 
             messageArea.appendChild(messageElement);
+
+            // If this new element is a response_chunk in internal comms, track it.
+            if (type === 'response_chunk' && targetAreaId === 'internal-comms-area' && agentId) {
+                currentStreamingMessageElements[agentId] = messageElement;
+                console.log(`UI_CHUNK_DEBUG: NEW stream element created and TRACKED for ${agentId}. ID: ${messageElement.getAttribute('data-message-id')}`);
+            }
             // console.debug(`Message appended to #${targetAreaId}.`); // Less verbose
         }
 

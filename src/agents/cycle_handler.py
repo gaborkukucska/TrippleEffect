@@ -457,6 +457,35 @@ class AgentCycleHandler:
                         await self._manager.send_to_ui(event)
                     else: # For "response_chunk", "status"
                         await self._manager.send_to_ui(event)
+
+                elif event_type == "pm_startup_missing_task_list_after_think":
+                    logger.warning(
+                        f"CycleHandler '{agent.agent_id}': PM startup missing task list after think. "
+                        f"Agent ID: {event.get('agent_id')}. Forcing retry with feedback."
+                    )
+                    # Append feedback to PM's message history
+                    feedback_content = (
+                        "[Framework Feedback for PM Retry]\n"
+                        "Your previous output consisted only of a <think> block. "
+                        "In the PM_STATE_STARTUP, you must provide the <task_list> XML structure after your thoughts. "
+                        "Please ensure your entire response includes the XML task list as specified in your instructions."
+                    )
+                    agent.message_history.append({"role": "system", "content": feedback_content})
+                    if context.current_db_session_id:
+                        await self._manager.db_manager.log_interaction(
+                            session_id=context.current_db_session_id,
+                            agent_id=agent.agent_id,
+                            role="system_feedback",
+                            content=feedback_content
+                        )
+
+                    context.action_taken_this_cycle = True # An action (feedback) was taken
+                    context.cycle_completed_successfully = False # Cycle did not achieve its goal
+                    context.needs_reactivation_after_cycle = True # Force reschedule
+                    # No specific error object, but cycle was not successful in its primary aim
+                    context.last_error_content = "PM startup missing task list after think."
+                    await self._manager.send_to_ui({**event, "feedback_provided": True}) # Notify UI if helpful
+                    break # Stop processing further events in this cycle
                 else:
                     logger.warning(f"CycleHandler: Unknown event type '{event_type}' from agent '{agent.agent_id}'.")
             

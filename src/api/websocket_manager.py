@@ -117,10 +117,16 @@ async def websocket_endpoint(websocket: WebSocket):
                     action = message_data.get("action")
                     original_text = message_data.get("original_text")
                     user_feedback = message_data.get("user_feedback")
+                    agent_id_for_cg_response = message_data.get("agent_id")
 
-                    # Assumption: The response is for the 'admin_ai' agent, which is the one that gets paused.
-                    # A more robust solution might involve the frontend sending the agent_id or the backend tracking it.
-                    agent_id_for_cg_response = "admin_ai"
+                    if not agent_id_for_cg_response:
+                        logger.error(
+                            f"Received cg_concern_response from {client_host} without agent_id. "
+                            f"Cannot correctly target agent for resolution. Defaulting to 'admin_ai' with a warning."
+                        )
+                        agent_id_for_cg_response = "admin_ai" # Fallback as per instructions
+                    else:
+                        logger.info(f"CG concern response is for agent_id: {agent_id_for_cg_response}")
 
                     if action and original_text is not None: # user_feedback can be None
                         if action == "acknowledge_cg_concern":

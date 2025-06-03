@@ -189,7 +189,7 @@ export const handleWebSocketMessage = (data) => {
 
                 let buttonsHTML = '';
                 defaultOptions.forEach(option => {
-                    buttonsHTML += `<button class="message-button" data-command="${escapeHTML(option.command)}" data-original-text="${originalReviewedText}">${escapeHTML(option.text)}</button>`;
+                    buttonsHTML += `<button class="message-button" data-command="${escapeHTML(option.command)}" data-original-text="${originalReviewedText}" data-agent-id="${escapeHTML(data.agent_id || 'unknown_agent')}">${escapeHTML(option.text)}</button>`;
                 });
 
                 displayContent = `
@@ -343,11 +343,18 @@ export const handleMessageButtonClick = (event) => {
 
             if (originalText !== undefined) { // CG Concern Response Path
                 console.log("Handler: 'originalText' condition met. Processing as cg_concern button.");
+                const agentIdForConcern = actualMessageButton.dataset.agentId;
+                if (!agentIdForConcern || agentIdForConcern === 'unknown_agent') {
+                    console.warn("Handler: agentIdForConcern is missing or 'unknown_agent' on the CG concern button. This may lead to issues targeting the correct agent for resolution.");
+                    // Potentially send without agent_id or handle as an error, depending on backend strictness
+                }
+
                 messageObject = {
                     type: "cg_concern_response",
                     action: command,
                     original_text: originalText,
-                    user_feedback: null
+                    user_feedback: null,
+                    agent_id: agentIdForConcern // Add the agent_id to the message
                 };
                 messageToSend = JSON.stringify(messageObject);
                 ui.displayMessage(escapeHTML(`You chose to: ${buttonText}`), 'user', 'conversation-area', 'human_user');
