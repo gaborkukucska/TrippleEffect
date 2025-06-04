@@ -226,7 +226,7 @@ async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optiona
         # This part executes if:
         # 1. The original provider was remote.
         # 2. The original provider was local, but round-robin failed (e.g., list empty, model not found on any candidate).
-        
+
         # Use original_specific_provider_name and model_id_suffix from the comprehensive sort
         # Perform standard checks for this specific provider
 
@@ -302,71 +302,81 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
         config_model = final_agent_config_data.get("model") # Canonical name like 'ollama/model...'
         use_config_value = False
 
-        # --- Step 1: Attempt to use config.yaml values ---
         if config_provider and config_model:
             logger.info(f"Lifecycle: Agent '{agent_id}' defined in config.yaml: Provider='{config_provider}', Model='{config_model}'")
-        # Check if base provider type is configured/discovered
-        if config_provider:
+
+            # --- New Logic for Generic Local Provider Round-Robin ---
             if config_provider in ["ollama", "litellm"]:
-                # For local providers, check if they are discovered by ModelRegistry
-                discovered_providers = list(model_registry.available_models.keys())
-                matching_local_providers = [p for p in discovered_providers if p.startswith(f"{config_provider}-local-")]
-                if not matching_local_providers:
-                    logger.warning(f"Lifecycle: Local provider '{config_provider}' specified for agent '{agent_id}' is not discovered. Ignoring config.")
-                    use_config_value = False
+                logger.info(f"Lifecycle: Config provider '{config_provider}' is a generic local type. Attempting round-robin mapping.")
+                specific_local_provider_list = manager.available_local_providers_list.get(config_provider)
+
+                if specific_local_provider_list and len(specific_local_provider_list) > 0:
+                    model_suffix_from_config = None
+                    if config_model:
+                        if config_model.startswith(f"{config_provider}/"):
+                            model_suffix_from_config = config_model[len(config_provider)+1:]
+                        else:
+                            # If no prefix, assume the whole string is the suffix.
+                            # This might be risky if users put "ollama/model" as provider and "model" as model.
+                            # The recommended way is "ollama" as provider and "ollama/model" or "model" as model.
+                            model_suffix_from_config = config_model
+                            logger.warning(f"Lifecycle: Model '{config_model}' for local provider '{config_provider}' does not have expected prefix '{config_provider}/'. Using full string as suffix for matching: '{model_suffix_from_config}'.")
+
+
+                    if model_suffix_from_config:
+                        round_robin_start_index = manager.local_api_usage_round_robin_index.get(config_provider, 0)
+                        for i in range(len(specific_local_provider_list)):
+                            current_attempt_index = (round_robin_start_index + i) % len(specific_local_provider_list)
+                            candidate_specific_provider = specific_local_provider_list[current_attempt_index]
+
+                            if manager.model_registry.is_model_available(candidate_specific_provider, model_suffix_from_config):
+                                final_provider_for_creation = candidate_specific_provider
+                                # Ensure final_model_canonical has the prefix
+                                if not config_model.startswith(f"{config_provider}/"):
+                                    final_model_canonical = f"{config_provider}/{model_suffix_from_config}"
+                                else:
+                                    final_model_canonical = config_model
+
+                                manager.local_api_usage_round_robin_index[config_provider] = (current_attempt_index + 1) % len(specific_local_provider_list)
+                                use_config_value = True
+                                selection_method = f"config.yaml (round-robin to {candidate_specific_provider})"
+                                logger.info(f"Lifecycle: Mapped generic '{config_provider}/{model_suffix_from_config}' to specific '{final_provider_for_creation}/{model_suffix_from_config}' via round-robin for agent '{agent_id}'.")
+                                break # Found a suitable specific provider
+                        if not use_config_value:
+                            logger.warning(f"Lifecycle: Model '{model_suffix_from_config}' for generic provider '{config_provider}' not found on any specific instances: {specific_local_provider_list}. Agent '{agent_id}' will fallback to auto-selection if enabled.")
+                    else:
+                        logger.warning(f"Lifecycle: Could not determine model suffix from '{config_model}' for generic provider '{config_provider}'. Agent '{agent_id}' will fallback to auto-selection.")
                 else:
-                    use_config_value = True
-            else:
-                # For remote providers, check if they are configured in .env
+                    logger.warning(f"Lifecycle: Generic local provider '{config_provider}' specified for agent '{agent_id}', but no specific instances found in `available_local_providers_list`. Fallback to auto-selection.")
+            # --- End New Logic for Generic Local Provider Round-Robin ---
+
+            # --- Existing Logic for Remote Providers or Specific Local (if new logic didn't set use_config_value) ---
+            if not use_config_value and config_provider not in ["ollama", "litellm"]: # Only run this for remote or if local RR failed
                 provider_configured = settings.is_provider_configured(config_provider)
                 if not provider_configured:
-                    use_config_value = False
+                    logger.warning(f"Lifecycle: Remote provider '{config_provider}' for agent '{agent_id}' not configured in .env. Ignoring config.")
+                    # use_config_value remains False
                 else:
-                # Validate format and get model suffix
-                    is_local_provider_cfg = config_provider in ["ollama", "litellm"]
-                    model_id_suffix = None
-                    format_valid = True
-
-                if is_local_provider_cfg:
-                    if config_model.startswith(f"{config_provider}/"):
-                        model_id_suffix = config_model[len(config_provider)+1:]
-                    else:
-                        logger.warning(f"Lifecycle: Agent '{agent_id}' model '{config_model}' in config.yaml must start with '{config_provider}/'. Ignoring config.")
-                        format_valid = False
-                elif config_model.startswith("ollama/") or config_model.startswith("litellm/"):
-                     logger.warning(f"Lifecycle: Agent '{agent_id}' model '{config_model}' in config.yaml starts with local prefix, but provider is '{config_provider}'. Ignoring config.")
-                     format_valid = False
-                else: # Remote provider
-                     model_id_suffix = config_model # Use full name for check
-
-                # Check availability if format was valid
-                if format_valid and model_id_suffix is not None:
-                    found_on_specific_provider = None
-                    if is_local_provider_cfg:
-                        # Search discovered local providers for this model suffix
-                        matching_providers = [p for p in model_registry.get_available_models_dict() if p.startswith(f"{config_provider}-local-") or p == f"{config_provider}-proxy"]
-                        for specific_provider_name in matching_providers:
-                            if model_registry.is_model_available(specific_provider_name, model_id_suffix):
-                                found_on_specific_provider = specific_provider_name
-                                break # Found it
-                        if not found_on_specific_provider:
-                            logger.warning(f"Lifecycle: Model suffix '{model_id_suffix}' (from '{config_model}') for agent '{agent_id}' not found under any discovered '{config_provider}-local-*' or '{config_provider}-proxy' providers. Ignoring config.")
+                    # Validate format and get model suffix (this part is mostly for remote)
+                    model_id_suffix_remote = None
+                    if config_model.startswith("ollama/") or config_model.startswith("litellm/"):
+                        logger.warning(f"Lifecycle: Agent '{agent_id}' model '{config_model}' in config.yaml starts with local prefix, but provider is remote '{config_provider}'. Ignoring config.")
+                        # use_config_value remains False
+                    else: # Remote provider
+                        model_id_suffix_remote = config_model # Use full name for check
+                        if not model_registry.is_model_available(config_provider, model_id_suffix_remote):
+                            logger.warning(f"Lifecycle: Model '{model_id_suffix_remote}' (from '{config_model}') specified for agent '{agent_id}' in config is not available via registry for (remote) provider '{config_provider}'. Ignoring config.")
+                            # use_config_value remains False
                         else:
-                            logger.info(f"Lifecycle: Using agent '{agent_id}' model '{model_id_suffix}' from config on discovered provider '{found_on_specific_provider}'.")
-                            final_provider_for_creation = found_on_specific_provider
-                            final_model_canonical = config_model # Keep original canonical name
+                            logger.info(f"Lifecycle: Using agent '{agent_id}' (remote) provider/model specified in config.yaml: {config_provider}/{config_model}")
+                            final_provider_for_creation = config_provider
+                            final_model_canonical = config_model
                             use_config_value = True
-                    else: # Remote provider check
-                        if not model_registry.is_model_available(config_provider, model_id_suffix):
-                             logger.warning(f"Lifecycle: Model '{model_id_suffix}' (from '{config_model}') specified for agent '{agent_id}' in config is not available via registry for provider '{config_provider}'. Ignoring config.")
-                        else:
-                             logger.info(f"Lifecycle: Using agent '{agent_id}' provider/model specified in config.yaml: {config_provider}/{config_model}")
-                             final_provider_for_creation = config_provider
-                             final_model_canonical = config_model
-                             use_config_value = True
+            elif not use_config_value and config_provider in ["ollama", "litellm"]:
+                 logger.info(f"Lifecycle: Round-robin for generic local provider '{config_provider}' did not yield a usable model for agent '{agent_id}'. Will attempt auto-selection.")
 
-        # --- Step 2: Fallback to automatic selection if config wasn't valid, specified, or available ---
-        if not use_config_value:
+        # --- Fallback to automatic selection if config wasn't valid, specified, or available ---
+        if not use_config_value: # This flag is True if either generic local RR succeeded or remote direct config succeeded
             logger.info(f"Lifecycle: Agent '{agent_id}' provider/model not specified or invalid/unavailable in config.yaml. Attempting automatic selection...")
             selected_provider, selected_model_suffix = await _select_best_available_model(manager) # Returns specific instance name for local
             selection_method = "automatic"
