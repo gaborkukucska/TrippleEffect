@@ -93,6 +93,8 @@ class AgentManager:
         self.db_manager = db_manager
         self.current_project_db_id: Optional[int] = None
         self.current_session_db_id: Optional[int] = None
+        self.local_api_usage_round_robin_index: Dict[str, int] = {}
+        self.available_local_providers_list: Dict[str, List[str]] = {}
         
         logger.info("AgentManager __init__: Instantiating ProviderKeyManager...")
         self.key_manager = ProviderKeyManager(settings.PROVIDER_API_KEYS, settings)
@@ -127,6 +129,40 @@ class AgentManager:
     async def _ensure_default_db_session(self):
         if self.current_session_db_id is None:
              await self.set_project_session_context(DEFAULT_PROJECT_NAME, f"startup_{int(time.time())}")
+
+    async def _initialize_local_provider_lists(self):
+        logger.info("AgentManager: Initializing local provider lists...")
+        if not hasattr(self.model_registry, 'available_models') or not self.model_registry.available_models:
+            logger.warning("AgentManager: model_registry.available_models is not available or empty. Skipping local provider initialization.")
+            return
+
+        local_providers_by_base: Dict[str, List[str]] = {}
+
+        for provider_name in self.model_registry.available_models.keys():
+            base_type = None
+            specific_provider_name = provider_name
+
+            if provider_name.startswith("ollama-local-"):
+                base_type = "ollama"
+            elif provider_name.startswith("litellm-local-"):
+                base_type = "litellm"
+            elif provider_name == "ollama-proxy":
+                base_type = "ollama" # Treat proxy as a type of local access
+            elif provider_name == "litellm-proxy":
+                base_type = "litellm" # Treat proxy as a type of local access
+
+            if base_type:
+                if base_type not in local_providers_by_base:
+                    local_providers_by_base[base_type] = []
+                local_providers_by_base[base_type].append(specific_provider_name)
+
+        for base_type, providers in local_providers_by_base.items():
+            sorted_providers = sorted(providers)
+            self.available_local_providers_list[base_type] = sorted_providers
+            self.local_api_usage_round_robin_index[base_type] = 0
+            logger.info(f"AgentManager: Discovered local providers for base type '{base_type}': {sorted_providers}")
+
+        logger.info("AgentManager: Local provider list initialization complete.")
 
     async def set_project_session_context(self, project_name: str, session_name: str, loading: bool = False):
         logger.info(f"Setting context. Project: {project_name}, Session: {session_name}, Loading: {loading}")

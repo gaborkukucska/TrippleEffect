@@ -166,42 +166,102 @@ async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optiona
     current_model_tier = settings.MODEL_TIER
 
     for model_info in comprehensively_sorted_models:
-        specific_provider_name = model_info["provider"] # This is the specific name like "ollama-local-..."
+        original_specific_provider_name = model_info["provider"] # This is the specific name like "ollama-local-..."
         model_id_suffix = model_info["id"] # This is the suffix like "llama3"
         num_params = model_info.get("num_parameters_sortable", 0)
         perf_score = model_info.get("performance_score", 0.0)
 
-        # Determine base provider type (e.g., "ollama", "openrouter")
-        base_provider_type = specific_provider_name.split("-local-")[0].split("-proxy")[0]
+        # Determine base provider type (e.g., "ollama", "openrouter") from the original provider in the sorted list
+        base_provider_type = original_specific_provider_name.split("-local-")[0].split("-proxy")[0]
         
-        is_local_provider = base_provider_type in ["ollama", "litellm"]
+        is_original_provider_local = base_provider_type in ["ollama", "litellm"]
 
-        # Tier Check
-        if current_model_tier == "LOCAL" and not is_local_provider:
-            logger.debug(f"Skipping '{specific_provider_name}/{model_id_suffix}': Tier is LOCAL, model is remote.")
+        # Tier Check (applies to the model itself, regardless of how it's accessed)
+        if current_model_tier == "LOCAL" and not is_original_provider_local:
+            # This check implies that if MODEL_TIER is LOCAL, we only consider models whose original listing was local.
+            logger.debug(f"Skipping '{original_specific_provider_name}/{model_id_suffix}': Tier is LOCAL, model's original provider is remote.")
             continue
         
         if current_model_tier == "FREE":
             is_free_model = ":free" in model_id_suffix.lower()
-            if not is_local_provider and not is_free_model:
-                logger.debug(f"Skipping '{specific_provider_name}/{model_id_suffix}': Tier is FREE, model is remote and not free.")
+            # If the original provider is remote AND the model is not free, skip.
+            # Local models are considered "free" in terms of API cost for this tier.
+            if not is_original_provider_local and not is_free_model:
+                logger.debug(f"Skipping '{original_specific_provider_name}/{model_id_suffix}': Tier is FREE, model's original provider is remote and model is not designated as free.")
                 continue
-        
-        # Key/Configuration Check for remote providers
-        if not is_local_provider:
-            if not settings.is_provider_configured(base_provider_type):
-                logger.debug(f"Skipping '{specific_provider_name}/{model_id_suffix}': Remote provider '{base_provider_type}' not configured.")
-                continue
-            if await manager.key_manager.is_provider_depleted(base_provider_type):
-                logger.debug(f"Skipping '{specific_provider_name}/{model_id_suffix}': Keys for remote provider '{base_provider_type}' depleted.")
-                continue
-        
-        # If all checks pass, this is the best model
-        logger.info(f"Automatic selection (Comprehensive Sort): Selected {specific_provider_name}/{model_id_suffix} "
-                    f"(Size: {num_params}, Score: {perf_score:.2f}, Tier: {current_model_tier})")
-        return specific_provider_name, model_id_suffix
 
-    logger.error("Automatic model selection failed: No available models found after comprehensive sorting and filtering.")
+        # Round-Robin Logic for Local Providers
+        if is_original_provider_local:
+            logger.debug(f"Considering local model '{model_id_suffix}' from base type '{base_provider_type}'. Attempting round-robin.")
+            specific_local_provider_list = manager.available_local_providers_list.get(base_provider_type)
+
+            if specific_local_provider_list and len(specific_local_provider_list) > 0:
+                current_index = manager.local_api_usage_round_robin_index.get(base_provider_type, 0)
+
+                for attempt_offset in range(len(specific_local_provider_list)):
+                    current_attempt_index = (current_index + attempt_offset) % len(specific_local_provider_list)
+                    candidate_specific_provider_name = specific_local_provider_list[current_attempt_index]
+
+                    # Verify the chosen model_id_suffix is available on this specific candidate local provider
+                    if manager.model_registry.is_model_available(candidate_specific_provider_name, model_id_suffix):
+                        # Key/Configuration Check for this specific local provider (e.g. if it needs a specific key for proxy access)
+                        # This check is often simpler for local, but good for consistency if local proxies might need keys
+                        if base_provider_type in settings.PROVIDER_API_KEYS and settings.PROVIDER_API_KEYS[base_provider_type]:
+                            if await manager.key_manager.is_provider_depleted(base_provider_type): # Check depletion for the base type
+                                logger.debug(f"Skipping local round-robin candidate '{candidate_specific_provider_name}/{model_id_suffix}': Keys for base provider '{base_provider_type}' depleted.")
+                                continue # Try next in round-robin or fall through
+
+                        manager.local_api_usage_round_robin_index[base_provider_type] = (current_attempt_index + 1) % len(specific_local_provider_list)
+                        logger.info(f"Automatic selection (Round-Robin Local): Selected {candidate_specific_provider_name}/{model_id_suffix} "
+                                    f"(Size: {num_params}, Score: {perf_score:.2f}, Tier: {current_model_tier}, RR Index: {manager.local_api_usage_round_robin_index[base_provider_type]})")
+                        return candidate_specific_provider_name, model_id_suffix
+                    else:
+                        logger.debug(f"Local round-robin: Model '{model_id_suffix}' not available on candidate '{candidate_specific_provider_name}'. Trying next.")
+
+                logger.warning(f"Local round-robin: Model '{model_id_suffix}' (base type '{base_provider_type}') not found on any configured local providers: {specific_local_provider_list}. Falling through.")
+            else:
+                logger.debug(f"Local round-robin: No specific local providers configured or available for base type '{base_provider_type}'. Falling through.")
+
+        # Fallback to Original Selection or Remote Provider Logic
+        # This part executes if:
+        # 1. The original provider was remote.
+        # 2. The original provider was local, but round-robin failed (e.g., list empty, model not found on any candidate).
+        
+        # Use original_specific_provider_name and model_id_suffix from the comprehensive sort
+        # Perform standard checks for this specific provider
+
+        # Re-check key/configuration for the original_specific_provider_name
+        # If it was local and round-robin failed, this check is for the specific instance from the sorted list.
+        # If it's remote, this is the standard remote check.
+
+        current_provider_to_check_base = original_specific_provider_name.split("-local-")[0].split("-proxy")[0] # Base for key checks etc.
+        is_current_provider_to_check_local = current_provider_to_check_base in ["ollama", "litellm"]
+
+        if not is_current_provider_to_check_local: # Standard remote provider checks
+            if not settings.is_provider_configured(current_provider_to_check_base):
+                logger.debug(f"Skipping '{original_specific_provider_name}/{model_id_suffix}': Remote provider '{current_provider_to_check_base}' not configured.")
+                continue
+            if await manager.key_manager.is_provider_depleted(current_provider_to_check_base):
+                logger.debug(f"Skipping '{original_specific_provider_name}/{model_id_suffix}': Keys for remote provider '{current_provider_to_check_base}' depleted.")
+                continue
+        else: # Local provider (original from sorted list, if round-robin failed or didn't apply)
+            # Check if this specific local provider instance needs a key (e.g. local proxy with API key)
+            if current_provider_to_check_base in settings.PROVIDER_API_KEYS and settings.PROVIDER_API_KEYS[current_provider_to_check_base]:
+                 if await manager.key_manager.is_provider_depleted(current_provider_to_check_base):
+                    logger.debug(f"Skipping fallback local '{original_specific_provider_name}/{model_id_suffix}': Keys for base provider '{current_provider_to_check_base}' depleted.")
+                    continue
+            # Additionally, ensure the model is actually available on this specific provider instance
+            # This is important if round-robin failed or was skipped.
+            if not manager.model_registry.is_model_available(original_specific_provider_name, model_id_suffix):
+                logger.debug(f"Skipping fallback local '{original_specific_provider_name}/{model_id_suffix}': Model not available on this specific instance.")
+                continue
+        
+        # If all checks pass for the original_specific_provider_name (either remote, or local fallback)
+        logger.info(f"Automatic selection (Direct/Fallback): Selected {original_specific_provider_name}/{model_id_suffix} "
+                    f"(Size: {num_params}, Score: {perf_score:.2f}, Tier: {current_model_tier})")
+        return original_specific_provider_name, model_id_suffix
+
+    logger.error("Automatic model selection failed: No available models found after comprehensive sorting, filtering, and round-robin attempts.")
     return None, None
 # --- END Automatic Model Selection Logic ---
 
