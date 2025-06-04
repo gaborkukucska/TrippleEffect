@@ -138,20 +138,18 @@ class AgentManager:
 
         local_providers_by_base: Dict[str, List[str]] = {}
 
-        for provider_name in self.model_registry.available_models.keys():
+        for specific_provider_name in self.model_registry.available_models.keys():
             base_type = None
-            specific_provider_name = provider_name
+            is_local = False
 
-            if provider_name.startswith("ollama-local-"):
+            if specific_provider_name.startswith("ollama-local") or specific_provider_name == "ollama-proxy":
                 base_type = "ollama"
-            elif provider_name.startswith("litellm-local-"):
+                is_local = True
+            elif specific_provider_name.startswith("litellm-local") or specific_provider_name == "litellm-proxy":
                 base_type = "litellm"
-            elif provider_name == "ollama-proxy":
-                base_type = "ollama" # Treat proxy as a type of local access
-            elif provider_name == "litellm-proxy":
-                base_type = "litellm" # Treat proxy as a type of local access
+                is_local = True
 
-            if base_type:
+            if is_local and base_type:
                 if base_type not in local_providers_by_base:
                     local_providers_by_base[base_type] = []
                 local_providers_by_base[base_type].append(specific_provider_name)
