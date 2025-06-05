@@ -46,6 +46,25 @@ logger = logging.getLogger(__name__)
 
 # PREFERRED_ADMIN_MODELS - No change needed to this list itself for now
 
+# --- Helper function to determine base provider type for class lookup ---
+def _get_base_provider_type_for_class_lookup(specific_provider_name: str) -> str:
+    """
+    Determines the base provider type from a specific provider name.
+    This is used for looking up the provider class in PROVIDER_CLASS_MAP.
+    Handles "ollama-local", "ollama-local-IP", "ollama-proxy" -> "ollama"
+    Handles "litellm-local", "litellm-local-IP", "litellm-proxy" -> "litellm"
+    Defaults to returning the original name for direct mappings like "openai".
+    """
+    if specific_provider_name.startswith("ollama-local") or specific_provider_name == "ollama-proxy":
+        return "ollama"
+    if specific_provider_name.startswith("litellm-local") or specific_provider_name == "litellm-proxy":
+        return "litellm"
+    # Add other known base types if they have dynamic naming conventions, e.g.
+    # if specific_provider_name.startswith("someother-local"):
+    #     return "someother"
+    return specific_provider_name # Default for direct names like "openai", "openrouter"
+# --- END Helper function ---
+
 # --- Automatic Model Selection Logic ---
 async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optional[str], Optional[str], Optional[str], Optional[int]]:
     """
@@ -708,14 +727,22 @@ async def _create_agent_internal(
         "config": final_config_for_agent_object
     }
 
-    ProviderClass = PROVIDER_CLASS_MAP.get(final_base_provider_name) # Use base name for class lookup
+    # Determine ProviderClass using the helper function
+    # provider_name is the specific name, e.g., "ollama-local", "ollama-local-ip", "openai"
+    base_name_for_class_lookup = _get_base_provider_type_for_class_lookup(provider_name)
+    ProviderClass = PROVIDER_CLASS_MAP.get(base_name_for_class_lookup)
+
     if not ProviderClass:
-        msg = f"Lifecycle: Unknown provider base type '{final_base_provider_name}' for class lookup."; logger.error(msg); return False, msg, None
+        msg = f"Lifecycle: Unknown provider base type '{base_name_for_class_lookup}' (derived from specific provider name '{provider_name}') for class lookup in PROVIDER_CLASS_MAP."
+        logger.error(msg)
+        return False, msg, None
+
+    logger.info(f"  Lifecycle: Determined ProviderClass '{ProviderClass.__name__}' for specific provider '{provider_name}' using base type '{base_name_for_class_lookup}'.")
 
     try:
         llm_provider_instance = ProviderClass(**final_provider_args) # These include client_init_kwargs
     except Exception as e:
-        msg = f"Lifecycle: Provider init failed for {final_base_provider_name} (specific: {provider_name}): {e}"; logger.error(msg, exc_info=True); return False, msg, None
+        msg = f"Lifecycle: Provider init failed for {base_name_for_class_lookup} (specific: {provider_name}): {e}"; logger.error(msg, exc_info=True); return False, msg, None
     logger.info(f"  Lifecycle: Instantiated provider {ProviderClass.__name__} for '{agent_id}'.")
 
     try:
