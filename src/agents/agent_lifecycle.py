@@ -66,7 +66,10 @@ def _get_base_provider_type_for_class_lookup(specific_provider_name: str) -> str
 # --- END Helper function ---
 
 # --- Automatic Model Selection Logic ---
-async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optional[str], Optional[str], Optional[str], Optional[int]]:
+async def _select_best_available_model( # Added current_rr_indices_override to signature
+    manager: 'AgentManager',
+    current_rr_indices_override: Optional[Dict[str, int]] = None
+) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[int]]:
     """
     Selects the best available and usable model.
     Prioritizes an "API-first Round-Robin" strategy for local providers.
@@ -75,6 +78,8 @@ async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optiona
 
     Args:
         manager: The AgentManager instance.
+        current_rr_indices_override: Optional dictionary to override starting RR indices
+                                     for specific base types during a sequence of selections (e.g., bootstrap).
 
     Returns:
         Tuple[Optional[str], Optional[str], Optional[str], Optional[int]]:
@@ -82,7 +87,7 @@ async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optiona
           The last two elements are None if selection was not API-first RR for a local provider.
     """
     logger.info("Attempting model selection: API-first Round-Robin strategy...")
-    local_provider_type_preference = ["ollama", "litellm"] # Define preference order
+    local_provider_type_preference = ["ollama", "litellm"]
 
     for base_provider_type in local_provider_type_preference:
         specific_instances_list = manager.available_local_providers_list.get(base_provider_type)
@@ -90,14 +95,18 @@ async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optiona
             logger.debug(f"API-first RR: No specific instances found for base type '{base_provider_type}'. Skipping.")
             continue
 
-        # Get the start index from the global manager index for this attempt sequence
-        rr_start_index_for_this_attempt_sequence = manager.local_api_usage_round_robin_index.get(base_provider_type, 0)
+        rr_index_to_use: int
+        if current_rr_indices_override and base_provider_type in current_rr_indices_override:
+            rr_index_to_use = current_rr_indices_override[base_provider_type]
+            logger.debug(f"API-first RR: Using overridden start index {rr_index_to_use} for base type '{base_provider_type}'.")
+        else:
+            rr_index_to_use = manager.local_api_usage_round_robin_index.get(base_provider_type, 0)
+            logger.debug(f"API-first RR: Using global start index {rr_index_to_use} for base type '{base_provider_type}'.")
 
-        logger.debug(f"API-first RR: Trying base type '{base_provider_type}' with {len(specific_instances_list)} instance(s), starting from global index {rr_start_index_for_this_attempt_sequence}.")
+        logger.debug(f"API-first RR: Trying base type '{base_provider_type}' with {len(specific_instances_list)} instance(s), starting attempt loop with index {rr_index_to_use}.")
 
-        for i in range(len(specific_instances_list)): # Attempt loop for this base_provider_type
-            # This is the actual index in specific_instances_list being tried
-            current_instance_list_idx = (rr_start_index_for_this_attempt_sequence + i) % len(specific_instances_list)
+        for i in range(len(specific_instances_list)):
+            current_instance_list_idx = (rr_index_to_use + i) % len(specific_instances_list)
             chosen_specific_instance = specific_instances_list[current_instance_list_idx]
 
             logger.debug(f"API-first RR: Attempting instance '{chosen_specific_instance}' (list index {current_instance_list_idx}) for base '{base_provider_type}'.")
@@ -352,8 +361,11 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
         # --- Fallback to automatic selection if config wasn't valid, specified, or available ---
         if not use_config_value: # This flag is True if either generic local RR succeeded or remote direct config succeeded
             logger.info(f"Lifecycle: Agent '{agent_id}' provider/model not specified or invalid/unavailable in config.yaml. Attempting automatic selection...")
-            # Update to handle new return signature
-            selected_provider, selected_model_suffix, rr_base_type, rr_idx_chosen = await _select_best_available_model(manager)
+            # Pass current_bootstrap_rr_indices to _select_best_available_model
+            selected_provider, selected_model_suffix, rr_base_type, rr_idx_chosen = await _select_best_available_model(
+                manager,
+                current_rr_indices_override=current_bootstrap_rr_indices
+            )
             selection_method = "automatic"
 
             if rr_base_type and rr_idx_chosen is not None: # API-first RR was successful for a local provider
