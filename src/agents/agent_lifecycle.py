@@ -285,6 +285,8 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
     formatted_available_models = model_registry.get_formatted_available_models()
     logger.debug("Lifecycle: Retrieved formatted available models for Admin AI prompt.")
 
+    current_bootstrap_rr_indices: Dict[str, int] = {} # Initialize local RR index tracker
+
     for agent_conf_entry in agent_configs_list:
         agent_id = agent_conf_entry.get("agent_id")
         if not agent_id:
@@ -324,7 +326,11 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
 
 
                     if model_suffix_from_config:
-                        round_robin_start_index = manager.local_api_usage_round_robin_index.get(config_provider, 0)
+                        # Use and update local RR index for bootstrap sequence
+                        if config_provider not in current_bootstrap_rr_indices:
+                            current_bootstrap_rr_indices[config_provider] = manager.local_api_usage_round_robin_index.get(config_provider, 0)
+                        round_robin_start_index = current_bootstrap_rr_indices[config_provider]
+
                         for i in range(len(specific_local_provider_list)):
                             current_attempt_index = (round_robin_start_index + i) % len(specific_local_provider_list)
                             candidate_specific_provider = specific_local_provider_list[current_attempt_index]
@@ -337,10 +343,11 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
                                 else:
                                     final_model_canonical = config_model
 
-                                manager.local_api_usage_round_robin_index[config_provider] = (current_attempt_index + 1) % len(specific_local_provider_list)
+                                # Update local tracker immediately for next agent in this bootstrap sequence
+                                current_bootstrap_rr_indices[config_provider] = (current_attempt_index + 1) % len(specific_local_provider_list)
                                 use_config_value = True
                                 selection_method = f"config.yaml (round-robin to {candidate_specific_provider})"
-                                logger.info(f"Lifecycle: Mapped generic '{config_provider}/{model_suffix_from_config}' to specific '{final_provider_for_creation}/{model_suffix_from_config}' via round-robin for agent '{agent_id}'.")
+                                logger.info(f"Lifecycle: Mapped generic '{config_provider}/{model_suffix_from_config}' to specific '{final_provider_for_creation}/{model_suffix_from_config}' via round-robin for agent '{agent_id}'. Next RR index for '{config_provider}' in this bootstrap: {current_bootstrap_rr_indices[config_provider]}")
                                 break # Found a suitable specific provider
                         if not use_config_value:
                             logger.warning(f"Lifecycle: Model '{model_suffix_from_config}' for generic provider '{config_provider}' not found on any specific instances: {specific_local_provider_list}. Agent '{agent_id}' will fallback to auto-selection if enabled.")
@@ -494,6 +501,15 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
                  elif isinstance(result, Exception): logger.error(f"--- Lifecycle: Failed bootstrap init '{original_agent_id_attempted}': {result} ---", exc_info=result)
                  else: error_msg = result[1] if isinstance(result, tuple) else str(result); logger.error(f"--- Lifecycle: Failed bootstrap init '{original_agent_id_attempted}': {error_msg} ---")
              except Exception as gather_err: logger.error(f"Lifecycle: Unexpected error processing bootstrap result for '{original_agent_id_attempted}': {gather_err}", exc_info=True)
+
+    # Update global round-robin indices from the local tracker after all bootstrap agents are processed
+    for base_type, final_index_value in current_bootstrap_rr_indices.items():
+        # Check if the base_type was actually used and index changed, or if it's a new base_type for global
+        # This avoids overwriting global if no agent of this base_type was round-robined during this bootstrap
+        if base_type in manager.local_api_usage_round_robin_index or final_index_value != manager.local_api_usage_round_robin_index.get(base_type, 0):
+             manager.local_api_usage_round_robin_index[base_type] = final_index_value
+             logger.info(f"Lifecycle: Updated global round-robin index for '{base_type}' to {final_index_value} after bootstrap sequence.")
+
     logger.info(f"Lifecycle: Finished bootstrap initialization. Active: {successful_ids}")
     if BOOTSTRAP_AGENT_ID not in manager.agents: logger.critical(f"CRITICAL: Admin AI ('{BOOTSTRAP_AGENT_ID}') failed to initialize! Check previous errors.")
 # --- END initialize_bootstrap_agents ---
