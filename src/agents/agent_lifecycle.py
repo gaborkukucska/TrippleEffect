@@ -83,13 +83,13 @@ async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optiona
 
             logger.debug(f"API-first RR: Attempting instance '{chosen_specific_instance}' (list index {current_instance_list_idx}) for base '{base_provider_type}'.")
 
-            current_model_tier = manager.settings.MODEL_TIER
+            current_model_tier = settings.MODEL_TIER
             is_chosen_instance_local = chosen_specific_instance.startswith(base_provider_type + "-local") or chosen_specific_instance.endswith("-proxy")
             if current_model_tier == "LOCAL" and not is_chosen_instance_local:
                 logger.debug(f"API-first RR: Instance '{chosen_specific_instance}' skipped. Tier is LOCAL, but instance doesn't appear local.")
                 continue
 
-            if base_provider_type in manager.settings.PROVIDER_API_KEYS and manager.settings.PROVIDER_API_KEYS[base_provider_type]:
+            if base_provider_type in settings.PROVIDER_API_KEYS and settings.PROVIDER_API_KEYS[base_provider_type]:
                 if await manager.key_manager.is_provider_depleted(base_provider_type):
                     logger.debug(f"API-first RR: Keys for base provider '{base_provider_type}' (for instance '{chosen_specific_instance}') depleted. Skipping this instance.")
                     continue
@@ -167,7 +167,7 @@ async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optiona
     )
     logger.debug(f"Comprehensive Fallback: Total models after sorting: {len(comprehensively_sorted_models)}")
 
-    current_model_tier = manager.settings.MODEL_TIER
+    current_model_tier = settings.MODEL_TIER
 
     for model_info in comprehensively_sorted_models:
         specific_provider_name = model_info["provider"]
@@ -189,14 +189,14 @@ async def _select_best_available_model(manager: 'AgentManager') -> Tuple[Optiona
                 continue
 
         if not is_provider_local_comp:
-            if not manager.settings.is_provider_configured(base_provider_type_comp):
+            if not settings.is_provider_configured(base_provider_type_comp):
                 logger.debug(f"Comprehensive Fallback: Skipping '{specific_provider_name}/{model_id_suffix}': Remote provider '{base_provider_type_comp}' not configured.")
                 continue
             if await manager.key_manager.is_provider_depleted(base_provider_type_comp):
                 logger.debug(f"Comprehensive Fallback: Skipping '{specific_provider_name}/{model_id_suffix}': Keys for remote provider '{base_provider_type_comp}' depleted.")
                 continue
         else:
-             if base_provider_type_comp in manager.settings.PROVIDER_API_KEYS and manager.settings.PROVIDER_API_KEYS[base_provider_type_comp]:
+             if base_provider_type_comp in settings.PROVIDER_API_KEYS and settings.PROVIDER_API_KEYS[base_provider_type_comp]:
                  if await manager.key_manager.is_provider_depleted(base_provider_type_comp):
                     logger.debug(f"Comprehensive Fallback: Skipping local '{specific_provider_name}/{model_id_suffix}': Keys for base provider '{base_provider_type_comp}' depleted.")
                     continue
