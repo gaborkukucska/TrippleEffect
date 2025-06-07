@@ -546,7 +546,13 @@ async def _create_agent_internal(
              msg = f"Lifecycle Error: Bootstrap agent '{agent_id}' reached _create_agent_internal without provider/model."
              logger.critical(msg); return False, msg, None
         logger.info(f"Lifecycle: Provider or model not specified for dynamic agent '{agent_id}'. Attempting automatic selection...")
-        selected_provider, selected_model_suffix = await _select_best_available_model(manager); selection_source = "automatic"
+        # Correctly unpack all four values returned by _select_best_available_model
+        # Note: current_rr_indices_override is not passed here, so _select_best_available_model will use global RR indices.
+        selected_provider, selected_model_suffix, rr_base_type, rr_idx_chosen = await _select_best_available_model(manager)
+        selection_source = "automatic" # Ensure this is on its own line or handled correctly
+
+        logger.debug(f"Dynamic agent auto-selection in _create_agent_internal: _select_best_available_model returned provider='{selected_provider}', model_suffix='{selected_model_suffix}', rr_base_type='{rr_base_type}', rr_idx_chosen='{rr_idx_chosen}'")
+
         if not selected_provider or not selected_model_suffix:
             msg = f"Lifecycle Error: Automatic model selection failed for agent '{agent_id}'. No suitable model found."
             logger.error(msg); return False, msg, None
