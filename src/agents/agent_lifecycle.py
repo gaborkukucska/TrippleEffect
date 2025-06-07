@@ -611,21 +611,26 @@ async def _create_agent_internal(
     )
     model_id_for_provider = None # ID to pass to the provider class (without prefix)
     validation_passed = True
-    error_msg_val = None
-    error_prefix = f"Lifecycle Error ({selection_source} model '{model_id_canonical}' for provider '{provider_name}'):"
+    error_msg_val = None # Will store specific error message
+    # error_prefix is defined earlier in the function.
+    # Example: error_prefix = f"Lifecycle Error (source: {selection_source}, model: '{model_id_canonical}', provider: '{provider_name}'):"
+    # Ensure error_prefix is defined before this block as per the original code structure.
 
     if is_local_provider:
         base_provider_type = _get_base_provider_type_for_class_lookup(provider_name) # e.g., "ollama"
 
-        # Correct check: model_id_canonical should start with the base_provider_type prefix
-        if model_id_canonical.startswith(f"{base_provider_type}/"):
-            model_id_for_provider = model_id_canonical[len(base_provider_type)+1:]
+        expected_prefix = f"{base_provider_type}/" # e.g., "ollama/"
+        if model_id_canonical.startswith(expected_prefix):
+            model_id_for_provider = model_id_canonical[len(expected_prefix):]
+            # validation_passed remains True
         else:
-            error_msg_val = f"{error_prefix} Local model ID '{model_id_canonical}' for provider '{provider_name}' must start with the base prefix like '{base_provider_type}/'."
+            # This is the correct error condition if the prefix for a local model is wrong.
+            error_msg_val = f"{error_prefix} Local model ID '{model_id_canonical}' for provider '{provider_name}' must start with the base prefix '{expected_prefix}'."
             logger.error(error_msg_val)
             validation_passed = False
-            model_id_for_provider = None
+            model_id_for_provider = None # Ensure it's None if validation fails here
     else: # Remote provider
+        # This part should correctly handle remote provider model IDs
         if model_id_canonical.startswith("ollama/") or model_id_canonical.startswith("litellm/"):
              error_msg_val = f"{error_prefix} Remote model ID '{model_id_canonical}' (for provider '{provider_name}') should not start with a local provider prefix like 'ollama/' or 'litellm/'."
              logger.error(error_msg_val)
@@ -633,10 +638,16 @@ async def _create_agent_internal(
              model_id_for_provider = None
         else:
              model_id_for_provider = model_id_canonical
+             # validation_passed remains True
 
+    # This check should exist after the if/else block:
     if not validation_passed:
-        # error_msg_val should already be set and logged if validation_passed is False
-        return False, error_msg_val or f"{error_prefix} Unknown validation error.", None
+        # error_msg_val should have been set by one of the failing conditions above.
+        # Provide a fallback message if error_msg_val is somehow not set, though it should be.
+        final_error_message = error_msg_val if error_msg_val else f"{error_prefix} Model ID validation failed for an unspecified reason."
+        # Ensure that the logged/returned message is the most specific one.
+        # logger.error(final_error_message) # Error is already logged where validation_passed is set to False.
+        return False, final_error_message, None
 
     # Final availability check using the model ID format the provider expects
     # Use the potentially dynamic provider_name for the check
