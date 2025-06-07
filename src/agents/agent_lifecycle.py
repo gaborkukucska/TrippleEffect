@@ -90,7 +90,9 @@ async def _select_best_available_model( # Added current_rr_indices_override to s
     local_provider_type_preference = ["ollama", "litellm"]
 
     for base_provider_type in local_provider_type_preference:
+        logger.debug(f"API-first RR: Accessing manager.available_local_providers_list. Current content: {manager.available_local_providers_list}")
         specific_instances_list = manager.available_local_providers_list.get(base_provider_type)
+        logger.debug(f"API-first RR: For base_provider_type '{base_provider_type}', retrieved specific_instances_list: {specific_instances_list}")
         if not specific_instances_list:
             logger.debug(f"API-first RR: No specific instances found for base type '{base_provider_type}'. Skipping.")
             continue
@@ -547,11 +549,15 @@ async def _create_agent_internal(
              logger.critical(msg); return False, msg, None
         logger.info(f"Lifecycle: Provider or model not specified for dynamic agent '{agent_id}'. Attempting automatic selection...")
         # Correctly unpack all four values returned by _select_best_available_model
-        # Note: current_rr_indices_override is not passed here, so _select_best_available_model will use global RR indices.
+        # Note: current_rr_indices_override is NOT passed here for dynamic agents, so _select_best_available_model
+        # will use the global manager.local_api_usage_round_robin_index.
         selected_provider, selected_model_suffix, rr_base_type, rr_idx_chosen = await _select_best_available_model(manager)
-        selection_source = "automatic" # Ensure this is on its own line or handled correctly
+        selection_source = "automatic"
 
         logger.debug(f"Dynamic agent auto-selection in _create_agent_internal: _select_best_available_model returned provider='{selected_provider}', model_suffix='{selected_model_suffix}', rr_base_type='{rr_base_type}', rr_idx_chosen='{rr_idx_chosen}'")
+
+        # If API-first RR was used by _select_best_available_model for a dynamic agent, it would have updated the global index itself.
+        # No special handling of rr_base_type or rr_idx_chosen is needed here in _create_agent_internal for dynamic agents.
 
         if not selected_provider or not selected_model_suffix:
             msg = f"Lifecycle Error: Automatic model selection failed for agent '{agent_id}'. No suitable model found."
