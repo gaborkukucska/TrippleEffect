@@ -615,25 +615,28 @@ async def _create_agent_internal(
     error_prefix = f"Lifecycle Error ({selection_source} model '{model_id_canonical}' for provider '{provider_name}'):"
 
     if is_local_provider:
-        # Expect canonical ID like "ollama/model_name" or "litellm/model_name"
-        # Provider name might be dynamic (e.g., ollama-local-127-0-0-1)
-        base_provider_type_val_suffix = provider_name.split('-local-')[0].split('-proxy')[0] # Get 'ollama' or 'litellm'
-        if model_id_canonical.startswith(f"{base_provider_type_val_suffix}/"):
-            model_id_for_provider = model_id_canonical[len(base_provider_type_val_suffix)+1:] # Strip prefix
+        base_provider_type = _get_base_provider_type_for_class_lookup(provider_name) # e.g., "ollama"
+
+        # Correct check: model_id_canonical should start with the base_provider_type prefix
+        if model_id_canonical.startswith(f"{base_provider_type}/"):
+            model_id_for_provider = model_id_canonical[len(base_provider_type)+1:]
         else:
-            error_msg_val = f"{error_prefix} Local model ID must start with prefix '{base_provider_type_val_suffix}/'."
+            error_msg_val = f"{error_prefix} Local model ID '{model_id_canonical}' for provider '{provider_name}' must start with the base prefix like '{base_provider_type}/'."
+            logger.error(error_msg_val)
             validation_passed = False
+            model_id_for_provider = None
     else: # Remote provider
-        # Expect canonical ID like "google/gemma..." - it should NOT start with a local prefix
         if model_id_canonical.startswith("ollama/") or model_id_canonical.startswith("litellm/"):
-             error_msg_val = f"{error_prefix} Remote model ID should not start with 'ollama/' or 'litellm/'."
+             error_msg_val = f"{error_prefix} Remote model ID '{model_id_canonical}' (for provider '{provider_name}') should not start with a local provider prefix like 'ollama/' or 'litellm/'."
+             logger.error(error_msg_val)
              validation_passed = False
+             model_id_for_provider = None
         else:
-             # Remote IDs (like OpenRouter's) can contain slashes, use the canonical ID directly
              model_id_for_provider = model_id_canonical
 
     if not validation_passed:
-        logger.error(error_msg_val); return False, error_msg_val, None
+        # error_msg_val should already be set and logged if validation_passed is False
+        return False, error_msg_val or f"{error_prefix} Unknown validation error.", None
 
     # Final availability check using the model ID format the provider expects
     # Use the potentially dynamic provider_name for the check
