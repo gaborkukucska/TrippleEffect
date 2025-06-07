@@ -603,7 +603,12 @@ async def _create_agent_internal(
 
     # --- Corrected Validation Logic ---
     # Determine if the final provider is local based on its name
-    is_local_provider = "-local-" in provider_name or "-proxy" in provider_name
+    is_local_provider = (
+        provider_name.startswith("ollama-local") or  # Catches "ollama-local" and "ollama-local-..."
+        provider_name == "ollama-proxy" or
+        provider_name.startswith("litellm-local") or # Catches "litellm-local" and "litellm-local-..."
+        provider_name == "litellm-proxy"
+    )
     model_id_for_provider = None # ID to pass to the provider class (without prefix)
     validation_passed = True
     error_msg_val = None
