@@ -126,8 +126,17 @@ async def lifespan(app: FastAPI):
     try:
         await model_registry.discover_models_and_providers()
         logger.info("Lifespan: Provider and model discovery completed.")
+
+        # Initialize local provider lists after model discovery
+        if agent_manager_instance:
+            logger.info("Lifespan: Initializing local provider lists in AgentManager...")
+            await agent_manager_instance._initialize_local_provider_lists()
+            logger.info("Lifespan: Local provider lists initialization completed.")
+        else:
+            logger.error("Lifespan: AgentManager instance not available for initializing local provider lists.")
+
     except Exception as e:
-        logger.error(f"Lifespan: Error during provider/model discovery: {e}", exc_info=True)
+        logger.error(f"Lifespan: Error during provider/model discovery or local provider init: {e}", exc_info=True)
 
     logger.info("Lifespan: Initializing bootstrap agents...")
     try:
