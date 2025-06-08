@@ -581,56 +581,52 @@ async def _create_agent_internal(
 
 
     # --- Provider/Model Validation ---
-    if not provider_name or not model_id_canonical:
-         msg = f"Lifecycle Error: Missing final provider or model for agent '{agent_id}'."; logger.error(msg); return False, msg, None
+    # Define error_prefix HERE, after provider_name, model_id_canonical, and selection_source are set
+    error_prefix = f"Lifecycle Error ({selection_source} model '{model_id_canonical}' for provider '{provider_name}'):"
 
-        # Check configuration/depletion using the *base* provider name if it's dynamic local
-    is_dynamic_local = "-local-" in provider_name or "-proxy" in provider_name
-    base_provider_name_val = provider_name.split('-local-')[0].split('-proxy')[0] if is_dynamic_local else provider_name
+    if not provider_name or not model_id_canonical: # This check might be redundant if auto-selection above guarantees these.
+         msg = f"{error_prefix} Missing final provider or model after all selection attempts.";
+         logger.error(msg); return False, msg, None
 
-    if is_dynamic_local:
-            # For dynamic local providers, check if they are discovered by ModelRegistry
-            if not model_registry.is_provider_discovered(provider_name):
-                msg = f"Lifecycle: Local provider '{provider_name}' (base for '{base_provider_name_val}', source: {selection_source}) not discovered by ModelRegistry."; logger.error(msg); return False, msg, None
-    else:
-            # For remote providers, check if they are configured in .env
-            if not settings.is_provider_configured(base_provider_name_val):
-                msg = f"Lifecycle: Provider '{base_provider_name_val}' (base for '{provider_name}', source: {selection_source}) not configured in .env settings."; logger.error(msg); return False, msg, None
+    is_dynamic_local = "-local-" in provider_name or "-proxy" in provider_name # This check seems too simplistic.
+    base_provider_name_val = _get_base_provider_type_for_class_lookup(provider_name) if is_dynamic_local else provider_name
 
-            # Key depletion check still applies to the base provider name for remote providers
+
+    if is_dynamic_local: # This refers to specific instances like ollama-local-ip, not generic "ollama-local"
+            if not model_registry.is_provider_discovered(provider_name): # Check specific instance
+                msg = f"{error_prefix} Specific local provider instance '{provider_name}' not discovered by ModelRegistry.";
+                logger.error(msg); return False, msg, None
+    else: # Non-dynamic specific name (e.g. "openai", "openrouter", or a direct "ollama-proxy" if not caught by is_dynamic_local)
+            if not settings.is_provider_configured(base_provider_name_val): # Check base config like "openai"
+                msg = f"{error_prefix} Provider '{base_provider_name_val}' not configured in .env settings.";
+                logger.error(msg); return False, msg, None
+
             if base_provider_name_val not in ["ollama", "litellm"] and await manager.key_manager.is_provider_depleted(base_provider_name_val):
-                msg = f"Lifecycle: Cannot create agent '{agent_id}': All keys for '{base_provider_name_val}' (base for '{provider_name}', source: {selection_source}) are quarantined."; logger.error(msg); return False, msg, None
+                msg = f"{error_prefix} All keys for '{base_provider_name_val}' are quarantined.";
+                logger.error(msg); return False, msg, None
 
-    # --- Corrected Validation Logic ---
-    # Determine if the final provider is local based on its name
-    is_local_provider = (
-        provider_name.startswith("ollama-local") or  # Catches "ollama-local" and "ollama-local-..."
+    # Determine if the final provider_name is local based on its name structure for model ID validation
+    is_local_provider_for_model_id_check = (
+        provider_name.startswith("ollama-local") or
         provider_name == "ollama-proxy" or
-        provider_name.startswith("litellm-local") or # Catches "litellm-local" and "litellm-local-..."
+        provider_name.startswith("litellm-local") or
         provider_name == "litellm-proxy"
     )
-    model_id_for_provider = None # ID to pass to the provider class (without prefix)
+    model_id_for_provider = None
     validation_passed = True
-    error_msg_val = None # Will store specific error message
-    # error_prefix is defined earlier in the function.
-    # Example: error_prefix = f"Lifecycle Error (source: {selection_source}, model: '{model_id_canonical}', provider: '{provider_name}'):"
-    # Ensure error_prefix is defined before this block as per the original code structure.
+    error_msg_val = None
 
-    if is_local_provider:
-        base_provider_type = _get_base_provider_type_for_class_lookup(provider_name) # e.g., "ollama"
-
-        expected_prefix = f"{base_provider_type}/" # e.g., "ollama/"
+    if is_local_provider_for_model_id_check:
+        base_provider_type = _get_base_provider_type_for_class_lookup(provider_name)
+        expected_prefix = f"{base_provider_type}/"
         if model_id_canonical.startswith(expected_prefix):
             model_id_for_provider = model_id_canonical[len(expected_prefix):]
-            # validation_passed remains True
         else:
-            # This is the correct error condition if the prefix for a local model is wrong.
             error_msg_val = f"{error_prefix} Local model ID '{model_id_canonical}' for provider '{provider_name}' must start with the base prefix '{expected_prefix}'."
             logger.error(error_msg_val)
             validation_passed = False
-            model_id_for_provider = None # Ensure it's None if validation fails here
+            model_id_for_provider = None
     else: # Remote provider
-        # This part should correctly handle remote provider model IDs
         if model_id_canonical.startswith("ollama/") or model_id_canonical.startswith("litellm/"):
              error_msg_val = f"{error_prefix} Remote model ID '{model_id_canonical}' (for provider '{provider_name}') should not start with a local provider prefix like 'ollama/' or 'litellm/'."
              logger.error(error_msg_val)
@@ -638,140 +634,120 @@ async def _create_agent_internal(
              model_id_for_provider = None
         else:
              model_id_for_provider = model_id_canonical
-             # validation_passed remains True
 
-    # This check should exist after the if/else block:
     if not validation_passed:
-        # error_msg_val should have been set by one of the failing conditions above.
-        # Provide a fallback message if error_msg_val is somehow not set, though it should be.
         final_error_message = error_msg_val if error_msg_val else f"{error_prefix} Model ID validation failed for an unspecified reason."
-        # Ensure that the logged/returned message is the most specific one.
-        # logger.error(final_error_message) # Error is already logged where validation_passed is set to False.
         return False, final_error_message, None
 
-    # Final availability check using the model ID format the provider expects
-    # Use the potentially dynamic provider_name for the check
-    if not model_registry.is_model_available(provider_name, model_id_for_provider):
+    if not model_registry.is_model_available(provider_name, model_id_for_provider): # Uses specific provider_name
         available_list_str = ", ".join(model_registry.get_available_models_list(provider=provider_name)) or "(None available)"
-        msg = f"Lifecycle: Model '{model_id_for_provider}' (derived from '{model_id_canonical}', source: {selection_source}) not available for provider '{provider_name}'. Available: [{available_list_str}]"
+        msg = f"{error_prefix} Model suffix '{model_id_for_provider}' not available for specific provider '{provider_name}'. Available: [{available_list_str}]"
         logger.error(msg); return False, msg, None
-    # --- End Corrected Validation ---
+    # --- End Provider/Model Validation ---
 
     logger.info(f"Lifecycle: Final model validated: Provider='{provider_name}', Model='{model_id_for_provider}'. Canonical stored: '{model_id_canonical}'.")
 
     # Assemble System Prompt
     role_specific_prompt = agent_config_data.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
-    # Allow empty string for system_prompt if AgentWorkflowManager will set it
-    if role_specific_prompt is None: # Ensure it's at least an empty string if missing from config
+    if role_specific_prompt is None:
         role_specific_prompt = ""
 
     final_system_prompt = role_specific_prompt
     if not loading_from_session and not is_bootstrap:
         logger.debug(f"Lifecycle: Constructing final prompt for dynamic agent '{agent_id}'...")
-        # Use the agent_type determined earlier to get standard instructions
-        from src.agents.constants import AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER # Local import
-        determined_agent_type = AGENT_TYPE_WORKER # Default for dynamic agents
+        from src.agents.constants import AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER
+        determined_agent_type = AGENT_TYPE_WORKER
         if agent_id == BOOTSTRAP_AGENT_ID: determined_agent_type = AGENT_TYPE_ADMIN
         elif agent_id.startswith("pm_"): determined_agent_type = AGENT_TYPE_PM
         
-        standard_instr_key = manager.workflow_manager._standard_instructions_map.get(determined_agent_type, "standard_framework_instructions") # Fallback
+        standard_instr_key = manager.workflow_manager._standard_instructions_map.get(determined_agent_type, "standard_framework_instructions")
         standard_info_template = settings.PROMPTS.get(standard_instr_key, "--- Standard Instructions Missing ---")
         
-        # Address book and other context will be formatted by WorkflowManager when it sets the final prompt.
-        # Here, we just ensure the `system_prompt` field (role_specific_prompt) is present.
-        final_system_prompt = role_specific_prompt # For dynamic agents, this is often minimal initially.
+        final_system_prompt = role_specific_prompt
         logger.info(f"Lifecycle: Using role-specific prompt for dynamic agent '{agent_id}'. WorkflowManager will finalize.")
     elif loading_from_session:
         final_system_prompt = agent_config_data.get("system_prompt", settings.DEFAULT_SYSTEM_PROMPT)
         logger.debug(f"Lifecycle: Using stored prompt for loaded agent '{agent_id}'.")
     elif is_bootstrap:
-        final_system_prompt = agent_config_data.get("system_prompt", "") # Use the one from config for bootstrap (might be empty)
+        final_system_prompt = agent_config_data.get("system_prompt", "")
         logger.debug(f"Lifecycle: Using pre-assembled prompt for bootstrap agent '{agent_id}'.")
 
     # Prepare Provider Arguments
     final_provider_args: Dict[str, Any] = {}; api_key_used = None
-    is_final_provider_local = "-local-" in provider_name or "-proxy" in provider_name
-    final_base_provider_name = provider_name.split('-local-')[0].split('-proxy')[0] if is_final_provider_local else provider_name
+    # Use final_base_provider_name for some arg lookups, but provider_name for direct URL if specific.
+    final_base_provider_name_for_args = _get_base_provider_type_for_class_lookup(provider_name)
 
 
-    if is_final_provider_local:
-        base_url = model_registry.get_reachable_provider_url(provider_name)
+    if is_local_provider_for_model_id_check: # Use the more accurate local check
+        base_url = model_registry.get_reachable_provider_url(provider_name) # provider_name is specific here
         if base_url: final_provider_args['base_url'] = base_url
-        # Use final_base_provider_name for key lookup
-        if final_base_provider_name in settings.PROVIDER_API_KEYS and settings.PROVIDER_API_KEYS[final_base_provider_name]:
-            key_config = await manager.key_manager.get_active_key_config(final_base_provider_name)
+
+        if final_base_provider_name_for_args in settings.PROVIDER_API_KEYS and settings.PROVIDER_API_KEYS[final_base_provider_name_for_args]:
+            key_config = await manager.key_manager.get_active_key_config(final_base_provider_name_for_args)
             if key_config is None:
-                msg = f"Lifecycle: Failed to get active API key for local provider '{provider_name}' (base type '{final_base_provider_name}') - keys might be configured but all quarantined."
+                msg = f"{error_prefix} Failed to get active API key for local provider '{provider_name}' (base type '{final_base_provider_name_for_args}') - keys might be configured but all quarantined."
                 logger.error(msg); return False, msg, None
             final_provider_args.update(key_config); api_key_used = final_provider_args.get('api_key')
             logger.info(f"Using configured API key ending '...{api_key_used[-4:] if api_key_used else 'N/A'}' for local provider '{provider_name}'.")
         else:
-            ProviderClassCheck = PROVIDER_CLASS_MAP.get(final_base_provider_name)
-            if final_base_provider_name == 'ollama' and ProviderClassCheck == OllamaProvider: final_provider_args['api_key'] = 'ollama'
-    else: # Remote provider (final_base_provider_name is same as provider_name)
-        final_provider_args = settings.get_provider_config(final_base_provider_name)
-        key_config = await manager.key_manager.get_active_key_config(final_base_provider_name)
+            ProviderClassCheck = PROVIDER_CLASS_MAP.get(final_base_provider_name_for_args)
+            if final_base_provider_name_for_args == 'ollama' and ProviderClassCheck == OllamaProvider: final_provider_args['api_key'] = 'ollama'
+    else: # Remote provider
+        final_provider_args = settings.get_provider_config(final_base_provider_name_for_args) # Use base name like "openai"
+        key_config = await manager.key_manager.get_active_key_config(final_base_provider_name_for_args)
         if key_config is None:
-            msg = f"Lifecycle: Failed to get active API key for remote provider '{final_base_provider_name}'."; logger.error(msg); return False, msg, None
+            msg = f"{error_prefix} Failed to get active API key for remote provider '{final_base_provider_name_for_args}'.";
+            logger.error(msg); return False, msg, None
         final_provider_args.update(key_config); api_key_used = final_provider_args.get('api_key')
 
     temperature = agent_config_data.get("temperature", settings.DEFAULT_TEMPERATURE)
     
     OPENAI_CLIENT_VALID_KWARGS = {"timeout", "http_client", "organization", "project"} 
     allowed_provider_keys = ['api_key', 'base_url', 'referer']
-    # Ensure _selection_method is preserved if it exists from bootstrap, but not duplicated if already in kwargs
     framework_agent_config_keys = {'provider', 'model', 'system_prompt', 'temperature', 'persona', 'agent_type', 'team_id', 'plan_description', '_selection_method', 'project_name_context', 'initial_plan_description'}
 
     client_init_kwargs = {}; api_call_options = {} 
 
     for k, v in agent_config_data.items():
         if k in framework_agent_config_keys or k in allowed_provider_keys: continue 
-        if final_base_provider_name == "ollama" and k in KNOWN_OLLAMA_OPTIONS: api_call_options[k] = v
-        elif final_base_provider_name in ["openai", "openrouter"] and k in OPENAI_CLIENT_VALID_KWARGS: client_init_kwargs[k] = v
+        if final_base_provider_name_for_args == "ollama" and k in KNOWN_OLLAMA_OPTIONS: api_call_options[k] = v
+        elif final_base_provider_name_for_args in ["openai", "openrouter"] and k in OPENAI_CLIENT_VALID_KWARGS: client_init_kwargs[k] = v
         else:
-            if not (final_base_provider_name == "ollama" and k in KNOWN_OLLAMA_OPTIONS) and \
-               not (final_base_provider_name in ["openai", "openrouter"] and k in OPENAI_CLIENT_VALID_KWARGS):
-                logger.debug(f"Lifecycle: Kwarg '{k}' from agent_config_data not explicitly handled for client init for provider '{final_base_provider_name}'. Will be passed as api_call_option.")
+            if not (final_base_provider_name_for_args == "ollama" and k in KNOWN_OLLAMA_OPTIONS) and \
+               not (final_base_provider_name_for_args in ["openai", "openrouter"] and k in OPENAI_CLIENT_VALID_KWARGS):
+                logger.debug(f"Lifecycle: Kwarg '{k}' from agent_config_data not explicitly handled for client init for provider '{final_base_provider_name_for_args}'. Will be passed as api_call_option.")
             api_call_options[k] = v
 
     final_provider_args = {**final_provider_args, **client_init_kwargs}
     final_provider_args = {k: v for k, v in final_provider_args.items() if v is not None}
 
-    # Construct the final config for the Agent object, ensuring all necessary fields are present
-    # This includes provider (specific name), model (canonical), system_prompt, persona, temperature
-    # and any other relevant kwargs (api_call_options, client_init_kwargs).
     final_config_for_agent_object = {
-        "provider": provider_name, # Specific name, e.g. ollama-local-ip
-        "model": model_id_canonical, # Canonical name, e.g. ollama/llama2
+        "provider": provider_name,
+        "model": model_id_canonical,
         "system_prompt": final_system_prompt,
         "persona": persona,
         "temperature": temperature,
-        **api_call_options, # These are options for the API call itself (e.g. Ollama's num_predict)
-        # client_init_kwargs are used for ProviderClass instantiation, not directly stored in agent.config usually
+        **api_call_options,
     }
-    # Add agent_type, which is determined based on agent_id pattern or if it's BOOTSTRAP_AGENT_ID
     from src.agents.constants import AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER
     agent_type = AGENT_TYPE_WORKER
     if agent_id == BOOTSTRAP_AGENT_ID: agent_type = AGENT_TYPE_ADMIN
     elif agent_id.startswith("pm_"): agent_type = AGENT_TYPE_PM
     final_config_for_agent_object["agent_type"] = agent_type
 
-    # Preserve these if they were in the original agent_config_data (e.g. from bootstrap or dynamic creation)
     if 'initial_plan_description' in agent_config_data:
         final_config_for_agent_object["initial_plan_description"] = agent_config_data['initial_plan_description']
     if 'project_name_context' in agent_config_data:
         final_config_for_agent_object["project_name_context"] = agent_config_data['project_name_context']
-    if '_selection_method' in agent_config_data: # From bootstrap/auto-selection
+    if '_selection_method' in agent_config_data:
         final_config_for_agent_object["_selection_method"] = agent_config_data['_selection_method']
 
 
-    final_agent_config_entry = { # This is what's passed to the Agent constructor
+    final_agent_config_entry = {
         "agent_id": agent_id,
         "config": final_config_for_agent_object
     }
 
-    # Determine ProviderClass using the helper function
-    # provider_name is the specific name, e.g., "ollama-local", "ollama-local-ip", "openai"
     base_name_for_class_lookup = _get_base_provider_type_for_class_lookup(provider_name)
     ProviderClass = PROVIDER_CLASS_MAP.get(base_name_for_class_lookup)
 
@@ -783,14 +759,14 @@ async def _create_agent_internal(
     logger.info(f"  Lifecycle: Determined ProviderClass '{ProviderClass.__name__}' for specific provider '{provider_name}' using base type '{base_name_for_class_lookup}'.")
 
     try:
-        llm_provider_instance = ProviderClass(**final_provider_args) # These include client_init_kwargs
+        llm_provider_instance = ProviderClass(**final_provider_args)
     except Exception as e:
         msg = f"Lifecycle: Provider init failed for {base_name_for_class_lookup} (specific: {provider_name}): {e}"; logger.error(msg, exc_info=True); return False, msg, None
     logger.info(f"  Lifecycle: Instantiated provider {ProviderClass.__name__} for '{agent_id}'.")
 
     try:
         agent = Agent(agent_config=final_agent_config_entry, llm_provider=llm_provider_instance, manager=manager)
-        agent.model = model_id_for_provider # This is the suffix, e.g. "llama2"
+        agent.model = model_id_for_provider
         if api_key_used: agent._last_api_key_used = api_key_used
     except Exception as e:
         msg = f"Lifecycle: Agent instantiation failed: {e}"; logger.error(msg, exc_info=True);
@@ -799,7 +775,6 @@ async def _create_agent_internal(
     
     from src.agents.constants import ADMIN_STATE_STARTUP, PM_STATE_STARTUP, WORKER_STATE_STARTUP
     initial_state_to_set = None
-    # Use agent.agent_type which was set inside Agent.__init__ based on final_config_for_agent_object
     if agent.agent_type == AGENT_TYPE_ADMIN: initial_state_to_set = ADMIN_STATE_STARTUP
     elif agent.agent_type == AGENT_TYPE_PM: initial_state_to_set = PM_STATE_STARTUP
     elif agent.agent_type == AGENT_TYPE_WORKER: initial_state_to_set = WORKER_STATE_STARTUP
@@ -810,7 +785,7 @@ async def _create_agent_internal(
             logger.info(f"Lifecycle: Set initial state for {agent.agent_type} agent '{agent_id}' to '{initial_state_to_set}' via WorkflowManager.")
         else:
             logger.error("WorkflowManager not available on manager. Cannot set initial agent state.")
-            agent.set_state(initial_state_to_set) # Fallback to direct set_state if WM fails
+            agent.set_state(initial_state_to_set)
 
     try: await asyncio.to_thread(agent.ensure_sandbox_exists)
     except Exception as e: logger.error(f"  Lifecycle: Error ensuring sandbox for '{agent_id}': {e}", exc_info=True)
