@@ -1,8 +1,8 @@
 <!-- # START OF FILE helperfiles/PROJECT_PLAN.md -->
 # Project Plan: TrippleEffect
 
-**Version:** 2.35
-**Date:** 2025-06-03
+**Version:** 2.36
+**Date:** 2025-07-29
 
 ## 1. Project Goals
 
@@ -13,7 +13,7 @@
 *   Implement **standardized communication layers**: *(Completed - UI Refactor Done)*
     *   **Layer 1:** User <-> Admin AI Interaction. *(Completed)*
     *   **Layer 2:** Admin AI <-> Local Dynamic Agents (within the same team or Admin). *(Completed)*
-    *   **Layer 3:** Admin AI <-> External Authorized Admin AIs / Groups (Federated Communication). *(Future Goal - Phase 27+)*
+    *   **Layer 3:** Admin AI <-> External Authorized Admin AIs / Groups (Federated Communication). *(Future Goal - Phase 29+)*
 *   Inject standardized context (incl. tools, time, health report for Admin) into dynamic agents' system prompts. *(Completed, Enhanced in P24/P25)*
 *   Empower agents to communicate and collaborate autonomously (within Layer 2). *(Completed)*
 *   Implement **session persistence** (filesystem), including project task data (`tasklib`). *(Completed, Enhanced in P23)*
@@ -28,7 +28,7 @@
 *   Utilize **XML-based tool calling** with **sequential execution** (one tool type per turn enforced). *(Completed, Enhanced in P25)*
 *   Allow tool use in sandboxed or **shared workspaces** with **authorization checks** based on agent type. *(Completed, Auth added P25)*
 *   Implement **automatic project/session context setting** (DB and filesystem). *(Completed)*
-*   Implement **automatic model selection** for dynamic agents if not specified. *(Completed)*
+*   Implement **automatic model selection** for dynamic agents if not specified. *(Refined in P26b)*
 *   Implement **robust agent ID/persona handling** for `send_message` (Layer 2). *(Completed)*
 *   Implement **structured planning phase** for Admin AI, followed by **framework-driven delegation to Project Manager** (requires user approval). *(Completed, Updated in P24)*
 *   Enhance `FileSystemTool` with **find/replace, mkdir, delete**. *(Completed)*
@@ -44,21 +44,21 @@
 *   Refactor UI for Communication Layers and refine Admin AI memory usage prompts. *(Completed in P22)*
 *   Fix UI message interleaving issue during concurrent streaming. *(Completed in P22)*
 *   Increase internal comms message history limit. *(Completed in P22)*
-*   **(Current Goal - Phase 25)** Address agent logic issues, Taskwarrior UDA issues, rate limiting. Implement basic Governance Layer. Refine agent thought capture/usage. Model selection refinement.
-*   **(Future Goals)** **Advanced Memory & Learning** (P26), **Proactive Behavior** (Scheduling - P27), **Federated Communication** (Layer 3 - P28+), Enhance Admin AI planning (few-shot examples), implement new Admin AI tools, resource management, advanced collaboration patterns, DB integration, **Full transition to on-demand tool help** (removing static descriptions from prompts - P28+).
+*   Implement Local API Round-Robin for model selection and address various stability/logic issues. *(Completed in P26b)*
+*   **(Future Goals)** **Advanced Memory & Learning** (P27), **Proactive Behavior** (Scheduling - P28), **Federated Communication** (Layer 3 - P29+), Enhance Admin AI planning (few-shot examples), implement new Admin AI tools, resource management, advanced collaboration patterns, DB integration, **Full transition to on-demand tool help** (removing static descriptions from prompts - P30+).
 
 ## 2. Scope
 
-**In Scope (Completed up to Phase 24):**
+**In Scope (Completed up to Phase 26b):**
 
 *   **Core Backend & Agent Core:** Base functionality, stateful agents (Admin, PM, Worker types).
 *   **Admin AI Agent:** Core logic, state machine (`conversation`, `planning`), time/health context, KB search prompt, **framework-driven delegation to PM workflow**.
 *   **Project Manager Agent:** Definition, automatic creation per session, prompt for active management, **requires user approval to start**.
-*   **Agent Manager & Handlers:** Orchestration, cycle management, interaction handling, failover, DB logging integration, **PM agent auto-creation**, **framework-driven initial task creation via ToolExecutor**.
+*   **Agent Manager & Handlers:** Orchestration, cycle management, interaction handling, failover, DB logging integration, **PM agent auto-creation**, **framework-driven initial task creation via ToolExecutor**, **Local API Round-Robin Index Management**.
 *   **Workflow Manager (`AgentWorkflowManager`):** Manages agent states and state-specific prompt selection.
 *   **State & Session Management:** Team state (runtime), Save/Load (filesystem), **Tasklib data persistence**.
 *   **Model Registry (`ModelRegistry`):** Provider/model discovery, filtering.
-*   **Automatic Model Selection:** Admin AI startup, dynamic agents.
+*   **Automatic Model Selection:** Admin AI startup, dynamic agents, **API-first Round-Robin for local providers**.
 *   **Performance Tracking (`ModelPerformanceTracker`):** Tracks metrics, saves to JSON.
 *   **Automatic Agent Failover:** Handles provider/model switching.
 *   **Dynamic Agent/Team Management:** In-memory CRUD via Admin AI tool calls.
@@ -84,25 +84,18 @@
 *   **Database Integration (Phase 21):** SQLite backend, SQLAlchemy models, interaction/agent logging, knowledge save/search tools.
 *   **Communication Layers:** Layer 1 (User<->Admin) & Layer 2 (Admin<->Local Agents) logic implemented.
 *   **Agent Thoughts:** Capture via `<think>` tag and save to KB.
+*   **Constitutional Guardian (CG) Agent:** Backend infrastructure for agent output review.
+*   **PM Workflow & UI Interaction Refinements:** Reliability fixes for PM startup and CG concern handling.
 
-**In Scope (Phase 25 - Current):**
+**Out of Scope (Deferred to Future Phases):**
 
-*   **Agent Logic Refinement:**
-    *   Investigating `MODEL_TIER` & `MODEL_COST` interference, need to refactor is likely.
-    *   Investigate and fix other potential logic issues (looping, placeholders, targeting).
-*   **Memory/Learning Foundation:**
-    *   Refine agent thought capture/usage.
-*   **Governance Layer Foundation:**
-    *   Define a structure for representing core principles or a 'constitution'.
-    *   Implement mechanisms to inject relevant principles into agent prompts.
-    *   *Initial Goal:* Focus on structure and injection, not complex enforcement. Explore Admin AI use during planning/review.
+*   **Phase 27: Advanced Memory & Learning.** (Feedback Loop, Learned Principles).
+*   **Phase 28: Proactive Behavior.** (Scheduling, Goal Management).
+*   **Phase 29+: Federated Communication (Layer 3).** (External Admin AI interaction - protocol, security, discovery).
+*   **Phase 30+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), etc.
+*   Global Governance Principle Injection (Removed, replaced by CG review).
+*   `TEAMS_CONFIG` and `allowed_sub_agent_models` (Removed from `ConfigManager`).
 
-**Out of Scope (Deferred to Future Phases 26+):**
-
-*   **Phase 26: Advanced Memory & Learning.** (Feedback Loop, Learned Principles).
-*   **Phase 27: Proactive Behavior.** (Scheduling, Goal Management).
-*   **Phase 28+: Federated Communication (Layer 3).** (External Admin AI interaction - protocol, security, discovery).
-*   **Phase 29+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), etc.
 
 ## 💻 Technology Stack
 
@@ -141,7 +134,7 @@
 *   [X] Fix bootstrap agent initialization fallback logic (`agent_lifecycle.py`).
 *   [X] Correct `AgentManager` check for initial task creation result.
 
-**Phase 25: Agent Logic, Taskwarrior Refinement & Governance Layer Foundation (Completed/Advanced)**
+**Phase 25: Agent Logic, Taskwarrior Refinement & Governance Layer Foundation (Completed)**
     *   **Goal:** Address known agent logic issues, stabilize Taskwarrior integration, implement basic Governance Layer, refine thought capture, and enhance model selection.
     *   [X] Enhanced Model Selection Logic: Model selection logic refactored. New priority: Tier -> Size (larger preferred, `num_parameters` discovered for OpenRouter/Ollama) -> Performance Score -> ID.
     *   [X] Sequential Multi-Action Execution: Agents can have multiple tools execute sequentially in one "turn", with results aggregated and fed back.
@@ -172,20 +165,19 @@
     *   [X] UI Chunking: Improved UI message chunk handling in `internal-comms-area` by implementing direct tracking of active streaming elements per agent, making chunk appending more robust. (Modified `static/js/ui.js`).
     *   [X] PM Prompting: Strengthened `pm_build_team_tasks_prompt` to be more directive about the initial team creation tool call. (Modified `prompts.json`).
 
-*   **Phase 27:** Advanced Memory & Learning (Feedback Loop, Learned Principles, Advanced Thought Usage).
-*   **Phase 28:** Proactive Behavior (Scheduling, Goal Management).
-*   **Phase 29+:** Federated Communication (Layer 3 - External Admin AI Interaction).
-*   **Phase 30+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), etc.
-*   Enhanced Model Selection (Tier -> Size -> Performance -> ID)
-*   Sequential Multi-Action Execution for tools.
-*   Constitutional Guardian (CG) Agent - Backend Foundation.
+**Phase 26b: Local API Round-Robin and Stability Fixes (Completed)**
+    *   `[X] Implemented API-first round-robin selection for local providers in `_select_best_available_model` to distribute agent load across multiple discovered local API instances (e.g., Ollama, LiteLLM).`
+    *   `[X] Ensured `AgentManager` tracks available local provider instances and their round-robin usage index, populated at startup.`
+    *   `[X] Corrected bootstrap agent initialization (`initialize_bootstrap_agents`) to properly use the round-robin mechanism for both explicitly configured generic local providers and for auto-selected local models.`
+    *   `[X] Resolved `AttributeError` in `_select_best_available_model` by correcting access to global `settings` object.`
+    *   `[X] Fixed `NameError` for `error_prefix` in `_create_agent_internal` by ensuring correct variable definition order.`
+    *   `[X] Corrected model ID prefix validation in `_create_agent_internal` to prevent misclassification of canonical local provider names (e.g., "ollama-local") and ensure accurate parsing of model names like "ollama/model_id".`
+    *   `[X] Refined round-robin index management during bootstrap agent initialization to ensure correct sequential assignment when multiple agents use the same local provider type.`
 
-**Out of Scope (Deferred to Future Phases 27+):**
-
-*   Global Governance Principle Injection (Removed, replaced by CG review).
-*   `TEAMS_CONFIG` and `allowed_sub_agent_models` (Removed from `ConfigManager`).
-*   **Phase 27: Advanced Memory & Learning.** (Feedback Loop, Learned Principles).
+**Future Goals:**
+*   **Phase 27: Advanced Memory & Learning.** (Feedback Loop, Learned Principles, Advanced Thought Usage).
 *   **Phase 28: Proactive Behavior.** (Scheduling, Goal Management).
 *   **Phase 29+: Federated Communication (Layer 3).** (External Admin AI interaction - protocol, security, discovery).
 *   **Phase 30+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), etc.
+
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

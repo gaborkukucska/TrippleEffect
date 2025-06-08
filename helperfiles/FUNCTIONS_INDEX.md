@@ -1,7 +1,7 @@
-<!-- # START OF FILE helperfiles/FUNCTIONS_INDEX.md -->
-# Functions Index (v2.30)
+<!-- # START OF FILE helperfiles/FUNCTIONS_INDEX.MD -->
+# Functions Index (v2.36)
 
-This file tracks the core functions/methods defined within the TrippleEffect framework (as of v2.30), categorized by component. It helps in understanding the codebase and navigating between different parts.
+This file tracks the core functions/methods defined within the TrippleEffect framework (as of v2.36), categorized by component. It helps in understanding the codebase and navigating between different parts.
 
 *   **Format:** `[File Path]::[Class Name]::[Method Name](parameters) - Description` or `[File Path]::[Function Name](parameters) - Description`
 
@@ -9,7 +9,7 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 
 ## **Application Entry Point (`src/main.py`)**
 
-*   `src/main.py::lifespan(app: FastAPI)` (async context manager) - Manages startup/shutdown. Initializes `DatabaseManager`, starts/stops Ollama proxy (optional), instantiates `AgentManager`, runs `ModelRegistry.discover_models_and_providers()`, initializes bootstrap agents via `AgentManager`, calls `agent_manager.cleanup_providers()` on shutdown.
+*   `src/main.py::lifespan(app: FastAPI)` (async context manager) - Manages startup/shutdown. Initializes DatabaseManager, starts/stops Ollama proxy (optional), instantiates AgentManager, runs ModelRegistry.discover_models_and_providers(), calls agent_manager._initialize_local_provider_lists(), initializes bootstrap agents via AgentManager, calls agent_manager.cleanup_providers() on shutdown.
 *   `src/main.py` (Script execution block) - Loads .env, configures logging, creates FastAPI app instance with lifespan, mounts static files, includes API routers, runs Uvicorn server.
 
 ## **Configuration (`src/config/`)**
@@ -181,12 +181,12 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 
 ## **Agent Lifecycle (`src/agents/`)**
 
-*   `src/agents/agent_lifecycle.py::_select_best_available_model(manager)` (Async Internal) -> `Tuple[Optional[str], Optional[str]]` - Selects best model based on ranking/availability.
-*   `src/agents/agent_lifecycle.py::initialize_bootstrap_agents(manager)` (Async) - Initializes bootstrap agents from settings, selects model for Admin AI if needed, sets initial state via `WorkflowManager`.
-*   `src/agents/agent_lifecycle.py::_create_agent_internal(manager, agent_id_requested, agent_config_data, is_bootstrap, team_id, loading_from_session)` (Async Internal) -> `Tuple[bool, str, Optional[str]]` - Core agent creation logic. Selects model if needed, creates `Agent` instance, sets initial state.
+*   `src/agents/agent_lifecycle.py::_get_base_provider_type_for_class_lookup(specific_provider_name: str) -> str` - Helper function to determine the base provider type (e.g., "ollama") from a specific provider name (e.g., "ollama-local", "ollama-local-ip") for class lookup.
+*   `src/agents/agent_lifecycle.py::_select_best_available_model(manager, current_rr_indices_override=None)` (Async Internal) -> `Tuple[Optional[str], Optional[str], Optional[str], Optional[int]]` - Selects the best model, prioritizing API-first round-robin for local providers (returning specific provider, model suffix, base local provider type used for RR, and chosen list index for RR), then falling back to comprehensive ranking across all providers. Uses global `settings` and `model_registry`.
+*   `src/agents/agent_lifecycle.py::initialize_bootstrap_agents(manager)` (Async) - Initializes bootstrap agents from settings. Handles generic local provider names (e.g., "ollama") in config by selecting a specific local instance via round-robin if the configured model is available. For auto-selection, calls _select_best_available_model which uses API-first round-robin for local providers. Manages round-robin state for the bootstrap sequence locally and updates global state in AgentManager post-initialization. Sets initial state via `WorkflowManager`.
+*   `src/agents/agent_lifecycle.py::_create_agent_internal(manager, agent_id_requested, agent_config_data, is_bootstrap, team_id, loading_from_session)` (Async Internal) -> `Tuple[bool, str, Optional[str]]` - Core agent creation logic. If provider/model not specified, calls _select_best_available_model for auto-selection (which handles API-first RR for local). Uses _get_base_provider_type_for_class_lookup for robust provider class instantiation. Validates model ID prefixes for local and remote providers. Creates Agent instance, sets initial state.
 *   `src/agents/agent_lifecycle.py::create_agent_instance(manager, agent_id_requested, provider, model, system_prompt, persona, team_id, temperature, **kwargs)` (Async) -> `Tuple[bool, str, Optional[str]]` - Public method for dynamic agents.
 *   `src/agents/agent_lifecycle.py::delete_agent_instance(manager, agent_id)` (Async) -> `Tuple[bool, str]` - Removes agent and cleans up resources (state manager).
-*   `src/agents/agent_lifecycle.py::_select_best_available_model(manager)` (Async Internal) -> `Tuple[Optional[str], Optional[str]]` - Selects best model based on comprehensive ranking (tier, size from `num_parameters`, performance score, ID). Uses global `settings` for configuration checks. `num_parameters` are discovered where available (e.g. OpenRouter, Ollama).
 *   `src/agents/agent_lifecycle.py::_generate_unique_agent_id(manager, prefix)` -> `str` - Generates unique agent ID.
 
 ## **Agent Workflow Manager (`src/agents/`)**
@@ -200,7 +200,8 @@ This file tracks the core functions/methods defined within the TrippleEffect fra
 ## **Agent Manager (Coordinator) (`src/agents/`)**
 
 *   `src/agents/manager.py::AgentManager` (Class) - Central coordinator. Instantiates components.
-*   `src/agents/manager.py::AgentManager.__init__(websocket_manager=None)` - Initializes manager, instantiates handlers, managers, tracker, executor. Instantiates `AgentWorkflowManager`. Starts default DB session task. Ensures `self.model_registry` is assigned from global `model_registry`.
+*   `src/agents/manager.py::AgentManager.__init__(websocket_manager=None)` - Initializes manager, instantiates handlers, managers, tracker, executor. Instantiates `AgentWorkflowManager`. Starts default DB session task. Ensures `self.model_registry` is assigned from global `model_registry`. Initializes `self.local_api_usage_round_robin_index = {}` and `self.available_local_providers_list = {}` for managing round-robin local API selection.
+*   `src/agents/manager.py::AgentManager._initialize_local_provider_lists()` (Async Internal) - Populates `available_local_providers_list` by grouping discovered specific local provider names (from `model_registry`) by their base type (e.g., "ollama"). Initializes `local_api_usage_round_robin_index` for each discovered base local provider type. Called at startup after model discovery.
 *   `src/agents/manager.py::AgentManager._ensure_default_db_session()` (Async Internal) - Ensures default project/session exists in DB on startup.
 *   `src/agents/manager.py::AgentManager.set_project_session_context(project_name, session_name, loading=False)` (Async) - Sets current project/session context and updates DB records.
 *   `src/agents/manager.py::AgentManager._ensure_projects_dir()` (Internal) - Ensures projects directory exists.
