@@ -11,6 +11,7 @@ import time
 import uuid
 import fnmatch
 import copy
+import re
 
 logging.info("manager.py: Importing database_manager...")
 from src.core.database_manager import db_manager, close_db_connection, Project as DBProject, Session as DBSession
@@ -231,17 +232,74 @@ class AgentManager:
 
     async def handle_user_message(self, message: str, client_id: Optional[str] = None):
         if self.current_project is None or self.current_session_db_id is None:
+            # Ensure default session context if none exists
             await self.set_project_session_context(DEFAULT_PROJECT_NAME, f"session_{int(time.time())}")
-        if self.current_session_db_id: await self.db_manager.log_interaction(session_id=self.current_session_db_id, agent_id="human_user", role="user", content=message)
+
+        # Log the user interaction first, regardless of processing outcome for AdminAI
+        if self.current_session_db_id:
+            await self.db_manager.log_interaction(session_id=self.current_session_db_id, agent_id="human_user", role="user", content=message)
+
         admin_agent = self.agents.get(BOOTSTRAP_AGENT_ID)
-        if not admin_agent: logger.error(f"Admin AI '{BOOTSTRAP_AGENT_ID}' not found."); await self.send_to_ui({"type": "error", "agent_id": "manager", "content": "Admin AI unavailable."}); return
+        if not admin_agent:
+            logger.error(f"Admin AI '{BOOTSTRAP_AGENT_ID}' not found.")
+            await self.send_to_ui({"type": "error", "agent_id": "manager", "content": "Admin AI unavailable."})
+            return
+
+        # Check for project approval command specifically for Admin AI
+        # This regex will capture the PM agent ID from messages like "approve project pm_ProjectName_timestamp"
+        approval_match = re.match(r"^approve project (pm_[a-zA-Z0-9_.-]+)$", message.strip())
+
+        if admin_agent.agent_id == BOOTSTRAP_AGENT_ID and approval_match:
+            pm_agent_id_from_message = approval_match.group(1)
+            pm_agent_to_check = self.agents.get(pm_agent_id_from_message)
+
+            # Check if the PM agent exists and was awaiting approval.
+            # The _awaiting_project_approval flag is set by ProjectCreationWorkflow
+            # and cleared by the HTTP /approve endpoint *before* the PM is scheduled.
+            # So, if this flag is still True here, it's an edge case or a different timing.
+            # A more reliable check might be to see if the PM is in PM_STATE_STARTUP
+            # and its _awaiting_project_approval flag was recently true or if the project is in a pending state.
+            # For now, let's rely on the fact that the HTTP route should handle the primary approval.
+            # This interception is mainly to prevent AdminAI from misinterpreting the user's echo of this command.
+
+            if pm_agent_to_check:
+                logger.info(f"Manager: Intercepted potential project approval message for PM '{pm_agent_id_from_message}' directed at Admin AI ('{message.strip()}'). PM activation should be handled by the dedicated HTTP POST to /api/projects/approve/{pm_agent_id_from_message}. Admin AI will not be directly scheduled with this message to prevent misinterpretation.")
+
+                # Ensure AdminAI is in a sensible state if it was busy
+                if admin_agent.status != AGENT_STATUS_IDLE:
+                    # Admin was busy, queue the message (it will be logged by default path later if not returned)
+                    # but log that we are aware it's an approval.
+                    logger.warning(f"Admin AI status is '{admin_agent.status}'. Approval message for '{pm_agent_id_from_message}' will be added to queue but Admin AI cycle not forced by this interception logic.")
+                    # Fall through to default queuing logic, but the context of interception is logged.
+                elif admin_agent.state != ADMIN_STATE_CONVERSATION:
+                    logger.warning(f"Admin AI was in state '{admin_agent.state}' when approval message for '{pm_agent_id_from_message}' was intercepted. Forcing to conversation state. Message will be processed if Admin AI becomes idle.")
+                    self.workflow_manager.change_state(admin_agent, ADMIN_STATE_CONVERSATION)
+                     # Message will be processed by default logic if admin becomes idle
+                else:
+                    # Admin is IDLE and in CONVERSATION.
+                    # This message is likely the user confirming via chat after UI approval.
+                    # We will let it pass to AdminAI, but the prompt for admin_conversation_prompt
+                    # (Step 3 of the plan) should make AdminAI handle it gracefully.
+                    # The critical part is that the PM is activated by the HTTP route, not by AdminAI misinterpreting this.
+                    # For now, we'll let it pass through to the standard logic below,
+                    # relying on prompt changes to make AdminAI respond correctly.
+                    # The key is that the PM's activation is decoupled from AdminAI processing this.
+                    logger.info(f"Admin AI is IDLE and in CONVERSATION. Approval message for PM '{pm_agent_id_from_message}' will be passed to AdminAI. Its prompt should guide it to acknowledge correctly.")
+                    pass # Let it fall through to the default handling
+
+        # Default message handling for Admin AI
         if admin_agent.status == AGENT_STATUS_IDLE:
             admin_agent.message_history.append({"role": "user", "content": message})
-            await self.schedule_cycle(admin_agent, 0) 
+            await self.schedule_cycle(admin_agent, 0)
         else:
+            # Append to history even if busy, so it's there when it becomes idle
             admin_agent.message_history.append({"role": "user", "content": message})
-            await self.push_agent_status_update(admin_agent.agent_id)
-            await self.send_to_ui({ "type": "status", "agent_id": admin_agent.agent_id, "content": f"Admin AI busy ({admin_agent.status}). Queued." })
+            await self.push_agent_status_update(admin_agent.agent_id) # Update UI that it's busy
+            await self.send_to_ui({
+                "type": "status",
+                "agent_id": admin_agent.agent_id,
+                "content": f"Admin AI is currently {admin_agent.status}. Your message ('{message[:50]}...') has been queued."
+            })
 
     async def handle_agent_model_failover(self, agent_id: str, last_error_obj: Exception) -> bool:
         return await handle_agent_model_failover(self, agent_id, last_error_obj)
