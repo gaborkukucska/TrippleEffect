@@ -180,4 +180,25 @@
 *   **Phase 29+: Federated Communication (Layer 3).** (External Admin AI interaction - protocol, security, discovery).
 *   **Phase 30+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), etc.
 
+## June 15th, 2025 - PM Agent Loop in `pm_build_team_tasks`
+
+**Issue:**
+After successfully creating the project team, the PM agent (`pm_Snake_Game_Browser_Development_startup_1749963589`) entered the `pm_build_team_tasks` state but then repeatedly finished its cycles without taking further action (i.e., not proceeding to create worker agents). This caused an infinite loop where the agent was rescheduled in the same state but made no progress. Logs indicated the agent was not producing any tool calls after the initial team creation.
+
+**Diagnosis:**
+The hypothesis was that the agent, after fulfilling the initial directive to create a team (which was also Step 1 of its workflow in `pm_build_team_tasks_prompt`), became confused by the prompt's "CRITICAL FIRST ACTION" language for team creation on subsequent turns within the same state. It wasn't robustly recognizing that Step 1 was complete and that it should move to Step 2 (Create First Worker Agent).
+
+**Solution Attempted:**
+Modified `prompts.json`, specifically the `pm_build_team_tasks_prompt`.
+Step 1 of the workflow was rephrased from "Create Project Team" to "Ensure Project Team Exists."
+The new instruction guides the agent to:
+1. Review its message history for the current `pm_build_team_tasks` state.
+2. If team creation for `team_{project_name_snake_case}` has NOT already been successfully performed in this state, then create the team as the sole action.
+3. If team creation HAS already been successfully performed in this state (verified by checking for a successful tool result), then explicitly PROCEED DIRECTLY TO STEP 2: Create First Worker Agent.
+
+This change aims to make the agent more aware of its past actions within the state and explicitly direct it to continue the workflow.
+
+**Next Steps:**
+Await user testing to confirm if the PM agent now correctly proceeds to create worker agents after team creation.
+
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->
