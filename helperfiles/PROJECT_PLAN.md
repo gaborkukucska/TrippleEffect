@@ -201,4 +201,20 @@ This change aims to make the agent more aware of its past actions within the sta
 **Next Steps:**
 Await user testing to confirm if the PM agent now correctly proceeds to create worker agents after team creation.
 
+---
+**Correction Update (Post-Testing Feedback):**
+
+**Issue Identified:**
+User testing after the submission (commit `pm-task-loop-fix`) revealed a `WorkflowManager` error: `Missing key: project_name_snake_case` when trying to format `pm_build_team_tasks_prompt`.
+My initial diagnosis incorrectly assumed the `{project_name_snake_case}` placeholder was in Step 1 of the prompt. Subtask investigation (turn 47) found it was actually in Step 2, in the instruction for assigning the first worker agent to a team.
+
+**Solution Implemented:**
+The entire `pm_build_team_tasks_prompt` in `prompts.json` was replaced with a known-good version. This new version:
+1.  Ensures Step 1 ("Ensure Project Team Exists") correctly guides the agent to check its System Context (for `Your Team ID (once created): {team_id}`) and its history, and to form the `team_id` using `team_` + the exact 'Current Project' name from its [SYSTEM CONTEXT] if creation is needed.
+2.  Corrects Step 2 ("Create First Worker Agent") to guide the agent to assign the new worker to the project team ID you confirmed or created in Step 1, using the standard `{project_name}` placeholder for reference (e.g., "assign it to team `team_{project_name}`").
+3.  This definitively removes the erroneous `{project_name_snake_case}` placeholder.
+
+**Next Steps:**
+Awaiting user testing of this corrected `prompts.json`.
+---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->
