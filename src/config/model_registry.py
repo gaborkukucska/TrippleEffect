@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Default Ports and Public Endpoints
 DEFAULT_OLLAMA_PORT = 11434
-DEFAULT_LITELLM_PORT = 4000 # Adjust if your LiteLLM default is different
+DEFAULT_LITELLM_PORT = 8000 # Adjust if your LiteLLM default is different
 
 # --- NEW: TypedDict for ModelInfo ---
 from typing import TypedDict
@@ -244,11 +244,14 @@ class ModelRegistry:
             except Exception as scan_err: logger.error(f"Error during local network scan: {scan_err}", exc_info=True)
         else: logger.info("Local network scan is disabled in settings.")
 
+        logger.info(f"ModelRegistry: Full list of URLs to verify for local providers: {list(urls_to_verify)}")
+
         if urls_to_verify:
             logger.info(f"Verifying {len(urls_to_verify)} potential local endpoints...")
             urls_to_actually_verify = [url for url in urls_to_verify if url not in processed_urls]
             verification_tasks = [self._verify_and_fetch_models(url) for url in urls_to_actually_verify]
             verification_results = await asyncio.gather(*verification_tasks, return_exceptions=True)
+            logger.info(f"ModelRegistry: Received {len(verification_results)} results from local provider verification tasks.")
 
             for result in verification_results:
                 if isinstance(result, tuple) and len(result) == 3:
@@ -284,6 +287,13 @@ class ModelRegistry:
                 elif result is None: pass
                 else: logger.warning(f"Unexpected result type from verification task: {type(result)}")
         else: logger.info("No local endpoints found or configured to verify.")
+
+        # Check if any local providers were actually added to _reachable_providers
+        local_providers_found_this_run = [p for p in self._reachable_providers if p.startswith("ollama-local") or p.startswith("litellm-local") or p == "ollama-proxy"]
+        if not local_providers_found_this_run:
+            logger.warning("ModelRegistry: No local LLM providers were successfully verified or registered in this discovery cycle, despite attempts.")
+        else:
+            logger.info(f"ModelRegistry: Successfully verified and registered the following local providers in this cycle: {local_providers_found_this_run}")
 
         # --- 3. Run Remote Discovery Tasks Concurrently ---
         if remote_discovery_tasks:
