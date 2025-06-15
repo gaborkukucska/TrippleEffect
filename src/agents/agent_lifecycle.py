@@ -541,6 +541,55 @@ async def _create_agent_internal(
          msg = f"Lifecycle Error: Missing persona for agent '{agent_id}'."
          logger.error(msg); return False, msg, None
 
+    # --- START: Generic Local Provider Mapping for Dynamic Agents ---
+    specific_provider_name_resolved = provider_name # Will be updated if generic is resolved
+    model_suffix_for_check = model_id_canonical # Will be updated if prefix is part of canonical
+
+    if provider_name in ["ollama", "litellm"] and model_id_canonical and not is_bootstrap: # Generic local provider specified in config for a dynamic agent
+        logger.info(f"Lifecycle: Generic local provider '{provider_name}' with model '{model_id_canonical}' specified for dynamic agent '{agent_id}'. Attempting to map to specific instance.")
+
+        # Determine potential model suffix
+        if model_id_canonical.startswith(f"{provider_name}/"):
+            model_suffix_for_check = model_id_canonical[len(provider_name)+1:]
+        else:
+            model_suffix_for_check = model_id_canonical # Assume it's already a suffix
+
+        specific_instances = manager.available_local_providers_list.get(provider_name, [])
+        found_specific_instance = False
+        if specific_instances:
+            # Prefer round-robin for fairness if multiple instances have the model
+            rr_key = f"{provider_name}_dynamic_pm_assignment" # Unique key for this round robin
+            start_index = manager.local_api_usage_round_robin_index.get(rr_key, 0)
+
+            for i in range(len(specific_instances)):
+                current_instance_idx = (start_index + i) % len(specific_instances)
+                candidate_specific_provider = specific_instances[current_instance_idx]
+
+                # Check if model_suffix_for_check is available on this candidate_specific_provider
+                if model_registry.is_model_available(candidate_specific_provider, model_suffix_for_check):
+                    specific_provider_name_resolved = candidate_specific_provider
+                    # Update global round-robin index for this specific use case
+                    manager.local_api_usage_round_robin_index[rr_key] = (current_instance_idx + 1) % len(specific_instances)
+                    logger.info(f"Lifecycle: Mapped generic '{provider_name}/{model_suffix_for_check}' to specific '{specific_provider_name_resolved}/{model_suffix_for_check}' for dynamic agent '{agent_id}'.")
+                    found_specific_instance = True
+                    break
+            if not found_specific_instance:
+                logger.warning(f"Lifecycle: Model '{model_suffix_for_check}' not found on any specific instances of '{provider_name}': {specific_instances}. Will proceed with original generic provider name which might lead to auto-selection or failure.")
+                # Let it fall through to auto-selection or fail later if generic 'ollama' can't be directly used
+        else:
+            logger.warning(f"Lifecycle: Generic local provider '{provider_name}' specified, but no specific instances discovered. Will proceed with original generic provider name.")
+
+        # Update provider_name and model_id_canonical if successfully resolved for direct use
+        if found_specific_instance:
+            provider_name = specific_provider_name_resolved # Now it's specific, e.g., "ollama-local-..."
+            # model_id_canonical should already be correct or its suffix model_suffix_for_check is what we need
+            # For is_model_available, we need the suffix. For the Agent object, the canonical form.
+            # Ensure agent_config_data reflects this resolved specific provider
+            agent_config_data["provider"] = provider_name
+            # model_id_canonical in agent_config_data should already be the canonical one.
+            # The model_id_for_provider (suffix) will be derived again later based on the now specific provider_name.
+    # --- END: Generic Local Provider Mapping ---
+
     # Auto-selection only for non-bootstrap agents if needed
     if not provider_name or not model_id_canonical:
         if is_bootstrap:
@@ -588,15 +637,16 @@ async def _create_agent_internal(
          msg = f"{error_prefix} Missing final provider or model after all selection attempts.";
          logger.error(msg); return False, msg, None
 
-    is_dynamic_local = "-local-" in provider_name or "-proxy" in provider_name # This check seems too simplistic.
-    base_provider_name_val = _get_base_provider_type_for_class_lookup(provider_name) if is_dynamic_local else provider_name
+    base_provider_name_val = _get_base_provider_type_for_class_lookup(provider_name)
 
 
-    if is_dynamic_local: # This refers to specific instances like ollama-local-ip, not generic "ollama-local"
-            if not model_registry.is_provider_discovered(provider_name): # Check specific instance
-                msg = f"{error_prefix} Specific local provider instance '{provider_name}' not discovered by ModelRegistry.";
+    if base_provider_name_val in ["ollama", "litellm"]: # This refers to generic base types or specific instances mapped to them
+            # For specific local instances (e.g. ollama-local-ip), provider_name is specific.
+            # For generic "ollama" that might not have resolved, this check is still relevant.
+            if not model_registry.is_provider_discovered(provider_name): # Check specific instance if provider_name is specific, or generic if not
+                msg = f"{error_prefix} Local provider type/instance '{provider_name}' not discovered/verified by ModelRegistry.";
                 logger.error(msg); return False, msg, None
-    else: # Non-dynamic specific name (e.g. "openai", "openrouter", or a direct "ollama-proxy" if not caught by is_dynamic_local)
+    else: # Non-dynamic specific name (e.g. "openai", "openrouter")
             if not settings.is_provider_configured(base_provider_name_val): # Check base config like "openai"
                 msg = f"{error_prefix} Provider '{base_provider_name_val}' not configured in .env settings.";
                 logger.error(msg); return False, msg, None
@@ -605,39 +655,41 @@ async def _create_agent_internal(
                 msg = f"{error_prefix} All keys for '{base_provider_name_val}' are quarantined.";
                 logger.error(msg); return False, msg, None
 
-    # Determine if the final provider_name is local based on its name structure for model ID validation
-    is_local_provider_for_model_id_check = (
-        provider_name.startswith("ollama-local") or
-        provider_name == "ollama-proxy" or
-        provider_name.startswith("litellm-local") or
-        provider_name == "litellm-proxy"
-    )
     model_id_for_provider = None
     validation_passed = True
     error_msg_val = None
 
-    if is_local_provider_for_model_id_check:
-        base_provider_type = _get_base_provider_type_for_class_lookup(provider_name)
-        expected_prefix = f"{base_provider_type}/"
-        if model_id_canonical.startswith(expected_prefix):
-            model_id_for_provider = model_id_canonical[len(expected_prefix):]
+    # provider_name here is now specific_provider_name_resolved if mapping occurred
+    is_definitely_local_type_after_resolution = provider_name.startswith("ollama-local") or \
+                                              provider_name == "ollama-proxy" or \
+                                              provider_name.startswith("litellm-local") or \
+                                              provider_name == "litellm-proxy"
+
+    if is_definitely_local_type_after_resolution:
+        base_type = _get_base_provider_type_for_class_lookup(provider_name) # e.g., "ollama"
+        # model_id_canonical is from config, e.g., "gemma3:4b-it-q4_K_M" or "ollama/gemma3:4b-it-q4_K_M"
+        if model_id_canonical.startswith(f"{base_type}/"):
+            model_id_for_provider = model_id_canonical[len(base_type)+1:]
         else:
-            error_msg_val = f"{error_prefix} Local model ID '{model_id_canonical}' for provider '{provider_name}' must start with the base prefix '{expected_prefix}'."
-            logger.error(error_msg_val)
-            validation_passed = False
-            model_id_for_provider = None
-    else: # Remote provider
+            model_id_for_provider = model_id_canonical # Assume it's already a suffix
+    else: # Remote or unmapped generic (though unmapped generic should ideally not reach here if validation is strict)
         if model_id_canonical.startswith("ollama/") or model_id_canonical.startswith("litellm/"):
-             error_msg_val = f"{error_prefix} Remote model ID '{model_id_canonical}' (for provider '{provider_name}') should not start with a local provider prefix like 'ollama/' or 'litellm/'."
+             error_msg_val = f"{error_prefix} Remote model ID '{model_id_canonical}' (for provider '{provider_name}') should not start with a local provider prefix."
              logger.error(error_msg_val)
              validation_passed = False
              model_id_for_provider = None
         else:
              model_id_for_provider = model_id_canonical
 
-    if not validation_passed:
+    if not validation_passed: # This check should use the error_msg_val set above
         final_error_message = error_msg_val if error_msg_val else f"{error_prefix} Model ID validation failed for an unspecified reason."
         return False, final_error_message, None
+
+    if not model_id_for_provider: # If model_id_for_provider is None after logic above (e.g. due to error)
+        if not error_msg_val: # Ensure there's an error message if not already set
+             error_msg_val = f"{error_prefix} Could not determine model suffix for provider '{provider_name}' from canonical ID '{model_id_canonical}'."
+        logger.error(error_msg_val)
+        return False, error_msg_val, None
 
     if not model_registry.is_model_available(provider_name, model_id_for_provider): # Uses specific provider_name
         available_list_str = ", ".join(model_registry.get_available_models_list(provider=provider_name)) or "(None available)"
@@ -678,7 +730,7 @@ async def _create_agent_internal(
     final_base_provider_name_for_args = _get_base_provider_type_for_class_lookup(provider_name)
 
 
-    if is_local_provider_for_model_id_check: # Use the more accurate local check
+    if is_definitely_local_type_after_resolution: # Use the more accurate local check
         base_url = model_registry.get_reachable_provider_url(provider_name) # provider_name is specific here
         if base_url: final_provider_args['base_url'] = base_url
 
@@ -874,3 +926,4 @@ def _generate_unique_agent_id(manager: 'AgentManager', prefix="agent") -> str:
         new_id = f"{prefix}_{timestamp}_{short_uuid}".replace(":", "_");
         if new_id not in manager.agents: return new_id
         time.sleep(0.001); timestamp = int(time.time() * 1000); short_uuid = uuid.uuid4().hex[:4]
+# END OF FILE src/agents/agent_lifecycle.py
