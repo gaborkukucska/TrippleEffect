@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Default Ports and Public Endpoints
 DEFAULT_OLLAMA_PORT = 11434
-DEFAULT_LITELLM_PORT = 8000 # Adjust if your LiteLLM default is different
+DEFAULT_LITELLM_PORT = 4000 # Adjust if your LiteLLM default is different
 
 # --- NEW: TypedDict for ModelInfo ---
 from typing import TypedDict
@@ -235,6 +235,7 @@ class ModelRegistry:
 
         network_scan_urls = set()
         if self.settings.LOCAL_API_SCAN_ENABLED:
+            logger.info("Local API network scan is ENABLED. If you are on a large, restricted, or unreliable network (e.g., public WiFi), this scan may take a very long time or fail. Consider setting LOCAL_API_SCAN_ENABLED: false in your config.yaml and relying on direct localhost checks or manually specified provider URLs if issues occur.")
             logger.info("Starting network scan for local APIs...")
             try:
                 scanned_urls = await scan_for_local_apis(ports=self.settings.LOCAL_API_SCAN_PORTS, timeout=self.settings.LOCAL_API_SCAN_TIMEOUT)
