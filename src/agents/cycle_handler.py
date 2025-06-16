@@ -477,31 +477,48 @@ class AgentCycleHandler:
                         original_event_data = event # Store original event
 
                         if final_content and agent.agent_id != CONSTITUTIONAL_GUARDIAN_AGENT_ID:
-                            cg_verdict = await self._get_cg_verdict(final_content)
+                            # --- CG Review Block Start ---
+                            cg_agent = self._manager.agents.get(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
+                            original_cg_status = None
+                            if cg_agent:
+                                original_cg_status = cg_agent.status
+                                cg_agent.set_status(AGENT_STATUS_PROCESSING) # Or 'reviewing_output'
+                                await self._manager.push_agent_status_update(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
 
-                            if cg_verdict == "<OK/>": # Explicitly check for <OK/>
-                                logger.info(f"CG Verdict OK for agent '{agent.agent_id}'. Proceeding normally.")
-                                if context.current_db_session_id:
-                                    if not agent.message_history or not agent.message_history[-1].get("tool_calls"):
-                                        await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content)
-                                await self._manager.send_to_ui(original_event_data)
-                            else: # Any other string is a concern (either extracted detail or "Malformed..." string)
-                                logger.info(f"CG CONCERN for agent '{agent.agent_id}'. Pausing agent and notifying UI.")
-                                concern_details = cg_verdict # This is now the extracted concern string or malformed message
-                                agent.cg_original_text = final_content
-                                agent.cg_concern_details = concern_details
-                                agent.cg_original_event_data = original_event_data
-                                agent.cg_awaiting_user_decision = True
-                                agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG)
-                                await self._manager.send_to_ui({
-                                    "type": "cg_concern",
-                                    "agent_id": agent.agent_id,
-                                    "original_text": final_content,
-                                    "concern_details": concern_details 
-                                })
-                                context.action_taken_this_cycle = True
-                                context.needs_reactivation_after_cycle = False
-                                break 
+                            cg_verdict = None
+                            try:
+                                cg_verdict = await self._get_cg_verdict(final_content)
+
+                                if cg_verdict == "<OK/>": # Explicitly check for <OK/>
+                                    logger.info(f"CG Verdict OK for agent '{agent.agent_id}'. Proceeding normally.")
+                                    if context.current_db_session_id:
+                                        if not agent.message_history or not agent.message_history[-1].get("tool_calls"):
+                                            await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content)
+                                    await self._manager.send_to_ui(original_event_data)
+                                else: # Any other string is a concern (either extracted detail or "Malformed..." string)
+                                    logger.info(f"CG CONCERN for agent '{agent.agent_id}'. Pausing agent and notifying UI.")
+                                    concern_details = cg_verdict # This is now the extracted concern string or malformed message
+                                    agent.cg_original_text = final_content
+                                    agent.cg_concern_details = concern_details
+                                    agent.cg_original_event_data = original_event_data
+                                    agent.cg_awaiting_user_decision = True
+                                    agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG)
+                                    await self._manager.send_to_ui({
+                                        "type": "cg_concern",
+                                        "agent_id": agent.agent_id,
+                                        "original_text": final_content,
+                                        "concern_details": concern_details
+                                    })
+                                    context.action_taken_this_cycle = True
+                                    context.needs_reactivation_after_cycle = False
+                                    break
+                            finally:
+                                if cg_agent: # Check if cg_agent was successfully retrieved
+                                    # Revert to original status, or idle if no original status was captured
+                                    final_status_for_cg = original_cg_status if original_cg_status else AGENT_STATUS_IDLE
+                                    cg_agent.set_status(final_status_for_cg)
+                                    await self._manager.push_agent_status_update(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
+                            # --- CG Review Block End ---
                         else: # No content in final_response, or it's the CG agent itself
                             if context.current_db_session_id and final_content: 
                                 if not agent.message_history or not agent.message_history[-1].get("tool_calls"):
@@ -554,29 +571,46 @@ class AgentCycleHandler:
                     mock_event_data = {"type": "final_response", "content": final_content_from_buffer, "agent_id": agent.agent_id}
 
                     if agent.agent_id != CONSTITUTIONAL_GUARDIAN_AGENT_ID:
-                        cg_verdict = await self._get_cg_verdict(final_content_from_buffer)
+                        # --- CG Review Block Start (for buffer) ---
+                        cg_agent_buffer = self._manager.agents.get(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
+                        original_cg_status_buffer = None
+                        if cg_agent_buffer:
+                            original_cg_status_buffer = cg_agent_buffer.status
+                            cg_agent_buffer.set_status(AGENT_STATUS_PROCESSING) # Or 'reviewing_output'
+                            await self._manager.push_agent_status_update(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
 
-                        if cg_verdict == "<OK/>": # Explicitly check for <OK/>
-                            logger.info(f"CG Verdict OK for agent '{agent.agent_id}' (from buffer). Proceeding normally.")
-                            if context.current_db_session_id:
-                                await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content_from_buffer)
-                            await self._manager.send_to_ui(mock_event_data)
-                        else: # Any other string is a concern
-                            logger.info(f"CG CONCERN for agent '{agent.agent_id}' (from buffer). Pausing agent and notifying UI.")
-                            concern_details = cg_verdict
-                            agent.cg_original_text = final_content_from_buffer
-                            agent.cg_concern_details = concern_details
-                            agent.cg_original_event_data = mock_event_data
-                            agent.cg_awaiting_user_decision = True
-                            agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG)
-                            await self._manager.send_to_ui({
-                                "type": "cg_concern",
-                                "agent_id": agent.agent_id,
-                                "original_text": final_content_from_buffer,
-                                "concern_details": concern_details
-                            })
-                            context.action_taken_this_cycle = True
-                            context.needs_reactivation_after_cycle = False
+                        cg_verdict_buffer = None
+                        try:
+                            cg_verdict_buffer = await self._get_cg_verdict(final_content_from_buffer)
+
+                            if cg_verdict_buffer == "<OK/>": # Explicitly check for <OK/>
+                                logger.info(f"CG Verdict OK for agent '{agent.agent_id}' (from buffer). Proceeding normally.")
+                                if context.current_db_session_id:
+                                    await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content_from_buffer)
+                                await self._manager.send_to_ui(mock_event_data)
+                            else: # Any other string is a concern
+                                logger.info(f"CG CONCERN for agent '{agent.agent_id}' (from buffer). Pausing agent and notifying UI.")
+                                concern_details_buffer = cg_verdict_buffer
+                                agent.cg_original_text = final_content_from_buffer
+                                agent.cg_concern_details = concern_details_buffer
+                                agent.cg_original_event_data = mock_event_data
+                                agent.cg_awaiting_user_decision = True
+                                agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG)
+                                await self._manager.send_to_ui({
+                                    "type": "cg_concern",
+                                    "agent_id": agent.agent_id,
+                                    "original_text": final_content_from_buffer,
+                                    "concern_details": concern_details_buffer
+                                })
+                                context.action_taken_this_cycle = True
+                                context.needs_reactivation_after_cycle = False
+                        finally:
+                            if cg_agent_buffer: # Check if cg_agent_buffer was successfully retrieved
+                                # Revert to original status, or idle if no original status was captured
+                                final_status_for_cg_buffer = original_cg_status_buffer if original_cg_status_buffer else AGENT_STATUS_IDLE
+                                cg_agent_buffer.set_status(final_status_for_cg_buffer)
+                                await self._manager.push_agent_status_update(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
+                        # --- CG Review Block End (for buffer) ---
                     else: 
                         if final_content_from_buffer: 
                             if context.current_db_session_id:
