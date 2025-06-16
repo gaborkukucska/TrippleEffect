@@ -235,6 +235,7 @@ class ModelRegistry:
 
         network_scan_urls = set()
         if self.settings.LOCAL_API_SCAN_ENABLED:
+            logger.info("Local API network scan is ENABLED. If you are on a large, restricted, or unreliable network (e.g., public WiFi), this scan may take a very long time or fail. Consider setting LOCAL_API_SCAN_ENABLED: false in your config.yaml and relying on direct localhost checks or manually specified provider URLs if issues occur.")
             logger.info("Starting network scan for local APIs...")
             try:
                 scanned_urls = await scan_for_local_apis(ports=self.settings.LOCAL_API_SCAN_PORTS, timeout=self.settings.LOCAL_API_SCAN_TIMEOUT)
@@ -244,11 +245,14 @@ class ModelRegistry:
             except Exception as scan_err: logger.error(f"Error during local network scan: {scan_err}", exc_info=True)
         else: logger.info("Local network scan is disabled in settings.")
 
+        logger.info(f"ModelRegistry: Full list of URLs to verify for local providers: {list(urls_to_verify)}")
+
         if urls_to_verify:
             logger.info(f"Verifying {len(urls_to_verify)} potential local endpoints...")
             urls_to_actually_verify = [url for url in urls_to_verify if url not in processed_urls]
             verification_tasks = [self._verify_and_fetch_models(url) for url in urls_to_actually_verify]
             verification_results = await asyncio.gather(*verification_tasks, return_exceptions=True)
+            logger.info(f"ModelRegistry: Received {len(verification_results)} results from local provider verification tasks.")
 
             for result in verification_results:
                 if isinstance(result, tuple) and len(result) == 3:
@@ -284,6 +288,13 @@ class ModelRegistry:
                 elif result is None: pass
                 else: logger.warning(f"Unexpected result type from verification task: {type(result)}")
         else: logger.info("No local endpoints found or configured to verify.")
+
+        # Check if any local providers were actually added to _reachable_providers
+        local_providers_found_this_run = [p for p in self._reachable_providers if p.startswith("ollama-local") or p.startswith("litellm-local") or p == "ollama-proxy"]
+        if not local_providers_found_this_run:
+            logger.warning("ModelRegistry: No local LLM providers were successfully verified or registered in this discovery cycle, despite attempts.")
+        else:
+            logger.info(f"ModelRegistry: Successfully verified and registered the following local providers in this cycle: {local_providers_found_this_run}")
 
         # --- 3. Run Remote Discovery Tasks Concurrently ---
         if remote_discovery_tasks:

@@ -282,6 +282,64 @@ class AgentCycleHandler:
                              context.needs_reactivation_after_cycle = False 
                     break 
 
+                elif event_type == "malformed_tool_call":
+                    context.action_taken_this_cycle = True
+                    malformed_tool_name = event.get("tool_name")
+                    parsing_error_msg = event.get("error_message")
+                    # malformed_xml_block = event.get("malformed_xml_block") # Available if needed for logging
+                    raw_llm_response_with_error = event.get("raw_assistant_response")
+
+                    logger.warning(f"Agent {agent.agent_id} produced malformed XML for tool '{malformed_tool_name}'. Error: {parsing_error_msg}")
+
+                    # Log the original assistant message that contained the error
+                    if context.current_db_session_id and raw_llm_response_with_error:
+                        await self._manager.db_manager.log_interaction(
+                            session_id=context.current_db_session_id,
+                            agent_id=agent.agent_id,
+                            role="assistant", # Log it as what the assistant tried to say
+                            content=raw_llm_response_with_error,
+                            # No tool_calls since it was malformed
+                        )
+
+                    detailed_tool_usage = "Could not retrieve detailed usage for this tool."
+                    if malformed_tool_name and malformed_tool_name in self._manager.tool_executor.tools:
+                        try:
+                            detailed_tool_usage = self._manager.tool_executor.tools[malformed_tool_name].get_detailed_usage()
+                        except Exception as usage_exc:
+                            logger.error(f"Failed to get detailed usage for tool {malformed_tool_name}: {usage_exc}")
+
+                    feedback_to_agent = (
+                        f"[Framework Feedback: XML Parsing Error]\n"
+                        f"Your previous attempt to use the '{malformed_tool_name}' tool failed because the XML structure was malformed.\n"
+                        f"Error detail: {parsing_error_msg}\n\n"
+                        f"Please carefully review your XML syntax and ensure all tags are correctly opened, closed, and nested. "
+                        f"Pay special attention to the content within tags, ensuring it's plain text and any special XML characters (like '<', '>', '&') are avoided or properly escaped if absolutely necessary.\n\n"
+                        f"Correct usage for the '{malformed_tool_name}' tool:\n{detailed_tool_usage}"
+                    )
+
+                    agent.message_history.append({"role": "system", "content": feedback_to_agent})
+                    if context.current_db_session_id:
+                        await self._manager.db_manager.log_interaction(
+                            session_id=context.current_db_session_id,
+                            agent_id=agent.agent_id,
+                            role="system_error_feedback",
+                            content=feedback_to_agent
+                        )
+
+                    await self._manager.send_to_ui({
+                        "type": "system_error_feedback",
+                        "agent_id": agent.agent_id,
+                        "tool_name": malformed_tool_name,
+                        "error_message": parsing_error_msg,
+                        "detailed_usage": detailed_tool_usage,
+                        "original_attempt": raw_llm_response_with_error
+                    })
+
+                    context.needs_reactivation_after_cycle = True
+                    context.last_error_content = f"Malformed XML for tool '{malformed_tool_name}'"
+                    context.cycle_completed_successfully = False
+                    break
+
                 elif event_type == "agent_thought":
                     context.action_taken_this_cycle = True; context.thought_produced_this_cycle = True
                     thought_content = event.get("content")

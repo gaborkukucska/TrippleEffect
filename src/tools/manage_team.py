@@ -193,6 +193,13 @@ class ManageTeamTool(BaseTool):
             *   `<model>` (string, optional): LLM model (e.g., 'ollama/llama3.2:8b'). Auto-selected if omitted.
             *   `<temperature>` (float, optional): Model temperature.
             *   Example: `<manage_team><action>create_agent</action><persona>Researcher</persona><system_prompt>Research topics and provide summaries.</system_prompt><team_id>research_team</team_id></manage_team>`
+            *   **XML Content Rules for Agent Creation:**
+                *   The text content provided within `<persona>` and `<system_prompt>` tags **MUST be plain text only**. Avoid complex internal formatting.
+                *   **Special XML Characters:** Do NOT use raw `<`, `>`, or `&` characters directly within the text of persona or system prompts.
+                    *   If absolutely necessary, they MUST be XML escaped: `&lt;` for `<`, `&gt;` for `>`, `&amp;` for `&`.
+                    *   It is generally safer to rephrase sentences to avoid needing these characters in agent-generated text.
+                *   Keep persona and system prompt text concise and focused on the agent's role and instructions.
+                *   Ensure all XML tags are properly formed and closed (e.g., `<tag>content</tag>`).
 
         2.  **delete_agent:** Deletes an existing agent (not bootstrap agents).
             *   `<agent_id>` (string, required): Exact ID of the agent.

@@ -180,4 +180,55 @@
 *   **Phase 29+: Federated Communication (Layer 3).** (External Admin AI interaction - protocol, security, discovery).
 *   **Phase 30+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), etc.
 
+## June 15th, 2025 - PM Agent Loop in `pm_build_team_tasks`
+
+**Issue:**
+After successfully creating the project team, the PM agent (`pm_Snake_Game_Browser_Development_startup_1749963589`) entered the `pm_build_team_tasks` state but then repeatedly finished its cycles without taking further action (i.e., not proceeding to create worker agents). This caused an infinite loop where the agent was rescheduled in the same state but made no progress. Logs indicated the agent was not producing any tool calls after the initial team creation.
+
+**Diagnosis:**
+The hypothesis was that the agent, after fulfilling the initial directive to create a team (which was also Step 1 of its workflow in `pm_build_team_tasks_prompt`), became confused by the prompt's "CRITICAL FIRST ACTION" language for team creation on subsequent turns within the same state. It wasn't robustly recognizing that Step 1 was complete and that it should move to Step 2 (Create First Worker Agent).
+
+**Solution Attempted:**
+Modified `prompts.json`, specifically the `pm_build_team_tasks_prompt`.
+Step 1 of the workflow was rephrased from "Create Project Team" to "Ensure Project Team Exists."
+The new instruction guides the agent to:
+1. Review its message history for the current `pm_build_team_tasks` state.
+2. If team creation for `team_{project_name_snake_case}` has NOT already been successfully performed in this state, then create the team as the sole action.
+3. If team creation HAS already been successfully performed in this state (verified by checking for a successful tool result), then explicitly PROCEED DIRECTLY TO STEP 2: Create First Worker Agent.
+
+This change aims to make the agent more aware of its past actions within the state and explicitly direct it to continue the workflow.
+
+**Next Steps:**
+Await user testing to confirm if the PM agent now correctly proceeds to create worker agents after team creation.
+
+---
+**Correction Update (Post-Testing Feedback):**
+
+**Issue Identified:**
+User testing after the submission (commit `pm-task-loop-fix`) revealed a `WorkflowManager` error: `Missing key: project_name_snake_case` when trying to format `pm_build_team_tasks_prompt`.
+My initial diagnosis incorrectly assumed the `{project_name_snake_case}` placeholder was in Step 1 of the prompt. Subtask investigation (turn 47) found it was actually in Step 2, in the instruction for assigning the first worker agent to a team.
+
+**Solution Implemented:**
+The entire `pm_build_team_tasks_prompt` in `prompts.json` was replaced with a known-good version. This new version:
+1.  Ensures Step 1 ("Ensure Project Team Exists") correctly guides the agent to check its System Context (for `Your Team ID (once created): {team_id}`) and its history, and to form the `team_id` using `team_` + the exact 'Current Project' name from its [SYSTEM CONTEXT] if creation is needed.
+2.  Corrects Step 2 ("Create First Worker Agent") to guide the agent to assign the new worker to the project team ID you confirmed or created in Step 1, using the standard `{project_name}` placeholder for reference (e.g., "assign it to team `team_{project_name}`").
+3.  This definitively removes the erroneous `{project_name_snake_case}` placeholder.
+
+**Next Steps:**
+Awaiting user testing of this corrected `prompts.json`.
+---
+---
+**Second Correction Attempt (Further Refinement):**
+
+**Issue Persisted:**
+Even after correcting the `project_name_snake_case` placeholder and ensuring Step 1 guided the agent to "PROCEED DIRECTLY TO STEP 2", user testing (logs from turn #53) showed the PM agent still looped after team creation, returning empty LLM responses instead of initiating Step 2 (listing tools). The System Context was confirmed to be correctly updated with the Team ID.
+
+**Solution Implemented (Current):**
+Step 1 of the `pm_build_team_tasks_prompt` in `prompts.json` was refined again. Now, if the team is found to be already created, the instruction is more explicit:
+"...In this case, your NEXT ACTION is to start Step 2, which begins with listing tools: `<tool_information><action>list_tools</action></tool_information>`. This MUST BE your only output for this turn."
+The entire `pm_build_team_tasks_prompt` value was replaced with this new version to ensure accuracy.
+
+**Next Steps:**
+Awaiting user testing of this latest, more explicit prompt.
+---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

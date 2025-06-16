@@ -360,9 +360,14 @@ class Settings:
             # For dynamic local providers, check if they are discovered by ModelRegistry
             return model_registry.is_provider_discovered(provider_name)
         elif provider_name in ["ollama", "litellm"]:
-            # Availability depends on discovery, not .env keys
-            logger.debug(f"is_provider_configured check for local '{provider_name}': Returning False (status depends on discovery).")
-            return False
+            # For generic local provider types, configuration depends on whether local discovery is permitted by MODEL_TIER.
+            # Actual instance availability is checked by ModelRegistry.
+            if self.MODEL_TIER in ["LOCAL", "ALL"]:
+                logger.debug(f"is_provider_configured check for generic local type '{provider_name}': Returning True (MODEL_TIER is '{self.MODEL_TIER}', discovery permitted).")
+                return True
+            else:
+                logger.debug(f"is_provider_configured check for generic local type '{provider_name}': Returning False (MODEL_TIER is '{self.MODEL_TIER}', local discovery not permitted).")
+                return False
         else:
             # Check remote providers for a non-empty list of API keys.
             is_configured = provider_name in self.PROVIDER_API_KEYS and bool(self.PROVIDER_API_KEYS[provider_name])

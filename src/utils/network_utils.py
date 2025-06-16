@@ -66,6 +66,7 @@ def _get_local_network_cidr() -> Optional[str]:
         return None
 
 async def scan_for_local_apis(ports: List[int], timeout: float) -> List[str]:
+    logger.warning("Initiating nmap scan for local APIs. This can be slow or unreliable on large, restricted, or public networks. If issues occur, consider disabling LOCAL_API_SCAN_ENABLED in your config and relying on direct localhost checks or manually specified provider URLs.")
     """
     Scans the automatically detected local network using nmap to find devices
     with specified open TCP ports.
@@ -159,7 +160,10 @@ async def scan_for_local_apis(ports: List[int], timeout: float) -> List[str]:
     except ImportError:
          logger.error("Nmap scan failed: 'python-nmap' library not found. Please install it (`pip install python-nmap`).")
     except Exception as e:
-        logger.error(f"Error during nmap scan or processing: {e}", exc_info=True)
+        if isinstance(e, nmap.PortScannerError):
+            logger.error(f"Nmap scan or XML parsing failed: {e}. This can happen on unstable networks or if the scan is interrupted. Returning empty list of found APIs.", exc_info=True)
+        else:
+            logger.error(f"Error during nmap scan or processing: {e}", exc_info=True)
 
     logger.info(f"Nmap-based local API scan finished. Found {len(candidate_urls)} potential non-localhost endpoints.")
     return candidate_urls
