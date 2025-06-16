@@ -73,6 +73,13 @@ class AgentCycleHandler:
             logger.error(f"Constitutional Guardian agent '{CONSTITUTIONAL_GUARDIAN_AGENT_ID}' has no LLM provider. Failing open (assuming <OK/>).")
             return "<OK/>"
 
+        original_cg_status = cg_agent.status
+        cg_agent.set_status(AGENT_STATUS_PROCESSING)
+        if hasattr(self._manager, 'push_agent_status_update'):
+            await self._manager.push_agent_status_update(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
+        else:
+            logger.error("AgentManager instance not found or lacks push_agent_status_update, cannot update CG status for UI.")
+
         # Format governance principles text
         text_parts = []
         if hasattr(settings, 'GOVERNANCE_PRINCIPLES') and settings.GOVERNANCE_PRINCIPLES:
@@ -180,9 +187,102 @@ class AgentCycleHandler:
                 logger.warning(f"CG verdict '{stripped_verdict}' does not meet any specific OK or Concern criteria. Treating as malformed/inconclusive.")
             return MALFORMED_INCONCLUSIVE_MSG
 
-        except Exception as e:
-            logger.error(f"Error during Constitutional Guardian LLM call or verdict parsing: {e}", exc_info=True)
-            return ERROR_PROCESSING_MSG
+        try:
+            try:
+                logger.info(f"Requesting CG verdict via stream_completion for text: '{original_agent_final_text[:100]}...'")
+                provider_stream = cg_agent.llm_provider.stream_completion(
+                    messages=cg_history,
+                    model=cg_agent.model,
+                    temperature=cg_agent.temperature,
+                    max_tokens=max_tokens_for_verdict
+                )
+
+                full_verdict_text = ""
+                async for event in provider_stream:
+                    if event.get("type") == "response_chunk":
+                        full_verdict_text += event.get("content", "")
+                    elif event.get("type") == "error":
+                        logger.error(f"Error during CG LLM stream: {event.get('content')}", exc_info=event.get('_exception_obj'))
+                        full_verdict_text = "<OK/>" # Fail-open
+                        break
+
+                stripped_verdict = full_verdict_text.strip()
+                logger.info(f"CG Verdict received (raw full text from stream): '{stripped_verdict}'")
+
+                # Define constants for parsing
+                OK_TAG = "<OK/>"
+                CONCERN_START_TAG = "<CONCERN>"
+                CONCERN_END_TAG = "</CONCERN>"
+                MALFORMED_CONCERN_MSG = "Constitutional Guardian expressed a concern, but the format was malformed."
+                MALFORMED_INCONCLUSIVE_MSG = "Constitutional Guardian returned a malformed or inconclusive verdict."
+                ERROR_PROCESSING_MSG = "Constitutional Guardian encountered an error during verdict processing."
+
+                IMPLICIT_OK_PHRASES = [
+                    "no constitutional content", "no issues found",
+                    "seems to be a friendly greeting",
+                    "no substantial text related to constitutional matters", "fully complies"
+                ]
+
+                # 1. Explicit <OK/> check
+                if OK_TAG in stripped_verdict:
+                    # Ambiguity check: if <OK/> is present, but "concern" keyword also appears, it's problematic.
+                    if "concern" in stripped_verdict.lower():
+                        logger.warning(f"Ambiguous CG response: Contained '{OK_TAG}' but also the word 'concern'. Full response: '{stripped_verdict}'. Treating as malformed concern.")
+                        return MALFORMED_CONCERN_MSG
+                    logger.info(f"CG verdict contains explicit '{OK_TAG}'. Parsing as OK.")
+                    return OK_TAG
+
+                # 2. Well-formed <CONCERN>details</CONCERN>
+                concern_start_index = stripped_verdict.find(CONCERN_START_TAG)
+                concern_end_index = -1
+                if concern_start_index != -1:
+                    concern_end_index = stripped_verdict.find(CONCERN_END_TAG, concern_start_index + len(CONCERN_START_TAG))
+
+                if concern_start_index != -1 and concern_end_index != -1:
+                    concern_detail = stripped_verdict[concern_start_index + len(CONCERN_START_TAG):concern_end_index].strip()
+                    if concern_detail:
+                        logger.info(f"Extracted well-formed concern detail: '{concern_detail}'")
+                        return f"{CONCERN_START_TAG}{concern_detail}{CONCERN_END_TAG}"
+                    else: # Tags present, but empty content
+                        logger.warning(f"CG verdict has '{CONCERN_START_TAG}...{CONCERN_END_TAG}' tags but the content is empty. Treating as malformed concern.")
+                        return MALFORMED_CONCERN_MSG
+
+                # 3. Malformed or Keyword-based Concern
+                # This includes <CONCERN> without </CONCERN> or just the word "concern"
+                has_concern_start_tag_only = (concern_start_index != -1 and concern_end_index == -1)
+                contains_concern_keyword = "concern" in stripped_verdict.lower()
+
+                # If it has a start tag only, OR it contains "concern" keyword AND wasn't a well-formed concern already handled
+                if has_concern_start_tag_only or contains_concern_keyword:
+                    logger.warning(f"CG verdict indicates a concern but is malformed or keyword-based. Has start tag only: {has_concern_start_tag_only}. Contains 'concern' keyword: {contains_concern_keyword}. Original: '{stripped_verdict}'")
+                    return MALFORMED_CONCERN_MSG
+
+                # 4. Implicit OK (Only if no explicit OK and NO concern signals at all were found above)
+                if stripped_verdict: # Must be non-empty
+                    # This check is done after concern checks to ensure no concern signal was present
+                    for phrase in IMPLICIT_OK_PHRASES:
+                        if phrase in stripped_verdict.lower():
+                            logger.info(f"Implicit OK detected due to positive sentiment ('{phrase}') and lack of any concern signals. Verdict: '{stripped_verdict}'")
+                            return OK_TAG
+
+                # 5. Fallback to Malformed/Inconclusive
+                if not stripped_verdict:
+                    logger.warning("CG returned an empty or whitespace-only verdict. Treating as malformed/inconclusive.")
+                else:
+                    logger.warning(f"CG verdict '{stripped_verdict}' does not meet any specific OK or Concern criteria. Treating as malformed/inconclusive.")
+                return MALFORMED_INCONCLUSIVE_MSG
+
+            except Exception as e:
+                logger.error(f"Error during Constitutional Guardian LLM call or verdict parsing: {e}", exc_info=True)
+                return ERROR_PROCESSING_MSG
+        finally:
+            if cg_agent: # Check if cg_agent was valid from the start of the method
+                final_status_to_set = original_cg_status if original_cg_status is not None else AGENT_STATUS_IDLE
+                cg_agent.set_status(final_status_to_set)
+                if hasattr(self._manager, 'push_agent_status_update'):
+                    await self._manager.push_agent_status_update(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
+                else:
+                    logger.error("AgentManager instance not found or lacks push_agent_status_update, cannot revert CG status for UI.")
 
     # Removed _request_cg_review method as its functionality is integrated into _get_cg_verdict and run_cycle
 
@@ -477,48 +577,31 @@ class AgentCycleHandler:
                         original_event_data = event # Store original event
 
                         if final_content and agent.agent_id != CONSTITUTIONAL_GUARDIAN_AGENT_ID:
-                            # --- CG Review Block Start ---
-                            cg_agent = self._manager.agents.get(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
-                            original_cg_status = None
-                            if cg_agent:
-                                original_cg_status = cg_agent.status
-                                cg_agent.set_status(AGENT_STATUS_PROCESSING) # Or 'reviewing_output'
-                                await self._manager.push_agent_status_update(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
+                            cg_verdict = await self._get_cg_verdict(final_content)
 
-                            cg_verdict = None
-                            try:
-                                cg_verdict = await self._get_cg_verdict(final_content)
-
-                                if cg_verdict == "<OK/>": # Explicitly check for <OK/>
-                                    logger.info(f"CG Verdict OK for agent '{agent.agent_id}'. Proceeding normally.")
-                                    if context.current_db_session_id:
-                                        if not agent.message_history or not agent.message_history[-1].get("tool_calls"):
-                                            await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content)
-                                    await self._manager.send_to_ui(original_event_data)
-                                else: # Any other string is a concern (either extracted detail or "Malformed..." string)
-                                    logger.info(f"CG CONCERN for agent '{agent.agent_id}'. Pausing agent and notifying UI.")
-                                    concern_details = cg_verdict # This is now the extracted concern string or malformed message
-                                    agent.cg_original_text = final_content
-                                    agent.cg_concern_details = concern_details
-                                    agent.cg_original_event_data = original_event_data
-                                    agent.cg_awaiting_user_decision = True
-                                    agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG)
-                                    await self._manager.send_to_ui({
-                                        "type": "cg_concern",
-                                        "agent_id": agent.agent_id,
-                                        "original_text": final_content,
-                                        "concern_details": concern_details
-                                    })
-                                    context.action_taken_this_cycle = True
-                                    context.needs_reactivation_after_cycle = False
-                                    break
-                            finally:
-                                if cg_agent: # Check if cg_agent was successfully retrieved
-                                    # Revert to original status, or idle if no original status was captured
-                                    final_status_for_cg = original_cg_status if original_cg_status else AGENT_STATUS_IDLE
-                                    cg_agent.set_status(final_status_for_cg)
-                                    await self._manager.push_agent_status_update(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
-                            # --- CG Review Block End ---
+                            if cg_verdict == "<OK/>": # Explicitly check for <OK/>
+                                logger.info(f"CG Verdict OK for agent '{agent.agent_id}'. Proceeding normally.")
+                                if context.current_db_session_id:
+                                    if not agent.message_history or not agent.message_history[-1].get("tool_calls"):
+                                        await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content)
+                                await self._manager.send_to_ui(original_event_data)
+                            else: # Any other string is a concern (either extracted detail or "Malformed..." string)
+                                logger.info(f"CG CONCERN for agent '{agent.agent_id}'. Pausing agent and notifying UI.")
+                                concern_details = cg_verdict # This is now the extracted concern string or malformed message
+                                agent.cg_original_text = final_content
+                                agent.cg_concern_details = concern_details
+                                agent.cg_original_event_data = original_event_data
+                                agent.cg_awaiting_user_decision = True
+                                agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG)
+                                await self._manager.send_to_ui({
+                                    "type": "cg_concern",
+                                    "agent_id": agent.agent_id,
+                                    "original_text": final_content,
+                                    "concern_details": concern_details
+                                })
+                                context.action_taken_this_cycle = True
+                                context.needs_reactivation_after_cycle = False
+                                break
                         else: # No content in final_response, or it's the CG agent itself
                             if context.current_db_session_id and final_content: 
                                 if not agent.message_history or not agent.message_history[-1].get("tool_calls"):
@@ -571,46 +654,29 @@ class AgentCycleHandler:
                     mock_event_data = {"type": "final_response", "content": final_content_from_buffer, "agent_id": agent.agent_id}
 
                     if agent.agent_id != CONSTITUTIONAL_GUARDIAN_AGENT_ID:
-                        # --- CG Review Block Start (for buffer) ---
-                        cg_agent_buffer = self._manager.agents.get(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
-                        original_cg_status_buffer = None
-                        if cg_agent_buffer:
-                            original_cg_status_buffer = cg_agent_buffer.status
-                            cg_agent_buffer.set_status(AGENT_STATUS_PROCESSING) # Or 'reviewing_output'
-                            await self._manager.push_agent_status_update(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
+                        cg_verdict = await self._get_cg_verdict(final_content_from_buffer)
 
-                        cg_verdict_buffer = None
-                        try:
-                            cg_verdict_buffer = await self._get_cg_verdict(final_content_from_buffer)
-
-                            if cg_verdict_buffer == "<OK/>": # Explicitly check for <OK/>
-                                logger.info(f"CG Verdict OK for agent '{agent.agent_id}' (from buffer). Proceeding normally.")
-                                if context.current_db_session_id:
-                                    await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content_from_buffer)
-                                await self._manager.send_to_ui(mock_event_data)
-                            else: # Any other string is a concern
-                                logger.info(f"CG CONCERN for agent '{agent.agent_id}' (from buffer). Pausing agent and notifying UI.")
-                                concern_details_buffer = cg_verdict_buffer
-                                agent.cg_original_text = final_content_from_buffer
-                                agent.cg_concern_details = concern_details_buffer
-                                agent.cg_original_event_data = mock_event_data
-                                agent.cg_awaiting_user_decision = True
-                                agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG)
-                                await self._manager.send_to_ui({
-                                    "type": "cg_concern",
-                                    "agent_id": agent.agent_id,
-                                    "original_text": final_content_from_buffer,
-                                    "concern_details": concern_details_buffer
-                                })
-                                context.action_taken_this_cycle = True
-                                context.needs_reactivation_after_cycle = False
-                        finally:
-                            if cg_agent_buffer: # Check if cg_agent_buffer was successfully retrieved
-                                # Revert to original status, or idle if no original status was captured
-                                final_status_for_cg_buffer = original_cg_status_buffer if original_cg_status_buffer else AGENT_STATUS_IDLE
-                                cg_agent_buffer.set_status(final_status_for_cg_buffer)
-                                await self._manager.push_agent_status_update(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
-                        # --- CG Review Block End (for buffer) ---
+                        if cg_verdict == "<OK/>": # Explicitly check for <OK/>
+                            logger.info(f"CG Verdict OK for agent '{agent.agent_id}' (from buffer). Proceeding normally.")
+                            if context.current_db_session_id:
+                                await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content_from_buffer)
+                            await self._manager.send_to_ui(mock_event_data)
+                        else: # Any other string is a concern
+                            logger.info(f"CG CONCERN for agent '{agent.agent_id}' (from buffer). Pausing agent and notifying UI.")
+                            concern_details = cg_verdict
+                            agent.cg_original_text = final_content_from_buffer
+                            agent.cg_concern_details = concern_details
+                            agent.cg_original_event_data = mock_event_data
+                            agent.cg_awaiting_user_decision = True
+                            agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG)
+                            await self._manager.send_to_ui({
+                                "type": "cg_concern",
+                                "agent_id": agent.agent_id,
+                                "original_text": final_content_from_buffer,
+                                "concern_details": concern_details
+                            })
+                            context.action_taken_this_cycle = True
+                            context.needs_reactivation_after_cycle = False
                     else: 
                         if final_content_from_buffer: 
                             if context.current_db_session_id:
