@@ -491,6 +491,25 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
                      created_agent_id = result[2];
                      if created_agent_id:
                          if created_agent_id not in manager.bootstrap_agents: manager.bootstrap_agents.append(created_agent_id); successful_ids.append(created_agent_id); logger.info(f"--- Lifecycle: Bootstrap agent '{created_agent_id}' initialized. ---")
+                         # Send agent_added message to UI
+                         agent = manager.agents.get(created_agent_id)
+                         if agent:
+                             config_ui = agent.agent_config.get("config", {})
+                             team = manager.state_manager.get_agent_team(created_agent_id)
+                             await manager.send_to_ui({
+                                 "type": "agent_added",
+                                 "agent_id": created_agent_id,
+                                 "config": config_ui,
+                                 "team": team,
+                                 # Ensure status is part of the initial payload for UI consistency
+                                 "status": agent.get_state() # Send the full current state
+                             })
+                             # Push an explicit status update as well, as agent_added might just add to list
+                             # and status_update populates details.
+                             await manager.push_agent_status_update(created_agent_id)
+                             logger.info(f"Lifecycle: Sent agent_added and pushed status_update for bootstrap agent '{created_agent_id}'.")
+                         else:
+                             logger.warning(f"Lifecycle: Could not retrieve agent '{created_agent_id}' after creation to send agent_added UI message.")
                          else: logger.warning(f"Lifecycle: Bootstrap agent '{created_agent_id}' appears to be already initialized. Skipping duplicate add.")
                      else: logger.error(f"--- Lifecycle: Failed bootstrap init '{original_agent_id_attempted}': {result[1]} (Success reported but no ID?) ---")
                  elif isinstance(result, Exception): logger.error(f"--- Lifecycle: Failed bootstrap init '{original_agent_id_attempted}': {result} ---", exc_info=result)
