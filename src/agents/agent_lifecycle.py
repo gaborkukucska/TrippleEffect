@@ -487,15 +487,41 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
         for i, result in enumerate(results):
              original_agent_id_attempted = processed_configs[i].get("agent_id", f"unknown_index_{i}")
              try:
-                 if isinstance(result, tuple) and result[0]:
-                     created_agent_id = result[2];
-                     if created_agent_id:
-                         if created_agent_id not in manager.bootstrap_agents: manager.bootstrap_agents.append(created_agent_id); successful_ids.append(created_agent_id); logger.info(f"--- Lifecycle: Bootstrap agent '{created_agent_id}' initialized. ---")
-                         else: logger.warning(f"Lifecycle: Bootstrap agent '{created_agent_id}' appears to be already initialized. Skipping duplicate add.")
-                     else: logger.error(f"--- Lifecycle: Failed bootstrap init '{original_agent_id_attempted}': {result[1]} (Success reported but no ID?) ---")
-                 elif isinstance(result, Exception): logger.error(f"--- Lifecycle: Failed bootstrap init '{original_agent_id_attempted}': {result} ---", exc_info=result)
-                 else: error_msg = result[1] if isinstance(result, tuple) else str(result); logger.error(f"--- Lifecycle: Failed bootstrap init '{original_agent_id_attempted}': {error_msg} ---")
-             except Exception as gather_err: logger.error(f"Lifecycle: Unexpected error processing bootstrap result for '{original_agent_id_attempted}': {gather_err}", exc_info=True)
+                 if isinstance(result, tuple) and result[0]: # Agent creation reported success
+                     created_agent_id = result[2]
+                     if created_agent_id: # Agent ID was returned
+                         if created_agent_id not in manager.bootstrap_agents:
+                             manager.bootstrap_agents.append(created_agent_id)
+                             successful_ids.append(created_agent_id)
+                             logger.info(f"--- Lifecycle: Bootstrap agent '{created_agent_id}' initialized. ---")
+
+                             # Send agent_added message to UI
+                             agent = manager.agents.get(created_agent_id)
+                             if agent:
+                                 config_ui = agent.agent_config.get("config", {})
+                                 team = manager.state_manager.get_agent_team(created_agent_id)
+                                 await manager.send_to_ui({
+                                     "type": "agent_added",
+                                     "agent_id": created_agent_id,
+                                     "config": config_ui,
+                                     "team": team,
+                                     "status": agent.get_state()
+                                 })
+                                 await manager.push_agent_status_update(created_agent_id)
+                                 logger.info(f"Lifecycle: Sent agent_added and pushed status_update for bootstrap agent '{created_agent_id}'.")
+                             else:
+                                 logger.warning(f"Lifecycle: Could not retrieve agent '{created_agent_id}' after creation to send agent_added UI message.")
+                         else: # This else pairs with "if created_agent_id not in manager.bootstrap_agents"
+                             logger.warning(f"Lifecycle: Bootstrap agent '{created_agent_id}' appears to be already initialized. Skipping duplicate add.")
+                     else: # This else pairs with "if created_agent_id:" (i.e., creation succeeded but no agent_id was in result[2])
+                         logger.error(f"--- Lifecycle: Failed bootstrap init '{original_agent_id_attempted}': {result[1]} (Success reported but no agent ID in result tuple index 2?) ---")
+                 elif isinstance(result, Exception): # Agent creation task raised an exception
+                     logger.error(f"--- Lifecycle: Failed bootstrap init '{original_agent_id_attempted}': {result} ---", exc_info=result)
+                 else: # Agent creation task returned a failure tuple (e.g., (False, "some error", None))
+                     error_msg = result[1] if isinstance(result, tuple) and len(result) > 1 else str(result)
+                     logger.error(f"--- Lifecycle: Failed bootstrap init '{original_agent_id_attempted}': {error_msg} ---")
+             except Exception as gather_err: # Catch-all for unexpected issues processing the result itself
+                 logger.error(f"Lifecycle: Unexpected error processing bootstrap result for '{original_agent_id_attempted}': {gather_err}", exc_info=True)
 
     # Update global round-robin indices from the local tracker after all bootstrap agents are processed
     for base_type, final_index_value in current_bootstrap_rr_indices.items():

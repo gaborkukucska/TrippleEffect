@@ -167,6 +167,21 @@ async def websocket_endpoint(websocket: WebSocket):
                             "type": "error",
                             "content": "Incomplete constitutional guardian response received."
                         }))
+                elif message_type == "request_full_agent_status":
+                    logger.info(f"Received request_full_agent_status from {client_host}.")
+                    if agent_manager_instance:
+                        all_agent_statuses = agent_manager_instance.get_agent_status()
+                        await websocket.send_text(json.dumps({
+                            "type": "full_status",
+                            "agents": all_agent_statuses
+                        }))
+                        logger.info(f"Sent full_status update to {client_host} with {len(all_agent_statuses)} agents.")
+                    else:
+                        logger.error("AgentManager not available. Cannot send full_status.")
+                        await websocket.send_text(json.dumps({
+                            "type": "error",
+                            "content": "Backend AgentManager not available to provide full status."
+                        }))
                 else:
                     # Handle other potential JSON message types if added later
                     logger.warning(f"Received unknown JSON message type '{message_type}' from {client_host}.")

@@ -37,6 +37,7 @@ export const connectWebSocket = () => {
             state.setReconnectDelay(config.INITIAL_RECONNECT_DELAY); // Reset delay
             displayStatusMessage("Connected to backend.", false, false, 'internal-comms-area');
             console.log("WebSocket connection established.");
+            sendMessage(JSON.stringify({ type: "request_full_agent_status" }));
              // Maybe request initial full status upon connection?
              // sendMessage(JSON.stringify({ type: 'get_initial_status' })); // If backend supports
         };

@@ -54,16 +54,12 @@ class AgentCycleHandler:
         logger.info("AgentCycleHandler initialized.")
 
     async def _get_cg_verdict(self, original_agent_final_text: str) -> Optional[str]:
-        """
-        Directly calls the Constitutional Guardian agent's LLM provider to get a verdict.
-        This method bypasses the usual agent scheduling and cycle handling for the CG agent
-        to get an immediate verdict.
-        """
         if not original_agent_final_text or original_agent_final_text.isspace():
             logger.warning("CG review requested for empty or whitespace-only text. Skipping LLM call and returning <OK/>.")
             return "<OK/>"
 
         cg_agent = self._manager.agents.get(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
+        original_cg_status = None # Define before try block
 
         if not cg_agent:
             logger.error(f"Constitutional Guardian agent '{CONSTITUTIONAL_GUARDIAN_AGENT_ID}' not found. Failing open (assuming <OK/>).")
@@ -73,116 +69,113 @@ class AgentCycleHandler:
             logger.error(f"Constitutional Guardian agent '{CONSTITUTIONAL_GUARDIAN_AGENT_ID}' has no LLM provider. Failing open (assuming <OK/>).")
             return "<OK/>"
 
-        # Format governance principles text
-        text_parts = []
-        if hasattr(settings, 'GOVERNANCE_PRINCIPLES') and settings.GOVERNANCE_PRINCIPLES:
-            for principle in settings.GOVERNANCE_PRINCIPLES:
-                if principle.get("enabled", False):
-                    text_parts.append(f"Principle: {principle.get('name', 'N/A')} (ID: {principle.get('id', 'N/A')})\n{principle.get('text', 'N/A')}")
-        
-        governance_text = "\n\n---\n\n".join(text_parts) if text_parts else "No specific governance principles provided."
+        original_cg_status = cg_agent.status
+        cg_agent.set_status(AGENT_STATUS_PROCESSING)
+        if hasattr(self._manager, 'push_agent_status_update'):
+            await self._manager.push_agent_status_update(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
+        else:
+            logger.error("AgentManager instance not found or lacks push_agent_status_update, cannot update CG status for UI during processing.")
 
-        cg_prompt_template = settings.PROMPTS.get("cg_system_prompt", "")
-        if not cg_prompt_template:
-            logger.error("System prompt for Constitutional Guardian (cg_system_prompt) not found. Failing open (assuming <OK/>).")
-            return "<OK/>"
+        verdict_to_return = None # Initialize verdict
 
-        formatted_cg_system_prompt = cg_prompt_template.format(governance_principles_text=governance_text)
-        
-        cg_history: List[MessageDict] = [
-            {"role": "system", "content": formatted_cg_system_prompt},
-            {"role": "system", "content": f"---\nText for Constitutional Review:\n---\n{original_agent_final_text}"}
-        ]
-
-        max_tokens_for_verdict = 250 # Verdicts should be concise
-
-        try:
-            logger.info(f"Requesting CG verdict via stream_completion for text: '{original_agent_final_text[:100]}...'")
-            provider_stream = cg_agent.llm_provider.stream_completion(
-                messages=cg_history,
-                model=cg_agent.model,
-                temperature=cg_agent.temperature,
-                max_tokens=max_tokens_for_verdict
-            )
+        try: # Outer try for the main logic + status reset
+            text_parts = []
+            if hasattr(settings, 'GOVERNANCE_PRINCIPLES') and settings.GOVERNANCE_PRINCIPLES:
+                for principle in settings.GOVERNANCE_PRINCIPLES:
+                    if principle.get("enabled", False):
+                        text_parts.append(f"Principle: {principle.get('name', 'N/A')} (ID: {principle.get('id', 'N/A')})\n{principle.get('text', 'N/A')}")
+            governance_text = "\n\n---\n\n".join(text_parts) if text_parts else "No specific governance principles provided."
+            cg_prompt_template = settings.PROMPTS.get("cg_system_prompt", "")
             
-            full_verdict_text = ""
-            async for event in provider_stream:
-                if event.get("type") == "response_chunk":
-                    full_verdict_text += event.get("content", "")
-                elif event.get("type") == "error":
-                    logger.error(f"Error during CG LLM stream: {event.get('content')}", exc_info=event.get('_exception_obj'))
-                    full_verdict_text = "<OK/>" # Fail-open
-                    break
+            if not cg_prompt_template:
+                logger.error("System prompt for Constitutional Guardian (cg_system_prompt) not found. Failing open (assuming <OK/>).")
+                verdict_to_return = "<OK/>"
             
-            stripped_verdict = full_verdict_text.strip()
-            logger.info(f"CG Verdict received (raw full text from stream): '{stripped_verdict}'")
+            if verdict_to_return is None: # Only proceed if no error above from missing prompt template
+                formatted_cg_system_prompt = cg_prompt_template.format(governance_principles_text=governance_text)
+                cg_history: List[MessageDict] = [
+                    {"role": "system", "content": formatted_cg_system_prompt},
+                    {"role": "system", "content": f"---\nText for Constitutional Review:\n---\n{original_agent_final_text}"}
+                ]
+                max_tokens_for_verdict = 250
 
-            # Define constants for parsing
-            OK_TAG = "<OK/>"
-            CONCERN_START_TAG = "<CONCERN>"
-            CONCERN_END_TAG = "</CONCERN>"
-            MALFORMED_CONCERN_MSG = "Constitutional Guardian expressed a concern, but the format was malformed."
-            MALFORMED_INCONCLUSIVE_MSG = "Constitutional Guardian returned a malformed or inconclusive verdict."
-            ERROR_PROCESSING_MSG = "Constitutional Guardian encountered an error during verdict processing."
+                try: # Inner try for LLM call and parsing (original try...except block content)
+                    logger.info(f"Requesting CG verdict via stream_completion for text: '{original_agent_final_text[:100]}...'")
+                    provider_stream = cg_agent.llm_provider.stream_completion(
+                        messages=cg_history, model=cg_agent.model,
+                        temperature=cg_agent.temperature, max_tokens=max_tokens_for_verdict
+                    )
+                    full_verdict_text = ""
+                    async for event in provider_stream:
+                        if event.get("type") == "response_chunk":
+                            full_verdict_text += event.get("content", "")
+                        elif event.get("type") == "error":
+                            logger.error(f"Error during CG LLM stream: {event.get('content')}", exc_info=event.get('_exception_obj'))
+                            full_verdict_text = "<OK/>" # Fail-open
+                            break
+                    stripped_verdict = full_verdict_text.strip()
+                    logger.info(f"CG Verdict received (raw full text from stream): '{stripped_verdict}'")
 
-            IMPLICIT_OK_PHRASES = [
-                "no constitutional content", "no issues found",
-                "seems to be a friendly greeting",
-                "no substantial text related to constitutional matters", "fully complies"
-            ]
+                    OK_TAG = "<OK/>"
+                    CONCERN_START_TAG = "<CONCERN>"
+                    CONCERN_END_TAG = "</CONCERN>"
+                    MALFORMED_CONCERN_MSG = "Constitutional Guardian expressed a concern, but the format was malformed."
+                    MALFORMED_INCONCLUSIVE_MSG = "Constitutional Guardian returned a malformed or inconclusive verdict."
+                    # ERROR_PROCESSING_MSG is assigned directly in except block now
+                    IMPLICIT_OK_PHRASES = [
+                        "no constitutional content", "no issues found",
+                        "seems to be a friendly greeting",
+                        "no substantial text related to constitutional matters", "fully complies"
+                    ]
 
-            # 1. Explicit <OK/> check
-            if OK_TAG in stripped_verdict:
-                # Ambiguity check: if <OK/> is present, but "concern" keyword also appears, it's problematic.
-                if "concern" in stripped_verdict.lower():
-                    logger.warning(f"Ambiguous CG response: Contained '{OK_TAG}' but also the word 'concern'. Full response: '{stripped_verdict}'. Treating as malformed concern.")
-                    return MALFORMED_CONCERN_MSG
-                logger.info(f"CG verdict contains explicit '{OK_TAG}'. Parsing as OK.")
-                return OK_TAG
+                    if OK_TAG in stripped_verdict:
+                        if "concern" in stripped_verdict.lower(): # Ambiguity check
+                            verdict_to_return = MALFORMED_CONCERN_MSG
+                        else:
+                            verdict_to_return = OK_TAG
+                    else: # Not an explicit OK, check for concerns or other patterns
+                        concern_start_index = stripped_verdict.find(CONCERN_START_TAG)
+                        concern_end_index = -1
+                        if concern_start_index != -1:
+                            concern_end_index = stripped_verdict.find(CONCERN_END_TAG, concern_start_index + len(CONCERN_START_TAG))
 
-            # 2. Well-formed <CONCERN>details</CONCERN>
-            concern_start_index = stripped_verdict.find(CONCERN_START_TAG)
-            concern_end_index = -1
-            if concern_start_index != -1:
-                concern_end_index = stripped_verdict.find(CONCERN_END_TAG, concern_start_index + len(CONCERN_START_TAG))
+                        if concern_start_index != -1 and concern_end_index != -1: # Well-formed concern
+                            concern_detail = stripped_verdict[concern_start_index + len(CONCERN_START_TAG):concern_end_index].strip()
+                            if concern_detail:
+                                verdict_to_return = f"{CONCERN_START_TAG}{concern_detail}{CONCERN_END_TAG}"
+                            else: # Tags present, but empty content
+                                verdict_to_return = MALFORMED_CONCERN_MSG
+                        else: # Not a well-formed concern, check for other signals
+                            has_concern_start_tag_only = (concern_start_index != -1 and concern_end_index == -1)
+                            contains_concern_keyword = "concern" in stripped_verdict.lower()
+                            if has_concern_start_tag_only or contains_concern_keyword:
+                                verdict_to_return = MALFORMED_CONCERN_MSG
+                            elif stripped_verdict: # Must be non-empty to check for implicit OK
+                                is_implicit_ok = False
+                                for phrase in IMPLICIT_OK_PHRASES:
+                                    if phrase in stripped_verdict.lower():
+                                        is_implicit_ok = True; break
+                                if is_implicit_ok:
+                                    verdict_to_return = OK_TAG
+                                else: # No implicit OK, and no other pattern matched
+                                    verdict_to_return = MALFORMED_INCONCLUSIVE_MSG
+                            else: # Empty stripped_verdict
+                                verdict_to_return = MALFORMED_INCONCLUSIVE_MSG
 
-            if concern_start_index != -1 and concern_end_index != -1:
-                concern_detail = stripped_verdict[concern_start_index + len(CONCERN_START_TAG):concern_end_index].strip()
-                if concern_detail:
-                    logger.info(f"Extracted well-formed concern detail: '{concern_detail}'")
-                    return f"{CONCERN_START_TAG}{concern_detail}{CONCERN_END_TAG}"
-                else: # Tags present, but empty content
-                    logger.warning(f"CG verdict has '{CONCERN_START_TAG}...{CONCERN_END_TAG}' tags but the content is empty. Treating as malformed concern.")
-                    return MALFORMED_CONCERN_MSG
+                except Exception as e:
+                    logger.error(f"Error during Constitutional Guardian LLM call or verdict parsing: {e}", exc_info=True)
+                    verdict_to_return = "Constitutional Guardian encountered an error during verdict processing."
 
-            # 3. Malformed or Keyword-based Concern
-            # This includes <CONCERN> without </CONCERN> or just the word "concern"
-            has_concern_start_tag_only = (concern_start_index != -1 and concern_end_index == -1)
-            contains_concern_keyword = "concern" in stripped_verdict.lower()
+        finally: # Outer finally
+            if cg_agent:
+                final_status_to_set = original_cg_status if original_cg_status is not None else AGENT_STATUS_IDLE
+                cg_agent.set_status(final_status_to_set)
+                if hasattr(self._manager, 'push_agent_status_update'):
+                    await self._manager.push_agent_status_update(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
+                else:
+                    logger.error("AgentManager instance not found or lacks push_agent_status_update, cannot revert CG status for UI.")
 
-            # If it has a start tag only, OR it contains "concern" keyword AND wasn't a well-formed concern already handled
-            if has_concern_start_tag_only or contains_concern_keyword:
-                logger.warning(f"CG verdict indicates a concern but is malformed or keyword-based. Has start tag only: {has_concern_start_tag_only}. Contains 'concern' keyword: {contains_concern_keyword}. Original: '{stripped_verdict}'")
-                return MALFORMED_CONCERN_MSG
-
-            # 4. Implicit OK (Only if no explicit OK and NO concern signals at all were found above)
-            if stripped_verdict: # Must be non-empty
-                # This check is done after concern checks to ensure no concern signal was present
-                for phrase in IMPLICIT_OK_PHRASES:
-                    if phrase in stripped_verdict.lower():
-                        logger.info(f"Implicit OK detected due to positive sentiment ('{phrase}') and lack of any concern signals. Verdict: '{stripped_verdict}'")
-                        return OK_TAG
-
-            # 5. Fallback to Malformed/Inconclusive
-            if not stripped_verdict:
-                logger.warning("CG returned an empty or whitespace-only verdict. Treating as malformed/inconclusive.")
-            else:
-                logger.warning(f"CG verdict '{stripped_verdict}' does not meet any specific OK or Concern criteria. Treating as malformed/inconclusive.")
-            return MALFORMED_INCONCLUSIVE_MSG
-
-        except Exception as e:
-            logger.error(f"Error during Constitutional Guardian LLM call or verdict parsing: {e}", exc_info=True)
-            return ERROR_PROCESSING_MSG
+        return verdict_to_return
 
     # Removed _request_cg_review method as its functionality is integrated into _get_cg_verdict and run_cycle
 
@@ -497,11 +490,11 @@ class AgentCycleHandler:
                                     "type": "cg_concern",
                                     "agent_id": agent.agent_id,
                                     "original_text": final_content,
-                                    "concern_details": concern_details 
+                                    "concern_details": concern_details
                                 })
                                 context.action_taken_this_cycle = True
                                 context.needs_reactivation_after_cycle = False
-                                break 
+                                break
                         else: # No content in final_response, or it's the CG agent itself
                             if context.current_db_session_id and final_content: 
                                 if not agent.message_history or not agent.message_history[-1].get("tool_calls"):
