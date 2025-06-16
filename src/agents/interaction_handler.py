@@ -346,6 +346,55 @@ class AgentInteractionHandler:
 
                         if state_changed:
                             logger.info(f"Worker '{assignee_id}' state set to WORK. CycleHandler will manage next cycle.")
+                            await self._manager.schedule_cycle(assigned_agent, 0) # Explicitly schedule activated worker
+
+                            # Notify PM about worker activation
+                            pm_agent = agent # 'agent' is the PM executing the ProjectManagementTool
+
+                            # task_description is already defined in the outer scope
+                            brief_task_desc = (task_description[:70] + '...') if task_description and len(task_description) > 70 else task_description
+                            if not brief_task_desc: brief_task_desc = "N/A"
+
+                            notification_content = f"[Framework Notification]: Worker agent '{assignee_id}' (Persona: '{assigned_agent.persona if hasattr(assigned_agent, 'persona') else 'N/A'}') has been automatically activated for task: '{brief_task_desc}'."
+
+                            pm_notification_message: MessageDict = {
+                                "role": "tool",
+                                "tool_call_id": f"worker_activation_notification_{assignee_id}_{int(time.time())}",
+                                "name": "framework_notification",
+                                "content": notification_content
+                            }
+                            pm_agent.message_history.append(pm_notification_message)
+                            logger.info(f"InteractionHandler: Appended activation notification for worker '{assignee_id}' to PM '{pm_agent.agent_id}' history.")
+
+                            # Log to database
+                            if self._manager.current_session_db_id:
+                                try:
+                                    await self._manager.db_manager.log_interaction(
+                                        session_id=self._manager.current_session_db_id, # type: ignore
+                                        agent_id=pm_agent.agent_id,
+                                        role="system_feedback",
+                                        content=notification_content,
+                                        tool_name="framework_notification",
+                                        tool_input={"worker_id": assignee_id, "task": brief_task_desc},
+                                        tool_output=notification_content,
+                                        token_usage=None,
+                                        caller_id="InteractionHandler"
+                                    )
+                                except Exception as db_log_err:
+                                    logger.error(f"InteractionHandler: Failed to log PM notification to database: {db_log_err}")
+
+                            # Send UI message
+                            try:
+                                ui_message_task_desc = raw_result.get("description", "N/A") # Full description for UI
+                                await self._manager.send_to_ui({
+                                    "type": "framework_notification_to_pm",
+                                    "pm_agent_id": pm_agent.agent_id,
+                                    "worker_agent_id": assignee_id,
+                                    "task_description": ui_message_task_desc,
+                                    "message": notification_content
+                                })
+                            except Exception as ui_send_err:
+                                logger.error(f"InteractionHandler: Failed to send PM notification to UI: {ui_send_err}")
                         else:
                             logger.error(f"Failed to change state to WORK for activated worker '{assignee_id}'.")
                             assigned_agent._needs_initial_work_context = False # Reset flag if state change failed
