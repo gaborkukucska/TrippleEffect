@@ -79,6 +79,7 @@ class Agent:
         self._pm_needs_initial_list_tools: bool = False
         self._awaiting_project_approval: bool = False
         self.needs_priority_recheck: bool = False
+        self.intervention_applied_for_build_team_tasks: bool = False
         self.text_buffer: str = ""
         self.sandbox_path: Path = BASE_DIR / "sandboxes" / f"agent_{self.agent_id}"
         self.raw_xml_tool_call_pattern = None
