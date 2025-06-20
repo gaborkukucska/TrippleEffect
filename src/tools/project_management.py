@@ -210,7 +210,7 @@ uda.assignee.label=Assignee
                             "task_uuid": final_task['uuid'],
                             "task_id": final_task['id'],
                             "description": final_task['description'],
-                            "assignee": getattr(final_task, 'assignee', None) # Still use getattr for safety on fetch
+                            "assignee": kwargs.get("assignee_agent_id")
                         })
                     except Exception as fetch_err:
                         logger.error(f"Failed to fetch task ID {created_task_id} after add/modify: {fetch_err}", exc_info=True)
@@ -313,6 +313,9 @@ uda.assignee.label=Assignee
 
                 # Apply modifications
                 modified_fields = []
+                intended_assignee_for_modification = kwargs.get("assignee_agent_id")
+                assignee_value_for_result = None
+
                 if "description" in kwargs:
                     task['description'] = kwargs["description"]
                     modified_fields.append("description")
@@ -323,36 +326,63 @@ uda.assignee.label=Assignee
                          modified_fields.append("status")
                     else:
                          logger.warning(f"Invalid status '{new_status}' provided for modify_task.")
-                         # Optionally return error or ignore invalid status
                 if "priority" in kwargs:
                     task['priority'] = kwargs["priority"]
                     modified_fields.append("priority")
                 if "project_filter" in kwargs: # Assuming project_filter is used to set project
                     task['project'] = kwargs["project_filter"]
                     modified_fields.append("project")
+
+                # Handle tags separately from assignee logic for now, then combine if assignee changes
                 if "tags" in kwargs and isinstance(kwargs["tags"], list):
                     task['tags'] = set(kwargs["tags"]) # Replace tags
                     modified_fields.append("tags")
-                if "assignee_agent_id" in kwargs: # Allow modifying assignee
-                    task['assignee'] = kwargs["assignee_agent_id"]
+
+                if intended_assignee_for_modification:
+                    task['assignee'] = intended_assignee_for_modification
                     modified_fields.append("assignee")
-                # Add dependency modification if needed later
 
-                if not modified_fields:
-                    return self._error_result("No valid fields provided to modify.")
+                    current_tags = set(task['tags'] if task['tags'] else [])
+                    tags_to_remove = {
+                        tag for tag in current_tags
+                        if (tag.startswith('pm_') or tag.startswith('worker_') or tag.startswith('admin_ai'))
+                           and tag != intended_assignee_for_modification
+                    }
+                    current_tags = current_tags - tags_to_remove
+                    current_tags.add(intended_assignee_for_modification)
+                    task['tags'] = list(current_tags)
+                    if "tags" not in modified_fields: # Avoid double-adding "tags" if it was already there
+                        modified_fields.append("tags") # Tags were modified due to assignee change
 
-                task.save()
+                    assignee_value_for_result = intended_assignee_for_modification
+                else:
+                    # Assignee not being actively changed by this call
+                    assignee_value_for_result = getattr(task, 'assignee', None)
+                    if not assignee_value_for_result and task['tags']:
+                        for tag_val in task['tags']: # Corrected variable name from 'tag' to 'tag_val'
+                            if isinstance(tag_val, str) and (tag_val.startswith('pm_') or tag_val.startswith('worker_') or tag_val.startswith('admin_ai')):
+                                assignee_value_for_result = tag_val
+                                break
+
+                if not modified_fields and not intended_assignee_for_modification : # Check if any actual modification happened
+                    # If only assignee_agent_id was passed but it's the same as current, it's not a modification
+                    # Or if no modification fields were passed at all.
+                    current_assignee_from_uda = getattr(task, 'assignee', None)
+                    if not intended_assignee_for_modification or intended_assignee_for_modification == current_assignee_from_uda:
+                         return self._error_result("No valid fields provided for modification or assignee is already set to the provided value.")
+
+
+                task.save() # Save after all modifications
                 logger.info(f"Task '{task_id}' modified. Fields changed: {', '.join(modified_fields)}")
-                # --- MODIFIED: Return assignee and description ---
+
                 return self._success_result({
                     "message": f"Task '{task_id}' modified successfully.",
                     "task_uuid": task['uuid'],
                     "task_id": task['id'],
                     "modified_fields": modified_fields,
-                    "description": task['description'], # Add description
-                    "assignee": getattr(task, 'assignee', None) # Add assignee
+                    "description": task['description'],
+                    "assignee": assignee_value_for_result
                 })
-                # --- END MODIFIED ---
 
             elif action == "complete_task":
                 task_id = kwargs.get("task_id")

@@ -402,12 +402,28 @@ class AgentWorkflowManager:
         state_prompt_template = settings.PROMPTS.get(state_prompt_key, "Error: State-specific prompt template missing.")
         
         task_desc_for_prompt = getattr(agent, 'initial_plan_description', None)
-        if agent.agent_type == AGENT_TYPE_PM and task_desc_for_prompt is None:
-             task_desc_for_prompt = '{task_description}' 
-             logger.error(f"CRITICAL: PM agent {agent.agent_id} in state {agent.state} has no 'initial_plan_description'. The startup prompt will use a placeholder.")
-        elif task_desc_for_prompt is None: 
-            task_desc_for_prompt = '{task_description}'
 
+        # === MODIFICATION START ===
+        # Use injected task description for newly activated workers
+        if agent.agent_type == AGENT_TYPE_WORKER and agent.state == WORKER_STATE_WORK:
+            if hasattr(agent, '_needs_initial_work_context') and agent._needs_initial_work_context and \
+               hasattr(agent, '_injected_task_description') and agent._injected_task_description is not None:
+                task_desc_for_prompt = agent._injected_task_description
+                logger.info(f"WorkflowManager: Using injected task description for worker {agent.agent_id} for initial work context: '{str(task_desc_for_prompt)[:100]}...'")
+                agent._needs_initial_work_context = False
+
+        # Refined fallback logic for task_description
+        if task_desc_for_prompt is None:
+            if agent.agent_type == AGENT_TYPE_PM:
+                task_desc_for_prompt = '{task_description}' # Placeholder for PM, critical error
+                logger.error(f"CRITICAL: PM agent {agent.agent_id} in state {agent.state} has no 'initial_plan_description' and no injected context. Startup prompt will use a placeholder.")
+            elif agent.agent_type == AGENT_TYPE_WORKER:
+                task_desc_for_prompt = "No task description provided." # Specific message for Worker
+                logger.warning(f"Worker agent {agent.agent_id} in state {agent.state} has no 'initial_plan_description' and no injected context. Using default message.")
+            else: # For Admin or other types if applicable
+                task_desc_for_prompt = '{task_description}' # Generic placeholder
+                logger.warning(f"Agent {agent.agent_id} ({agent.agent_type}) in state {agent.state} has no task description. Using generic placeholder.")
+        # === MODIFICATION END ===
 
         state_formatting_context = {
             "agent_id": agent.agent_id, "persona": agent.persona,
