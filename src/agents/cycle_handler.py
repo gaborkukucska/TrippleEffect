@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import time
+import re
 from typing import TYPE_CHECKING, Dict, Any, Optional, List
 
 from src.llm_providers.base import ToolResultDict, MessageDict
@@ -358,29 +359,87 @@ class AgentCycleHandler:
 
                 # This block handles cases where the LLM stream finished without any specific break-worthy event.
                 if llm_stream_ended_cleanly and not context.last_error_obj and not context.action_taken_this_cycle:
-                    final_content_from_buffer = agent.text_buffer.strip()
-                    if final_content_from_buffer:
-                        agent.text_buffer = ""; mock_event_data = {"type": "final_response", "content": final_content_from_buffer, "agent_id": agent.agent_id}
-                        context.action_taken_this_cycle = True # Processing buffer counts as an action
-                        if agent.agent_id != CONSTITUTIONAL_GUARDIAN_AGENT_ID: # CG Check for buffer content
-                            cg_verdict = await self._get_cg_verdict(final_content_from_buffer)
-                            if cg_verdict == "<OK/>":
+                    # Intervention logic for PM agent stuck after team creation
+                    if agent.agent_type == AGENT_TYPE_PM and \
+                       agent.state == PM_STATE_BUILD_TEAM_TASKS and \
+                       not agent.intervention_applied_for_build_team_tasks:
+
+                        team_created_successfully = False
+                        created_team_id_for_message = "team_NameNotRetrieved" # Default
+                        if agent.message_history:
+                            for i in range(len(agent.message_history) -1, -1, -1):
+                                msg = agent.message_history[i]
+                                if msg.get("role") == "tool" and msg.get("name") == "manage_team":
+                                    tool_content = msg.get("content", "")
+                                    if "create_team" in tool_content.lower() and \
+                                       ("successfully" in tool_content.lower() or "created" in tool_content.lower()):
+                                        team_created_successfully = True
+                                        match = re.search(r'\"created_team_id\":\s*\"([^\"]+)\"', tool_content)
+                                        if match:
+                                            created_team_id_for_message = match.group(1)
+                                        else:
+                                            if i > 0 and agent.message_history[i-1].get("role") == "assistant":
+                                                prev_msg_tool_calls = agent.message_history[i-1].get("tool_calls")
+                                                if prev_msg_tool_calls and isinstance(prev_msg_tool_calls, list):
+                                                    for call in prev_msg_tool_calls:
+                                                        if call.get("name") == "manage_team" and call.get("arguments", {}).get("action") == "create_team":
+                                                            created_team_id_for_message = call.get("arguments", {}).get("team_id", created_team_id_for_message)
+                                                            break
+                                        break
+                                if msg.get("role") == "assistant":
+                                    break
+
+                        if team_created_successfully:
+                            logger.info(f"CycleHandler: PM agent '{agent.agent_id}' in state '{agent.state}' returned empty. Applying intervention after successful team creation.")
+
+                            intervention_message_content = (
+                                f"[Framework Intervention]: Team '{created_team_id_for_message}' is now created. "
+                                "Your mandatory next action is to list available tools to proceed with agent creation. "
+                                "Output ONLY the following XML: <tool_information><action>list_tools</action></tool_information>"
+                            )
+                            intervention_message: MessageDict = {"role": "system", "content": intervention_message_content}
+                            agent.message_history.append(intervention_message)
+
+                            if context.current_db_session_id:
+                                await self._manager.db_manager.log_interaction(
+                                    session_id=context.current_db_session_id,
+                                    agent_id=agent.agent_id,
+                                    role="system_intervention",
+                                    content=intervention_message_content
+                                )
+
+                            agent.intervention_applied_for_build_team_tasks = True
+                            context.needs_reactivation_after_cycle = True
+                            context.action_taken_this_cycle = True
+                            context.cycle_completed_successfully = True
+
+                    # Original logic for processing final_content_from_buffer starts here
+                    if context.needs_reactivation_after_cycle and agent.intervention_applied_for_build_team_tasks and not agent.text_buffer.strip():
+                        pass
+                    else:
+                        final_content_from_buffer = agent.text_buffer.strip()
+                        if final_content_from_buffer:
+                            agent.text_buffer = ""; mock_event_data = {"type": "final_response", "content": final_content_from_buffer, "agent_id": agent.agent_id}
+                            context.action_taken_this_cycle = True
+                            if agent.agent_id != CONSTITUTIONAL_GUARDIAN_AGENT_ID:
+                                cg_verdict = await self._get_cg_verdict(final_content_from_buffer)
+                                if cg_verdict == "<OK/>":
+                                    if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content_from_buffer)
+                                    await self._manager.send_to_ui(mock_event_data)
+                                    context.cycle_completed_successfully = True
+                                else:
+                                    agent.cg_original_text = final_content_from_buffer; agent.cg_concern_details = cg_verdict; agent.cg_original_event_data = mock_event_data
+                                    agent.cg_awaiting_user_decision = True; agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG)
+                                    await self._manager.send_to_ui({"type": "cg_concern", "agent_id": agent.agent_id, "original_text": final_content_from_buffer, "concern_details": cg_verdict})
+                                    context.needs_reactivation_after_cycle = False
+                                    context.cycle_completed_successfully = False
+                            else:
                                 if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content_from_buffer)
                                 await self._manager.send_to_ui(mock_event_data)
-                                context.cycle_completed_successfully = True # Successfully outputted content
-                            else: # CG Concern from buffer
-                                agent.cg_original_text = final_content_from_buffer; agent.cg_concern_details = cg_verdict; agent.cg_original_event_data = mock_event_data
-                                agent.cg_awaiting_user_decision = True; agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG)
-                                await self._manager.send_to_ui({"type": "cg_concern", "agent_id": agent.agent_id, "original_text": final_content_from_buffer, "concern_details": cg_verdict})
-                                context.needs_reactivation_after_cycle = False # Paused for user
-                                context.cycle_completed_successfully = False # Paused, not successfully completed cycle's goal
-                        else: # CG agent itself, or no CG check needed
-                            if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content_from_buffer)
-                            await self._manager.send_to_ui(mock_event_data)
+                                context.cycle_completed_successfully = True
+                        else:
+                            logger.info(f"Agent '{agent.agent_id}' cycle resulted in no errors, no actions, and no text_buffer content. Cycle considered complete but no output.")
                             context.cycle_completed_successfully = True
-                    else: # No error, no action, no buffer content
-                        logger.info(f"Agent '{agent.agent_id}' cycle resulted in no errors, no actions, and no text_buffer content. Cycle considered complete but no output.")
-                        context.cycle_completed_successfully = True # Completed without error, even if no output
 
                 # Determine if this iteration of LLM call was successful before recheck
                 if not context.last_error_obj and context.action_taken_this_cycle:
