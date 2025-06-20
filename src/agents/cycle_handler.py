@@ -250,6 +250,28 @@ class AgentCycleHandler:
                         if workflow_result.next_agent_state: self._manager.workflow_manager.change_state(agent, workflow_result.next_agent_state)
                         if workflow_result.next_agent_status: agent.set_status(workflow_result.next_agent_status)
                         if workflow_result.ui_message_data: await self._manager.send_to_ui(workflow_result.ui_message_data)
+
+                        # START of inserted code block
+                        if agent.agent_id == BOOTSTRAP_AGENT_ID and workflow_result.ui_message_data and workflow_result.ui_message_data.get('type') == 'project_pending_approval':
+                            project_title = workflow_result.ui_message_data.get('project_title')
+                            if project_title:
+                                system_message_content = f"[Framework Notification: Project '{project_title}' has been created and is now awaiting user approval. You should inform the user about this status and wait for their approval. Do not re-plan this item.]"
+                                framework_notification_message: MessageDict = {"role": "system", "content": system_message_content}
+                                agent.message_history.append(framework_notification_message)
+                                logger.info(f"CycleHandler '{agent.agent_id}': Injected project pending approval notification into history for project '{project_title}'.")
+                                if context.current_db_session_id: # Log this important injection to DB as well
+                                    try:
+                                        await self._manager.db_manager.log_interaction(
+                                            session_id=context.current_db_session_id,
+                                            agent_id=agent.agent_id,
+                                            role="system_framework_notification", # A new role to distinguish this
+                                            content=system_message_content
+                                        )
+                                        logger.debug(f"CycleHandler '{agent.agent_id}': Logged framework notification to DB.")
+                                    except Exception as db_log_err:
+                                        logger.error(f"CycleHandler '{agent.agent_id}': Failed to log framework notification to DB: {db_log_err}", exc_info=True)
+                        # END of inserted code block
+
                         if workflow_result.tasks_to_schedule:
                             for task_agent, task_retry_count in workflow_result.tasks_to_schedule:
                                 if task_agent and isinstance(task_agent, Agent): await self._manager.schedule_cycle(task_agent, task_retry_count)
