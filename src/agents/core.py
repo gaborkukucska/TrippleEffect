@@ -78,6 +78,7 @@ class Agent:
         self._failed_models_this_cycle: set = set()
         self._pm_needs_initial_list_tools: bool = False
         self._awaiting_project_approval: bool = False
+        self.needs_priority_recheck: bool = False
         self.text_buffer: str = ""
         self.sandbox_path: Path = BASE_DIR / "sandboxes" / f"agent_{self.agent_id}"
         self.raw_xml_tool_call_pattern = None

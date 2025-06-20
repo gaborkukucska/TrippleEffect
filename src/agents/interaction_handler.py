@@ -16,7 +16,8 @@ from src.tools.tool_parser import parse_tool_call # This seems unused, consider 
 # Import status constants and agent types
 from src.agents.constants import (
     AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_EXECUTING_TOOL,
-    AGENT_TYPE_WORKER, WORKER_STATE_WORK, BOOTSTRAP_AGENT_ID # Added BOOTSTRAP_AGENT_ID
+    AGENT_TYPE_WORKER, WORKER_STATE_WORK, BOOTSTRAP_AGENT_ID, AGENT_STATUS_ERROR, # Added BOOTSTRAP_AGENT_ID
+    AGENT_STATUS_AWAITING_CG_REVIEW, AGENT_STATUS_AWAITING_USER_REVIEW_CG # Added CG states
 )
 
 # Import helper for prompt update
@@ -239,11 +240,30 @@ class AgentInteractionHandler:
 
         activation_task = None
         if target_agent.status == AGENT_STATUS_IDLE:
-            logger.info(f"InteractionHandler: Target '{resolved_target_id}' is IDLE. Scheduling cycle...");
+            logger.info(f"InteractionHandler: Target '{resolved_target_id}' ({target_agent.persona}) is IDLE. Scheduling cycle due to new message from '{sender_id}'.")
             activation_task = asyncio.create_task(self._manager.schedule_cycle(target_agent, 0))
-        else:
-            logger.info(f"InteractionHandler: Target '{resolved_target_id}' not IDLE (Status: {target_agent.status}). Message queued.")
-            await self._manager.send_to_ui({ "type": "status", "agent_id": resolved_target_id, "content": f"Message received from @{sender_id}, queued." })
+        elif target_agent.status == AGENT_STATUS_ERROR:
+            logger.info(f"InteractionHandler: Reset agent {target_agent.agent_id} ({target_agent.persona}) status from ERROR to IDLE due to incoming message from '{sender_id}'. Scheduling cycle.")
+            target_agent.set_status(AGENT_STATUS_IDLE) # set_status also pushes UI update via manager
+            activation_task = asyncio.create_task(self._manager.schedule_cycle(target_agent, 0))
+            # No specific send_to_ui here as schedule_cycle and set_status handle agent status updates.
+        else: # Agent is in some other active state
+            exempt_states = {AGENT_STATUS_AWAITING_CG_REVIEW, AGENT_STATUS_AWAITING_USER_REVIEW_CG}
+            if target_agent.status not in exempt_states:
+                target_agent.needs_priority_recheck = True
+                logger.info(f"InteractionHandler: Agent {target_agent.agent_id} ({target_agent.persona}) is in status {target_agent.status}. Flagged for priority recheck due to new message from '{sender_id}'.")
+                await self._manager.send_to_ui({
+                    "type": "status", # This type is generic, could be more specific if UI handles it
+                    "agent_id": resolved_target_id,
+                    "content": f"Message received from @{sender_id} ({sender_agent.persona}). Agent busy, flagged for recheck."
+                })
+            else: # Agent is in an exempt system-paused state
+                logger.info(f"InteractionHandler: Agent {target_agent.agent_id} ({target_agent.persona}) is in system-paused status {target_agent.status}. New message from '{sender_id}' added to history, but agent will not be flagged or rescheduled by this handler.")
+                await self._manager.send_to_ui({
+                    "type": "status",
+                    "agent_id": resolved_target_id,
+                    "content": f"Message received from @{sender_id} ({sender_agent.persona}). Agent paused, message queued."
+                })
         return activation_task
 
 
