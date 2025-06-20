@@ -225,7 +225,7 @@ class AgentCycleHandler:
                 llm_stream_ended_cleanly = True # Flag to see if the event loop finished or broke early
                 async for event in agent_generator:
                     event_type = event.get("type")
-                logger.debug(f"CycleHandler '{agent.agent_id}': Received Event from Agent.process_message: Type='{event_type}', Keys={list(event.keys())}")
+                    logger.debug(f"CycleHandler '{agent.agent_id}': Received Event from Agent.process_message: Type='{event_type}', Keys={list(event.keys())}")
 
                     if event_type == "error":
                         context.last_error_obj = event.get('_exception_obj', ValueError(event.get('content', 'Unknown Agent Core Error')))
