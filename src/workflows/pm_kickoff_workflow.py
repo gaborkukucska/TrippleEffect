@@ -130,25 +130,37 @@ class PMKickoffWorkflow(BaseWorkflow):
             agent.clear_history()
             logger.info(f"PMKickoffWorkflow: Cleared history for PM agent '{agent.agent_id}' before transitioning to PM_STATE_BUILD_TEAM_TASKS.")
 
+            # Format the task descriptions for inclusion in the message
+            formatted_task_list = "\n".join([f"- {desc}" for desc in task_descriptions])
+            if not formatted_task_list:
+                formatted_task_list = "No specific kick-off tasks were itemized in the previous step."
+
             directive_message_content = (
                 "[Framework System Message]\n"
                 "Your previous state 'pm_startup' and its associated task decomposition are complete.\n"
+                "The following kick-off tasks have been identified and logged based on your <task_list> output:\n"
+                "{formatted_task_list}\n\n" # Include the formatted tasks here
                 "You are NOW in state 'pm_build_team_tasks'.\n"
-                "Your SOLE FOCUS now is to follow the instructions for 'pm_build_team_tasks' provided in your main system prompt.\n"
-                "Your first action in 'pm_build_team_tasks' MUST be to create the project team using the 'manage_team' tool with the 'create_team' action. "
-                "The team name should be 'team_{project_name_context}'. Replace '{project_name_context}' with the actual project name."
+                "Your SOLE FOCUS now is to follow the instructions for 'pm_build_team_tasks' provided in your main system prompt. "
+                "This will involve (in order):\n"
+                "1. Ensuring a project team exists (or creating one if it's the very first time in this state for this project, using 'team_{project_name_context}').\n"
+                "2. Getting detailed information about the 'manage_team' tool.\n"
+                "3. Creating worker agents based on THE KICK-OFF TASKS LISTED ABOVE.\n"
+                "Consult your main prompt for the exact XML to use for each step."
             )
-            # Ensure project_name_context is available; it should be from the PM's agent_config
+
             project_name_context = agent.agent_config.get("config", {}).get("project_name_context", "UnknownProject")
-            # Sanitize project_name_context for team name (replace spaces/special chars with underscore, ensure lowercase)
             sanitized_project_name_for_team = "".join(c if c.isalnum() else "_" for c in project_name_context.lower())
-            if not sanitized_project_name_for_team: # Handle case where project_name_context was e.g. only symbols
+            if not sanitized_project_name_for_team:
                 sanitized_project_name_for_team = "default_project"
 
-            final_directive_content = directive_message_content.format(project_name_context=sanitized_project_name_for_team)
+            final_directive_content = directive_message_content.format(
+                formatted_task_list=formatted_task_list,
+                project_name_context=sanitized_project_name_for_team
+            )
 
             agent.message_history.append({"role": "system", "content": final_directive_content})
-            logger.info(f"PMKickoffWorkflow: Injected directive system message for PM agent '{agent.agent_id}' for state PM_STATE_BUILD_TEAM_TASKS.")
+            logger.info(f"PMKickoffWorkflow: Injected directive system message for PM agent '{agent.agent_id}' for state PM_STATE_BUILD_TEAM_TASKS, including {len(task_descriptions)} kick-off tasks.")
 
             return WorkflowResult(
                 success=True,
