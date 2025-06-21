@@ -175,7 +175,79 @@ class ToolInformationTool(BaseTool):
                     if not is_authorized:
                          return f"Error: Agent type '{agent_type}' is not authorized to access tool '{tool_name_req}' (requires level '{tool_auth_level}')."
 
-                    # Get and return usage info if authorized
+                    # NEW LOGIC FOR PM and manage_team
+                    if tool_name_req == "manage_team" and agent_type == AGENT_TYPE_PM:
+                        try:
+                            usage_info = target_tool.get_detailed_usage()
+                            # Attempt to extract create_agent section
+                            # This is a simplified extraction, actual markers might differ.
+                            # Assuming usage string has sections like "1. **create_agent:** ... details ... \n2. **delete_agent:**"
+                            # or XML examples like "<action>create_agent</action>..."
+
+                            import re
+                            extracted_section = None
+
+                            # Try to find XML block for create_agent
+                            xml_match = re.search(r"(<manage_team>\s*<action>create_agent</action>[\s\S]*?</manage_team>)", usage_info, re.MULTILINE)
+                            if xml_match:
+                                extracted_section = xml_match.group(1)
+                                # Also try to get descriptive text before or around it if possible
+                                # This part is highly dependent on the actual format of get_detailed_usage() for manage_team
+                                # For now, we'll primarily focus on the XML block if found.
+                                # A more robust solution would need to know the exact format of manage_team's detailed usage.
+
+                                # Let's try to find a preceding descriptive paragraph for create_agent
+                                # This is a guess, assuming a structure like:
+                                # ... some text ...
+                                # **create_agent:**
+                                # Description of create_agent action.
+                                # Parameters:
+                                #   - agent_id: ...
+                                #   - role: ...
+                                # Example:
+                                # <manage_team>
+                                #   <action>create_agent</action>
+                                #   ...
+                                # </manage_team>
+                                # ... next action ...
+
+                                desc_pattern = r"(\*\*create_agent:\*\*(?:.|\n)*?)<manage_team>\s*<action>create_agent</action>"
+                                desc_match = re.search(desc_pattern, usage_info, re.IGNORECASE | re.MULTILINE)
+                                if desc_match:
+                                     extracted_section = desc_match.group(1).strip() + "\n" + extracted_section
+
+                            if extracted_section:
+                                concise_message = (
+                                    f"--- Key Usage for Tool: manage_team (Action: create_agent) ---\n"
+                                    f"Focus on the 'create_agent' action. Below is the relevant excerpt:\n\n"
+                                    f"{extracted_section.strip()}\n\n"
+                                    f"--- End Key Usage ---"
+                                )
+                                logger.info(f"{self.name}: Provided concise 'create_agent' info for 'manage_team' to PM agent {agent_id}.")
+                                return concise_message
+                            else:
+                                # Fallback if specific create_agent section not found easily
+                                fallback_message = (
+                                    f"--- Key Usage for Tool: manage_team (Auth Level: {tool_auth_level}) ---\n"
+                                    "Action: create_agent.\n"
+                                    "This action is used to create new worker agents and assign them to your team.\n"
+                                    "Essential parameters typically include:\n"
+                                    "  - `agent_id`: A unique identifier for the new agent (e.g., worker_projectname_1).\n"
+                                    "  - `role`: A concise descriptor of the agent's function (e.g., 'FrontendDeveloper', 'Researcher').\n"
+                                    "  - `persona`: A brief description of the agent's expertise and personality.\n"
+                                    "  - `system_prompt`: Specific instructions for the worker, its goal, and expected output.\n"
+                                    "  - `team_id`: Your current team's ID (e.g., team_projectname).\n"
+                                    "Ensure your output is a single, complete XML block for the <manage_team> tool call.\n"
+                                    "Full tool details are extensive; this is a focused summary for agent creation.\n"
+                                    f"--- End Key Usage ---"
+                                )
+                                logger.info(f"{self.name}: Provided fallback concise 'create_agent' info for 'manage_team' to PM agent {agent_id}.")
+                                return fallback_message
+                        except Exception as e:
+                            logger.error(f"Error during concise 'manage_team' info extraction for PM {agent_id}: {e}", exc_info=True)
+                            # Fall through to default behavior if extraction fails badly
+
+                    # Get and return usage info if authorized (default behavior)
                     try:
                         usage_info = target_tool.get_detailed_usage()
                         logger.info(f"{self.name}: Executed 'get_info' for tool '{tool_name_req}' by agent {agent_id}.")
