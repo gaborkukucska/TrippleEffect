@@ -279,10 +279,17 @@ class AgentCycleHandler:
                                 else: logger.warning(f"CycleHandler '{agent.agent_id}': Workflow '{workflow_result.workflow_name}' invalid agent schedule request.")
                         if workflow_result.success:
                             context.cycle_completed_successfully = True
+                            # Default reactivation logic
                             context.needs_reactivation_after_cycle = not (workflow_result.tasks_to_schedule and any(ts_agent.agent_id == agent.agent_id for ts_agent, _ in workflow_result.tasks_to_schedule)) and \
-                                                                bool(workflow_result.next_agent_state or workflow_result.tasks_to_schedule) # Complex: needs careful thought
+                                                                bool(workflow_result.next_agent_state or workflow_result.tasks_to_schedule)
+
+                            # Specific intervention for Admin AI after project_creation workflow
+                            if agent.agent_id == BOOTSTRAP_AGENT_ID and workflow_result.workflow_name == "project_creation":
+                                logger.info(f"CycleHandler '{agent.agent_id}': ProjectCreationWorkflow completed. Explicitly setting needs_reactivation_after_cycle to False for Admin AI.")
+                                context.needs_reactivation_after_cycle = False
                         else:
                             context.last_error_content = f"Workflow '{workflow_result.workflow_name}' failed: {workflow_result.message}"; context.last_error_obj = ValueError(context.last_error_content)
+                            # Default reactivation logic for failed workflow
                             context.needs_reactivation_after_cycle = not (workflow_result.tasks_to_schedule and any(ts_agent.agent_id == agent.agent_id for ts_agent, _ in workflow_result.tasks_to_schedule)) and \
                                                                 (not workflow_result.next_agent_state and workflow_result.next_agent_status != AGENT_STATUS_ERROR)
                         llm_stream_ended_cleanly = False; break
