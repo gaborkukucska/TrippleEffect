@@ -258,15 +258,25 @@ uda.assignee.label=Assignee
                     # --- Extract assignee from tags ---
                     assignee_val = None
                     tags_list = list(task['tags']) if task['tags'] else []
-                    # Simple check: if a tag looks like a PM agent ID, assume it's the assignee
-                    # This assumes assignee tags are unique and follow the pm_... pattern
-                    for tag in tags_list:
-                        if tag.startswith("pm_"): # Basic check for our PM agent ID pattern
-                            assignee_val = tag
-                            # Optional: Remove the assignee tag from the list returned to the agent?
-                            # try: tags_list.remove(tag)
-                            # except ValueError: pass # Should not happen
-                            break # Assume only one assignee tag per task
+
+                    # Define common agent ID prefixes
+                    # Ensure these are comprehensive for all agent types that can be assigned tasks.
+                    agent_id_prefixes = ("pm_", "worker_", "admin_ai_")
+
+                    for tag_item in tags_list:
+                        if isinstance(tag_item, str): # Ensure the tag is a string
+                            for prefix in agent_id_prefixes:
+                                if tag_item.startswith(prefix):
+                                    assignee_val = tag_item
+                                    # Optional: remove the assignee tag from the list returned to the agent if desired
+                                    # try:
+                                    #     if isinstance(tags_list, list): # Ensure it's a list before trying to remove
+                                    #         tags_list.remove(tag_item)
+                                    # except ValueError:
+                                    #     pass # Should not happen if tag_item was in tags_list
+                                    break # Found an assignee tag from a prefix, stop checking other prefixes for THIS tag_item
+                        if assignee_val: # If an assignee was found from the current tag_item, stop checking further tags
+                            break
 
                     # --- Get other values using _data.get() ---
                     project_val = task._data.get('project')   # Standard key is lowercase

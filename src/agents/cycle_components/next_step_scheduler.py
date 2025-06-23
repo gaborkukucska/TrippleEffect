@@ -71,9 +71,24 @@ class NextStepScheduler:
         if context.needs_reactivation_after_cycle:
             reactivation_reason = self._determine_reactivation_reason(context)
             logger.info(f"NextStepScheduler: Reactivating agent '{agent_id}' ({context.current_model_key_for_tracking}) due to: {reactivation_reason}.")
-            if agent.status != AGENT_STATUS_ERROR: 
+            if agent.status != AGENT_STATUS_ERROR:
                 agent.set_status(AGENT_STATUS_IDLE)
-            await self._schedule_new_cycle(agent, 0) 
+
+            # Check if the reactivation is for Admin AI after project creation workflow
+            # and the last message in its history is the specific framework notification.
+            if agent.agent_type == AGENT_TYPE_ADMIN and \
+               agent.state == ADMIN_STATE_CONVERSATION and \
+               reactivation_reason == "agent action taken": # This is the reason set when workflow adds notification
+                last_message = agent.message_history[-1] if agent.message_history else None
+                if last_message and \
+                   last_message.get("role") == "system_framework_notification" and \
+                   "has been created and is now awaiting user approval" in last_message.get("content", ""):
+                    logger.info(f"NextStepScheduler: Suppressing immediate reactivation of Admin AI '{agent_id}' after project creation notification. Admin AI should wait for user input.")
+                    # Do not schedule a new cycle, let the user interact or another event trigger the Admin AI.
+                    self._log_end_of_schedule_next_step(agent, "Path B - Suppressed Reactivation for Admin AI post-project creation")
+                    return
+
+            await self._schedule_new_cycle(agent, 0)
             self._log_end_of_schedule_next_step(agent, "Path B - Needs Reactivation")
             return
 
