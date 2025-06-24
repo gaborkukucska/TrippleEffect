@@ -401,16 +401,12 @@ class AgentInteractionHandler:
                                     await self._manager.db_manager.log_interaction(
                                         session_id=self._manager.current_session_db_id, # type: ignore
                                         agent_id=pm_agent.agent_id,
-                                        role="system_feedback",
-                                        content=notification_content,
-                                        tool_name="framework_notification",
-                                        tool_input={"worker_id": assignee_id, "task": brief_task_desc},
-                                        tool_output=notification_content,
-                                        token_usage=None,
-                                        caller_id="InteractionHandler"
+                                        role="system_framework_notification", # Changed role
+                                        content=notification_content
+                                        # Removed tool_name, tool_input, tool_output, caller_id
                                     )
                                 except Exception as db_log_err:
-                                    logger.error(f"InteractionHandler: Failed to log PM notification to database: {db_log_err}")
+                                    logger.error(f"InteractionHandler: Failed to log PM notification to database: {db_log_err}", exc_info=True) # Added exc_info
 
                             # Send UI message
                             try:
