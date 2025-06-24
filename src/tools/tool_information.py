@@ -38,7 +38,13 @@ class ToolInformationTool(BaseTool):
             name="tool_name",
             type="string",
             description="For 'get_info': The name of the specific tool, or 'all' for detailed usage of all accessible tools. Not used by 'list_tools'.",
-            required=False, # Only required for get_info if not 'all'
+            required=False,
+        ),
+        ToolParameter( # New parameter
+            name="sub_action",
+            type="string",
+            description="For 'get_info' on certain complex tools (like 'manage_team'): Specifies a sub-action to get detailed help for (e.g., 'create_agent').",
+            required=False,
         ),
     ]
 
@@ -54,6 +60,7 @@ class ToolInformationTool(BaseTool):
         """Executes the tool information retrieval."""
         action = kwargs.get("action")
         tool_name_req = kwargs.get("tool_name", "all") # Default to 'all' for get_info
+        sub_action_req = kwargs.get("sub_action") # Get the new sub_action
 
         valid_actions = ["list_tools", "get_info"]
         if not action or action not in valid_actions:
@@ -206,18 +213,19 @@ class ToolInformationTool(BaseTool):
 
                     # Get and return usage info if authorized (default behavior)
                     try:
-                        usage_info = target_tool.get_detailed_usage(agent_context=agent_context_for_tool)
-                        logger.info(f"{self.name}: Executed 'get_info' for tool '{tool_name_req}' by agent {agent_id}.")
-                        return f"--- Detailed Usage for Tool: {tool_name_req} (Auth Level: {tool_auth_level}) ---\n{usage_info}\n--- End Usage ---"
+                        # Pass sub_action if provided, otherwise it defaults to None in target_tool.get_detailed_usage
+                        usage_info = target_tool.get_detailed_usage(agent_context=agent_context_for_tool, sub_action=sub_action_req)
+                        logger.info(f"{self.name}: Executed 'get_info' for tool '{tool_name_req}' (Sub-action: {sub_action_req or 'N/A'}) by agent {agent_id}.")
+                        return f"--- Detailed Usage for Tool: {tool_name_req} {('(Sub-action: ' + sub_action_req + ')') if sub_action_req else ''} (Auth Level: {tool_auth_level}) ---\n{usage_info}\n--- End Usage ---"
                     except Exception as tool_usage_err:
-                        logger.error(f"Error getting detailed usage for tool '{tool_name_req}': {tool_usage_err}", exc_info=True)
-                        return f"Error retrieving usage for tool '{tool_name_req}': {type(tool_usage_err).__name__}"
+                        logger.error(f"Error getting detailed usage for tool '{tool_name_req}' (Sub-action: {sub_action_req}): {tool_usage_err}", exc_info=True)
+                        return f"Error retrieving usage for tool '{tool_name_req}' (Sub-action: {sub_action_req}): {type(tool_usage_err).__name__}"
 
         except Exception as e:
             logger.error(f"Unexpected error executing {self.name} (Action: {action}) for agent {agent_id}: {e}", exc_info=True)
             return f"Error executing {self.name} ({action}): {type(e).__name__} - {e}"
 
-    def get_detailed_usage(self) -> str:
+    def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None) -> str: # Added agent_context to match BaseTool
         """Returns detailed usage instructions for the ToolInformationTool."""
         usage = """
         **Tool Name:** tool_information
