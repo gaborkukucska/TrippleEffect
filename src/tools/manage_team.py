@@ -191,12 +191,21 @@ class ManageTeamTool(BaseTool):
         1.  **create_agent:** Creates a new agent.
             *   `<persona>` (string, required): Display name.
             *   `<system_prompt>` (string, required): Agent's role instructions.
-            *   `<agent_id>` (string, optional): Custom ID, else generated.
-            *   `<team_id>` (string, optional): Assigns to this team if provided.
+            *   `<agent_id>` (string, optional): Custom ID (e.g., `{worker_agent_id_placeholder}`), else generated.
+            *   `<team_id>` (string, optional): Assigns to this team if provided (e.g., `{team_id_placeholder}`).
             *   `<provider>` (string, optional): LLM provider (e.g., 'ollama', 'openrouter'). Auto-selected if omitted.
             *   `<model>` (string, optional): LLM model (e.g., 'ollama/llama3.2:8b'). Auto-selected if omitted.
             *   `<temperature>` (float, optional): Model temperature.
-            *   Example: `<manage_team><action>create_agent</action><persona>Researcher</persona><system_prompt>Research topics and provide summaries.</system_prompt><team_id>research_team</team_id></manage_team>`
+            *   Example:
+                ```xml
+                <manage_team>
+                  <action>create_agent</action>
+                  <agent_id>{worker_agent_id_placeholder}</agent_id>
+                  <persona>Researcher</persona>
+                  <system_prompt>Research topics and provide summaries.</system_prompt>
+                  <team_id>{team_id_placeholder}</team_id>
+                </manage_team>
+                ```
             *   **XML Content Rules for Agent Creation:**
                 *   The text content provided within `<persona>` and `<system_prompt>` tags **MUST be plain text only**. Avoid complex internal formatting.
                 *   **Special XML Characters:** Do NOT use raw `<`, `>`, or `&` characters directly within the text of persona or system prompts.
@@ -207,37 +216,37 @@ class ManageTeamTool(BaseTool):
 
         2.  **delete_agent:** Deletes an existing agent (not bootstrap agents).
             *   `<agent_id>` (string, required): Exact ID of the agent.
-            *   Example: `<manage_team><action>delete_agent</action><agent_id>researcher_xyz</agent_id></manage_team>`
+            *   Example: `<manage_team><action>delete_agent</action><agent_id>{worker_agent_id_placeholder}</agent_id></manage_team>`
 
         3.  **create_team:** Creates a new team.
             *   `<team_id>` (string, required): Unique ID for the team.
-            *   Example: `<manage_team><action>create_team</action><team_id>project_alpha_team</team_id></manage_team>`
+            *   Example: `<manage_team><action>create_team</action><team_id>{team_id_placeholder}</team_id></manage_team>`
 
         4.  **delete_team:** Deletes an existing team.
             *   `<team_id>` (string, required): ID of the team to delete.
-            *   Example: `<manage_team><action>delete_team</action><team_id>old_team</team_id></manage_team>`
+            *   Example: `<manage_team><action>delete_team</action><team_id>{team_id_placeholder}</team_id></manage_team>`
 
         5.  **add_agent_to_team:** Adds an agent to a team.
             *   `<agent_id>` (string, required): Agent ID.
             *   `<team_id>` (string, required): Team ID.
-            *   Example: `<manage_team><action>add_agent_to_team</action><agent_id>researcher_xyz</agent_id><team_id>project_alpha_team</team_id></manage_team>`
+            *   Example: `<manage_team><action>add_agent_to_team</action><agent_id>{worker_agent_id_placeholder}</agent_id><team_id>{team_id_placeholder}</team_id></manage_team>`
 
         6.  **remove_agent_from_team:** Removes an agent from a team.
             *   `<agent_id>` (string, required): Agent ID.
             *   `<team_id>` (string, required): Team ID.
-            *   Example: `<manage_team><action>remove_agent_from_team</action><agent_id>researcher_xyz</agent_id><team_id>project_alpha_team</team_id></manage_team>`
+            *   Example: `<manage_team><action>remove_agent_from_team</action><agent_id>{worker_agent_id_placeholder}</agent_id><team_id>{team_id_placeholder}</team_id></manage_team>`
 
         7.  **list_agents:** Lists active agents.
-            *   `<team_id>` (string, optional): Filters by team.
+            *   `<team_id>` (string, optional): Filters by team (e.g., `{team_id_placeholder}`).
             *   Example (all): `<manage_team><action>list_agents</action></manage_team>`
-            *   Example (team): `<manage_team><action>list_agents</action><team_id>project_alpha_team</team_id></manage_team>`
+            *   Example (team): `<manage_team><action>list_agents</action><team_id>{team_id_placeholder}</team_id></manage_team>`
 
         8.  **list_teams:** Lists all defined teams.
             *   Example: `<manage_team><action>list_teams</action></manage_team>`
 
         9.  **get_agent_details:** Retrieves detailed info about an agent.
             *   `<agent_id>` (string, required): Agent ID.
-            *   Example: `<manage_team><action>get_agent_details</action><agent_id>pm_project_alpha</agent_id></manage_team>`
+            *   Example: `<manage_team><action>get_agent_details</action><agent_id>{worker_agent_id_placeholder}</agent_id></manage_team>`
 
         10. **set_agent_state:** Changes a non-Admin AI agent's workflow state and activates it if idle.
             *   `<agent_id>` (string, required): The ID of the agent whose state to change. **Cannot be '{BOOTSTRAP_AGENT_ID}'**.

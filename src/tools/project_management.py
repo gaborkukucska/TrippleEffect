@@ -378,31 +378,37 @@ uda.assignee.label=Assignee
                     assignee_value_for_result = intended_assignee_for_modification
                 else:
                     # Assignee not being actively changed by this call
-                    assignee_value_for_result = getattr(task, 'assignee', None)
-                    if not assignee_value_for_result and task['tags']:
-                        for tag_val in task['tags']: # Corrected variable name from 'tag' to 'tag_val'
-                            if isinstance(tag_val, str) and (tag_val.startswith('pm_') or tag_val.startswith('worker_') or tag_val.startswith('admin_ai')):
+                    assignee_value_for_result = getattr(task, 'assignee', None) # Get current UDA value
+                    if not assignee_value_for_result and task['tags']: # Fallback to tag if UDA is empty
+                        for tag_val in task['tags']:
+                            if isinstance(tag_val, str) and (tag_val.startswith('pm_') or tag_val.startswith('worker_') or tag_val.startswith('admin_ai_')): # ensure full prefix for admin
                                 assignee_value_for_result = tag_val
                                 break
 
-                if not modified_fields and not intended_assignee_for_modification : # Check if any actual modification happened
-                    # If only assignee_agent_id was passed but it's the same as current, it's not a modification
-                    # Or if no modification fields were passed at all.
+                original_description_before_potential_uda_overwrite = task['description']
+
+
+                if not modified_fields and not intended_assignee_for_modification :
                     current_assignee_from_uda = getattr(task, 'assignee', None)
                     if not intended_assignee_for_modification or intended_assignee_for_modification == current_assignee_from_uda:
                          return self._error_result("No valid fields provided for modification or assignee is already set to the provided value.")
 
-
                 task.save() # Save after all modifications
                 logger.info(f"Task '{task_id}' modified. Fields changed: {', '.join(modified_fields)}")
 
+                # Fetch the task again to get its state *after* save, especially the description
+                # as Taskwarrior might append assignee to it.
+                # However, for the worker, we want to pass the *original* semantic description.
+                # So, we return the description as it was *before* the assignee UDA might have altered it.
+                final_task_state = tw.tasks.get(uuid=task['uuid']) # Re-fetch by UUID
+
                 return self._success_result({
                     "message": f"Task '{task_id}' modified successfully.",
-                    "task_uuid": task['uuid'],
-                    "task_id": task['id'],
+                    "task_uuid": final_task_state['uuid'],
+                    "task_id": final_task_state['id'],
                     "modified_fields": modified_fields,
-                    "description": task['description'],
-                    "assignee": assignee_value_for_result
+                    "description": original_description_before_potential_uda_overwrite, # Return the description *before* UDA modification
+                    "assignee": assignee_value_for_result # This is the intended or current assignee
                 })
 
             elif action == "complete_task":
