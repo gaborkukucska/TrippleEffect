@@ -346,15 +346,54 @@ class AgentInteractionHandler:
             if tool_name == ProjectManagementTool.name and isinstance(raw_result, dict) and raw_result.get("status") == "success":
                 action = tool_args.get("action") # Get action from original tool_args
                 assignee_id = raw_result.get("assignee")
-                task_description = raw_result.get("description")
+                # IMPORTANT: task_description from raw_result (after modify_task) might be just "assignee:agent_id"
+                # We need the original, semantic task description.
 
-                if assignee_id and task_description and action in ["add_task", "modify_task"]:
+                # Try to get the original task description from the tool_args if it's an add_task action
+                original_task_description = None
+                if action == "add_task":
+                    original_task_description = tool_args.get("description") or tool_args.get("task_description") or tool_args.get("task_name")
+
+                # If not found in tool_args (e.g. for modify_task or if add_task didn't have it directly),
+                # attempt to retrieve it using the task_id/uuid from the result.
+                if not original_task_description:
+                    task_id_for_fetch = raw_result.get("task_id") or raw_result.get("task_uuid")
+                    if task_id_for_fetch:
+                        try:
+                            # This assumes ProjectManagementTool has a method to get a single task's details
+                            # We might need to add such a method or adjust how ProjectManagementTool works.
+                            # For now, let's assume we can fetch it.
+                            # This is a conceptual fetch; implementation might need ProjectManagementTool changes.
+                            task_details_result = await self._manager.tool_executor.execute_tool(
+                                agent_id=agent.agent_id, # PM is making this internal call
+                                agent_sandbox_path=agent.sandbox_path,
+                                tool_name=ProjectManagementTool.name,
+                                tool_args={"action": "get_task_details", "task_id": task_id_for_fetch, "project_filter": project_name or raw_result.get("project")}, # Ensure project context
+                                project_name=project_name, # Pass existing project context
+                                session_name=session_name, # Pass existing session context
+                                manager=self._manager
+                            )
+                            if isinstance(task_details_result, dict) and task_details_result.get("status") == "success" and task_details_result.get("task"):
+                                original_task_description = task_details_result["task"].get("description")
+                                logger.info(f"Fetched original task description for '{task_id_for_fetch}': '{original_task_description}'")
+                            else:
+                                logger.warning(f"Could not fetch original task description for '{task_id_for_fetch}'. Tool result: {task_details_result}")
+                        except Exception as e_fetch:
+                            logger.error(f"Error fetching original task description for '{task_id_for_fetch}': {e_fetch}")
+
+                if not original_task_description:
+                    original_task_description = raw_result.get("description", "Task description unavailable") # Fallback if all else fails
+                    logger.warning(f"Using fallback task description for worker activation: {original_task_description}")
+
+
+                if assignee_id and original_task_description and action in ["add_task", "modify_task"]:
                     logger.info(f"InteractionHandler: Task '{action}' successful for assignee '{assignee_id}'. Checking for worker activation.")
                     assigned_agent = self._manager.agents.get(assignee_id)
                     if assigned_agent and assigned_agent.agent_type == AGENT_TYPE_WORKER and assigned_agent.status == AGENT_STATUS_IDLE:
-                        logger.info(f"Activating idle worker agent '{assignee_id}' for assigned task.")
+                        logger.info(f"Activating idle worker agent '{assignee_id}' for assigned task with description: '{original_task_description}'.")
                         assigned_agent._needs_initial_work_context = True
-                        assigned_agent._injected_task_description = task_description
+                        # Use the fetched/original task description
+                        assigned_agent._injected_task_description = original_task_description
                         try:
                             if hasattr(self._manager, 'tool_executor') and hasattr(self._manager.tool_executor, 'get_available_tools_list_str'):
                                 assigned_agent._injected_tools_list_str = self._manager.tool_executor.get_available_tools_list_str(assigned_agent.agent_type)

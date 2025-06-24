@@ -443,6 +443,61 @@ uda.assignee.label=Assignee
                 })
 
             else:
+            elif action == "get_task_details":
+                task_id = kwargs.get("task_id")
+                if not task_id:
+                    return self._error_result("Missing required parameter 'task_id' for action 'get_task_details'.")
+                try:
+                    # Try fetching by UUID first, then by integer ID
+                    try:
+                        task = tw.tasks.get(uuid=task_id)
+                    except:
+                        try:
+                            task = tw.tasks.get(id=int(task_id))
+                        except ValueError:
+                             return self._error_result(f"Invalid task_id format: '{task_id}'. Must be UUID or integer.")
+                        except Exception:
+                            return self._error_result(f"Task with ID or UUID '{task_id}' not found.")
+                except Exception as e_fetch_details:
+                     logger.error(f"Error fetching task '{task_id}' for details: {e_fetch_details}", exc_info=True)
+                     return self._error_result(f"Error fetching task '{task_id}' for details: {e_fetch_details}")
+
+                if not task: # Should be caught above, but as a safeguard
+                    return self._error_result(f"Task with ID or UUID '{task_id}' not found.")
+
+                # Format the task data for the result
+                assignee_val = task['assignee'] # Directly access UDA value
+                if not assignee_val and task['tags']:
+                    tags_list_for_assignee_check = list(task['tags'])
+                    agent_id_prefixes = ("pm_", "worker_", "admin_ai_")
+                    for tag_item in tags_list_for_assignee_check:
+                        if isinstance(tag_item, str):
+                            for prefix in agent_id_prefixes:
+                                if tag_item.startswith(prefix):
+                                    assignee_val = tag_item
+                                    break
+                        if assignee_val:
+                            break
+
+                task_details = {
+                    "id": task['id'],
+                    "uuid": task['uuid'],
+                    "status": task['status'],
+                    "description": task['description'], # This will be the Taskwarrior description, which might include assignee
+                    "priority": task['priority'],
+                    "project": task['project'],
+                    "tags": list(task['tags']) if task['tags'] else [],
+                    "depends": [dep['uuid'] for dep in task['depends']] if task['depends'] else [],
+                    "assignee": assignee_val, # The resolved assignee
+                    "entry": task['entry'].isoformat() if task['entry'] else None,
+                    "modified": task['modified'].isoformat() if task['modified'] else None,
+                    "due": task['due'].isoformat() if task['due'] else None,
+                }
+                return self._success_result({
+                    "message": f"Successfully retrieved details for task '{task_id}'.",
+                    "task": task_details
+                })
+            else:
                 return self._error_result(f"Unknown action: '{action}'.")
 
         except Exception as e:

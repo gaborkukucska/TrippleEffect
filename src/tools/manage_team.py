@@ -190,83 +190,85 @@ class ManageTeamTool(BaseTool):
             "create_agent": f"""
         **Sub-Action: create_agent**
         Creates a new agent.
-        *   `<persona>` (string, required): Display name.
-        *   `<system_prompt>` (string, required): Agent's role instructions.
-        *   `<agent_id>` (string, optional): Custom ID (e.g., `{worker_agent_id_placeholder}`), else generated.
-        *   `<team_id>` (string, optional): Assigns to this team if provided (e.g., `{team_id_placeholder}`).
-        *   `<provider>` (string, optional): LLM provider (e.g., 'ollama', 'openrouter'). Auto-selected if omitted.
-        *   `<model>` (string, optional): LLM model (e.g., 'ollama/llama3.2:8b'). Auto-selected if omitted.
-        *   `<temperature>` (float, optional): Model temperature.
+        *   `<persona>` (string, required): Display name for the agent.
+        *   `<system_prompt>` (string, required): The main instruction set defining the agent's role, capabilities, and goal.
+        *   `<agent_id>` (string, optional): A custom unique ID for the agent (e.g., `{worker_agent_id_placeholder}`). If omitted, one will be generated.
+        *   `<team_id>` (string, optional): The ID of the team to assign this agent to (e.g., `{team_id_placeholder}`).
+        *   `<provider>` (string, optional): Specify an LLM provider (e.g., 'ollama', 'openrouter'). If omitted, the framework will auto-select one.
+        *   `<model>` (string, optional): Specify an LLM model (e.g., 'ollama/llama3.2:8b', 'openrouter/google/gemma-2-9b-it:free'). If omitted, the framework will auto-select one based on the provider or its own defaults.
+        *   `<temperature>` (float, optional): Model temperature (e.g., 0.7). Defaults to framework settings if omitted.
         *   Example:
             ```xml
             <manage_team>
               <action>create_agent</action>
               <agent_id>{worker_agent_id_placeholder}</agent_id>
-              <persona>Researcher</persona>
-              <system_prompt>Research topics and provide summaries.</system_prompt>
+              <persona>Web Content Researcher</persona>
+              <system_prompt>You are a web researcher. Your goal is to find and summarize information on requested topics using the web_search tool. Provide concise summaries.</system_prompt>
               <team_id>{team_id_placeholder}</team_id>
+              <provider>openrouter</provider>
+              <model>google/gemma-2-9b-it:free</model>
             </manage_team>
             ```
-        *   **XML Content Rules for Agent Creation:** Ensure plain text within tags, escape <, >, & if necessary. Keep prompts concise.
+        *   **XML Content Rules for Agent Creation:** Ensure all content within tags like `<system_prompt>` or `<persona>` is plain text. If you need to include characters like `<`, `>`, or `&` within these text blocks, they MUST be XML escaped (e.g., `&lt;` for `<`, `&gt;` for `>`, `&amp;` for `&`). Keep prompts clear and concise.
             """,
             "delete_agent": f"""
         **Sub-Action: delete_agent**
-        Deletes an existing agent (not bootstrap agents).
-        *   `<agent_id>` (string, required): Exact ID of the agent.
+        Deletes an existing agent. Cannot delete bootstrap agents like Admin AI.
+        *   `<agent_id>` (string, required): The exact ID of the agent to be deleted.
         *   Example: `<manage_team><action>delete_agent</action><agent_id>{worker_agent_id_placeholder}</agent_id></manage_team>`
             """,
             "create_team": f"""
         **Sub-Action: create_team**
-        Creates a new team.
-        *   `<team_id>` (string, required): Unique ID for the team.
+        Creates a new team. The agent calling this action will automatically be added to the new team.
+        *   `<team_id>` (string, required): A unique ID for the new team (e.g., `{team_id_placeholder}`).
         *   Example: `<manage_team><action>create_team</action><team_id>{team_id_placeholder}</team_id></manage_team>`
             """,
             "delete_team": f"""
         **Sub-Action: delete_team**
-        Deletes an existing team.
-        *   `<team_id>` (string, required): ID of the team to delete.
+        Deletes an existing team. Agents in the team will become team-less but will not be deleted.
+        *   `<team_id>` (string, required): The ID of the team to delete.
         *   Example: `<manage_team><action>delete_team</action><team_id>{team_id_placeholder}</team_id></manage_team>`
             """,
             "add_agent_to_team": f"""
         **Sub-Action: add_agent_to_team**
-        Adds an agent to a team.
-        *   `<agent_id>` (string, required): Agent ID.
-        *   `<team_id>` (string, required): Team ID.
+        Adds an existing agent to a team.
+        *   `<agent_id>` (string, required): The ID of the agent to add.
+        *   `<team_id>` (string, required): The ID of the team to add the agent to.
         *   Example: `<manage_team><action>add_agent_to_team</action><agent_id>{worker_agent_id_placeholder}</agent_id><team_id>{team_id_placeholder}</team_id></manage_team>`
             """,
             "remove_agent_from_team": f"""
         **Sub-Action: remove_agent_from_team**
-        Removes an agent from a team.
-        *   `<agent_id>` (string, required): Agent ID.
-        *   `<team_id>` (string, required): Team ID.
+        Removes an agent from a team. The agent will not be deleted.
+        *   `<agent_id>` (string, required): The ID of the agent to remove.
+        *   `<team_id>` (string, required): The ID of the team to remove the agent from.
         *   Example: `<manage_team><action>remove_agent_from_team</action><agent_id>{worker_agent_id_placeholder}</agent_id><team_id>{team_id_placeholder}</team_id></manage_team>`
             """,
             "list_agents": f"""
         **Sub-Action: list_agents**
         Lists active agents.
-        *   `<team_id>` (string, optional): Filters by team (e.g., `{team_id_placeholder}`).
-        *   Example (all): `<manage_team><action>list_agents</action></manage_team>`
-        *   Example (team): `<manage_team><action>list_agents</action><team_id>{team_id_placeholder}</team_id></manage_team>`
+        *   `<team_id>` (string, optional): If provided, filters the list to agents only within the specified team (e.g., `{team_id_placeholder}`).
+        *   Example (list all agents): `<manage_team><action>list_agents</action></manage_team>`
+        *   Example (list agents in a specific team): `<manage_team><action>list_agents</action><team_id>{team_id_placeholder}</team_id></manage_team>`
             """,
             "list_teams": f"""
         **Sub-Action: list_teams**
-        Lists all defined teams.
+        Lists all currently defined teams.
         *   Example: `<manage_team><action>list_teams</action></manage_team>`
             """,
             "get_agent_details": f"""
         **Sub-Action: get_agent_details**
-        Retrieves detailed info about an agent.
-        *   `<agent_id>` (string, required): Agent ID.
+        Retrieves detailed information about a specific agent.
+        *   `<agent_id>` (string, required): The ID of the agent whose details are requested.
         *   Example: `<manage_team><action>get_agent_details</action><agent_id>{pm_agent_id_placeholder}</agent_id></manage_team>`
             """,
             "set_agent_state": f"""
         **Sub-Action: set_agent_state**
-        Changes a non-Admin AI agent's workflow state and activates it if idle.
-        *   `<agent_id>` (string, required): The ID of the agent whose state to change. **Cannot be '{BOOTSTRAP_AGENT_ID}'**.
-        *   `<new_state>` (string, required): The target state.
-            *   Valid states for Project Managers (PMs): {', '.join(valid_pm_states)}
-            *   Valid states for Worker Agents: {', '.join(valid_worker_states)}
-        *   Example (Activate a worker to 'work' state):
+        Changes a non-Admin AI agent's workflow state. If the agent is IDLE, this will also trigger its activation.
+        *   `<agent_id>` (string, required): The ID of the agent whose state is to be changed. **CRITICAL: This cannot be '{BOOTSTRAP_AGENT_ID}' (Admin AI).**
+        *   `<new_state>` (string, required): The target state for the agent.
+            *   Valid states for Project Manager (PM) type agents: {', '.join(valid_pm_states)}
+            *   Valid states for Worker type agents: {', '.join(valid_worker_states)}
+        *   Example (Activate a worker agent by setting its state to 'work'):
             ```xml
             <manage_team>
               <action>set_agent_state</action>
@@ -274,7 +276,7 @@ class ManageTeamTool(BaseTool):
               <new_state>work</new_state>
             </manage_team>
             ```
-        *   Example (Set PM to 'pm_manage' state):
+        *   Example (Set a Project Manager agent to the 'pm_manage' state):
             ```xml
             <manage_team>
               <action>set_agent_state</action>
