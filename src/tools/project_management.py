@@ -442,7 +442,6 @@ uda.assignee.label=Assignee
                     "task_id": task['id']
                 })
 
-            else:
             elif action == "get_task_details":
                 task_id = kwargs.get("task_id")
                 if not task_id:
