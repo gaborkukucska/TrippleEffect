@@ -335,8 +335,27 @@ async def approve_project_start(
         logger.info(f"Cleared _awaiting_project_approval flag for PM agent '{pm_agent_id}'.")
         # --- END NEW ---
 
-        # Schedule the agent's first cycle now that it's in the startup state
-        logger.info(f"PM agent '{pm_agent_id}' state set to '{PM_STATE_STARTUP}'. Scheduling initial cycle...")
+        # --- NEW: Set AgentManager's current project/session context ---
+        pm_project_name = agent_to_start.agent_config.get("config", {}).get("project_name_context")
+        # session_name for PMs is usually the same as their initial startup session or a loaded one.
+        # For newly created PMs, their agent_id often contains the session context.
+        # However, the crucial part is the project_name_context.
+        # We'll use the manager's current_session if the PM doesn't have a specific one,
+        # assuming this approval relates to the manager's active session.
+        # A more robust way might be to store session_name alongside project_name_context in agent_config.
+        # For now, let's assume the manager's current session is the relevant one if pm_session_name is not explicitly set.
+        pm_session_name = agent_to_start.agent_config.get("config", {}).get("session_name", manager.current_session)
+
+
+        if pm_project_name and pm_session_name:
+            logger.info(f"Setting AgentManager context to Project: '{pm_project_name}', Session: '{pm_session_name}' for PM activation.")
+            await manager.set_project_session_context(pm_project_name, pm_session_name, loading=False) # Use loading=False to indicate fresh context set
+        else:
+            logger.warning(f"PM Agent '{pm_agent_id}' missing 'project_name_context' or 'session_name' in config. Cannot set AgentManager context. Falling back to manager's current context if any.")
+            # If essential context is missing, this might be an issue. For now, it will use manager's existing context.
+
+        # Schedule the agent's first cycle now that it's in the startup state and manager context is set
+        logger.info(f"PM agent '{pm_agent_id}' state set to '{PM_STATE_STARTUP}'. Scheduling initial cycle with updated manager context...")
         asyncio.create_task(manager.schedule_cycle(agent_to_start)) # Use asyncio.create_task
 
         # Send confirmation to UI

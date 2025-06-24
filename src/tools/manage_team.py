@@ -171,10 +171,14 @@ class ManageTeamTool(BaseTool):
             "message": success_msg 
         }
 
-    def get_detailed_usage(self) -> str:
+    def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None) -> str:
         """Returns detailed usage instructions for the manage_team tool."""
+        project_name_placeholder = agent_context.get('project_name', '{project_name}') if agent_context else '{project_name}'
+        team_id_placeholder = agent_context.get('team_id', f'team_{project_name_placeholder}') if agent_context else f'team_{project_name_placeholder}'
+        worker_agent_id_placeholder = f"worker_{project_name_placeholder}_1"
+
         # Define valid states for PMs and Workers to list in the usage instructions
-        valid_pm_states = [PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE, DEFAULT_STATE] # Could add ADMIN_STATE_CONVERSATION if PMs can go idle that way
+        valid_pm_states = [PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE, DEFAULT_STATE]
         valid_worker_states = [WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_WAIT, DEFAULT_STATE]
 
         usage = f"""

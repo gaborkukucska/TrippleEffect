@@ -55,10 +55,15 @@ class BaseTool(ABC):
     # --- *** END MODIFIED SIGNATURE *** ---
 
     @abstractmethod
-    def get_detailed_usage(self) -> str:
+    def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None) -> str:
         """
         Returns a detailed string explaining how to use the tool, including actions,
         parameters, and examples. This is intended for on-demand requests by LLMs.
+
+        Args:
+            agent_context (Optional[Dict[str, Any]]): Information about the calling agent,
+                                                     such as agent_id, type, project_name, team_id.
+                                                     Tools can use this to provide more relevant examples.
         """
         pass
 
