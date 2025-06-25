@@ -345,10 +345,39 @@ class AgentCycleHandler:
                                 all_tool_results_for_history.append(history_item)
                                 result_content_str = str(result_dict.get("content", ""))
                                 if not result_content_str.lower().startswith(("[toolerror", "error:", "[toolexec error")): any_tool_success = True
-                                # ... (db log tool result, UI send) ...
+
+                                # --- START: Intervention for PM after tool_information for manage_team/create_agent ---
+                                if agent.agent_type == AGENT_TYPE_PM and \
+                                   agent.state == PM_STATE_BUILD_TEAM_TASKS and \
+                                   tool_name == "tool_information" and \
+                                   tool_args.get("action") == "get_info" and \
+                                   tool_args.get("tool_name") == "manage_team" and \
+                                   tool_args.get("sub_action") == "create_agent" and \
+                                   any_tool_success: # Ensure the tool_information call itself was successful
+
+                                    logger.info(f"CycleHandler: PM '{agent.agent_id}' successfully received info for 'manage_team create_agent'. Injecting directive.")
+                                    directive_content = (
+                                        "[Framework System Message]: You have successfully retrieved the detailed information for the 'manage_team' tool with sub_action 'create_agent'. "
+                                        "Your MANDATORY next action is to proceed with Step 2 of your workflow: Create the First Worker Agent using the "
+                                        "'<manage_team><action>create_agent</action>...' XML format, referring to your initial kick-off tasks list."
+                                    )
+                                    directive_message: MessageDict = {"role": "system", "content": directive_content}
+                                    # Append directly to the list that will be added to history
+                                    all_tool_results_for_history.append(directive_message)
+                                    if context.current_db_session_id:
+                                        await self._manager.db_manager.log_interaction(
+                                            session_id=context.current_db_session_id,
+                                            agent_id=agent.agent_id,
+                                            role="system_intervention", # Use a distinct role
+                                            content=directive_content
+                                        )
+                                    logger.debug(f"CycleHandler: Added directive message to history for agent '{agent.agent_id}' after tool info.")
+                                # --- END: Intervention ---
+
                                 if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="tool", content=result_content_str, tool_results=[result_dict])
                                 await self._manager.send_to_ui({**result_dict, "type": "tool_result", "agent_id": agent.agent_id, "tool_sequence": f"{i+1}_of_{len(tool_calls)}"})
                             else: all_tool_results_for_history.append({"role": "tool", "tool_call_id": tool_id or f"unknown_call_{i}", "name": tool_name or f"unknown_tool_{i}", "content": "[Tool Error: No result object]"})
+
                         for res_hist_item in all_tool_results_for_history: agent.message_history.append(res_hist_item)
                         context.executed_tool_successfully_this_cycle = any_tool_success; context.needs_reactivation_after_cycle = True
                         llm_stream_ended_cleanly = False; break
