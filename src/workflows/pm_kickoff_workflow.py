@@ -135,15 +135,18 @@ class PMKickoffWorkflow(BaseWorkflow):
             agent.successfully_created_agent_count_for_build = 0 # Ensure counter is reset
             logger.info(f"PMKickoffWorkflow: Stored kick_off_task_count_for_build={agent.kick_off_task_count_for_build} and reset successfully_created_agent_count_for_build on agent '{agent.agent_id}'.")
 
-            # Format the task descriptions for inclusion in the message
-            formatted_task_list = "\n".join([f"- {desc}" for desc in task_descriptions])
+            # Format the task descriptions for inclusion in the message with explicit numbering
+            formatted_task_list = "\n".join([f"{i+1}. {desc}" for i, desc in enumerate(task_descriptions)])
             if not formatted_task_list:
                 formatted_task_list = "No specific kick-off tasks were itemized in the previous step."
+            else:
+                formatted_task_list = f"MASTER KICK-OFF TASK LIST:\n{formatted_task_list}"
+
 
             directive_message_content = (
                 "[Framework System Message]\n"
                 "Your previous state 'pm_startup' and its associated task decomposition are complete.\n"
-                "The following {num_tasks} kick-off tasks have been identified and logged based on your <task_list> output (this is your master list for worker creation):\n"
+                "The following {num_tasks} kick-off tasks have been identified. This is your **MASTER KICK-OFF TASK LIST** for creating worker agents. When the framework directs you to create worker #N, you MUST use task #N from THIS LIST to define its role and system_prompt:\n"
                 "{formatted_task_list}\n\n"
                 "You are NOW in state 'pm_build_team_tasks'.\n"
                 "Your SOLE FOCUS now is to follow the instructions for 'pm_build_team_tasks' provided in your main system prompt. "
@@ -155,12 +158,12 @@ class PMKickoffWorkflow(BaseWorkflow):
 
             final_directive_content = directive_message_content.format(
                 num_tasks=len(task_descriptions),
-                formatted_task_list=formatted_task_list,
-                project_name_context=project_name_context # Placeholder still used in prompt, but value comes from agent config
+                formatted_task_list=formatted_task_list, # This now includes the "MASTER KICK-OFF TASK LIST:" header if tasks exist
+                project_name_context=project_name_context
             )
 
             agent.message_history.append({"role": "system", "content": final_directive_content})
-            logger.info(f"PMKickoffWorkflow: Injected directive system message for PM agent '{agent.agent_id}' for state PM_STATE_BUILD_TEAM_TASKS, detailing {len(task_descriptions)} kick-off tasks.")
+            logger.info(f"PMKickoffWorkflow: Injected directive system message for PM agent '{agent.agent_id}' for state PM_STATE_BUILD_TEAM_TASKS, detailing {len(task_descriptions)} kick-off tasks with explicit numbering.")
 
             return WorkflowResult(
                 success=True,
