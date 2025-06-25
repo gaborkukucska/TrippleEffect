@@ -406,24 +406,42 @@ class AgentCycleHandler:
                                 # This was an agent creation action
                                 agent.successfully_created_agent_count_for_build += 1
                                 created_count = agent.successfully_created_agent_count_for_build
-                                total_kickoff_tasks = agent.kick_off_task_count_for_build if agent.kick_off_task_count_for_build is not None else -1 # -1 if not set
+                                total_kickoff_tasks = agent.kick_off_task_count_for_build if agent.kick_off_task_count_for_build is not None else -1
+                                max_workers_allowed = settings.MAX_WORKERS_PER_PM
 
                                 if total_kickoff_tasks == -1:
-                                    logger.warning(f"PMKickoffWorkflow: agent.kick_off_task_count_for_build not set for PM {agent.agent_id}. Cannot reliably determine if all agents created.")
-                                    # Fallback: Tell it to create next or move to activate, LLM has to decide based on its memory of tasks.
+                                    logger.warning(f"PMKickoffWorkflow: agent.kick_off_task_count_for_build not set for PM {agent.agent_id}. Cannot reliably determine if all agents created. Max allowed: {max_workers_allowed}")
+                                    # Fallback logic when total_kickoff_tasks is unknown
+                                    if created_count < max_workers_allowed:
+                                        directive_message_content = (
+                                            f"[Framework System Message]: Worker agent creation attempt {created_count} (of max {max_workers_allowed}) processed. "
+                                            "Refer to your initial kick-off task list. If more workers are needed and you are under the limit, proceed with Step 3: Create Next Worker. "
+                                            "If all planned workers are created or the limit is reached, proceed to Step 4: Request 'Activate Workers' State."
+                                        )
+                                    else: # Hit max_workers_allowed, total_kickoff_tasks unknown
+                                        directive_message_content = (
+                                            f"[Framework System Message]: You have now initiated the creation of {created_count} worker agents, reaching the current maximum limit of {max_workers_allowed} workers for this project. "
+                                            "Your MANDATORY next action is to proceed to Step 4: Request 'Activate Workers' State by outputting ONLY `<request_state state='pm_activate_workers'/>`."
+                                        )
+                                elif created_count < total_kickoff_tasks and created_count < max_workers_allowed:
+                                    # Condition A: More tasks AND under PM's own task count AND under global max
                                     directive_message_content = (
-                                        f"[Framework System Message]: Worker agent creation attempt {created_count} processed. "
-                                        "Refer to your initial kick-off task list. If more workers are needed, proceed with Step 3: Create Next Worker. "
-                                        "If all planned workers are created, proceed to Step 4: Request 'Activate Workers' State."
-                                    )
-                                elif created_count < total_kickoff_tasks:
-                                    directive_message_content = (
-                                        f"[Framework System Message]: Worker agent {created_count} of {total_kickoff_tasks} created (or creation initiated). "
+                                        f"[Framework System Message]: Worker agent {created_count} of {total_kickoff_tasks} created (or creation initiated, max allowed: {max_workers_allowed}). "
                                         "Your MANDATORY next action is to proceed with Step 3 of your workflow: Create the next worker agent, referring to your initial kick-off tasks list."
                                     )
-                                else: # created_count >= total_kickoff_tasks
+                                elif created_count == max_workers_allowed and created_count < total_kickoff_tasks:
+                                    # Condition B: Hit global max BUT still has own tasks planned
                                     directive_message_content = (
-                                        f"[Framework System Message]: You have now initiated the creation of all {total_kickoff_tasks} planned worker agents. "
+                                        f"[Framework System Message]: You have now initiated the creation of {created_count} worker agents, reaching the current maximum limit of {max_workers_allowed} workers for this project. "
+                                        "Even if you had more kick-off tasks planned ({total_kickoff_tasks} total), you must now proceed. "
+                                        "Your MANDATORY next action is to Step 4: Request 'Activate Workers' State by outputting ONLY `<request_state state='pm_activate_workers'/>`."
+                                    )
+                                else: # created_count >= total_kickoff_tasks OR created_count >= max_workers_allowed (and total_kickoff_tasks might be >= created_count)
+                                    # This covers Condition C and also if total_kickoff_tasks was > max_workers_allowed and we hit max_workers_allowed.
+                                    final_count_reported = min(created_count, max_workers_allowed)
+                                    reason = "all planned" if created_count >= total_kickoff_tasks else f"the maximum allowed {max_workers_allowed}"
+                                    directive_message_content = (
+                                        f"[Framework System Message]: You have now initiated the creation of {final_count_reported} worker agents, which is {reason} worker agents. "
                                         "Your MANDATORY next action is to proceed to Step 4: Request 'Activate Workers' State by outputting ONLY `<request_state state='pm_activate_workers'/>`."
                                     )
 

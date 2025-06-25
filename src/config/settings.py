@@ -162,6 +162,15 @@ class Settings:
         self.DEFAULT_SYSTEM_PROMPT: str = self.PROMPTS.get("default_system_prompt", "You are a helpful assistant.")
         self.DEFAULT_TEMPERATURE: float = float(os.getenv("DEFAULT_TEMPERATURE", 0.7))
         self.DEFAULT_PERSONA: str = self.PROMPTS.get("default_agent_persona", "Assistant Agent")
+
+        # --- Max Workers per PM ---
+        try:
+            self.MAX_WORKERS_PER_PM: int = int(os.getenv("MAX_WORKERS_PER_PM", "20")) # User requested increase from 10 to 20
+            logger.info(f"Loaded MAX_WORKERS_PER_PM: {self.MAX_WORKERS_PER_PM}")
+        except ValueError:
+            logger.warning("Invalid MAX_WORKERS_PER_PM in .env, using default 20.") # Default also updated to 20
+            self.MAX_WORKERS_PER_PM = 20
+
         # --- Max ADMIN AI Local Tokens ---
         try: self.ADMIN_AI_LOCAL_MAX_TOKENS: int = int(os.getenv("ADMIN_AI_LOCAL_MAX_TOKENS", "1024")); logger.info(f"Loaded ADMIN_AI_LOCAL_MAX_TOKENS: {self.ADMIN_AI_LOCAL_MAX_TOKENS}")
         except ValueError: logger.warning("Invalid ADMIN_AI_LOCAL_MAX_TOKENS, using 1024."); self.ADMIN_AI_LOCAL_MAX_TOKENS = 1024
