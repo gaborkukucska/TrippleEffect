@@ -345,41 +345,79 @@ class AgentCycleHandler:
                                 all_tool_results_for_history.append(history_item)
                                 result_content_str = str(result_dict.get("content", ""))
                                 if not result_content_str.lower().startswith(("[toolerror", "error:", "[toolexec error")): any_tool_success = True
-
-                                # --- START: Intervention for PM after tool_information for manage_team/create_agent ---
-                                if agent.agent_type == AGENT_TYPE_PM and \
-                                   agent.state == PM_STATE_BUILD_TEAM_TASKS and \
-                                   tool_name == "tool_information" and \
-                                   tool_args.get("action") == "get_info" and \
-                                   tool_args.get("tool_name") == "manage_team" and \
-                                   tool_args.get("sub_action") == "create_agent" and \
-                                   any_tool_success: # Ensure the tool_information call itself was successful
-
-                                    logger.info(f"CycleHandler: PM '{agent.agent_id}' successfully received info for 'manage_team create_agent'. Injecting directive.")
-                                    directive_content = (
-                                        "[Framework System Message]: You have successfully retrieved the detailed information for the 'manage_team' tool with sub_action 'create_agent'. "
-                                        "Your MANDATORY next action is to proceed with Step 2 of your workflow: Create the First Worker Agent using the "
-                                        "'<manage_team><action>create_agent</action>...' XML format, referring to your initial kick-off tasks list."
-                                    )
-                                    directive_message: MessageDict = {"role": "system", "content": directive_content}
-                                    # Append directly to the list that will be added to history
-                                    all_tool_results_for_history.append(directive_message)
-                                    if context.current_db_session_id:
-                                        await self._manager.db_manager.log_interaction(
-                                            session_id=context.current_db_session_id,
-                                            agent_id=agent.agent_id,
-                                            role="system_intervention", # Use a distinct role
-                                            content=directive_content
-                                        )
-                                    logger.debug(f"CycleHandler: Added directive message to history for agent '{agent.agent_id}' after tool info.")
-                                # --- END: Intervention ---
-
+                                # ... (db log tool result, UI send) ...
                                 if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="tool", content=result_content_str, tool_results=[result_dict])
                                 await self._manager.send_to_ui({**result_dict, "type": "tool_result", "agent_id": agent.agent_id, "tool_sequence": f"{i+1}_of_{len(tool_calls)}"})
                             else: all_tool_results_for_history.append({"role": "tool", "tool_call_id": tool_id or f"unknown_call_{i}", "name": tool_name or f"unknown_tool_{i}", "content": "[Tool Error: No result object]"})
-
                         for res_hist_item in all_tool_results_for_history: agent.message_history.append(res_hist_item)
                         context.executed_tool_successfully_this_cycle = any_tool_success; context.needs_reactivation_after_cycle = True
+
+                        # --- START: PM Build Team Tasks State Interventions ---
+                        if agent.agent_type == AGENT_TYPE_PM and \
+                           agent.state == PM_STATE_BUILD_TEAM_TASKS and \
+                           any_tool_success and \
+                           tool_calls and len(tool_calls) == 1: # Ensure only one tool was called
+
+                            called_tool_name = tool_calls[0].get("name")
+                            called_tool_args = tool_calls[0].get("arguments", {})
+                            directive_message_content = None
+
+                            if called_tool_name == "manage_team" and called_tool_args.get("action") == "create_team":
+                                # This was the first action in the state (Team Creation)
+                                directive_message_content = (
+                                    "[Framework System Message]: Team creation process initiated. "
+                                    "Your MANDATORY next action is to get specific instructions for creating an agent. "
+                                    "Output ONLY the following XML: <tool_information><action>get_info</action><tool_name>manage_team</tool_name><sub_action>create_agent</sub_action></tool_information>"
+                                )
+                            elif called_tool_name == "tool_information" and \
+                                 called_tool_args.get("action") == "get_info" and \
+                                 called_tool_args.get("tool_name") == "manage_team" and \
+                                 called_tool_args.get("sub_action") == "create_agent":
+                                # This was the second action (Getting create_agent info)
+                                agent.successfully_created_agent_count_for_build = 0 # Reset counter before first create
+                                directive_message_content = (
+                                    "[Framework System Message]: You have successfully retrieved the detailed information for the 'manage_team' tool with sub_action 'create_agent'. "
+                                    "Your MANDATORY next action is to proceed with Step 2 of your workflow: Create the First Worker Agent using the "
+                                    "'<manage_team><action>create_agent</action>...' XML format, referring to your initial kick-off tasks list."
+                                )
+                            elif called_tool_name == "manage_team" and called_tool_args.get("action") == "create_agent":
+                                # This was an agent creation action
+                                agent.successfully_created_agent_count_for_build += 1
+                                created_count = agent.successfully_created_agent_count_for_build
+                                total_kickoff_tasks = agent.kick_off_task_count_for_build if agent.kick_off_task_count_for_build is not None else -1 # -1 if not set
+
+                                if total_kickoff_tasks == -1:
+                                    logger.warning(f"PMKickoffWorkflow: agent.kick_off_task_count_for_build not set for PM {agent.agent_id}. Cannot reliably determine if all agents created.")
+                                    # Fallback: Tell it to create next or move to activate, LLM has to decide based on its memory of tasks.
+                                    directive_message_content = (
+                                        f"[Framework System Message]: Worker agent creation attempt {created_count} processed. "
+                                        "Refer to your initial kick-off task list. If more workers are needed, proceed with Step 3: Create Next Worker. "
+                                        "If all planned workers are created, proceed to Step 4: Request 'Activate Workers' State."
+                                    )
+                                elif created_count < total_kickoff_tasks:
+                                    directive_message_content = (
+                                        f"[Framework System Message]: Worker agent {created_count} of {total_kickoff_tasks} created (or creation initiated). "
+                                        "Your MANDATORY next action is to proceed with Step 3 of your workflow: Create the next worker agent, referring to your initial kick-off tasks list."
+                                    )
+                                else: # created_count >= total_kickoff_tasks
+                                    directive_message_content = (
+                                        f"[Framework System Message]: You have now initiated the creation of all {total_kickoff_tasks} planned worker agents. "
+                                        "Your MANDATORY next action is to proceed to Step 4: Request 'Activate Workers' State by outputting ONLY `<request_state state='pm_activate_workers'/>`."
+                                    )
+
+                            if directive_message_content:
+                                logger.info(f"CycleHandler: PM '{agent.agent_id}' in '{agent.state}', after tool '{called_tool_name}', injecting directive: {directive_message_content[:100]}...")
+                                directive_msg: MessageDict = {"role": "system", "content": directive_message_content}
+                                agent.message_history.append(directive_msg) # Append to live history
+                                if context.current_db_session_id:
+                                    await self._manager.db_manager.log_interaction(
+                                        session_id=context.current_db_session_id,
+                                        agent_id=agent.agent_id,
+                                        role="system_intervention",
+                                        content=directive_message_content
+                                    )
+                        # --- END: PM Build Team Tasks State Interventions ---
+
                         llm_stream_ended_cleanly = False; break
 
                     elif event_type in ["response_chunk", "status", "final_response", "invalid_state_request_output"]:

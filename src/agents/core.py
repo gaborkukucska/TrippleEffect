@@ -86,6 +86,8 @@ class Agent:
         self.markdown_xml_tool_call_pattern = None
         self.think_pattern = ROBUST_THINK_TAG_PATTERN
         self.initial_plan_description: Optional[str] = config.get("initial_plan_description")
+        self.kick_off_task_count_for_build: Optional[int] = None # For PM to track how many workers to create
+        self.successfully_created_agent_count_for_build: int = 0 # Counter for created workers in build phase
         
         # Attributes for Constitutional Guardian interaction
         self.cg_original_text: Optional[str] = None
@@ -108,7 +110,8 @@ class Agent:
         logger.info(f"Agent {self.agent_id} ({self.persona}) initialized. Type: {self.agent_type}. Status: {self.status}. State: {self.state}. Provider: {self.provider_name}, Model: {self.model}.")
 
     def set_status(self, new_status: str, tool_info: Optional[Dict[str, str]] = None, plan_info: Optional[str] = None):
-        if self.status != new_status: logger.info(f"Agent {self.agent_id}: Status changed from '{self.status}' to '{new_status}'")
+        if self.status != new_status:
+            logger.info(f"Agent {self.agent_id}: Status changed from '{self.status}' to '{new_status}'")
         self.status = new_status
         self.current_tool_info = tool_info if new_status == AGENT_STATUS_EXECUTING_TOOL else None
         self.current_plan = plan_info if new_status == AGENT_STATUS_PLANNING else None
