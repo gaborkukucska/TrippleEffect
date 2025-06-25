@@ -320,9 +320,31 @@ class AgentCycleHandler:
 
                     elif event_type == "agent_state_change_requested":
                         context.action_taken_this_cycle = True; context.state_change_requested_this_cycle = True; requested_state = event.get("requested_state")
-                        if self._manager.workflow_manager.change_state(agent, requested_state): context.needs_reactivation_after_cycle = True
-                        else: context.needs_reactivation_after_cycle = True
-                        # ... (db logging, UI send) ...
+                        if self._manager.workflow_manager.change_state(agent, requested_state):
+                            context.needs_reactivation_after_cycle = True
+                            # --- START MODIFICATION: Inject directive after PM state change to pm_activate_workers ---
+                            if agent.agent_type == AGENT_TYPE_PM and requested_state == PM_STATE_ACTIVATE_WORKERS:
+                                logger.info(f"CycleHandler: PM '{agent.agent_id}' successfully changed to '{PM_STATE_ACTIVATE_WORKERS}'. Injecting specific follow-up directive.")
+                                directive_for_activate_workers = (
+                                    f"[Framework System Message]: You are now in state '{PM_STATE_ACTIVATE_WORKERS}'. "
+                                    "Your MANDATORY next action is to begin Step 1 of your workflow: Identify the first Kick-Off Task and a suitable Worker Agent. "
+                                    "Use `<project_management><action>list_tasks</action>...</project_management>` and/or "
+                                    "`<manage_team><action>list_agents</action>...</manage_team>` as needed. "
+                                    "Remember to use `<think>...</think>` before acting."
+                                )
+                                agent.message_history.append({"role": "system", "content": directive_for_activate_workers})
+                                if context.current_db_session_id:
+                                    await self._manager.db_manager.log_interaction(
+                                        session_id=context.current_db_session_id,
+                                        agent_id=agent.agent_id,
+                                        role="system_intervention",
+                                        content=directive_for_activate_workers
+                                    )
+                            # --- END MODIFICATION ---
+                        else:
+                            # If change_state returned False (e.g., invalid state), still likely needs reactivation to retry or get error feedback.
+                            context.needs_reactivation_after_cycle = True
+
                         if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="agent_state_change", content=f"State changed to: {requested_state}")
                         await self._manager.send_to_ui(event)
                         llm_stream_ended_cleanly = False; break
@@ -351,6 +373,91 @@ class AgentCycleHandler:
                             else: all_tool_results_for_history.append({"role": "tool", "tool_call_id": tool_id or f"unknown_call_{i}", "name": tool_name or f"unknown_tool_{i}", "content": "[Tool Error: No result object]"})
                         for res_hist_item in all_tool_results_for_history: agent.message_history.append(res_hist_item)
                         context.executed_tool_successfully_this_cycle = any_tool_success; context.needs_reactivation_after_cycle = True
+
+                        # --- START: PM Build Team Tasks State Interventions ---
+                        if agent.agent_type == AGENT_TYPE_PM and \
+                           agent.state == PM_STATE_BUILD_TEAM_TASKS and \
+                           any_tool_success and \
+                           tool_calls and len(tool_calls) == 1: # Ensure only one tool was called
+
+                            called_tool_name = tool_calls[0].get("name")
+                            called_tool_args = tool_calls[0].get("arguments", {})
+                            directive_message_content = None
+
+                            if called_tool_name == "manage_team" and called_tool_args.get("action") == "create_team":
+                                # This was the first action in the state (Team Creation)
+                                directive_message_content = (
+                                    "[Framework System Message]: Team creation process initiated. "
+                                    "Your MANDATORY next action is to get specific instructions for creating an agent. "
+                                    "Output ONLY the following XML: <tool_information><action>get_info</action><tool_name>manage_team</tool_name><sub_action>create_agent</sub_action></tool_information>"
+                                )
+                            elif called_tool_name == "tool_information" and \
+                                 called_tool_args.get("action") == "get_info" and \
+                                 called_tool_args.get("tool_name") == "manage_team" and \
+                                 called_tool_args.get("sub_action") == "create_agent":
+                                # This was the second action (Getting create_agent info)
+                                agent.successfully_created_agent_count_for_build = 0 # Reset counter before first create
+                                directive_message_content = (
+                                    "[Framework System Message]: You have successfully retrieved the detailed information for the 'manage_team' tool with sub_action 'create_agent'. "
+                                    "Your MANDATORY next action is to proceed with Step 2 of your workflow: Create the First Worker Agent using the "
+                                    "'<manage_team><action>create_agent</action>...' XML format, referring to your initial kick-off tasks list."
+                                )
+                            elif called_tool_name == "manage_team" and called_tool_args.get("action") == "create_agent":
+                                # This was an agent creation action
+                                agent.successfully_created_agent_count_for_build += 1
+                                created_count = agent.successfully_created_agent_count_for_build
+                                total_kickoff_tasks = agent.kick_off_task_count_for_build if agent.kick_off_task_count_for_build is not None else -1
+                                max_workers_allowed = settings.MAX_WORKERS_PER_PM
+
+                                if total_kickoff_tasks == -1:
+                                    logger.warning(f"PMKickoffWorkflow: agent.kick_off_task_count_for_build not set for PM {agent.agent_id}. Cannot reliably determine if all agents created. Max allowed: {max_workers_allowed}")
+                                    # Fallback logic when total_kickoff_tasks is unknown
+                                    if created_count < max_workers_allowed:
+                                        directive_message_content = (
+                                            f"[Framework System Message]: Worker agent creation attempt {created_count} (of max {max_workers_allowed}) processed. "
+                                            "Refer to your initial kick-off task list. If more workers are needed and you are under the limit, proceed with Step 3: Create Next Worker. "
+                                            "If all planned workers are created or the limit is reached, proceed to Step 4: Request 'Activate Workers' State."
+                                        )
+                                    else: # Hit max_workers_allowed, total_kickoff_tasks unknown
+                                        directive_message_content = (
+                                            f"[Framework System Message]: You have now initiated the creation of {created_count} worker agents, reaching the current maximum limit of {max_workers_allowed} workers for this project. "
+                                            "Your MANDATORY next action is to proceed to Step 4: Request 'Activate Workers' State by outputting ONLY `<request_state state='pm_activate_workers'/>`."
+                                        )
+                                elif created_count < total_kickoff_tasks and created_count < max_workers_allowed:
+                                    # Condition A: More tasks AND under PM's own task count AND under global max
+                                    directive_message_content = (
+                                        f"[Framework System Message]: Worker agent {created_count} of {total_kickoff_tasks} created (or creation initiated, max allowed: {max_workers_allowed}). "
+                                        "Your MANDATORY next action is to proceed with Step 3 of your workflow: Create the next worker agent, referring to your initial kick-off tasks list."
+                                    )
+                                elif created_count == max_workers_allowed and created_count < total_kickoff_tasks:
+                                    # Condition B: Hit global max BUT still has own tasks planned
+                                    directive_message_content = (
+                                        f"[Framework System Message]: You have now initiated the creation of {created_count} worker agents, reaching the current maximum limit of {max_workers_allowed} workers for this project. "
+                                        "Even if you had more kick-off tasks planned ({total_kickoff_tasks} total), you must now proceed. "
+                                        "Your MANDATORY next action is to Step 4: Request 'Activate Workers' State by outputting ONLY `<request_state state='pm_activate_workers'/>`."
+                                    )
+                                else: # created_count >= total_kickoff_tasks OR created_count >= max_workers_allowed (and total_kickoff_tasks might be >= created_count)
+                                    # This covers Condition C and also if total_kickoff_tasks was > max_workers_allowed and we hit max_workers_allowed.
+                                    final_count_reported = min(created_count, max_workers_allowed)
+                                    reason = "all planned" if created_count >= total_kickoff_tasks else f"the maximum allowed {max_workers_allowed}"
+                                    directive_message_content = (
+                                        f"[Framework System Message]: You have now initiated the creation of {final_count_reported} worker agents, which is {reason} worker agents. "
+                                        "Your MANDATORY next action is to proceed to Step 4: Request 'Activate Workers' State by outputting ONLY `<request_state state='pm_activate_workers'/>`."
+                                    )
+
+                            if directive_message_content:
+                                logger.info(f"CycleHandler: PM '{agent.agent_id}' in '{agent.state}', after tool '{called_tool_name}', injecting directive: {directive_message_content[:100]}...")
+                                directive_msg: MessageDict = {"role": "system", "content": directive_message_content}
+                                agent.message_history.append(directive_msg) # Append to live history
+                                if context.current_db_session_id:
+                                    await self._manager.db_manager.log_interaction(
+                                        session_id=context.current_db_session_id,
+                                        agent_id=agent.agent_id,
+                                        role="system_intervention",
+                                        content=directive_message_content
+                                    )
+                        # --- END: PM Build Team Tasks State Interventions ---
+
                         llm_stream_ended_cleanly = False; break
 
                     elif event_type in ["response_chunk", "status", "final_response", "invalid_state_request_output"]:
