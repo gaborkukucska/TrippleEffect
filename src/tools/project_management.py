@@ -127,9 +127,12 @@ uda.assignee.label=Assignee
 
         try:
             if action == "add_task":
-                description = kwargs.get("description")
+                description = kwargs.get("description") or \
+                              kwargs.get("task_description") or \
+                              kwargs.get("task_name") # Added fallbacks
+
                 if not description:
-                    return self._error_result("Missing required parameter 'description' for action 'add_task'.")
+                    return self._error_result("Missing required task content parameter ('description', 'task_description', or 'task_name') for action 'add_task'.")
 
                 # Extract optional parameters
                 priority = kwargs.get("priority")
@@ -245,54 +248,62 @@ uda.assignee.label=Assignee
 
                 # Execute query and perform post-filtering
                 tasks = tasks_query.all() # Get all matching tasks first
+
+                # Apply post-query filters
                 if tags_filter and isinstance(tags_filter, list):
-                    # --- CORRECTED: Use ['tags'] for Tasklib ---
                     tasks = [t for t in tasks if t['tags'] and all(tag in t['tags'] for tag in tags_filter)]
-                if assignee_filter:
-                    # --- CORRECTED: Use ['assignee'] or getattr for Tasklib ---
-                    tasks = [t for t in tasks if getattr(t, 'assignee', None) == assignee_filter]
+
+                # Note: Assignee filtering is now handled primarily by direct UDA check below.
+                # The 'assignee_filter' might still be useful if we want to allow filtering by
+                # agents who *were* assigned via tag but not via UDA, though that's less likely.
 
                 # Format results
                 task_list = []
-                for task in tasks: # Iterate through the already filtered tasks
-                    # --- Extract assignee from tags ---
-                    assignee_val = None
-                    tags_list = list(task['tags']) if task['tags'] else []
+                for task_obj in tasks: # Iterate through the already filtered tasks
+                    task_data_exported = task_obj.export_data() # Use export_data() for a dictionary
 
-                    # Define common agent ID prefixes
-                    # Ensure these are comprehensive for all agent types that can be assigned tasks.
-                    agent_id_prefixes = ("pm_", "worker_", "admin_ai_")
+                    # Prioritize the 'assignee' UDA if it exists and is populated
+                    assignee_val = task_obj['assignee'] # Directly access UDA value
 
-                    for tag_item in tags_list:
-                        if isinstance(tag_item, str): # Ensure the tag is a string
-                            for prefix in agent_id_prefixes:
-                                if tag_item.startswith(prefix):
-                                    assignee_val = tag_item
-                                    # Optional: remove the assignee tag from the list returned to the agent if desired
-                                    # try:
-                                    #     if isinstance(tags_list, list): # Ensure it's a list before trying to remove
-                                    #         tags_list.remove(tag_item)
-                                    # except ValueError:
-                                    #     pass # Should not happen if tag_item was in tags_list
-                                    break # Found an assignee tag from a prefix, stop checking other prefixes for THIS tag_item
-                        if assignee_val: # If an assignee was found from the current tag_item, stop checking further tags
-                            break
+                    # Fallback: if UDA is empty, try to extract from tags
+                    if not assignee_val and task_obj['tags']:
+                        tags_list_for_assignee_check = list(task_obj['tags'])
+                        agent_id_prefixes = ("pm_", "worker_", "admin_ai_")
+                        for tag_item in tags_list_for_assignee_check:
+                            if isinstance(tag_item, str):
+                                for prefix in agent_id_prefixes:
+                                    if tag_item.startswith(prefix):
+                                        assignee_val = tag_item
+                                        break
+                            if assignee_val:
+                                break
 
-                    # --- Get other values using _data.get() ---
-                    project_val = task._data.get('project')   # Standard key is lowercase
-                    priority_val = task._data.get('priority') # Standard key is lowercase
-                    logger.debug(f"Task {task['id']} raw data: {task._data}, Extracted Assignee Tag: {assignee_val}") # Log raw data and extracted tag
+                    # Apply assignee_filter if it was provided for the 'list_tasks' call
+                    if assignee_filter and assignee_val != assignee_filter:
+                        continue # Skip this task if it doesn't match the assignee filter
+
+                    # Ensure other fields are also fetched correctly
+                    project_val = task_obj['project']   # Standard key is lowercase
+                    priority_val = task_obj['priority'] # Standard key is lowercase
+                    status_val = task_obj['status']
+                    description_val = task_obj['description']
+                    uuid_val = task_obj['uuid']
+                    id_val = task_obj['id']
+                    tags_val = list(task_obj['tags']) if task_obj['tags'] else []
+                    depends_val = [dep['uuid'] for dep in task_obj['depends']] if task_obj['depends'] else []
+
+                    logger.debug(f"Task {id_val} raw data: {task_data_exported}, Final Assignee: {assignee_val}")
 
                     task_list.append({
-                        "id": task['id'],
-                        "uuid": task['uuid'],
-                        "status": task['status'],
-                        "description": task['description'],
+                        "id": id_val,
+                        "uuid": uuid_val,
+                        "status": status_val,
+                        "description": description_val,
                         "priority": priority_val,
                         "project": project_val,
-                        "tags": tags_list, # Return the list of tags (potentially without assignee tag if removed)
-                        "depends": [dep['uuid'] for dep in task['depends']] if task['depends'] else [],
-                        "assignee": assignee_val # Use the value extracted from the tag
+                        "tags": tags_val,
+                        "depends": depends_val,
+                        "assignee": assignee_val
                     })
 
                 return self._success_result({
@@ -367,31 +378,37 @@ uda.assignee.label=Assignee
                     assignee_value_for_result = intended_assignee_for_modification
                 else:
                     # Assignee not being actively changed by this call
-                    assignee_value_for_result = getattr(task, 'assignee', None)
-                    if not assignee_value_for_result and task['tags']:
-                        for tag_val in task['tags']: # Corrected variable name from 'tag' to 'tag_val'
-                            if isinstance(tag_val, str) and (tag_val.startswith('pm_') or tag_val.startswith('worker_') or tag_val.startswith('admin_ai')):
+                    assignee_value_for_result = getattr(task, 'assignee', None) # Get current UDA value
+                    if not assignee_value_for_result and task['tags']: # Fallback to tag if UDA is empty
+                        for tag_val in task['tags']:
+                            if isinstance(tag_val, str) and (tag_val.startswith('pm_') or tag_val.startswith('worker_') or tag_val.startswith('admin_ai_')): # ensure full prefix for admin
                                 assignee_value_for_result = tag_val
                                 break
 
-                if not modified_fields and not intended_assignee_for_modification : # Check if any actual modification happened
-                    # If only assignee_agent_id was passed but it's the same as current, it's not a modification
-                    # Or if no modification fields were passed at all.
+                original_description_before_potential_uda_overwrite = task['description']
+
+
+                if not modified_fields and not intended_assignee_for_modification :
                     current_assignee_from_uda = getattr(task, 'assignee', None)
                     if not intended_assignee_for_modification or intended_assignee_for_modification == current_assignee_from_uda:
                          return self._error_result("No valid fields provided for modification or assignee is already set to the provided value.")
 
-
                 task.save() # Save after all modifications
                 logger.info(f"Task '{task_id}' modified. Fields changed: {', '.join(modified_fields)}")
 
+                # Fetch the task again to get its state *after* save, especially the description
+                # as Taskwarrior might append assignee to it.
+                # However, for the worker, we want to pass the *original* semantic description.
+                # So, we return the description as it was *before* the assignee UDA might have altered it.
+                final_task_state = tw.tasks.get(uuid=task['uuid']) # Re-fetch by UUID
+
                 return self._success_result({
                     "message": f"Task '{task_id}' modified successfully.",
-                    "task_uuid": task['uuid'],
-                    "task_id": task['id'],
+                    "task_uuid": final_task_state['uuid'],
+                    "task_id": final_task_state['id'],
                     "modified_fields": modified_fields,
-                    "description": task['description'],
-                    "assignee": assignee_value_for_result
+                    "description": original_description_before_potential_uda_overwrite, # Return the description *before* UDA modification
+                    "assignee": assignee_value_for_result # This is the intended or current assignee
                 })
 
             elif action == "complete_task":
@@ -425,6 +442,60 @@ uda.assignee.label=Assignee
                     "task_id": task['id']
                 })
 
+            elif action == "get_task_details":
+                task_id = kwargs.get("task_id")
+                if not task_id:
+                    return self._error_result("Missing required parameter 'task_id' for action 'get_task_details'.")
+                try:
+                    # Try fetching by UUID first, then by integer ID
+                    try:
+                        task = tw.tasks.get(uuid=task_id)
+                    except:
+                        try:
+                            task = tw.tasks.get(id=int(task_id))
+                        except ValueError:
+                             return self._error_result(f"Invalid task_id format: '{task_id}'. Must be UUID or integer.")
+                        except Exception:
+                            return self._error_result(f"Task with ID or UUID '{task_id}' not found.")
+                except Exception as e_fetch_details:
+                     logger.error(f"Error fetching task '{task_id}' for details: {e_fetch_details}", exc_info=True)
+                     return self._error_result(f"Error fetching task '{task_id}' for details: {e_fetch_details}")
+
+                if not task: # Should be caught above, but as a safeguard
+                    return self._error_result(f"Task with ID or UUID '{task_id}' not found.")
+
+                # Format the task data for the result
+                assignee_val = task['assignee'] # Directly access UDA value
+                if not assignee_val and task['tags']:
+                    tags_list_for_assignee_check = list(task['tags'])
+                    agent_id_prefixes = ("pm_", "worker_", "admin_ai_")
+                    for tag_item in tags_list_for_assignee_check:
+                        if isinstance(tag_item, str):
+                            for prefix in agent_id_prefixes:
+                                if tag_item.startswith(prefix):
+                                    assignee_val = tag_item
+                                    break
+                        if assignee_val:
+                            break
+
+                task_details = {
+                    "id": task['id'],
+                    "uuid": task['uuid'],
+                    "status": task['status'],
+                    "description": task['description'], # This will be the Taskwarrior description, which might include assignee
+                    "priority": task['priority'],
+                    "project": task['project'],
+                    "tags": list(task['tags']) if task['tags'] else [],
+                    "depends": [dep['uuid'] for dep in task['depends']] if task['depends'] else [],
+                    "assignee": assignee_val, # The resolved assignee
+                    "entry": task['entry'].isoformat() if task['entry'] else None,
+                    "modified": task['modified'].isoformat() if task['modified'] else None,
+                    "due": task['due'].isoformat() if task['due'] else None,
+                }
+                return self._success_result({
+                    "message": f"Successfully retrieved details for task '{task_id}'.",
+                    "task": task_details
+                })
             else:
                 return self._error_result(f"Unknown action: '{action}'.")
 
@@ -432,27 +503,28 @@ uda.assignee.label=Assignee
             logger.error(f"Error executing ProjectManagementTool action '{action}': {e}", exc_info=True)
             return self._error_result(f"An unexpected error occurred: {e}")
 
-    def get_detailed_usage(self) -> str:
+    def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None) -> str:
         """Provides detailed usage instructions for the tool."""
-        # Improve this with examples for each action
+        project_name_placeholder = agent_context.get('project_name', '{project_name}') if agent_context else '{project_name}'
+        agent_id_placeholder = agent_context.get('agent_id', '{agent_id}') if agent_context else '{agent_id}' # Could be PM's own ID for examples
+
         usage = f"Tool: {self.name}\nDescription: {self.description}\nParameters:\n"
-        # Iterate through the ToolParameter objects
         for param in self.parameters:
             req = "Required" if param.required else "Optional"
             usage += f"  - {param.name} ({param.type}, {req}): {param.description}\n"
 
         usage += "\nAvailable Actions:\n"
         usage += "  - add_task: Adds a new task.\n"
-        usage += "    - Required: action='add_task', description='...'.\n"
-        usage += "    - Optional: priority='H/M/L', project_filter='ProjectName', tags=['tag1', 'tag2'], depends='<dependency_task_uuid>', assignee_agent_id='<agent_id>'.\n"
+        usage += f"    - Required: action='add_task', description='...'.\n"
+        usage += f"    - Optional: priority='H/M/L', project_filter='{project_name_placeholder}', tags=['tag1', 'tag2'], depends='<dependency_task_uuid>', assignee_agent_id='{agent_id_placeholder}'.\n"
         usage += "  - list_tasks: Lists tasks.\n"
-        usage += "    - Required: action='list_tasks'.\n"
-        usage += "    - Optional Filters: status='pending|completed|deleted|all', project_filter='ProjectName', tags=['tag1', 'tag2'] (AND logic), assignee_agent_id='<agent_id>'.\n"
+        usage += f"    - Required: action='list_tasks'.\n"
+        usage += f"    - Optional Filters: status='pending|completed|deleted|all', project_filter='{project_name_placeholder}', tags=['tag1', 'tag2'] (AND logic), assignee_agent_id='{agent_id_placeholder}'.\n"
         usage += "  - modify_task: Modifies an existing task.\n"
-        usage += "    - Required: action='modify_task', task_id='<uuid_or_id>'.\n"
-        usage += "    - Optional fields to modify: description='...', status='pending|completed|deleted|waiting', priority='H/M/L', project_filter='ProjectName', tags=['tag1', 'tag2'] (replaces existing), assignee_agent_id='<agent_id>'.\n"
+        usage += f"    - Required: action='modify_task', task_id='<uuid_or_id>'.\n"
+        usage += f"    - Optional fields to modify: description='...', status='pending|completed|deleted|waiting', priority='H/M/L', project_filter='{project_name_placeholder}', tags=['tag1', 'tag2'] (replaces existing), assignee_agent_id='{agent_id_placeholder}'.\n"
         usage += "  - complete_task: Marks a task as completed.\n"
-        usage += "    - Required: action='complete_task', task_id='<uuid_or_id>'.\n"
+        usage += f"    - Required: action='complete_task', task_id='<uuid_or_id>'.\n"
 
         return usage
 

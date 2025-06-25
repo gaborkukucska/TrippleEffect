@@ -455,16 +455,19 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
                                          final_provider_for_creation.endswith("-proxy")
         if is_local_provider_selected:
                 if "max_tokens" not in final_agent_config_data and "num_predict" not in final_agent_config_data:
-                    final_agent_config_data["max_tokens"] = settings.ADMIN_AI_LOCAL_MAX_TOKENS
-                    logger.info(f"Lifecycle: Injecting default max_tokens ({settings.ADMIN_AI_LOCAL_MAX_TOKENS}) for local Admin AI.")
+                    final_agent_config_data["max_tokens"] = settings.ADMIN_AI_LOCAL_MAX_TOKENS # This was specific to Admin AI, but now applies to any local bootstrap
+                    logger.info(f"Lifecycle: Injecting default max_tokens ({settings.ADMIN_AI_LOCAL_MAX_TOKENS}) for local bootstrap agent '{agent_id}'.")
                 else:
-                    logger.debug(f"Lifecycle: max_tokens/num_predict already set for local Admin AI, skipping injection.")
+                    logger.debug(f"Lifecycle: max_tokens/num_predict already set for local bootstrap agent '{agent_id}', skipping injection.")
+
+        # Corrected Logging for initial prompt:
+        # This now correctly reflects the agent_id being processed and the nature of its initial prompt.
+        log_prompt_info = final_agent_config_data.get('system_prompt', '')
+        if not log_prompt_info:
+            logger.info(f"Lifecycle: Initial system prompt for bootstrap agent '{agent_id}' is empty. WorkflowManager will set the state-specific prompt.")
         else:
-             # For other bootstrap agents, ensure system_prompt exists but don't modify it here
-             logger.info(f"Lifecycle: Using system prompt from config for bootstrap agent '{agent_id}'.")
-             if "system_prompt" not in final_agent_config_data:
-                  final_agent_config_data["system_prompt"] = ""
-        # --- End Prompt Assembly ---
+            logger.info(f"Lifecycle: Initial system prompt for bootstrap agent '{agent_id}' from config is being passed. WorkflowManager will set the state-specific prompt.")
+        # --- End Prompt Assembly / Corrected Logging ---
 
         tasks.append(_create_agent_internal(
             manager,

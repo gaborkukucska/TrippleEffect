@@ -424,8 +424,8 @@ class AgentCycleHandler:
 
                             intervention_message_content = (
                                 f"[Framework Intervention]: Team '{created_team_id_for_message}' is now created. "
-                                "Your mandatory next action is to list available tools to proceed with agent creation. "
-                                "Output ONLY the following XML: <tool_information><action>list_tools</action></tool_information>"
+                                "Your mandatory next action is to get specific instructions for creating an agent. "
+                                "Output ONLY the following XML: <tool_information><action>get_info</action><tool_name>manage_team</tool_name><sub_action>create_agent</sub_action></tool_information>"
                             )
                             intervention_message: MessageDict = {"role": "system", "content": intervention_message_content}
                             agent.message_history.append(intervention_message)
