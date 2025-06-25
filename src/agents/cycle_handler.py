@@ -320,9 +320,31 @@ class AgentCycleHandler:
 
                     elif event_type == "agent_state_change_requested":
                         context.action_taken_this_cycle = True; context.state_change_requested_this_cycle = True; requested_state = event.get("requested_state")
-                        if self._manager.workflow_manager.change_state(agent, requested_state): context.needs_reactivation_after_cycle = True
-                        else: context.needs_reactivation_after_cycle = True
-                        # ... (db logging, UI send) ...
+                        if self._manager.workflow_manager.change_state(agent, requested_state):
+                            context.needs_reactivation_after_cycle = True
+                            # --- START MODIFICATION: Inject directive after PM state change to pm_activate_workers ---
+                            if agent.agent_type == AGENT_TYPE_PM and requested_state == PM_STATE_ACTIVATE_WORKERS:
+                                logger.info(f"CycleHandler: PM '{agent.agent_id}' successfully changed to '{PM_STATE_ACTIVATE_WORKERS}'. Injecting specific follow-up directive.")
+                                directive_for_activate_workers = (
+                                    f"[Framework System Message]: You are now in state '{PM_STATE_ACTIVATE_WORKERS}'. "
+                                    "Your MANDATORY next action is to begin Step 1 of your workflow: Identify the first Kick-Off Task and a suitable Worker Agent. "
+                                    "Use `<project_management><action>list_tasks</action>...</project_management>` and/or "
+                                    "`<manage_team><action>list_agents</action>...</manage_team>` as needed. "
+                                    "Remember to use `<think>...</think>` before acting."
+                                )
+                                agent.message_history.append({"role": "system", "content": directive_for_activate_workers})
+                                if context.current_db_session_id:
+                                    await self._manager.db_manager.log_interaction(
+                                        session_id=context.current_db_session_id,
+                                        agent_id=agent.agent_id,
+                                        role="system_intervention",
+                                        content=directive_for_activate_workers
+                                    )
+                            # --- END MODIFICATION ---
+                        else:
+                            # If change_state returned False (e.g., invalid state), still likely needs reactivation to retry or get error feedback.
+                            context.needs_reactivation_after_cycle = True
+
                         if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="agent_state_change", content=f"State changed to: {requested_state}")
                         await self._manager.send_to_ui(event)
                         llm_stream_ended_cleanly = False; break
