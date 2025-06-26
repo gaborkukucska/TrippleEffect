@@ -125,8 +125,8 @@ class NextStepScheduler:
                 await self._schedule_new_cycle(agent, 0)
             elif agent.agent_type == AGENT_TYPE_PM and \
                  agent.state in [PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS] and \
-                 not context.action_taken_this_cycle:
-                logger.warning(f"NextStepScheduler: PM agent '{agent_id}' in state '{agent.state}' finished but took NO ACTION. Reactivating to enforce workflow.")
+                 (not context.action_taken_this_cycle and not context.executed_tool_successfully_this_cycle): # MODIFIED HERE
+                logger.warning(f"NextStepScheduler: PM agent '{agent_id}' in state '{agent.state}' finished but took NO ACTION (and no tool was run). Reactivating to enforce workflow.")
                 if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear()
                 agent.set_status(AGENT_STATUS_IDLE)
                 await self._schedule_new_cycle(agent, 0)
