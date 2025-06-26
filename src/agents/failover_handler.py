@@ -576,94 +576,77 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
 
             # Try initial model (or a default) with this key
             initial_model_to_try = None
-            
-            # --- 1. Attempt to select initial model using comprehensive sort ---
-            logger.debug(f"Attempting to select initial model for '{external_provider}' using comprehensive sort.")
-            
             all_external_provider_models_raw = all_available.get(external_provider, [])
-            candidate_external_model_infos: List[ModelInfo] = []
 
-            for model_data in all_external_provider_models_raw:
-                m_id = model_data.get("id")
-                if not m_id: continue
-
-                if m_id in failover_state["tried_models_on_current_external_key"]:
-                    logger.debug(f"Skipping model '{m_id}' for initial try on '{external_provider}': already tried on current key.")
-                    continue
-
-                tier_compatible = False
-                if current_model_tier == "ALL": tier_compatible = True
-                elif current_model_tier == "FREE" and external_provider == "openrouter" and ":free" in m_id.lower(): tier_compatible = True
-                # Add other tier/provider specific checks if needed for FREE tier
-
-                if not tier_compatible:
-                    logger.debug(f"Skipping model '{m_id}' for initial try on '{external_provider}': not compatible with tier '{current_model_tier}'.")
-                    continue
+            # --- New Logic: Prioritize agent's original_model on new provider/key ---
+            agent_original_model_on_this_provider = None
+            if any(m_info['id'] == original_model for m_info in all_external_provider_models_raw):
+                original_model_suitable_tier = False
+                if current_model_tier == "ALL": original_model_suitable_tier = True
+                elif current_model_tier == "FREE" and external_provider == "openrouter" and ":free" in original_model.lower(): original_model_suitable_tier = True
                 
-                model_data_copy = model_data.copy()
-                model_data_copy["provider"] = external_provider # Specific provider name
-                candidate_external_model_infos.append(model_data_copy)
+                if original_model_suitable_tier and original_model not in failover_state["tried_models_on_current_external_key"]:
+                    agent_original_model_on_this_provider = original_model
+                    logger.info(f"Prioritizing agent's original model '{agent_original_model_on_this_provider}' for '{external_provider}' on current key.")
 
-            if candidate_external_model_infos:
-                # Prepare performance metrics for these candidates
-                external_provider_metrics_for_sorter = {}
-                # Base name for external provider is the provider name itself
-                for m_info_dict_ext in candidate_external_model_infos:
-                    m_id_suffix_ext = m_info_dict_ext["id"]
-                    metrics_ext = manager.performance_tracker.get_metrics(external_provider, m_id_suffix_ext)
-                    if metrics_ext:
-                        if external_provider not in external_provider_metrics_for_sorter:
-                             external_provider_metrics_for_sorter[external_provider] = {}
-                        external_provider_metrics_for_sorter[external_provider][m_id_suffix_ext] = metrics_ext
-                    else: # Default if no metrics
-                        if external_provider not in external_provider_metrics_for_sorter:
-                             external_provider_metrics_for_sorter[external_provider] = {}
-                        external_provider_metrics_for_sorter[external_provider][m_id_suffix_ext] = {"score": 0.0, "latency": float('inf'), "calls": 0}
-
-
-                sorted_external_models = sort_models_by_size_performance_id(
-                    candidate_external_model_infos,
-                    performance_metrics=external_provider_metrics_for_sorter
-                )
-                if sorted_external_models:
-                    initial_model_to_try = sorted_external_models[0]["id"]
-                    logger.info(f"Selected initial model '{initial_model_to_try}' for '{external_provider}' based on comprehensive sort "
-                                f"(Size: {sorted_external_models[0].get('num_parameters_sortable',0)}, Score: {sorted_external_models[0].get('performance_score',0.0):.2f}).")
-                else:
-                    logger.debug(f"Comprehensive sort yielded no models for '{external_provider}'.")
+            if agent_original_model_on_this_provider:
+                initial_model_to_try = agent_original_model_on_this_provider
             else:
-                logger.debug(f"No candidate models for comprehensive sort for '{external_provider}' after filtering.")
+                # --- Existing Logic: Attempt to select initial model using comprehensive sort if original_model not prioritized ---
+                logger.debug(f"Agent's original model not prioritized for '{external_provider}'. Attempting comprehensive sort.")
+                candidate_external_model_infos: List[ModelInfo] = []
+                for model_data in all_external_provider_models_raw:
+                    m_id = model_data.get("id")
+                    if not m_id: continue
+                    if m_id == original_model: continue # Already considered or not suitable
 
-            # --- 2. Fallback logic if comprehensive sort yields no model ---
-            if not initial_model_to_try:
-                logger.debug(f"Initial model not found by comprehensive sort for '{external_provider}'. Using existing fallback logic.")
-                # Fallback A: Prefer original model if available, suitable for tier, and not tried on this key
-                # Note: provider_models_info was all_external_provider_models_raw
-                if any(m_info['id'] == original_model for m_info in all_external_provider_models_raw):
-                    original_model_suitable_tier = False
-                    if current_model_tier == "ALL": original_model_suitable_tier = True
-                    elif current_model_tier == "FREE" and external_provider == "openrouter" and ":free" in original_model.lower(): original_model_suitable_tier = True
+                    if m_id in failover_state["tried_models_on_current_external_key"]:
+                        logger.debug(f"Skipping model '{m_id}' for initial try on '{external_provider}': already tried on current key.")
+                        continue
+
+                    tier_compatible = False
+                    if current_model_tier == "ALL": tier_compatible = True
+                    elif current_model_tier == "FREE" and external_provider == "openrouter" and ":free" in m_id.lower(): tier_compatible = True
+
+                    if not tier_compatible:
+                        logger.debug(f"Skipping model '{m_id}' for initial try on '{external_provider}': not compatible with tier '{current_model_tier}'.")
+                        continue
+
+                    model_data_copy = model_data.copy()
+                    model_data_copy["provider"] = external_provider # Specific provider name
+                    candidate_external_model_infos.append(model_data_copy)
+
+                if candidate_external_model_infos:
+                    external_provider_metrics_for_sorter = {}
+                    for m_info_dict_ext in candidate_external_model_infos:
+                        m_id_suffix_ext = m_info_dict_ext["id"]
+                        metrics_ext = manager.performance_tracker.get_metrics(external_provider, m_id_suffix_ext)
+                        if metrics_ext:
+                            if external_provider not in external_provider_metrics_for_sorter: external_provider_metrics_for_sorter[external_provider] = {}
+                            external_provider_metrics_for_sorter[external_provider][m_id_suffix_ext] = metrics_ext
+                        else:
+                            if external_provider not in external_provider_metrics_for_sorter: external_provider_metrics_for_sorter[external_provider] = {}
+                            external_provider_metrics_for_sorter[external_provider][m_id_suffix_ext] = {"score": 0.0, "latency": float('inf'), "calls": 0}
                     
-                    if original_model_suitable_tier and original_model not in failover_state["tried_models_on_current_external_key"]:
-                        initial_model_to_try = original_model
-                        logger.info(f"Selected initial model '{initial_model_to_try}' (agent's original) for '{external_provider}' by fallback A.")
-                    # Logging for why original might not be chosen is already in previous version, can be kept or removed for brevity
+                    sorted_external_models = sort_models_by_size_performance_id(
+                        candidate_external_model_infos,
+                        performance_metrics=external_provider_metrics_for_sorter
+                    )
+                    if sorted_external_models:
+                        initial_model_to_try = sorted_external_models[0]["id"]
+                        logger.info(f"Selected initial model '{initial_model_to_try}' for '{external_provider}' based on comprehensive sort "
+                                    f"(Size: {sorted_external_models[0].get('num_parameters_sortable',0)}, Score: {sorted_external_models[0].get('performance_score',0.0):.2f}).")
+                    else: logger.debug(f"Comprehensive sort yielded no models for '{external_provider}'.")
+                else: logger.debug(f"No candidate models for comprehensive sort for '{external_provider}' after filtering.")
 
-                # Fallback B: If original model not used, try first available model from registry (respecting tier and not tried)
-                if not initial_model_to_try and all_external_provider_models_raw:
-                    logger.debug(f"Original model not used as initial. Searching for first available model from registry for '{external_provider}' (fallback B).")
-                    # This part should iterate through all_external_provider_models_raw, check tier and not tried.
-                    # The existing code for Fallback B already does this, using 'provider_models_info' which is 'all_external_provider_models_raw'.
-                    # No need to repeat that specific loop here, just ensure the logic flow.
-                    # The existing code has a loop: for m_info in provider_models_info:
-                    # This will run if initial_model_to_try is still None.
-                    # We need to ensure this fallback respects the comprehensive sort's failure to find a model.
-                    # The current structure of this part of the code is a bit nested.
-                    # Let's assume the old Fallback B logic is still fine if initial_model_to_try is None after sort.
-                    # The original code for Fallback B:
-                    if not initial_model_to_try: # Check again, as it might have been set by Fallback A
-                        for m_info_fb in all_external_provider_models_raw: # Renamed to avoid clash
+                # --- Fallback B (first from registry) if comprehensive sort also fails ---
+                if not initial_model_to_try:
+                    logger.debug(f"Comprehensive sort failed. Using Fallback B for '{external_provider}'.")
+                    if all_external_provider_models_raw: # Ensure there are models to iterate
+                        for m_info_fb in all_external_provider_models_raw:
                             m_id_fb = m_info_fb['id']
+                            if m_id_fb == original_model: continue # Already considered
+
                             model_suitable_tier_fb = False
                             if current_model_tier == "ALL": model_suitable_tier_fb = True
                             elif current_model_tier == "FREE" and external_provider == "openrouter" and ":free" in m_id_fb.lower(): model_suitable_tier_fb = True
@@ -675,26 +658,18 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
                             logger.info(f"Selected initial model '{initial_model_to_try}' for '{external_provider}' by fallback B (first from registry).")
                             break
             
-            model_switch_successful = False # This variable seems unused before this point in the original code.
+            # Attempt the selected initial_model_to_try
             if initial_model_to_try:
                  logger.info(f"Attempting initial model '{initial_model_to_try}' with current key for provider '{external_provider}'.")
-                 # Ensure this model is added to tried_models_on_current_external_key BEFORE the attempt,
-                 # so if _try_switch_agent fails and we re-enter selection, we don't pick it again.
-                 # However, _try_switch_agent might lead to success, and we want to retry IT, not alternates yet.
-                 # The current logic adds to tried_models_on_current_external_key AFTER _try_switch_agent fails, which is correct.
                  switched = await _try_switch_agent(manager, agent, external_provider, initial_model_to_try, next_key_config)
-                 if switched: # Reconfiguration successful
+                 if switched:
                       logger.info(f"Failover handler successfully reconfigured agent '{agent_id}' to try '{external_provider}/{initial_model_to_try}'.")
-                      # CycleHandler will schedule the next attempt.
-                      return True # Signal to CycleHandler
-                 else: # ADDED LOGGING
-                      logger.warning(f"Failover: _try_switch_agent failed for external initial model: {external_provider}/{initial_model_to_try}") # ADDED LOGGING
-
-                 # If switch failed or cycle fails later, mark model as tried for this key
+                      return True
+                 else:
+                      logger.warning(f"Failover: _try_switch_agent failed for external initial model: {external_provider}/{initial_model_to_try}")
                  failover_state["tried_models_on_current_external_key"].add(initial_model_to_try)
-                 # failover_state["failover_attempt_count"] += 1 # REMOVE: Don't increment overall count for model switch failure
             else:
-                 logger.warning(f"No suitable initial models available for provider '{external_provider}' and tier '{current_model_tier}'.")
+                 logger.warning(f"No suitable initial models available for provider '{external_provider}' and tier '{current_model_tier}' after all fallbacks.")
 
             # Try alternate models with this key if initial failed or wasn't available
             alternate_models = await _select_alternate_models(
