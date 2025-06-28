@@ -125,8 +125,8 @@ class AgentWorkflowManager:
                     }))
                 return True
             else:
-                logger.debug(f"WorkflowManager: Agent '{agent.agent_id}' already in state '{requested_state}'. No change.")
-                return True
+                logger.debug(f"WorkflowManager: Agent '{agent.agent_id}' already in state '{requested_state}'. No change made.")
+                return False # MODIFIED: Return False if no state change occurred
         else:
             logger.warning(f"WorkflowManager: Invalid state transition requested for agent '{agent.agent_id}' ({agent.agent_type}) to state '{requested_state}'. Allowed states: {self._valid_states.get(agent.agent_type, [])}")
             return False
