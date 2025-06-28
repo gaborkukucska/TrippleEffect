@@ -504,6 +504,44 @@ class AgentManager:
         logger.info(f"Agent '{agent_id}' set to IDLE and rescheduled for retry with user and CG feedback.")
         return True, f"Agent '{agent_id}' will retry with feedback."
 
+    async def activate_worker_with_task_details(self, worker_agent_id: str, task_id_from_tool: str, task_description_from_tool: str):
+        """
+        Activates a worker agent with specific task details, ensuring the task description
+        is injected for its next cycle.
+        """
+        worker_agent = self.agents.get(worker_agent_id)
+        if not worker_agent:
+            logger.error(f"AgentManager: Cannot activate worker '{worker_agent_id}'. Agent not found.")
+            return
+
+        if worker_agent.agent_type != AGENT_TYPE_WORKER:
+            logger.error(f"AgentManager: Agent '{worker_agent_id}' is not a Worker. Cannot activate with task details.")
+            return
+
+        logger.info(f"AgentManager: Activating worker '{worker_agent_id}' for task ID '{task_id_from_tool}' with description: '{task_description_from_tool[:100]}...'")
+
+        worker_agent._injected_task_description = task_description_from_tool
+        worker_agent._needs_initial_work_context = True
+        worker_agent.current_task_id = task_id_from_tool # Store the task ID as well
+
+        # Ensure the agent is in the correct state and status to be scheduled
+        self.workflow_manager.change_state(worker_agent, WORKER_STATE_WORK) # This also sets status to IDLE if state changes
+        if worker_agent.status != AGENT_STATUS_IDLE: # If state didn't change but status was e.g. ERROR
+            worker_agent.set_status(AGENT_STATUS_IDLE)
+
+        # Log this activation and context injection to DB for traceability
+        if self.current_session_db_id:
+            await self.db_manager.log_interaction(
+                session_id=self.current_session_db_id,
+                agent_id=worker_agent_id,
+                role="system_framework_event",
+                content=f"Worker activated for task {task_id_from_tool}. Injected task description: {task_description_from_tool}"
+            )
+
+        await self.schedule_cycle(worker_agent, retry_count=0)
+        logger.info(f"AgentManager: Worker '{worker_agent_id}' scheduled for task '{task_id_from_tool}'.")
+
+
 logging.info("manager.py: Module loading finished.")
 
 # Resolve forward references for CycleContext

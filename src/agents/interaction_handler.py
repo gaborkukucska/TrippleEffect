@@ -344,128 +344,44 @@ class AgentInteractionHandler:
 
             # Worker activation logic (if task assigned successfully via ProjectManagementTool)
             if tool_name == ProjectManagementTool.name and isinstance(raw_result, dict) and raw_result.get("status") == "success":
-                action = tool_args.get("action") # Get action from original tool_args
+                action_performed = tool_args.get("action") # Get action from original tool_args
                 assignee_id = raw_result.get("assignee")
-                # IMPORTANT: task_description from raw_result (after modify_task) might be just "assignee:agent_id"
-                # We need the original, semantic task description.
 
-                # Try to get the original task description from the tool_args if it's an add_task action
-                original_task_description = None
-                if action == "add_task":
-                    original_task_description = tool_args.get("description") or tool_args.get("task_description") or tool_args.get("task_name")
+                # Get the task description from the tool's result.
+                # ProjectManagementTool's modify_task and add_task actions are designed to return
+                # the correct, original/semantic description in the "description" field of their result.
+                task_description_for_worker = raw_result.get("description")
+                task_identifier_for_activation = raw_result.get("task_uuid") or str(raw_result.get("task_id", "N/A"))
 
-                # If not found in tool_args (e.g. for modify_task or if add_task didn't have it directly),
-                # attempt to retrieve it using the task_id/uuid from the result.
-                if not original_task_description:
-                    task_id_for_fetch = raw_result.get("task_id") or raw_result.get("task_uuid")
-                    if task_id_for_fetch:
-                        try:
-                            # This assumes ProjectManagementTool has a method to get a single task's details
-                            # We might need to add such a method or adjust how ProjectManagementTool works.
-                            # For now, let's assume we can fetch it.
-                            # This is a conceptual fetch; implementation might need ProjectManagementTool changes.
-                            task_details_result = await self._manager.tool_executor.execute_tool(
-                                agent_id=agent.agent_id, # PM is making this internal call
-                                agent_sandbox_path=agent.sandbox_path,
-                                tool_name=ProjectManagementTool.name,
-                                tool_args={"action": "get_task_details", "task_id": task_id_for_fetch, "project_filter": project_name or raw_result.get("project")}, # Ensure project context
-                                project_name=project_name, # Pass existing project context
-                                session_name=session_name, # Pass existing session context
-                                manager=self._manager
-                            )
-                            if isinstance(task_details_result, dict) and task_details_result.get("status") == "success" and task_details_result.get("task"):
-                                original_task_description = task_details_result["task"].get("description")
-                                logger.info(f"Fetched original task description for '{task_id_for_fetch}': '{original_task_description}'")
-                            else:
-                                logger.warning(f"Could not fetch original task description for '{task_id_for_fetch}'. Tool result: {task_details_result}")
-                        except Exception as e_fetch:
-                            logger.error(f"Error fetching original task description for '{task_id_for_fetch}': {e_fetch}")
+                if assignee_id and task_description_for_worker and action_performed in ["add_task", "modify_task"]:
+                    logger.info(f"InteractionHandler: Task '{action_performed}' successful for assignee '{assignee_id}'. Attempting worker activation via AgentManager.")
 
-                if not original_task_description:
-                    original_task_description = raw_result.get("description", "Task description unavailable") # Fallback if all else fails
-                    logger.warning(f"Using fallback task description for worker activation: {original_task_description}")
+                    # Call the new AgentManager method to handle activation
+                    await self._manager.activate_worker_with_task_details(
+                        worker_agent_id=assignee_id,
+                        task_id_from_tool=task_identifier_for_activation,
+                        task_description_from_tool=task_description_for_worker
+                    )
 
+                    # Notification to the PM about worker activation can be added here if desired,
+                    # or handled by the PM agent itself when it processes the successful tool result.
+                    # For now, the activation is logged by activate_worker_with_task_details.
+                    # If direct PM notification from here is needed, it can be added.
+                    # Example:
+                    # pm_agent = agent
+                    # brief_task_desc = (task_description_for_worker[:70] + '...') if task_description_for_worker and len(task_description_for_worker) > 70 else task_description_for_worker
+                    # notification_content = f"[Framework Notification]: Worker '{assignee_id}' activated for task '{brief_task_desc}'."
+                    # pm_notification_message: MessageDict = {"role": "tool", "tool_call_id": f"worker_activation_{assignee_id}", "name": "framework_notification", "content": notification_content}
+                    # pm_agent.message_history.append(pm_notification_message)
+                    # if self._manager.current_session_db_id:
+                    #     await self._manager.db_manager.log_interaction(session_id=self._manager.current_session_db_id, agent_id=pm_agent.agent_id, role="system_framework_notification", content=notification_content)
+                    # await self._manager.send_to_ui({"type": "framework_notification_to_pm", "pm_agent_id": pm_agent.agent_id, "worker_agent_id": assignee_id, "task_description": task_description_for_worker, "message": notification_content})
 
-                if assignee_id and original_task_description and action in ["add_task", "modify_task"]:
-                    logger.info(f"InteractionHandler: Task '{action}' successful for assignee '{assignee_id}'. Checking for worker activation.")
-                    assigned_agent = self._manager.agents.get(assignee_id)
-                    if assigned_agent and assigned_agent.agent_type == AGENT_TYPE_WORKER and assigned_agent.status == AGENT_STATUS_IDLE:
-                        logger.info(f"Activating idle worker agent '{assignee_id}' for assigned task with description: '{original_task_description}'.")
-                        assigned_agent._needs_initial_work_context = True
-                        # Use the fetched/original task description
-                        assigned_agent._injected_task_description = original_task_description
-                        try:
-                            if hasattr(self._manager, 'tool_executor') and hasattr(self._manager.tool_executor, 'get_available_tools_list_str'):
-                                assigned_agent._injected_tools_list_str = self._manager.tool_executor.get_available_tools_list_str(assigned_agent.agent_type)
-                            else:
-                                logger.error(f"ToolExecutor or get_available_tools_list_str not found for worker {assignee_id}.")
-                                assigned_agent._injected_tools_list_str = "[Error retrieving tool list: ToolExecutor unavailable]"
-                        except Exception as tool_list_err:
-                             logger.error(f"Failed to get tool list for worker {assignee_id}: {tool_list_err}")
-                             assigned_agent._injected_tools_list_str = "[Error retrieving tool list]"
+                elif assignee_id and not task_description_for_worker and action_performed in ["add_task", "modify_task"]:
+                    logger.warning(f"InteractionHandler: Task '{action_performed}' successful for assignee '{assignee_id}', but no task description was found in the tool result. Worker cannot be properly activated with task details.")
+                elif assignee_id and task_description_for_worker and action_performed not in ["add_task", "modify_task"]:
+                    logger.debug(f"InteractionHandler: ProjectManagementTool action '{action_performed}' was successful but is not an assignment action. No worker activation needed from this handler.")
 
-                        state_changed = False
-                        if hasattr(self._manager, 'workflow_manager'):
-                             # Cast for type hinting
-                             workflow_mgr_cast: 'AgentWorkflowManager' = self._manager.workflow_manager
-                             state_changed = workflow_mgr_cast.change_state(assigned_agent, WORKER_STATE_WORK)
-                        else:
-                             logger.error("WorkflowManager not found on AgentManager. Cannot change worker state.")
-
-                        if state_changed:
-                            logger.info(f"Worker '{assignee_id}' state set to WORK. CycleHandler will manage next cycle.")
-                            await self._manager.schedule_cycle(assigned_agent, 0) # Explicitly schedule activated worker
-
-                            # Notify PM about worker activation
-                            pm_agent = agent # 'agent' is the PM executing the ProjectManagementTool
-
-                            # task_description is already defined in the outer scope
-                            brief_task_desc = (task_description[:70] + '...') if task_description and len(task_description) > 70 else task_description
-                            if not brief_task_desc: brief_task_desc = "N/A"
-
-                            notification_content = f"[Framework Notification]: Worker agent '{assignee_id}' (Persona: '{assigned_agent.persona if hasattr(assigned_agent, 'persona') else 'N/A'}') has been automatically activated for task: '{brief_task_desc}'."
-
-                            pm_notification_message: MessageDict = {
-                                "role": "tool",
-                                "tool_call_id": f"worker_activation_notification_{assignee_id}_{int(time.time())}",
-                                "name": "framework_notification",
-                                "content": notification_content
-                            }
-                            pm_agent.message_history.append(pm_notification_message)
-                            logger.info(f"InteractionHandler: Appended activation notification for worker '{assignee_id}' to PM '{pm_agent.agent_id}' history.")
-
-                            # Log to database
-                            if self._manager.current_session_db_id:
-                                try:
-                                    await self._manager.db_manager.log_interaction(
-                                        session_id=self._manager.current_session_db_id, # type: ignore
-                                        agent_id=pm_agent.agent_id,
-                                        role="system_framework_notification", # Changed role
-                                        content=notification_content
-                                        # Removed tool_name, tool_input, tool_output, caller_id
-                                    )
-                                except Exception as db_log_err:
-                                    logger.error(f"InteractionHandler: Failed to log PM notification to database: {db_log_err}", exc_info=True) # Added exc_info
-
-                            # Send UI message
-                            try:
-                                ui_message_task_desc = raw_result.get("description", "N/A") # Full description for UI
-                                await self._manager.send_to_ui({
-                                    "type": "framework_notification_to_pm",
-                                    "pm_agent_id": pm_agent.agent_id,
-                                    "worker_agent_id": assignee_id,
-                                    "task_description": ui_message_task_desc,
-                                    "message": notification_content
-                                })
-                            except Exception as ui_send_err:
-                                logger.error(f"InteractionHandler: Failed to send PM notification to UI: {ui_send_err}")
-                        else:
-                            logger.error(f"Failed to change state to WORK for activated worker '{assignee_id}'.")
-                            assigned_agent._needs_initial_work_context = False # Reset flag if state change failed
-                    elif assigned_agent and assigned_agent.agent_type == AGENT_TYPE_WORKER:
-                         logger.info(f"Worker agent '{assignee_id}' assigned task but is not IDLE (Status: {assigned_agent.status}). Will process when available.")
-                    elif not assigned_agent:
-                         logger.error(f"Assignee agent ID '{assignee_id}' from task assignment not found.")
 
         return {"call_id": call_id, "name": tool_name, "content": result_content, "_raw_result": raw_result} 
 
