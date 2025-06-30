@@ -321,22 +321,16 @@ async def approve_project_start(
         logger.info(f"Setting PM agent '{pm_agent_id}' state to '{PM_STATE_STARTUP}'...")
         state_change_success = False
         if hasattr(manager, 'workflow_manager'):
-            # Attempt to change state. This will return True if state was different, False if already in pm_startup or other error.
-            actual_state_change_occurred = manager.workflow_manager.change_state(agent_to_start, PM_STATE_STARTUP)
-            # After the call, check the agent's current state.
-            if agent_to_start.state == PM_STATE_STARTUP:
-                logger.info(f"PM Agent '{pm_agent_id}' is now confirmed to be in '{PM_STATE_STARTUP}'. Actual change occurred: {actual_state_change_occurred}.")
-                # Proceed even if actual_state_change_occurred is False, as long as the agent is in the correct state.
-            else:
-                # This case means change_state failed to put the agent into PM_STATE_STARTUP for some reason other than it already being there.
-                logger.error(f"Failed to ensure PM agent '{pm_agent_id}' is in '{PM_STATE_STARTUP}'. Current state: '{agent_to_start.state}'. Cannot start cycle.")
-                raise HTTPException(status_code=500, detail=f"Failed to set PM agent state to '{PM_STATE_STARTUP}'. Final state was '{agent_to_start.state}'.")
+            state_change_success = manager.workflow_manager.change_state(agent_to_start, PM_STATE_STARTUP)
         else:
             logger.error("WorkflowManager not found on AgentManager! Cannot change PM state.")
             raise HTTPException(status_code=500, detail="Internal Server Error: Workflow Manager unavailable.")
 
-        # If we reached here, the agent is confirmed to be in PM_STATE_STARTUP.
-        # Clear the approval flag before scheduling
+        if not state_change_success:
+            logger.error(f"Failed to change PM agent '{pm_agent_id}' state to '{PM_STATE_STARTUP}'. Cannot start cycle.")
+            raise HTTPException(status_code=500, detail=f"Failed to set PM agent state to '{PM_STATE_STARTUP}'.")
+
+        # --- NEW: Clear the approval flag before scheduling ---
         agent_to_start._awaiting_project_approval = False
         logger.info(f"Cleared _awaiting_project_approval flag for PM agent '{pm_agent_id}'.")
         # --- END NEW ---
