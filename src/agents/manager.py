@@ -20,7 +20,7 @@ logging.info("manager.py: Imported database_manager.")
 logging.info("manager.py: Importing constants...")
 from src.agents.constants import (
     AGENT_STATUS_IDLE, AGENT_STATUS_ERROR, BOOTSTRAP_AGENT_ID, ADMIN_STATE_CONVERSATION,
-    AGENT_TYPE_PM, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_STARTUP,
+    AGENT_TYPE_PM, AGENT_TYPE_WORKER, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_STARTUP, WORKER_STATE_WORK, # Added WORKER_STATE_WORK
     AGENT_STATUS_AWAITING_USER_REVIEW_CG # Added for CG concern resolution
 )
 logging.info("manager.py: Imported constants.")

@@ -317,46 +317,34 @@ async def approve_project_start(
             logger.warning(f"Approval failed: PM Agent '{pm_agent_id}' is not idle (Status: {agent_to_start.status}). Cannot start.")
             raise HTTPException(status_code=409, detail=f"Project Manager agent '{pm_agent_id}' is currently busy (Status: {agent_to_start.status}) and cannot be started.")
 
-        # --- NEW: Change state to 'startup' before scheduling ---
-        logger.info(f"Setting PM agent '{pm_agent_id}' state to '{PM_STATE_STARTUP}'...")
-        state_change_success = False
-        if hasattr(manager, 'workflow_manager'):
-            state_change_success = manager.workflow_manager.change_state(agent_to_start, PM_STATE_STARTUP)
-        else:
-            logger.error("WorkflowManager not found on AgentManager! Cannot change PM state.")
-            raise HTTPException(status_code=500, detail="Internal Server Error: Workflow Manager unavailable.")
+        # Verify the agent was awaiting approval
+        if not getattr(agent_to_start, '_awaiting_project_approval', False):
+            logger.warning(f"Approval failed: PM Agent '{pm_agent_id}' was not awaiting project approval.")
+            raise HTTPException(status_code=409, detail=f"Project Manager agent '{pm_agent_id}' was not awaiting approval.")
 
-        if not state_change_success:
-            logger.error(f"Failed to change PM agent '{pm_agent_id}' state to '{PM_STATE_STARTUP}'. Cannot start cycle.")
-            raise HTTPException(status_code=500, detail=f"Failed to set PM agent state to '{PM_STATE_STARTUP}'.")
-
-        # --- NEW: Clear the approval flag before scheduling ---
+        # Clear the approval flag before scheduling
         agent_to_start._awaiting_project_approval = False
         logger.info(f"Cleared _awaiting_project_approval flag for PM agent '{pm_agent_id}'.")
-        # --- END NEW ---
 
-        # --- NEW: Set AgentManager's current project/session context ---
+        # Set AgentManager's current project/session context for the PM
         pm_project_name = agent_to_start.agent_config.get("config", {}).get("project_name_context")
-        # session_name for PMs is usually the same as their initial startup session or a loaded one.
-        # For newly created PMs, their agent_id often contains the session context.
-        # However, the crucial part is the project_name_context.
-        # We'll use the manager's current_session if the PM doesn't have a specific one,
-        # assuming this approval relates to the manager's active session.
-        # A more robust way might be to store session_name alongside project_name_context in agent_config.
-        # For now, let's assume the manager's current session is the relevant one if pm_session_name is not explicitly set.
         pm_session_name = agent_to_start.agent_config.get("config", {}).get("session_name", manager.current_session)
 
-
         if pm_project_name and pm_session_name:
-            logger.info(f"Setting AgentManager context to Project: '{pm_project_name}', Session: '{pm_session_name}' for PM activation.")
-            await manager.set_project_session_context(pm_project_name, pm_session_name, loading=False) # Use loading=False to indicate fresh context set
+            logger.info(f"Setting AgentManager context to Project: '{pm_project_name}', Session: '{pm_session_name}' for PM '{pm_agent_id}' activation.")
+            await manager.set_project_session_context(pm_project_name, pm_session_name, loading=False)
         else:
-            logger.warning(f"PM Agent '{pm_agent_id}' missing 'project_name_context' or 'session_name' in config. Cannot set AgentManager context. Falling back to manager's current context if any.")
-            # If essential context is missing, this might be an issue. For now, it will use manager's existing context.
+            logger.warning(f"PM Agent '{pm_agent_id}' missing 'project_name_context' or 'session_name' in config. AgentManager context not explicitly set for this PM activation. Using manager's current context: {manager.current_project}/{manager.current_session}")
 
-        # Schedule the agent's first cycle now that it's in the startup state and manager context is set
-        logger.info(f"PM agent '{pm_agent_id}' state set to '{PM_STATE_STARTUP}'. Scheduling initial cycle with updated manager context...")
-        asyncio.create_task(manager.schedule_cycle(agent_to_start)) # Use asyncio.create_task
+        # Ensure the agent is in PM_STATE_STARTUP. It should be, from when it was created.
+        # If it's somehow not, log a warning but proceed with scheduling as the primary goal is activation.
+        if agent_to_start.state != PM_STATE_STARTUP:
+            logger.warning(f"PM Agent '{pm_agent_id}' is in state '{agent_to_start.state}' instead of expected '{PM_STATE_STARTUP}' during approval. Proceeding with cycle scheduling.")
+            # Optionally, force state back if deemed critical, but for now, focus on scheduling.
+            # manager.workflow_manager.change_state(agent_to_start, PM_STATE_STARTUP) # This might re-introduce the original problem if not handled carefully.
+
+        logger.info(f"PM agent '{pm_agent_id}' approved. Current state: '{agent_to_start.state}'. Scheduling initial cycle...")
+        asyncio.create_task(manager.schedule_cycle(agent_to_start))
 
         # Send confirmation to UI
         await manager.send_to_ui({
