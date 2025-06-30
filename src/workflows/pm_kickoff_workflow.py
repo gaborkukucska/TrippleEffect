@@ -135,6 +135,76 @@ class PMKickoffWorkflow(BaseWorkflow):
             agent.successfully_created_agent_count_for_build = 0 # Ensure counter is reset
             logger.info(f"PMKickoffWorkflow: Stored kick_off_task_count_for_build={agent.kick_off_task_count_for_build} and reset successfully_created_agent_count_for_build on agent '{agent.agent_id}'.")
 
+            # --- BEGIN MODIFICATION: Mark initial Admin AI task as done ---
+            logger.info(f"PMKickoffWorkflow: Attempting to find and complete the initial project plan task for project '{project_context}' assigned to PM '{agent.agent_id}'.")
+            initial_project_task_uuid_to_complete = None
+            try:
+                list_tasks_args = {
+                    "action": "list_tasks",
+                    "project_filter": project_context,
+                    "tags": ["project_kickoff", "auto_created_by_framework"],
+                    "assignee_agent_id": agent.agent_id
+                }
+                logger.debug(f"PMKickoffWorkflow: Listing tasks with args: {list_tasks_args}")
+                list_result = await manager.tool_executor.execute_tool(
+                    agent_id="framework_internal", # System action
+                    agent_sandbox_path=agent.sandbox_path, # PM's sandbox for context
+                    tool_name="project_management",
+                    tool_args=list_tasks_args,
+                    project_name=project_context,
+                    session_name=manager.current_session,
+                    manager=manager
+                )
+
+                if isinstance(list_result, dict) and list_result.get("status") == "success":
+                    tasks = list_result.get("tasks", [])
+                    logger.debug(f"PMKickoffWorkflow: Found {len(tasks)} candidate tasks for initial project plan task.")
+                    found_matching_tasks = []
+                    for task_item in tasks:
+                        # Check description prefix and ensure it's not already completed
+                        if task_item.get("description", "").startswith("PROJECT KICK-OFF:") and task_item.get("status") != "completed":
+                            found_matching_tasks.append(task_item)
+
+                    if len(found_matching_tasks) > 1:
+                        logger.warning(f"PMKickoffWorkflow: Multiple ({len(found_matching_tasks)}) non-completed 'PROJECT KICK-OFF:' tasks found for PM '{agent.agent_id}' in project '{project_context}'. Will attempt to complete the first one found: {found_matching_tasks[0].get('uuid')}")
+
+                    if found_matching_tasks:
+                        initial_project_task_uuid_to_complete = found_matching_tasks[0].get("uuid")
+                        logger.info(f"PMKickoffWorkflow: Identified initial project plan task to complete. UUID: {initial_project_task_uuid_to_complete}, Description: '{found_matching_tasks[0].get('description', '')[:50]}...'")
+                    else:
+                        logger.warning(f"PMKickoffWorkflow: No suitable non-completed 'PROJECT KICK-OFF:' task found for PM '{agent.agent_id}' in project '{project_context}'. It might have been completed manually or does not exist.")
+                else:
+                    error_msg = list_result.get("message", "Unknown error") if isinstance(list_result, dict) else str(list_result)
+                    logger.error(f"PMKickoffWorkflow: Failed to list tasks to find initial project plan task: {error_msg}")
+
+            except Exception as e_list:
+                logger.error(f"PMKickoffWorkflow: Exception while trying to list tasks for initial project plan task: {e_list}", exc_info=True)
+
+            if initial_project_task_uuid_to_complete:
+                try:
+                    complete_task_args = {
+                        "action": "complete_task",
+                        "task_id": initial_project_task_uuid_to_complete
+                    }
+                    logger.debug(f"PMKickoffWorkflow: Attempting to complete task with args: {complete_task_args}")
+                    complete_result = await manager.tool_executor.execute_tool(
+                        agent_id="framework_internal", # System action
+                        agent_sandbox_path=agent.sandbox_path, # PM's sandbox for context
+                        tool_name="project_management",
+                        tool_args=complete_task_args,
+                        project_name=project_context,
+                        session_name=manager.current_session,
+                        manager=manager
+                    )
+                    if isinstance(complete_result, dict) and complete_result.get("status") == "success":
+                        logger.info(f"PMKickoffWorkflow: Successfully marked initial project plan task '{initial_project_task_uuid_to_complete}' as completed.")
+                    else:
+                        error_msg = complete_result.get("message", "Unknown error") if isinstance(complete_result, dict) else str(complete_result)
+                        logger.error(f"PMKickoffWorkflow: Failed to complete initial project plan task '{initial_project_task_uuid_to_complete}': {error_msg}")
+                except Exception as e_complete:
+                    logger.error(f"PMKickoffWorkflow: Exception while trying to complete initial project plan task '{initial_project_task_uuid_to_complete}': {e_complete}", exc_info=True)
+            # --- END MODIFICATION ---
+
             # Format the task descriptions for inclusion in the message with explicit numbering
             formatted_task_list = "\n".join([f"{i+1}. {desc}" for i, desc in enumerate(task_descriptions)])
             if not formatted_task_list:
