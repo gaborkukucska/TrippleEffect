@@ -392,8 +392,26 @@ class AgentWorkflowManager:
             "project_name": agent_project_name_for_context, "session_name": manager.current_session or 'N/A',
             "current_time_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(sep=' ', timespec='seconds'),
             "address_book": address_book_content,
-            "available_workflow_trigger": available_workflow_trigger_info
+            "available_workflow_trigger": available_workflow_trigger_info,
+            "pm_provider": "N/A", # Default if not PM or not found
+            "pm_model": "N/A"    # Default if not PM or not found
         }
+
+        if agent.agent_type == AGENT_TYPE_PM:
+            # agent.provider_name should hold the specific provider instance (e.g., ollama-local-...)
+            # agent.model should hold the model suffix (e.g., llama3:latest)
+            # agent.agent_config['config']['model'] should hold the canonical model (e.g., ollama/llama3:latest)
+
+            # Use the specific provider instance name the agent is actually using
+            standard_formatting_context["pm_provider"] = agent.provider_name or "N/A"
+
+            # Use the canonical model name from its config, which includes the base provider prefix
+            # This is what the PM should use when instructing other agents.
+            if hasattr(agent, 'agent_config') and 'config' in agent.agent_config and 'model' in agent.agent_config['config']:
+                standard_formatting_context["pm_model"] = agent.agent_config['config']['model'] or "N/A"
+            elif agent.model: # Fallback to agent.model (suffix) if full config not available, less ideal
+                standard_formatting_context["pm_model"] = f"{agent.provider_name.split('-local-')[0].split('-proxy')[0]}/{agent.model}" if agent.provider_name else agent.model
+
         try: formatted_standard_instructions = standard_instructions_template.format(**standard_formatting_context)
         except Exception as e: logger.error(f"Error formatting standard instructions: {e}"); formatted_standard_instructions = standard_instructions_template
         

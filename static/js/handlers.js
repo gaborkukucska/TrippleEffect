@@ -254,11 +254,15 @@ export const handleWebSocketMessage = (data) => {
                  // Handle empty final messages
                  if (displayContent === undefined || displayContent === null) {
                     if(targetAreaId === 'internal-comms-area') {
-                        displayContent = '[Empty Final Response/Msg]';
+                        displayContent = '[Empty Final Response/Msg]'; // This is a literal, no need to escape
                     } else {
                         shouldDisplay = false; // Don't show empty final messages in main chat
                     }
                     console.warn(`Handler: Received ${messageType} from ${agentId} with no content.`);
+                 } else {
+                    // Escape the content if it's not empty and is meant for display
+                    // This ensures that if displayContent was data.content, it gets escaped.
+                    displayContent = escapeHTML(displayContent);
                  }
                  break;
 
