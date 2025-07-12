@@ -167,9 +167,9 @@ class ProjectCreationWorkflow(BaseWorkflow):
                 "action": "add_task",
                 "description": f"PROJECT KICK-OFF: {project_title}\n\nFull Plan Overview:\n{plan_description}",
                 "priority": "H",
-                "project_filter": project_title, 
-                "tags": ["project_kickoff", "auto_created_by_framework"],
-                "assignee_agent_id": pm_agent_id 
+                "project_filter": project_title,
+                "tags": ["project_kickoff", "auto_created_by_framework", f"+{pm_agent_id}"], # Ensure tag for assignee
+                "assignee_agent_id": pm_agent_id
             }
             pm_agent_for_sandbox = manager.agents.get(pm_agent_id)
             if not pm_agent_for_sandbox:
