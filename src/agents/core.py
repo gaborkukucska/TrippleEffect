@@ -104,26 +104,34 @@ class Agent:
                 self.raw_xml_tool_call_pattern = re.compile(raw_pattern_str, re.IGNORECASE | re.DOTALL)
                 md_xml_pattern_str = MARKDOWN_FENCE_XML_PATTERN.format(tool_names=tool_names_pattern_group_lower)
                 self.markdown_xml_tool_call_pattern = re.compile(md_xml_pattern_str, re.IGNORECASE | re.DOTALL | re.MULTILINE)
-                logger.info(f"Agent {self.agent_id}: Compiled XML tool patterns for tools: {tool_names}")
-            else: logger.info(f"Agent {self.agent_id}: No tools found in executor, tool parsing disabled.")
-        else: logger.warning(f"Agent {self.agent_id}: Manager or ToolExecutor not available, tool parsing disabled.")
-        logger.info(f"Agent {self.agent_id} ({self.persona}) initialized. Type: {self.agent_type}. Status: {self.status}. State: {self.state}. Provider: {self.provider_name}, Model: {self.model}.")
+                logger.debug(f"Agent {self.agent_id} compiled XML tool patterns for {len(tool_names)} tools.")
+            else:
+                logger.info(f"Agent {self.agent_id} has no tools to compile patterns for.")
+        else:
+            logger.warning(f"Agent {self.agent_id} could not access ToolExecutor; tool parsing will be disabled.")
+        logger.info(f"Agent {self.agent_id} ({self.persona}) initialized. Type: {self.agent_type}, Provider: {self.provider_name}, Model: {self.model}")
 
     def set_status(self, new_status: str, tool_info: Optional[Dict[str, str]] = None, plan_info: Optional[str] = None):
         if self.status != new_status:
-            logger.info(f"Agent {self.agent_id}: Status changed from '{self.status}' to '{new_status}'")
-        self.status = new_status
-        self.current_tool_info = tool_info if new_status == AGENT_STATUS_EXECUTING_TOOL else None
-        self.current_plan = plan_info if new_status == AGENT_STATUS_PLANNING else None
-        if self.manager: asyncio.create_task(self.manager.push_agent_status_update(self.agent_id))
+            logger.info(f"Agent {self.agent_id} status changing from '{self.status}' to '{new_status}'")
+            self.status = new_status
+            self.current_tool_info = tool_info if new_status == AGENT_STATUS_EXECUTING_TOOL else None
+            self.current_plan = plan_info if new_status == AGENT_STATUS_PLANNING else None
+            if self.manager:
+                asyncio.create_task(self.manager.push_agent_status_update(self.agent_id))
 
     def set_state(self, new_state: str):
-        if self.state != new_state: logger.info(f"Agent {self.agent_id}: Workflow State changed from '{self.state}' to '{new_state}'"); self.state = new_state
-        else: logger.debug(f"Agent {self.agent_id}: set_state called with current state '{new_state}'. No change.")
+        if self.state != new_state:
+            logger.info(f"Agent {self.agent_id} workflow state changing from '{self.state}' to '{new_state}'")
+            self.state = new_state
 
     def ensure_sandbox_exists(self) -> bool:
-        try: self.sandbox_path.mkdir(parents=True, exist_ok=True); return True
-        except Exception as e: logger.error(f"Error creating sandbox for Agent {self.agent_id}: {e}", exc_info=True); return False
+        try:
+            self.sandbox_path.mkdir(parents=True, exist_ok=True)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to create sandbox for Agent {self.agent_id}: {e}", exc_info=True)
+            return False
 
     async def process_message(self, history_override: Optional[List[MessageDict]] = None) -> AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]:
         history_to_use = history_override if history_override is not None else self.message_history

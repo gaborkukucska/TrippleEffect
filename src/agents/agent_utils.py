@@ -3,17 +3,10 @@
 import logging
 from typing import List, Optional, Dict, Any
 
-# Assuming ModelInfo and PerformanceTracker structures.
-# from src.config.model_registry import ModelInfo # If strictly typed
-# from src.agents.performance_tracker import PerformanceTracker # If strictly typed
-
 logger = logging.getLogger(__name__)
 
-# Define a type alias for enriched model info for clarity, if needed
-# EnrichedModelInfo = Dict[str, Any] # or a TypedDict if preferred
-
-DEFAULT_PERFORMANCE_SCORE = 0.0  # For models without performance data
-DEFAULT_NUM_PARAMETERS = 0       # For models without parameter data, treat as smallest
+DEFAULT_PERFORMANCE_SCORE = 0.0
+DEFAULT_NUM_PARAMETERS = 0
 
 def sort_models_by_size_performance_id(
     model_infos: List[Dict[str, Any]], # Expects list of ModelInfo-like dicts
@@ -43,14 +36,11 @@ def sort_models_by_size_performance_id(
     for model_info in model_infos:
         enriched_model = model_info.copy()
         
-        # Ensure 'id' and 'provider' are present, provide defaults if critical for sorting/lookup
         if 'id' not in enriched_model:
-            logger.warning(f"Model info missing 'id', skipping: {enriched_model}")
+            logger.warning(f"Model info is missing 'id', skipping: {enriched_model}")
             continue
         
         provider = enriched_model.get("provider", "unknown_provider_for_sort")
-
-        # Get performance score
         score = DEFAULT_PERFORMANCE_SCORE
         if performance_metrics and provider in performance_metrics:
             model_specific_metrics = performance_metrics[provider].get(enriched_model["id"])
@@ -58,28 +48,23 @@ def sort_models_by_size_performance_id(
                 score = model_specific_metrics["score"]
         enriched_model["performance_score"] = score
         
-        # Get num_parameters, ensure it's comparable
         num_params = enriched_model.get("num_parameters")
         if not isinstance(num_params, (int, float)) or num_params is None:
             num_params = DEFAULT_NUM_PARAMETERS 
-        enriched_model["num_parameters_sortable"] = num_params # Store sortable version
+        enriched_model["num_parameters_sortable"] = num_params
 
         enriched_models.append(enriched_model)
 
-    # Sort the models
-    # Primary: num_parameters (descending) - None/0 treated as smallest.
-    # Secondary: performance_score (descending) - DEFAULT_PERFORMANCE_SCORE treated as lowest.
-    # Tertiary: model ID (alphabetical ascending).
     def sort_key(model: Dict[str, Any]):
         return (
-            -model["num_parameters_sortable"], # Negative for descending
-            -model["performance_score"],       # Negative for descending
-            model["id"]                        # Ascending
+            -model["num_parameters_sortable"],
+            -model["performance_score"],
+            model["id"]
         )
 
     sorted_models = sorted(enriched_models, key=sort_key)
     
-    logger.debug(f"Sorted models ({len(sorted_models)}):")
+    logger.debug(f"Sorted {len(sorted_models)} models:")
     for m in sorted_models:
         logger.debug(f"  - ID: {m['id']}, Size: {m['num_parameters_sortable']}, Score: {m['performance_score']:.2f}, Provider: {m.get('provider')}")
         

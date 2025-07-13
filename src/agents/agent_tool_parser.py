@@ -29,12 +29,13 @@ def find_and_parse_xml_tool_calls(
     Returns a dictionary with 'valid_calls' and 'parsing_errors'.
     Uses ElementTree for more robust XML parsing.
     """
-    if not text_buffer: return {"valid_calls": [], "parsing_errors": []}
-    buffer_content_for_logging = text_buffer.strip() # For logging only
-    logger.debug(f"Agent {agent_id}: [PARSE_DEBUG] Checking stripped buffer for XML tool calls (Len: {len(buffer_content_for_logging)}):\n>>>\n{buffer_content_for_logging}\n<<<")
+    if not text_buffer:
+        return {"valid_calls": [], "parsing_errors": []}
+
+    logger.debug(f"Checking buffer for XML tool calls for agent {agent_id}.")
 
     found_calls_details: List[ValidCallTuple] = []
-    parsing_errors: List[ParsingErrorDict] = [] # Initialize parsing_errors list
+    parsing_errors: List[ParsingErrorDict] = []
     processed_spans = set()
 
     def is_overlapping(start, end, existing_spans):
@@ -124,17 +125,14 @@ def find_and_parse_xml_tool_calls(
         is_markdown = item["is_markdown"]
 
         if is_overlapping(match_span[0], match_span[1], processed_spans):
-            logger.debug(f"[PARSE_DEBUG] Skipping overlapping match at span {match_span} for candidate '{tool_name_candidate}'.")
             continue
 
         actual_tool_name = next((name for name in tools if name.lower() == tool_name_candidate), None)
         if not actual_tool_name:
-            logger.warning(f"[PARSE_DEBUG] Agent {agent_id}: Regex matched candidate <{tool_name_candidate}> but no such tool is registered. Skipping.")
-            # Optionally, this could also be a parsing error if strictness is desired
-            # For now, just skipping as it's not a malformed call for a *known* tool
+            logger.warning(f"Regex matched unknown tool candidate '{tool_name_candidate}' for agent {agent_id}. Skipping.")
             continue
 
-        logger.info(f"Agent {agent_id}: Detected call for tool '{actual_tool_name}' (candidate: '{tool_name_candidate}') at span {match_span} (Markdown: {is_markdown})")
+        logger.info(f"Detected tool call for '{actual_tool_name}' for agent {agent_id}.")
         
         parsed_args, error_detail = parse_isolated_xml_block(xml_block_to_parse, actual_tool_name)
 
@@ -148,33 +146,25 @@ def find_and_parse_xml_tool_calls(
                     missing_required_params.append(p_info_schema['name'])
 
             if missing_required_params:
-                logger.warning(f"Agent {agent_id}: Tool '{actual_tool_name}' call MISSING required parameter(s) defined in schema: {missing_required_params}. Tool execution will likely fail if these are truly needed by the tool's logic.")
+                logger.warning(f"Tool '{actual_tool_name}' call from agent {agent_id} is missing required parameters: {missing_required_params}.")
 
             found_calls_details.append((actual_tool_name, parsed_args, match_span))
             processed_spans.add(match_span)
         else:
-            # Error occurred in parse_isolated_xml_block
-            logger.warning(f"Agent {agent_id}: Failed to parse XML block for tool '{actual_tool_name}' at span {match_span}. Error: {error_detail}")
+            logger.warning(f"Failed to parse XML block for tool '{actual_tool_name}' for agent {agent_id}. Error: {error_detail}")
             parsing_errors.append({
                 "tool_name": actual_tool_name,
-                "error_message": error_detail or "Unknown parsing error from parse_isolated_xml_block",
-                "xml_block": xml_block_to_parse, # The original block attempted
+                "error_message": error_detail or "Unknown parsing error",
+                "xml_block": xml_block_to_parse,
                 "is_markdown": is_markdown,
                 "span": match_span
             })
-            # Note: We might still want to add the span to processed_spans if we decide one error per block is enough
-            # For now, if a block errors, it won't be added to processed_spans, meaning other interpretations of it (if any) could be tried.
-            # However, given the greedy nature of the regex, this is unlikely for typical tool calls.
-            # Consider adding to processed_spans here if we want to ensure an erroneous block isn't re-processed by a less specific regex:
             processed_spans.add(match_span)
 
-
-    if not found_calls_details and not parsing_errors:
-        logger.debug(f"Agent {agent_id}: [PARSE_DEBUG] No valid XML tool calls or parsing errors found in buffer after full processing.")
-    elif found_calls_details:
-        logger.info(f"Agent {agent_id}: Found {len(found_calls_details)} valid XML tool call(s) in buffer.")
+    if found_calls_details:
+        logger.info(f"Found {len(found_calls_details)} valid tool calls for agent {agent_id}.")
     if parsing_errors:
-         logger.info(f"Agent {agent_id}: Encountered {len(parsing_errors)} XML parsing error(s) in buffer.")
+         logger.warning(f"Encountered {len(parsing_errors)} XML parsing errors for agent {agent_id}.")
 
     return {"valid_calls": found_calls_details, "parsing_errors": parsing_errors}
 # END OF FILE src/agents/agent_tool_parser.py
