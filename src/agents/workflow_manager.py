@@ -331,9 +331,17 @@ class AgentWorkflowManager:
             workers_in_my_project = []
             for worker_agent in manager.agents.values():
                 if worker_agent.agent_type == AGENT_TYPE_WORKER:
+                    # *** FIX: Exclude bootstrap agents unless they have a specific project context ***
+                    # This prevents system-level agents (like constitutional_guardian_ai) from leaking
+                    # into a project's contact list just because they are 'worker' type.
+                    if worker_agent.agent_id in manager.bootstrap_agents:
+                        # A bootstrap agent is only part of a project if explicitly assigned.
+                        if 'project_name_context' not in worker_agent.agent_config.get('config', {}):
+                            continue # Skip this bootstrap agent as it's a general system agent
+
                     worker_project_name = self._get_agent_project_name(worker_agent, manager)
                     if worker_project_name == agent_project_name:
-                        if worker_agent not in workers_in_my_project: 
+                        if worker_agent not in workers_in_my_project:
                             workers_in_my_project.append(worker_agent)
             unique_workers = list({w.agent_id: w for w in workers_in_my_project}.values()) 
             if unique_workers:
