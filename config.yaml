@@ -27,13 +27,13 @@ agents:
       agent_type: "admin" # Explicitly set agent type
       temperature: 0.6 # Balanced temperature for planning and control
       persona: "Admin AI (@admin_ai)" # Display name
-      provider: "openrouter" # Provider name
-      model: "meta-llama/llama-4-maverick:free" # Model name
+      # provider: "openrouter" # Provider name
+      # model: "meta-llama/llama-4-maverick:free" # Model name
       # model: "google/gemini-flash-1.5:free"
       # model: "google/gemma-3-27b-it:free"
       # You can also specify local models!
-      # provider: "ollama" # Set the provider
-      # model: "granite3.3:2b"
+      provider: "ollama" # Set the provider
+      model: "gemma3:4b-it-q4_K_M"
       # model: "ollama/llama3.2:3b-instruct-q4_K_M" # Make sure the selected local model is available on a local API
 
   - agent_id: "constitutional_guardian_ai" # The central constitutional guardian agent
@@ -42,12 +42,13 @@ agents:
       agent_type: "worker" # Classified as a worker, but is a system-level agent
       temperature: 0.1
       persona: "Constitutional Guardian (@cg_agent)" # Display name
-      provider: "openrouter" # Provider name
-      model: "meta-llama/llama-4-maverick:free" # Model name
+      # provider: "openrouter" # Provider name
+      # model: "meta-llama/llama-4-maverick:free" # Model name
       # model: "google/gemini-flash-1.5:free"
       # model: "google/gemma-3-27b-it:free"
       # You can also specify local models!
-      # provider: "ollama" # Set the provider
+      provider: "ollama" # Set the provider
+      model: "gemma3:4b-it-q4_K_M"
       # model: "granite3.3:2b"
       # model: "ollama/llama3.2:3b-instruct-q4_K_M" # Make sure the selected local model is available on a local API
 
@@ -57,12 +58,13 @@ agents:
       agent_type: "worker" # A specialized worker agent
       temperature: 0.3
       persona: "Vision Processor (@vision_agent)" # Display name
-      provider: "openrouter" # Provider name
-      model: "google/gemma-3-27b-it:free" # Model name
+      # provider: "openrouter" # Provider name
+      # model: "google/gemma-3-27b-it:free" # Model name
       # model: "google/gemini-flash-1.5:free"
       # model: "meta-llama/llama-4-maverick:free"
       # You can also specify local models!
-      # provider: "ollama" # Set the provider
+      provider: "ollama" # Set the provider
+      model: "gemma3:4b-it-q4_K_M"
       # model: "ollama/llama3.2:3b-instruct-q4_K_M" # Make sure the selected local model is available on a local API
 
   - agent_id: "project_manager_agent"
@@ -71,12 +73,13 @@ agents:
       agent_type: "pm" # Explicitly set agent type
       temperature: 0.6
       persona: "Project Manager (@pm_agent)"
-      provider: "openrouter" # Provider name
-      model: "meta-llama/llama-4-maverick:free" # Model name
+      # provider: "openrouter" # Provider name
+      # model: "meta-llama/llama-4-maverick:free" # Model name
       # model: "google/gemini-flash-1.5:free"
       # model: "google/gemma-3-27b-it:free"
       # You can also specify local models!
-      # provider: "ollama" # Set the provider
+      provider: "ollama" # Set the provider
+      model: "gemma3:4b-it-q4_K_M"
       # model: "granite3.3:2b"
       # model: "ollama/llama3.2:3b-instruct-q4_K_M" # Make sure the selected local model is available on a local API
 
