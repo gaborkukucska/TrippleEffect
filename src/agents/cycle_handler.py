@@ -413,7 +413,7 @@ class AgentCycleHandler:
                                 agent.successfully_created_agent_count_for_build += 1
 
                                 # Get up-to-date team information
-                                team_id = called_tool_args.get("team_id")
+                                team_id = self._manager.state_manager.get_agent_team(agent.agent_id)
                                 current_worker_agents = []
                                 if team_id:
                                     # We get the Agent objects and filter for workers, then get their IDs
