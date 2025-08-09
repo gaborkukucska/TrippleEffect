@@ -113,10 +113,19 @@ class AgentWorkflowManager:
             if current_state != requested_state:
                 logger.info(f"WorkflowManager: Changing state for agent '{agent.agent_id}' ({agent.agent_type}) from '{current_state}' to '{requested_state}'.")
                 agent.state = requested_state
-                if agent.agent_type == AGENT_TYPE_PM and requested_state == PM_STATE_MANAGE:
-                    agent._pm_needs_initial_list_tools = True
-                elif hasattr(agent, '_pm_needs_initial_list_tools'): 
-                    agent._pm_needs_initial_list_tools = False
+
+                # PM State-specific logic
+                if agent.agent_type == AGENT_TYPE_PM:
+                    if requested_state == PM_STATE_MANAGE:
+                        agent._pm_needs_initial_list_tools = True
+                    elif hasattr(agent, '_pm_needs_initial_list_tools'):
+                        agent._pm_needs_initial_list_tools = False
+
+                    # Per user request, clear history when entering activate_workers state
+                    if requested_state == PM_STATE_ACTIVATE_WORKERS:
+                        agent.clear_history()
+                        logger.info(f"WorkflowManager: Cleared history for PM agent '{agent.agent_id}' upon entering state '{requested_state}'.")
+
                 if hasattr(agent, 'manager') and hasattr(agent.manager, 'send_to_ui'):
                     asyncio.create_task(agent.manager.send_to_ui({
                         "type": "agent_state_change", "agent_id": agent.agent_id,
