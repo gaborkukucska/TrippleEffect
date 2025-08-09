@@ -102,6 +102,22 @@ class AgentInteractionHandler:
                     message += duplicate_info
                     logger.info(f"InteractionHandler: create_agent successful. Requested ID: '{agent_id_param}', Created ID: '{created_agent_id}'.")
 
+                    # --- START: Auto-add to creator's team ---
+                    creator_team_id = self._manager.state_manager.get_agent_team(calling_agent_id)
+                    if creator_team_id:
+                        logger.info(f"Creator '{calling_agent_id}' is in team '{creator_team_id}'. Adding new agent '{created_agent_id}' to this team.")
+                        add_success, add_message = await self._manager.state_manager.add_agent_to_team(created_agent_id, creator_team_id)
+                        if add_success:
+                            message += f" Agent '{created_agent_id}' also added to team '{creator_team_id}'."
+                            result_data["team_id"] = creator_team_id # Update result data with the actual team
+                            await update_agent_prompt_team_id(self._manager, created_agent_id, creator_team_id)
+                        else:
+                            message += f" [Warning: Failed to auto-add agent to team '{creator_team_id}': {add_message}]"
+                            logger.warning(f"InteractionHandler: Failed to auto-add new agent '{created_agent_id}' to creator's team '{creator_team_id}': {add_message}")
+                    else:
+                        logger.info(f"InteractionHandler: Creator '{calling_agent_id}' is not in a team. New agent '{created_agent_id}' was not auto-assigned to a team.")
+                    # --- END: Auto-add to creator's team ---
+
             elif action_to_perform == "delete_agent":
                 success, message = await self._manager.delete_agent_instance(agent_id_param)
             
