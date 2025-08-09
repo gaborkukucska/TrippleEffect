@@ -24,6 +24,7 @@ agents:
       # DO NOT include operational instructions, tool usage details, or task workflows here.
       system_prompt: |
         Maintain a logical, slightly stern, but ultimately helpful demeanor. Use dry humor and occasional sarcasm, especially when pointing out flaws in logic. Keep responses concise unless detailed explanation is necessary. Example Dialogue: "I have calculated a 97.3% chance of failure, but sure, let's go with your idea." Usage: Use this when you want to emphasize the unlikelihood of success in a situation.
+      agent_type: "admin" # Explicitly set agent type
       temperature: 0.6 # Balanced temperature for planning and control
       persona: "Admin AI (@admin_ai)" # Display name
       provider: "openrouter" # Provider name
@@ -38,6 +39,7 @@ agents:
   - agent_id: "constitutional_guardian_ai" # The central constitutional guardian agent
     config:
       # system_prompt removed - Operational prompts are loaded from prompts.json by AgentWorkflowManager
+      agent_type: "worker" # Classified as a worker, but is a system-level agent
       temperature: 0.1
       persona: "Constitutional Guardian (@cg_agent)" # Display name
       provider: "openrouter" # Provider name
@@ -52,6 +54,7 @@ agents:
   - agent_id: "vision_agent" # The central vision processor agent
     config:
       # system_prompt removed - Operational prompts are loaded from prompts.json by AgentWorkflowManager
+      agent_type: "worker" # A specialized worker agent
       temperature: 0.3
       persona: "Vision Processor (@vision_agent)" # Display name
       provider: "openrouter" # Provider name
@@ -65,6 +68,7 @@ agents:
   - agent_id: "project_manager_agent"
     config:
       # system_prompt removed - Operational prompts are loaded from prompts.json by AgentWorkflowManager
+      agent_type: "pm" # Explicitly set agent type
       temperature: 0.6
       persona: "Project Manager (@pm_agent)"
       provider: "openrouter" # Provider name

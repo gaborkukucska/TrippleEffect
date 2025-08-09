@@ -22,7 +22,9 @@ class TestAgentCycleHandlerMultiTool(unittest.TestCase):
         self.manager_mock = MagicMock(spec=AgentManager)
         self.manager_mock.db_manager = AsyncMock()
         self.manager_mock.performance_tracker = AsyncMock()
-        self.manager_mock.workflow_manager = MagicMock() # WorkflowManager might not need to be async
+        self.manager_mock.workflow_manager = MagicMock()
+        # CRITICAL FIX: Mock the return value of get_system_prompt to be a string
+        self.manager_mock.workflow_manager.get_system_prompt.return_value = "Mock system prompt"
         self.manager_mock.settings = MagicMock(spec=Settings) # Settings for CycleContext
         self.manager_mock.settings.MAX_STREAM_RETRIES = 1 # Simplify retry logic for tests
         self.manager_mock.settings.RETRY_DELAY_SECONDS = 0.01
@@ -38,8 +40,12 @@ class TestAgentCycleHandlerMultiTool(unittest.TestCase):
         self.agent_mock.provider_name = "mock_provider"
         self.agent_mock.model = "mock_model"
         self.agent_mock.message_history = []
-        self.agent_mock.process_message = AsyncMock() # This will yield events
+        # Corrected: process_message is a sync function returning an async generator, so use MagicMock.
+        self.agent_mock.process_message = MagicMock() # This will yield events
         self.agent_mock.set_status = MagicMock() # To observe status changes
+        # Add status and state attributes to the mock to prevent AttributeErrors from logging
+        self.agent_mock.status = AGENT_STATUS_IDLE
+        self.agent_mock.state = "test_state"
         # Initialize _failover_state if any error path in CycleHandler might access it
         self.agent_mock._failover_state = {} 
         self.agent_mock._failed_models_this_cycle = set()

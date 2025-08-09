@@ -811,9 +811,19 @@ async def _create_agent_internal(
         **api_call_options,
     }
     from src.agents.constants import AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER
-    agent_type = AGENT_TYPE_WORKER
-    if agent_id == BOOTSTRAP_AGENT_ID: agent_type = AGENT_TYPE_ADMIN
-    elif agent_id.startswith("pm_"): agent_type = AGENT_TYPE_PM
+    # Improved agent type determination:
+    # 1. Check if agent_type is explicitly provided in the config.
+    # 2. If not, fallback to heuristic based on agent_id.
+    if 'agent_type' in agent_config_data and agent_config_data['agent_type']:
+        agent_type = agent_config_data['agent_type']
+        logger.info(f"Lifecycle: Using explicitly defined agent_type '{agent_type}' for agent '{agent_id}'.")
+    else:
+        logger.debug(f"Lifecycle: agent_type not in config for '{agent_id}'. Using heuristic.")
+        agent_type = AGENT_TYPE_WORKER # Default
+        if agent_id == BOOTSTRAP_AGENT_ID:
+            agent_type = AGENT_TYPE_ADMIN
+        elif agent_id.startswith("pm_"):
+            agent_type = AGENT_TYPE_PM
     final_config_for_agent_object["agent_type"] = agent_type
 
     if 'initial_plan_description' in agent_config_data:
