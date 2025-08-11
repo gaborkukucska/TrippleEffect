@@ -421,31 +421,34 @@ class AgentCycleHandler:
                                     current_worker_agents = [a.agent_id for a in all_agents_in_team if a.agent_type == AGENT_TYPE_WORKER]
 
                                 created_count = len(current_worker_agents) # Use the actual count from the state manager
-                                total_kickoff_tasks = agent.kick_off_task_count_for_build if agent.kick_off_task_count_for_build is not None else -1
+                                # *** FIX: Corrected variable name from kick_off_task_count_for_build to target_worker_agents_for_build ***
+                                target_workers = getattr(agent, 'target_worker_agents_for_build', -1)
                                 max_workers_allowed = settings.MAX_WORKERS_PER_PM
 
                                 # Construct the context block for the message
                                 team_status_context = (
-                                    f"  - Target Worker Agents: {total_kickoff_tasks if total_kickoff_tasks != -1 else 'Not specified, max allowed: ' + str(max_workers_allowed)}\n"
+                                    f"  - Target Worker Agents: {target_workers if target_workers != -1 else 'Not specified, max allowed: ' + str(max_workers_allowed)}\n"
                                     f"  - Worker Agents Created So Far: {created_count}\n"
                                     f"  - Current Worker Agent IDs in Team: {current_worker_agents if current_worker_agents else 'None'}"
                                 )
 
                                 # Determine the next action based on the counts
                                 proceed_to_next_step = False
-                                if total_kickoff_tasks != -1:
-                                    # Logic based on the number of initial tasks
-                                    if created_count >= total_kickoff_tasks:
+                                reason = ""
+                                if target_workers != -1:
+                                    # Primary logic: Compare created agents to the target number from the kickoff plan
+                                    if created_count >= target_workers:
                                         proceed_to_next_step = True
-                                        reason = f"you have created all {total_kickoff_tasks} planned worker agents."
+                                        reason = f"you have created all {target_workers} planned worker agents."
                                     elif created_count >= max_workers_allowed:
                                         proceed_to_next_step = True
                                         reason = f"you have reached the maximum allowed limit of {max_workers_allowed} worker agents."
                                 else:
-                                    # Fallback logic if kick-off task count is missing
+                                    # Fallback logic if target_worker_agents_for_build is somehow not set
+                                    logger.warning(f"CycleHandler: PM '{agent.agent_id}' in build state but 'target_worker_agents_for_build' is not set. Using max_workers fallback logic.")
                                     if created_count >= max_workers_allowed:
                                         proceed_to_next_step = True
-                                        reason = f"you have reached the maximum allowed limit of {max_workers_allowed} worker agents."
+                                        reason = f"the target number of agents was not specified, and you have reached the maximum allowed limit of {max_workers_allowed} worker agents."
 
                                 if proceed_to_next_step:
                                     directive_message_content = (
