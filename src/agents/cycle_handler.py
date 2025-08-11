@@ -479,6 +479,41 @@ class AgentCycleHandler:
                                     )
                         # --- END: PM Build Team Tasks State Interventions ---
 
+                        # --- START: PM Activate Workers State Interventions ---
+                        elif agent.agent_type == AGENT_TYPE_PM and \
+                             agent.state == PM_STATE_ACTIVATE_WORKERS and \
+                             any_tool_success and \
+                             tool_calls and len(tool_calls) == 1:
+
+                            called_tool_name = tool_calls[0].get("name")
+                            directive_message_content = None
+
+                            if called_tool_name == "project_management":
+                                # This covers both list_tasks and modify_task (assigning)
+                                directive_message_content = (
+                                    "[Framework System Message]: Action processed. "
+                                    "Your previous action was successful. Please review the updated information and proceed with the next step in your activation workflow. "
+                                    "If you have the task and agent lists, assign the next task. If all tasks are assigned, report completion to Admin AI."
+                                )
+                            elif called_tool_name == "manage_team" and tool_calls[0].get("arguments", {}).get("action") == "list_agents":
+                                directive_message_content = (
+                                    "[Framework System Message]: You now have the list of available agents. "
+                                    "Please review the task list and agent list in your history and proceed with assigning the first unassigned kick-off task to a suitable worker."
+                                )
+
+                            if directive_message_content:
+                                logger.info(f"CycleHandler: PM '{agent.agent_id}' in '{agent.state}', after tool '{called_tool_name}', injecting directive: {directive_message_content[:100]}...")
+                                directive_msg: MessageDict = {"role": "system", "content": directive_message_content}
+                                agent.message_history.append(directive_msg)
+                                if context.current_db_session_id:
+                                    await self._manager.db_manager.log_interaction(
+                                        session_id=context.current_db_session_id,
+                                        agent_id=agent.agent_id,
+                                        role="system_intervention",
+                                        content=directive_message_content
+                                    )
+                        # --- END: PM Activate Workers State Interventions ---
+
                         llm_stream_ended_cleanly = False; break
 
                     elif event_type in ["response_chunk", "status", "final_response", "invalid_state_request_output"]:
