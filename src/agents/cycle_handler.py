@@ -486,16 +486,32 @@ class AgentCycleHandler:
                              tool_calls and len(tool_calls) == 1:
 
                             called_tool_name = tool_calls[0].get("name")
+                            called_tool_args = tool_calls[0].get("arguments", {})
                             directive_message_content = None
 
                             if called_tool_name == "project_management":
-                                # This covers both list_tasks and modify_task (assigning)
-                                directive_message_content = (
-                                    "[Framework System Message]: Action processed. "
-                                    "Your previous action was successful. Please review the updated information and proceed with the next step in your activation workflow. "
-                                    "If you have the task and agent lists, assign the next task. If all tasks are assigned, report completion to Admin AI."
-                                )
-                            elif called_tool_name == "manage_team" and tool_calls[0].get("arguments", {}).get("action") == "list_agents":
+                                last_tool_result_content = all_tool_results_for_history[0].get("content", "{}")
+                                try:
+                                    tool_result_json = json.loads(last_tool_result_content)
+                                    tool_status = tool_result_json.get("status")
+                                except json.JSONDecodeError:
+                                    tool_status = "error" # Treat unparsable content as an error
+
+                                if tool_status == "error":
+                                    error_message = tool_result_json.get("message", "An unspecified error occurred.")
+                                    directive_message_content = (
+                                        f"[Framework Feedback: Tool Error]\nYour last action resulted in an error: '{error_message}'.\n"
+                                        "Please review the error and your previous steps. Ensure you are using the correct information, such as valid UUIDs for tasks from the `list_tasks` results. "
+                                        "Do not invent placeholder IDs. Correct your approach and try again."
+                                    )
+                                else: # Success
+                                    directive_message_content = (
+                                        "[Framework System Message]: Action processed. "
+                                        "Your previous action was successful. Please review the updated information and proceed with the next step in your activation workflow. "
+                                        "If you have the task and agent lists, assign the next task. If all tasks are assigned, report completion to Admin AI."
+                                    )
+
+                            elif called_tool_name == "manage_team" and called_tool_args.get("action") == "list_agents":
                                 directive_message_content = (
                                     "[Framework System Message]: You now have the list of available agents. "
                                     "Please review the task list and agent list in your history and proceed with assigning the first unassigned kick-off task to a suitable worker."
