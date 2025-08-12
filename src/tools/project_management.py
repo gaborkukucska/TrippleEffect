@@ -281,9 +281,11 @@ uda.assignee.label=Assignee
                         if assignee_val != assignee_filter:
                             continue # Skip this task if it doesn't match the assignee filter
 
+                    description_text = task_obj['description']
+                    truncated_description = (description_text[:75] + '...') if len(description_text) > 75 else description_text
                     minimal_task_list.append({
                         "uuid": task_obj['uuid'],
-                        "description": task_obj['description']
+                        "description": truncated_description
                     })
                     logger.debug(f"Task {task_obj['id']} added to minimal list: uuid={task_obj['uuid']}, desc='{task_obj['description'][:50]}...'")
 

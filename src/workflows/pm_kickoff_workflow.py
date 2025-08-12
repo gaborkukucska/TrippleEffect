@@ -157,8 +157,9 @@ class PMKickoffWorkflow(BaseWorkflow):
             # Store the identified roles and tasks on the agent for the next state
             agent.kick_off_roles = role_names
             agent.kick_off_tasks = task_descriptions
+            agent.target_worker_agents_for_build = len(role_names)  # *** FIX: Set the target number of agents to build ***
             agent.successfully_created_agent_count_for_build = 0 # Reset counter
-            logger.info(f"PMKickoffWorkflow: Stored {len(role_names)} roles and {len(task_descriptions)} tasks on agent '{agent.agent_id}'.")
+            logger.info(f"PMKickoffWorkflow: Stored {len(role_names)} roles, {len(task_descriptions)} tasks, and set target agent count to {len(role_names)} on agent '{agent.agent_id}'.")
 
             # --- BEGIN MODIFICATION: Mark initial Admin AI task as done ---
             logger.info(f"PMKickoffWorkflow: Attempting to find and complete the initial project plan task for project '{project_context}' assigned to PM '{agent.agent_id}'.")

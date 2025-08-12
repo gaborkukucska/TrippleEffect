@@ -407,7 +407,7 @@ class AgentCycleHandler:
                                 agent.successfully_created_agent_count_for_build += 1
 
                                 # Get up-to-date team information
-                                team_id = called_tool_args.get("team_id")
+                                team_id = self._manager.state_manager.get_agent_team(agent.agent_id)
                                 current_worker_agents = []
                                 if team_id:
                                     # We get the Agent objects and filter for workers, then get their IDs
@@ -415,31 +415,34 @@ class AgentCycleHandler:
                                     current_worker_agents = [a.agent_id for a in all_agents_in_team if a.agent_type == AGENT_TYPE_WORKER]
 
                                 created_count = len(current_worker_agents) # Use the actual count from the state manager
-                                total_kickoff_tasks = agent.kick_off_task_count_for_build if agent.kick_off_task_count_for_build is not None else -1
+                                # *** FIX: Corrected variable name from kick_off_task_count_for_build to target_worker_agents_for_build ***
+                                target_workers = getattr(agent, 'target_worker_agents_for_build', -1)
                                 max_workers_allowed = settings.MAX_WORKERS_PER_PM
 
                                 # Construct the context block for the message
                                 team_status_context = (
-                                    f"  - Target Worker Agents: {total_kickoff_tasks if total_kickoff_tasks != -1 else 'Not specified, max allowed: ' + str(max_workers_allowed)}\n"
+                                    f"  - Target Worker Agents: {target_workers if target_workers != -1 else 'Not specified, max allowed: ' + str(max_workers_allowed)}\n"
                                     f"  - Worker Agents Created So Far: {created_count}\n"
                                     f"  - Current Worker Agent IDs in Team: {current_worker_agents if current_worker_agents else 'None'}"
                                 )
 
                                 # Determine the next action based on the counts
                                 proceed_to_next_step = False
-                                if total_kickoff_tasks != -1:
-                                    # Logic based on the number of initial tasks
-                                    if created_count >= total_kickoff_tasks:
+                                reason = ""
+                                if target_workers != -1:
+                                    # Primary logic: Compare created agents to the target number from the kickoff plan
+                                    if created_count >= target_workers:
                                         proceed_to_next_step = True
-                                        reason = f"you have created all {total_kickoff_tasks} planned worker agents."
+                                        reason = f"you have created all {target_workers} planned worker agents."
                                     elif created_count >= max_workers_allowed:
                                         proceed_to_next_step = True
                                         reason = f"you have reached the maximum allowed limit of {max_workers_allowed} worker agents."
                                 else:
-                                    # Fallback logic if kick-off task count is missing
+                                    # Fallback logic if target_worker_agents_for_build is somehow not set
+                                    logger.warning(f"CycleHandler: PM '{agent.agent_id}' in build state but 'target_worker_agents_for_build' is not set. Using max_workers fallback logic.")
                                     if created_count >= max_workers_allowed:
                                         proceed_to_next_step = True
-                                        reason = f"you have reached the maximum allowed limit of {max_workers_allowed} worker agents."
+                                        reason = f"the target number of agents was not specified, and you have reached the maximum allowed limit of {max_workers_allowed} worker agents."
 
                                 if proceed_to_next_step:
                                     directive_message_content = (
@@ -475,6 +478,108 @@ class AgentCycleHandler:
                                         content=directive_message_content
                                     )
                         # --- END: PM Build Team Tasks State Interventions ---
+
+                        # --- START: PM Activate Workers State Interventions ---
+                        elif agent.agent_type == AGENT_TYPE_PM and \
+                             agent.state == PM_STATE_ACTIVATE_WORKERS and \
+                             any_tool_success and \
+                             tool_calls and len(tool_calls) == 1:
+
+                            called_tool_name = tool_calls[0].get("name")
+                            called_tool_args = tool_calls[0].get("arguments", {})
+                            directive_message_content = None
+
+                            if called_tool_name == "project_management":
+                                last_tool_result_content = all_tool_results_for_history[0].get("content", "{}")
+                                try:
+                                    tool_result_json = json.loads(last_tool_result_content)
+                                    tool_status = tool_result_json.get("status")
+                                except json.JSONDecodeError:
+                                    tool_status = "error"
+                                    tool_result_json = {}
+
+                                if tool_status == "error":
+                                    error_message = tool_result_json.get("message", "An unspecified error occurred.")
+                                    directive_message_content = (
+                                        f"[Framework Feedback: Tool Error]\nYour last action resulted in an error: '{error_message}'.\n"
+                                        "Please review the error and your previous steps. Ensure you are using the correct information, such as valid UUIDs for tasks from the `list_tasks` results. "
+                                        "Do not invent placeholder IDs. Correct your approach and try again."
+                                    )
+                                else: # Success
+                                    action_performed = called_tool_args.get("action")
+                                    if action_performed == "list_tasks":
+                                        tasks = tool_result_json.get("tasks", [])
+                                        task_summary_lines = []
+                                        agent.unassigned_tasks_summary = [] # Clear previous summary
+                                        for task in tasks:
+                                            uuid = task.get("uuid")
+                                            desc = task.get("description", "No description").strip().replace('\n', ' ')
+                                            truncated_desc = (desc[:75] + '...') if len(desc) > 75 else desc
+                                            if uuid:
+                                                task_summary_lines.append(f"- {truncated_desc} (UUID: {uuid})")
+                                                agent.unassigned_tasks_summary.append({"uuid": uuid, "description": desc})
+
+                                        summary_str = "\n".join(task_summary_lines) if task_summary_lines else "No unassigned tasks found."
+                                        directive_message_content = (
+                                            f"[Framework System Message]: Task list retrieved successfully. Here is a summary of the unassigned tasks:\n"
+                                            f"{summary_str}\n\n"
+                                            "Your mandatory next action is to get the list of available agents using the `<manage_team><action>list_agents</action>...</manage_team>` tool."
+                                        )
+                                    elif action_performed == "modify_task":
+                                        assigned_task_uuid = called_tool_args.get("task_id")
+                                        if hasattr(agent, 'unassigned_tasks_summary') and isinstance(agent.unassigned_tasks_summary, list) and assigned_task_uuid:
+                                            # Remove the assigned task from our summary
+                                            agent.unassigned_tasks_summary = [t for t in agent.unassigned_tasks_summary if t.get("uuid") != assigned_task_uuid]
+
+                                        # Now, generate a new summary of remaining tasks
+                                        remaining_tasks = getattr(agent, 'unassigned_tasks_summary', [])
+                                        if not remaining_tasks:
+                                            directive_message_content = (
+                                                "[Framework System Message]: Last task assignment processed successfully. All kick-off tasks have now been assigned.\n\n"
+                                                "Your MANDATORY next action is to proceed to Step 5: Report completion to the Admin AI."
+                                            )
+                                        else:
+                                            task_summary_lines = []
+                                            for task_info in remaining_tasks:
+                                                desc = task_info.get("description", "No description")
+                                                uuid = task_info.get("uuid")
+                                                truncated_desc = (desc[:75] + '...') if len(desc) > 75 else desc
+                                                task_summary_lines.append(f"- {truncated_desc} (UUID: {uuid})")
+                                            summary_str = "\n".join(task_summary_lines)
+                                            directive_message_content = (
+                                                f"[Framework System Message]: Task assignment processed successfully. Here are the remaining unassigned tasks:\n"
+                                                f"{summary_str}\n\n"
+                                                "Your mandatory next action is to assign the next task from this list to a suitable agent."
+                                            )
+                            elif called_tool_name == "manage_team" and called_tool_args.get("action") == "list_agents":
+                                # This intervention is now more intelligent. It re-presents the simplified task list.
+                                task_summary_lines = []
+                                if hasattr(agent, 'unassigned_tasks_summary') and agent.unassigned_tasks_summary:
+                                    for task_info in agent.unassigned_tasks_summary:
+                                        desc = task_info.get("description", "No description")
+                                        uuid = task_info.get("uuid")
+                                        truncated_desc = (desc[:75] + '...') if len(desc) > 75 else desc
+                                        task_summary_lines.append(f"- {truncated_desc} (UUID: {uuid})")
+
+                                summary_str = "\n".join(task_summary_lines) if task_summary_lines else "No unassigned tasks found in summary. Please re-list tasks if needed."
+                                directive_message_content = (
+                                    "[Framework System Message]: You now have the list of available agents. For your convenience, here is the summary of unassigned tasks you previously retrieved:\n"
+                                    f"{summary_str}\n\n"
+                                    "Your mandatory next action is to assign the first task from this list to a suitable agent using its correct UUID."
+                                )
+
+                            if directive_message_content:
+                                logger.info(f"CycleHandler: PM '{agent.agent_id}' in '{agent.state}', after tool '{called_tool_name}', injecting directive: {directive_message_content[:100]}...")
+                                directive_msg: MessageDict = {"role": "system", "content": directive_message_content}
+                                agent.message_history.append(directive_msg)
+                                if context.current_db_session_id:
+                                    await self._manager.db_manager.log_interaction(
+                                        session_id=context.current_db_session_id,
+                                        agent_id=agent.agent_id,
+                                        role="system_intervention",
+                                        content=directive_message_content
+                                    )
+                        # --- END: PM Activate Workers State Interventions ---
 
                         llm_stream_ended_cleanly = False; break
 
