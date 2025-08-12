@@ -525,11 +525,32 @@ class AgentCycleHandler:
                                             f"{summary_str}\n\n"
                                             "Your mandatory next action is to get the list of available agents using the `<manage_team><action>list_agents</action>...</manage_team>` tool."
                                         )
-                                    else: # For other successful project_management actions like modify_task
-                                        directive_message_content = (
-                                            "[Framework System Message]: Task assignment processed successfully. "
-                                            "Please review your task and agent lists and proceed with assigning the next task, or report completion if all tasks are assigned."
-                                        )
+                                    elif action_performed == "modify_task":
+                                        assigned_task_uuid = called_tool_args.get("task_id")
+                                        if hasattr(agent, 'unassigned_tasks_summary') and isinstance(agent.unassigned_tasks_summary, list) and assigned_task_uuid:
+                                            # Remove the assigned task from our summary
+                                            agent.unassigned_tasks_summary = [t for t in agent.unassigned_tasks_summary if t.get("uuid") != assigned_task_uuid]
+
+                                        # Now, generate a new summary of remaining tasks
+                                        remaining_tasks = getattr(agent, 'unassigned_tasks_summary', [])
+                                        if not remaining_tasks:
+                                            directive_message_content = (
+                                                "[Framework System Message]: Last task assignment processed successfully. All kick-off tasks have now been assigned.\n\n"
+                                                "Your MANDATORY next action is to proceed to Step 5: Report completion to the Admin AI."
+                                            )
+                                        else:
+                                            task_summary_lines = []
+                                            for task_info in remaining_tasks:
+                                                desc = task_info.get("description", "No description")
+                                                uuid = task_info.get("uuid")
+                                                truncated_desc = (desc[:75] + '...') if len(desc) > 75 else desc
+                                                task_summary_lines.append(f"- {truncated_desc} (UUID: {uuid})")
+                                            summary_str = "\n".join(task_summary_lines)
+                                            directive_message_content = (
+                                                f"[Framework System Message]: Task assignment processed successfully. Here are the remaining unassigned tasks:\n"
+                                                f"{summary_str}\n\n"
+                                                "Your mandatory next action is to assign the next task from this list to a suitable agent."
+                                            )
                             elif called_tool_name == "manage_team" and called_tool_args.get("action") == "list_agents":
                                 # This intervention is now more intelligent. It re-presents the simplified task list.
                                 task_summary_lines = []
