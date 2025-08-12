@@ -531,9 +531,20 @@ class AgentCycleHandler:
                                             "Please review your task and agent lists and proceed with assigning the next task, or report completion if all tasks are assigned."
                                         )
                             elif called_tool_name == "manage_team" and called_tool_args.get("action") == "list_agents":
+                                # This intervention is now more intelligent. It re-presents the simplified task list.
+                                task_summary_lines = []
+                                if hasattr(agent, 'unassigned_tasks_summary') and agent.unassigned_tasks_summary:
+                                    for task_info in agent.unassigned_tasks_summary:
+                                        desc = task_info.get("description", "No description")
+                                        uuid = task_info.get("uuid")
+                                        truncated_desc = (desc[:75] + '...') if len(desc) > 75 else desc
+                                        task_summary_lines.append(f"- {truncated_desc} (UUID: {uuid})")
+
+                                summary_str = "\n".join(task_summary_lines) if task_summary_lines else "No unassigned tasks found in summary. Please re-list tasks if needed."
                                 directive_message_content = (
-                                    "[Framework System Message]: You now have the list of available agents. "
-                                    "Please review the task list and agent list in your history and proceed with assigning the first unassigned kick-off task to a suitable worker."
+                                    "[Framework System Message]: You now have the list of available agents. For your convenience, here is the summary of unassigned tasks you previously retrieved:\n"
+                                    f"{summary_str}\n\n"
+                                    "Your mandatory next action is to assign the first task from this list to a suitable agent using its correct UUID."
                                 )
 
                             if directive_message_content:
