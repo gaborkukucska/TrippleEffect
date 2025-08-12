@@ -495,7 +495,8 @@ class AgentCycleHandler:
                                     tool_result_json = json.loads(last_tool_result_content)
                                     tool_status = tool_result_json.get("status")
                                 except json.JSONDecodeError:
-                                    tool_status = "error" # Treat unparsable content as an error
+                                    tool_status = "error"
+                                    tool_result_json = {}
 
                                 if tool_status == "error":
                                     error_message = tool_result_json.get("message", "An unspecified error occurred.")
@@ -505,12 +506,30 @@ class AgentCycleHandler:
                                         "Do not invent placeholder IDs. Correct your approach and try again."
                                     )
                                 else: # Success
-                                    directive_message_content = (
-                                        "[Framework System Message]: Action processed. "
-                                        "Your previous action was successful. Please review the updated information and proceed with the next step in your activation workflow. "
-                                        "If you have the task and agent lists, assign the next task. If all tasks are assigned, report completion to Admin AI."
-                                    )
+                                    action_performed = called_tool_args.get("action")
+                                    if action_performed == "list_tasks":
+                                        tasks = tool_result_json.get("tasks", [])
+                                        task_summary_lines = []
+                                        agent.unassigned_tasks_summary = [] # Clear previous summary
+                                        for task in tasks:
+                                            uuid = task.get("uuid")
+                                            desc = task.get("description", "No description").strip().replace('\n', ' ')
+                                            truncated_desc = (desc[:75] + '...') if len(desc) > 75 else desc
+                                            if uuid:
+                                                task_summary_lines.append(f"- {truncated_desc} (UUID: {uuid})")
+                                                agent.unassigned_tasks_summary.append({"uuid": uuid, "description": desc})
 
+                                        summary_str = "\n".join(task_summary_lines) if task_summary_lines else "No unassigned tasks found."
+                                        directive_message_content = (
+                                            f"[Framework System Message]: Task list retrieved successfully. Here is a summary of the unassigned tasks:\n"
+                                            f"{summary_str}\n\n"
+                                            "Your mandatory next action is to get the list of available agents using the `<manage_team><action>list_agents</action>...</manage_team>` tool."
+                                        )
+                                    else: # For other successful project_management actions like modify_task
+                                        directive_message_content = (
+                                            "[Framework System Message]: Task assignment processed successfully. "
+                                            "Please review your task and agent lists and proceed with assigning the next task, or report completion if all tasks are assigned."
+                                        )
                             elif called_tool_name == "manage_team" and called_tool_args.get("action") == "list_agents":
                                 directive_message_content = (
                                     "[Framework System Message]: You now have the list of available agents. "
