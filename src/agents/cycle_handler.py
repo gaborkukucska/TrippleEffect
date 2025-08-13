@@ -374,6 +374,17 @@ class AgentCycleHandler:
                         for res_hist_item in all_tool_results_for_history: agent.message_history.append(res_hist_item)
                         context.executed_tool_successfully_this_cycle = any_tool_success; context.needs_reactivation_after_cycle = True
 
+                        # --- START: PM Post-Tool State Transitions ---
+                        if agent.agent_type == AGENT_TYPE_PM and any_tool_success and tool_calls and len(tool_calls) == 1:
+                            called_tool_name = tool_calls[0].get("name")
+                            if agent.state == PM_STATE_ACTIVATE_WORKERS and called_tool_name == "send_message":
+                                # This is the final "report to admin" message. Transition to manage state.
+                                logger.info(f"CycleHandler: PM '{agent.agent_id}' sent completion message. Auto-transitioning to PM_STATE_MANAGE.")
+                                self._manager.workflow_manager.change_state(agent, PM_STATE_MANAGE)
+                                # No need to reactivate, the timer will pick it up.
+                                context.needs_reactivation_after_cycle = False
+
+
                         # --- START: PM Build Team Tasks State Interventions ---
                         if agent.agent_type == AGENT_TYPE_PM and \
                            agent.state == PM_STATE_BUILD_TEAM_TASKS and \
