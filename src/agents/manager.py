@@ -123,9 +123,11 @@ class AgentManager:
 
         self._ensure_projects_dir()
         self._pm_manage_task: Optional[asyncio.Task] = None
+        self._cg_heartbeat_task: Optional[asyncio.Task] = None
         logger.info("AgentManager __init__: Initialized synchronously.")
         asyncio.create_task(self._ensure_default_db_session())
         asyncio.create_task(self.start_pm_manage_timer())
+        asyncio.create_task(self.start_cg_heartbeat_timer())
 
     async def _ensure_default_db_session(self):
         if self.current_session_db_id is None:
@@ -388,6 +390,54 @@ class AgentManager:
             except asyncio.CancelledError: logger.info("PM manage timer task cancelled.")
             self._pm_manage_task = None
         else: logger.info("PM manage timer task not running or already stopped.")
+
+    async def _periodic_cg_check(self):
+        interval = settings.CG_HEARTBEAT_INTERVAL_SECONDS
+        threshold = settings.CG_STALLED_THRESHOLD_SECONDS
+        logger.info(f"Starting periodic CG check loop (Interval: {interval}s, Threshold: {threshold}s)...")
+        while True:
+            await asyncio.sleep(interval)
+            logger.debug("Running periodic CG check...")
+            try:
+                agents_snapshot = list(self.agents.values())
+                for agent in agents_snapshot:
+                    if agent.status == AGENT_STATUS_AWAITING_USER_REVIEW_CG and agent.cg_review_start_time is not None:
+                        stalled_time = time.time() - agent.cg_review_start_time
+                        if stalled_time > threshold:
+                            logger.warning(f"Agent '{agent.agent_id}' has been awaiting CG review for {stalled_time:.2f} seconds. Notifying Admin AI.")
+                            # Reset the start time to avoid repeated notifications for the same stall
+                            agent.cg_review_start_time = time.time()
+
+                            admin_agent = self.agents.get(BOOTSTRAP_AGENT_ID)
+                            if admin_agent:
+                                message_content = f"[System Notification from Constitutional Guardian]: The agent '{agent.agent_id}' has been awaiting user review for over {threshold} seconds regarding a constitutional concern. You may need to inform the user or investigate."
+                                admin_agent.message_history.append({
+                                    "role": "system",
+                                    "content": message_content
+                                })
+                                if admin_agent.status == AGENT_STATUS_IDLE:
+                                    await self.schedule_cycle(admin_agent)
+                                else:
+                                    logger.info(f"Admin AI is busy, but CG stall notification for '{agent.agent_id}' was added to its queue.")
+            except Exception as e:
+                logger.error(f"Error during periodic CG check: {e}", exc_info=True)
+
+    async def start_cg_heartbeat_timer(self):
+        if self._cg_heartbeat_task is None or self._cg_heartbeat_task.done():
+            self._cg_heartbeat_task = asyncio.create_task(self._periodic_cg_check())
+        else:
+            logger.info("CG heartbeat timer task already running.")
+
+    async def stop_cg_heartbeat_timer(self):
+        if self._cg_heartbeat_task and not self._cg_heartbeat_task.done():
+            self._cg_heartbeat_task.cancel()
+            try:
+                await self._cg_heartbeat_task
+            except asyncio.CancelledError:
+                logger.info("CG heartbeat timer task cancelled.")
+            self._cg_heartbeat_task = None
+        else:
+            logger.info("CG heartbeat timer task not running or already stopped.")
 
     async def resolve_cg_concern_approve(self, agent_id: str):
         agent = self.agents.get(agent_id)

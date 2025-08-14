@@ -140,6 +140,16 @@ class Settings:
             logger.warning("Invalid PM_MANAGE_CHECK_INTERVAL_SECONDS in .env, using default 60.0.")
             self.PM_MANAGE_CHECK_INTERVAL_SECONDS = 60.0
 
+        # --- CG Heartbeat Timer Intervals ---
+        try:
+            self.CG_HEARTBEAT_INTERVAL_SECONDS: float = float(os.getenv("CG_HEARTBEAT_INTERVAL_SECONDS", "60.0"))
+            self.CG_STALLED_THRESHOLD_SECONDS: float = float(os.getenv("CG_STALLED_THRESHOLD_SECONDS", "300.0"))
+            logger.info(f"Loaded CG Heartbeat settings: Interval={self.CG_HEARTBEAT_INTERVAL_SECONDS}s, Threshold={self.CG_STALLED_THRESHOLD_SECONDS}s")
+        except ValueError:
+            logger.warning("Invalid CG Heartbeat interval/threshold in .env, using defaults (60s/300s).")
+            self.CG_HEARTBEAT_INTERVAL_SECONDS = 60.0
+            self.CG_STALLED_THRESHOLD_SECONDS = 300.0
+
         # --- Project/Session Configuration ---
         self.PROJECTS_BASE_DIR: Path = Path(os.getenv("PROJECTS_BASE_DIR", str(BASE_DIR / "projects")))
 

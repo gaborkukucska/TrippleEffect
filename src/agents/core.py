@@ -94,6 +94,8 @@ class Agent:
         self.cg_concern_details: Optional[str] = None
         self.cg_original_event_data: Optional[Dict[str, Any]] = None
         self.cg_awaiting_user_decision: bool = False
+        self.cg_review_start_time: Optional[float] = None
+
 
         if self.manager and self.manager.tool_executor and self.manager.tool_executor.tools:
             tool_names = list(self.manager.tool_executor.tools.keys())

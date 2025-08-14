@@ -313,6 +313,31 @@ class AgentInteractionHandler:
         agent.set_status(AGENT_STATUS_EXECUTING_TOOL, tool_info=tool_info)
         raw_result: Optional[Any] = None
         result_content: str = "[Tool Execution Error: Unknown]"
+
+        # --- Special Handling for send_message ---
+        if tool_name == SendMessageTool.name:
+            logger.debug(f"InteractionHandler: Intercepting '{tool_name}' for direct handling.")
+            target_id = tool_args.get("target_agent_id")
+            message_content = tool_args.get("message_content")
+            if not target_id or message_content is None:
+                result_content = "[ToolExec Error: `target_agent_id` and `message_content` are required for send_message.]"
+                raw_result = {"status": "error", "message": result_content}
+            else:
+                await self.route_and_activate_agent_message(
+                    sender_id=agent.agent_id,
+                    target_identifier=target_id,
+                    message_content=message_content
+                )
+                # The tool result for the *sender* is a simple confirmation.
+                result_content = f"Message routing to agent '{target_id}' initiated by manager."
+                raw_result = {"status": "success", "message": result_content}
+
+            # Reset agent status after handling
+            if agent.status == AGENT_STATUS_EXECUTING_TOOL:
+                agent.set_status(AGENT_STATUS_PROCESSING)
+            return {"call_id": call_id, "name": tool_name, "content": result_content, "_raw_result": raw_result}
+        # --- End Special Handling ---
+
         try:
             logger.debug(f"InteractionHandler: Executing tool '{tool_name}' (ID: {call_id}) for '{agent.agent_id}' with context Project: {project_name}, Session: {session_name}")
             raw_result = await self._manager.tool_executor.execute_tool(

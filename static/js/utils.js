@@ -26,11 +26,11 @@ export const escapeHTML = (str) => {
     // Ensure it's a string before replacing
     return String(str).replace(/[&<>"']/g, (match) => {
         switch (match) {
-            case '&': return '&'; // Use named entity for ampersand
-            case '<': return '<';
-            case '>': return '>';
-            case '"': return '"';
-            case "'": return '\\\''; // Use escaped single quote <<< FIX APPLIED HERE
+            case '&': return '&amp;';
+            case '<': return '&lt;';
+            case '>': return '&gt;';
+            case '"': return '&quot;';
+            case "'": return '&#39;'; // Standard HTML entity for single quote
             default: return match;
         }
     });

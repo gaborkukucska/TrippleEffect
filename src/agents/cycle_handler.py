@@ -374,6 +374,17 @@ class AgentCycleHandler:
                         for res_hist_item in all_tool_results_for_history: agent.message_history.append(res_hist_item)
                         context.executed_tool_successfully_this_cycle = any_tool_success; context.needs_reactivation_after_cycle = True
 
+                        # --- START: PM Post-Tool State Transitions ---
+                        if agent.agent_type == AGENT_TYPE_PM and any_tool_success and tool_calls and len(tool_calls) == 1:
+                            called_tool_name = tool_calls[0].get("name")
+                            if agent.state == PM_STATE_ACTIVATE_WORKERS and called_tool_name == "send_message":
+                                # This is the final "report to admin" message. Transition to manage state.
+                                logger.info(f"CycleHandler: PM '{agent.agent_id}' sent completion message. Auto-transitioning to PM_STATE_MANAGE.")
+                                self._manager.workflow_manager.change_state(agent, PM_STATE_MANAGE)
+                                # No need to reactivate, the timer will pick it up.
+                                context.needs_reactivation_after_cycle = False
+
+
                         # --- START: PM Build Team Tasks State Interventions ---
                         if agent.agent_type == AGENT_TYPE_PM and \
                            agent.state == PM_STATE_BUILD_TEAM_TASKS and \
@@ -534,9 +545,12 @@ class AgentCycleHandler:
                                         # Now, generate a new summary of remaining tasks
                                         remaining_tasks = getattr(agent, 'unassigned_tasks_summary', [])
                                         if not remaining_tasks:
+                                            project_name = agent.agent_config.get("config", {}).get("project_name_context", "Unknown Project")
                                             directive_message_content = (
                                                 "[Framework System Message]: Last task assignment processed successfully. All kick-off tasks have now been assigned.\n\n"
-                                                "Your MANDATORY next action is to proceed to Step 5: Report completion to the Admin AI."
+                                                "Your MANDATORY next action is to report this completion to the Admin AI. "
+                                                f"Use the send_message tool to send the following message to '{BOOTSTRAP_AGENT_ID}':\n"
+                                                f"'Project `{project_name}` kick-off phase complete. All initial tasks have been assigned to workers.'"
                                             )
                                         else:
                                             task_summary_lines = []
@@ -593,7 +607,7 @@ class AgentCycleHandler:
                                     await self._manager.send_to_ui(original_event_data)
                                 else: # CG Concern
                                     agent.cg_original_text = final_content; agent.cg_concern_details = cg_verdict; agent.cg_original_event_data = original_event_data
-                                    agent.cg_awaiting_user_decision = True; agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG)
+                                    agent.cg_awaiting_user_decision = True; agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG); agent.cg_review_start_time = time.time()
                                     await self._manager.send_to_ui({"type": "cg_concern", "agent_id": agent.agent_id, "original_text": final_content, "concern_details": cg_verdict})
                                     context.action_taken_this_cycle = True; context.needs_reactivation_after_cycle = False
                                     llm_stream_ended_cleanly = False; break
