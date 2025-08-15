@@ -595,11 +595,95 @@ class AgentCycleHandler:
                                     )
                         # --- END: PM Activate Workers State Interventions ---
 
+                        # --- START: PM Manage State Interventions ---
+                        elif agent.agent_type == AGENT_TYPE_PM and \
+                            agent.state == PM_STATE_MANAGE and \
+                            any_tool_success and \
+                            tool_calls and len(tool_calls) == 1:
+
+                            called_tool_name = tool_calls[0].get("name")
+                            called_tool_args = tool_calls[0].get("arguments", {})
+                            directive_message_content = None
+
+                            if called_tool_name == "project_management" and called_tool_args.get("action") == "list_tasks":
+                                # After listing tasks, the agent needs to analyze and decide.
+                                # The prompt itself guides this, so we just confirm and let it proceed.
+                                # A more advanced implementation could analyze the task list here and provide a more specific directive.
+                                directive_message_content = (
+                                    "[Framework System Message]: You have the current task list. "
+                                    "Your MANDATORY next action is to analyze the list as per your workflow (Step 2) "
+                                    "and execute the single most appropriate management action (e.g., assign task, review work, or send a status update)."
+                                )
+                            elif called_tool_name == "send_message" and called_tool_args.get("target_agent_id") == BOOTSTRAP_AGENT_ID:
+                                # This handles the case after the PM reports project completion to the Admin AI.
+                                if "is complete" in called_tool_args.get("message_content", "").lower():
+                                    directive_message_content = (
+                                        "[Framework System Message]: You have successfully reported project completion. "
+                                        "Your MANDATORY next action is to transition to a standby state. "
+                                        "Output ONLY the following XML: <request_state state='pm_standby'/>"
+                                    )
+
+                            if directive_message_content:
+                                logger.info(f"CycleHandler: PM '{agent.agent_id}' in '{agent.state}', after tool '{called_tool_name}', injecting directive: {directive_message_content[:100]}...")
+                                directive_msg: MessageDict = {"role": "system", "content": directive_message_content}
+                                agent.message_history.append(directive_msg)
+                                if context.current_db_session_id:
+                                    await self._manager.db_manager.log_interaction(
+                                        session_id=context.current_db_session_id,
+                                        agent_id=agent.agent_id,
+                                        role="system_intervention",
+                                        content=directive_message_content
+                                    )
+                        # --- END: PM Manage State Interventions ---
+
                         llm_stream_ended_cleanly = False; break
 
                     elif event_type in ["response_chunk", "status", "final_response", "invalid_state_request_output"]:
                         if event_type == "final_response":
                             final_content = event.get("content"); original_event_data = event
+
+                            # --- START: Worker Auto-Save File Feature ---
+                            if agent.agent_type == AGENT_TYPE_WORKER and final_content and "<request_state state='worker_wait'/>" in final_content:
+                                logger.info(f"CycleHandler: Worker '{agent.agent_id}' produced final content. Checking for files to auto-save.")
+                                # Regex to find all markdown code blocks
+                                code_blocks = re.findall(r"```(?:\w+)?\n(.*?)\n```", final_content, re.DOTALL)
+                                saved_files_count = 0
+                                for block in code_blocks:
+                                    # Regex to find a filename comment, e.g., # file: path/to/file.js or <!-- file: index.html -->
+                                    match = re.search(r"^(?:#|//|<!--)\s*file:\s*([\w\-\./_]+)\s*(?:-->)?", block)
+                                    if match:
+                                        filepath = match.group(1).strip()
+                                        # The rest of the block is the content
+                                        file_content = block[match.end():].strip()
+                                        logger.info(f"CycleHandler: Found file '{filepath}' in worker output. Attempting to save.")
+                                        try:
+                                            # Use the ToolExecutor to write the file
+                                            # Note: This is an internal, framework-level call, so we use a specific agent_id for logging/auth if needed
+                                            tool_result = await self._interaction_handler.execute_single_tool(
+                                                agent=agent, # Pass the original agent for context
+                                                call_id="internal_auto_save",
+                                                tool_name="file_system",
+                                                tool_args={"action": "write_file", "filepath": filepath, "content": file_content},
+                                                project_name=self._manager.current_project,
+                                                session_name=self._manager.current_session
+                                            )
+                                            if tool_result and tool_result.get("status") == "success":
+                                                saved_files_count += 1
+                                                logger.info(f"CycleHandler: Successfully auto-saved file '{filepath}' for worker '{agent.agent_id}'.")
+                                                # Optional: Notify UI about the saved file
+                                                await self._manager.send_to_ui({
+                                                    "type": "system_notification",
+                                                    "agent_id": agent.agent_id,
+                                                    "content": f"Framework auto-saved file: {filepath}"
+                                                })
+                                            else:
+                                                logger.error(f"CycleHandler: Failed to auto-save file '{filepath}'. Reason: {tool_result.get('message') if tool_result else 'Unknown error'}")
+                                        except Exception as e:
+                                            logger.error(f"CycleHandler: Exception during auto-save of file '{filepath}': {e}", exc_info=True)
+                                if saved_files_count > 0:
+                                    logger.info(f"CycleHandler: Auto-save complete. Saved {saved_files_count} file(s) from worker '{agent.agent_id}' output.")
+                            # --- END: Worker Auto-Save File Feature ---
+
                             if final_content and agent.agent_id != CONSTITUTIONAL_GUARDIAN_AGENT_ID:
                                 cg_verdict = await self._get_cg_verdict(final_content)
                                 if cg_verdict == "<OK/>":
