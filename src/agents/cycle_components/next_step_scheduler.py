@@ -115,7 +115,21 @@ class NextStepScheduler:
             return
         
         if context.cycle_completed_successfully:
-            if agent.agent_type == AGENT_TYPE_PM and \
+            # --- Start Persistent Agent Logic ---
+            # These states represent continuous work loops. Agents in these states should
+            # be reactivated by default unless they explicitly change state.
+            persistent_states = {
+                (AGENT_TYPE_PM, PM_STATE_MANAGE),
+                (AGENT_TYPE_WORKER, WORKER_STATE_WORK)
+            }
+            # This logic ensures that if an agent in a persistent state completes a cycle
+            # without error and without requesting a state change, it gets reactivated.
+            if (agent.agent_type, agent.state) in persistent_states and not context.state_change_requested_this_cycle:
+                logger.info(f"NextStepScheduler: Agent '{agent_id}' is in a persistent state ('{agent.state}'). Reactivating for continuous work.")
+                agent.set_status(AGENT_STATUS_IDLE)
+                await self._schedule_new_cycle(agent, 0)
+            # --- End Persistent Agent Logic ---
+            elif agent.agent_type == AGENT_TYPE_PM and \
                agent.state == PM_STATE_STARTUP and \
                not context.action_taken_this_cycle and \
                not context.thought_produced_this_cycle: 
