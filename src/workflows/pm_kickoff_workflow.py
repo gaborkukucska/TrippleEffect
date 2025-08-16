@@ -173,7 +173,7 @@ class PMKickoffWorkflow(BaseWorkflow):
                 }
                 logger.debug(f"PMKickoffWorkflow: Listing tasks with args: {list_tasks_args}")
                 list_result = await manager.tool_executor.execute_tool(
-                    agent_id="framework_internal", # System action
+                    agent_id="framework", # System action
                     agent_sandbox_path=agent.sandbox_path, # PM's sandbox for context
                     tool_name="project_management",
                     tool_args=list_tasks_args,
@@ -214,7 +214,7 @@ class PMKickoffWorkflow(BaseWorkflow):
                     }
                     logger.debug(f"PMKickoffWorkflow: Attempting to complete task with args: {complete_task_args}")
                     complete_result = await manager.tool_executor.execute_tool(
-                        agent_id="framework_internal", # System action
+                        agent_id="framework", # System action
                         agent_sandbox_path=agent.sandbox_path, # PM's sandbox for context
                         tool_name="project_management",
                         tool_args=complete_task_args,
