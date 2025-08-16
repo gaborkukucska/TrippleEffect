@@ -271,14 +271,17 @@ class AgentInteractionHandler:
             logger.info(f"InteractionHandler: Reset agent {target_agent.agent_id} ({target_agent.persona}) status from ERROR to IDLE due to incoming message from '{sender_id}'. Scheduling cycle.")
             target_agent.set_status(AGENT_STATUS_IDLE) # set_status also pushes UI update via manager
             activation_task = asyncio.create_task(self._manager.schedule_cycle(target_agent, 0))
-            # No specific send_to_ui here as schedule_cycle and set_status handle agent status updates.
-        else: # Agent is in some other active state
+        else: # Agent is in some other non-idle state
             exempt_states = {AGENT_STATUS_AWAITING_CG_REVIEW, AGENT_STATUS_AWAITING_USER_REVIEW_CG}
             if target_agent.status not in exempt_states:
+                # This is the key change: Any non-idle, non-exempt agent that receives a message
+                # should be forced to re-evaluate its current operation.
                 target_agent.needs_priority_recheck = True
                 logger.info(f"InteractionHandler: Agent {target_agent.agent_id} ({target_agent.persona}) is in status {target_agent.status}. Flagged for priority recheck due to new message from '{sender_id}'.")
+                # Also, if it's a PM in the manage state that might be in a soft-stall, this recheck
+                # will interrupt its current empty processing loop and force it to consider the new message.
                 await self._manager.send_to_ui({
-                    "type": "status", # This type is generic, could be more specific if UI handles it
+                    "type": "status",
                     "agent_id": resolved_target_id,
                     "content": f"Message received from @{sender_id} ({sender_agent.persona}). Agent busy, flagged for recheck."
                 })
