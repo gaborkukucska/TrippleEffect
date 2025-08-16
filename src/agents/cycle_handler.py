@@ -381,8 +381,8 @@ class AgentCycleHandler:
                                 # This is the final "report to admin" message. Transition to manage state.
                                 logger.info(f"CycleHandler: PM '{agent.agent_id}' sent completion message. Auto-transitioning to PM_STATE_MANAGE.")
                                 self._manager.workflow_manager.change_state(agent, PM_STATE_MANAGE)
-                                # No need to reactivate, the timer will pick it up.
-                                context.needs_reactivation_after_cycle = False
+                                # Reactivate immediately to start the management loop.
+                                context.needs_reactivation_after_cycle = True
 
 
                         # --- START: PM Build Team Tasks State Interventions ---
