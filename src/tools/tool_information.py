@@ -51,179 +51,72 @@ class ToolInformationTool(BaseTool):
     async def execute(
         self,
         agent_id: str,
-        agent_sandbox_path: Path, # Not used by this tool
-        manager: 'AgentManager', # Passed in by executor
-        project_name: Optional[str] = None, # Not used by this tool
-        session_name: Optional[str] = None, # Not used by this tool
+        agent_sandbox_path: Path,
+        manager: 'AgentManager',
         **kwargs: Any
-        ) -> str:
-        """Executes the tool information retrieval."""
+    ) -> Dict[str, Any]:
         action = kwargs.get("action")
-        tool_name_req = kwargs.get("tool_name", "all") # Default to 'all' for get_info
-        sub_action_req = kwargs.get("sub_action") # Get the new sub_action
+        tool_name_req = kwargs.get("tool_name", "all")
+        sub_action_req = kwargs.get("sub_action")
 
-        valid_actions = ["list_tools", "get_info"]
-        if not action or action not in valid_actions:
-            return f"Error: Invalid or missing 'action'. Must be one of {valid_actions}."
+        if not action or action not in ["list_tools", "get_info"]:
+            return {"status": "error", "message": "Invalid or missing 'action'. Must be 'list_tools' or 'get_info'."}
 
-        # Access the tool executor via the manager
         if not manager or not hasattr(manager, 'tool_executor'):
-             logger.error(f"{self.name}: AgentManager instance not available or missing tool_executor.")
-             return "Error: Internal configuration error - cannot access tool executor."
+             return {"status": "error", "message": "Internal configuration error: cannot access tool executor."}
 
-        # Get calling agent's type
         calling_agent = manager.agents.get(agent_id)
-        agent_type = getattr(calling_agent, 'agent_type', AGENT_TYPE_WORKER) if calling_agent else AGENT_TYPE_WORKER # Default to worker
+        agent_type = getattr(calling_agent, 'agent_type', AGENT_TYPE_WORKER)
 
         try:
-            # --- NEW: Handle list_tools action ---
             if action == "list_tools":
-                authorized_tools_summary = []
-                all_tool_names = sorted(list(manager.tool_executor.tools.keys()))
+                tools_list = []
+                for name, tool in sorted(manager.tool_executor.tools.items()):
+                    if self._is_authorized(agent_type, tool.auth_level):
+                        summary = getattr(tool, 'summary', tool.description)
+                        tools_list.append({"name": name, "summary": summary.strip()})
 
-                for name in all_tool_names:
-                    tool_instance = manager.tool_executor.tools.get(name)
-                    if not tool_instance: continue
-
-                    tool_auth_level = getattr(tool_instance, 'auth_level', 'worker')
-
-                    # Check authorization
-                    is_authorized = False
-                    if agent_type == AGENT_TYPE_ADMIN: is_authorized = True
-                    elif agent_type == AGENT_TYPE_PM: is_authorized = tool_auth_level in [AGENT_TYPE_PM, AGENT_TYPE_WORKER]
-                    elif agent_type == AGENT_TYPE_WORKER: is_authorized = tool_auth_level == AGENT_TYPE_WORKER
-
-                    if is_authorized:
-                        summary = getattr(tool_instance, 'summary', None) or tool_instance.description # Fallback to description
-                        authorized_tools_summary.append(f"- {name}: {summary.strip()}")
-
-                logger.info(f"{self.name}: Executed 'list_tools' for agent {agent_id} (Type: {agent_type}).")
-                if not authorized_tools_summary:
-                    return f"No tools are accessible for your agent type ({agent_type})."
-                else:
-                    return f"Tools available to you (Agent Type: {agent_type}):\n" + "\n".join(authorized_tools_summary)
-            # --- END list_tools action ---
+                return {"status": "success", "message": f"Found {len(tools_list)} tools for agent type '{agent_type}'.", "tools": tools_list}
 
             elif action == "get_info":
-                # Handle 'all' tools request (filtered by auth)
-                if tool_name_req.lower() == 'all':
-                    all_usage_info = []
-                    authorized_tools = []
-                    all_tool_names = sorted(list(manager.tool_executor.tools.keys()))
-
-                    for name in all_tool_names:
-                        tool_instance = manager.tool_executor.tools.get(name)
-                        if not tool_instance:
-                            continue
-
-                        tool_auth_level = getattr(tool_instance, 'auth_level', 'worker')
-
-                        # Check authorization based on agent type
-                        is_authorized = False
-                        if agent_type == AGENT_TYPE_ADMIN:
-                            is_authorized = True
-                        elif agent_type == AGENT_TYPE_PM:
-                            is_authorized = tool_auth_level in [AGENT_TYPE_PM, AGENT_TYPE_WORKER]
-                        elif agent_type == AGENT_TYPE_WORKER:
-                            is_authorized = tool_auth_level == AGENT_TYPE_WORKER
-
-                        if is_authorized:
-                            authorized_tools.append(name)
-                            if hasattr(tool_instance, 'get_detailed_usage'):
-                                try:
-                                    # --- Pass agent_context to get_detailed_usage ---
-                                    agent_context_for_tool = {
-                                        "agent_id": agent_id,
-                                        "agent_type": agent_type,
-                                        "project_name": getattr(calling_agent, 'project_name_context', manager.current_project if manager else None),
-                                        "team_id": manager.state_manager.get_agent_team(agent_id) if manager and hasattr(manager, 'state_manager') else None,
-                                        "session_name": getattr(calling_agent, 'session_name', manager.current_session if manager else None)
-                                    }
-                                    usage = tool_instance.get_detailed_usage(agent_context=agent_context_for_tool)
-                                    all_usage_info.append(f"--- Usage for Tool: {name} (Auth Level: {tool_auth_level}) ---\n{usage}\n--- End Usage ---\n")
-                                except Exception as tool_usage_err:
-                                    logger.error(f"Error getting detailed usage for tool '{name}': {tool_usage_err}", exc_info=True)
-                                    all_usage_info.append(f"--- Error getting usage for Tool: {name}: {type(tool_usage_err).__name__} ---\n")
-                            else:
-                                all_usage_info.append(f"--- Usage information unavailable for Tool: {name} ---\n")
-
-                    # Prepend the list of authorized tools
-                    all_usage_info.insert(0, f"Tools available to you (Agent Type: {agent_type}): {authorized_tools}\n")
-
-                    logger.info(f"{self.name}: Executed 'get_info' for 'all' (filtered) tools by agent {agent_id} (Type: {agent_type}).")
-                    # Join and limit total length
-                    MAX_ALL_USAGE_CHARS = 8000 # Define this constant if not already defined globally for the class/module
-                    final_output = "\n".join(all_usage_info)
-                    if len(final_output) > MAX_ALL_USAGE_CHARS:
-                        final_output = final_output[:MAX_ALL_USAGE_CHARS] + "\n\n[... Tool usage details truncated due to length limit ...]"
-                    return final_output
-
-                # Handle specific tool request
-                else: # This `else` is for `if tool_name_req.lower() == 'all':`
-                    target_tool = manager.tool_executor.tools.get(tool_name_req)
-                    if not target_tool:
-                        # List only tools *authorized* for the calling agent
-                        authorized_tools_list = []
-                        all_tool_names = sorted(list(manager.tool_executor.tools.keys()))
-                        for name in all_tool_names:
-                            tool_instance = manager.tool_executor.tools.get(name)
-                            if not tool_instance: continue
-                            tool_auth_level = getattr(tool_instance, 'auth_level', 'worker')
-                            is_authorized = False
-                            if agent_type == AGENT_TYPE_ADMIN: is_authorized = True
-                            elif agent_type == AGENT_TYPE_PM: is_authorized = tool_auth_level in [AGENT_TYPE_PM, AGENT_TYPE_WORKER]
-                            elif agent_type == AGENT_TYPE_WORKER: is_authorized = tool_auth_level == AGENT_TYPE_WORKER
-                            if is_authorized: authorized_tools_list.append(name)
-
-                        return f"Error: Tool '{tool_name_req}' not found or not authorized for your agent type ({agent_type}). Available authorized tools: {authorized_tools_list}"
-
-                    # Check authorization for the specific tool
-                    tool_auth_level = getattr(target_tool, 'auth_level', 'worker')
-                    is_authorized = False
-                    if agent_type == AGENT_TYPE_ADMIN: is_authorized = True
-                    elif agent_type == AGENT_TYPE_PM: is_authorized = tool_auth_level in [AGENT_TYPE_PM, AGENT_TYPE_WORKER]
-                    elif agent_type == AGENT_TYPE_WORKER: is_authorized = tool_auth_level == AGENT_TYPE_WORKER
-
-                    if not is_authorized:
-                         return f"Error: Agent type '{agent_type}' is not authorized to access tool '{tool_name_req}' (requires level '{tool_auth_level}')."
-
-                    # --- Prepare agent_context for get_detailed_usage ---
-                    agent_context_for_tool = {
-                        "agent_id": agent_id,
-                        "agent_type": agent_type,
-                        "project_name": getattr(calling_agent, 'project_name_context', manager.current_project if manager else None),
-                        "team_id": manager.state_manager.get_agent_team(agent_id) if manager and hasattr(manager, 'state_manager') else None,
-                        "session_name": getattr(calling_agent, 'session_name', manager.current_session if manager else None)
-                    }
-
-                    # Special handling for PM and manage_team can be simplified or moved to manage_team's get_detailed_usage
-                    if tool_name_req == "manage_team" and agent_type == AGENT_TYPE_PM:
-                        try:
-                            # The get_detailed_usage method of ManageTeamTool itself should handle context if needed
-                            usage_info = target_tool.get_detailed_usage(agent_context=agent_context_for_tool)
-                            # If manage_team's get_detailed_usage already provides a concise version for PMs, this is enough.
-                            # Otherwise, the existing special string formatting for PMs can be kept here or, ideally,
-                            # moved into manage_team.get_detailed_usage.
-                            # For now, let's assume manage_team.get_detailed_usage handles the context.
-                            logger.info(f"{self.name}: Provided usage for 'manage_team' to PM agent {agent_id} using context.")
-                            return f"--- Detailed Usage for Tool: {tool_name_req} (Auth Level: {tool_auth_level}) ---\n{usage_info}\n--- End Usage ---"
-                        except Exception as e:
-                            logger.error(f"Error during 'manage_team' info provision for PM {agent_id}: {e}", exc_info=True)
-                            # Fall through to default behavior if specific handling fails
-
-                    # Get and return usage info if authorized (default behavior)
-                    try:
-                        # Pass sub_action if provided, otherwise it defaults to None in target_tool.get_detailed_usage
-                        usage_info = target_tool.get_detailed_usage(agent_context=agent_context_for_tool, sub_action=sub_action_req)
-                        logger.info(f"{self.name}: Executed 'get_info' for tool '{tool_name_req}' (Sub-action: {sub_action_req or 'N/A'}) by agent {agent_id}.")
-                        return f"--- Detailed Usage for Tool: {tool_name_req} {('(Sub-action: ' + sub_action_req + ')') if sub_action_req else ''} (Auth Level: {tool_auth_level}) ---\n{usage_info}\n--- End Usage ---"
-                    except Exception as tool_usage_err:
-                        logger.error(f"Error getting detailed usage for tool '{tool_name_req}' (Sub-action: {sub_action_req}): {tool_usage_err}", exc_info=True)
-                        return f"Error retrieving usage for tool '{tool_name_req}' (Sub-action: {sub_action_req}): {type(tool_usage_err).__name__}"
+                return self._get_info(agent_id, agent_type, tool_name_req, sub_action_req, manager)
 
         except Exception as e:
-            logger.error(f"Unexpected error executing {self.name} (Action: {action}) for agent {agent_id}: {e}", exc_info=True)
-            return f"Error executing {self.name} ({action}): {type(e).__name__} - {e}"
+            logger.error(f"Error in ToolInformationTool action '{action}': {e}", exc_info=True)
+            return {"status": "error", "message": f"Unexpected error: {e}"}
+
+    def _is_authorized(self, agent_type: str, tool_auth_level: str) -> bool:
+        if agent_type == AGENT_TYPE_ADMIN: return True
+        if agent_type == AGENT_TYPE_PM: return tool_auth_level in [AGENT_TYPE_PM, AGENT_TYPE_WORKER]
+        return tool_auth_level == AGENT_TYPE_WORKER
+
+    def _get_info(self, agent_id: str, agent_type: str, tool_name_req: str, sub_action_req: Optional[str], manager: 'AgentManager') -> Dict[str, Any]:
+        if tool_name_req.lower() == 'all':
+            usage_info = []
+            for name, tool in sorted(manager.tool_executor.tools.items()):
+                if self._is_authorized(agent_type, tool.auth_level):
+                    usage_info.append(self._get_single_tool_usage_dict(agent_id, agent_type, name, sub_action_req, tool, manager))
+            return {"status": "success", "message": f"Usage info for {len(usage_info)} authorized tools.", "usage_details": usage_info}
+
+        tool = manager.tool_executor.tools.get(tool_name_req)
+        if not tool or not self._is_authorized(agent_type, tool.auth_level):
+            return {"status": "error", "message": f"Tool '{tool_name_req}' not found or not authorized."}
+
+        usage_dict = self._get_single_tool_usage_dict(agent_id, agent_type, tool_name_req, sub_action_req, tool, manager)
+        return {"status": "success", "message": "Usage info retrieved.", "usage": usage_dict}
+
+    def _get_single_tool_usage_dict(self, agent_id: str, agent_type: str, tool_name: str, sub_action: Optional[str], tool: BaseTool, manager: 'AgentManager') -> Dict[str, Any]:
+        agent_context = {
+            "agent_id": agent_id,
+            "agent_type": agent_type,
+            "project_name": manager.current_project,
+            "team_id": manager.state_manager.get_agent_team(agent_id) if hasattr(manager, 'state_manager') else None
+        }
+        try:
+            usage = tool.get_detailed_usage(agent_context=agent_context, sub_action=sub_action)
+            return {"tool_name": tool_name, "usage": usage}
+        except Exception as e:
+            return {"tool_name": tool_name, "usage": f"Error retrieving usage: {e}"}
 
     def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None) -> str: # Added agent_context to match BaseTool
         """Returns detailed usage instructions for the ToolInformationTool."""

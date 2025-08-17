@@ -166,7 +166,6 @@ class GitHubTool(BaseTool):
                  raise Exception(f"Unexpected error during GitHub API request: {type(e).__name__}") from e
              else: raise e
 
-    # --- NEW Recursive List Helper ---
     async def _list_repo_recursively(self, repo_full_name: str, current_path: str, ref: Optional[str]) -> List[Dict[str, str]]:
         """Recursively lists files and directories starting from current_path."""
         all_items = []
@@ -180,9 +179,9 @@ class GitHubTool(BaseTool):
 
             if not contents:
                 logger.warning(f"Recursive list: Path '{current_path}' not found or empty in repo '{repo_full_name}'.")
-                return [] # Path not found or empty
+                return []
 
-            if isinstance(contents, list): # Directory listing
+            if isinstance(contents, list):
                 tasks = []
                 for item in contents:
                     item_name = item.get("name")
@@ -194,12 +193,10 @@ class GitHubTool(BaseTool):
                     all_items.append({"path": item_path, "type": item_type})
 
                     if item_type == "dir":
-                        # Schedule recursive call for subdirectories
                         tasks.append(asyncio.create_task(
                             self._list_repo_recursively(repo_full_name, item_path, ref)
                         ))
 
-                # Gather results from recursive calls
                 if tasks:
                     results = await asyncio.gather(*tasks, return_exceptions=True)
                     for res in results:
@@ -207,24 +204,17 @@ class GitHubTool(BaseTool):
                             all_items.extend(res)
                         elif isinstance(res, Exception):
                             logger.error(f"Recursive list error during gather for path '{current_path}': {res}")
-                            # Optionally add an error placeholder to the results?
-                            # all_items.append({"path": f"{current_path}/[ERROR]", "type": "error"})
             elif isinstance(contents, dict) and contents.get("type") == "file":
-                 # Base case: path was actually a file
                  all_items.append({"path": contents.get("path"), "type": "file"})
             else:
                  logger.warning(f"Recursive list: Unexpected content type for {endpoint}: {type(contents)}")
 
-
         except FileNotFoundError:
             logger.warning(f"Recursive list: Path '{current_path}' not found in repo '{repo_full_name}' (ref: {ref or 'default'}).")
-            # Return empty list, don't propagate error upwards unless it's the initial call
         except Exception as e:
             logger.error(f"Recursive list: Error processing path '{current_path}' in repo '{repo_full_name}': {e}", exc_info=True)
-            # Return empty list or add an error item? Empty seems safer.
 
         return all_items
-    # --- End NEW Recursive List Helper ---
 
     async def execute(
         self,
@@ -233,50 +223,52 @@ class GitHubTool(BaseTool):
         project_name: Optional[str] = None,
         session_name: Optional[str] = None,
         **kwargs: Any
-        ) -> Any:
-        """
-        Executes the GitHub operation based on the provided action.
-        Uses correct endpoints for listing user repos vs. authenticated user repos.
-        Supports recursive listing for 'list_files'.
-        """
+        ) -> Dict[str, Any]:
         if not self.token:
-            return "Error: GitHubTool cannot execute because GITHUB_ACCESS_TOKEN is not configured correctly."
+            return {"status": "error", "message": "GitHubTool cannot execute because GITHUB_ACCESS_TOKEN is not configured correctly."}
 
         action = kwargs.get("action")
         repo_full_name_or_username = kwargs.get("repo_full_name")
         path = kwargs.get("path", "/")
         ref = kwargs.get("branch_or_ref")
-        # --- Get recursive parameter ---
         recursive_str = kwargs.get("recursive", "false")
         recursive = str(recursive_str).lower() == 'true'
-        # --- End Get recursive parameter ---
-
 
         logger.info(f"Agent {agent_id} attempting GitHub action '{action}' (Target: {repo_full_name_or_username}, Path: {path}, Ref: {ref}, Recursive: {recursive})")
 
         if not action or action not in ["list_repos", "list_files", "read_file"]:
-            return f"Error: Invalid or missing 'action'. Must be 'list_repos', 'list_files', or 'read_file'."
+            return {"status": "error", "message": "Invalid or missing 'action'. Must be 'list_repos', 'list_files', or 'read_file'."}
 
         try:
             if action == "list_repos":
                 endpoint = "/user/repos"; list_target_user = None
                 if repo_full_name_or_username and '/' not in repo_full_name_or_username:
-                    list_target_user = repo_full_name_or_username; endpoint = f"/users/{list_target_user}/repos"; logger.info(f"Listing public repos for user: {list_target_user}")
+                    list_target_user = repo_full_name_or_username
+                    endpoint = f"/users/{list_target_user}/repos"
                 elif repo_full_name_or_username:
-                     parts = repo_full_name_or_username.split('/', 1); list_target_user = parts[0]; endpoint = f"/users/{list_target_user}/repos"; logger.warning(f"Parameter 'repo_full_name' contained '/', interpreting '{list_target_user}' as the target user for listing public repos.")
-                else: logger.info("Listing repositories accessible by the authenticated user token.")
+                     parts = repo_full_name_or_username.split('/', 1)
+                     list_target_user = parts[0]
+                     endpoint = f"/users/{list_target_user}/repos"
+
                 params = {"type": "all", "per_page": 100}
                 repo_data = await self._make_github_request("GET", endpoint, params=params)
-                if not repo_data or not isinstance(repo_data, list): target_desc = f"user '{list_target_user}'" if list_target_user else "authenticated user"; return f"No repositories found or accessible for {target_desc}, or error retrieving list."
-                repo_details = []
-                for repo in repo_data:
-                     full_name = repo.get("full_name"); description = repo.get("description") or "No description.";
-                     if full_name: repo_details.append(f"*   **[{full_name}](https://github.com/{full_name}):** {description}")
-                if not repo_details: target_desc = f"user '{list_target_user}'" if list_target_user else "authenticated user"; return f"No repositories found or accessible for {target_desc} with the provided token."
-                target_desc_title = f" for {list_target_user}" if list_target_user else " Accessible by Token"; return f"Repositories{target_desc_title} (first {len(repo_details)}):\n\n" + "\n".join(repo_details)
+
+                if not repo_data or not isinstance(repo_data, list):
+                    target_desc = f"user '{list_target_user}'" if list_target_user else "authenticated user"
+                    return {"status": "success", "message": f"No repositories found or accessible for {target_desc}.", "repositories": []}
+
+                repo_details = [{"full_name": repo.get("full_name"), "description": repo.get("description", "No description."), "url": repo.get("html_url")} for repo in repo_data if repo.get("full_name")]
+
+                if not repo_details:
+                    target_desc = f"user '{list_target_user}'" if list_target_user else "authenticated user"
+                    return {"status": "success", "message": f"No repositories found or accessible for {target_desc} with the provided token.", "repositories": []}
+
+                target_desc_title = f" for {list_target_user}" if list_target_user else " Accessible by Token"
+                message = f"Repositories{target_desc_title} (first {len(repo_details)}):\n\n" + "\n".join([f"*   **[{repo['full_name']}]({repo['url']}):** {repo['description']}" for repo in repo_details])
+                return {"status": "success", "message": message, "repositories": repo_details}
 
             if not repo_full_name_or_username or '/' not in repo_full_name_or_username:
-                return f"Error: 'repo_full_name' in the format 'username/repo-name' is required for action '{action}'."
+                return {"status": "error", "message": f"'repo_full_name' in the format 'username/repo-name' is required for action '{action}'."}
 
             repo_endpoint_base = f"/repos/{repo_full_name_or_username}"
 
@@ -284,62 +276,86 @@ class GitHubTool(BaseTool):
                 list_path = path.lstrip('/')
                 ref_display = ref or 'default branch'
 
-                # --- Handle Recursive Listing ---
                 if recursive:
-                    logger.info(f"Performing RECURSIVE list for '{repo_full_name_or_username}' at path '{path}' (ref: {ref_display})")
                     all_items = await self._list_repo_recursively(repo_full_name_or_username, list_path, ref)
                     if not all_items:
-                         return f"Path '{path}' in repository '{repo_full_name_or_username}' (ref: {ref_display}) not found or is empty (recursive search)."
-                    # Sort items by path for clarity
+                         return {"status": "success", "message": f"Path '{path}' in repository '{repo_full_name_or_username}' (ref: {ref_display}) not found or is empty (recursive search).", "items": []}
                     sorted_items = sorted(all_items, key=lambda x: x.get('path', 'z'))
-                    item_list = [f"- {item.get('path')} ({item.get('type')})" for item in sorted_items]
-                    return f"Recursive listing of '{repo_full_name_or_username}' at path '{path}' (ref: {ref_display}):\n" + "\n".join(item_list)
-                # --- End Recursive Handling ---
-                else: # Non-recursive
-                    endpoint = f"{repo_endpoint_base}/contents/{list_path}"; params = {"ref": ref} if ref else {}
+                    message = f"Recursive listing of '{repo_full_name_or_username}' at path '{path}' (ref: {ref_display}):\n" + "\n".join([f"- {item.get('path')} ({item.get('type')})" for item in sorted_items])
+                    return {"status": "success", "message": message, "items": sorted_items}
+                else:
+                    endpoint = f"{repo_endpoint_base}/contents/{list_path}"
+                    params = {"ref": ref} if ref else {}
                     try:
                         contents_data = await self._make_github_request("GET", endpoint, params=params)
-                        if not contents_data: return f"Path '{path}' in repository '{repo_full_name_or_username}' (ref: {ref_display}) not found or is empty."
+                        if not contents_data:
+                            return {"status": "success", "message": f"Path '{path}' in repository '{repo_full_name_or_username}' (ref: {ref_display}) not found or is empty.", "items": []}
                         if isinstance(contents_data, list):
-                            items = sorted(contents_data, key=lambda x: (x.get('type', 'z'), x.get('name', ''))); file_list = [f"- {item.get('name')} ({item.get('type')})" for item in items]
-                            if not file_list: return f"Directory '{path}' in repository '{repo_full_name_or_username}' (ref: {ref_display}) is empty."
-                            return f"Contents of '{repo_full_name_or_username}' at path '{path}' (ref: {ref_display}):\n" + "\n".join(file_list)
-                        elif isinstance(contents_data, dict) and contents_data.get("type") == "file": return f"Path '{path}' points to a single file: {contents_data.get('name')}. Use 'read_file' action to get content."
-                        else: logger.warning(f"Unexpected response format when listing {endpoint}: {contents_data}"); return f"Unexpected response format when listing path '{path}' in repository '{repo_full_name_or_username}'."
-                    except FileNotFoundError: return f"Error: Path '{path}' not found in repository '{repo_full_name_or_username}' (ref: {ref_display})."
+                            items = sorted(contents_data, key=lambda x: (x.get('type', 'z'), x.get('name', '')))
+                            item_details = [{"name": item.get("name"), "type": item.get("type"), "path": item.get("path")} for item in items]
+                            message = f"Contents of '{repo_full_name_or_username}' at path '{path}' (ref: {ref_display}):\n" + "\n".join([f"- {item['name']} ({item['type']})" for item in item_details])
+                            return {"status": "success", "message": message, "items": item_details}
+                        elif isinstance(contents_data, dict) and contents_data.get("type") == "file":
+                            return {"status": "success", "message": f"Path '{path}' points to a single file: {contents_data.get('name')}. Use 'read_file' action to get content.", "items": [{"name": contents_data.get("name"), "type": "file", "path": contents_data.get("path")}]}
+                        else:
+                            return {"status": "error", "message": f"Unexpected response format when listing path '{path}' in repository '{repo_full_name_or_username}'."}
+                    except FileNotFoundError:
+                        return {"status": "error", "message": f"Path '{path}' not found in repository '{repo_full_name_or_username}' (ref: {ref_display})."}
 
             elif action == "read_file":
-                if not path or path == '/': return f"Error: A specific file 'path' is required for action 'read_file'."
-                read_path = path.lstrip('/'); endpoint = f"{repo_endpoint_base}/contents/{read_path}"; params = {"ref": ref} if ref else {}
+                if not path or path == '/':
+                    return {"status": "error", "message": "A specific file 'path' is required for action 'read_file'."}
+                read_path = path.lstrip('/')
+                endpoint = f"{repo_endpoint_base}/contents/{read_path}"
+                params = {"ref": ref} if ref else {}
                 try:
                     file_data = await self._make_github_request("GET", endpoint, params=params)
-                    if not isinstance(file_data, dict) or file_data.get("type") != "file": type_found = file_data.get("type", "unknown") if isinstance(file_data, dict) else "unexpected format"; return f"Error: Path '{path}' in repository '{repo_full_name_or_username}' is not a file (type: {type_found})."
-                    content_base64 = file_data.get("content"); file_size = file_data.get("size", 0); content_bytes = b''
+                    if not isinstance(file_data, dict) or file_data.get("type") != "file":
+                        type_found = file_data.get("type", "unknown") if isinstance(file_data, dict) else "unexpected format"
+                        return {"status": "error", "message": f"Path '{path}' in repository '{repo_full_name_or_username}' is not a file (type: {type_found})."}
+
+                    content_base64 = file_data.get("content")
+                    file_size = file_data.get("size", 0)
+                    content_bytes = b''
+
                     if content_base64 is None:
                         download_url = file_data.get("download_url")
                         if download_url:
-                             logger.warning(f"File content missing for '{path}', attempting download from {download_url} (Size: {file_size} bytes)"); MAX_DOWNLOAD_SIZE = 1 * 1024 * 1024
-                             if file_size > MAX_DOWNLOAD_SIZE: return f"Error: File '{path}' is too large ({file_size} bytes) to download directly."
+                             MAX_DOWNLOAD_SIZE = 1 * 1024 * 1024
+                             if file_size > MAX_DOWNLOAD_SIZE:
+                                 return {"status": "error", "message": f"File '{path}' is too large ({file_size} bytes) to download directly."}
                              async with aiohttp.ClientSession() as dl_session:
                                  async with dl_session.get(download_url, timeout=30) as dl_response:
-                                     if dl_response.status == 200: content_bytes = await dl_response.read()
-                                     else: return f"Error: Could not retrieve content for file '{path}'. Download failed (Status: {dl_response.status})."
-                        else: return f"Error: Could not retrieve content for file '{path}'. No content or download URL found."
-                    else: content_bytes = base64.b64decode(content_base64.replace('\n', ''))
-                    try: decoded_content = content_bytes.decode('utf-8')
-                    except UnicodeDecodeError: logger.warning(f"Failed to decode UTF-8 content of '{path}' from repo '{repo_full_name_or_username}'. Assuming binary."); return f"Note: Content of '{path}' could not be decoded as UTF-8 text. It might be a binary file."
+                                     if dl_response.status == 200:
+                                         content_bytes = await dl_response.read()
+                                     else:
+                                         return {"status": "error", "message": f"Could not retrieve content for file '{path}'. Download failed (Status: {dl_response.status})."}
+                        else:
+                            return {"status": "error", "message": f"Could not retrieve content for file '{path}'. No content or download URL found."}
+                    else:
+                        content_bytes = base64.b64decode(content_base64.replace('\n', ''))
+
+                    try:
+                        decoded_content = content_bytes.decode('utf-8')
+                    except UnicodeDecodeError:
+                        return {"status": "success", "message": f"Note: Content of '{path}' could not be decoded as UTF-8 text. It might be a binary file.", "content_base64": base64.b64encode(content_bytes).decode()}
+
                     logger.info(f"Successfully read file '{path}' from repo '{repo_full_name_or_username}' for agent {agent_id}.")
                     MAX_FILE_READ_CHARS = 50000
                     ref_display = ref or 'default branch'
+
                     if len(decoded_content) > MAX_FILE_READ_CHARS:
-                         logger.warning(f"Read large file '{path}' from GitHub ({len(decoded_content)} chars), truncating.")
-                         return f"Content of '{repo_full_name_or_username}/{path}' (ref: {ref_display}) [TRUNCATED]:\n\n{decoded_content[:MAX_FILE_READ_CHARS]}\n\n[... File content truncated due to size limit ({MAX_FILE_READ_CHARS} chars) ...]"
-                    else: return f"Content of '{repo_full_name_or_username}/{path}' (ref: {ref_display}):\n\n{decoded_content}"
-                except FileNotFoundError: return f"Error: File path '{path}' not found in repository '{repo_full_name_or_username}' (ref: {ref or 'default'})."
+                         message = f"Content of '{repo_full_name_or_username}/{path}' (ref: {ref_display}) [TRUNCATED]:\n\n{decoded_content[:MAX_FILE_READ_CHARS]}\n\n[... File content truncated due to size limit ({MAX_FILE_READ_CHARS} chars) ...]"
+                         return {"status": "success", "message": message, "content": decoded_content[:MAX_FILE_READ_CHARS], "truncated": True}
+                    else:
+                        message = f"Content of '{repo_full_name_or_username}/{path}' (ref: {ref_display}):\n\n{decoded_content}"
+                        return {"status": "success", "message": message, "content": decoded_content, "truncated": False}
+                except FileNotFoundError:
+                    return {"status": "error", "message": f"File path '{path}' not found in repository '{repo_full_name_or_username}' (ref: {ref or 'default'})."}
 
         except (FileNotFoundError, PermissionError) as known_err:
             logger.warning(f"GitHub tool execution failed for agent {agent_id}: {known_err}")
-            return str(known_err)
+            return {"status": "error", "message": str(known_err)}
         except Exception as e:
             logger.error(f"Unexpected error executing GitHub tool ({action}) for agent {agent_id}: {e}", exc_info=True)
-            return f"Error executing GitHub tool ({action}): {type(e).__name__} - {e}"
+            return {"status": "error", "message": f"Error executing GitHub tool ({action}): {type(e).__name__} - {e}"}

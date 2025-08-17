@@ -92,95 +92,67 @@ class KnowledgeBaseTool(BaseTool):
         agent_sandbox_path: Path, # Not used by this tool
         project_name: Optional[str] = None, # Context for potential future use
         session_name: Optional[str] = None, # Context for potential future use
-        # We need the current session_id from the manager to link knowledge
-        # But tools don't have direct manager access. This needs adjustment.
-        # For now, let's assume the manager passes it via kwargs if possible,
-        # or we link knowledge globally (less ideal).
-        # **Let's assume session_id is NOT reliably passed here yet.**
-        # We will link knowledge globally for now, or to the session found via project/session names if possible.
         **kwargs: Any
-        ) -> Any:
+        ) -> Dict[str, Any]:
         """Executes the knowledge base action."""
         action = kwargs.get("action")
         logger.info(f"Agent {agent_id} requesting KnowledgeBaseTool action '{action}' with params: {kwargs}")
         if not action or action not in ["save_knowledge", "search_knowledge", "search_agent_thoughts"]:
-            return "Error: Invalid or missing 'action'. Must be 'save_knowledge', 'search_knowledge', or 'search_agent_thoughts'."
-        # --- Get DB Session ID (Best effort - Requires Manager modification ideally) ---
-        # This is a temporary workaround. Ideally, ToolExecutor would get session_db_id from manager
-        # and pass it here explicitly.
+            return {"status": "error", "message": "Invalid or missing 'action'. Must be 'save_knowledge', 'search_knowledge', or 'search_agent_thoughts'."}
+
         current_session_db_id: Optional[int] = None
-        # if project_name and session_name:
-        #    # Need a db_manager method here: get_session_id(project_name, session_name)
-        #    pass # Placeholder - cannot get session ID reliably here yet.
 
         try:
             if action == "save_knowledge":
-                # --- MODIFIED: Make summary/keywords optional for saving ---
                 summary = kwargs.get("summary")
-                keywords_str = kwargs.get("keywords") # Renamed to avoid conflict
+                keywords_str = kwargs.get("keywords")
                 importance_str = kwargs.get("importance", "0.5")
 
-                # Provide defaults if missing (e.g., for automatic thought saving)
                 if not summary:
-                    # Attempt to get raw thought content if available (needs framework support)
-                    # For now, use a placeholder if summary is truly missing.
-                    summary = kwargs.get("_raw_thought_content", "[No Summary Provided]") # Example placeholder
-                    logger.warning(f"KnowledgeBaseTool: 'summary' missing for save_knowledge called by {agent_id}. Using placeholder/raw content.")
-
+                    summary = kwargs.get("_raw_thought_content", "[No Summary Provided]")
                 if not keywords_str:
-                    keywords_str = f"agent_thought,{agent_id},auto_logged" # Default keywords
-                    logger.warning(f"KnowledgeBaseTool: 'keywords' missing for save_knowledge called by {agent_id}. Using default tags: {keywords_str}")
-
-                # if not summary or not keywords: # Original check removed
-                #     return "Error: 'summary' and 'keywords' parameters are required for 'save_knowledge'."
+                    keywords_str = f"agent_thought,{agent_id},auto_logged"
 
                 try:
                     importance = float(importance_str)
                 except (ValueError, TypeError):
-                    logger.warning(f"Invalid importance value '{importance_str}' from agent {agent_id}. Defaulting to 0.5.")
                     importance = 0.5
 
-                # TODO: Get interaction_id if possible to link the source. Requires framework changes.
-                interaction_id = None
-
                 saved_knowledge = await db_manager.save_knowledge(
-                    keywords=keywords_str, # Use the potentially defaulted string
-                    summary=summary, # Use the potentially defaulted summary
-                    session_id=current_session_db_id, # May be None for now
-                    interaction_id=interaction_id, # May be None
+                    keywords=keywords_str,
+                    summary=summary,
+                    session_id=current_session_db_id,
+                    interaction_id=None,
                     importance=importance
                 )
 
                 if saved_knowledge:
-                    return f"Successfully saved knowledge item ID {saved_knowledge.id}."
+                    return {"status": "success", "message": f"Successfully saved knowledge item ID {saved_knowledge.id}."}
                 else:
-                    return "Error: Failed to save knowledge item to database."
+                    return {"status": "error", "message": "Failed to save knowledge item to database."}
 
             elif action == "search_knowledge":
                 query_keywords_str = kwargs.get("query_keywords")
-                min_importance_str = kwargs.get("min_importance")
-                max_results_str = kwargs.get("max_results", "5")
-
                 if not query_keywords_str:
-                    return "Error: 'query_keywords' parameter is required for 'search_knowledge'."
+                    return {"status": "error", "message": "'query_keywords' parameter is required for 'search_knowledge'."}
 
                 query_keywords = [kw.strip() for kw in query_keywords_str.split(',') if kw.strip()]
                 if not query_keywords:
-                     return "Error: 'query_keywords' contained no valid keywords after splitting."
+                     return {"status": "error", "message": "'query_keywords' contained no valid keywords."}
 
                 min_importance = None
-                if min_importance_str:
+                if kwargs.get("min_importance"):
                     try:
-                        min_importance = float(min_importance_str)
+                        min_importance = float(kwargs["min_importance"])
                     except (ValueError, TypeError):
-                        logger.warning(f"Invalid min_importance value '{min_importance_str}' from agent {agent_id}. Ignoring.")
+                        pass
 
-                try:
-                    max_results = int(max_results_str)
-                    if max_results <= 0: max_results = 5
-                except ValueError:
-                    logger.warning(f"Invalid 'max_results' value '{max_results_str}' provided by {agent_id}. Defaulting to 5.")
-                    max_results = 5
+                max_results = 5
+                if kwargs.get("max_results"):
+                    try:
+                        max_results = int(kwargs["max_results"])
+                    except (ValueError, TypeError):
+                        pass
 
                 found_items = await db_manager.search_knowledge(
                     query_keywords=query_keywords,
@@ -189,126 +161,44 @@ class KnowledgeBaseTool(BaseTool):
                 )
 
                 if not found_items:
-                    return f"No knowledge items found matching keywords: '{query_keywords_str}'" + (f" with min importance {min_importance}." if min_importance else ".")
+                    return {"status": "success", "message": f"No knowledge items found matching keywords: '{query_keywords_str}'.", "items": []}
 
-                # Format results
-                output_lines = [f"Found {len(found_items)} knowledge item(s) matching '{query_keywords_str}':"]
-                MAX_SUMMARY_LEN = 200
-                for item in found_items:
-                    summary_preview = item.summary[:MAX_SUMMARY_LEN] + ('...' if len(item.summary) > MAX_SUMMARY_LEN else '')
-                    output_lines.append(
-                        f"  - ID: {item.id}, Score: {item.importance_score:.2f}, Keywords: '{item.keywords}'\n    Summary: {summary_preview}"
-                    )
-                return "\n".join(output_lines)
+                items_data = [{"id": item.id, "score": f"{item.importance_score:.2f}", "keywords": item.keywords, "summary": item.summary} for item in found_items]
+                message = f"Found {len(found_items)} knowledge item(s) matching '{query_keywords_str}'."
+                return {"status": "success", "message": message, "items": items_data}
             
             elif action == "search_agent_thoughts":
                 agent_identifier = kwargs.get("agent_identifier")
-                additional_keywords_str = kwargs.get("additional_keywords")
-                max_results_str = kwargs.get("max_results", "5") # Default to 5 for thoughts as well
-
                 if not agent_identifier:
-                    return "Error: 'agent_identifier' parameter is required for 'search_agent_thoughts'."
+                    return {"status": "error", "message": "'agent_identifier' parameter is required for 'search_agent_thoughts'."}
 
-                # Base keywords for searching thoughts
-                search_keywords = ["agent_thought", str(agent_identifier).strip()] # Ensure agent_identifier is a string
+                search_keywords = ["agent_thought", str(agent_identifier).strip()]
+                if kwargs.get("additional_keywords"):
+                    search_keywords.extend([kw.strip() for kw in kwargs["additional_keywords"].split(',') if kw.strip()])
 
-                # Add additional keywords if provided
-                if additional_keywords_str:
-                    parsed_additional_keywords = [kw.strip() for kw in additional_keywords_str.split(',') if kw.strip()]
-                    if parsed_additional_keywords:
-                        search_keywords.extend(parsed_additional_keywords)
+                max_results = 5
+                if kwargs.get("max_results"):
+                    try:
+                        max_results = int(kwargs["max_results"])
+                    except (ValueError, TypeError):
+                        pass
                 
-                logger.debug(f"Searching agent thoughts for agent '{agent_identifier}' with keywords: {search_keywords}")
-
-                try:
-                    max_results = int(max_results_str)
-                    if max_results <= 0: max_results = 5
-                except ValueError:
-                    logger.warning(f"Invalid 'max_results' value '{max_results_str}' for search_agent_thoughts by {agent_id}. Defaulting to 5.")
-                    max_results = 5
-                
-                # For thoughts, min_importance might not be as relevant, or we could use a low default.
-                # For now, not explicitly setting min_importance, letting db_manager.search_knowledge use its default or None.
-                min_importance_for_thoughts = None # Or a low value like 0.1 if desired
-
                 found_items = await db_manager.search_knowledge(
                     query_keywords=search_keywords,
-                    min_importance=min_importance_for_thoughts, 
                     max_results=max_results
                 )
 
                 if not found_items:
-                    return f"No thoughts found for agent '{agent_identifier}' matching keywords: '{', '.join(search_keywords)}'."
+                    return {"status": "success", "message": f"No thoughts found for agent '{agent_identifier}' matching keywords.", "thoughts": []}
                 
-                output_lines = [f"Found {len(found_items)} thought(s) for agent '{agent_identifier}' (Keywords: {', '.join(search_keywords)}):"]
-                MAX_SUMMARY_LEN = 200 # Consistent with search_knowledge
-                for item in found_items:
-                    # Thoughts are saved with their content in the 'summary' field of KnowledgeItem
-                    thought_preview = item.summary[:MAX_SUMMARY_LEN] + ('...' if len(item.summary) > MAX_SUMMARY_LEN else '')
-                    output_lines.append(
-                        f"  - ID: {item.id}, Saved: {item.timestamp.strftime('%Y-%m-%d %H:%M:%S') if item.timestamp else 'N/A'}, Keywords: '{item.keywords}'\n    Thought: {thought_preview}"
-                    )
-                return "\n".join(output_lines)
+                thoughts_data = [{"id": item.id, "timestamp": item.timestamp.strftime('%Y-%m-%d %H:%M:%S') if item.timestamp else 'N/A', "keywords": item.keywords, "thought": item.summary} for item in found_items]
+                message = f"Found {len(found_items)} thought(s) for agent '{agent_identifier}'."
+                return {"status": "success", "message": message, "thoughts": thoughts_data}
 
         except Exception as e:
             logger.error(f"Unexpected error executing KnowledgeBaseTool (Action: {action}) for agent {agent_id}: {e}", exc_info=True)
-            return f"Error executing knowledge base tool ({action}): {type(e).__name__} - {e}"
+            return {"status": "error", "message": f"Error executing knowledge base tool ({action}): {type(e).__name__} - {e}"}
 
-    # --- Detailed Usage Method ---
     def get_detailed_usage(self) -> str:
         """Returns detailed usage instructions for the KnowledgeBaseTool."""
-        usage = """
-        **Tool Name:** knowledge_base
-
-        **Description:** Saves or searches for information in the long-term knowledge base. Useful for remembering past learnings, procedures, or context across sessions. Also allows searching for specific agent thoughts.
-
-        **Actions & Parameters:**
-
-        1.  **save_knowledge:** Saves a piece of knowledge.
-            *   `<summary>` (string, required): A concise summary of the information to save.
-            *   `<keywords>` (string, required): Comma-separated keywords relevant to the summary (e.g., 'python,fastapi,deployment,docker').
-            *   `<importance>` (float, optional): A score from 0.1 to 1.0 indicating confidence or importance. Defaults to 0.5.
-            *   Example:
-                ```xml
-                <knowledge_base>
-                  <action>save_knowledge</action>
-                  <summary>Successfully deployed the webapp using Docker on the staging server. Key steps involved updating the Dockerfile and nginx config.</summary>
-                  <keywords>deployment,docker,webapp,staging,nginx</keywords>
-                  <importance>0.9</importance>
-                </knowledge_base>
-                ```
-
-        2.  **search_knowledge:** Searches the knowledge base for relevant items.
-            *   `<query_keywords>` (string, required): Comma-separated keywords to search for (e.g., 'python,data analysis,pandas').
-            *   `<max_results>` (integer, optional): Maximum number of results to return. Defaults to 5.
-            *   `<min_importance>` (float, optional): Only return results with an importance score greater than or equal to this value.
-            *   Example:
-                ```xml
-                <knowledge_base>
-                  <action>search_knowledge</action>
-                  <query_keywords>python,api,error handling</query_keywords>
-                  <max_results>3</max_results>
-                  <min_importance>0.7</min_importance>
-                </knowledge_base>
-                ```
-        
-        3.  **search_agent_thoughts:** Searches for past thoughts of a specific agent.
-            *   `<agent_identifier>` (string, required): The ID of the agent whose thoughts are being searched (e.g., "agent_xyz123").
-            *   `<additional_keywords>` (string, optional): Comma-separated keywords to further refine the search within the agent's thoughts (e.g., "planning,file_system").
-            *   `<max_results>` (integer, optional): Maximum number of thoughts to return. Defaults to 5.
-            *   Example:
-                ```xml
-                <knowledge_base>
-                  <action>search_agent_thoughts</action>
-                  <agent_identifier>agent_alpha_7</agent_identifier>
-                  <additional_keywords>project_omega,database_schema</additional_keywords>
-                  <max_results>3</max_results>
-                </knowledge_base>
-                ```
-
-        **Important Notes:**
-        *   Use `save_knowledge` after successful complex tasks or when significant learning occurs. Agent thoughts are often automatically saved with relevant keywords.
-        *   Use `search_knowledge` *before* planning complex tasks to leverage past information.
-        *   Use `search_agent_thoughts` to recall specific past reasoning or context from an agent, which can be useful for understanding past decisions or resuming tasks.
-        """
-        return usage.strip()
+        return super().get_detailed_usage()
