@@ -140,7 +140,6 @@ class Agent:
         complete_assistant_response = ""
         stream_had_error = False
         last_error_obj = None
-        yielded_chunks = False
         
         logger.info(f"Agent {self.agent_id} starting processing via {self.provider_name}. History length: {len(history_to_use)}. State: {self.state}")
         try:
@@ -148,190 +147,125 @@ class Agent:
                 self.set_status(AGENT_STATUS_ERROR)
                 yield {"type": "error", "content": f"[Agent Error: Could not ensure sandbox {self.sandbox_path}]", "_exception_obj": OSError(f"Could not ensure sandbox {self.sandbox_path}")}; return
 
-            max_tokens_override = None 
-
             provider_stream = self.llm_provider.stream_completion(
                 messages=history_to_use, model=self.model, temperature=self.temperature,
-                max_tokens=max_tokens_override, **self.provider_kwargs
+                **self.provider_kwargs
             )
 
             async for event in provider_stream:
                 event_type = event.get("type")
                 if event_type == "response_chunk":
                     content = event.get("content", "")
-                    if content: self.text_buffer += content; complete_assistant_response += content; yielded_chunks = True
+                    if content: self.text_buffer += content; complete_assistant_response += content
                     yield {"type": "response_chunk", "content": content, "agent_id": self.agent_id}
                 elif event_type == "status": event["agent_id"] = self.agent_id; yield event
                 elif event_type == "error":
                     error_content = f"[{self.provider_name} Error] {event.get('content', 'Unknown provider error')}"
                     last_error_obj = event.get('_exception_obj', ValueError(error_content))
                     logger.error(f"Agent {self.agent_id}: Received error event from provider: {error_content}")
-                    event["agent_id"] = self.agent_id; event["content"] = error_content; event["_exception_obj"] = last_error_obj; stream_had_error = True; yield event; break 
+                    event["agent_id"] = self.agent_id; event["content"] = error_content; event["_exception_obj"] = last_error_obj; stream_had_error = True; yield event; break
                 else: logger.warning(f"Agent {self.agent_id}: Received unknown event type '{event_type}' from provider.")
             logger.debug(f"Agent {self.agent_id}: Provider stream finished. Stream error: {stream_had_error}. Processing buffer.")
 
-            if not stream_had_error:
-                logger.debug(f"Agent {self.agent_id}: Raw response before post-processing:\n>>>\n{complete_assistant_response}\n<<<")
-                buffer_to_process = self.text_buffer.strip() # Strip here for workflow processing
-                original_complete_response = complete_assistant_response # Retain the full original response for potential error reporting
-
-                # --- Check for Workflow Triggers First ---
-                if hasattr(self.manager, 'workflow_manager'):
-                    workflow_result: Optional['WorkflowResult'] = await self.manager.workflow_manager.process_agent_output_for_workflow(
-                        self.manager, self, buffer_to_process 
-                    )
-                    if workflow_result:
-                        logger.info(f"Agent {self.agent_id}: Workflow '{workflow_result.workflow_name}' executed. Success: {workflow_result.success}. Message: {workflow_result.message}")
-                        yield {"type": "workflow_executed", "workflow_name": workflow_result.workflow_name, "result_data": workflow_result.dict(), "agent_id": self.agent_id}
-                        # If a workflow was triggered and executed, its result dictates the next steps.
-                        # The Agent.process_message should return here, and CycleHandler will use the WorkflowResult.
-                        return 
-                # --- END Workflow Trigger Check ---
-
-                # If no workflow was triggered, proceed with normal parsing (think, state_request, tools)
-                think_content_extracted = None
-                remaining_text_after_processing_tags = buffer_to_process # Use the stripped buffer
-
-                think_match = self.think_pattern.search(remaining_text_after_processing_tags)
-                if think_match:
-                    extracted_think_content = think_match.group(1).strip()
-                    full_think_block = think_match.group(0)
-                    if extracted_think_content:
-                        logger.info(f"Agent {self.agent_id}: Detected robust <think> tag content.")
-                        think_content_extracted = extracted_think_content
-                        yield {"type": "agent_thought", "content": extracted_think_content, "agent_id": self.agent_id}
-                    remaining_text_after_processing_tags = remaining_text_after_processing_tags.replace(full_think_block, '', 1).strip()
-
-                # --- PM Startup Missing Task List Check ---
-                if think_content_extracted and \
-                   (not remaining_text_after_processing_tags or remaining_text_after_processing_tags.isspace()) and \
-                   self.agent_type == AGENT_TYPE_PM and \
-                   self.state == PM_STATE_STARTUP:
-                    logger.warning(
-                        f"Agent {self.agent_id} (PM) in state '{self.state}' provided only a <think> tag "
-                        f"and no further content, but a task list is expected. Yielding specific event."
-                    )
-                    yield {"type": "pm_startup_missing_task_list_after_think", "agent_id": self.agent_id}
-                    return
-                # --- END PM Startup Missing Task List Check ---
-
-                state_request_tag = None; requested_state = None
-                cycle_handler_instance = getattr(self.manager, 'cycle_handler', None)
-                manager_request_state_pattern = getattr(cycle_handler_instance, 'request_state_pattern', None) if cycle_handler_instance else None
-
-                cleaned_for_state_regex = remaining_text_after_processing_tags # Already stripped
-                if (cleaned_for_state_regex.startswith("```xml") and cleaned_for_state_regex.endswith("```")) or \
-                   (cleaned_for_state_regex.startswith("```") and cleaned_for_state_regex.endswith("```")):
-                    cleaned_for_state_regex = re.sub(r"^```(?:xml)?\s*|\s*```$", "", cleaned_for_state_regex).strip()
-                if cleaned_for_state_regex.startswith("`") and cleaned_for_state_regex.endswith("`"):
-                    cleaned_for_state_regex = cleaned_for_state_regex[1:-1].strip()
-                
-                if manager_request_state_pattern:
-                    state_match = manager_request_state_pattern.search(cleaned_for_state_regex)
-                    if state_match:
-                        requested_state = state_match.group(1)
-                        state_request_tag = state_match.group(0)
-                        is_valid_state_request = self.manager.workflow_manager.is_valid_state(self.agent_type, requested_state)
-                        if is_valid_state_request:
-                            logger.info(f"Agent {self.agent_id}: Detected valid state request tag for '{requested_state}': {state_request_tag}")
-                            text_after_state_tag = "" 
-                            if cleaned_for_state_regex == state_request_tag: # If the *entire cleaned output* was the state request
-                                yield {"type": "agent_state_change_requested", "requested_state": requested_state, "agent_id": self.agent_id}
-                                return # State change is the only action
-                            else:
-                                yield {"type": "agent_state_change_requested", "requested_state": requested_state, "agent_id": self.agent_id}
-                                remaining_text_after_state_tag = remaining_text_after_processing_tags.replace(state_request_tag, '', 1).strip()
-                                if remaining_text_after_state_tag:
-                                    yield {"type": "final_response", "content": remaining_text_after_state_tag, "agent_id": self.agent_id}
-                                return # Stop further processing
-                        else:
-                            logger.warning(f"Agent {self.agent_id}: Detected invalid state request '{requested_state}'. Ignoring tag: {state_request_tag}")
-                            if cleaned_for_state_regex == state_request_tag:
-                                yield {"type": "invalid_state_request_output", "content": state_request_tag, "agent_id": self.agent_id}; return
-                            remaining_text_after_processing_tags = remaining_text_after_processing_tags.replace(state_request_tag, '', 1).strip()
-                
-                final_cleaned_response_for_tools_or_text = remaining_text_after_processing_tags
-                
-                if self.agent_type == AGENT_TYPE_PM and \
-                   self.state == PM_STATE_STARTUP and \
-                   (not 'workflow_result' in locals() or not workflow_result):
-
-                    pm_kickoff_trigger_tag = "task_list"
-                    if hasattr(self.manager, 'workflow_manager') and self.manager.workflow_manager and \
-                       hasattr(self.manager.workflow_manager, '_workflow_triggers'):
-                        for trigger_key, wf_instance in self.manager.workflow_manager._workflow_triggers.items():
-                            if hasattr(wf_instance, 'name') and wf_instance.name == "pm_project_kickoff":
-                                pm_kickoff_trigger_tag = trigger_key[2]
-                                break
-
-                    if f"<{pm_kickoff_trigger_tag}>" not in final_cleaned_response_for_tools_or_text:
-                        logger.warning(
-                            f"Agent {self.agent_id} (PM) in state '{self.state}' did not output the expected '<{pm_kickoff_trigger_tag}>' tag. "
-                            f"Forcing retry by re-requesting current state with feedback. Output was: '{final_cleaned_response_for_tools_or_text[:200]}...'"
-                        )
-                        feedback_content = (
-                            f"[Framework Feedback for PM Retry]\n"
-                            f"Your previous output did not contain the required '<{pm_kickoff_trigger_tag}>' XML structure. "
-                            f"Please review your instructions for the '{self.state}' state and ensure your entire response is the XML task list as specified."
-                        )
-                        self.message_history.append({"role": "system", "content": feedback_content})
-                        yield {"type": "agent_state_change_requested", "requested_state": PM_STATE_STARTUP, "agent_id": self.agent_id}
-                        return
-
-                tool_requests_to_yield = []
-
-                if self.manager.tool_executor and self.raw_xml_tool_call_pattern: 
-                    parsed_tool_calls_info = find_and_parse_xml_tool_calls(
-                        final_cleaned_response_for_tools_or_text, self.manager.tool_executor.tools,
-                        self.raw_xml_tool_call_pattern, self.markdown_xml_tool_call_pattern, self.agent_id
-                    )
-                    valid_calls = parsed_tool_calls_info["valid_calls"]
-                    parsing_errors = parsed_tool_calls_info["parsing_errors"]
-
-                    if parsing_errors: # Check for parsing errors first
-                        first_error = parsing_errors[0]
-                        logger.warning(f"Agent {self.agent_id}: Malformed XML tool call detected. Tool: {first_error['tool_name']}, Error: {first_error['error_message']}")
-                        yield {
-                            "type": "malformed_tool_call",
-                            "tool_name": first_error["tool_name"],
-                            "error_message": first_error["error_message"],
-                            "malformed_xml_block": first_error["xml_block"],
-                            "raw_assistant_response": original_complete_response, # Use the original full response here
-                            "agent_id": self.agent_id
-                        }
-                        return # Stop processing this turn, agent needs to correct
-
-                    if valid_calls:
-                        calls_to_process = valid_calls
-                        
-                        if len(calls_to_process) > 1:
-                             logger.info(f"Agent {self.agent_id} found {len(calls_to_process)} tool calls in a single response. Processing all.")
-
-                        for call_data in calls_to_process:
-                            tool_name_call, tool_args, _ = call_data
-                            if tool_name_call in self.manager.tool_executor.tools:
-                                call_id = f"xml_call_{self.agent_id}_{int(time.time() * 1000)}_{os.urandom(2).hex()}"
-                                tool_requests_to_yield.append({"id": call_id, "name": tool_name_call, "arguments": tool_args})
-                            else:
-                                logger.warning(f"Agent {self.agent_id}: Tool name '{tool_name_call}' parsed from LLM output, but not found in ToolExecutor. Skipping this call.")
-                
-                if tool_requests_to_yield:
-                    logger.debug(f"Agent {self.agent_id} preparing to yield {len(tool_requests_to_yield)} tool requests.")
-                    # Use original_complete_response for history if tool calls are made
-                    response_for_history = original_complete_response 
-                    yield {"type": "tool_requests", "calls": tool_requests_to_yield, "raw_assistant_response": response_for_history, "agent_id": self.agent_id}; return
-                else:
-                    # No tool requests yielded, this is a final textual response (or empty if only think tag was present)
-                    if final_cleaned_response_for_tools_or_text:
-                        yield {"type": "final_response", "content": final_cleaned_response_for_tools_or_text, "agent_id": self.agent_id}; return
-                    else: 
-                        if think_content_extracted:
-                            logger.info(f"Agent {self.agent_id}: Only a <think> block was produced. No further output.")
-                        else:
-                            logger.info(f"Agent {self.agent_id}: Buffer empty after processing tags. No final response or action yielded.")
-                        return
-            else: 
+            if stream_had_error:
                 logger.warning(f"Agent {self.agent_id}: Skipping final tag/tool parsing due to stream error."); return
+
+            logger.debug(f"Agent {self.agent_id}: Raw response before post-processing:\n>>>\n{complete_assistant_response}\n<<<")
+
+            buffer_to_process = self.text_buffer.strip()
+            original_complete_response = complete_assistant_response
+
+            # --- Workflow Trigger Check ---
+            if hasattr(self.manager, 'workflow_manager'):
+                workflow_result = await self.manager.workflow_manager.process_agent_output_for_workflow(self.manager, self, buffer_to_process)
+                if workflow_result:
+                    logger.info(f"Agent {self.agent_id}: Workflow '{workflow_result.workflow_name}' executed. Yielding and stopping.")
+                    yield {"type": "workflow_executed", "workflow_name": workflow_result.workflow_name, "result_data": workflow_result.dict(), "agent_id": self.agent_id}
+                    return
+
+            # --- Refactored Action Processing ---
+            events_to_yield = []
+            remaining_buffer = buffer_to_process
+
+            # 1. Process Thoughts
+            think_match = self.think_pattern.search(remaining_buffer)
+            if think_match:
+                extracted_think_content = think_match.group(1).strip()
+                if extracted_think_content:
+                    logger.info(f"Agent {self.agent_id}: Detected <think> tag.")
+                    events_to_yield.append({"type": "agent_thought", "content": extracted_think_content, "agent_id": self.agent_id})
+                remaining_buffer = remaining_buffer.replace(think_match.group(0), '', 1).strip()
+
+            # 2. Process Tool Calls
+            if self.manager.tool_executor and self.raw_xml_tool_call_pattern:
+                parsed_tool_calls_info = find_and_parse_xml_tool_calls(
+                    remaining_buffer, self.manager.tool_executor.tools,
+                    self.raw_xml_tool_call_pattern, self.markdown_xml_tool_call_pattern, self.agent_id
+                )
+
+                if parsed_tool_calls_info["parsing_errors"]:
+                    first_error = parsed_tool_calls_info["parsing_errors"][0]
+                    logger.warning(f"Agent {self.agent_id}: Malformed XML tool call detected. Yielding error and stopping.")
+                    yield {
+                        "type": "malformed_tool_call", "tool_name": first_error['tool_name'],
+                        "error_message": first_error['error_message'], "malformed_xml_block": first_error['xml_block'],
+                        "raw_assistant_response": original_complete_response, "agent_id": self.agent_id
+                    }
+                    return
+
+                if parsed_tool_calls_info["valid_calls"]:
+                    tool_requests = []
+                    processed_spans = []
+                    # Sort calls by their start position to process them in order
+                    sorted_calls = sorted(parsed_tool_calls_info["valid_calls"], key=lambda x: x[2][0])
+
+                    for tool_name_call, tool_args, span in sorted_calls:
+                        call_id = f"xml_call_{self.agent_id}_{int(time.time() * 1000)}_{os.urandom(2).hex()}"
+                        tool_requests.append({"id": call_id, "name": tool_name_call, "arguments": tool_args})
+                        processed_spans.append(span)
+
+                    logger.info(f"Agent {self.agent_id}: Found {len(tool_requests)} valid tool call(s).")
+                    events_to_yield.append({
+                        "type": "tool_requests", "calls": tool_requests,
+                        "raw_assistant_response": original_complete_response, "agent_id": self.agent_id
+                    })
+
+                    # Remove tool calls from buffer to isolate remaining text
+                    temp_buffer = ""
+                    last_end = 0
+                    for start, end in sorted(processed_spans):
+                        temp_buffer += remaining_buffer[last_end:start]
+                        last_end = end
+                    temp_buffer += remaining_buffer[last_end:]
+                    remaining_buffer = temp_buffer.strip()
+
+            # 3. Process State Change Request
+            cycle_handler_instance = getattr(self.manager, 'cycle_handler', None)
+            manager_request_state_pattern = getattr(cycle_handler_instance, 'request_state_pattern', None) if cycle_handler_instance else None
+            if manager_request_state_pattern:
+                state_match = manager_request_state_pattern.search(remaining_buffer)
+                if state_match:
+                    requested_state = state_match.group(1)
+                    if self.manager.workflow_manager.is_valid_state(self.agent_type, requested_state):
+                        logger.info(f"Agent {self.agent_id}: Detected valid state request for '{requested_state}'.")
+                        events_to_yield.append({"type": "agent_state_change_requested", "requested_state": requested_state, "agent_id": self.agent_id})
+                        remaining_buffer = remaining_buffer.replace(state_match.group(0), '', 1).strip()
+                    else:
+                        logger.warning(f"Agent {self.agent_id}: Detected invalid state request '{requested_state}'. Ignoring.")
+                        events_to_yield.append({"type": "invalid_state_request_output", "content": state_match.group(0), "agent_id": self.agent_id})
+                        remaining_buffer = remaining_buffer.replace(state_match.group(0), '', 1).strip()
+
+            # 4. Handle Final Textual Response (if any remains)
+            if remaining_buffer:
+                logger.info(f"Agent {self.agent_id}: Found remaining text to be treated as final response.")
+                events_to_yield.append({"type": "final_response", "content": remaining_buffer, "agent_id": self.agent_id})
+
+            # --- Yield all collected events ---
+            if not events_to_yield:
+                 logger.info(f"Agent {self.agent_id}: Buffer empty after processing. No actions or final response yielded.")
+            else:
+                for event in events_to_yield:
+                    yield event
 
         except Exception as e:
             error_msg = f"Unexpected Error processing message in Agent {self.agent_id}: {type(e).__name__} - {e}"
