@@ -382,7 +382,20 @@ class AgentCycleHandler:
                                 history_item: MessageDict = {"role": "tool", "tool_call_id": result_dict.get("call_id", tool_id or f"unknown_id_{i}"), "name": result_dict.get("name", tool_name or f"unknown_tool_{i}"), "content": str(result_dict.get("content", "[Tool Error: No content]"))}
                                 all_tool_results_for_history.append(history_item)
                                 result_content_str = str(result_dict.get("content", ""))
-                                if not result_content_str.lower().startswith(("[toolerror", "error:", "[toolexec error")): any_tool_success = True
+                                tool_was_successful = True # Assume success by default
+                                try:
+                                    # Attempt to parse the content as JSON. This handles tools that
+                                    # return structured results (like file_system will).
+                                    tool_result_data = json.loads(result_content_str)
+                                    if isinstance(tool_result_data, dict) and tool_result_data.get("status") == "error":
+                                        tool_was_successful = False
+                                except (json.JSONDecodeError, TypeError):
+                                    # If it's not valid JSON, fall back to the old string check for compatibility.
+                                    if "error" in result_content_str.lower():
+                                        tool_was_successful = False
+
+                                if tool_was_successful:
+                                    any_tool_success = True
                                 # ... (db log tool result, UI send) ...
                                 if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="tool", content=result_content_str, tool_results=[result_dict])
                                 await self._manager.send_to_ui({**result_dict, "type": "tool_result", "agent_id": agent.agent_id, "tool_sequence": f"{i+1}_of_{len(tool_calls)}"})
