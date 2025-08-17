@@ -130,7 +130,9 @@ class Settings:
         except ValueError: logger.warning("Invalid RETRY_DELAY_SECONDS, using default 5.0."); self.RETRY_DELAY_SECONDS = 5.0
         try: self.MAX_FAILOVER_ATTEMPTS: int = int(os.getenv("MAX_FAILOVER_ATTEMPTS", "3"))
         except ValueError: logger.warning("Invalid MAX_FAILOVER_ATTEMPTS, using default 3."); self.MAX_FAILOVER_ATTEMPTS = 3
-        logger.info(f"Retry/Failover settings loaded: MaxRetries={self.MAX_STREAM_RETRIES}, Delay={self.RETRY_DELAY_SECONDS}s, MaxFailover={self.MAX_FAILOVER_ATTEMPTS}")
+        try: self.MAX_CYCLE_TURNS: int = int(os.getenv("MAX_CYCLE_TURNS", "15"))
+        except ValueError: logger.warning("Invalid MAX_CYCLE_TURNS, using default 15."); self.MAX_CYCLE_TURNS = 15
+        logger.info(f"Retry/Failover settings loaded: MaxRetries={self.MAX_STREAM_RETRIES}, Delay={self.RETRY_DELAY_SECONDS}s, MaxFailover={self.MAX_FAILOVER_ATTEMPTS}, MaxTurns={self.MAX_CYCLE_TURNS}")
 
         # --- PM Manage State Timer Interval ---
         try:

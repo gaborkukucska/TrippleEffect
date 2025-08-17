@@ -20,6 +20,7 @@ class CycleContext(BaseModel):
     agent: 'Agent' = Field(..., description="The Agent instance being processed.")
     manager: 'AgentManager' = Field(..., description="The AgentManager instance.")
     retry_count: int = Field(default=0, description="Current retry count for this cycle.")
+    turn_count: int = Field(default=0, description="Tracks the number of turns within a single, continuous cycle.")
     
     # Cycle Execution State
     history_for_call: List[MessageDict] = Field(default_factory=list, description="Message history prepared for the LLM call.")

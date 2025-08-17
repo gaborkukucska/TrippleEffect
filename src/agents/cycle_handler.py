@@ -196,7 +196,23 @@ class AgentCycleHandler:
         
         # Outer loop to handle priority rechecks by restarting the thinking process
         while True:
-            logger.debug(f"CycleHandler '{agent.agent_id}': Starting/Restarting thinking process within run_cycle's main loop.")
+            context.turn_count += 1
+            logger.debug(f"CycleHandler '{agent.agent_id}': Starting/Restarting thinking process within run_cycle's main loop. Turn: {context.turn_count}")
+
+            if context.turn_count > settings.MAX_CYCLE_TURNS:
+                error_message = f"Agent '{agent.agent_id}' exceeded the maximum of {settings.MAX_CYCLE_TURNS} turns in a single cycle. Forcing error state to prevent infinite loop."
+                logger.critical(error_message)
+                agent.set_status(AGENT_STATUS_ERROR)
+                if context.current_db_session_id:
+                    await self._manager.db_manager.log_interaction(
+                        session_id=context.current_db_session_id,
+                        agent_id=agent.agent_id,
+                        role="system_error",
+                        content=error_message
+                    )
+                await self._manager.send_to_ui({"type": "error", "agent_id": agent.agent_id, "content": error_message})
+                break # Exit the while loop
+
             # Reset per-iteration flags in context (those not reset by CycleContext init or prepare_llm_call_data)
             context.last_error_obj = None
             context.last_error_content = None
@@ -381,8 +397,8 @@ class AgentCycleHandler:
                                 # This is the final "report to admin" message. Transition to manage state.
                                 logger.info(f"CycleHandler: PM '{agent.agent_id}' sent completion message. Auto-transitioning to PM_STATE_MANAGE.")
                                 self._manager.workflow_manager.change_state(agent, PM_STATE_MANAGE)
-                                # No need to reactivate, the timer will pick it up.
-                                context.needs_reactivation_after_cycle = False
+                                # Reactivate immediately to start the management loop.
+                                context.needs_reactivation_after_cycle = True
 
 
                         # --- START: PM Build Team Tasks State Interventions ---

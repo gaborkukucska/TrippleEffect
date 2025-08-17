@@ -118,6 +118,8 @@ class AgentWorkflowManager:
                 if agent.agent_type == AGENT_TYPE_PM:
                     if requested_state == PM_STATE_MANAGE:
                         agent._pm_needs_initial_list_tools = True
+                        agent.clear_history()
+                        logger.info(f"WorkflowManager: Cleared history for PM agent '{agent.agent_id}' upon entering state 'PM_STATE_MANAGE' to ensure a clean start for the management loop.")
                     elif hasattr(agent, '_pm_needs_initial_list_tools'):
                         agent._pm_needs_initial_list_tools = False
 
