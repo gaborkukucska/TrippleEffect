@@ -125,7 +125,8 @@ class ProjectManagementTool(BaseTool):
                     return {"status": "error", "message": "No valid fields provided for modification."}
 
                 task.save()
-                return {"status": "success", "message": f"Task '{task_id}' modified successfully.", "task_uuid": task['uuid'], "task_id": task['id'], "modified_fields": modified_fields, "description": task['description'], "assignee": task['assignee']}
+                assignee_to_return = kwargs.get("assignee_agent_id") or task['assignee']
+                return {"status": "success", "message": f"Task '{task_id}' modified successfully.", "task_uuid": task['uuid'], "task_id": task['id'], "modified_fields": modified_fields, "description": task['description'], "assignee": assignee_to_return}
 
             elif action == "complete_task":
                 task_id = kwargs.get("task_id")
