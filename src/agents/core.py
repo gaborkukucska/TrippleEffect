@@ -148,7 +148,7 @@ class Agent:
                 self.set_status(AGENT_STATUS_ERROR)
                 yield {"type": "error", "content": f"[Agent Error: Could not ensure sandbox {self.sandbox_path}]", "_exception_obj": OSError(f"Could not ensure sandbox {self.sandbox_path}")}; return
 
-            max_tokens_override = None 
+            max_tokens_override = None
 
             provider_stream = self.llm_provider.stream_completion(
                 messages=history_to_use, model=self.model, temperature=self.temperature,
@@ -166,7 +166,7 @@ class Agent:
                     error_content = f"[{self.provider_name} Error] {event.get('content', 'Unknown provider error')}"
                     last_error_obj = event.get('_exception_obj', ValueError(error_content))
                     logger.error(f"Agent {self.agent_id}: Received error event from provider: {error_content}")
-                    event["agent_id"] = self.agent_id; event["content"] = error_content; event["_exception_obj"] = last_error_obj; stream_had_error = True; yield event; break 
+                    event["agent_id"] = self.agent_id; event["content"] = error_content; event["_exception_obj"] = last_error_obj; stream_had_error = True; yield event; break
                 else: logger.warning(f"Agent {self.agent_id}: Received unknown event type '{event_type}' from provider.")
             logger.debug(f"Agent {self.agent_id}: Provider stream finished. Stream error: {stream_had_error}. Processing buffer.")
 
@@ -178,14 +178,14 @@ class Agent:
                 # --- Check for Workflow Triggers First ---
                 if hasattr(self.manager, 'workflow_manager'):
                     workflow_result: Optional['WorkflowResult'] = await self.manager.workflow_manager.process_agent_output_for_workflow(
-                        self.manager, self, buffer_to_process 
+                        self.manager, self, buffer_to_process
                     )
                     if workflow_result:
                         logger.info(f"Agent {self.agent_id}: Workflow '{workflow_result.workflow_name}' executed. Success: {workflow_result.success}. Message: {workflow_result.message}")
                         yield {"type": "workflow_executed", "workflow_name": workflow_result.workflow_name, "result_data": workflow_result.dict(), "agent_id": self.agent_id}
                         # If a workflow was triggered and executed, its result dictates the next steps.
                         # The Agent.process_message should return here, and CycleHandler will use the WorkflowResult.
-                        return 
+                        return
                 # --- END Workflow Trigger Check ---
 
                 # If no workflow was triggered, proceed with normal parsing (think, state_request, tools)
@@ -225,7 +225,7 @@ class Agent:
                     cleaned_for_state_regex = re.sub(r"^```(?:xml)?\s*|\s*```$", "", cleaned_for_state_regex).strip()
                 if cleaned_for_state_regex.startswith("`") and cleaned_for_state_regex.endswith("`"):
                     cleaned_for_state_regex = cleaned_for_state_regex[1:-1].strip()
-                
+
                 if manager_request_state_pattern:
                     state_match = manager_request_state_pattern.search(cleaned_for_state_regex)
                     if state_match:
@@ -234,7 +234,7 @@ class Agent:
                         is_valid_state_request = self.manager.workflow_manager.is_valid_state(self.agent_type, requested_state)
                         if is_valid_state_request:
                             logger.info(f"Agent {self.agent_id}: Detected valid state request tag for '{requested_state}': {state_request_tag}")
-                            text_after_state_tag = "" 
+                            text_after_state_tag = ""
                             if cleaned_for_state_regex == state_request_tag: # If the *entire cleaned output* was the state request
                                 yield {"type": "agent_state_change_requested", "requested_state": requested_state, "agent_id": self.agent_id}
                                 return # State change is the only action
@@ -249,9 +249,9 @@ class Agent:
                             if cleaned_for_state_regex == state_request_tag:
                                 yield {"type": "invalid_state_request_output", "content": state_request_tag, "agent_id": self.agent_id}; return
                             remaining_text_after_processing_tags = remaining_text_after_processing_tags.replace(state_request_tag, '', 1).strip()
-                
+
                 final_cleaned_response_for_tools_or_text = remaining_text_after_processing_tags
-                
+
                 if self.agent_type == AGENT_TYPE_PM and \
                    self.state == PM_STATE_STARTUP and \
                    (not 'workflow_result' in locals() or not workflow_result):
@@ -280,7 +280,7 @@ class Agent:
 
                 tool_requests_to_yield = []
 
-                if self.manager.tool_executor and self.raw_xml_tool_call_pattern: 
+                if self.manager.tool_executor and self.raw_xml_tool_call_pattern:
                     parsed_tool_calls_info = find_and_parse_xml_tool_calls(
                         final_cleaned_response_for_tools_or_text, self.manager.tool_executor.tools,
                         self.raw_xml_tool_call_pattern, self.markdown_xml_tool_call_pattern, self.agent_id
@@ -303,7 +303,7 @@ class Agent:
 
                     if valid_calls:
                         calls_to_process = valid_calls
-                        
+
                         if len(calls_to_process) > 1:
                              logger.info(f"Agent {self.agent_id} found {len(calls_to_process)} tool calls in a single response. Processing all.")
 
@@ -314,23 +314,23 @@ class Agent:
                                 tool_requests_to_yield.append({"id": call_id, "name": tool_name_call, "arguments": tool_args})
                             else:
                                 logger.warning(f"Agent {self.agent_id}: Tool name '{tool_name_call}' parsed from LLM output, but not found in ToolExecutor. Skipping this call.")
-                
+
                 if tool_requests_to_yield:
                     logger.debug(f"Agent {self.agent_id} preparing to yield {len(tool_requests_to_yield)} tool requests.")
                     # Use original_complete_response for history if tool calls are made
-                    response_for_history = original_complete_response 
+                    response_for_history = original_complete_response
                     yield {"type": "tool_requests", "calls": tool_requests_to_yield, "raw_assistant_response": response_for_history, "agent_id": self.agent_id}; return
                 else:
                     # No tool requests yielded, this is a final textual response (or empty if only think tag was present)
                     if final_cleaned_response_for_tools_or_text:
                         yield {"type": "final_response", "content": final_cleaned_response_for_tools_or_text, "agent_id": self.agent_id}; return
-                    else: 
+                    else:
                         if think_content_extracted:
                             logger.info(f"Agent {self.agent_id}: Only a <think> block was produced. No further output.")
                         else:
                             logger.info(f"Agent {self.agent_id}: Buffer empty after processing tags. No final response or action yielded.")
                         return
-            else: 
+            else:
                 logger.warning(f"Agent {self.agent_id}: Skipping final tag/tool parsing due to stream error."); return
 
         except Exception as e:

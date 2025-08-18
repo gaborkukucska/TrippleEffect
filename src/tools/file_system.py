@@ -82,7 +82,7 @@ class FileSystemTool(BaseTool):
         project_name: Optional[str] = None,
         session_name: Optional[str] = None,
         **kwargs: Any
-        ) -> Any:
+        ) -> Dict[str, Any]:
         """
         Executes the file system operation based on the provided action and scope.
         """
@@ -96,30 +96,30 @@ class FileSystemTool(BaseTool):
 
         valid_actions = ["read", "write", "list", "mkdir", "delete", "find_replace"]
         if not action or action not in valid_actions:
-            return f"Error: Invalid or missing 'action'. Must be one of: {', '.join(valid_actions)}."
+            return {"status": "error", "message": f"Invalid or missing 'action'. Must be one of: {', '.join(valid_actions)}."}
         if scope not in ["private", "shared", "projects"]: # Added 'projects' scope
-            return "Error: Invalid 'scope'. Must be 'private', 'shared', or 'projects'."
+            return {"status": "error", "message": "Invalid 'scope'. Must be 'private', 'shared', or 'projects'."}
 
         # Determine base path
         base_path: Optional[Path] = None
         scope_description: str = ""
         if scope == "private":
             base_path = agent_sandbox_path; scope_description = f"agent {agent_id}'s private sandbox"
-            if not base_path.is_dir(): return f"Error: Agent's private sandbox directory does not exist at {base_path}"
+            if not base_path.is_dir(): return {"status": "error", "message": f"Agent's private sandbox directory does not exist at {base_path}"}
         elif scope == "shared":
-            if not project_name or not session_name: return "Error: Cannot use 'shared' scope - project/session context is missing."
+            if not project_name or not session_name: return {"status": "error", "message": "Cannot use 'shared' scope - project/session context is missing."}
             base_path = settings.PROJECTS_BASE_DIR / project_name / session_name / "shared_workspace"; scope_description = f"shared workspace for '{project_name}/{session_name}'"
             try:
                 # Ensure shared workspace base exists (don't need output subdir here)
                 await asyncio.to_thread(base_path.mkdir, parents=True, exist_ok=True)
                 logger.debug(f"Ensured shared workspace dir exists: {base_path}")
-            except Exception as e: logger.error(f"Failed to create shared workspace dir for {scope_description}: {e}", exc_info=True); return f"Error: Could not create shared workspace directory: {e}"
+            except Exception as e: logger.error(f"Failed to create shared workspace dir for {scope_description}: {e}", exc_info=True); return {"status": "error", "message": f"Could not create shared workspace directory: {e}"}
         elif scope == "projects": # Handle new 'projects' scope
             base_path = settings.PROJECTS_BASE_DIR
             scope_description = "main projects directory"
-            if not base_path.is_dir(): return f"Error: Main projects directory does not exist at {base_path}"
+            if not base_path.is_dir(): return {"status": "error", "message": f"Main projects directory does not exist at {base_path}"}
         # --- End Scope Handling ---
-        if base_path is None: return "Error: Internal error determining workspace path."
+        if base_path is None: return {"status": "error", "message": "Internal error determining workspace path."}
 
         # Default relative path for list action if not provided
         if action == "list" and relative_path is None:
@@ -128,34 +128,34 @@ class FileSystemTool(BaseTool):
         # Execute action
         try:
             if action == "read":
-                if not filename: return "Error: 'filename' parameter is required for 'read'."
+                if not filename: return {"status": "error", "message": "'filename' parameter is required for 'read'."}
                 return await self._read_file(base_path, filename, agent_id, scope_description)
             elif action == "write":
-                if not filename: return "Error: 'filename' parameter is required for 'write'."
-                if content is None: return "Error: 'content' parameter is required for 'write'."
+                if not filename: return {"status": "error", "message": "'filename' parameter is required for 'write'."}
+                if content is None: return {"status": "error", "message": "'content' parameter is required for 'write'."}
                 return await self._write_file(base_path, filename, content, agent_id, scope_description)
             elif action == "list":
                 # relative_path default handled above
                 return await self._list_directory(base_path, relative_path, agent_id, scope_description)
             elif action == "find_replace":
-                if not filename: return "Error: 'filename' parameter is required for 'find_replace'."
-                if find_text is None: return "Error: 'find_text' parameter is required for 'find_replace'."
-                if replace_text is None: return "Error: 'replace_text' parameter is required for 'find_replace'."
+                if not filename: return {"status": "error", "message": "'filename' parameter is required for 'find_replace'."}
+                if find_text is None: return {"status": "error", "message": "'find_text' parameter is required for 'find_replace'."}
+                if replace_text is None: return {"status": "error", "message": "'replace_text' parameter is required for 'find_replace'."}
                 return await self._find_replace_in_file(base_path, filename, find_text, replace_text, agent_id, scope_description)
             # --- NEW: Handle mkdir and delete ---
             elif action == "mkdir":
-                 if not relative_path: return "Error: 'path' parameter (directory path) is required for 'mkdir'."
+                 if not relative_path: return {"status": "error", "message": "'path' parameter (directory path) is required for 'mkdir'."}
                  return await self._create_directory(base_path, relative_path, agent_id, scope_description)
             elif action == "delete":
-                 if not relative_path: return "Error: 'path' parameter (file or directory path) is required for 'delete'."
+                 if not relative_path: return {"status": "error", "message": "'path' parameter (file or directory path) is required for 'delete'."}
                  return await self._delete_item(base_path, relative_path, agent_id, scope_description)
             # --- END NEW ---
 
         except Exception as e:
             logger.error(f"Unexpected error executing file system tool (Action: {action}, Scope: {scope}) for agent {agent_id}: {e}", exc_info=True)
-            return f"Error executing file system tool ({action} in {scope}): {type(e).__name__} - {e}"
+            return {"status": "error", "message": f"Error executing file system tool ({action} in {scope}): {type(e).__name__} - {e}"}
 
-        return "Error: Unknown state in file system tool." # Should not be reached
+        return {"status": "error", "message": "Unknown state in file system tool."} # Should not be reached
 
     # --- Detailed Usage Method ---
     def get_detailed_usage(self) -> str:
@@ -241,62 +241,65 @@ class FileSystemTool(BaseTool):
             return None
 
 
-    async def _read_file(self, base_path: Path, filename: str, agent_id: str, scope_description: str) -> str:
+    async def _read_file(self, base_path: Path, filename: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
         """Reads content from a file within the specified base path."""
         validated_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
-        if not validated_path: return f"Error: Invalid or disallowed file path '{filename}' in {scope_description}."
-        if not validated_path.is_file(): return f"Error: File not found or is not a regular file at '{filename}' in {scope_description}."
+        if not validated_path: return {"status": "error", "message": f"Invalid or disallowed file path '{filename}' in {scope_description}."}
+        if not validated_path.is_file(): return {"status": "error", "message": f"File not found or is not a regular file at '{filename}' in {scope_description}."}
         try:
             content = await asyncio.to_thread(validated_path.read_text, encoding='utf-8')
             logger.info(f"Agent {agent_id} successfully read file: '{filename}' from {scope_description}")
-            return content
-        except FileNotFoundError: logger.warning(f"Agent {agent_id} file read error (FileNotFound): File not found at '{filename}' in {scope_description}."); return f"Error: File not found at '{filename}' in {scope_description}."
-        except PermissionError: logger.error(f"Agent {agent_id} file read error: Permission denied for '{filename}' in {scope_description}."); return f"Error: Permission denied when reading file '{filename}'."
-        except Exception as e: logger.error(f"Agent {agent_id} error reading file '{filename}' in {scope_description}: {e}", exc_info=True); return f"Error reading file '{filename}': {type(e).__name__} - {e}"
+            return {"status": "success", "content": content}
+        except FileNotFoundError: logger.warning(f"Agent {agent_id} file read error (FileNotFound): File not found at '{filename}' in {scope_description}."); return {"status": "error", "message": f"File not found at '{filename}' in {scope_description}."}
+        except PermissionError: logger.error(f"Agent {agent_id} file read error: Permission denied for '{filename}' in {scope_description}."); return {"status": "error", "message": f"Permission denied when reading file '{filename}'."}
+        except Exception as e: logger.error(f"Agent {agent_id} error reading file '{filename}' in {scope_description}: {e}", exc_info=True); return {"status": "error", "message": f"Error reading file '{filename}': {type(e).__name__} - {e}"}
 
 
-    async def _write_file(self, base_path: Path, filename: str, content: str, agent_id: str, scope_description: str) -> str:
+    async def _write_file(self, base_path: Path, filename: str, content: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
         """Writes content to a file within the specified base path."""
         validated_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
-        if not validated_path: return f"Error: Invalid or disallowed file path '{filename}' in {scope_description}."
-        if validated_path.is_dir(): logger.warning(f"Agent {agent_id} attempted to write to directory: {filename} in {scope_description}"); return f"Error: Cannot write file. '{filename}' points to an existing directory."
+        if not validated_path: return {"status": "error", "message": f"Invalid or disallowed file path '{filename}' in {scope_description}."}
+        if validated_path.is_dir(): logger.warning(f"Agent {agent_id} attempted to write to directory: {filename} in {scope_description}"); return {"status": "error", "message": f"Cannot write file. '{filename}' points to an existing directory."}
         try:
             await asyncio.to_thread(validated_path.parent.mkdir, parents=True, exist_ok=True)
             await asyncio.to_thread(validated_path.write_text, content, encoding='utf-8')
             logger.info(f"Agent {agent_id} successfully wrote file: '{filename}' to {scope_description}")
-            return f"Successfully wrote content to '{filename}' in {scope_description}."
-        except PermissionError: logger.error(f"Agent {agent_id} file write error: Permission denied for '{filename}' in {scope_description}."); return f"Error: Permission denied when writing to file '{filename}'."
-        except Exception as e: logger.error(f"Agent {agent_id} error writing file '{filename}' in {scope_description}: {e}", exc_info=True); return f"Error writing file '{filename}': {type(e).__name__} - {e}"
+            return {"status": "success", "message": f"Successfully wrote content to '{filename}' in {scope_description}."}
+        except PermissionError: logger.error(f"Agent {agent_id} file write error: Permission denied for '{filename}' in {scope_description}."); return {"status": "error", "message": f"Permission denied when writing to file '{filename}'."}
+        except Exception as e: logger.error(f"Agent {agent_id} error writing file '{filename}' in {scope_description}: {e}", exc_info=True); return {"status": "error", "message": f"Error writing file '{filename}': {type(e).__name__} - {e}"}
 
 
-    async def _list_directory(self, base_path: Path, relative_dir: str, agent_id: str, scope_description: str) -> str:
+    async def _list_directory(self, base_path: Path, relative_dir: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
         """Lists files and directories within a specified sub-directory of the base path."""
         validated_path = await self._resolve_and_validate_path(base_path, relative_dir, agent_id, scope_description)
-        if not validated_path: return f"Error: Invalid or disallowed path '{relative_dir}' in {scope_description}."
-        if not validated_path.is_dir(): logger.warning(f"Agent {agent_id} attempted to list non-existent directory: {relative_dir} in {scope_description}"); return f"Error: Path '{relative_dir}' does not exist or is not a directory in {scope_description}."
+        if not validated_path: return {"status": "error", "message": f"Invalid or disallowed path '{relative_dir}' in {scope_description}."}
+        if not validated_path.is_dir(): logger.warning(f"Agent {agent_id} attempted to list non-existent directory: {relative_dir} in {scope_description}"); return {"status": "error", "message": f"Path '{relative_dir}' does not exist or is not a directory in {scope_description}."}
         try:
             items = await asyncio.to_thread(os.listdir, validated_path)
-            if not items: logger.info(f"Agent {agent_id} listed empty directory: '{relative_dir}' in {scope_description}"); return f"Directory '{relative_dir}' in {scope_description} is empty."
-            output_lines = [f"Contents of '{relative_dir}' in {scope_description}:"]
+            if not items: logger.info(f"Agent {agent_id} listed empty directory: '{relative_dir}' in {scope_description}"); return {"status": "success", "message": f"Directory '{relative_dir}' in {scope_description} is empty.", "items": []}
+            output_lines = []
+            item_details = []
             for item in sorted(items):
                  try:
                       item_path = validated_path / item
-                      if item_path.exists(): item_type = "dir" if item_path.is_dir() else "file"
-                      elif item_path.is_symlink(): item_type = "link (broken?)"
-                      else: item_type = "unknown"
+                      item_type = "unknown"
+                      if item_path.is_symlink(): item_type = "link"
+                      elif item_path.is_dir(): item_type = "dir"
+                      elif item_path.is_file(): item_type = "file"
                       output_lines.append(f"- {item} ({item_type})")
+                      item_details.append({"name": item, "type": item_type})
                  except OSError as list_item_err: logger.warning(f"Error accessing item '{item}' in directory '{relative_dir}' for agent {agent_id}: {list_item_err}"); output_lines.append(f"- {item} (error accessing)")
             logger.info(f"Agent {agent_id} successfully listed directory: '{relative_dir}' in {scope_description}")
-            return "\n".join(output_lines)
-        except PermissionError: logger.error(f"Agent {agent_id} directory list error: Permission denied for '{relative_dir}' in {scope_description}."); return f"Error: Permission denied when listing directory '{relative_dir}'."
-        except Exception as e: logger.error(f"Agent {agent_id} error listing directory '{relative_dir}' in {scope_description}: {e}", exc_info=True); return f"Error listing directory '{relative_dir}': {type(e).__name__} - {e}"
+            return {"status": "success", "message": f"Contents of '{relative_dir}' in {scope_description}:\n" + "\n".join(output_lines), "items": item_details}
+        except PermissionError: logger.error(f"Agent {agent_id} directory list error: Permission denied for '{relative_dir}' in {scope_description}."); return {"status": "error", "message": f"Permission denied when listing directory '{relative_dir}'."}
+        except Exception as e: logger.error(f"Agent {agent_id} error listing directory '{relative_dir}' in {scope_description}: {e}", exc_info=True); return {"status": "error", "message": f"Error listing directory '{relative_dir}': {type(e).__name__} - {e}"}
 
 
-    async def _find_replace_in_file(self, base_path: Path, filename: str, find_text: str, replace_text: str, agent_id: str, scope_description: str) -> str:
+    async def _find_replace_in_file(self, base_path: Path, filename: str, find_text: str, replace_text: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
         """Finds and replaces all occurrences of text in a file within the specified scope."""
         validated_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
-        if not validated_path: return f"Error: Invalid or disallowed file path '{filename}' in {scope_description}."
-        if not validated_path.is_file(): return f"Error: File not found or is not a regular file at '{filename}' in {scope_description}."
+        if not validated_path: return {"status": "error", "message": f"Invalid or disallowed file path '{filename}' in {scope_description}."}
+        if not validated_path.is_file(): return {"status": "error", "message": f"File not found or is not a regular file at '{filename}' in {scope_description}."}
 
         try:
             def find_replace_sync():
@@ -306,58 +309,59 @@ class FileSystemTool(BaseTool):
                 if original_content == new_content: return 0 # No changes made
                 else: validated_path.write_text(new_content, encoding='utf-8'); return count
             num_replacements = await asyncio.to_thread(find_replace_sync)
-            if num_replacements == 0:
-                logger.info(f"Agent {agent_id}: find_replace completed for '{filename}' in {scope_description}. No occurrences of '{find_text[:50]}...' found.")
-                return f"Found 0 occurrences of the text in '{filename}'. No changes made."
-            else:
+            message = f"Found 0 occurrences of the text in '{filename}'. No changes made."
+            if num_replacements > 0:
+                message = f"Successfully replaced {num_replacements} occurrence(s) in '{filename}'."
                 logger.info(f"Agent {agent_id}: Successfully replaced {num_replacements} occurrence(s) in file '{filename}' in {scope_description}.")
-                return f"Successfully replaced {num_replacements} occurrence(s) in '{filename}'."
-        except FileNotFoundError: logger.warning(f"Agent {agent_id} find_replace error (FileNotFound): File not found at '{filename}' in {scope_description}."); return f"Error: File not found at '{filename}' in {scope_description}."
-        except PermissionError: logger.error(f"Agent {agent_id} find_replace error: Permission denied for '{filename}' in {scope_description}."); return f"Error: Permission denied when accessing file '{filename}'."
-        except Exception as e: logger.error(f"Agent {agent_id} error during find/replace in file '{filename}' in {scope_description}: {e}", exc_info=True); return f"Error during find/replace in '{filename}': {type(e).__name__} - {e}"
+            else:
+                 logger.info(f"Agent {agent_id}: find_replace completed for '{filename}' in {scope_description}. No occurrences of '{find_text[:50]}...' found.")
+            return {"status": "success", "message": message, "replacements_made": num_replacements}
+        except FileNotFoundError: logger.warning(f"Agent {agent_id} find_replace error (FileNotFound): File not found at '{filename}' in {scope_description}."); return {"status": "error", "message": f"File not found at '{filename}' in {scope_description}."}
+        except PermissionError: logger.error(f"Agent {agent_id} find_replace error: Permission denied for '{filename}' in {scope_description}."); return {"status": "error", "message": f"Permission denied when accessing file '{filename}'."}
+        except Exception as e: logger.error(f"Agent {agent_id} error during find/replace in file '{filename}' in {scope_description}: {e}", exc_info=True); return {"status": "error", "message": f"Error during find/replace in '{filename}': {type(e).__name__} - {e}"}
 
     # --- NEW: _create_directory method ---
-    async def _create_directory(self, base_path: Path, relative_dir: str, agent_id: str, scope_description: str) -> str:
+    async def _create_directory(self, base_path: Path, relative_dir: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
          """Creates a directory within the specified base path."""
          validated_path = await self._resolve_and_validate_path(base_path, relative_dir, agent_id, scope_description)
-         if not validated_path: return f"Error: Invalid or disallowed directory path '{relative_dir}' in {scope_description}."
+         if not validated_path: return {"status": "error", "message": f"Invalid or disallowed directory path '{relative_dir}' in {scope_description}."}
          if validated_path.exists():
-             if validated_path.is_dir(): return f"Directory '{relative_dir}' already exists in {scope_description}."
-             else: return f"Error: Cannot create directory. '{relative_dir}' points to an existing file."
+             if validated_path.is_dir(): return {"status": "success", "message": f"Directory '{relative_dir}' already exists in {scope_description}."}
+             else: return {"status": "error", "message": f"Cannot create directory. '{relative_dir}' points to an existing file."}
          try:
              await asyncio.to_thread(validated_path.mkdir, parents=True, exist_ok=True) # exist_ok shouldn't be needed due to check, but safe
              logger.info(f"Agent {agent_id} successfully created directory: '{relative_dir}' in {scope_description}")
-             return f"Successfully created directory '{relative_dir}' in {scope_description}."
-         except PermissionError: logger.error(f"Agent {agent_id} directory creation error: Permission denied for '{relative_dir}' in {scope_description}."); return f"Error: Permission denied when creating directory '{relative_dir}'."
-         except Exception as e: logger.error(f"Agent {agent_id} error creating directory '{relative_dir}' in {scope_description}: {e}", exc_info=True); return f"Error creating directory '{relative_dir}': {type(e).__name__} - {e}"
+             return {"status": "success", "message": f"Successfully created directory '{relative_dir}' in {scope_description}."}
+         except PermissionError: logger.error(f"Agent {agent_id} directory creation error: Permission denied for '{relative_dir}' in {scope_description}."); return {"status": "error", "message": f"Permission denied when creating directory '{relative_dir}'."}
+         except Exception as e: logger.error(f"Agent {agent_id} error creating directory '{relative_dir}' in {scope_description}: {e}", exc_info=True); return {"status": "error", "message": f"Error creating directory '{relative_dir}': {type(e).__name__} - {e}"}
 
     # --- NEW: _delete_item method ---
-    async def _delete_item(self, base_path: Path, relative_item_path: str, agent_id: str, scope_description: str) -> str:
+    async def _delete_item(self, base_path: Path, relative_item_path: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
          """Deletes a file or an empty directory within the specified base path."""
          validated_path = await self._resolve_and_validate_path(base_path, relative_item_path, agent_id, scope_description)
-         if not validated_path: return f"Error: Invalid or disallowed path '{relative_item_path}' for deletion in {scope_description}."
-         if not validated_path.exists(): return f"Error: Cannot delete. Path '{relative_item_path}' does not exist in {scope_description}."
+         if not validated_path: return {"status": "error", "message": f"Invalid or disallowed path '{relative_item_path}' for deletion in {scope_description}."}
+         if not validated_path.exists(): return {"status": "error", "message": f"Cannot delete. Path '{relative_item_path}' does not exist in {scope_description}."}
          # Prevent deleting the base path itself
-         if validated_path == base_path.resolve(): return f"Error: Cannot delete the root of the {scope_description}."
+         if validated_path == base_path.resolve(): return {"status": "error", "message": f"Cannot delete the root of the {scope_description}."}
 
          try:
              if validated_path.is_file():
                  await asyncio.to_thread(validated_path.unlink)
                  logger.info(f"Agent {agent_id} successfully deleted file: '{relative_item_path}' from {scope_description}")
-                 return f"Successfully deleted file '{relative_item_path}' from {scope_description}."
+                 return {"status": "success", "message": f"Successfully deleted file '{relative_item_path}' from {scope_description}."}
              elif validated_path.is_dir():
                  # Check if directory is empty
                  is_empty = not any(await asyncio.to_thread(validated_path.iterdir))
                  if is_empty:
                      await asyncio.to_thread(validated_path.rmdir)
                      logger.info(f"Agent {agent_id} successfully deleted empty directory: '{relative_item_path}' from {scope_description}")
-                     return f"Successfully deleted empty directory '{relative_item_path}' from {scope_description}."
+                     return {"status": "success", "message": f"Successfully deleted empty directory '{relative_item_path}' from {scope_description}."}
                  else:
                      logger.warning(f"Agent {agent_id} attempted to delete non-empty directory: '{relative_item_path}' in {scope_description}")
-                     return f"Error: Directory '{relative_item_path}' is not empty. Cannot delete."
+                     return {"status": "error", "message": f"Directory '{relative_item_path}' is not empty. Cannot delete."}
              else:
                  # Handle symlinks or other types if necessary, for now, treat as error
                  logger.warning(f"Agent {agent_id} attempted to delete unsupported item type at '{relative_item_path}' in {scope_description}")
-                 return f"Error: Path '{relative_item_path}' is not a file or directory. Cannot delete."
-         except PermissionError: logger.error(f"Agent {agent_id} deletion error: Permission denied for '{relative_item_path}' in {scope_description}."); return f"Error: Permission denied when deleting '{relative_item_path}'."
-         except Exception as e: logger.error(f"Agent {agent_id} error deleting '{relative_item_path}' in {scope_description}: {e}", exc_info=True); return f"Error deleting '{relative_item_path}': {type(e).__name__} - {e}"
+                 return {"status": "error", "message": f"Path '{relative_item_path}' is not a file or directory. Cannot delete."}
+         except PermissionError: logger.error(f"Agent {agent_id} deletion error: Permission denied for '{relative_item_path}' in {scope_description}."); return {"status": "error", "message": f"Permission denied when deleting '{relative_item_path}'."}
+         except Exception as e: logger.error(f"Agent {agent_id} error deleting '{relative_item_path}' in {scope_description}: {e}", exc_info=True); return {"status": "error", "message": f"Error deleting '{relative_item_path}': {type(e).__name__} - {e}"}
