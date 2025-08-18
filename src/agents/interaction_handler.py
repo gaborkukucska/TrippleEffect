@@ -330,19 +330,22 @@ class AgentInteractionHandler:
 
             # Worker activation logic (if task assigned successfully via ProjectManagementTool)
             if tool_name == ProjectManagementTool.name and isinstance(raw_result, dict) and raw_result.get("status") == "success":
-                action_performed = tool_args.get("action") # Get action from original tool_args
+                action_performed = tool_args.get("action")
                 assignee_id = raw_result.get("assignee")
-
-                # Get the task description from the tool's result.
-                # ProjectManagementTool's modify_task and add_task actions are designed to return
-                # the correct, original/semantic description in the "description" field of their result.
                 task_description_for_worker = raw_result.get("description")
                 task_identifier_for_activation = raw_result.get("task_uuid") or str(raw_result.get("task_id", "N/A"))
 
-                if assignee_id and task_description_for_worker and action_performed in ["add_task", "modify_task"]:
-                    logger.info(f"InteractionHandler: Task '{action_performed}' successful for assignee '{assignee_id}'. Attempting worker activation via AgentManager.")
+                # --- DEBUGGING LOGS ---
+                logger.info(f"[WORKER_ACTIVATION_DEBUG] Checking activation conditions...")
+                logger.info(f"[WORKER_ACTIVATION_DEBUG]   - Tool Name: {tool_name}")
+                logger.info(f"[WORKER_ACTIVATION_DEBUG]   - Raw Result Status: {raw_result.get('status')}")
+                logger.info(f"[WORKER_ACTIVATION_DEBUG]   - Action Performed (from tool_args): {action_performed}")
+                logger.info(f"[WORKER_ACTIVATION_DEBUG]   - Assignee ID (from result): {assignee_id}")
+                logger.info(f"[WORKER_ACTIVATION_DEBUG]   - Task Description (from result): {'Present' if task_description_for_worker else 'Missing'}")
+                # --- END DEBUGGING ---
 
-                    # Call the new AgentManager method to handle activation
+                if assignee_id and task_description_for_worker and action_performed in ["add_task", "modify_task"]:
+                    logger.info(f"InteractionHandler: Task '{action_performed}' successful for assignee '{assignee_id}'. Attempting worker activation.")
                     await self._manager.activate_worker_with_task_details(
                         worker_agent_id=assignee_id,
                         task_id_from_tool=task_identifier_for_activation,
