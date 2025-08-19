@@ -221,14 +221,18 @@ class ToolExecutor:
         session_name: Optional[str] = None,  
         manager: Optional[Any] = None # Type hint as 'AgentManager' if possible, else Any
     ) -> Any:
+        # Enhanced logging for tool execution lifecycle
+        execution_id = f"{agent_id}_{tool_name}_{hash(str(tool_args))}"[-12:]
+        logger.info(f"[TOOL_EXEC_START] ID:{execution_id} | Tool:'{tool_name}' | Agent:'{agent_id}' | Args:{tool_args}")
+        
         tool = self.tools.get(tool_name)
         if not tool:
-            error_msg = f"Error: Tool '{tool_name}' not found."
-            logger.error(error_msg)
+            error_msg = f"Error: Tool '{tool_name}' not found. Available tools: {list(self.tools.keys())}"
+            logger.error(f"[TOOL_EXEC_ERROR] ID:{execution_id} | {error_msg}")
             if tool_name == ManageTeamTool.name: 
-                return {"status": "error", "action": tool_args.get("action"), "message": error_msg}
+                return {"status": "error", "action": tool_args.get("action"), "message": error_msg, "execution_id": execution_id}
             else:
-                return error_msg
+                return f"{error_msg} [ID:{execution_id}]"
 
         original_state = None
         current_agent_instance_for_tool_call = None 

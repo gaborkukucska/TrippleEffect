@@ -579,6 +579,18 @@ class AgentManager:
         if worker_agent.status != AGENT_STATUS_IDLE: # If state didn't change but status was e.g. ERROR
             worker_agent.set_status(AGENT_STATUS_IDLE)
 
+        # CRITICAL FIX: Initialize the worker's message history with the proper system prompt
+        # This ensures the worker has context when it starts its first cycle
+        if not worker_agent.message_history:  # Only if history is empty
+            initial_system_prompt = self.workflow_manager.get_system_prompt(worker_agent, self)
+            worker_agent.message_history.append({
+                "role": "system", 
+                "content": initial_system_prompt
+            })
+            logger.info(f"AgentManager: Initialized worker '{worker_agent_id}' with system prompt containing injected task context.")
+        else:
+            logger.debug(f"AgentManager: Worker '{worker_agent_id}' already has message history, skipping system prompt initialization.")
+
         # Log this activation and context injection to DB for traceability
         if self.current_session_db_id:
             await self.db_manager.log_interaction(
@@ -589,7 +601,7 @@ class AgentManager:
             )
 
         await self.schedule_cycle(worker_agent, retry_count=0)
-        logger.info(f"AgentManager: Worker '{worker_agent_id}' scheduled for task '{task_id_from_tool}'.")
+        logger.info(f"AgentManager: Worker '{worker_agent_id}' scheduled for task '{task_id_from_tool}' with proper context.")
 
 
 logging.info("manager.py: Module loading finished.")

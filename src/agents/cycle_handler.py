@@ -53,7 +53,17 @@ class AgentCycleHandler:
         self._next_step_scheduler = NextStepScheduler(self._manager)
         
         self.request_state_pattern = REQUEST_STATE_TAG_PATTERN 
-        logger.info("AgentCycleHandler initialized.")
+        self._tool_execution_stats = {"total_calls": 0, "successful_calls": 0, "failed_calls": 0}
+        logger.info("AgentCycleHandler initialized with enhanced tool execution monitoring.")
+
+    def _report_tool_execution_stats(self):
+        """Report current tool execution statistics"""
+        if self._tool_execution_stats["total_calls"] > 0:
+            success_rate = (self._tool_execution_stats["successful_calls"] / self._tool_execution_stats["total_calls"]) * 100
+            logger.info(f"Tool Execution Stats - Total: {self._tool_execution_stats['total_calls']}, "
+                       f"Successful: {self._tool_execution_stats['successful_calls']}, "
+                       f"Failed: {self._tool_execution_stats['failed_calls']}, "
+                       f"Success Rate: {success_rate:.1f}%")
 
     async def _get_cg_verdict(self, original_agent_final_text: str) -> Optional[str]:
         if not original_agent_final_text or original_agent_final_text.isspace():
@@ -883,4 +893,9 @@ class AgentCycleHandler:
             )
 
         await self._next_step_scheduler.schedule_next_step(context)
+        
+        # Report tool execution stats periodically
+        if self._tool_execution_stats["total_calls"] % 10 == 0 and self._tool_execution_stats["total_calls"] > 0:
+            self._report_tool_execution_stats()
+            
         logger.info(f"CycleHandler: Finished cycle logic for Agent '{agent.agent_id}'. Final status for this attempt: {agent.status}. State: {agent.state}")
