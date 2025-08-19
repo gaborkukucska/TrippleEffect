@@ -114,6 +114,28 @@ class ProjectManagementTool(BaseTool):
                 except Exception:
                     return {"status": "error", "message": f"Task with ID or UUID '{task_id}' not found."}
 
+                # Validate status if provided
+                if "status" in kwargs:
+                    status = kwargs["status"]
+                    valid_statuses = ["pending", "completed", "deleted", "waiting", "recurring"]
+                    if status not in valid_statuses:
+                        # Map common alternative statuses to valid ones
+                        status_mapping = {
+                            "assigned": "pending",
+                            "open": "pending", 
+                            "in_progress": "pending",
+                            "active": "pending",
+                            "done": "completed",
+                            "finished": "completed",
+                            "closed": "completed"
+                        }
+                        if status in status_mapping:
+                            status = status_mapping[status]
+                            logger.info(f"TaskWarrior: Mapped invalid status '{kwargs['status']}' to valid status '{status}'")
+                        else:
+                            return {"status": "error", "message": f"Invalid status '{status}'. Valid statuses are: {', '.join(valid_statuses)}. Note: 'assigned' should be mapped to 'pending'."}
+                    kwargs["status"] = status
+
                 modified_fields = []
                 if "description" in kwargs: task['description'] = kwargs["description"]; modified_fields.append("description")
                 if "status" in kwargs: task['status'] = kwargs["status"]; modified_fields.append("status")

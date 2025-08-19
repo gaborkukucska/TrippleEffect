@@ -43,36 +43,88 @@ def find_and_parse_xml_tool_calls(
                 return True
         return False
 
+    def _sanitize_xml_block(xml_block: str, tool_name: str) -> str:
+        """Enhanced XML sanitization to handle common LLM-generated malformations."""
+        cleaned = xml_block.strip()
+        
+        # Remove common prefixes that break XML parsing
+        prefixes_to_remove = ['```xml', '```', 'xml']
+        for prefix in prefixes_to_remove:
+            if cleaned.lower().startswith(prefix.lower()):
+                cleaned = cleaned[len(prefix):].strip()
+        
+        # Remove common suffixes
+        suffixes_to_remove = ['```', '`']
+        for suffix in suffixes_to_remove:
+            if cleaned.lower().endswith(suffix.lower()):
+                cleaned = cleaned[:-len(suffix)].strip()
+        
+        # Ensure proper start tag
+        if not cleaned.startswith("<"):
+            start_tag_index = cleaned.find(f"<{tool_name}")
+            if start_tag_index != -1:
+                cleaned = cleaned[start_tag_index:]
+            else:
+                # Try case-insensitive search
+                start_tag_index = cleaned.lower().find(f"<{tool_name.lower()}")
+                if start_tag_index != -1:
+                    cleaned = cleaned[start_tag_index:]
+        
+        # Ensure proper end tag and remove trailing content
+        expected_end_tag = f"</{tool_name}>"
+        end_tag_index = cleaned.rfind(expected_end_tag)
+        if end_tag_index == -1:
+            # Try case-insensitive search
+            end_tag_index = cleaned.lower().rfind(f"</{tool_name.lower()}>")
+            if end_tag_index != -1:
+                # Find the actual end tag with correct case
+                actual_end_start = cleaned.rfind("<", 0, end_tag_index + len(expected_end_tag))
+                if actual_end_start != -1:
+                    cleaned = cleaned[:actual_end_start] + expected_end_tag
+        else:
+            cleaned = cleaned[:end_tag_index + len(expected_end_tag)]
+        
+        # Handle XML entities that might be double-escaped
+        cleaned = cleaned.replace("&amp;lt;", "&lt;").replace("&amp;gt;", "&gt;")
+        
+        return cleaned
+
+    def _generate_corrected_xml_example(tool_name: str, tools: Dict[str, BaseTool]) -> str:
+        """Generate a corrected XML example for the tool."""
+        if tool_name not in tools:
+            return f"<{tool_name}><action>example_action</action></{tool_name}>"
+        
+        tool_schema = tools[tool_name].get_schema()
+        params = tool_schema.get('parameters', [])
+        
+        example_parts = [f"<{tool_name}>"]
+        for param in params[:3]:  # Show first 3 parameters as example
+            param_name = param['name']
+            if param['type'] == 'string':
+                example_value = f"example_{param_name}"
+            elif param['type'] == 'integer':
+                example_value = "1"
+            elif param['type'] == 'boolean':
+                example_value = "true"
+            else:
+                example_value = f"example_{param_name}"
+            example_parts.append(f"<{param_name}>{example_value}</{param_name}>")
+        example_parts.append(f"</{tool_name}>")
+        
+        return "\n".join(example_parts)
+
     # This helper parses a single, isolated XML block assuming it's a complete tool call
     def parse_isolated_xml_block(xml_block: str, identified_tool_name: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]: # Updated return type
         tool_args = {}
         error_message: Optional[str] = None
-        cleaned_xml_block = xml_block # Keep original for error reporting if cleaning fails
-
+        
+        # Enhanced XML cleaning
+        cleaned_xml_block = _sanitize_xml_block(xml_block, identified_tool_name)
+        
         try:
-            # Attempt to clean up common LLM mistakes like extra text before/after XML
-            # This is a basic cleanup; more sophisticated might be needed if issues persist.
-            if not xml_block.startswith("<"):
-                start_tag_index = xml_block.find(f"<{identified_tool_name}")
-                if start_tag_index != -1:
-                    cleaned_xml_block = xml_block[start_tag_index:]
-                else: # If the expected start tag is not found at all
-                    cleaned_xml_block = xml_block # Keep original if specific start tag not found
-            
-            # Ensure it ends with the correct closing tag, remove trailing text
-            end_tag = f"</{identified_tool_name}>"
-            end_tag_index = cleaned_xml_block.rfind(end_tag)
-            if end_tag_index != -1:
-                cleaned_xml_block = cleaned_xml_block[:end_tag_index + len(end_tag)]
-            else: # If no proper end tag, parsing will likely fail, but log it
-                # This warning is now less critical as the error will be returned
-                logger.debug(f"[PARSE_HELPER] XML block for '{identified_tool_name}' might be malformed (missing/incorrect end tag): '{xml_block[:100]}...'")
-
-
             root = ET.fromstring(cleaned_xml_block)
             if root.tag.lower() != identified_tool_name.lower():
-                error_message = f"XML root tag '{root.tag}' does not match identified tool name '{identified_tool_name}'."
-                logger.warning(f"[PARSE_HELPER] {error_message}")
+                error_message = f"XML root tag '{root.tag}' does not match expected tool name '{identified_tool_name}'. Expected: <{identified_tool_name}>...</{identified_tool_name}>"
                 return None, error_message
 
             for child in root:
@@ -80,13 +132,32 @@ def find_and_parse_xml_tool_calls(
                 param_value = child.text.strip() if child.text else ""
                 tool_args[param_name] = html.unescape(param_value)
             return tool_args, None # Success
+            
         except ET.ParseError as e:
-            error_message = f"XML ParseError: {str(e)}"
-            logger.error(f"[PARSE_HELPER] Error for tool '{identified_tool_name}': {error_message}. Block: '{xml_block[:200]}...' Attempted Cleaned: '{cleaned_xml_block[:200]}...'")
+            # Generate detailed error message with correction guidance
+            error_details = str(e)
+            corrected_example = _generate_corrected_xml_example(identified_tool_name, tools)
+            
+            error_message = f"XML ParseError: {error_details}. "
+            
+            if "junk after document element" in error_details:
+                error_message += "This usually means there's extra content after the closing tag. "
+            elif "mismatched tag" in error_details:
+                error_message += "This means opening and closing tags don't match. "
+            elif "not well-formed" in error_details:
+                error_message += "The XML structure is malformed. "
+            
+            error_message += f"Correct format:\n{corrected_example}"
+            
+            logger.error(f"[PARSE_HELPER] Enhanced error for tool '{identified_tool_name}': {error_message}")
+            logger.debug(f"[PARSE_HELPER] Original block: '{xml_block[:200]}...'")
+            logger.debug(f"[PARSE_HELPER] Cleaned block: '{cleaned_xml_block[:200]}...'")
+            
             return None, error_message
+            
         except Exception as e:
-            error_message = f"Unexpected error parsing XML: {str(e)}"
-            logger.error(f"[PARSE_HELPER] Error for tool '{identified_tool_name}': {error_message}. Block: '{xml_block[:200]}...' Attempted Cleaned: '{cleaned_xml_block[:200]}...'")
+            error_message = f"Unexpected error parsing XML: {str(e)}. Please ensure your XML follows the correct format: <{identified_tool_name}>...</{identified_tool_name}>"
+            logger.error(f"[PARSE_HELPER] Unexpected error for tool '{identified_tool_name}': {error_message}")
             return None, error_message
 
     matches_to_process = []

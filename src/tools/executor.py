@@ -3,6 +3,8 @@ import json
 import re
 import importlib
 import inspect
+import time
+import asyncio
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Type
 import xml.etree.ElementTree as ET
@@ -21,10 +23,23 @@ class ToolExecutor:
     def __init__(self):
         self.tools: Dict[str, BaseTool] = {}
         self._register_available_tools()
+        
+        # Tool execution robustness settings
+        self._max_retry_attempts = 3
+        self._retry_delay_seconds = 1.0
+        self._execution_stats = {
+            "total_attempts": 0,
+            "successful_executions": 0, 
+            "failed_executions": 0,
+            "retried_executions": 0,
+            "fallback_used": 0
+        }
+        
         if not self.tools:
              logger.warning("ToolExecutor initialized, but no tools were discovered or registered.")
         else:
              logger.info(f"ToolExecutor initialized with dynamically discovered tools: {list(self.tools.keys())}")
+             logger.info(f"Tool execution robustness enabled: max_retries={self._max_retry_attempts}, retry_delay={self._retry_delay_seconds}s")
 
     def _register_available_tools(self):
         logger.info("Dynamically discovering and registering tools...")
@@ -211,6 +226,132 @@ class ToolExecutor:
             return f"No tools are accessible for your agent type ({agent_type})."
         return f"Tools available to you (Agent Type: {agent_type}):\n" + "\n".join(authorized_tools_summary)
 
+    def _update_execution_stats(self, success: bool, retried: bool = False, fallback_used: bool = False):
+        """Update internal execution statistics"""
+        self._execution_stats["total_attempts"] += 1
+        if success:
+            self._execution_stats["successful_executions"] += 1
+        else:
+            self._execution_stats["failed_executions"] += 1
+        if retried:
+            self._execution_stats["retried_executions"] += 1
+        if fallback_used:
+            self._execution_stats["fallback_used"] += 1
+
+    def _get_execution_stats(self) -> Dict[str, Any]:
+        """Get current execution statistics"""
+        stats = self._execution_stats.copy()
+        if stats["total_attempts"] > 0:
+            stats["success_rate"] = round((stats["successful_executions"] / stats["total_attempts"]) * 100, 2)
+        else:
+            stats["success_rate"] = 0.0
+        return stats
+
+    def report_execution_stats(self):
+        """Report tool execution statistics to logs"""
+        stats = self._get_execution_stats()
+        if stats["total_attempts"] > 0:
+            logger.info(f"Tool Execution Statistics - "
+                       f"Total: {stats['total_attempts']}, "
+                       f"Successful: {stats['successful_executions']}, "
+                       f"Failed: {stats['failed_executions']}, "
+                       f"Retried: {stats['retried_executions']}, "
+                       f"Fallback Used: {stats['fallback_used']}, "
+                       f"Success Rate: {stats['success_rate']}%")
+        else:
+            logger.info("Tool Execution Statistics - No executions recorded yet")
+        return stats
+
+    async def _execute_tool_with_retry(
+        self,
+        tool: BaseTool,
+        execute_args: Dict[str, Any],
+        tool_name: str,
+        agent_id: str,
+        execution_id: str
+    ) -> Tuple[Any, bool, str]:
+        """
+        Execute a tool with retry logic and enhanced error handling
+        Returns: (result, success, error_message)
+        """
+        last_error = None
+        
+        for attempt in range(self._max_retry_attempts):
+            try:
+                logger.debug(f"[TOOL_EXEC_ATTEMPT] ID:{execution_id} | Attempt:{attempt+1}/{self._max_retry_attempts}")
+                result = await tool.execute(**execute_args)
+                
+                # Check if result indicates an error for certain tools
+                if isinstance(result, dict) and result.get("status") == "error":
+                    error_msg = result.get("message", "Tool returned error status")
+                    logger.warning(f"[TOOL_EXEC_ERROR] ID:{execution_id} | Attempt:{attempt+1} | Tool error: {error_msg}")
+                    last_error = error_msg
+                    
+                    # For certain recoverable errors, try again
+                    if self._is_recoverable_error(error_msg) and attempt < self._max_retry_attempts - 1:
+                        await asyncio.sleep(self._retry_delay_seconds * (attempt + 1))  # Exponential backoff
+                        continue
+                    else:
+                        return result, False, error_msg
+                
+                # Success case
+                logger.info(f"[TOOL_EXEC_SUCCESS] ID:{execution_id} | Attempt:{attempt+1}")
+                return result, True, ""
+                
+            except Exception as e:
+                error_msg = f"{type(e).__name__}: {str(e)}"
+                logger.warning(f"[TOOL_EXEC_EXCEPTION] ID:{execution_id} | Attempt:{attempt+1} | {error_msg}")
+                last_error = error_msg
+                
+                # Check if this is a recoverable error
+                if self._is_recoverable_error(error_msg) and attempt < self._max_retry_attempts - 1:
+                    logger.info(f"[TOOL_EXEC_RETRY] ID:{execution_id} | Retrying in {self._retry_delay_seconds * (attempt + 1)}s")
+                    await asyncio.sleep(self._retry_delay_seconds * (attempt + 1))  # Exponential backoff
+                    continue
+                else:
+                    # Non-recoverable error or max attempts reached
+                    break
+        
+        # All attempts failed
+        final_error = f"Tool execution failed after {self._max_retry_attempts} attempts. Last error: {last_error}"
+        logger.error(f"[TOOL_EXEC_FAILED] ID:{execution_id} | {final_error}")
+        return None, False, final_error
+
+    def _is_recoverable_error(self, error_msg: str) -> bool:
+        """Determine if an error is recoverable and worth retrying"""
+        recoverable_patterns = [
+            "timeout",
+            "connection",
+            "network",
+            "temporary",
+            "rate limit",
+            "server error",
+            "503",
+            "502",
+            "500"
+        ]
+        error_lower = error_msg.lower()
+        return any(pattern in error_lower for pattern in recoverable_patterns)
+
+    def _generate_fallback_response(self, tool_name: str, tool_args: Dict[str, Any], error_msg: str) -> Any:
+        """Generate a fallback response when tool execution fails completely"""
+        fallback_response = {
+            "status": "error",
+            "message": f"Tool '{tool_name}' execution failed: {error_msg}",
+            "fallback_response": True,
+            "suggested_action": "Please check your parameters and try again, or use an alternative approach."
+        }
+        
+        # Add tool-specific fallback information
+        if tool_name == "file_system":
+            fallback_response["suggested_action"] = "File operation failed. Verify the file path exists and you have proper permissions."
+        elif tool_name == "web_search":
+            fallback_response["suggested_action"] = "Web search failed. Check your internet connection or try a different search query."
+        elif tool_name == "project_management":
+            fallback_response["suggested_action"] = "Project management operation failed. Verify task IDs and project state."
+        
+        return fallback_response
+
     async def execute_tool(
         self,
         agent_id: str,
@@ -229,6 +370,7 @@ class ToolExecutor:
         if not tool:
             error_msg = f"Error: Tool '{tool_name}' not found. Available tools: {list(self.tools.keys())}"
             logger.error(f"[TOOL_EXEC_ERROR] ID:{execution_id} | {error_msg}")
+            self._update_execution_stats(success=False)
             if tool_name == ManageTeamTool.name: 
                 return {"status": "error", "action": tool_args.get("action"), "message": error_msg, "execution_id": execution_id}
             else:
@@ -357,21 +499,47 @@ class ToolExecutor:
                     logger.error(f"ToolExecutor: {error_msg}")
                     return error_msg
             
-            try:
-                result = await tool.execute(**execute_args)
-                logger.info(f"ToolExecutor: Tool '{tool_name}' execution completed successfully for agent '{agent_id}'")
-                if original_state and current_agent_instance_for_tool_call and \
-                   hasattr(current_agent_instance_for_tool_call, 'state') and \
-                   current_agent_instance_for_tool_call.state != original_state :
-                    logger.debug(f"ToolExecutor: Restoring original state '{original_state}' for agent '{agent_id}' after tool execution.")
-                    current_agent_instance_for_tool_call.state = original_state
-            except Exception as e:
-                if original_state and current_agent_instance_for_tool_call and \
-                   hasattr(current_agent_instance_for_tool_call, 'state'): 
-                    logger.debug(f"ToolExecutor: Restoring original state '{original_state}' after tool error for agent '{agent_id}'")
-                    current_agent_instance_for_tool_call.state = original_state
-                raise 
+            # Use the robust retry mechanism
+            result, success, error_message = await self._execute_tool_with_retry(
+                tool=tool,
+                execute_args=execute_args,
+                tool_name=tool_name,
+                agent_id=agent_id,
+                execution_id=execution_id
+            )
+            
+            # Update statistics
+            retry_was_used = self._execution_stats["retried_executions"] > 0
+            self._update_execution_stats(success=success, retried=retry_was_used)
+            
+            # Handle state restoration
+            if original_state and current_agent_instance_for_tool_call and \
+               hasattr(current_agent_instance_for_tool_call, 'state') and \
+               current_agent_instance_for_tool_call.state != original_state:
+                logger.debug(f"ToolExecutor: Restoring original state '{original_state}' for agent '{agent_id}' after tool execution.")
+                current_agent_instance_for_tool_call.state = original_state
+            
+            # Handle failure case with fallback
+            if not success:
+                logger.error(f"[TOOL_EXEC_FAILED] ID:{execution_id} | {error_message}")
+                
+                # Generate fallback response
+                fallback_response = self._generate_fallback_response(tool_name, tool_args, error_message)
+                self._update_execution_stats(success=False, fallback_used=True)
+                
+                if tool_name == ManageTeamTool.name:
+                    fallback_response["action"] = tool_args.get("action", "unknown_action")
+                    fallback_response["execution_id"] = execution_id
+                    return fallback_response
+                elif tool_name == ProjectManagementTool.name:
+                    fallback_response["action"] = tool_args.get("action", "unknown_action")
+                    return fallback_response
+                else:
+                    return f"[Tool Execution Failed] {error_message} [ID:{execution_id}] - {fallback_response['suggested_action']}"
 
+            # Handle success case - format result appropriately
+            logger.info(f"[TOOL_EXEC_COMPLETE] ID:{execution_id} | Success: {success}")
+            
             if tool_name == ManageTeamTool.name or tool_name == ProjectManagementTool.name: 
                  if not isinstance(result, dict):
                       logger.error(f"{tool_name} execution returned unexpected type: {type(result)}. Expected dict.")
@@ -388,8 +556,16 @@ class ToolExecutor:
                  return result_str
 
         except Exception as e: 
-            error_msg = f"Executor: Error executing tool '{tool_name}': {type(e).__name__} - {e}"
+            error_msg = f"Executor: Critical error executing tool '{tool_name}': {type(e).__name__} - {e}"
             logger.error(error_msg, exc_info=True)
+            self._update_execution_stats(success=False)
+            
+            # Restore state on critical error
+            if original_state and current_agent_instance_for_tool_call and \
+               hasattr(current_agent_instance_for_tool_call, 'state'): 
+                logger.debug(f"ToolExecutor: Restoring original state '{original_state}' after critical error for agent '{agent_id}'")
+                current_agent_instance_for_tool_call.state = original_state
+            
             if tool_name == ManageTeamTool.name or tool_name == ProjectManagementTool.name: 
                  return {"status": "error", "action": tool_args.get("action"), "message": error_msg}
             else:

@@ -16,7 +16,7 @@ from src.agents.constants import (
     AGENT_STATUS_AWAITING_CG_REVIEW, AGENT_STATUS_AWAITING_USER_REVIEW_CG, # Added for CG
     AGENT_STATUS_ERROR, AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER,
     ADMIN_STATE_PLANNING, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STARTUP,
-    PM_STATE_STARTUP, PM_STATE_MANAGE, PM_STATE_WORK, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS,
+    PM_STATE_STARTUP, PM_STATE_MANAGE, PM_STATE_WORK, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_STANDBY,
     WORKER_STATE_WAIT, REQUEST_STATE_TAG_PATTERN,
     CONSTITUTIONAL_GUARDIAN_AGENT_ID, # Added for CG
     BOOTSTRAP_AGENT_ID
@@ -60,10 +60,16 @@ class AgentCycleHandler:
         """Report current tool execution statistics"""
         if self._tool_execution_stats["total_calls"] > 0:
             success_rate = (self._tool_execution_stats["successful_calls"] / self._tool_execution_stats["total_calls"]) * 100
-            logger.info(f"Tool Execution Stats - Total: {self._tool_execution_stats['total_calls']}, "
+            logger.info(f"CycleHandler Tool Stats - Total: {self._tool_execution_stats['total_calls']}, "
                        f"Successful: {self._tool_execution_stats['successful_calls']}, "
                        f"Failed: {self._tool_execution_stats['failed_calls']}, "
                        f"Success Rate: {success_rate:.1f}%")
+        
+        # Also report ToolExecutor stats if available
+        if hasattr(self._manager, 'tool_executor') and hasattr(self._manager.tool_executor, 'report_execution_stats'):
+            executor_stats = self._manager.tool_executor.report_execution_stats()
+            return executor_stats
+        return None
 
     async def _get_cg_verdict(self, original_agent_final_text: str) -> Optional[str]:
         if not original_agent_final_text or original_agent_final_text.isspace():
@@ -414,6 +420,38 @@ class AgentCycleHandler:
                         context.executed_tool_successfully_this_cycle = any_tool_success; context.needs_reactivation_after_cycle = True
 
                         # --- START: PM Post-Tool State Transitions ---
+                        # Track tool success/failure for PM loop detection
+                        if agent.agent_type == AGENT_TYPE_PM and tool_calls and len(tool_calls) == 1:
+                            called_tool_name = tool_calls[0].get("name")
+                            
+                            # Check for persistent tool failures that could cause loops
+                            if not any_tool_success:
+                                # Increment consecutive failure counter
+                                if not hasattr(agent, '_consecutive_tool_failures'):
+                                    agent._consecutive_tool_failures = 0
+                                agent._consecutive_tool_failures += 1
+                                
+                                # If too many consecutive failures, force intervention
+                                if agent._consecutive_tool_failures >= 3:
+                                    logger.error(f"CycleHandler: PM '{agent.agent_id}' had {agent._consecutive_tool_failures} consecutive tool failures. Forcing error state to prevent loop.")
+                                    agent.set_status(AGENT_STATUS_ERROR)
+                                    error_message = f"Agent '{agent.agent_id}' had {agent._consecutive_tool_failures} consecutive tool execution failures. Stopped to prevent infinite loop."
+                                    agent.message_history.append({"role": "system", "content": f"[Framework Error]: {error_message}"})
+                                    
+                                    if context.current_db_session_id:
+                                        await self._manager.db_manager.log_interaction(
+                                            session_id=context.current_db_session_id,
+                                            agent_id=agent.agent_id,
+                                            role="system_error",
+                                            content=error_message
+                                        )
+                                    await self._manager.send_to_ui({"type": "error", "agent_id": agent.agent_id, "content": error_message})
+                                    context.needs_reactivation_after_cycle = False
+                                    break  # Break from tool processing loop
+                            else:
+                                # Reset failure counter on success
+                                agent._consecutive_tool_failures = 0
+                        
                         if agent.agent_type == AGENT_TYPE_PM and any_tool_success and tool_calls and len(tool_calls) == 1:
                             called_tool_name = tool_calls[0].get("name")
                             if agent.state == PM_STATE_ACTIVATE_WORKERS and called_tool_name == "send_message":
@@ -676,6 +714,82 @@ class AgentCycleHandler:
                         # --- END: PM Manage State Interventions ---
 
                         llm_stream_ended_cleanly = False; break
+
+                # This block handles cases where the LLM stream finished without any specific break-worthy event.
+                if llm_stream_ended_cleanly and not context.last_error_obj and not context.action_taken_this_cycle:
+                    # NEW: Enhanced intervention logic for PM agent stuck in MANAGE state producing only <think>
+                    if agent.agent_type == AGENT_TYPE_PM and \
+                       agent.state == PM_STATE_MANAGE and \
+                       not getattr(agent, '_manage_cycle_cooldown_until', 0) > time.time():
+
+                        # Check if the agent's recent output was only thinking without action
+                        recent_think_only = False
+                        if agent.text_buffer.strip():
+                            # If there's content in text buffer, check if it's just thinking
+                            buffer_content = agent.text_buffer.strip()
+                            if '<think>' in buffer_content.lower() and not any(tool_name in buffer_content.lower() 
+                                for tool_name in ['<project_management>', '<manage_team>', '<send_message>']):
+                                recent_think_only = True
+                        else:
+                            # If no text buffer but also no action taken, this indicates a problematic cycle
+                            recent_think_only = True
+
+                        if recent_think_only:
+                            logger.info(f"CycleHandler: PM agent '{agent.agent_id}' in MANAGE state produced only thinking without action. Applying enhanced intervention.")
+
+                            # Set a cooldown to prevent immediate re-triggering by the periodic timer
+                            agent._manage_cycle_cooldown_until = time.time() + 30  # 30 second cooldown
+                            
+                            # Count consecutive non-productive cycles
+                            if not hasattr(agent, '_manage_unproductive_cycles'):
+                                agent._manage_unproductive_cycles = 0
+                            agent._manage_unproductive_cycles += 1
+
+                            if agent._manage_unproductive_cycles >= 3:
+                                # After 3 unproductive cycles, transition to a standby state
+                                logger.warning(f"CycleHandler: PM agent '{agent.agent_id}' had {agent._manage_unproductive_cycles} unproductive MANAGE cycles. Transitioning to standby state.")
+                                
+                                standby_message_content = (
+                                    "[Framework Intervention]: You have completed multiple management cycles without taking concrete action. "
+                                    "Your project appears to be in a stable state. You will now transition to standby mode. "
+                                    "Output ONLY the following XML: <request_state state='pm_standby'/>"
+                                )
+                                agent.message_history.append({"role": "system", "content": standby_message_content})
+                                
+                                if context.current_db_session_id:
+                                    await self._manager.db_manager.log_interaction(
+                                        session_id=context.current_db_session_id,
+                                        agent_id=agent.agent_id,
+                                        role="system_intervention",
+                                        content=standby_message_content
+                                    )
+                                
+                                # Reset the counter since we're forcing a state change
+                                agent._manage_unproductive_cycles = 0
+                                context.needs_reactivation_after_cycle = True
+                                context.action_taken_this_cycle = True
+                                context.cycle_completed_successfully = True
+                            else:
+                                # Provide specific directive to take action
+                                directive_message_content = (
+                                    f"[Framework Intervention]: This is your {agent._manage_unproductive_cycles} consecutive management cycle without concrete action. "
+                                    "Your MANDATORY next action is to perform Step 1 of your workflow: "
+                                    "Use `<project_management><action>list_tasks</action></project_management>` to assess the current project status. "
+                                    "Do NOT just think - you must execute this tool call."
+                                )
+                                agent.message_history.append({"role": "system", "content": directive_message_content})
+                                
+                                if context.current_db_session_id:
+                                    await self._manager.db_manager.log_interaction(
+                                        session_id=context.current_db_session_id,
+                                        agent_id=agent.agent_id,
+                                        role="system_intervention",
+                                        content=directive_message_content
+                                    )
+                                
+                                context.needs_reactivation_after_cycle = True
+                                context.action_taken_this_cycle = True
+                                context.cycle_completed_successfully = True
 
                     elif event_type in ["response_chunk", "status", "final_response", "invalid_state_request_output"]:
                         if event_type == "final_response":
