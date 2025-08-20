@@ -350,6 +350,13 @@ class AgentCycleHandler:
                         if thought_content and context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant_thought", content=thought_content)
                         if thought_content: await self._manager.send_to_ui(event) # Save to KB logic omitted for diff brevity but would be here
 
+                    elif event_type == "agent_raw_response":
+                        # Forward raw agent responses to the UI for display in Internal Comms
+                        raw_content = event.get("content")
+                        if raw_content:
+                            await self._manager.send_to_ui(event)
+                            logger.debug(f"CycleHandler '{agent.agent_id}': Forwarded agent_raw_response to UI")
+
                     elif event_type == "agent_state_change_requested":
                         context.action_taken_this_cycle = True; context.state_change_requested_this_cycle = True; requested_state = event.get("requested_state")
                         if self._manager.workflow_manager.change_state(agent, requested_state):

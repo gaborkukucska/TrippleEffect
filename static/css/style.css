@@ -233,11 +233,17 @@ body {
     background-color: var(--agent-msg-bg-base);
     align-self: flex-start;
     display: flex;
-    flex-direction: row; /* Default to row */
+    /* flex-direction: row; /* Default to row for conversation */
     align-items: flex-start; /* Align items at the start of the cross axis */
     flex-shrink: 0;
 }
 .message p { margin: 0; }
+
+/* Internal Comms Area Messages - Column Layout */
+.system-log-area .message {
+    flex-direction: column; /* Stack timestamp, label, and content vertically */
+    align-items: stretch; /* Make children take full width */
+}
 
 .message .timestamp {
     font-size: 0.8em;
@@ -245,6 +251,13 @@ body {
     margin-right: 8px;
     white-space: nowrap; /* Prevent timestamp from wrapping */
     flex-shrink: 0;
+}
+
+/* Internal Comms timestamp styling */
+.system-log-area .message .timestamp {
+    margin-right: 0;
+    margin-bottom: 4px;
+    align-self: flex-start;
 }
 
 /* Container for label + content, to allow them to stack if message is column */
@@ -265,12 +278,28 @@ body {
     overflow-wrap: break-word;
 }
 
+/* Internal Comms agent label styling */
+.system-log-area .message .agent-label {
+    margin-bottom: 6px;
+    padding-bottom: 2px;
+    border-bottom: 1px solid var(--border-color);
+    opacity: 0.9;
+}
+
 .message .message-content {
     display: block;
     white-space: pre-wrap;
-    word-break: break-word; /* Break long words in content */
-    overflow-wrap: break-word;
+    /* word-break: break-word; /* Break long words in content */
+    /* overflow-wrap: break-word; */
+    overflow-block: auto;
     font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+}
+
+/* Internal Comms message content styling */
+.system-log-area .message .message-content {
+    margin-top: 4px;
+    padding-top: 4px;
+    line-height: 1.4;
 }
 
 .conversation-area .message.user {
@@ -287,7 +316,7 @@ body {
 .system-log-area .message {
     width: 100%;
     max-width: 100%;
-    flex-direction: row; /* Keep timestamp side-by-side with message-body */
+    /* flex-direction: row; /* Keep timestamp side-by-side with message-body */
 }
 
 /* Agent ID specific styling (for internal comms) */
@@ -314,7 +343,7 @@ body {
     margin-right: auto;
     padding: 4px 10px;
     border-radius: 4px;
-    flex-direction: row; /* Status messages are typically single line */
+    /* flex-direction: row; /* Status messages are typically single line */
     justify-content: center; /* Center content within status message */
     align-items: center;
 }
@@ -357,7 +386,7 @@ body {
     margin-left: 0 !important;
     margin-right: 0 !important;
     padding: 8px 12px !important; /* Use standard message padding */
-    flex-direction: row; /* Keep timestamp side-by-side with body */
+    /* flex-direction: row; /* Keep timestamp side-by-side with body */
     text-align: left !important; /* Errors are usually better left-aligned */
 }
 

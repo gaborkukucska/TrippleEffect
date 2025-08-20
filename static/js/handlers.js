@@ -104,7 +104,7 @@ export const handleWebSocketMessage = (data) => {
                 break;
             case 'agent_state_change_requested':
                 console.log("Handler: Explicitly handling agent_state_change_requested for", data.agent_id); // Diagnostic log
-                displayContent = `Agent ${escapeHTML(data.agent_id || 'Unknown Agent')} requested state change to '${escapeHTML(data.requested_state || 'N/A')}'. ${data.message ? escapeHTML(data.message) : ''}`;
+                displayContent = `🔄 Agent ${escapeHTML(data.agent_id || 'Unknown Agent')} requested state change to '${escapeHTML(data.requested_state || 'N/A')}'`;
                 displayAgentId = data.agent_id || 'system_event_source_agent';
                 displayType = 'agent_state_request';
                 targetAreaId = 'internal-comms-area';
@@ -295,6 +295,132 @@ export const handleWebSocketMessage = (data) => {
                  displayType = 'system_event'; // Style like other system events
                  targetAreaId = 'internal-comms-area';
                  break;
+
+            // --- NEW: Missing message type handlers ---
+            case 'agent_thought':
+                console.log("Handler: Explicitly handling agent_thought for", data.agent_id);
+                displayContent = `🤔 Thought (${escapeHTML(data.agent_id || 'Unknown Agent')}): ${escapeHTML(data.content || 'No thought content')}`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'agent_thought';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
+            case 'system_error_feedback':
+                console.log("Handler: Explicitly handling system_error_feedback for", data.agent_id);
+                displayContent = `⚠️ System Error Feedback (${escapeHTML(data.agent_id || 'System')}): ${escapeHTML(data.content || 'No feedback content')}`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'system_error_feedback';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
+            case 'system_notification':
+                console.log("Handler: Explicitly handling system_notification for", data.agent_id);
+                displayContent = `📢 System Notification (${escapeHTML(data.agent_id || 'System')}): ${escapeHTML(data.content || 'No notification content')}`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'system_notification';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
+            case 'malformed_tool_call':
+                console.log("Handler: Explicitly handling malformed_tool_call for", data.agent_id);
+                const toolName = data.tool_name || 'Unknown Tool';
+                const errorMsg = data.error_message || 'Unknown error';
+                displayContent = `❌ Malformed Tool Call (${escapeHTML(data.agent_id || 'Unknown Agent')}): Tool '${escapeHTML(toolName)}' - ${escapeHTML(errorMsg)}`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'malformed_tool_call';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
+            case 'workflow_executed':
+                console.log("Handler: Explicitly handling workflow_executed for", data.agent_id);
+                const workflowName = data.workflow_name || 'Unknown Workflow';
+                const workflowSuccess = data.success ? '✅' : '❌';
+                displayContent = `${workflowSuccess} Workflow (${escapeHTML(data.agent_id || 'Unknown Agent')}): '${escapeHTML(workflowName)}' - ${escapeHTML(data.message || 'No details')}`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'workflow_executed';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
+            case 'pm_startup_missing_task_list_after_think':
+                console.log("Handler: Explicitly handling pm_startup_missing_task_list_after_think for", data.agent_id);
+                displayContent = `⚠️ PM Startup Issue (${escapeHTML(data.agent_id || 'Unknown PM')}): Missing task list after think block`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'pm_startup_error';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
+            case 'pm_completion_verification_triggered':
+                console.log("Handler: Explicitly handling pm_completion_verification_triggered for", data.agent_id);
+                displayContent = `🔍 PM Completion Check (${escapeHTML(data.agent_id || 'Unknown PM')}): Verifying project completion status`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'pm_completion_verification';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
+            case 'invalid_state_request_output':
+                console.log("Handler: Explicitly handling invalid_state_request_output for", data.agent_id);
+                displayContent = `❌ Invalid State Request (${escapeHTML(data.agent_id || 'Unknown Agent')}): ${escapeHTML(data.content || 'No details')}`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'invalid_state_request';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
+            // Additional message types that may appear in logs but don't have explicit handlers yet
+            case 'cg_concern_raised': // Alternative name for constitutional concerns
+                console.log("Handler: Explicitly handling cg_concern_raised for", data.agent_id);
+                displayContent = `⚖️ Constitutional Concern Raised (${escapeHTML(data.agent_id || 'Unknown Agent')}): ${escapeHTML(data.content || data.concern_details || 'No details')}`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'constitutional_concern';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
+            case 'awaiting_user_review_cg': // From logs: "Final status for this attempt: awaiting_user_review_cg"
+                console.log("Handler: Explicitly handling awaiting_user_review_cg for", data.agent_id);
+                displayContent = `⏳ Awaiting User Review (${escapeHTML(data.agent_id || 'Unknown Agent')}): Constitutional Guardian review pending`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'awaiting_review';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
+            case 'cg_review_complete': // Potential follow-up message type
+                console.log("Handler: Explicitly handling cg_review_complete for", data.agent_id);
+                displayContent = `✅ Constitutional Review Complete (${escapeHTML(data.agent_id || 'Unknown Agent')}): ${escapeHTML(data.content || 'Review completed')}`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'review_complete';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
+            case 'agent_cycle_complete': // When agent cycles finish
+                console.log("Handler: Explicitly handling agent_cycle_complete for", data.agent_id);
+                displayContent = `🔄 Agent Cycle Complete (${escapeHTML(data.agent_id || 'Unknown Agent')}): ${escapeHTML(data.status || 'Cycle finished')}`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'cycle_complete';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
+            case 'agent_raw_response': // Raw response from agent before post-processing
+                console.log("Handler: Explicitly handling agent_raw_response for", data.agent_id);
+                const rawContent = data.content || 'No raw content';
+                // Format the raw response with >>> and <<< markers like in the logs
+                displayContent = `📄 Raw Response (${escapeHTML(data.agent_id || 'Unknown Agent')}):<br><pre>>>><br>${escapeHTML(rawContent)}<br><<<</pre>`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'agent_raw_response';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+            // --- END NEW handlers ---
 
             default:
                 console.warn(`Handler: Received unknown message type: ${messageType}`, data);

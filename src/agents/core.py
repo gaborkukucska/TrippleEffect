@@ -172,6 +172,9 @@ class Agent:
 
             if not stream_had_error:
                 logger.debug(f"Agent {self.agent_id}: Raw response before post-processing:\n>>>\n{complete_assistant_response}\n<<<")
+                # Send raw response to UI for Internal Comms visibility
+                if complete_assistant_response.strip():
+                    yield {"type": "agent_raw_response", "content": complete_assistant_response, "agent_id": self.agent_id}
                 buffer_to_process = self.text_buffer.strip() # Strip here for workflow processing
                 original_complete_response = complete_assistant_response # Retain the full original response for potential error reporting
 

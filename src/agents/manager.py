@@ -314,8 +314,18 @@ class AgentManager:
 
     async def send_to_ui(self, message_data: Dict[str, Any]):
         if not self.send_to_ui_func: logger.warning("UI broadcast func not set."); return
-        try: await self.send_to_ui_func(json.dumps(message_data))
-        except Exception as e: logger.error(f"Error sending to UI: {e}. Data: {message_data}", exc_info=True)
+        
+        # Add debug logging for agent_thought, agent_raw_response, and tool_result events
+        event_type = message_data.get("type", "unknown")
+        if event_type in ["agent_thought", "agent_raw_response", "tool_result"]:
+            logger.info(f"Manager: Sending {event_type} event to UI for agent {message_data.get('agent_id', 'unknown')}")
+        
+        try: 
+            await self.send_to_ui_func(json.dumps(message_data))
+            if event_type in ["agent_thought", "agent_raw_response", "tool_result"]:
+                logger.info(f"Manager: Successfully sent {event_type} event to UI via broadcast")
+        except Exception as e: 
+            logger.error(f"Error sending to UI: {e}. Data: {message_data}", exc_info=True)
 
     def get_agent_status(self) -> Dict[str, Dict[str, Any]]:
         return {aid: (ag.get_state() | {"team": self.state_manager.get_agent_team(aid)}) for aid, ag in self.agents.items()}

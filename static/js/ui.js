@@ -129,40 +129,63 @@ export const displayMessage = (text, type, targetAreaId, agentId = null, agentPe
                 // --- End border styling ---
             }
 
-            const timestampSpan = (targetAreaId === 'internal-comms-area')
-                ? `<span class="timestamp">${getCurrentTimestamp()}</span>`
-                : '';
+            // Create structured content for internal comms vs conversation
+            if (targetAreaId === 'internal-comms-area') {
+                // For internal comms, create a column layout with separate lines
+                const timestampDiv = document.createElement('div');
+                timestampDiv.classList.add('timestamp');
+                timestampDiv.textContent = getCurrentTimestamp();
+                messageElement.appendChild(timestampDiv);
 
-            let innerHTMLContent = timestampSpan;
+                // Add Agent Label
+                if (agentPersona) {
+                    const agentLabelDiv = document.createElement('div');
+                    agentLabelDiv.classList.add('agent-label');
+                    agentLabelDiv.textContent = `${agentPersona} (${agentId}):`;
+                    messageElement.appendChild(agentLabelDiv);
+                } else if (agentId && !['system', 'api', 'frontend', 'manager', 'human_user'].includes(agentId)) {
+                    const agentLabelDiv = document.createElement('div');
+                    agentLabelDiv.classList.add('agent-label');
+                    agentLabelDiv.textContent = `Agent (${agentId}):`;
+                    messageElement.appendChild(agentLabelDiv);
+                } else if (agentId) {
+                    const agentLabelDiv = document.createElement('div');
+                    agentLabelDiv.classList.add('agent-label');
+                    agentLabelDiv.textContent = `${agentId.replace(/_/g,' ').toUpperCase()}:`;
+                    messageElement.appendChild(agentLabelDiv);
+                }
 
-            // Add Agent Label based on target area and type
-             if (targetAreaId === 'internal-comms-area') {
-                 // Show detailed labels in internal comms
-                 if (agentPersona) {
-                     innerHTMLContent += `<span class="agent-label">${escapeHTML(agentPersona)} (${escapeHTML(agentId)}):</span>`;
-                 } else if (agentId && !['system', 'api', 'frontend', 'manager', 'human_user'].includes(agentId)) {
-                     innerHTMLContent += `<span class="agent-label">Agent (${escapeHTML(agentId)}):</span>`;
-                 } else if (agentId) { // Handle system/manager/etc.
-                      innerHTMLContent += `<span class="agent-label">${escapeHTML(agentId.replace(/_/g,' ').toUpperCase())}:</span>`;
-                 }
-             } else if (targetAreaId === 'conversation-area') {
-                 // Only show persona for agent responses in chat
-                 if (type === 'agent_response' && agentPersona) {
-                     innerHTMLContent += `<span class="agent-label">${escapeHTML(agentPersona)}:</span>`;
-                 }
-                 // User messages don't need a label here
-             }
+                // Add content on its own line
+                const contentDiv = document.createElement('div');
+                contentDiv.classList.add('message-content');
+                if (type === 'response_chunk') {
+                    contentDiv.textContent = text;
+                } else {
+                    contentDiv.innerHTML = text;
+                }
+                messageElement.appendChild(contentDiv);
 
-            // Append the actual message content
-            const contentSpan = document.createElement('span');
-            contentSpan.classList.add('message-content');
-            if (type === 'response_chunk') {
-                 contentSpan.textContent = text; // Set initial text content for the first chunk
             } else {
-                 contentSpan.innerHTML = text; // Use innerHTML for other types that might contain pre-formatted HTML
+                // For conversation area, keep the original inline layout
+                const timestampSpan = '';
+                let innerHTMLContent = timestampSpan;
+
+                // Only show persona for agent responses in chat
+                if (type === 'agent_response' && agentPersona) {
+                    innerHTMLContent += `<span class="agent-label">${escapeHTML(agentPersona)}:</span>`;
+                }
+
+                // Append the actual message content
+                const contentSpan = document.createElement('span');
+                contentSpan.classList.add('message-content');
+                if (type === 'response_chunk') {
+                     contentSpan.textContent = text;
+                } else {
+                     contentSpan.innerHTML = text;
+                }
+                messageElement.innerHTML = innerHTMLContent;
+                messageElement.appendChild(contentSpan);
             }
-            messageElement.innerHTML = innerHTMLContent; // Add timestamp and label first
-            messageElement.appendChild(contentSpan); // Append the content span
 
             messageArea.appendChild(messageElement);
 
