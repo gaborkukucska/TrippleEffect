@@ -215,6 +215,24 @@ class Agent:
                     return
                 # --- END PM Startup Missing Task List Check ---
 
+                # --- Enhanced Completion Detection for PM Agents ---
+                if self.agent_type == AGENT_TYPE_PM and think_content_extracted:
+                    # Check if PM is thinking about project completion
+                    completion_indicators = [
+                        "project.*complete", "all.*tasks.*done", "work.*finished", 
+                        "project.*finished", "nothing.*left.*to.*do", "no.*remaining.*tasks",
+                        "all.*work.*completed", "ready.*to.*close", "project.*successful"
+                    ]
+                    
+                    thinking_lower = think_content_extracted.lower()
+                    completion_thoughts = any(re.search(pattern, thinking_lower) for pattern in completion_indicators)
+                    
+                    if completion_thoughts and self.state in [PM_STATE_MANAGE, PM_STATE_WORK]:
+                        logger.info(f"Agent {self.agent_id} (PM) showing completion thoughts. Checking project status.")
+                        yield {"type": "pm_completion_detection", "agent_id": self.agent_id, "thinking_content": think_content_extracted}
+                        # Allow processing to continue for normal tool calls or state changes
+                # --- END Enhanced Completion Detection for PM Agents ---
+
                 state_request_tag = None; requested_state = None
                 cycle_handler_instance = getattr(self.manager, 'cycle_handler', None)
                 manager_request_state_pattern = getattr(cycle_handler_instance, 'request_state_pattern', None) if cycle_handler_instance else None

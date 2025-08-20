@@ -2,6 +2,7 @@
 import logging
 import datetime
 import asyncio
+import time
 from typing import Dict, List, Optional, TYPE_CHECKING, Tuple, Any
 import re
 import importlib
@@ -113,6 +114,41 @@ class AgentWorkflowManager:
             current_state = agent.state
             if current_state != requested_state:
                 logger.info(f"WorkflowManager: Changing state for agent '{agent.agent_id}' ({agent.agent_type}) from '{current_state}' to '{requested_state}'.")
+                
+                # Enhanced state tracking for PM completion detection
+                if agent.agent_type == AGENT_TYPE_PM:
+                    # Track state transition timing for completion detection
+                    if not hasattr(agent, '_state_transition_history'):
+                        agent._state_transition_history = []
+                    
+                    agent._state_transition_history.append({
+                        'from_state': current_state,
+                        'to_state': requested_state,
+                        'timestamp': time.time()
+                    })
+                    
+                    # Keep only last 10 transitions to avoid memory issues
+                    if len(agent._state_transition_history) > 10:
+                        agent._state_transition_history = agent._state_transition_history[-10:]
+                    
+                    # Check for completion state transition
+                    if requested_state == PM_STATE_STANDBY:
+                        logger.info(f"WorkflowManager: PM agent '{agent.agent_id}' transitioning to standby state - project likely complete.")
+                        
+                        # Mark project as complete in agent context
+                        agent._project_completed = True
+                        agent._project_completion_time = time.time()
+                        
+                        # Reset loop prevention counters
+                        if hasattr(agent, '_periodic_cycle_count'):
+                            agent._periodic_cycle_count = 0
+                        if hasattr(agent, '_manage_unproductive_cycles'):
+                            agent._manage_unproductive_cycles = 0
+                            
+                        # Clear any completion-related flags
+                        if hasattr(agent, '_manage_cycle_cooldown_until'):
+                            delattr(agent, '_manage_cycle_cooldown_until')
+
                 agent.state = requested_state
 
                 # PM State-specific logic

@@ -859,12 +859,50 @@ class AgentCycleHandler:
 
                     elif event_type == "pm_startup_missing_task_list_after_think":
                         # ... (feedback prep, append to history, db log) ...
-                        feedback_content = ("[Framework Feedback for PM Retry]\nYour previous output consisted only of a <think> block. In the PM_STATE_STARTUP, you must provide the <task_list> XML structure after your thoughts. Please ensure your entire response includes the XML task list as specified in your instructions.")
+                        feedback_content = ("Framework Feedback for PM Retry]\nYour previous output consisted only of a <think> block. In the PM_STATE_STARTUP, you must provide the <task_list> XML structure after your thoughts. Please ensure your entire response includes the XML task list as specified in your instructions.")
                         agent.message_history.append({"role": "system", "content": feedback_content})
                         if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="system_feedback", content=feedback_content)
                         context.action_taken_this_cycle = True; context.cycle_completed_successfully = False; context.needs_reactivation_after_cycle = True
                         context.last_error_content = "PM startup missing task list after think."
                         await self._manager.send_to_ui({**event, "feedback_provided": True})
+                        llm_stream_ended_cleanly = False; break
+
+                    elif event_type == "pm_completion_detection":
+                        # Enhanced completion detection - check if project is actually complete
+                        context.action_taken_this_cycle = True
+                        thinking_content = event.get("thinking_content", "")
+                        
+                        logger.info(f"CycleHandler: PM '{agent.agent_id}' showing completion thoughts. Triggering project status verification.")
+                        
+                        # Inject a directive to verify project completion
+                        completion_verification_directive = (
+                            "[Framework System Message]: You have expressed thoughts about project completion. "
+                            "Your MANDATORY next action is to verify the actual project status. "
+                            "Use `<project_management><action>list_tasks</action></project_management>` to check for any remaining tasks. "
+                            "If no unassigned tasks remain and all work is truly complete, report completion to the Admin AI using: "
+                            f"`<send_message><target_agent_id>{BOOTSTRAP_AGENT_ID}</target_agent_id><message_content>Project [PROJECT_NAME] is complete. All tasks have been finished successfully.</message_content></send_message>` "
+                            "followed by requesting standby state: `<request_state state='pm_standby'/>`"
+                        )
+                        
+                        agent.message_history.append({"role": "system", "content": completion_verification_directive})
+                        
+                        if context.current_db_session_id:
+                            await self._manager.db_manager.log_interaction(
+                                session_id=context.current_db_session_id,
+                                agent_id=agent.agent_id,
+                                role="system_completion_verification",
+                                content=completion_verification_directive
+                            )
+                        
+                        context.needs_reactivation_after_cycle = True
+                        context.cycle_completed_successfully = True
+                        
+                        await self._manager.send_to_ui({
+                            "type": "pm_completion_verification_triggered",
+                            "agent_id": agent.agent_id,
+                            "thinking_content": thinking_content
+                        })
+                        
                         llm_stream_ended_cleanly = False; break
                     else: logger.warning(f"CycleHandler: Unknown event type '{event_type}' from agent '{agent.agent_id}'.")
 

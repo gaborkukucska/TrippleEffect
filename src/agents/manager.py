@@ -374,7 +374,51 @@ class AgentManager:
                         agent.status == AGENT_STATUS_IDLE and
                         agent.state == PM_STATE_MANAGE and 
                         not getattr(agent, '_awaiting_project_approval', False)):
-                        logger.info(f"PM '{agent.agent_id}' idle in MANAGE state. Scheduling cycle by timer.")
+                        
+                        # Enhanced loop prevention: Check if agent is cycling too frequently
+                        current_time = time.time()
+                        last_check_time = getattr(agent, '_last_periodic_check_time', 0)
+                        time_since_last_check = current_time - last_check_time
+                        
+                        # Track cycle frequency
+                        if not hasattr(agent, '_periodic_cycle_count'):
+                            agent._periodic_cycle_count = 0
+                        if not hasattr(agent, '_periodic_cycle_window_start'):
+                            agent._periodic_cycle_window_start = current_time
+                            
+                        # Reset counter if outside window (5 minutes)
+                        if current_time - agent._periodic_cycle_window_start > 300:
+                            agent._periodic_cycle_count = 0
+                            agent._periodic_cycle_window_start = current_time
+                        
+                        # Check if agent is cycling too frequently (more than 20 times in 5 minutes)
+                        if agent._periodic_cycle_count >= 20:
+                            logger.error(f"PM '{agent.agent_id}' has been triggered {agent._periodic_cycle_count} times in the last 5 minutes. This indicates infinite looping. Forcing to error state.")
+                            agent.set_status(AGENT_STATUS_ERROR)
+                            
+                            error_message = f"PM agent '{agent.agent_id}' has been cycling excessively ({agent._periodic_cycle_count} times in 5 minutes). Stopped to prevent infinite loop."
+                            agent.message_history.append({"role": "system", "content": f"[Framework Error]: {error_message}"})
+                            
+                            if self.current_session_db_id:
+                                await self.db_manager.log_interaction(
+                                    session_id=self.current_session_db_id,
+                                    agent_id=agent.agent_id,
+                                    role="system_error",
+                                    content=error_message
+                                )
+                            
+                            await self.send_to_ui({"type": "error", "agent_id": agent.agent_id, "content": error_message})
+                            continue
+                        
+                        # Add completion detection check before scheduling
+                        if await self._check_pm_completion_status(agent):
+                            logger.info(f"PM '{agent.agent_id}' project appears complete. Skipping periodic scheduling.")
+                            continue
+                            
+                        agent._periodic_cycle_count += 1
+                        agent._last_periodic_check_time = current_time
+                        
+                        logger.info(f"PM '{agent.agent_id}' idle in MANAGE state. Scheduling cycle by timer. (Count: {agent._periodic_cycle_count})")
                         await self.schedule_cycle(agent, 0) 
             except Exception as e: logger.error(f"Error during periodic PM manage check: {e}", exc_info=True)
 
@@ -602,6 +646,78 @@ class AgentManager:
 
         await self.schedule_cycle(worker_agent, retry_count=0)
         logger.info(f"AgentManager: Worker '{worker_agent_id}' scheduled for task '{task_id_from_tool}' with proper context.")
+
+    async def _check_pm_completion_status(self, agent: Agent) -> bool:
+        """
+        Check if a PM agent's project appears to be complete by examining task status
+        and worker activity. Returns True if project appears complete.
+        """
+        try:
+            # Use the project_management tool to check task status
+            if not self.tool_executor or 'project_management' not in self.tool_executor.tools:
+                logger.warning(f"PM completion check: project_management tool not available for agent '{agent.agent_id}'")
+                return False
+                
+            # Get the current project name from the agent's config
+            project_name = agent.agent_config.get("config", {}).get("project_name_context", "Unknown Project")
+            
+            # Call the project_management tool to list tasks
+            result_dict = await self.interaction_handler.execute_single_tool(
+                agent=agent,
+                call_id="internal_completion_check",
+                tool_name="project_management", 
+                tool_args={"action": "list_tasks"},
+                project_name=self.current_project,
+                session_name=self.current_session
+            )
+            
+            if not result_dict or result_dict.get("status") != "success":
+                logger.debug(f"PM completion check: Failed to get task list for agent '{agent.agent_id}'")
+                return False
+                
+            # Parse the result content
+            import json
+            result_content = result_dict.get("content", "{}")
+            if isinstance(result_content, str):
+                try:
+                    task_data = json.loads(result_content)
+                except json.JSONDecodeError:
+                    logger.debug(f"PM completion check: Failed to parse task data for agent '{agent.agent_id}'")
+                    return False
+            else:
+                task_data = result_content
+                
+            tasks = task_data.get("tasks", [])
+            
+            # Check if there are no unassigned tasks
+            unassigned_tasks = [task for task in tasks if not task.get("depends")]
+            
+            if not unassigned_tasks:
+                logger.info(f"PM completion check: No unassigned tasks found for agent '{agent.agent_id}'. Project may be complete.")
+                
+                # Additional check: verify workers are not actively working
+                team_id = self.state_manager.get_agent_team(agent.agent_id)
+                if team_id:
+                    team_agents = self.state_manager.get_agents_in_team(team_id)
+                    active_workers = [a for a in team_agents if a.agent_type == AGENT_TYPE_WORKER and a.status != AGENT_STATUS_IDLE]
+                    
+                    if not active_workers:
+                        logger.info(f"PM completion check: No active workers found for team '{team_id}'. Project appears complete.")
+                        return True
+                    else:
+                        logger.debug(f"PM completion check: Found {len(active_workers)} active workers for team '{team_id}'. Project not complete.")
+                        return False
+                else:
+                    # No team means project is likely complete or has no workers
+                    logger.info(f"PM completion check: No team found for agent '{agent.agent_id}'. Project may be complete.")
+                    return True
+            else:
+                logger.debug(f"PM completion check: Found {len(unassigned_tasks)} unassigned tasks for agent '{agent.agent_id}'. Project not complete.")
+                return False
+                
+        except Exception as e:
+            logger.error(f"PM completion check: Error checking completion status for agent '{agent.agent_id}': {e}", exc_info=True)
+            return False
 
 
 logging.info("manager.py: Module loading finished.")
