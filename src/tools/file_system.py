@@ -95,8 +95,28 @@ class FileSystemTool(BaseTool):
         replace_text = kwargs.get("replace_text") # Used by find_replace
 
         valid_actions = ["read", "write", "list", "mkdir", "delete", "find_replace"]
-        if not action or action not in valid_actions:
-            return {"status": "error", "message": f"Invalid or missing 'action'. Must be one of: {', '.join(valid_actions)}."}
+        
+        # Check for common mistakes and provide helpful suggestions
+        action_suggestions = {
+            "create_directory": "mkdir",
+            "create_file": "write", 
+            "create": "write",
+            "make_directory": "mkdir",
+            "make_dir": "mkdir",
+            "new_file": "write",
+            "save_file": "write",
+            "save": "write"
+        }
+        
+        if not action:
+            return {"status": "error", "message": f"Missing required 'action' parameter. Must be one of: {', '.join(valid_actions)}."}
+        
+        if action not in valid_actions:
+            if action in action_suggestions:
+                suggested_action = action_suggestions[action]
+                return {"status": "error", "message": f"Invalid action '{action}'. Did you mean '{suggested_action}'? Valid actions are: {', '.join(valid_actions)}."}
+            else:
+                return {"status": "error", "message": f"Invalid action '{action}'. Valid actions are: {', '.join(valid_actions)}."}
         if scope not in ["private", "shared", "projects"]: # Added 'projects' scope
             return {"status": "error", "message": "Invalid 'scope'. Must be 'private', 'shared', or 'projects'."}
 
@@ -166,6 +186,9 @@ class FileSystemTool(BaseTool):
 
 **Description:** Performs operations on files and directories within different scopes. All paths MUST be relative to the scope root.
 
+**CRITICAL - Valid Actions Only:** The following actions are the ONLY valid actions. Do NOT use variations like 'create_directory' or 'create_file':
+- read, write, list, mkdir, delete, find_replace
+
 **Scopes:**
 *   `private`: Agent's own sandbox directory (e.g., `sandboxes/agent_.../`). Use for temporary files or agent-specific data. Default.
 *   `shared`: Current session's shared workspace (e.g., `projects/<project>/<session>/shared_workspace/`). Use for collaboration and final outputs. Requires project/session context.
@@ -179,6 +202,7 @@ class FileSystemTool(BaseTool):
     *   Example: `<file_system><action>read</action><scope>shared</scope><filename>results/analysis.txt</filename></file_system>`
 
 2.  **write:** Writes content to a file, creating directories if needed. Overwrites existing files.
+    *   **NOTE:** Use 'write' action to create files, NOT 'create_file'!
     *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
     *   `<filename>` (string, required): Relative path to the file (e.g., `code/script.py`, `output/summary.txt`).
     *   `<content>` (string, required): The text content to write. **CRITICAL:** For large content (code, reports), use this action instead of putting content in `send_message`.
@@ -192,6 +216,7 @@ class FileSystemTool(BaseTool):
     *   Example (List projects): `<file_system><action>list</action><scope>projects</scope></file_system>`
 
 4.  **mkdir:** Creates a directory, including parent directories if needed. (Cannot use `scope='projects'`)
+    *   **NOTE:** Use 'mkdir' action to create directories, NOT 'create_directory'!
     *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
     *   `<path>` (string, required): Relative path of the directory to create (e.g., `results/images`, `data`).
     *   Example: `<file_system><action>mkdir</action><scope>shared</scope><path>final_report/data_files</path></file_system>`
@@ -208,6 +233,12 @@ class FileSystemTool(BaseTool):
     *   `<find_text>` (string, required): The exact text string to find.
     *   `<replace_text>` (string, required): The text string to replace occurrences with.
     *   Example: `<file_system><action>find_replace</action><scope>shared</scope><filename>config.yaml</filename><find_text>old_value</find_text><replace_text>new_value</replace_text></file_system>`
+
+**COMMON MISTAKES TO AVOID:**
+*   ❌ DON'T use 'create_directory' - use 'mkdir' instead
+*   ❌ DON'T use 'create_file' - use 'write' instead  
+*   ❌ DON'T use 'create' - use 'write' instead
+*   ❌ DON'T use 'make_directory' - use 'mkdir' instead
 
 **Important Notes:**
 *   Path Traversal (`../`, `/`) is blocked for security. All paths must be relative within the chosen scope.
