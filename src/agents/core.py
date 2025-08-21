@@ -264,8 +264,12 @@ class Agent:
                         if len(valid_calls) > 1:
                             logger.info(f"Agent {self.agent_id} found {len(valid_calls)} tool calls in a single response. Processing all.")
 
-                        for tool_name_call, tool_args, xml_block in valid_calls:
-                            all_tool_xml_blocks.append(xml_block)
+                        for tool_name_call, tool_args, match_span in valid_calls:
+                            # Extract the actual XML block string from the original text using the span
+                            start, end = match_span
+                            xml_block_str = text_for_tool_parsing[start:end]
+                            all_tool_xml_blocks.append(xml_block_str)
+
                             if tool_name_call in self.manager.tool_executor.tools:
                                 call_id = f"xml_call_{self.agent_id}_{int(time.time() * 1000)}_{os.urandom(2).hex()}"
                                 tool_requests_to_yield.append({"id": call_id, "name": tool_name_call, "arguments": tool_args})
