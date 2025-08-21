@@ -594,20 +594,38 @@ class ToolExecutor:
             except Exception as e:
                 logger.warning(f"Failed to broadcast tool_execution_complete event: {e}")
             
-            if tool_name == ManageTeamTool.name or tool_name == ProjectManagementTool.name: 
-                 if not isinstance(result, dict):
-                      logger.error(f"{tool_name} execution returned unexpected type: {type(result)}. Expected dict.")
-                      action_taken = tool_args.get("action", "unknown_action")
-                      return {"status": "error", "action": action_taken, "message": f"Internal Error: {tool_name} returned unexpected type {type(result)}."}
-                 logger.info(f"Executor: Tool '{tool_name}' execution returned result: {json.dumps(result, default=str)[:200]}...") 
-                 return result 
+            if tool_name == ManageTeamTool.name or tool_name == ProjectManagementTool.name:
+                if not isinstance(result, dict):
+                    logger.error(f"{tool_name} execution returned unexpected type: {type(result)}. Expected dict.")
+                    action_taken = tool_args.get("action", "unknown_action")
+                    return {"status": "error", "action": action_taken, "message": f"Internal Error: {tool_name} returned unexpected type {type(result)}."}
+                logger.info(f"Executor: Tool '{tool_name}' execution returned result: {json.dumps(result, default=str)[:200]}...")
+                return result
             else:
-                 if not isinstance(result, str):
-                     try: result_str = json.dumps(result, indent=2)
-                     except TypeError: result_str = str(result)
-                 else: result_str = result
-                 logger.info(f"Executor: Tool '{tool_name}' execution successful. Result (stringified, first 100 chars): {result_str[:100]}...")
-                 return result_str
+                # Handle structured (dict) vs. simple (str) tool results for all other tools
+                if isinstance(result, dict) and 'status' in result:
+                    # This is a structured response from a tool like FileSystemTool
+                    if result['status'] == 'success':
+                        # Prefer 'message' for user-facing confirmation, fallback to 'content'
+                        result_str = result.get('message', result.get('content', 'Tool execution was successful.'))
+                        if not isinstance(result_str, str):
+                            result_str = json.dumps(result_str, indent=2)
+                    else: # status == 'error'
+                        result_str = f"Error from tool '{tool_name}': {result.get('message', 'An unspecified error occurred.')}"
+                    logger.info(f"Executor: Tool '{tool_name}' successful. Structured result: {result_str[:150]}...")
+                    return result_str
+                elif isinstance(result, str):
+                    # This is a simple string response from a tool like SendMessageTool
+                    logger.info(f"Executor: Tool '{tool_name}' successful. Simple result: {result[:150]}...")
+                    return result
+                else:
+                    # Fallback for unexpected result types
+                    try:
+                        result_str = json.dumps(result, indent=2)
+                    except TypeError:
+                        result_str = str(result)
+                    logger.info(f"Executor: Tool '{tool_name}' execution successful. Result (stringified, first 100 chars): {result_str[:100]}...")
+                    return result_str
 
         except Exception as e: 
             error_msg = f"Executor: Critical error executing tool '{tool_name}': {type(e).__name__} - {e}"
