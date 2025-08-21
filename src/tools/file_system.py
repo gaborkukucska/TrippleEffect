@@ -88,7 +88,8 @@ class FileSystemTool(BaseTool):
         """
         action = kwargs.get("action")
         scope = kwargs.get("scope", "private").lower()
-        filename = kwargs.get("filename") # Used by read, write, find_replace
+        # Make tool more robust by accepting 'filepath' as an alias for 'filename'
+        filename = kwargs.get("filename") or kwargs.get("filepath")
         content = kwargs.get("content") # Used by write
         relative_path = kwargs.get("path") # Used by list, mkdir, delete. Default for list is '.', set below if needed.
         find_text = kwargs.get("find_text") # Used by find_replace
@@ -131,7 +132,9 @@ class FileSystemTool(BaseTool):
                 if not filename: return {"status": "error", "message": "'filename' parameter is required for 'read'."}
                 return await self._read_file(base_path, filename, agent_id, scope_description)
             elif action == "write":
-                if not filename: return {"status": "error", "message": "'filename' parameter is required for 'write'."}
+                if not filename: return {"status": "error", "message": "'filename' (or 'filepath') parameter is required for 'write'."}
+                if filename.endswith('/'):
+                    return {"status": "error", "message": f"The path '{filename}' appears to be a directory. Please use the 'mkdir' action to create directories."}
                 if content is None: return {"status": "error", "message": "'content' parameter is required for 'write'."}
                 return await self._write_file(base_path, filename, content, agent_id, scope_description)
             elif action == "list":
