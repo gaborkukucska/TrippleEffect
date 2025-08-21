@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, AsyncGenerator, Dict, Any, Optional, List
 from src.llm_providers.base import ToolResultDict
 # Import specific constants if needed, or rely on CycleContext for error types
 from src.agents.constants import (
-    AGENT_TYPE_PM, PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE,
+    AGENT_TYPE_PM, AGENT_TYPE_WORKER, PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE,
     WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_WAIT
 )
 
@@ -63,7 +63,7 @@ class LLMCaller:
                 max_tokens_override = self._settings.PM_WORK_STATE_MAX_TOKENS
             elif agent.state == PM_STATE_MANAGE:
                 max_tokens_override = self._settings.PM_MANAGE_STATE_MAX_TOKENS
-        elif agent.agent_type == WORKER_STATE_STARTUP: # Corrected to check agent_type
+        elif agent.agent_type == AGENT_TYPE_WORKER:
             if agent.state == WORKER_STATE_STARTUP:
                 max_tokens_override = self._settings.WORKER_STARTUP_STATE_MAX_TOKENS
             elif agent.state == WORKER_STATE_WORK:

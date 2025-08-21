@@ -420,6 +420,37 @@ export const handleWebSocketMessage = (data) => {
                 targetAreaId = 'internal-comms-area';
                 shouldDisplay = true;
                 break;
+
+            case 'tool_execution_start': // Tool execution started
+                console.log("Handler: Explicitly handling tool_execution_start for", data.agent_id);
+                const startToolName = data.tool_name || 'Unknown Tool';
+                const toolArgsStr = data.tool_args ? JSON.stringify(data.tool_args).substring(0, 100) : '{}';
+                displayContent = `🔧 Tool Execution Started (${escapeHTML(data.agent_id || 'Unknown Agent')}): '${escapeHTML(startToolName)}' with args: ${escapeHTML(toolArgsStr)}${toolArgsStr.length > 100 ? '...' : ''}`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'tool_execution_start';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
+            case 'tool_execution_complete': // Tool execution completed
+                console.log("Handler: Explicitly handling tool_execution_complete for", data.agent_id);
+                const completedToolName = data.tool_name || 'Unknown Tool';
+                const success = data.success;
+                const statusIcon = success ? '✅' : '❌';
+                
+                if (success) {
+                    const resultSummary = data.result_summary || 'No result summary';
+                    displayContent = `${statusIcon} Tool Execution Complete (${escapeHTML(data.agent_id || 'Unknown Agent')}): '${escapeHTML(completedToolName)}' - Success<br><small>Result: ${escapeHTML(resultSummary)}</small>`;
+                } else {
+                    const errorMessage = data.error_message || 'Unknown error';
+                    displayContent = `${statusIcon} Tool Execution Failed (${escapeHTML(data.agent_id || 'Unknown Agent')}): '${escapeHTML(completedToolName)}'<br><small>Error: ${escapeHTML(errorMessage)}</small>`;
+                }
+                
+                displayAgentId = data.agent_id || 'system';
+                displayType = success ? 'tool_execution_complete_success' : 'tool_execution_complete_failure';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
             // --- END NEW handlers ---
 
             default:

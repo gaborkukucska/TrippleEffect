@@ -15,6 +15,7 @@ from src.tools.base import BaseTool
 from src.tools.manage_team import ManageTeamTool
 from src.agents.constants import AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER
 from src.tools.project_management import ProjectManagementTool
+from src.api.websocket_manager import broadcast
 
 
 logger = logging.getLogger(__name__)
@@ -363,8 +364,21 @@ class ToolExecutor:
         manager: Optional[Any] = None # Type hint as 'AgentManager' if possible, else Any
     ) -> Any:
         # Enhanced logging for tool execution lifecycle
-        execution_id = f"{agent_id}_{tool_name}_{hash(str(tool_args))}"[-12:]
+        execution_id = f"{agent_id}_{tool_name}_{hash(str(tool_args))}_{int(time.time())}"[-12:]
         logger.info(f"[TOOL_EXEC_START] ID:{execution_id} | Tool:'{tool_name}' | Agent:'{agent_id}' | Args:{tool_args}")
+        
+        # Emit WebSocket event for tool execution start
+        try:
+            await broadcast(json.dumps({
+                "type": "tool_execution_start",
+                "agent_id": agent_id,
+                "tool_name": tool_name,
+                "tool_args": tool_args,
+                "execution_id": execution_id,
+                "timestamp": time.time()
+            }))
+        except Exception as e:
+            logger.warning(f"Failed to broadcast tool_execution_start event: {e}")
         
         tool = self.tools.get(tool_name)
         if not tool:
@@ -523,6 +537,20 @@ class ToolExecutor:
             if not success:
                 logger.error(f"[TOOL_EXEC_FAILED] ID:{execution_id} | {error_message}")
                 
+                # Emit WebSocket event for failed tool execution
+                try:
+                    await broadcast(json.dumps({
+                        "type": "tool_execution_complete",
+                        "agent_id": agent_id,
+                        "tool_name": tool_name,
+                        "execution_id": execution_id,
+                        "success": False,
+                        "error_message": error_message[:200],  # Truncate for event
+                        "timestamp": time.time()
+                    }))
+                except Exception as e:
+                    logger.warning(f"Failed to broadcast tool_execution_complete (failure) event: {e}")
+                
                 # Generate fallback response
                 fallback_response = self._generate_fallback_response(tool_name, tool_args, error_message)
                 self._update_execution_stats(success=False, fallback_used=True)
@@ -539,6 +567,32 @@ class ToolExecutor:
 
             # Handle success case - format result appropriately
             logger.info(f"[TOOL_EXEC_COMPLETE] ID:{execution_id} | Success: {success}")
+            
+            # Emit WebSocket event for successful tool execution completion
+            try:
+                # Prepare result summary for the event
+                if tool_name == ManageTeamTool.name or tool_name == ProjectManagementTool.name:
+                    result_summary = json.dumps(result, default=str)[:200] if isinstance(result, dict) else str(result)[:200]
+                else:
+                    if not isinstance(result, str):
+                        try: 
+                            result_summary = json.dumps(result, indent=2)[:200]
+                        except TypeError: 
+                            result_summary = str(result)[:200]
+                    else: 
+                        result_summary = result[:200]
+                
+                await broadcast(json.dumps({
+                    "type": "tool_execution_complete",
+                    "agent_id": agent_id,
+                    "tool_name": tool_name,
+                    "execution_id": execution_id,
+                    "success": True,
+                    "result_summary": result_summary,
+                    "timestamp": time.time()
+                }))
+            except Exception as e:
+                logger.warning(f"Failed to broadcast tool_execution_complete event: {e}")
             
             if tool_name == ManageTeamTool.name or tool_name == ProjectManagementTool.name: 
                  if not isinstance(result, dict):
