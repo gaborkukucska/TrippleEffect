@@ -445,6 +445,11 @@ class ToolExecutor:
         
         logger.info(f"Executor: Executing tool '{tool_name}' for agent '{agent_id}' (Type: {agent_type_for_auth}, Auth Level: {tool_auth_level}) with args: {tool_args} (Project: {project_name}, Session: {session_name})")
         try:
+            # --- Handle parameter aliases before validation ---
+            if tool_name == 'file_system' and 'filepath' in tool_args and 'filename' not in tool_args:
+                logger.debug(f"Found 'filepath' alias for 'file_system' tool. Mapping to 'filename'.")
+                tool_args['filename'] = tool_args['filepath']
+
             schema = tool.get_schema()
             validated_args = {}
             missing_required = []

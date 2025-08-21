@@ -88,8 +88,7 @@ class FileSystemTool(BaseTool):
         """
         action = kwargs.get("action")
         scope = kwargs.get("scope", "private").lower()
-        # Make tool more robust by accepting 'filepath' as an alias for 'filename'
-        filename = kwargs.get("filename") or kwargs.get("filepath")
+        filename = kwargs.get("filename") # Used by read, write, find_replace
         content = kwargs.get("content") # Used by write
         relative_path = kwargs.get("path") # Used by list, mkdir, delete. Default for list is '.', set below if needed.
         find_text = kwargs.get("find_text") # Used by find_replace
