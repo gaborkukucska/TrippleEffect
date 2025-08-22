@@ -419,25 +419,29 @@ class ToolExecutor:
             if current_agent_instance_for_tool_call:
                 original_state = current_agent_instance_for_tool_call.state
                 agent_type_for_auth = getattr(current_agent_instance_for_tool_call, 'agent_type', AGENT_TYPE_WORKER) 
-                logger.info(f"ToolExecutor: Auth: Found agent instance for '{agent_id}'. Original state: '{original_state}', Determined Type for Auth: '{agent_type_for_auth}'")
+                logger.critical(f"ToolExecutor: Auth: Found agent instance for '{agent_id}'. Original state: '{original_state}', Determined Type for Auth: '{agent_type_for_auth}', Tool auth level: '{tool_auth_level}'")
 
                 if agent_type_for_auth == AGENT_TYPE_ADMIN:
                     is_authorized = True 
+                    logger.critical(f"ToolExecutor: Auth: ADMIN agent '{agent_id}' authorized for tool '{tool_name}'")
                 elif agent_type_for_auth == AGENT_TYPE_PM:
                     is_authorized = tool_auth_level in [AGENT_TYPE_PM, AGENT_TYPE_WORKER]
+                    logger.critical(f"ToolExecutor: Auth: PM agent '{agent_id}' authorization check: tool_auth_level='{tool_auth_level}' in ['pm', 'worker'] = {is_authorized}")
                 elif agent_type_for_auth == AGENT_TYPE_WORKER:
                     is_authorized = tool_auth_level == AGENT_TYPE_WORKER
+                    logger.critical(f"ToolExecutor: Auth: WORKER agent '{agent_id}' authorization check: tool_auth_level='{tool_auth_level}' == 'worker' = {is_authorized}")
                 else: 
-                    logger.warning(f"ToolExecutor: Auth: Unknown agent type '{agent_type_for_auth}' for agent '{agent_id}'. Denying tool use.")
+                    logger.error(f"ToolExecutor: Auth: Unknown agent type '{agent_type_for_auth}' for agent '{agent_id}'. Denying tool use.")
             else:
-                logger.warning(f"ToolExecutor: Auth: Agent instance for '{agent_id}' NOT FOUND in manager.agents dict. Denying tool use.")
+                logger.error(f"ToolExecutor: Auth: Agent instance for '{agent_id}' NOT FOUND in manager.agents dict. Available agents: {list(manager.agents.keys())}")
         else:
             logger.error(f"ToolExecutor: Auth: Manager object missing (is None: {manager is None}), or manager.agents not a dict (hasattr: {hasattr(manager, 'agents')}, isinstance: {isinstance(getattr(manager, 'agents', None), dict) if manager else 'N/A'}). Cannot perform authorization.")
         # --- End Authorization Check Section ---
 
         if not is_authorized:
-            error_msg = f"Error: Agent '{agent_id}' (type: {agent_type_for_auth}) is not authorized to use tool '{tool_name}' (required level: {tool_auth_level})."
-            logger.error(error_msg)
+            error_msg = f"AUTHORIZATION FAILED: Agent '{agent_id}' (type: {agent_type_for_auth}) is not authorized to use tool '{tool_name}' (required level: {tool_auth_level})."
+            logger.error(f"[TOOL_EXEC_ERROR] ID:{execution_id} | {error_msg}")
+            self._update_execution_stats(success=False)
             if tool_name == ManageTeamTool.name:
                 return {"status": "error", "action": tool_args.get("action"), "message": error_msg}
             else:

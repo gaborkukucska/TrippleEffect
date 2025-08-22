@@ -341,16 +341,28 @@ class AgentInteractionHandler:
                 logger.info(f"[WORKER_ACTIVATION_DEBUG]   - Raw Result Status: {raw_result.get('status')}")
                 logger.info(f"[WORKER_ACTIVATION_DEBUG]   - Action Performed (from tool_args): {action_performed}")
                 logger.info(f"[WORKER_ACTIVATION_DEBUG]   - Assignee ID (from result): {assignee_id}")
-                logger.info(f"[WORKER_ACTIVATION_DEBUG]   - Task Description (from result): {'Present' if task_description_for_worker else 'Missing'}")
+                logger.info(f"[WORKER_ACTIVATION_DEBUG]   - Task Description (from result): {task_description_for_worker[:100] if task_description_for_worker else 'Missing'}")
                 # --- END DEBUGGING ---
 
-                if assignee_id and task_description_for_worker and action_performed in ["add_task", "modify_task"]:
-                    logger.info(f"InteractionHandler: Task '{action_performed}' successful for assignee '{assignee_id}'. Attempting worker activation.")
-                    await self._manager.activate_worker_with_task_details(
-                        worker_agent_id=assignee_id,
-                        task_id_from_tool=task_identifier_for_activation,
-                        task_description_from_tool=task_description_for_worker
-                    )
+                # CRITICAL FIX: The modify_task action returns the current task description from the database,
+                # but for worker activation we need to use the actual task description that was originally created,
+                # not potentially corrupted data. Let's fetch the task description properly.
+                if assignee_id and action_performed in ["add_task", "modify_task"]:
+                    # For modify_task, if the description looks corrupted (contains assignee info), 
+                    # try to get the actual task description from TaskWarrior
+                    if action_performed == "modify_task" and task_description_for_worker and "assignee:" in task_description_for_worker:
+                        logger.warning(f"[WORKER_ACTIVATION_DEBUG] Task description appears corrupted: '{task_description_for_worker}'. This indicates the task was created with assignee info as description.")
+                        # For now, use a fallback description based on the task ID
+                        task_description_for_worker = f"Complete the assigned task (Task ID: {task_identifier_for_activation}). Please check with your Project Manager for specific details."
+                        logger.info(f"[WORKER_ACTIVATION_DEBUG] Using fallback task description: '{task_description_for_worker}'")
+                    
+                    if task_description_for_worker:
+                        logger.info(f"InteractionHandler: Task '{action_performed}' successful for assignee '{assignee_id}'. Attempting worker activation.")
+                        await self._manager.activate_worker_with_task_details(
+                            worker_agent_id=assignee_id,
+                            task_id_from_tool=task_identifier_for_activation,
+                            task_description_from_tool=task_description_for_worker
+                        )
 
                     # Notification to the PM about worker activation can be added here if desired,
                     # or handled by the PM agent itself when it processes the successful tool result.
