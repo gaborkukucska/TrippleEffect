@@ -21,6 +21,7 @@ ADMIN_STATE_CONVERSATION = "admin_conversation" # Distinct conversation state fo
 ADMIN_STATE_PLANNING = "planning" # The planning state for the Admin AI which initiates the planning workflow
 ADMIN_STATE_WORK_DELEGATED = "work_delegated"
 ADMIN_STATE_WORK = "work" # The work state for the Admin AI
+ADMIN_STATE_STANDBY = "admin_standby" # State for Admin AI waiting for user, PM, or framework input
 
 # --- PM Agent Workflow State Constants ---
 PM_STATE_STARTUP = "pm_startup" # Initial entry point for a new PM

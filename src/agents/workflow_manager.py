@@ -13,7 +13,7 @@ import html # For unescaping title if extracted via regex
 
 from src.agents.constants import (
     AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER,
-    ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK,
+    ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK, ADMIN_STATE_STANDBY,
     PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_STANDBY,
     PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS,
     WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_WAIT,
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 class AgentWorkflowManager:
     def __init__(self):
         self._valid_states: Dict[str, List[str]] = {
-            AGENT_TYPE_ADMIN: [ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK, DEFAULT_STATE],
+            AGENT_TYPE_ADMIN: [ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK, ADMIN_STATE_STANDBY, DEFAULT_STATE],
             AGENT_TYPE_PM: [PM_STATE_STARTUP, PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_STANDBY, DEFAULT_STATE],
             AGENT_TYPE_WORKER: [WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_WAIT, DEFAULT_STATE]
         }
@@ -44,6 +44,7 @@ class AgentWorkflowManager:
             (AGENT_TYPE_ADMIN, ADMIN_STATE_PLANNING): "admin_ai_planning_prompt",
             (AGENT_TYPE_ADMIN, ADMIN_STATE_WORK_DELEGATED): "admin_ai_delegated_prompt",
             (AGENT_TYPE_ADMIN, ADMIN_STATE_WORK): "admin_work_prompt",
+            (AGENT_TYPE_ADMIN, ADMIN_STATE_STANDBY): "admin_ai_standby_prompt",
             (AGENT_TYPE_ADMIN, DEFAULT_STATE): "default_system_prompt",
 
             (AGENT_TYPE_PM, PM_STATE_STARTUP): "pm_startup_prompt",
@@ -247,8 +248,11 @@ class AgentWorkflowManager:
 
                             # General check for text_after_xml_tag (applies to all non-fenced)
                             if text_after_xml_tag: # Only check if there's actually text after
+                                # Enhanced pattern to allow backticks and other common formatting artifacts
+                                ENHANCED_INSIGNIFICANT_TEXT_PATTERN = r"^[A-Za-z0-9\s\.,;:!?'\"\(\)\[\]\{\}`\-_]{0," + str(MAX_INSIGNIFICANT_TEXT_LEN_DEFAULT) + r"}$"
+                                
                                 if not (len(text_after_xml_tag) <= MAX_INSIGNIFICANT_TEXT_LEN_DEFAULT and \
-                                        re.fullmatch(INSIGNIFICANT_TEXT_PATTERN_DEFAULT, text_after_xml_tag, re.IGNORECASE)):
+                                        re.fullmatch(ENHANCED_INSIGNIFICANT_TEXT_PATTERN, text_after_xml_tag, re.IGNORECASE)):
                                     is_problematic_after = True
 
                             if is_problematic_after:

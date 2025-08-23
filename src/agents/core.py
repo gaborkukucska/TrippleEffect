@@ -320,6 +320,21 @@ class Agent:
                             "agent_id": self.agent_id
                         }
                         return # Stop processing this turn, agent needs to correct
+                    
+                    # Enhanced detection for potential tool calls that weren't parsed
+                    elif not valid_calls and hasattr(self.manager, 'cycle_handler') and \
+                         hasattr(self.manager.cycle_handler, '_detect_potential_tool_calls') and \
+                         self.manager.cycle_handler._detect_potential_tool_calls(final_cleaned_response_for_tools_or_text):
+                        logger.warning(f"Agent {self.agent_id}: Detected potential tool calls but parsing failed completely.")
+                        yield {
+                            "type": "malformed_tool_call",
+                            "tool_name": "unknown", 
+                            "error_message": "Tool call detected but parsing failed. Please ensure proper XML format without markdown code fences.",
+                            "malformed_xml_block": final_cleaned_response_for_tools_or_text,
+                            "raw_assistant_response": original_complete_response,
+                            "agent_id": self.agent_id
+                        }
+                        return # Stop processing this turn, agent needs to correct
 
                     if valid_calls:
                         calls_to_process = valid_calls

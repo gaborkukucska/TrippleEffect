@@ -71,6 +71,102 @@ class AgentCycleHandler:
             return executor_stats
         return None
 
+    def _detect_potential_tool_calls(self, text: str) -> bool:
+        """
+        Enhanced detection for potential tool calls that failed to parse properly.
+        This covers various malformed patterns that agents might produce, while avoiding
+        false positives on legitimate workflow XML tags like <plan>, <task_list>, etc.
+        
+        Args:
+            text: The text to analyze for potential tool calls
+            
+        Returns:
+            bool: True if potential tool calls are detected, False otherwise
+        """
+        if not text or not text.strip():
+            return False
+            
+        text_lower = text.lower()
+        
+        # Get available tool names for pattern matching
+        if not (hasattr(self._manager, 'tool_executor') and 
+                hasattr(self._manager.tool_executor, 'tools') and 
+                self._manager.tool_executor.tools):
+            return False
+            
+        tool_names = list(self._manager.tool_executor.tools.keys())
+        
+        # Exclude legitimate workflow trigger tags to avoid false positives
+        workflow_tags = {'plan', 'task_list', 'request_state', 'think'}
+        
+        # Pattern 1: Markdown fenced XML with malformed brackets (SPECIFIC TO TOOL NAMES ONLY)
+        # Example: ```tool_information><action>list_tools</action></tool_information>```
+        malformed_fence_patterns = []
+        for tool_name in tool_names:
+            # Only check for markdown fences containing actual tool names
+            escaped_tool = re.escape(tool_name)
+            malformed_fence_patterns.extend([
+                # Missing opening bracket for specific tool names
+                rf'```[^`]*?{escaped_tool}>.*?</{escaped_tool}>[^`]*?```',
+                # Tool names with malformed opening in markdown fences
+                rf'```[^`]*?{escaped_tool}[^>]*>.*?</{escaped_tool}>[^`]*?```'
+            ])
+        
+        # Pattern 2: XML-like structures ONLY for actual tool names (not workflow tags)
+        tool_specific_patterns = []
+        for tool_name in tool_names:
+            escaped_tool = re.escape(tool_name)
+            tool_specific_patterns.extend([
+                # Missing opening bracket for specific tool names only
+                rf'{escaped_tool}>[^<>]*</{escaped_tool}>',
+                # Malformed opening bracket for specific tool names
+                rf'<{escaped_tool}[^>]*>[^<]*</{escaped_tool}>'
+            ])
+        
+        # Pattern 3: Action indicators combined with tool names (more specific)
+        action_indicators_with_tools = []
+        for tool_name in tool_names:
+            if any(keyword in tool_name.lower() for keyword in ['action', 'tool', 'manage', 'project', 'send', 'file']):
+                action_indicators_with_tools.extend([
+                    f'<action>[^<]*{tool_name}',
+                    f'{tool_name}[^<]*<action>',
+                    f'<{tool_name}[^>]*action[^>]*>'
+                ])
+        
+        # Check malformed fence patterns (tool names only)
+        for pattern in malformed_fence_patterns:
+            if re.search(pattern, text, re.IGNORECASE | re.DOTALL):
+                logger.debug(f"CycleHandler: Detected malformed fence pattern for tool name: {pattern}")
+                return True
+                
+        # Check tool-specific XML patterns (avoiding workflow tags)
+        for pattern in tool_specific_patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                # Double-check this isn't a workflow tag being caught
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    matched_text = match.group(0).lower()
+                    # Skip if it's a legitimate workflow tag
+                    is_workflow_tag = any(tag in matched_text for tag in workflow_tags)
+                    if not is_workflow_tag:
+                        logger.debug(f"CycleHandler: Detected tool-specific XML pattern: {pattern}")
+                        return True
+                        
+        # Check for action indicators combined with tool names
+        for pattern in action_indicators_with_tools:
+            if re.search(pattern, text, re.IGNORECASE):
+                logger.debug(f"CycleHandler: Detected action indicator with tool name: {pattern}")
+                return True
+        
+        # Pattern 4: The exact malformed pattern from original logs (very specific)
+        # ```tool_information><action>list_tools</action></tool_information>```
+        exact_original_pattern = r'```[^`]*?[a-zA-Z_]+>[^<]*<[^>]*>[^<]*</[^>]*>[^<]*</[^>]*>[^`]*```'
+        if re.search(exact_original_pattern, text, re.IGNORECASE | re.DOTALL):
+            logger.debug(f"CycleHandler: Detected exact original malformed pattern")
+            return True
+            
+        return False
+
     async def _get_cg_verdict(self, original_agent_final_text: str) -> Optional[str]:
         if not original_agent_final_text or original_agent_final_text.isspace():
             logger.warning("CG review requested for empty or whitespace-only text. Skipping LLM call and returning <OK/>.")
