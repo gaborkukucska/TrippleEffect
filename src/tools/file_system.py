@@ -45,8 +45,8 @@ class FileSystemTool(BaseTool):
         ),
         ToolParameter(
             name="filename",
-            type="string",
-            description="Relative path to the file within the scope. Required for 'read', 'write', 'find_replace'.",
+            type="string", 
+            description="Relative path to the file within the scope. Required for 'read', 'write', 'find_replace'. Can also use 'filepath'.",
             required=False, # Dynamically required
         ),
         ToolParameter(
@@ -88,7 +88,8 @@ class FileSystemTool(BaseTool):
         """
         action = kwargs.get("action")
         scope = kwargs.get("scope", "private").lower()
-        filename = kwargs.get("filename") # Used by read, write, find_replace
+        # Handle both 'filename' and 'filepath' parameters
+        filename = kwargs.get("filename") or kwargs.get("filepath") # Used by read, write, find_replace
         content = kwargs.get("content") # Used by write
         relative_path = kwargs.get("path") # Used by list, mkdir, delete. Default for list is '.', set below if needed.
         find_text = kwargs.get("find_text") # Used by find_replace
@@ -105,7 +106,14 @@ class FileSystemTool(BaseTool):
             "make_dir": "mkdir",
             "new_file": "write",
             "save_file": "write",
-            "save": "write"
+            "save": "write",
+            "write_file": "write",
+            "read_file": "read",
+            "list_files": "list",
+            "list_directory": "list",
+            "delete_file": "delete",
+            "remove_file": "delete",
+            "remove": "delete"
         }
         
         if not action:

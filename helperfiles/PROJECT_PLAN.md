@@ -1,8 +1,8 @@
 <!-- # START OF FILE helperfiles/PROJECT_PLAN.md -->
 # Project Plan: TrippleEffect
 
-**Version:** 2.36
-**Date:** 2025-07-29
+**Version:** 2.40
+**Date:** 2025-08-30
 
 ## 1. Project Goals
 
@@ -45,16 +45,19 @@
 *   Fix UI message interleaving issue during concurrent streaming. *(Completed in P22)*
 *   Increase internal comms message history limit. *(Completed in P22)*
 *   Implement Local API Round-Robin for model selection and address various stability/logic issues. *(Completed in P26b)*
-*   **(Future Goals)** **Advanced Memory & Learning** (P27), **Proactive Behavior** (Scheduling - P28), **Federated Communication** (Layer 3 - P29+), Enhance Admin AI planning (few-shot examples), implement new Admin AI tools, resource management, advanced collaboration patterns, DB integration, **Full transition to on-demand tool help** (removing static descriptions from prompts - P30+).
+*   **Implement Advanced Agent Health Monitoring System** with comprehensive loop detection, recovery, and XML validation capabilities. *(Completed in P27)*
+*   **(Future Goals)** **Advanced Memory & Learning** (P28), **Proactive Behavior** (Scheduling - P29), **Federated Communication** (Layer 3 - P30+), Enhance Admin AI planning (few-shot examples), implement new Admin AI tools, resource management, advanced collaboration patterns, DB integration, **Full transition to on-demand tool help** (removing static descriptions from prompts - P31+).
 
 ## 2. Scope
 
-**In Scope (Completed up to Phase 26b):**
+**In Scope (Completed up to Phase 27):**
 
 *   **Core Backend & Agent Core:** Base functionality, stateful agents (Admin, PM, Worker types).
 *   **Admin AI Agent:** Core logic, state machine (`conversation`, `planning`), time/health context, KB search prompt, **framework-driven delegation to PM workflow**.
 *   **Project Manager Agent:** Definition, automatic creation per session, prompt for active management, **requires user approval to start**.
 *   **Agent Manager & Handlers:** Orchestration, cycle management, interaction handling, failover, DB logging integration, **PM agent auto-creation**, **framework-driven initial task creation via ToolExecutor**, **Local API Round-Robin Index Management**.
+*   **Advanced Agent Health Monitoring (P27):** Comprehensive Constitutional Guardian system with intelligent agent behavior monitoring, loop detection, and recovery capabilities.
+*   **Cycle Components Architecture (P27):** Modular system including AgentHealthMonitor, XMLValidator, ContextSummarizer, NextStepScheduler, PromptAssembler, and OutcomeDeterminer.
 *   **Workflow Manager (`AgentWorkflowManager`):** Manages agent states and state-specific prompt selection.
 *   **State & Session Management:** Team state (runtime), Save/Load (filesystem), **Tasklib data persistence**.
 *   **Model Registry (`ModelRegistry`):** Provider/model discovery, filtering.
@@ -62,7 +65,7 @@
 *   **Performance Tracking (`ModelPerformanceTracker`):** Tracks metrics, saves to JSON.
 *   **Automatic Agent Failover:** Handles provider/model switching.
 *   **Dynamic Agent/Team Management:** In-memory CRUD via Admin AI tool calls.
-*   **Tooling (XML Format):**
+*   **Enhanced Tooling (XML Format):**
     *   `FileSystemTool`: Read/Write/List/FindReplace/Mkdir/Delete.
     *   `GitHubTool`: List Repos/Files (Recursive), Read File.
     *   `ManageTeamTool`: Agent/Team CRUD, Assign, List, Get Details.
@@ -73,7 +76,7 @@
     *   `ProjectManagementTool`: Add, list, modify, complete tasks using `tasklib` (assigns via CLI tags/UDA).
     *   `ToolInformationTool`: Get detailed tool usage.
 *   **Tool Executor (`ToolExecutor`):** Dynamic tool discovery, schema generation, execution with **authorization checks**.
-*   **Configuration:** `config.yaml`, `.env`, `prompts.json`.
+*   **Configuration:** `config.yaml`, `.env`, `prompts.json`, `governance.yaml`.
 *   **Session Persistence:** Save/Load state (filesystem).
 *   **Human UI:** Dynamic updates, Session management, **Separated Chat and Internal Comms views (UI Refactor P22)**, Config View, Fixed message interleaving (P22), Increased internal history limit (P22), **Project approval workflow**.
 *   **WebSocket Communication:** Real-time updates.
@@ -84,18 +87,17 @@
 *   **Database Integration (Phase 21):** SQLite backend, SQLAlchemy models, interaction/agent logging, knowledge save/search tools.
 *   **Communication Layers:** Layer 1 (User<->Admin) & Layer 2 (Admin<->Local Agents) logic implemented.
 *   **Agent Thoughts:** Capture via `<think>` tag and save to KB.
-*   **Constitutional Guardian (CG) Agent:** Backend infrastructure for agent output review.
+*   **Constitutional Guardian (CG) Agent:** Backend infrastructure for agent output review with enhanced health monitoring.
 *   **PM Workflow & UI Interaction Refinements:** Reliability fixes for PM startup and CG concern handling.
 
 **Out of Scope (Deferred to Future Phases):**
 
-*   **Phase 27: Advanced Memory & Learning.** (Feedback Loop, Learned Principles).
-*   **Phase 28: Proactive Behavior.** (Scheduling, Goal Management).
-*   **Phase 29+: Federated Communication (Layer 3).** (External Admin AI interaction - protocol, security, discovery).
-*   **Phase 30+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), etc.
+*   **Phase 28: Advanced Memory & Learning.** (Feedback Loop, Learned Principles, Context Optimization).
+*   **Phase 29: Proactive Behavior.** (Scheduling, Goal Management, Autonomous Planning).
+*   **Phase 30+: Federated Communication (Layer 3).** (External Admin AI interaction - protocol, security, discovery).
+*   **Phase 31+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), etc.
 *   Global Governance Principle Injection (Removed, replaced by CG review).
 *   `TEAMS_CONFIG` and `allowed_sub_agent_models` (Removed from `ConfigManager`).
-
 
 ## 💻 Technology Stack
 
@@ -103,7 +105,7 @@
 *   **Asynchronous Operations:** `asyncio`
 *   **WebSockets:** `websockets` library integrated with FastAPI
 *   **Database:** `SQLAlchemy` (Core, Asyncio), `aiosqlite` (for SQLite driver)
-*   **Task Management:** `tasklib` (Python Taskwarrior library) %% Added P23
+*   **Task Management:** `tasklib` (Python Taskwarrior library)
 *   **LLM Interaction:** `openai` library, `aiohttp`
 *   **Frontend:** HTML5, CSS3, Vanilla JavaScript
 *   **Configuration:** YAML (`PyYAML`), `.env` (`python-dotenv`), JSON (`prompts.json`)
@@ -111,7 +113,7 @@
 *   **Parsing:** `BeautifulSoup4` (HTML), `re`, `html` (XML)
 *   **Model Discovery & Management:** Custom `ModelRegistry` class
 *   **Performance Tracking:** Custom `ModelPerformanceTracker` class (JSON)
-*   **Persistence:** JSON (session state - filesystem), SQLite (interactions, knowledge, thoughts), Taskwarrior files (project tasks via `tasklib`) %% Updated P25
+*   **Persistence:** JSON (session state - filesystem), SQLite (interactions, knowledge, thoughts), Taskwarrior files (project tasks via `tasklib`)
 *   **Optional Proxy:** Node.js, Express, node-fetch
 *   **Data Handling/Validation:** Pydantic (via FastAPI)
 *   **Local Auto Discovery** nmap
@@ -119,116 +121,65 @@
 
 ## 4. Development Phases & Milestones
 
-**Phase 1-23 (Completed)**
-*   [X] Core Functionality, Dynamic Agent/Team Mgmt, Refactoring, Provider/Model Discovery & Selection, Failover, Key Management, Prompt Centralization, Ollama Proxy, XML Tooling, Auto-Selection (Dyn), Robust Agent ID Handling, Structured Planning, Context Optimization & FS Tools, GitHub Recursive List, ManageTeam Details, WebSearch API Fallback, SystemHelp Tool, Admin Time Context, **Memory Foundation (DB & KB Tool)**, **UI Layer Refactor & Workflow Refinements**, **Project Manager Agent & Tasklib Integration**.
+**Phase 1-26b (Completed)**
+*   [X] Core Functionality, Dynamic Agent/Team Mgmt, Refactoring, Provider/Model Discovery & Selection, Failover, Key Management, Prompt Centralization, Ollama Proxy, XML Tooling, Auto-Selection (Dyn), Robust Agent ID Handling, Structured Planning, Context Optimization & FS Tools, GitHub Recursive List, ManageTeam Details, WebSearch API Fallback, SystemHelp Tool, Admin Time Context, **Memory Foundation (DB & KB Tool)**, **UI Layer Refactor & Workflow Refinements**, **Project Manager Agent & Tasklib Integration**, **Admin AI State Machine & Framework-Driven Project Init**, **Agent Logic, Taskwarrior Refinement & Governance Layer Foundation**, **Constitutional Guardian - Backend Implementation**, **PM Workflow & UI Interaction Refinements**, **Local API Round-Robin and Stability Fixes**.
 
-**Phase 24: Admin AI State Machine & Framework-Driven Project Init (Completed)**
-*   **Goal:** Refactor Admin AI workflow into distinct states and automate project/PM creation by the framework, requiring user approval.
-*   [X] Add Admin AI states (`conversation`, `planning`) and `AgentWorkflowManager` for state logic.
-*   [X] Create state-specific prompts (`prompts.json`) used by `AgentWorkflowManager`.
-*   [X] Require `<title>` tag in Admin AI plans.
-*   [X] Implement framework logic (`CycleHandler`, `AgentManager`) to intercept Admin AI plans, extract title, automatically create PM agent and initial project task (via `ToolExecutor` calling `ProjectManagementTool`), assign PM via tags/UDA, and transition Admin AI state.
-*   [X] Implement UI notification for **user approval** of project start.
-*   [X] Implement API endpoint (`/approve`) and logic in `AgentManager` to schedule PM agent upon approval.
-*   [X] Update `SessionManager` to save/load Admin AI state.
-*   [X] Fix bootstrap agent initialization fallback logic (`agent_lifecycle.py`).
-*   [X] Correct `AgentManager` check for initial task creation result.
-
-**Phase 25: Agent Logic, Taskwarrior Refinement & Governance Layer Foundation (Completed)**
-    *   **Goal:** Address known agent logic issues, stabilize Taskwarrior integration, implement basic Governance Layer, refine thought capture, and enhance model selection.
-    *   [X] Enhanced Model Selection Logic: Model selection logic refactored. New priority: Tier -> Size (larger preferred, `num_parameters` discovered for OpenRouter/Ollama) -> Performance Score -> ID.
-    *   [X] Sequential Multi-Action Execution: Agents can have multiple tools execute sequentially in one "turn", with results aggregated and fed back.
-    *   [X] Refined Thought Usage: Implemented smarter keyword generation (using `src/utils/text_utils.py::extract_keywords_from_text`) for thoughts saved to Knowledge Base. (Assuming `search_agent_thoughts` was part of this or an earlier completion).
-    *   [X] Governance Layer Foundation: Principles loaded from `governance.yaml`. Global injection into agent prompts has been REMOVED; principles are now intended for use by the Constitutional Guardian (CG) agent.
-    *   [X] `ToolInformationTool` implemented.
-    *   [X] Authorization checks in `ToolExecutor` implemented.
-    *   [X] System health report injected into Admin AI context.
-    *   [X] Pydantic forward references for `CycleContext` and `WorkflowResult` updated for v1/v2 compatibility.
-    *   [X] Corrected `manager.settings` AttributeErrors by using global `settings` object where appropriate.
-    *   [X] Refined `admin_ai_startup_prompt` for more explicit state change instructions.
-    *   [X] Removed `TEAMS_CONFIG` and `allowed_sub_agent_models` handling from `ConfigManager` as they were unused.
-    *   [X] Comprehensive unit tests added/updated for model selection, `num_parameters` handling, governance loading, and multi-tool call processing.
-
-**Phase 26: Constitutional Guardian - Backend Implementation (Completed)**
-    *   **Goal:** Implement the backend infrastructure for a Constitutional Guardian (CG) agent to review agent outputs.
-    *   [X] CG Agent Definition: `constitutional_guardian_ai` configured by user (via `config.yaml`), specific `cg_system_prompt` added to `prompts.json` detailing its review task and output format (`<OK/>` or `<CONCERN>details</CONCERN>`). Prompt refined to expect user message as text to review.
-    *   [X] Core Logic in `AgentCycleHandler`: Implemented `_get_cg_verdict` for direct LLM call to CG (using `stream_completion`). `run_cycle` modified to intercept final agent text outputs, call CG, and if concern is raised, original agent status set to `AGENT_STATUS_AWAITING_USER_REVIEW_CG`, its output is paused, and a `cg_concern` UI message is generated.
-    *   [X] Agent State for CG: Added `cg_original_text`, `cg_concern_details`, `cg_original_event_data`, `cg_awaiting_user_decision` attributes to `Agent` class (`core.py`). New constants `CONSTITUTIONAL_GUARDIAN_AGENT_ID`, `AGENT_STATUS_AWAITING_CG_REVIEW` (now unused, effectively replaced by direct call), `AGENT_STATUS_AWAITING_USER_REVIEW_CG` added.
-    *   [X] User Decision Handling (Backend): Implemented `AgentManager` methods (`resolve_cg_concern_approve`, `resolve_cg_concern_stop`, `resolve_cg_concern_retry`) to process user's response to a CG concern.
-    *   [X] Scheduler Adjustment: `NextStepScheduler` modified to ensure agents awaiting user review (`AGENT_STATUS_AWAITING_USER_REVIEW_CG` with `cg_awaiting_user_decision = True`) are not prematurely idled.
-    *   **Note:** UI and API endpoint implementation for user interaction with CG concerns are required for full functionality and are external to these backend changes.
-
-**Phase 26a: PM Workflow & UI Interaction Refinements (Completed)**
-    *   **Goal:** Improve reliability of Project Manager (PM) agent workflows, CG concern handling, and UI message display.
-    *   [X] PM Startup Workflow: Addressed issue where PM in `PM_STATE_STARTUP` outputting only a `<think>` block would not proceed correctly. Implemented specific error handling for this case to provide feedback and force retry, bypassing unnecessary CG review. (Modified `src/agents/core.py`, `src/agents/cycle_handler.py`).
-    *   [X] CG Concern Targeting: Corrected logic to ensure CG concern resolutions (approve, retry) are targeted to the correct agent whose output caused the concern, instead of defaulting to `admin_ai`. (Modified `static/js/ui.js`, `static/js/handlers.js`, `src/api/websocket_manager.py`).
-    *   [X] UI Chunking: Improved UI message chunk handling in `internal-comms-area` by implementing direct tracking of active streaming elements per agent, making chunk appending more robust. (Modified `static/js/ui.js`).
-    *   [X] PM Prompting: Strengthened `pm_build_team_tasks_prompt` to be more directive about the initial team creation tool call. (Modified `prompts.json`).
-
-**Phase 26b: Local API Round-Robin and Stability Fixes (Completed)**
-    *   `[X] Implemented API-first round-robin selection for local providers in `_select_best_available_model` to distribute agent load across multiple discovered local API instances (e.g., Ollama, LiteLLM).`
-    *   `[X] Ensured `AgentManager` tracks available local provider instances and their round-robin usage index, populated at startup.`
-    *   `[X] Corrected bootstrap agent initialization (`initialize_bootstrap_agents`) to properly use the round-robin mechanism for both explicitly configured generic local providers and for auto-selected local models.`
-    *   `[X] Resolved `AttributeError` in `_select_best_available_model` by correcting access to global `settings` object.`
-    *   `[X] Fixed `NameError` for `error_prefix` in `_create_agent_internal` by ensuring correct variable definition order.`
-    *   `[X] Corrected model ID prefix validation in `_create_agent_internal` to prevent misclassification of canonical local provider names (e.g., "ollama-local") and ensure accurate parsing of model names like "ollama/model_id".`
-    *   `[X] Refined round-robin index management during bootstrap agent initialization to ensure correct sequential assignment when multiple agents use the same local provider type.`
+**Phase 27: Advanced Agent Health Monitoring System (Completed)**
+*   **Goal:** Implement comprehensive agent health monitoring, loop detection, and recovery capabilities to enhance the Constitutional Guardian system.
+*   [X] **Agent Health Monitor Implementation:** Comprehensive agent behavior tracking system that monitors patterns, detects problematic loops (empty responses, minimal responses, stuck states), and implements intelligent recovery strategies.
+*   [X] **XML Validator Component:** Advanced XML validation and recovery system that automatically detects malformed XML tool calls and attempts intelligent repair using multiple strategies (markdown fence removal, bracket correction, content extraction).
+*   [X] **Context Summarizer Implementation:** Intelligent conversation context management system that optimizes context for smaller models by automatically summarizing lengthy conversations while preserving critical information and recent interactions.
+*   [X] **Next Step Scheduler Enhancement:** Smart agent reactivation and workflow continuation logic that enables multi-step workflows, handles both successful and failed tool executions, and prevents infinite loops through coordinated empty response detection.
+*   [X] **Cycle Components Architecture:** Modular, extensible system for agent cycle management including PromptAssembler for dynamic prompt construction and OutcomeDeterminer for cycle outcome analysis.
+*   [X] **Enhanced Loop Detection:** Multi-layered protection system against infinite loops, empty responses, and stuck patterns with coordinated detection between CycleHandler, NextStepScheduler, and AgentHealthMonitor.
+*   [X] **Workflow Continuation Support:** Advanced support for multi-step agent workflows that allows agents to continue working through tool execution results, process outputs, and maintain work state until natural completion.
+*   [X] **Constitutional Guardian Integration:** Enhanced CG system with comprehensive health monitoring integration, preventing false positive interventions while maintaining robust protection against genuine problematic patterns.
+*   [X] **Recovery Strategy Implementation:** Intelligent recovery mechanisms including context clearing, status resets, guidance injection, workflow reminders, and tool availability updates based on specific problem analysis.
+*   [X] **Performance Optimization:** Context optimization features including automatic summarization for resource-constrained environments and intelligent token management for improved performance with smaller models.
 
 **Future Goals:**
-*   **Phase 27: Advanced Memory & Learning.** (Feedback Loop, Learned Principles, Advanced Thought Usage).
-*   **Phase 28: Proactive Behavior.** (Scheduling, Goal Management).
-*   **Phase 29+: Federated Communication (Layer 3).** (External Admin AI interaction - protocol, security, discovery).
-*   **Phase 30+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), etc.
+*   **Phase 28: Advanced Memory & Learning.** (Feedback Loop, Learned Principles, Advanced Context Management, Long-term Memory Systems).
+*   **Phase 29: Proactive Behavior.** (Scheduling, Goal Management, Autonomous Planning, Predictive Actions).
+*   **Phase 30+: Federated Communication (Layer 3).** (External Admin AI interaction - protocol, security, discovery, Cross-system coordination).
+*   **Phase 31+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), Distributed Processing, etc.
 
-## June 15th, 2025 - PM Agent Loop in `pm_build_team_tasks`
+## Recent Development Notes & Issue Resolutions
 
-**Issue:**
-After successfully creating the project team, the PM agent (`pm_Snake_Game_Browser_Development_startup_1749963589`) entered the `pm_build_team_tasks` state but then repeatedly finished its cycles without taking further action (i.e., not proceeding to create worker agents). This caused an infinite loop where the agent was rescheduled in the same state but made no progress. Logs indicated the agent was not producing any tool calls after the initial team creation.
+### Agent Health Monitoring System Development (Phase 27)
 
-**Diagnosis:**
-The hypothesis was that the agent, after fulfilling the initial directive to create a team (which was also Step 1 of its workflow in `pm_build_team_tasks_prompt`), became confused by the prompt's "CRITICAL FIRST ACTION" language for team creation on subsequent turns within the same state. It wasn't robustly recognizing that Step 1 was complete and that it should move to Step 2 (Create First Worker Agent).
+**Challenge:** Agents, particularly Admin AI, were experiencing infinite loops with empty responses, almost empty responses, or identical repeated responses. The existing Constitutional Guardian system needed enhancement to catch, analyze, and restart troubled agents while preventing false positive interventions.
 
-**Solution Attempted:**
-Modified `prompts.json`, specifically the `pm_build_team_tasks_prompt`.
-Step 1 of the workflow was rephrased from "Create Project Team" to "Ensure Project Team Exists."
-The new instruction guides the agent to:
-1. Review its message history for the current `pm_build_team_tasks` state.
-2. If team creation for `team_{project_name_snake_case}` has NOT already been successfully performed in this state, then create the team as the sole action.
-3. If team creation HAS already been successfully performed in this state (verified by checking for a successful tool result), then explicitly PROCEED DIRECTLY TO STEP 2: Create First Worker Agent.
+**Solution Implemented:** Comprehensive agent health monitoring system with multiple coordinated components:
 
-This change aims to make the agent more aware of its past actions within the state and explicitly direct it to continue the workflow.
+1. **AgentHealthMonitor**: Tracks agent behavior patterns using AgentHealthRecord objects, monitors consecutive empty/minimal responses, detects repetitive patterns, and implements intelligent recovery strategies with context analysis.
 
-**Next Steps:**
-Await user testing to confirm if the PM agent now correctly proceeds to create worker agents after team creation.
+2. **XMLValidator**: Handles malformed XML tool calls through automatic validation and recovery using multiple repair strategies including markdown fence removal, bracket correction, and content extraction.
 
----
-**Correction Update (Post-Testing Feedback):**
+3. **ContextSummarizer**: Manages conversation context through intelligent summarization for optimal performance with smaller models while preserving critical information.
 
-**Issue Identified:**
-User testing after the submission (commit `pm-task-loop-fix`) revealed a `WorkflowManager` error: `Missing key: project_name_snake_case` when trying to format `pm_build_team_tasks_prompt`.
-My initial diagnosis incorrectly assumed the `{project_name_snake_case}` placeholder was in Step 1 of the prompt. Subtask investigation (turn 47) found it was actually in Step 2, in the instruction for assigning the first worker agent to a team.
+4. **NextStepScheduler**: Enhanced with sophisticated agent reactivation logic that supports multi-step workflows, handles both successful and failed tool executions, and coordinates with other components to prevent infinite loops.
 
-**Solution Implemented:**
-The entire `pm_build_team_tasks_prompt` in `prompts.json` was replaced with a known-good version. This new version:
-1.  Ensures Step 1 ("Ensure Project Team Exists") correctly guides the agent to check its System Context (for `Your Team ID (once created): {team_id}`) and its history, and to form the `team_id` using `team_` + the exact 'Current Project' name from its [SYSTEM CONTEXT] if creation is needed.
-2.  Corrects Step 2 ("Create First Worker Agent") to guide the agent to assign the new worker to the project team ID you confirmed or created in Step 1, using the standard `{project_name}` placeholder for reference (e.g., "assign it to team `team_{project_name}`").
-3.  This definitively removes the erroneous `{project_name_snake_case}` placeholder.
+5. **Coordinated Loop Detection**: Multi-layered system where CycleHandler detects 3 consecutive empty responses and forces completion, while NextStepScheduler stops continuation after 2 empty cycles to prevent conflicts.
 
-**Next Steps:**
-Awaiting user testing of this corrected `prompts.json`.
----
----
-**Second Correction Attempt (Further Refinement):**
+**Key Technical Achievements:**
+- **False Positive Prevention**: 30-second cooldown after meaningful actions prevents incorrect health interventions
+- **Multi-step Workflow Support**: Agents can now execute complex workflows with proper continuation after tool calls
+- **Intelligent Recovery**: Context-aware recovery strategies based on specific problem analysis
+- **Performance Optimization**: Context summarization and token management for improved efficiency
+- **Robust Error Handling**: Enhanced XML validation with automatic repair capabilities
 
-**Issue Persisted:**
-Even after correcting the `project_name_snake_case` placeholder and ensuring Step 1 guided the agent to "PROCEED DIRECTLY TO STEP 2", user testing (logs from turn #53) showed the PM agent still looped after team creation, returning empty LLM responses instead of initiating Step 2 (listing tools). The System Context was confirmed to be correctly updated with the Team ID.
+### PM Agent Loop Resolution History
 
-**Solution Implemented (Current):**
-Step 1 of the `pm_build_team_tasks_prompt` in `prompts.json` was refined again. Now, if the team is found to be already created, the instruction is more explicit:
-"...In this case, your NEXT ACTION is to start Step 2, which begins with listing tools: `<tool_information><action>list_tools</action></tool_information>`. This MUST BE your only output for this turn."
-The entire `pm_build_team_tasks_prompt` value was replaced with this new version to ensure accuracy.
+**Issue History (June 2025):**
+PM agents experienced loops in `pm_build_team_tasks` state after successful team creation, failing to proceed to worker agent creation.
 
-**Next Steps:**
-Awaiting user testing of this latest, more explicit prompt.
+**Solutions Attempted:**
+1. Modified `pm_build_team_tasks_prompt` to change Step 1 from "Create Project Team" to "Ensure Project Team Exists"
+2. Corrected `{project_name_snake_case}` placeholder error that was causing WorkflowManager failures
+3. Enhanced Step 1 instructions to explicitly direct agents to proceed to Step 2 after team verification
+4. Implemented more explicit action directives for tool listing and worker creation
+
+**Current Status:** Resolved through enhanced prompt engineering and workflow state management improvements integrated into the Phase 27 agent health monitoring system.
+
 ---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

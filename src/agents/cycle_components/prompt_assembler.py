@@ -45,7 +45,7 @@ class PromptAssembler:
         # if there wasn't a specific error from the *previous* cycle of THIS agent.
         # The CycleContext will manage the "last_error_obj" for this agent's current cycle.
         # So, if we reach here, it means the previous cycle for *this agent* didn't end in a failover.
-        return "[Framework Internal Status: Last turn OK. This is not a user query.]"
+        return "[Framework Internal Status: System operational. Continue your work as needed.]"
 
 
     async def prepare_llm_call_data(self, context: 'CycleContext') -> None:
