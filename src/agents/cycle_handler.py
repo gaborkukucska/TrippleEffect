@@ -318,6 +318,37 @@ class AgentCycleHandler:
 
         return verdict_to_return
 
+    def _generate_empty_response_guidance(self, agent: 'Agent') -> str:
+        """Generates specific guidance for an agent stuck in an empty response loop."""
+        base_message = "[Framework Intervention]: You have produced multiple empty responses, indicating you are stuck. "
+        if agent.agent_type == AGENT_TYPE_ADMIN and agent.state == 'work':
+            # Analyze recent history for context
+            last_tool_call = None
+            for msg in reversed(agent.message_history):
+                if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                    last_tool_call = msg["tool_calls"][0]
+                    break
+
+            if last_tool_call:
+                tool_name = last_tool_call.get("name")
+                guidance = (
+                    f"Your last action was an attempt to use the '{tool_name}' tool. "
+                    "You are now in a loop. To proceed, you MUST take a different action. "
+                    "1. Re-evaluate your goal. What are you trying to accomplish? "
+                    "2. Use the `<tool_information><action>list_tools</action></tool_information>` to see all available tools. "
+                    "3. Choose a DIFFERENT tool to continue your task or provide a comprehensive summary of your findings and request a state change."
+                )
+            else:
+                guidance = (
+                    "You have not taken any meaningful action recently. "
+                    "To proceed, you MUST take a concrete action. "
+                    "Use `<tool_information><action>list_tools</action></tool_information>` to see available tools and test one, "
+                    "or provide a summary of your work so far."
+                )
+            return base_message + guidance
+
+        return base_message + "Please review your objective and take a concrete step to move forward."
+
     def _generate_admin_work_completion_message(self, agent: Agent) -> Optional[str]:
         """
         Generate a completion message for Admin AI when it gets stuck in empty response loops.
@@ -1146,45 +1177,34 @@ Then test a tool you haven't used yet."""
                             context.action_taken_this_cycle = True
                             context.cycle_completed_successfully = True
                             
-                        # After 2 consecutive empty responses, force completion
+                        # After 2 consecutive empty responses, inject guidance
                         elif agent._consecutive_empty_responses >= 2:
-                            logger.error(f"CycleHandler: Admin AI '{agent.agent_id}' had {agent._consecutive_empty_responses} consecutive empty responses after directive. Forcing work completion.")
+                            logger.error(f"CycleHandler: Admin AI '{agent.agent_id}' had {agent._consecutive_empty_responses} consecutive empty responses. Injecting guidance to break the loop.")
                             
-                            # Generate a final response acknowledging the work done
-                            completion_message = self._generate_admin_work_completion_message(agent)
-                            if completion_message:
-                                agent.text_buffer = completion_message
-                                context.action_taken_this_cycle = True
-                                context.cycle_completed_successfully = True
-                                agent._consecutive_empty_responses = 0  # Reset counter
-                                
-                                # Process the completion message through normal flow
-                                final_content_from_buffer = agent.text_buffer.strip()
-                                if final_content_from_buffer:
-                                    agent.text_buffer = ""
-                                    mock_event_data = {"type": "final_response", "content": final_content_from_buffer, "agent_id": agent.agent_id}
-                                    
-                                    if context.current_db_session_id:
-                                        await self._manager.db_manager.log_interaction(
-                                            session_id=context.current_db_session_id, 
-                                            agent_id=agent.agent_id, 
-                                            role="assistant", 
-                                            content=final_content_from_buffer
-                                        )
-                                    await self._manager.send_to_ui(mock_event_data)
-                            else:
-                                # If we can't generate completion message, force error state
-                                error_message = f"Admin AI '{agent.agent_id}' unable to continue work after {agent._consecutive_empty_responses} empty responses."
-                                agent.set_status(AGENT_STATUS_ERROR)
-                                context.last_error_content = error_message
-                                if context.current_db_session_id:
-                                    await self._manager.db_manager.log_interaction(
-                                        session_id=context.current_db_session_id,
-                                        agent_id=agent.agent_id,
-                                        role="system_error",
-                                        content=error_message
-                                    )
-                                await self._manager.send_to_ui({"type": "error", "agent_id": agent.agent_id, "content": error_message})
+                            # Generate and inject specific guidance
+                            guidance_message_content = self._generate_empty_response_guidance(agent)
+                            guidance_message: MessageDict = {"role": "system", "content": guidance_message_content}
+                            agent.message_history.append(guidance_message)
+
+                            # Log this intervention
+                            if context.current_db_session_id:
+                                await self._manager.db_manager.log_interaction(
+                                    session_id=context.current_db_session_id,
+                                    agent_id=agent.agent_id,
+                                    role="system_intervention",
+                                    content=guidance_message_content
+                                )
+                            await self._manager.send_to_ui({
+                                "type": "system_intervention",
+                                "agent_id": agent.agent_id,
+                                "content": guidance_message_content
+                            })
+
+                            # Reset counter and schedule reactivation
+                            agent._consecutive_empty_responses = 0
+                            context.needs_reactivation_after_cycle = True
+                            context.action_taken_this_cycle = True # The intervention is an action
+                            context.cycle_completed_successfully = True
                     else:
                         # Reset empty response counter for other agent types or successful cycles
                         if hasattr(agent, '_consecutive_empty_responses'):

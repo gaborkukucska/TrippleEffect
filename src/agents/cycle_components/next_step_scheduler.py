@@ -153,6 +153,10 @@ class NextStepScheduler:
                 logger.info(f"NextStepScheduler: Admin AI '{agent_id}' in work state needs reactivation (secondary catch)")
                 agent.set_status(AGENT_STATUS_IDLE)
                 await self._schedule_new_cycle(agent, 0)
+            elif agent.agent_type == AGENT_TYPE_ADMIN and context.executed_tool_successfully_this_cycle:
+                logger.critical(f"NextStepScheduler: Belt-and-suspenders check. Admin AI '{agent.agent_id}' successfully executed a tool. Forcing reactivation.")
+                agent.set_status(AGENT_STATUS_IDLE)
+                await self._schedule_new_cycle(agent, 0)
             # --- End Persistent Agent Logic ---
             elif agent.agent_type == AGENT_TYPE_PM and \
                agent.state == PM_STATE_STARTUP and \
@@ -243,7 +247,7 @@ class NextStepScheduler:
         
         # CRITICAL FIX: After successful tool execution, ALWAYS continue work unless explicitly told to stop
         if context.executed_tool_successfully_this_cycle:
-            logger.info(f"NextStepScheduler: Admin AI '{agent.agent_id}' successfully executed tools - FORCING continuation to process results")
+            logger.critical(f"NextStepScheduler: Admin AI '{agent.agent_id}' successfully executed tools - FORCING continuation to process results")
             # Reset any problematic counters since we had successful action
             if hasattr(agent, '_consecutive_empty_work_cycles'):
                 agent._consecutive_empty_work_cycles = 0
