@@ -144,6 +144,8 @@ class GitHubTool(BaseTool):
                          except Exception as read_err: logger.warning(f"Could not read error body for status {response.status}: {read_err}")
 
                          logger.error(f"GitHub API Error: Status {response.status} for {method} {endpoint}. Message: {error_details}")
+                         if response.status == 401:
+                             raise PermissionError(f"GitHub API Unauthorized (401) for {method} {endpoint}. This usually means your GITHUB_ACCESS_TOKEN is invalid, expired, or missing required scopes. Message: {error_details}")
                          if response.status == 404: raise FileNotFoundError(f"GitHub resource not found ({method} {endpoint}): {error_details}")
                          elif response.status == 403: raise PermissionError(f"GitHub API Forbidden (403) for {method} {endpoint}. Check token permissions or rate limits. Message: {error_details}")
                          else: raise Exception(f"GitHub API Error {response.status} for {method} {endpoint}: {error_details}")

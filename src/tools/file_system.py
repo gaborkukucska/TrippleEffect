@@ -95,6 +95,8 @@ class FileSystemTool(BaseTool):
         find_text = kwargs.get("find_text") # Used by find_replace
         replace_text = kwargs.get("replace_text") # Used by find_replace
 
+        if action == "write_file":
+            action = "write"
         valid_actions = ["read", "write", "list", "mkdir", "delete", "find_replace"]
         
         # Check for common mistakes and provide helpful suggestions
@@ -107,7 +109,6 @@ class FileSystemTool(BaseTool):
             "new_file": "write",
             "save_file": "write",
             "save": "write",
-            "write_file": "write",
             "read_file": "read",
             "list_files": "list",
             "list_directory": "list",
