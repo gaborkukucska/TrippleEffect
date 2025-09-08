@@ -35,7 +35,7 @@
 *   Enhance `GitHubTool` with **recursive listing**. *(Completed)*
 *   Enhance `ManageTeamTool` with **agent detail retrieval**. *(Completed)*
 *   Make `WebSearchTool` more robust with **API fallback**. *(Completed)*
-*   Implement `SystemHelpTool` for Admin AI **time awareness, log searching, and tool info retrieval**. *(Completed)*
+*   Implement `SystemHelpTool` for Admin AI **time awareness, log searching**. *(Completed)*
 *   Implement `ProjectManagementTool` using `tasklib` for task tracking (assigns via tags/UDA CLI workaround). *(Completed in P23, Refined in P24/P25)*
 *   Implement `KnowledgeBaseTool` for saving/searching distilled knowledge and agent thoughts. *(Completed in P21, Thoughts added P25)*
 *   Implement `ToolInformationTool` for retrieving detailed tool usage. *(Completed in P25)*
