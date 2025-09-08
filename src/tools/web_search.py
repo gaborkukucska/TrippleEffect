@@ -96,5 +96,36 @@ class WebSearchTool(BaseTool):
             logger.error(f"DDG scraping failed: {e}", exc_info=True)
             return None
 
-    def get_detailed_usage(self) -> str:
-        return "Detailed usage is available via the tool's description."
+    def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None, sub_action: Optional[str] = None) -> str:
+        """Returns detailed usage instructions for the WebSearchTool."""
+        usage = """
+        **Tool Name:** web_search
+
+        **Description:**
+        Performs a web search using the Tavily API if available, otherwise falls back to scraping DuckDuckGo. Returns a list of search results including title, URL, and snippet.
+
+        **Parameters:**
+
+        *   `<query>` (string, required): The search query. Be specific for better results.
+        *   `<num_results>` (integer, optional): The maximum number of search results to return. Defaults to 3.
+        *   `<search_depth>` (string, optional): (Tavily API only) The depth of the search. Can be 'basic' or 'advanced'. 'Advanced' is more thorough but slower and uses more credits. Defaults to 'basic'.
+
+        **Example XML Call:**
+
+        *   To perform a basic search for 'Python async programming':
+            ```xml
+            <web_search>
+              <query>Python async programming best practices</query>
+              <num_results>5</num_results>
+            </web_search>
+            ```
+
+        *   To perform an advanced search using the Tavily API:
+            ```xml
+            <web_search>
+              <query>latest advancements in large language models</query>
+              <search_depth>advanced</search_depth>
+            </web_search>
+            ```
+        """
+        return usage.strip()

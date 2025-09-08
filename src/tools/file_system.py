@@ -189,7 +189,7 @@ class FileSystemTool(BaseTool):
         return {"status": "error", "message": "Unknown state in file system tool."} # Should not be reached
 
     # --- Detailed Usage Method ---
-    def get_detailed_usage(self) -> str:
+    def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None, sub_action: Optional[str] = None) -> str:
         """Returns detailed usage instructions for the FileSystemTool."""
         usage = """**Tool Name:** file_system
 

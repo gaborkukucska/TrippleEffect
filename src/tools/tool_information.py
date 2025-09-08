@@ -223,15 +223,7 @@ class ToolInformationTool(BaseTool):
             logger.info(f"ToolInformation: All method calls failed for {tool_name}, generating from schema. Attempts: {fallback_attempts}")
             final_usage = self._generate_usage_from_schema(tool, tool_name)
             
-            # Add diagnostic information to help debug tool implementation issues
-            diagnostic_info = f"\n\n**DIAGNOSTIC INFO for {tool_name}:**\n"
-            diagnostic_info += f"- Available methods: {[method for method in dir(tool) if not method.startswith('_')]}\n"
-            diagnostic_info += f"- Has get_detailed_usage: {hasattr(tool, 'get_detailed_usage')}\n"
-            diagnostic_info += f"- Fallback attempts: {len(fallback_attempts)}\n"
-            for i, attempt in enumerate(fallback_attempts, 1):
-                diagnostic_info += f"- Attempt {i}: {attempt}\n"
-            
-            final_usage += diagnostic_info
+            # Diagnostic information is now only logged and not sent to the agent.
         
         return {"tool_name": tool_name, "usage": final_usage}
 
