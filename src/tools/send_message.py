@@ -65,7 +65,7 @@ class SendMessageTool(BaseTool):
         return f"Message routing to agent '{target_agent_id}' initiated by manager."
 
     # --- Detailed Usage Method ---
-    def get_detailed_usage(self) -> str:
+    def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None, sub_action: Optional[str] = None) -> str:
         """Returns detailed usage instructions for the SendMessageTool."""
         usage = """
         **Tool Name:** send_message

@@ -89,5 +89,45 @@ class SystemHelpTool(BaseTool):
         except Exception as e:
             return f"Error searching logs: {e}"
 
-    def get_detailed_usage(self) -> str:
-        return "Detailed usage is available via the tool's description."
+    def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None, sub_action: Optional[str] = None) -> str:
+        """
+        Returns detailed usage information for the system_help tool.
+        """
+        usage = """
+        **Tool Name:** system_help
+
+        **Description:**
+        Provides system-level information. This tool is essential for understanding the current operational context and for debugging issues by searching logs.
+
+        **Actions & Parameters:**
+
+        *   **action: 'get_time'**
+            *   **Description:** Retrieves the current time in UTC.
+            *   **Parameters:** None
+
+        *   **action: 'search_logs'**
+            *   **Description:** Searches the latest log file for specific information.
+            *   **Parameters:**
+                *   **log_query** (string, required): The text or pattern to search for in the logs.
+                *   **max_log_lines** (integer, optional): The maximum number of matching log lines to return. Defaults to 20.
+                *   **agent_id_filter** (string, optional): Filters the log search to only include lines related to a specific agent ID.
+
+        **Example XML Calls:**
+
+        *   To get the current time:
+            ```xml
+            <system_help>
+              <action>get_time</action>
+            </system_help>
+            ```
+
+        *   To search logs for errors related to 'admin_ai':
+            ```xml
+            <system_help>
+              <action>search_logs</action>
+              <log_query>error</log_query>
+              <agent_id_filter>admin_ai</agent_id_filter>
+            </system_help>
+            ```
+        """
+        return usage.strip()

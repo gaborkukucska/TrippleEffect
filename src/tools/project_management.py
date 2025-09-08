@@ -170,5 +170,77 @@ class ProjectManagementTool(BaseTool):
             logger.error(f"Error executing ProjectManagementTool action '{action}': {e}", exc_info=True)
             return {"status": "error", "message": f"An unexpected error occurred: {e}"}
 
-    def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None) -> str:
-        return "Detailed usage is available via the tool's description."
+    def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None, sub_action: Optional[str] = None) -> str:
+        """Returns detailed usage instructions for the ProjectManagementTool."""
+        project_name_placeholder = agent_context.get('project_name', '{project_name}') if agent_context else '{project_name}'
+
+        usage = f"""
+        **Tool Name:** project_management
+
+        **Description:**
+        Manages project tasks using a Taskwarrior backend. This tool is session-specific and should primarily be used by Project Manager (PM) agents.
+
+        **CRITICAL - Task Assignment:**
+        When assigning a task to an agent, you MUST use BOTH the `assignee_agent_id` parameter AND add the agent's ID as a tag (e.g., `tags=+{project_name_placeholder}_worker_1`). This ensures the framework can correctly track assignments.
+
+        **Actions & Parameters:**
+
+        1.  **add_task:** Creates a new task.
+            *   `<description>` (string, required): A clear and concise description of the task.
+            *   `<project_filter>` (string, optional): The project name to associate the task with. Defaults to the current project context if available.
+            *   `<priority>` (string, optional): Task priority (e.g., 'H', 'M', 'L').
+            *   `<tags>` (string, optional): Comma-separated list of tags to add (e.g., `+bug,+urgent`).
+            *   `<assignee_agent_id>` (string, optional): The ID of the agent to assign this task to.
+            *   `<depends>` (string, optional): The UUID of a task that this new task depends on.
+            *   Example:
+                ```xml
+                <project_management>
+                  <action>add_task</action>
+                  <description>Implement user authentication API endpoint</description>
+                  <project_filter>{project_name_placeholder}</project_filter>
+                  <priority>H</priority>
+                  <tags>+backend,+api</tags>
+                </project_management>
+                ```
+
+        2.  **list_tasks:** Lists existing tasks.
+            *   `<project_filter>` (string, optional): Filter tasks by a specific project name.
+            *   `<status_filter>` (string, optional): Filter by status (e.g., 'pending', 'completed').
+            *   `<tags_filter>` (string, optional): Filter by a comma-separated list of tags.
+            *   Example (List all pending tasks for the current project):
+                ```xml
+                <project_management>
+                  <action>list_tasks</action>
+                  <project_filter>{project_name_placeholder}</project_filter>
+                  <status_filter>pending</status_filter>
+                </project_management>
+                ```
+
+        3.  **modify_task:** Modifies an existing task.
+            *   `<task_id>` (string, required): The UUID or integer ID of the task to modify.
+            *   `<description>` (string, optional): New description for the task.
+            *   `<status>` (string, optional): New status (e.g., 'completed', 'deleted').
+            *   `<priority>` (string, optional): New priority.
+            *   `<tags>` (string, optional): New comma-separated list of tags. Use `+tag` to add and `-tag` to remove.
+            *   `<assignee_agent_id>` (string, optional): Reassign the task to a new agent. **REMEMBER to also update the tag.**
+            *   Example (Assign a task to a worker):
+                ```xml
+                <project_management>
+                  <action>modify_task</action>
+                  <task_id>123e4567-e89b-12d3-a456-426614174000</task_id>
+                  <assignee_agent_id>{project_name_placeholder}_worker_1</assignee_agent_id>
+                  <tags>+{project_name_placeholder}_worker_1,assigned</tags>
+                </project_management>
+                ```
+
+        4.  **complete_task:** Marks a task as completed. This is a shortcut for `modify_task` with `status='completed'`.
+            *   `<task_id>` (string, required): The UUID or integer ID of the task to complete.
+            *   Example:
+                ```xml
+                <project_management>
+                  <action>complete_task</action>
+                  <task_id>1</task_id>
+                </project_management>
+                ```
+        """
+        return usage.strip()

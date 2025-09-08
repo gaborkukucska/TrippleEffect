@@ -76,7 +76,7 @@ class GitHubTool(BaseTool):
             logger.info("GitHubTool initialized with access token.")
 
     # --- Detailed Usage Method ---
-    def get_detailed_usage(self) -> str:
+    def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None, sub_action: Optional[str] = None) -> str:
         """Returns detailed usage instructions for the GitHubTool."""
         usage = """
         **Tool Name:** github_tool
