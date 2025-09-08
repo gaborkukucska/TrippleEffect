@@ -1065,121 +1065,14 @@ class AgentCycleHandler:
 
                 # This block handles cases where the LLM stream finished without any specific break-worthy event.
                 if llm_stream_ended_cleanly and not context.last_error_obj and not context.action_taken_this_cycle:
-                    # CRITICAL FIX: Empty response loop detection for Admin AI
-                    if agent.agent_type == AGENT_TYPE_ADMIN and agent.state == 'work':
-                        # Track consecutive empty responses
-                        if not hasattr(agent, '_consecutive_empty_responses'):
-                            agent._consecutive_empty_responses = 0
-                        agent._consecutive_empty_responses += 1
-                        
-                        logger.warning(f"CycleHandler: Admin AI '{agent.agent_id}' produced empty response #{agent._consecutive_empty_responses}")
-                        
-                        # ENHANCED FIX: After first empty response, check for context pollution and clean it
-                        if agent._consecutive_empty_responses == 1:
-                            logger.info(f"CycleHandler: Admin AI '{agent.agent_id}' produced first empty response. Checking for context pollution.")
-                            
-                            # Count system messages in recent history to detect pollution
-                            recent_system_msgs = 0
-                            directive_msgs = 0
-                            for msg in agent.message_history[-10:]:  # Check last 10 messages
-                                if msg.get("role") == "system":
-                                    recent_system_msgs += 1
-                                    if "Framework Directive" in msg.get("content", ""):
-                                        directive_msgs += 1
-                            
-                            # If context is heavily polluted with system messages, clean it
-                            if recent_system_msgs > 5 or directive_msgs > 2:
-                                logger.warning(f"CycleHandler: Admin AI '{agent.agent_id}' context polluted with {recent_system_msgs} system messages ({directive_msgs} directive messages). Cleaning context.")
-                                
-                                # Keep only essential messages: user message, successful tool interactions, and one final directive
-                                cleaned_history = []
-                                
-                                # Find the original user greeting
-                                for msg in agent.message_history:
-                                    if msg.get("role") == "user":
-                                        cleaned_history.append(msg)
-                                        break
-                                
-                                # Find successful tool interactions (tool calls + results)
-                                successful_interactions = []
-                                for i, msg in enumerate(agent.message_history):
-                                    if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                                        # Look for the corresponding tool result
-                                        for j in range(i+1, min(i+5, len(agent.message_history))):
-                                            next_msg = agent.message_history[j]
-                                            if next_msg.get("role") == "tool":
-                                                # Check if it was successful
-                                                content = next_msg.get("content", "")
-                                                if "successfully" in content.lower() or ("status" in content and "success" in content):
-                                                    successful_interactions.extend([msg, next_msg])
-                                                    break
-                                
-                                # Add successful interactions to cleaned history
-                                cleaned_history.extend(successful_interactions[-4:])  # Keep last 2 successful interactions
-                                
-                                # Add a clean, simple directive
-                                simple_directive = """You are testing available tools systematically. You have made some progress with file operations.
+                    # This block is now primarily for handling final text responses that are not part of other events.
+                    # The flawed "empty response" loop detection has been removed and is now handled exclusively
+                    # by the AgentHealthMonitor, which is aware of recent meaningful actions.
 
-Your next action: Use <tool_information><action>list_tools</action></tool_information> to see all available tools, then test a different tool like 'knowledge_base' or 'web_search'."""
-                                
-                                cleaned_history.append({"role": "system", "content": simple_directive})
-                                
-                                # Replace the agent's history with cleaned version
-                                agent.message_history = cleaned_history
-                                logger.info(f"CycleHandler: Cleaned Admin AI '{agent.agent_id}' context from {len(agent.message_history)} to {len(cleaned_history)} messages")
-                            else:
-                                # Context not heavily polluted, just add a simple continuation
-                                simple_directive = """Continue your systematic tool testing. If you need to see available tools again, use: <tool_information><action>list_tools</action></tool_information>
+                    # Reset empty response counter for other agent types or successful cycles
+                    if hasattr(agent, '_consecutive_empty_responses'):
+                        agent._consecutive_empty_responses = 0
 
-Then test a tool you haven't used yet."""
-                                
-                                agent.message_history.append({"role": "system", "content": simple_directive})
-                            
-                            if context.current_db_session_id:
-                                await self._manager.db_manager.log_interaction(
-                                    session_id=context.current_db_session_id,
-                                    agent_id=agent.agent_id,
-                                    role="system_context_cleanup",
-                                    content="Context cleaned and simple directive provided"
-                                )
-                            
-                            # Force immediate reactivation with cleaned context
-                            context.needs_reactivation_after_cycle = True
-                            context.action_taken_this_cycle = True
-                            context.cycle_completed_successfully = True
-                            
-                        # After 2 consecutive empty responses, give it a concrete task.
-                        elif agent._consecutive_empty_responses >= 2:
-                            logger.error(f"CycleHandler: Admin AI '{agent.agent_id}' had {agent._consecutive_empty_responses} consecutive empty responses. Injecting a tool-testing task to break the loop.")
-
-                            # Generate and inject the new task
-                            task_message_content = self._generate_admin_work_completion_message(agent)
-                            task_message: MessageDict = {"role": "system", "content": task_message_content}
-                            agent.message_history.append(task_message)
-
-                            # Log this intervention
-                            if context.current_db_session_id:
-                                await self._manager.db_manager.log_interaction(
-                                    session_id=context.current_db_session_id,
-                                    agent_id=agent.agent_id,
-                                    role="system_intervention",
-                                    content=task_message_content
-                                )
-                            await self._manager.send_to_ui({
-                                "type": "system_intervention",
-                                "agent_id": agent.agent_id,
-                                "content": task_message_content
-                            })
-
-                            # Reset counter and schedule reactivation
-                            agent._consecutive_empty_responses = 0
-                            context.needs_reactivation_after_cycle = True
-                            context.action_taken_this_cycle = True # The intervention is an action
-                            context.cycle_completed_successfully = True
-                    else:
-                        # Reset empty response counter for other agent types or successful cycles
-                        if hasattr(agent, '_consecutive_empty_responses'):
-                            agent._consecutive_empty_responses = 0
                     # NEW: Enhanced intervention logic for PM agent stuck in MANAGE state producing only <think>
                     if agent.agent_type == AGENT_TYPE_PM and \
                        agent.state == PM_STATE_MANAGE and \
