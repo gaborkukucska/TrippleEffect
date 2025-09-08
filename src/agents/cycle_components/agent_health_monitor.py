@@ -229,8 +229,10 @@ class ConstitutionalGuardianHealthMonitor:
             
         record = self._health_records[agent_id]
         
-        # Use the took_meaningful_action parameter for accurate tracking
-        meaningful_action_occurred = took_meaningful_action or has_action
+        # Use the took_meaningful_action parameter for accurate tracking. This is the critical flag
+        # that is only True if a tool was successfully run or a state change was requested.
+        # The generic 'has_action' is too broad and counts any final text response as an action.
+        meaningful_action_occurred = took_meaningful_action
         
         record.record_response(content, meaningful_action_occurred, has_thought, agent.state or 'unknown')
         record.total_reactivations += 1
