@@ -349,67 +349,38 @@ class AgentCycleHandler:
 
         return base_message + "Please review your objective and take a concrete step to move forward."
 
-    def _generate_admin_work_completion_message(self, agent: Agent) -> Optional[str]:
+    def _generate_admin_work_completion_message(self, agent: 'Agent') -> str:
         """
-        Generate a completion message for Admin AI when it gets stuck in empty response loops.
-        Analyzes the agent's conversation history to understand what work was being performed
-        and creates an appropriate completion response.
-        
-        Args:
-            agent: The Admin AI agent that needs a completion message
-            
-        Returns:
-            str: A completion message acknowledging the work done, or None if unable to generate
+        Generates a specific, actionable task for an Admin AI that is stuck in a work loop.
+        This task instructs the agent to systematically test available tools to break the loop.
         """
-        try:
-            if not agent.message_history:
-                return None
-            
-            # Look for recent tool calls and their results to understand what work was done
-            recent_tools = []
-            recent_results = []
-            project_context = ""
-            
-            # Scan the last 10 messages for context
-            for msg in agent.message_history[-10:]:
-                if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                    for tool_call in msg.get("tool_calls", []):
-                        tool_name = tool_call.get("name", "unknown_tool")
-                        recent_tools.append(tool_name)
-                
-                elif msg.get("role") == "tool":
-                    content = msg.get("content", "")
-                    recent_results.append(content)
-                    
-                    # Extract project context if available
-                    if "project" in content.lower() and not project_context:
-                        # Try to extract project name from tool results
-                        import re
-                        project_match = re.search(r'project["\s]*:?\s*["\']?([^"\'.,\n]+)', content, re.IGNORECASE)
-                        if project_match:
-                            project_context = project_match.group(1).strip()
-            
-            # Generate completion message based on recent activity
-            if recent_tools:
-                tool_summary = ", ".join(set(recent_tools[-3:]))  # Last 3 unique tools
-                
-                if project_context:
-                    completion_msg = f"I have completed my review of the {project_context} project. After using tools such as {tool_summary}, I can see that the necessary work has been accomplished. The project status has been updated accordingly."
-                else:
-                    completion_msg = f"I have completed the requested analysis and review. After using tools including {tool_summary}, I have gathered the necessary information and taken the appropriate actions. The work is now complete."
-            else:
-                # Fallback if no recent tools found
-                if project_context:
-                    completion_msg = f"I have completed my review of the {project_context} project. All necessary assessments have been made and the project status is up to date."
-                else:
-                    completion_msg = "I have completed the requested work. All necessary assessments and actions have been taken based on the current context."
-            
-            logger.info(f"Generated completion message for Admin AI '{agent.agent_id}': {completion_msg[:100]}...")
-            return completion_msg
-            
-        except Exception as e:
-            logger.error(f"Error generating completion message for Admin AI '{agent.agent_id}': {e}", exc_info=True)
-            return None
+        logger.info(f"Generating tool-testing task for stuck Admin AI '{agent.agent_id}'.")
+
+        # Get the list of available tools to make the prompt more intelligent.
+        tool_list_str = "Could not retrieve tool list."
+        if hasattr(self._manager, 'tool_executor') and self._manager.tool_executor:
+            try:
+                # Using a method that gets a simple list for the agent's type.
+                tool_list_str = self._manager.tool_executor.get_available_tools_list_str(agent.agent_type)
+            except Exception as e:
+                logger.error(f"Error getting tool list for tool testing task generation: {e}")
+
+        # Frame the new task as a system intervention.
+        task_message = (
+            "[Framework Intervention]: You appear to be stuck in a work loop without a specific task. "
+            "A new task has been assigned to you to ensure progress.\n\n"
+            "**Your New Task: Systematically Test Available Tools**\n\n"
+            "**Step 1: Discover all available tools.**\n"
+            "Your first action MUST be to output the following XML to get a list of all tools you can use:\n"
+            "```xml\n"
+            "<tool_information><action>list_tools</action></tool_information>\n"
+            "```\n\n"
+            "**Step 2: Analyze and Test.**\n"
+            "After you receive the list, pick ONE tool from the list that you have not recently used and test one of its actions. "
+            "Use the `get_info` action of the `tool_information` tool first if you are unsure how to use it.\n\n"
+            f"**For context, here is a summary of tools currently available to you:**\n{tool_list_str}"
+        )
+        return task_message
 
     # Removed _request_cg_review method as its functionality is integrated into _get_cg_verdict and run_cycle
 
@@ -1177,14 +1148,14 @@ Then test a tool you haven't used yet."""
                             context.action_taken_this_cycle = True
                             context.cycle_completed_successfully = True
                             
-                        # After 2 consecutive empty responses, inject guidance
+                        # After 2 consecutive empty responses, give it a concrete task.
                         elif agent._consecutive_empty_responses >= 2:
-                            logger.error(f"CycleHandler: Admin AI '{agent.agent_id}' had {agent._consecutive_empty_responses} consecutive empty responses. Injecting guidance to break the loop.")
-                            
-                            # Generate and inject specific guidance
-                            guidance_message_content = self._generate_empty_response_guidance(agent)
-                            guidance_message: MessageDict = {"role": "system", "content": guidance_message_content}
-                            agent.message_history.append(guidance_message)
+                            logger.error(f"CycleHandler: Admin AI '{agent.agent_id}' had {agent._consecutive_empty_responses} consecutive empty responses. Injecting a tool-testing task to break the loop.")
+
+                            # Generate and inject the new task
+                            task_message_content = self._generate_admin_work_completion_message(agent)
+                            task_message: MessageDict = {"role": "system", "content": task_message_content}
+                            agent.message_history.append(task_message)
 
                             # Log this intervention
                             if context.current_db_session_id:
@@ -1192,12 +1163,12 @@ Then test a tool you haven't used yet."""
                                     session_id=context.current_db_session_id,
                                     agent_id=agent.agent_id,
                                     role="system_intervention",
-                                    content=guidance_message_content
+                                    content=task_message_content
                                 )
                             await self._manager.send_to_ui({
                                 "type": "system_intervention",
                                 "agent_id": agent.agent_id,
-                                "content": guidance_message_content
+                                "content": task_message_content
                             })
 
                             # Reset counter and schedule reactivation
