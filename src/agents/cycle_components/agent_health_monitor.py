@@ -54,8 +54,16 @@ class AgentHealthRecord:
         """Record a new response and update health metrics."""
         current_time = time.time()
         
+        # A "meaningful" response has substantive content. It's not just whitespace or punctuation.
+        is_meaningful_content = (
+            content and
+            len(content.strip()) > 2 and
+            not content.strip().startswith("[") and
+            any(c.isalnum() for c in content)
+        )
+
         # CRITICAL: Reset ALL counters if agent took meaningful action
-        if has_action or (content and content.strip() and not content.strip().startswith("[")):
+        if has_action or is_meaningful_content:
             self.consecutive_empty_responses = 0
             self.consecutive_minimal_responses = 0
             self.consecutive_identical_responses = 0
