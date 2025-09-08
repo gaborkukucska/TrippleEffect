@@ -168,6 +168,7 @@ Please provide your summary as plain text (no XML tags needed for this summariza
             # Use the CG's LLM provider directly for summarization
             summary_chunks = []
             async for chunk in cg_agent.llm_provider.stream_completion(
+                model=cg_agent.model,
                 messages=temp_history,
                 temperature=0.3,  # Lower temperature for more focused summaries
                 max_tokens=800    # Limit summary length
@@ -209,59 +210,46 @@ Please provide your summary as plain text (no XML tags needed for this summariza
     
     def _create_condensed_history(self, original_history: List[Dict[str, Any]], 
                                 summary1: str, summary2: str) -> List[Dict[str, Any]]:
-        """Create condensed message history with summaries while preserving tool results."""
+        """
+        Create a condensed message history that is more robust and less prone to context corruption.
+        This simplified logic preserves the system prompt, adds summaries, and keeps the last
+        10 messages to ensure immediate context is always maintained.
+        """
         condensed = []
         
-        # Keep original system message if present
+        # 1. Keep the original system message if it exists
         if original_history and original_history[0].get('role') == 'system':
             condensed.append(original_history[0])
         
-        # Add summary messages
+        # 2. Add the generated summary messages
         timestamp = datetime.now().isoformat()
-        
         condensed.append({
             "role": "system",
             "content": f"[CONTEXT SUMMARY 1/2 - {timestamp}]\n\n{summary1}"
         })
-        
         condensed.append({
             "role": "system", 
             "content": f"[CONTEXT SUMMARY 2/2 - {timestamp}]\n\n{summary2}"
         })
         
-        # CRITICAL FIX: Preserve all recent tool calls and their results
-        # This prevents the loss of tool results during context summarization
-        tool_preservation_count = 20  # Preserve last 20 tool-related messages
-        recent_tool_messages = []
-        
-        # Scan backwards through history to find tool-related messages
-        for msg in reversed(original_history):
-            if len(recent_tool_messages) >= tool_preservation_count:
-                break
-                
-            # Preserve assistant messages with tool calls and all tool result messages
-            if (msg.get('role') == 'assistant' and msg.get('tool_calls')) or \
-               (msg.get('role') == 'tool') or \
-               (msg.get('role') == 'system' and 
-                ('Framework' in msg.get('content', '') or 'intervention' in msg.get('content', '').lower())):
-                recent_tool_messages.insert(0, msg)  # Insert at beginning to maintain order
-        
-        # Add preserved tool messages to condensed history
-        for msg in recent_tool_messages:
-            if msg not in condensed:  # Avoid duplicating system message
-                condensed.append(msg)
-        
-        # Additionally, keep the most recent few messages for immediate context
-        # regardless of tool usage (conversation flow)
-        recent_conversation_count = 3
-        recent_conversation = original_history[-recent_conversation_count:]
-        
-        for msg in recent_conversation:
-            if msg not in condensed and msg not in recent_tool_messages:
-                condensed.append(msg)
-        
-        logger.info(f"ContextSummarizer: Condensed history created - Original: {len(original_history)} messages, "
-                   f"Condensed: {len(condensed)} messages, Tool messages preserved: {len(recent_tool_messages)}")
+        # 3. Keep the last 10 messages from the original history to preserve immediate context
+        # This is a much safer approach than trying to selectively filter messages.
+        num_messages_to_keep = 10
+        if len(original_history) > num_messages_to_keep:
+            recent_history = original_history[-num_messages_to_keep:]
+            # Avoid duplicating the system message if it's already in the recent history
+            for msg in recent_history:
+                if msg not in condensed:
+                    condensed.append(msg)
+        else:
+            # If the history is short, just use the original history (minus system prompt if already added)
+            start_index = 1 if (condensed and condensed[0] == original_history[0]) else 0
+            for i in range(start_index, len(original_history)):
+                if original_history[i] not in condensed:
+                    condensed.append(original_history[i])
+
+        logger.info(f"ContextSummarizer: Simplified condensed history created. "
+                   f"Original: {len(original_history)} messages, Condensed: {len(condensed)} messages.")
         
         return condensed
     
