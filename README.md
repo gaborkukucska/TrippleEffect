@@ -2,7 +2,7 @@
 <!-- # IT IS CRITICAL THAT ALL AIs and LLMs FOLLOW THE DEVELOPMENT INSTRUCTIONS IN THE `helperfiles/DEVELOPMENT_RULES.md` FILE WHEN FURTHER DEVELOPING THIS FRAMEWORK!!! -->
 # TrippleEffect Multi-Agent Framework
 
-**Version:** 2.30 <!-- Updated Version -->
+**Version:** 2.41 <!-- Updated Version -->
 
 **TrippleEffect** is an asynchronous, collaborative multi-agent framework built with Python, FastAPI, and WebSockets. It features a central **Admin AI** that initiates projects and a dedicated **Project Manager** agent per session that handles detailed task creation/tracking and agent/team creation/coordination. This framework is predominantly developed by various LLMs guided by Gabby.
 
@@ -31,6 +31,12 @@ chmod +x setup.sh run.sh
 *   **Project Manager Agent:** Automatically created per project/session by the framework, this agent uses the `ProjectManagementTool` (backed by `tasklib`) to decompose the initial plan, create a team, specialised worker agents, create/assign sub-tasks to worker agents, monitor progress via `send_message` tool, and report status/completion back to Admin AI.
 *   **Dynamic Worker Agent Management:** The Project Manager agent (or Admin AI, depending on workflow evolution) uses `ManageTeamTool` to create worker agents as needed for specific sub-tasks.
 *   **Constitutional Guardian (CG) Agent:** A specialized agent (`constitutional_guardian_ai`) reviews final textual outputs of other agents against predefined governance principles (from `governance.yaml`). If a concern is raised, the original agent's output is paused, and a UI notification is generated, allowing for user intervention (approve, stop agent, or provide feedback for retry). This feature's backend logic is implemented; UI/API for full user interaction is pending.
+*   **Advanced Agent Health Monitoring:** Enhanced Constitutional Guardian system with comprehensive agent health monitoring capabilities:
+    *   **Agent Health Monitor**: Tracks agent behavior patterns, detects infinite loops, empty responses, and problematic patterns
+    *   **XML Validator**: Automatic detection and recovery of malformed XML tool calls
+    *   **Context Summarizer**: Manages conversation context for optimal performance with smaller models
+    *   **Next Step Scheduler**: Intelligent agent reactivation and workflow continuation logic
+    *   **Cycle Components Architecture**: Modular, extensible system for agent cycle management
 *   **Intelligent Model Handling:**
     *   **Discovery:** Automatically finds reachable LLM providers (Ollama, OpenRouter, OpenAI) and available models at startup.
     *   **Filtering:** Filters discovered models based on the `MODEL_TIER` setting (`.env`).
@@ -42,13 +48,19 @@ chmod +x setup.sh run.sh
 *   **Communication Layer Separation (UI):** The user interface visually separates direct User<->Admin AI interaction from internal Admin AI<->PM<->Worker communication and system events.
 *   **Persistence:** Session state (agents, teams, histories) can be saved/loaded (filesystem). Interactions and knowledge are logged to a database (`data/trippleeffect_memory.db`).
 *   **KnowledgeBaseTool Enhancements:** Agent thoughts are saved with automatically generated keywords. A new `search_agent_thoughts` action allows targeted retrieval of past agent reasoning.
-*   **Basic Governance Layer:** System principles defined in `governance.yaml` are now primarily used by the Constitutional Guardian (CG) agent for its review process. Global injection of these principles into all agent prompts has been removed.
+*   **Governance Layer:** System principles defined in `governance.yaml` are now primarily used by the Constitutional Guardian (CG) agent for its review process. Global injection of these principles into all agent prompts has been removed.
 
 ## Features
 
 *   **Asynchronous Backend:** Built with FastAPI and `asyncio`.
 *   **WebSocket Communication:** Real-time updates via WebSockets.
 *   **Dynamic Agent/Team Creation:** Manage agents and teams on the fly using `ManageTeamTool`.
+*   **Advanced Agent Health System:** Comprehensive monitoring and recovery capabilities:
+    *   **Loop Detection**: Automatically detects and resolves infinite loops, empty responses, and stuck patterns
+    *   **XML Recovery**: Intelligent parsing and recovery of malformed XML tool calls
+    *   **Context Optimization**: Automatic context summarization for improved performance
+    *   **Workflow Continuation**: Smart reactivation logic for multi-step agent workflows
+    *   **Health Analytics**: Detailed agent behavior analysis and intervention strategies
 *   **Configurable Model Selection:**
     *   Dynamic discovery of providers/models (Ollama, OpenRouter, OpenAI).
     *   Filtering based on `MODEL_TIER` (.env: `FREE` or `ALL`).
@@ -58,6 +70,7 @@ chmod +x setup.sh run.sh
     *   Multi-key support and key cycling for providers (`PROVIDER_API_KEY_N` in `.env`).
     *   Automatic failover to different models/providers based on tiers (Local -> Free -> Paid).
     *   Key quarantining on persistent auth/rate limit errors.
+    *   Advanced XML validation and recovery mechanisms.
 *   **Performance Tracking:** Monitors success rate and latency per model, saved to `data/model_performance_metrics.json`.
 *   **State-Driven Admin AI Workflow:** Admin AI operates based on its current state (`conversation`, `planning`).
     *   **Conversation State:** Focuses on user interaction, KB search/save, monitoring PM updates, and identifying new tasks. Uses `<request_state state='planning'>` to signal task identification.
@@ -71,21 +84,21 @@ chmod +x setup.sh run.sh
     *   `SystemHelpTool`: Get current time (UTC), Search application logs, **Get detailed tool usage info (`get_tool_info`)**.
     *   `KnowledgeBaseTool`: Save/Search distilled knowledge in the database. Now includes smarter keyword generation for saved thoughts and a `search_agent_thoughts` action.
     *   `ProjectManagementTool`: Add, list, modify, and complete project tasks (uses `tasklib` backend per session). **Assigns tasks via tags (`+agent_id`)** due to CLI UDA issues. Used primarily by the Project Manager agent.
-    *   **On-Demand Tool Help:** Implemented `get_detailed_usage()` in tools and `get_tool_info` action in `SystemHelpTool` for dynamic help retrieval (full transition planned for Phase 27+).
+    *   **On-Demand Tool Help:** Implemented `get_detailed_usage()` in tools and `get_tool_info` action in `SystemHelpTool` for dynamic help retrieval.
 *   **Sequential Tool Execution:** Supports sequential execution of multiple tool calls from a single agent response.
-*   **Constitutional Guardian (CG) System (Backend Implemented):**
+*   **Constitutional Guardian (CG) System:**
     *   Dedicated CG agent (`constitutional_guardian_ai`) reviews agent outputs against `governance.yaml` principles.
     *   Uses a specific `cg_system_prompt`.
     *   `AgentCycleHandler` intercepts final responses for CG review via a direct LLM call.
     *   Original agents are paused (status `AGENT_STATUS_AWAITING_USER_REVIEW_CG`) if a concern is raised by CG.
     *   Backend methods in `AgentManager` (`resolve_cg_concern_approve`, `stop`, `retry`) are implemented to handle user decisions on concerns.
-    *   *UI/API for full user interaction with CG concerns is a pending development item.*
+    *   Enhanced with comprehensive agent health monitoring and recovery capabilities.
 *   **Session Persistence:** Save and load agent states, histories, team structures, and **project task data** (filesystem, including `tasklib` data with assignee tags).
 *   **Database Backend (SQLite):**
     *   Logs user, agent, tool, and system interactions.
     *   Stores long-term knowledge summaries and agent thoughts via `KnowledgeBaseTool`.
 *   **Governance Review via CG Agent:** System principles from `governance.yaml` are reviewed by the dedicated Constitutional Guardian (CG) agent, replacing the previous global prompt injection method.
-*   **Refined Web UI (Phase 22):**
+*   **Refined Web UI:**
     *   Separated view for User <-> Admin AI chat (`Chat` view).
     *   Dedicated view for internal Admin AI <-> Agent communication, tool usage, and system status updates (`Internal Comms` view).
     *   Improved message chunk grouping for concurrent streams.
@@ -93,7 +106,7 @@ chmod +x setup.sh run.sh
     *   Session management interface.
     *   Static configuration viewer.
 *   **Sandboxing:** Agents operate within dedicated sandbox directories or a shared session workspace.
-*   **Context Optimization:** Agents guided to use files for large outputs. Admin AI prompts are now state-specific.
+*   **Context Optimization:** Agents guided to use files for large outputs. Admin AI prompts are now state-specific. Advanced context summarization for improved performance.
 *   **Admin AI Time Context:** Current UTC time is injected into Admin AI prompts.
 *   **Local Provider Integration:** Automatic network discovery (`LOCAL_API_DISCOVERY_SUBNETS="auto"`).
 
@@ -103,7 +116,7 @@ chmod +x setup.sh run.sh
 *   **Asynchronous Operations:** `asyncio`
 *   **WebSockets:** `websockets` library integrated with FastAPI
 *   **Database:** `SQLAlchemy` (Core, Asyncio), `aiosqlite` (for SQLite driver)
-*   **Task Management:** `tasklib` (Python Taskwarrior library) %% Added P24
+*   **Task Management:** `tasklib` (Python Taskwarrior library)
 *   **LLM Interaction:** `openai` library, `aiohttp`
 *   **Frontend:** HTML5, CSS3, Vanilla JavaScript
     *   **Configuration:** YAML (`PyYAML`), `.env` (`python-dotenv`), JSON (`prompts.json`), `governance.yaml` (`PyYAML`)
@@ -173,21 +186,29 @@ chmod +x setup.sh run.sh
 
 ## Development Status
 
-*   **Current Version:** 2.30
-*   **Completed Phases:** 1-25. (Phase 25 focused on Governance Layer foundation, model selection, multi-tool execution, thought refinement, and various fixes).
-*   **Recent Fixes/Enhancements (v2.25 - v2.30):** 
-    *   **Constitutional Guardian (CG) Agent Backend:** Implemented core logic for CG agent review, including new agent statuses, `AgentManager` methods for handling user decisions on CG concerns, and modifications to `AgentCycleHandler` to integrate CG checks.
+*   **Current Version:** 2.40
+*   **Completed Phases:** 1-27. (Phase 27 focused on Advanced Agent Health Monitoring, Constitutional Guardian enhancements, and comprehensive loop detection and recovery systems).
+*   **Recent Enhancements (v2.30 - v2.40):** 
+    *   **Advanced Agent Health Monitoring System:** Comprehensive enhancement to the Constitutional Guardian system with intelligent agent health monitoring, loop detection, and recovery capabilities.
+    *   **Cycle Components Architecture:** Modular agent cycle management system including:
+        *   `AgentHealthMonitor`: Tracks behavior patterns, detects problematic loops, and implements recovery strategies
+        *   `XMLValidator`: Automatic XML validation and malformed content recovery
+        *   `ContextSummarizer`: Intelligent context management for optimal performance
+        *   `NextStepScheduler`: Smart agent reactivation and workflow continuation
+        *   `PromptAssembler`: Dynamic prompt construction and optimization
+        *   `OutcomeDeterminer`: Cycle outcome analysis and decision making
+    *   **Enhanced Loop Detection:** Multi-layered protection against infinite loops, empty responses, and stuck patterns
+    *   **XML Recovery System:** Intelligent parsing and automatic recovery of malformed XML tool calls
+    *   **Context Optimization:** Advanced context summarization for improved performance with smaller models
+    *   **Workflow Continuation:** Smart multi-step workflow support with proper agent reactivation
+    *   **Constitutional Guardian Backend:** Implemented core logic for CG agent review, including new agent statuses and user decision handling methods
     *   Refined model selection logic (Tier, Size, Performance).
     *   Enabled sequential execution of multiple tools per agent turn.
     *   Improved thought saving (smarter keywords) and retrieval (`search_agent_thoughts` action).
     *   Governance Layer: Principles loaded from `governance.yaml`; global prompt injection removed in favor of CG-specific use.
-    *   Refined Pydantic v1/v2 forward reference handling (`CycleContext`, `WorkflowResult`).
-    *   Corrected various `AttributeError` instances related to `manager.settings`.
-    *   Refined `admin_ai_startup_prompt` and `cg_system_prompt`.
-    *   Removed unused `TEAMS_CONFIG` and `allowed_sub_agent_models` from `ConfigManager`.
-    *   Expanded unit test coverage for new features.
-*   **Current Phase (26 Target Completion):** Focus on UI/API for Constitutional Guardian interaction, further agent logic refinements, and starting Advanced Memory & Learning explorations.
-*   **Future Plans:** Advanced Memory & Learning (Phase 27), Proactive Behavior (Phase 28), Federated Communication (Phase 29+), New Admin tools, LiteLLM provider, advanced collaboration, resource limits, DB/Vector Stores, **Full transition to on-demand tool help** (removing static descriptions from prompts - Phase 29+).
+    *   Comprehensive unit test coverage for new features and enhancements.
+*   **Current Phase (28 Target Completion):** Advanced Memory & Learning system development, proactive behavior implementation, and federated communication foundations.
+*   **Future Plans:** Proactive Behavior (Phase 28), Federated Communication (Phase 29+), New Admin tools, LiteLLM provider, advanced collaboration, resource limits, DB/Vector Stores, **Full transition to on-demand tool help**.
 
 See `helperfiles/PROJECT_PLAN.md` for detailed phase information.
 

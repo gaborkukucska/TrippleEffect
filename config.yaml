@@ -33,7 +33,10 @@ agents:
       # model: "google/gemma-3-27b-it:free"
       # You can also specify local models!
       provider: "ollama" # Set the provider
+      # model: "deepseek-r1:14b"
+      # model: "qwen3-coder:30b"
       model: "gemma3:4b-it-q4_K_M"
+      # model: "gpt-oss:20b"
       # model: "ollama/llama3.2:3b-instruct-q4_K_M" # Make sure the selected local model is available on a local API
 
   - agent_id: "constitutional_guardian_ai" # The central constitutional guardian agent
@@ -48,7 +51,10 @@ agents:
       # model: "google/gemma-3-27b-it:free"
       # You can also specify local models!
       provider: "ollama" # Set the provider
+      # model: "deepseek-r1:14b"
+      # model: "qwen3-coder:30b"
       model: "gemma3:4b-it-q4_K_M"
+      # model: "gpt-oss:20b"
       # model: "granite3.3:2b"
       # model: "ollama/llama3.2:3b-instruct-q4_K_M" # Make sure the selected local model is available on a local API
 
@@ -64,7 +70,10 @@ agents:
       # model: "meta-llama/llama-4-maverick:free"
       # You can also specify local models!
       provider: "ollama" # Set the provider
+      # model: "deepseek-r1:14b"
+      # model: "qwen3-coder:30b"
       model: "gemma3:4b-it-q4_K_M"
+      # model: "gpt-oss:20b"
       # model: "ollama/llama3.2:3b-instruct-q4_K_M" # Make sure the selected local model is available on a local API
 
   - agent_id: "project_manager_agent"
@@ -79,7 +88,10 @@ agents:
       # model: "google/gemma-3-27b-it:free"
       # You can also specify local models!
       provider: "ollama" # Set the provider
+      # model: "deepseek-r1:14b"
+      # model: "qwen3-coder:30b"
       model: "gemma3:4b-it-q4_K_M"
+      # model: "gpt-oss:20b"
       # model: "granite3.3:2b"
       # model: "ollama/llama3.2:3b-instruct-q4_K_M" # Make sure the selected local model is available on a local API
 

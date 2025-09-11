@@ -10,5 +10,6 @@ from .prompt_assembler import PromptAssembler
 from .llm_caller import LLMCaller
 from .outcome_determiner import CycleOutcomeDeterminer
 from .next_step_scheduler import NextStepScheduler
+from .agent_health_monitor import AgentHealthMonitor
 
 # END OF FILE src/agents/cycle_components/__init__.py

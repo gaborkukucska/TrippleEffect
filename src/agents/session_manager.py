@@ -168,10 +168,19 @@ class SessionManager:
             bootstrap_agents_present = []
             for boot_id in self._manager.bootstrap_agents:
                 if boot_id in self._manager.agents:
-                     self._manager.agents[boot_id].clear_history()
+                     # Only clear history if this is during actual session loading, not during normal operation
+                     # Check if the Admin AI has meaningful history that should be preserved
+                     agent = self._manager.agents[boot_id]
+                     if boot_id == BOOTSTRAP_AGENT_ID and len(agent.message_history) > 1:
+                         # Admin AI has meaningful history - preserve it during session operations
+                         logger.info(f"Preserving Admin AI history during session operation (length: {len(agent.message_history)})")
+                     else:
+                         # Safe to clear for other bootstrap agents or Admin AI with minimal history
+                         agent.clear_history()
+                         logger.info(f"Cleared history for bootstrap agent '{boot_id}' during session load")
                      bootstrap_agents_present.append(boot_id)
                 else: logger.error(f"Bootstrap agent '{boot_id}' not found in manager's registry during history reset!")
-            logger.info(f"Cleared team state and reset histories for present bootstrap agents: {bootstrap_agents_present}")
+            logger.info(f"Processed team state and bootstrap agent histories: {bootstrap_agents_present}")
             logger.debug(f"LOAD_DEBUG (After History Reset): Agents keys = {list(self._manager.agents.keys())}")
 
             # Load teams and mappings
@@ -226,9 +235,12 @@ class SessionManager:
                     else:
                         logger.warning(f"Invalid history format for agent '{agent_id}'. History not loaded.")
                 else:
-                     # If history wasn't saved (e.g., bootstrap), ensure it's cleared/reset
-                     agent.clear_history()
-                     logger.debug(f"No saved history found for agent '{agent_id}', history reset.")
+                     # If history wasn't saved (e.g., bootstrap), only clear if it's not the Admin AI with meaningful history
+                     if agent_id == BOOTSTRAP_AGENT_ID and len(agent.message_history) > 1:
+                         logger.debug(f"Preserving Admin AI history during session load - no saved history but has {len(agent.message_history)} existing messages")
+                     else:
+                         agent.clear_history()
+                         logger.debug(f"No saved history found for agent '{agent_id}', history reset.")
 
                 # Restore State (NEW)
                 state = loaded_states.get(agent_id)

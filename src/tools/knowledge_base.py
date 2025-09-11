@@ -97,8 +97,30 @@ class KnowledgeBaseTool(BaseTool):
         """Executes the knowledge base action."""
         action = kwargs.get("action")
         logger.info(f"Agent {agent_id} requesting KnowledgeBaseTool action '{action}' with params: {kwargs}")
-        if not action or action not in ["save_knowledge", "search_knowledge", "search_agent_thoughts"]:
-            return {"status": "error", "message": "Invalid or missing 'action'. Must be 'save_knowledge', 'search_knowledge', or 'search_agent_thoughts'."}
+        valid_actions = ["save_knowledge", "search_knowledge", "search_agent_thoughts"]
+        
+        # Check for common mistakes and provide helpful suggestions
+        action_suggestions = {
+            "search": "search_knowledge",
+            "save": "save_knowledge", 
+            "store": "save_knowledge",
+            "find": "search_knowledge",
+            "lookup": "search_knowledge",
+            "retrieve": "search_knowledge",
+            "get": "search_knowledge",
+            "search_thoughts": "search_agent_thoughts",
+            "get_thoughts": "search_agent_thoughts"
+        }
+        
+        if not action:
+            return {"status": "error", "message": f"Missing required 'action' parameter. Must be one of: {', '.join(valid_actions)}."}
+        
+        if action not in valid_actions:
+            if action in action_suggestions:
+                suggested_action = action_suggestions[action]
+                return {"status": "error", "message": f"Invalid action '{action}'. Did you mean '{suggested_action}'? Valid actions are: {', '.join(valid_actions)}."}
+            else:
+                return {"status": "error", "message": f"Invalid action '{action}'. Valid actions are: {', '.join(valid_actions)}."}
 
         current_session_db_id: Optional[int] = None
 
@@ -201,4 +223,42 @@ class KnowledgeBaseTool(BaseTool):
 
     def get_detailed_usage(self) -> str:
         """Returns detailed usage instructions for the KnowledgeBaseTool."""
-        return super().get_detailed_usage()
+        usage = """**Tool Name:** knowledge_base
+
+**Description:** Interacts with the long-term knowledge base for saving and searching information across sessions.
+
+**CRITICAL - Valid Actions Only:** The following actions are the ONLY valid actions. Do NOT use variations like 'search' or 'save':
+- save_knowledge, search_knowledge, search_agent_thoughts
+
+**Actions & Parameters:**
+
+1. **save_knowledge:** Saves a summary of learned information with keywords.
+   * `<summary>` (string, required): A concise summary of the information or learning to be saved.
+   * `<keywords>` (string, required): Comma-separated keywords relevant to the knowledge being saved.
+   * `<importance>` (float, optional): Numerical score (0.1 to 1.0) indicating importance. Defaults to 0.5.
+   * Example: `<knowledge_base><action>save_knowledge</action><summary>File system tool requires 'read' and 'write' actions, not 'read_file'</summary><keywords>file_system,tool_usage,common_mistakes</keywords><importance>0.8</importance></knowledge_base>`
+
+2. **search_knowledge:** Searches for relevant knowledge using keywords.
+   * `<query_keywords>` (string, required): Comma-separated keywords to search for in the knowledge base.
+   * `<min_importance>` (float, optional): Minimum importance score for results.
+   * `<max_results>` (integer, optional): Maximum number of results to return. Defaults to 5.
+   * Example: `<knowledge_base><action>search_knowledge</action><query_keywords>file_system,tool_usage</query_keywords><max_results>3</max_results></knowledge_base>`
+
+3. **search_agent_thoughts:** Searches for past thoughts of a specific agent.
+   * `<agent_identifier>` (string, required): The ID or unique identifier of the agent whose thoughts are being searched.
+   * `<additional_keywords>` (string, optional): Additional comma-separated keywords to narrow the search.
+   * `<max_results>` (integer, optional): Maximum number of results to return. Defaults to 5.
+   * Example: `<knowledge_base><action>search_agent_thoughts</action><agent_identifier>admin_ai</agent_identifier><additional_keywords>tool_errors</additional_keywords></knowledge_base>`
+
+**COMMON MISTAKES TO AVOID:**
+* ❌ DON'T use 'search' - use 'search_knowledge' instead
+* ❌ DON'T use 'save' - use 'save_knowledge' instead  
+* ❌ DON'T use 'find' - use 'search_knowledge' instead
+* ❌ DON'T use 'lookup' - use 'search_knowledge' instead
+
+**Important Notes:**
+* This tool persists information across sessions, making it valuable for learning from past mistakes.
+* Use meaningful keywords to make future searches more effective.
+* The Admin AI should use this to save insights about tool usage patterns and common errors.
+"""
+        return usage.strip()

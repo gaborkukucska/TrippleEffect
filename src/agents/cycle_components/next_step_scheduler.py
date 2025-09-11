@@ -8,7 +8,7 @@ from src.agents.constants import (
     AGENT_STATUS_IDLE, AGENT_STATUS_ERROR,
     AGENT_STATUS_AWAITING_USER_REVIEW_CG, # Added for CG logic
     AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER,
-    ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED,
+    ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK,
     PM_STATE_STARTUP, PM_STATE_MANAGE, PM_STATE_WORK,
     # Add new PM states for checks
     PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS,
@@ -88,6 +88,13 @@ class NextStepScheduler:
                     self._log_end_of_schedule_next_step(agent, "Path B - Suppressed Reactivation for Admin AI post-project creation")
                     return
 
+            # CRITICAL FIX: Always reactivate Admin AI after state transitions to work state
+            if agent.agent_type == AGENT_TYPE_ADMIN and context.state_change_requested_this_cycle and agent.state == ADMIN_STATE_WORK:
+                logger.info(f"NextStepScheduler: Admin AI '{agent_id}' just transitioned to work state - forcing immediate reactivation")
+                await self._schedule_new_cycle(agent, 0)
+                self._log_end_of_schedule_next_step(agent, "Path B - Admin Work State Transition Reactivation")
+                return
+
             await self._schedule_new_cycle(agent, 0)
             self._log_end_of_schedule_next_step(agent, "Path B - Needs Reactivation")
             return
@@ -120,12 +127,30 @@ class NextStepScheduler:
             # be reactivated by default unless they explicitly change state.
             persistent_states = {
                 (AGENT_TYPE_PM, PM_STATE_MANAGE),
-                (AGENT_TYPE_WORKER, WORKER_STATE_WORK)
+                (AGENT_TYPE_WORKER, WORKER_STATE_WORK),
+                (AGENT_TYPE_ADMIN, ADMIN_STATE_WORK)
             }
+            
+            # Special logic for Admin AI in work state - check if task is actually complete
+            if (agent.agent_type, agent.state) == (AGENT_TYPE_ADMIN, ADMIN_STATE_WORK):
+                # Admin AI should only continue in work state if it has made meaningful progress
+                # and hasn't completed its task. Check if it should transition out of work state.
+                should_continue_work = self._should_admin_continue_work(agent, context)
+                if should_continue_work:
+                    logger.info(f"NextStepScheduler: Admin AI '{agent_id}' continuing work state - task in progress.")
+                    agent.set_status(AGENT_STATUS_IDLE)
+                    await self._schedule_new_cycle(agent, 0)
+                else:
+                    logger.info(f"NextStepScheduler: Admin AI '{agent_id}' work appears complete, allowing natural transition.")
             # This logic ensures that if an agent in a persistent state completes a cycle
             # without error and without requesting a state change, it gets reactivated.
-            if (agent.agent_type, agent.state) in persistent_states and not context.state_change_requested_this_cycle:
+            elif (agent.agent_type, agent.state) in persistent_states and not context.state_change_requested_this_cycle:
                 logger.info(f"NextStepScheduler: Agent '{agent_id}' is in a persistent state ('{agent.state}'). Reactivating for continuous work.")
+                agent.set_status(AGENT_STATUS_IDLE)
+                await self._schedule_new_cycle(agent, 0)
+            # SECONDARY FIX: Ensure Admin AI in work state gets reactivated even if not caught by persistent states logic
+            elif agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_WORK and not context.state_change_requested_this_cycle:
+                logger.info(f"NextStepScheduler: Admin AI '{agent_id}' in work state needs reactivation (secondary catch)")
                 agent.set_status(AGENT_STATUS_IDLE)
                 await self._schedule_new_cycle(agent, 0)
             # --- End Persistent Agent Logic ---
@@ -192,6 +217,102 @@ class NextStepScheduler:
             return "agent action taken"
         return "unspecified condition (needs_reactivation_after_cycle was true)"
 
+    def _should_admin_continue_work(self, agent: 'Agent', context: 'CycleContext') -> bool:
+        """
+        Determine if Admin AI should continue in work state or transition out.
+        
+        Admin AI should continue working through multi-step workflows until it explicitly 
+        decides to transition out or gets stuck in problematic patterns.
+
+        Args:
+            agent: The Admin AI agent
+            context: The cycle context
+            
+        Returns:
+            True if Admin AI should continue working, False to allow natural transition
+        """
+        # If the Admin AI explicitly requested a state change, honor it and allow transition
+        if context.state_change_requested_this_cycle:
+            logger.info(f"NextStepScheduler: Admin AI '{agent.agent_id}' requested state change - stopping work continuation")
+            return False
+        
+        # If there was a system error (not tool failure), don't continue to avoid loops
+        if context.last_error_obj and not context.action_taken_this_cycle:
+            logger.info(f"NextStepScheduler: Admin AI '{agent.agent_id}' had system error without action - stopping work continuation")
+            return False
+        
+        # CRITICAL FIX: After successful tool execution, ALWAYS continue work unless explicitly told to stop
+        if context.executed_tool_successfully_this_cycle:
+            logger.info(f"NextStepScheduler: Admin AI '{agent.agent_id}' successfully executed tools - FORCING continuation to process results")
+            # Reset any problematic counters since we had successful action
+            if hasattr(agent, '_consecutive_empty_work_cycles'):
+                agent._consecutive_empty_work_cycles = 0
+            if hasattr(agent, '_work_cycle_count'):
+                agent._work_cycle_count = max(0, agent._work_cycle_count - 1)  # Reset progress since we're making progress
+            return True
+        
+        # Check for explicit completion indicators in the agent's recent responses
+        if hasattr(agent, 'message_history') and agent.message_history:
+            # Look for completion messages in the last assistant response
+            recent_messages = agent.message_history[-2:] if len(agent.message_history) >= 2 else agent.message_history
+            for msg in reversed(recent_messages):
+                if msg.get('role') == 'assistant':
+                    content = msg.get('content', '').lower()
+                    completion_phrases = [
+                        'task completed', 'work finished', 'testing complete', 
+                        'all tools tested', 'work done', 'task finished',
+                        'completed successfully', 'finished testing',
+                        'work is complete', 'task is complete'
+                    ]
+                    if any(phrase in content for phrase in completion_phrases):
+                        logger.info(f"NextStepScheduler: Admin AI '{agent.agent_id}' indicated work completion - stopping continuation")
+                        return False
+        
+        # Check for problematic empty response patterns that indicate the AI is stuck
+        if not context.action_taken_this_cycle and not context.thought_produced_this_cycle:
+            # Track consecutive empty cycles
+            if not hasattr(agent, '_consecutive_empty_work_cycles'):
+                agent._consecutive_empty_work_cycles = 0
+            agent._consecutive_empty_work_cycles += 1
+            
+            logger.warning(f"NextStepScheduler: Admin AI '{agent.agent_id}' had empty cycle #{agent._consecutive_empty_work_cycles} in work state")
+            
+            # After 2 consecutive empty cycles, stop continuation to prevent infinite loops
+            # This aligns with the cycle handler's 3-empty-response detection
+            if agent._consecutive_empty_work_cycles >= 2:
+                logger.error(f"NextStepScheduler: Admin AI '{agent.agent_id}' had {agent._consecutive_empty_work_cycles} consecutive empty cycles - stopping work continuation to prevent infinite loop")
+                # Reset counter
+                agent._consecutive_empty_work_cycles = 0
+                # The cycle handler will handle generating completion messages
+                return False
+        else:
+            # Reset empty cycle counter when meaningful action is taken
+            if hasattr(agent, '_consecutive_empty_work_cycles'):
+                agent._consecutive_empty_work_cycles = 0
+        
+        # Failsafe: Check if Admin AI has been in work state for too long
+        work_cycle_limit = 15  # Increased to allow for more complex workflows
+        if not hasattr(agent, '_work_cycle_count'):
+            agent._work_cycle_count = 0
+            
+        agent._work_cycle_count += 1
+        
+        if agent._work_cycle_count >= work_cycle_limit:
+            logger.warning(f"NextStepScheduler: Admin AI '{agent.agent_id}' has been in work state for {work_cycle_limit} cycles - forcing completion")
+            # Reset counter and inject completion guidance
+            agent._work_cycle_count = 0
+            completion_msg = {
+                "role": "system", 
+                "content": "[Framework Notice: Work session limit reached. Please summarize your work and transition to conversation state if appropriate.]"
+            }
+            agent.message_history.append(completion_msg)
+            return False
+            
+        # DEFAULT: Continue working - Admin AI should stay active in work state for multi-step workflows
+        # This allows it to process tool results, make decisions, and continue with next steps
+        logger.info(f"NextStepScheduler: Admin AI '{agent.agent_id}' continuing work state (cycle {agent._work_cycle_count}) - multi-step workflow in progress")
+        return True
+
     async def _schedule_new_cycle(self, agent: 'Agent', retry_count: int) -> None:
         """Schedules a new cycle for the agent using the AgentManager."""
         try:
@@ -208,7 +329,7 @@ class NextStepScheduler:
         except Exception as diag_err:
             logger.error(f"DIAGNOSTIC ERROR (NextStepScheduler - _schedule_new_cycle START): {diag_err}")
 
-        logger.info(f"NextStepScheduler._schedule_new_cycle: Scheduling for agent ID '{agent.agent_id}', instance ID: {id(agent)}, retry: {retry_count}")
+        logger.info(f"NextStepScheduler._schedule_new_cycle: CRITICAL - Scheduling new cycle for agent ID '{agent.agent_id}', instance ID: {id(agent)}, retry: {retry_count}")
         try:
             # AgentManager.schedule_cycle is now async, so await it.
             # It returns the task object, or None if scheduling failed internally.
