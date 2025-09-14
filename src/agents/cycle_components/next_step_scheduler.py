@@ -261,14 +261,16 @@ class NextStepScheduler:
             recent_messages = agent.message_history[-2:] if len(agent.message_history) >= 2 else agent.message_history
             for msg in reversed(recent_messages):
                 if msg.get('role') == 'assistant':
-                    content = msg.get('content', '').lower()
+                    # Ensure content is a string before calling .lower()
+                    content = msg.get('content') or ''
+                    content_lower = content.lower()
                     completion_phrases = [
                         'task completed', 'work finished', 'testing complete', 
                         'all tools tested', 'work done', 'task finished',
                         'completed successfully', 'finished testing',
                         'work is complete', 'task is complete'
                     ]
-                    if any(phrase in content for phrase in completion_phrases):
+                    if any(phrase in content_lower for phrase in completion_phrases):
                         logger.info(f"NextStepScheduler: Admin AI '{agent.agent_id}' indicated work completion - stopping continuation")
                         return False
         

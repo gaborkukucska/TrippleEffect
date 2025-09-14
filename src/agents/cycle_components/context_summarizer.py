@@ -260,8 +260,16 @@ Please provide your summary as plain text (no XML tags needed for this summariza
         """
         total_chars = 0
         for msg in messages:
-            content = msg.get('content', '')
-            total_chars += len(content)
+            content = msg.get('content') # Get content, which can be None
+            if content:
+                total_chars += len(content)
+
+            # Also account for tool calls, which add to the context size
+            if msg.get("tool_calls"):
+                try:
+                    total_chars += len(json.dumps(msg["tool_calls"]))
+                except (TypeError, ValueError):
+                    pass # Ignore if not serializable
         
         # Rough conversion: 4 characters per token
         estimated_tokens = total_chars // 4
