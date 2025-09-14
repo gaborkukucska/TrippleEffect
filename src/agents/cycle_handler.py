@@ -706,8 +706,11 @@ class AgentCycleHandler:
                         llm_stream_ended_cleanly = False; break
 
                     elif event_type == "tool_requests":
-                        context.action_taken_this_cycle = True; tool_calls = event.get("calls", []); raw_assistant_response = event.get("raw_assistant_response")
-                        
+                        context.action_taken_this_cycle = True
+                        tool_calls = event.get("calls", [])
+                        raw_assistant_response = event.get("raw_assistant_response")
+                        content_for_history = event.get("content_for_history")
+
                         # CRITICAL FIX: Check if the raw response also contains a state change request
                         # This handles the case where agent produces both state change + tool calls in same response
                         if raw_assistant_response and hasattr(self, 'request_state_pattern'):
@@ -721,26 +724,22 @@ class AgentCycleHandler:
                                         logger.info(f"CycleHandler: Successfully changed agent '{agent.agent_id}' state to '{requested_state}' during tool processing")
                                     else:
                                         logger.warning(f"CycleHandler: Failed to change agent '{agent.agent_id}' state to '{requested_state}' during tool processing")
-                        # ... (append assistant message to history, db log) ...
-                        if raw_assistant_response or tool_calls:
-                            # If tool_calls are present, content should be None for most models.
-                            content_for_history = None if tool_calls else raw_assistant_response
 
-                            assistant_message_for_history: MessageDict = {"role": "assistant", "content": content_for_history}
-                            if tool_calls:
-                                assistant_message_for_history["tool_calls"] = tool_calls
+                        # Construct and append the assistant message for history
+                        assistant_message_for_history: MessageDict = {"role": "assistant", "content": content_for_history}
+                        if tool_calls:
+                            assistant_message_for_history["tool_calls"] = tool_calls
+                        agent.message_history.append(assistant_message_for_history)
 
-                            agent.message_history.append(assistant_message_for_history)
-
-                            # Log the interaction to the database
-                            if context.current_db_session_id:
-                                await self._manager.db_manager.log_interaction(
-                                    session_id=context.current_db_session_id,
-                                    agent_id=agent.agent_id,
-                                    role="assistant",
-                                    content=raw_assistant_response,  # Log the original raw response for debugging
-                                    tool_calls=tool_calls
-                                )
+                        # Log the interaction to the database, always logging the full raw response for debuggability
+                        if context.current_db_session_id:
+                            await self._manager.db_manager.log_interaction(
+                                session_id=context.current_db_session_id,
+                                agent_id=agent.agent_id,
+                                role="assistant",
+                                content=raw_assistant_response,
+                                tool_calls=tool_calls
+                            )
                         
                         all_tool_results_for_history: List[MessageDict] = [] ; any_tool_success = False
                         for i, call_data in enumerate(tool_calls):

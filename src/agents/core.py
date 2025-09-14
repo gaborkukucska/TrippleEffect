@@ -352,9 +352,20 @@ class Agent:
 
                 if tool_requests_to_yield:
                     logger.debug(f"Agent {self.agent_id} preparing to yield {len(tool_requests_to_yield)} tool requests.")
-                    # Use original_complete_response for history if tool calls are made
-                    response_for_history = original_complete_response
-                    yield {"type": "tool_requests", "calls": tool_requests_to_yield, "raw_assistant_response": response_for_history, "agent_id": self.agent_id}
+                    # Clean the response to get only the text/thought part for the history
+                    content_for_history = final_cleaned_response_for_tools_or_text
+                    if valid_calls:
+                        for _, _, xml_block in valid_calls:
+                            content_for_history = content_for_history.replace(xml_block, '')
+                    content_for_history = content_for_history.strip()
+
+                    yield {
+                        "type": "tool_requests",
+                        "calls": tool_requests_to_yield,
+                        "raw_assistant_response": original_complete_response,
+                        "content_for_history": content_for_history, # Pass cleaned content
+                        "agent_id": self.agent_id
+                    }
                     # If there was also a state change request, yield it after the tools
                     if state_change_to_yield:
                         logger.debug(f"Agent {self.agent_id}: Also yielding state change after tool requests.")
