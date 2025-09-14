@@ -8,6 +8,7 @@ manageable chunks and using the Constitutional Guardian for summarization.
 """
 
 import logging
+import json
 from typing import TYPE_CHECKING, List, Dict, Any, Tuple, Optional
 import asyncio
 from datetime import datetime
