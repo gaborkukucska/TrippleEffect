@@ -722,11 +722,25 @@ class AgentCycleHandler:
                                     else:
                                         logger.warning(f"CycleHandler: Failed to change agent '{agent.agent_id}' state to '{requested_state}' during tool processing")
                         # ... (append assistant message to history, db log) ...
-                        if raw_assistant_response:
-                            assistant_message_for_history: MessageDict = {"role": "assistant", "content": raw_assistant_response}
-                            if tool_calls: assistant_message_for_history["tool_calls"] = tool_calls
+                        if raw_assistant_response or tool_calls:
+                            # If tool_calls are present, content should be None for most models.
+                            content_for_history = None if tool_calls else raw_assistant_response
+
+                            assistant_message_for_history: MessageDict = {"role": "assistant", "content": content_for_history}
+                            if tool_calls:
+                                assistant_message_for_history["tool_calls"] = tool_calls
+
                             agent.message_history.append(assistant_message_for_history)
-                        if context.current_db_session_id and raw_assistant_response: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=raw_assistant_response, tool_calls=tool_calls)
+
+                            # Log the interaction to the database
+                            if context.current_db_session_id:
+                                await self._manager.db_manager.log_interaction(
+                                    session_id=context.current_db_session_id,
+                                    agent_id=agent.agent_id,
+                                    role="assistant",
+                                    content=raw_assistant_response,  # Log the original raw response for debugging
+                                    tool_calls=tool_calls
+                                )
                         
                         all_tool_results_for_history: List[MessageDict] = [] ; any_tool_success = False
                         for i, call_data in enumerate(tool_calls):
