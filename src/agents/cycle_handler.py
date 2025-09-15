@@ -726,18 +726,24 @@ class AgentCycleHandler:
                                         logger.warning(f"CycleHandler: Failed to change agent '{agent.agent_id}' state to '{requested_state}' during tool processing")
 
                         # Construct and append the assistant message for history
-                        assistant_message_for_history: MessageDict = {"role": "assistant", "content": content_for_history}
+                        # CRITICAL FIX: If tool_calls are present, the content should be an empty string
+                        # to conform to the format expected by many tool-calling models and avoid confusion.
+                        # Any conversational text in `content_for_history` is preserved for logging but not sent to the model.
+                        assistant_content_for_history = "" if tool_calls else content_for_history
+                        assistant_message_for_history: MessageDict = {"role": "assistant", "content": assistant_content_for_history}
+
                         if tool_calls:
                             assistant_message_for_history["tool_calls"] = tool_calls
                         agent.message_history.append(assistant_message_for_history)
 
-                        # Log the interaction to the database, always logging the full raw response for debuggability
+                        # Log the interaction to the database.
+                        # The 'content' should be the conversational part, not the raw response which includes tool calls.
                         if context.current_db_session_id:
                             await self._manager.db_manager.log_interaction(
                                 session_id=context.current_db_session_id,
                                 agent_id=agent.agent_id,
                                 role="assistant",
-                                content=raw_assistant_response,
+                                content=content_for_history, # Use the cleaned content for logging
                                 tool_calls=tool_calls
                             )
                         
