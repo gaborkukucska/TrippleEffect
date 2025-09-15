@@ -720,7 +720,19 @@ class AgentCycleHandler:
                                 if self._manager.workflow_manager.is_valid_state(agent.agent_type, requested_state):
                                     logger.info(f"CycleHandler: Processing embedded state change request '{requested_state}' from tool_requests response")
                                     context.state_change_requested_this_cycle = True
-                                    if self._manager.workflow_manager.change_state(agent, requested_state):
+
+                                    task_description_for_state_change = None
+                                    if requested_state == ADMIN_STATE_WORK:
+                                        # Find the last user message to use as the task description
+                                        for msg in reversed(agent.message_history):
+                                            if msg.get("role") == "user":
+                                                task_description_for_state_change = msg.get("content")
+                                                break
+                                        if not task_description_for_state_change:
+                                            logger.warning(f"CycleHandler: Could not find a previous user message to use as task description for state change to '{requested_state}'.")
+
+                                    # Pass the task description to change_state
+                                    if self._manager.workflow_manager.change_state(agent, requested_state, task_description=task_description_for_state_change):
                                         logger.info(f"CycleHandler: Successfully changed agent '{agent.agent_id}' state to '{requested_state}' during tool processing")
                                     else:
                                         logger.warning(f"CycleHandler: Failed to change agent '{agent.agent_id}' state to '{requested_state}' during tool processing")

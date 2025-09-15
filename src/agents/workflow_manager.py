@@ -107,7 +107,7 @@ class AgentWorkflowManager:
     def is_valid_state(self, agent_type: str, state: str) -> bool:
         return state in self._valid_states.get(agent_type, [])
 
-    def change_state(self, agent: 'Agent', requested_state: str) -> bool:
+    def change_state(self, agent: 'Agent', requested_state: str, task_description: Optional[str] = None) -> bool:
         if not hasattr(agent, 'agent_type') or not agent.agent_type:
             logger.error(f"Cannot change state for agent '{agent.agent_id}': Missing 'agent_type'.")
             return False
@@ -116,6 +116,11 @@ class AgentWorkflowManager:
             if current_state != requested_state:
                 logger.info(f"WorkflowManager: Changing state for agent '{agent.agent_id}' ({agent.agent_type}) from '{current_state}' to '{requested_state}'.")
                 
+                # If transitioning to the work state, set the task description
+                if requested_state == ADMIN_STATE_WORK and task_description:
+                    agent.current_task_description = task_description
+                    logger.info(f"WorkflowManager: Set task description for agent '{agent.agent_id}' for work state: '{task_description[:100]}...'")
+
                 # Enhanced state tracking for PM completion detection
                 if agent.agent_type == AGENT_TYPE_PM:
                     # Track state transition timing for completion detection
@@ -479,10 +484,12 @@ class AgentWorkflowManager:
         if not state_prompt_key: return settings.PROMPTS.get("default_system_prompt", "Error: Default prompt missing.")
         state_prompt_template = settings.PROMPTS.get(state_prompt_key, "Error: State-specific prompt template missing.")
         
-        task_desc_for_prompt = getattr(agent, 'initial_plan_description', None)
+        if agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_WORK:
+            task_desc_for_prompt = agent.current_task_description
+        else:
+            task_desc_for_prompt = getattr(agent, 'initial_plan_description', None)
 
-        # === MODIFICATION START ===
-        # Use injected task description for newly activated workers
+        # Use injected task description for newly activated workers, overriding other values
         if agent.agent_type == AGENT_TYPE_WORKER and agent.state == WORKER_STATE_WORK:
             if hasattr(agent, '_needs_initial_work_context') and agent._needs_initial_work_context and \
                hasattr(agent, '_injected_task_description') and agent._injected_task_description is not None:
@@ -490,27 +497,26 @@ class AgentWorkflowManager:
                 logger.info(f"WorkflowManager: Using injected task description for worker {agent.agent_id} for initial work context: '{str(task_desc_for_prompt)[:100]}...'")
                 agent._needs_initial_work_context = False
 
-        # Refined fallback logic for task_description
-        if not task_desc_for_prompt: # Check for None or empty string
-            if agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_WORK and not getattr(agent, 'default_task_assigned', False):
-                logger.warning(f"Admin agent {agent.agent_id} in 'work' state has no task description. Injecting default tool-testing task.")
+        # Fallback logic for task_description if it's still empty
+        if not task_desc_for_prompt:
+            if agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_WORK:
+                # This now serves as a fallback if the task description was not passed during state change for some reason.
+                logger.warning(f"Admin agent {agent.agent_id} in 'work' state has an empty task description. Injecting default tool-testing task as a fallback.")
                 task_desc_for_prompt = (
                     "Your current task is to systematically test your available tools. "
                     "You have already listed them. Now, you MUST process the list of tools one by one. "
                     "Pick the first tool from the list that you have not already tested, and get more information about it using the 'get_info' action of the 'tool_information' tool. "
                     "Then, in a subsequent turn, attempt to use one of its actions. Do not list the tools again."
                 )
-                agent.default_task_assigned = True # Set the flag to prevent re-injection
             elif agent.agent_type == AGENT_TYPE_PM:
                 task_desc_for_prompt = '{task_description}' # Placeholder for PM, critical error
                 logger.error(f"CRITICAL: PM agent {agent.agent_id} in state {agent.state} has no 'initial_plan_description' and no injected context. Startup prompt will use a placeholder.")
             elif agent.agent_type == AGENT_TYPE_WORKER:
                 task_desc_for_prompt = "No task description provided." # Specific message for Worker
                 logger.warning(f"Worker agent {agent.agent_id} in state {agent.state} has no 'initial_plan_description' and no injected context. Using default message.")
-            else: # For Admin or other types in other states
+            else: # For other agents/states
                 task_desc_for_prompt = '{task_description}' # Generic placeholder
                 logger.warning(f"Agent {agent.agent_id} ({agent.agent_type}) in state {agent.state} has no task description. Using generic placeholder.")
-        # === MODIFICATION END ===
 
         state_formatting_context = {
             "agent_id": agent.agent_id, "persona": agent.persona,

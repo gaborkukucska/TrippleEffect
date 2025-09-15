@@ -71,8 +71,9 @@ class Agent:
         self.status: str = AGENT_STATUS_IDLE
         self.state: Optional[str] = None
         self.current_tool_info: Optional[Dict[str, str]] = None
-        self.current_plan: Optional[str] = None 
+        self.current_plan: Optional[str] = None
         self.current_task_id: Optional[str] = None
+        self.current_task_description: Optional[str] = None # Holds the task for the current work state
         self.message_history: List[MessageDict] = []
         self._last_api_key_used: Optional[str] = None
         self._failed_models_this_cycle: set = set()
