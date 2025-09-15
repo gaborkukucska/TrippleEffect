@@ -352,11 +352,17 @@ class Agent:
 
                 if tool_requests_to_yield:
                     logger.debug(f"Agent {self.agent_id} preparing to yield {len(tool_requests_to_yield)} tool requests.")
+
                     # Clean the response to get only the text/thought part for the history
                     content_for_history = final_cleaned_response_for_tools_or_text
                     if valid_calls:
-                        for _, _, xml_block in valid_calls:
-                            content_for_history = content_for_history.replace(xml_block, '')
+                        # The parser returns the span of the match. Use the span to get the exact
+                        # string that was matched from the original buffer to prevent errors.
+                        for _, _, match_span in valid_calls:
+                            start, end = match_span
+                            # Use the original, un-stripped text_buffer for slicing with the span
+                            xml_block_str = self.text_buffer[start:end]
+                            content_for_history = content_for_history.replace(xml_block_str, '')
                     content_for_history = content_for_history.strip()
 
                     yield {
