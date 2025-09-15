@@ -498,7 +498,7 @@ class AgentWorkflowManager:
             elif agent.agent_type == AGENT_TYPE_WORKER:
                 task_desc_for_prompt = "No task description provided." # Specific message for Worker
                 logger.warning(f"Worker agent {agent.agent_id} in state {agent.state} has no 'initial_plan_description' and no injected context. Using default message.")
-            elif agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_WORK:
+            elif agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_WORK and not getattr(agent, 'default_task_assigned', False):
                 # This is the fix: Provide a specific, actionable default task for Admin AI when it's in the work state without one.
                 logger.warning(f"Admin agent {agent.agent_id} in 'work' state has no task description. Injecting default tool-testing task.")
                 task_desc_for_prompt = (
@@ -506,6 +506,7 @@ class AgentWorkflowManager:
                     "You have just listed them. Now, pick one tool from the list and get more information about it using the 'get_info' action. "
                     "Then, attempt to use one of its actions."
                 )
+                agent.default_task_assigned = True # Set the flag to prevent re-injection
             else: # For Admin or other types in other states
                 task_desc_for_prompt = '{task_description}' # Generic placeholder
                 logger.warning(f"Agent {agent.agent_id} ({agent.agent_type}) in state {agent.state} has no task description. Using generic placeholder.")

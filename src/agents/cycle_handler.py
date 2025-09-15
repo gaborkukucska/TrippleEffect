@@ -726,12 +726,11 @@ class AgentCycleHandler:
                                         logger.warning(f"CycleHandler: Failed to change agent '{agent.agent_id}' state to '{requested_state}' during tool processing")
 
                         # Construct and append the assistant message for history
-                        # NOTE: This implementation preserves the agent's textual thoughts (`<think>` block)
-                        # in the history alongside tool calls. While some strict tool-calling models (like older
-                        # OpenAI versions) prefer content to be null/empty when tools are called, discarding
-                        # the thought process was causing severe memory loops. This approach prioritizes
-                        # fixing the memory loop, as the models in use (e.g., via Ollama) are more flexible.
-                        assistant_content_for_history = content_for_history
+                        # Construct and append the assistant message for history
+                        # CRITICAL FIX: If tool_calls are present, the content should be an empty string
+                        # to conform to the format expected by many tool-calling models and avoid confusion.
+                        # Any conversational text in `content_for_history` is preserved for logging but not sent to the model.
+                        assistant_content_for_history = "" if tool_calls else content_for_history
                         assistant_message_for_history: MessageDict = {"role": "assistant", "content": assistant_content_for_history}
 
                         if tool_calls:

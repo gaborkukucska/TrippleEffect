@@ -88,6 +88,7 @@ class Agent:
         self.initial_plan_description: Optional[str] = config.get("initial_plan_description")
         self.kick_off_task_count_for_build: Optional[int] = None # For PM to track how many workers to create
         self.successfully_created_agent_count_for_build: int = 0 # Counter for created workers in build phase
+        self.default_task_assigned: bool = False # Flag for one-time default task injection
         
         # Attributes for Constitutional Guardian interaction
         self.cg_original_text: Optional[str] = None
