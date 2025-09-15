@@ -503,8 +503,9 @@ class AgentWorkflowManager:
                 logger.warning(f"Admin agent {agent.agent_id} in 'work' state has no task description. Injecting default tool-testing task.")
                 task_desc_for_prompt = (
                     "Your current task is to systematically test your available tools. "
-                    "You have just listed them. Now, pick one tool from the list and get more information about it using the 'get_info' action. "
-                    "Then, attempt to use one of its actions."
+                    "You have already listed them. Now, you MUST process the list of tools one by one. "
+                    "Pick the first tool from the list that you have not already tested, and get more information about it using the 'get_info' action of the 'tool_information' tool. "
+                    "Then, in a subsequent turn, attempt to use one of its actions. Do not list the tools again."
                 )
                 agent.default_task_assigned = True # Set the flag to prevent re-injection
             else: # For Admin or other types in other states
