@@ -135,7 +135,7 @@ class NextStepScheduler:
             if (agent.agent_type, agent.state) == (AGENT_TYPE_ADMIN, ADMIN_STATE_WORK):
                 # Admin AI should only continue in work state if it has made meaningful progress
                 # and hasn't completed its task. Check if it should transition out of work state.
-                should_continue_work = self._should_admin_continue_work(agent, context)
+                should_continue_work = await self._should_admin_continue_work(agent, context)
                 if should_continue_work:
                     logger.info(f"NextStepScheduler: Admin AI '{agent_id}' continuing work state - task in progress.")
                     agent.set_status(AGENT_STATUS_IDLE)
@@ -221,7 +221,7 @@ class NextStepScheduler:
             return "agent action taken"
         return "unspecified condition (needs_reactivation_after_cycle was true)"
 
-    def _should_admin_continue_work(self, agent: 'Agent', context: 'CycleContext') -> bool:
+    async def _should_admin_continue_work(self, agent: 'Agent', context: 'CycleContext') -> bool:
         """
         Determine if Admin AI should continue in work state or transition out.
         
@@ -286,11 +286,36 @@ class NextStepScheduler:
             # After 2 consecutive empty cycles, stop continuation to prevent infinite loops
             # This aligns with the cycle handler's 3-empty-response detection
             if agent._consecutive_empty_work_cycles >= 2:
-                logger.error(f"NextStepScheduler: Admin AI '{agent.agent_id}' had {agent._consecutive_empty_work_cycles} consecutive empty cycles - stopping work continuation to prevent infinite loop")
+                logger.error(f"NextStepScheduler: Admin AI '{agent.agent_id}' had {agent._consecutive_empty_work_cycles} consecutive empty cycles. Injecting guidance to prevent loop.")
+
+                # Create and inject guidance message
+                guidance_message = (
+                    "[Framework Intervention]: You have produced multiple empty responses, indicating you are stuck. "
+                    "You MUST take a different action to proceed.\n"
+                    "1. Re-evaluate your goal and the last successful action.\n"
+                    "2. Use `<tool_information><action>list_tools</action></tool_information>` to see all available tools.\n"
+                    "3. Choose a DIFFERENT tool to continue your task, or provide a comprehensive summary of your findings and request a state change."
+                )
+
+                agent.message_history.append({"role": "system", "content": guidance_message})
+
+                # Log this intervention to the database for traceability
+                if self._manager and hasattr(self._manager, 'db_manager') and self._manager.current_session_db_id:
+                    try:
+                        await self._manager.db_manager.log_interaction(
+                            session_id=self._manager.current_session_db_id,
+                            agent_id=agent.agent_id,
+                            role="system_intervention",
+                            content=guidance_message
+                        )
+                    except Exception as db_err:
+                        logger.error(f"NextStepScheduler: Failed to log intervention to DB: {db_err}")
+
                 # Reset counter
                 agent._consecutive_empty_work_cycles = 0
-                # The cycle handler will handle generating completion messages
-                return False
+
+                # Return True to allow the agent to be re-scheduled with the new guidance
+                return True
         else:
             # Reset empty cycle counter when meaningful action is taken
             if hasattr(agent, '_consecutive_empty_work_cycles'):
