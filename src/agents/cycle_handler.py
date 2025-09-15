@@ -729,7 +729,7 @@ class AgentCycleHandler:
                         # CRITICAL FIX: If tool_calls are present, the content should be an empty string
                         # to conform to the format expected by many tool-calling models and avoid confusion.
                         # Any conversational text in `content_for_history` is preserved for logging but not sent to the model.
-                        assistant_content_for_history = "" if tool_calls else content_for_history
+                        assistant_content_for_history = content_for_history
                         assistant_message_for_history: MessageDict = {"role": "assistant", "content": assistant_content_for_history}
 
                         if tool_calls:
