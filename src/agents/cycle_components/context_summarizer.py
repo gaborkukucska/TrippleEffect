@@ -41,8 +41,8 @@ class ContextSummarizer:
         Returns:
             True if summarization should be triggered
         """
-        # Trigger summarization at 80% of max tokens to leave room for response
-        threshold = max_tokens * 0.8
+        from src.config.settings import settings
+        threshold = settings.SUMMARIZER_TRIGGER_THRESHOLD
         
         if context_length > threshold:
             logger.info(f"Context summarization triggered for agent {agent_id}. "
@@ -276,7 +276,7 @@ Please provide your summary as plain text (no XML tags needed for this summariza
         estimated_tokens = total_chars // 4
         
         # Add overhead for message structure
-        overhead = len(messages) * 50  # ~50 tokens overhead per message
+        overhead = len(messages) * 5  # ~5 tokens overhead per message
         
         return estimated_tokens + overhead
 

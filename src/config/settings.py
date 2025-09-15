@@ -132,6 +132,8 @@ class Settings:
         except ValueError: logger.warning("Invalid MAX_FAILOVER_ATTEMPTS, using default 3."); self.MAX_FAILOVER_ATTEMPTS = 3
         try: self.MAX_CYCLE_TURNS: int = int(os.getenv("MAX_CYCLE_TURNS", "15"))
         except ValueError: logger.warning("Invalid MAX_CYCLE_TURNS, using default 15."); self.MAX_CYCLE_TURNS = 15
+        try: self.SUMMARIZER_TRIGGER_THRESHOLD: int = int(os.getenv("SUMMARIZER_TRIGGER_THRESHOLD", "7000"))
+        except ValueError: logger.warning("Invalid SUMMARIZER_TRIGGER_THRESHOLD, using default 7000."); self.SUMMARIZER_TRIGGER_THRESHOLD = 7000
         logger.info(f"Retry/Failover settings loaded: MaxRetries={self.MAX_STREAM_RETRIES}, Delay={self.RETRY_DELAY_SECONDS}s, MaxFailover={self.MAX_FAILOVER_ATTEMPTS}, MaxTurns={self.MAX_CYCLE_TURNS}")
 
         # --- PM Manage State Timer Interval ---
