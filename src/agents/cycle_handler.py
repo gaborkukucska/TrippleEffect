@@ -727,11 +727,11 @@ class AgentCycleHandler:
 
                         # Construct and append the assistant message for history
                         # Construct and append the assistant message for history
-                        # CRITICAL FIX: If tool_calls are present, the content should be an empty string
-                        # to conform to the format expected by many tool-calling models and avoid confusion.
-                        # Any conversational text in `content_for_history` is preserved for logging but not sent to the model.
-                        assistant_content_for_history = "" if tool_calls else content_for_history
-                        assistant_message_for_history: MessageDict = {"role": "assistant", "content": assistant_content_for_history}
+                        # The `content_for_history` from the event now correctly contains only the conversational part of the response,
+                        # with tool call XML properly stripped by the logic in `agent.core`.
+                        # We will preserve this conversational text, as modern tool-calling models support it.
+                        # This fixes a bug where legitimate conversational text was being discarded.
+                        assistant_message_for_history: MessageDict = {"role": "assistant", "content": content_for_history or None}
 
                         if tool_calls:
                             assistant_message_for_history["tool_calls"] = tool_calls

@@ -355,16 +355,26 @@ class Agent:
                     logger.debug(f"Agent {self.agent_id} preparing to yield {len(tool_requests_to_yield)} tool requests.")
 
                     # Clean the response to get only the text/thought part for the history
-                    content_for_history = final_cleaned_response_for_tools_or_text
+                    content_for_history = ""
                     if valid_calls:
-                        # The parser returns the span of the match. Use the span to get the exact
-                        # string that was matched from the original buffer to prevent errors.
-                        for _, _, match_span in valid_calls:
-                            start, end = match_span
-                            # Use the original, un-stripped text_buffer for slicing with the span
-                            xml_block_str = self.text_buffer[start:end]
-                            content_for_history = content_for_history.replace(xml_block_str, '')
-                    content_for_history = content_for_history.strip()
+                        # Sort spans to process them in order, avoiding issues with nested or overlapping matches
+                        sorted_spans = sorted([call[2] for call in valid_calls])
+
+                        content_parts = []
+                        last_end = 0
+                        # Reconstruct content from the parts of the string *not* within any tool call span
+                        for start, end in sorted_spans:
+                            # Add the text segment between the end of the last tool call and the start of the current one
+                            content_parts.append(final_cleaned_response_for_tools_or_text[last_end:start])
+                            last_end = end
+
+                        # Add any remaining text that comes after the final tool call
+                        content_parts.append(final_cleaned_response_for_tools_or_text[last_end:])
+
+                        content_for_history = "".join(content_parts).strip()
+                    else:
+                        # If there were no valid tool calls, the whole cleaned response is the content
+                        content_for_history = final_cleaned_response_for_tools_or_text.strip()
 
                     yield {
                         "type": "tool_requests",
