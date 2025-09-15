@@ -924,6 +924,10 @@ class ConstitutionalGuardianHealthMonitor:
     def _is_contaminated_message(self, message: Dict[str, Any]) -> bool:
         """Check if a message contains contaminated content."""
         
+        # Never treat tool results as contaminated, as their content can be unpredictable
+        if message.get("role") == "tool":
+            return False
+
         if not isinstance(message, dict) or 'content' not in message:
             return False
             
