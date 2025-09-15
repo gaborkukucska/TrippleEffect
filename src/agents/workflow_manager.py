@@ -491,15 +491,8 @@ class AgentWorkflowManager:
                 agent._needs_initial_work_context = False
 
         # Refined fallback logic for task_description
-        if task_desc_for_prompt is None:
-            if agent.agent_type == AGENT_TYPE_PM:
-                task_desc_for_prompt = '{task_description}' # Placeholder for PM, critical error
-                logger.error(f"CRITICAL: PM agent {agent.agent_id} in state {agent.state} has no 'initial_plan_description' and no injected context. Startup prompt will use a placeholder.")
-            elif agent.agent_type == AGENT_TYPE_WORKER:
-                task_desc_for_prompt = "No task description provided." # Specific message for Worker
-                logger.warning(f"Worker agent {agent.agent_id} in state {agent.state} has no 'initial_plan_description' and no injected context. Using default message.")
-            elif agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_WORK and not getattr(agent, 'default_task_assigned', False):
-                # This is the fix: Provide a specific, actionable default task for Admin AI when it's in the work state without one.
+        if not task_desc_for_prompt: # Check for None or empty string
+            if agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_WORK and not getattr(agent, 'default_task_assigned', False):
                 logger.warning(f"Admin agent {agent.agent_id} in 'work' state has no task description. Injecting default tool-testing task.")
                 task_desc_for_prompt = (
                     "Your current task is to systematically test your available tools. "
@@ -508,6 +501,12 @@ class AgentWorkflowManager:
                     "Then, in a subsequent turn, attempt to use one of its actions. Do not list the tools again."
                 )
                 agent.default_task_assigned = True # Set the flag to prevent re-injection
+            elif agent.agent_type == AGENT_TYPE_PM:
+                task_desc_for_prompt = '{task_description}' # Placeholder for PM, critical error
+                logger.error(f"CRITICAL: PM agent {agent.agent_id} in state {agent.state} has no 'initial_plan_description' and no injected context. Startup prompt will use a placeholder.")
+            elif agent.agent_type == AGENT_TYPE_WORKER:
+                task_desc_for_prompt = "No task description provided." # Specific message for Worker
+                logger.warning(f"Worker agent {agent.agent_id} in state {agent.state} has no 'initial_plan_description' and no injected context. Using default message.")
             else: # For Admin or other types in other states
                 task_desc_for_prompt = '{task_description}' # Generic placeholder
                 logger.warning(f"Agent {agent.agent_id} ({agent.agent_type}) in state {agent.state} has no task description. Using generic placeholder.")
