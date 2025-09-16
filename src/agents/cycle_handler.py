@@ -457,6 +457,7 @@ class AgentCycleHandler:
                 agent._failed_models_this_cycle = {context.current_model_key_for_tracking}
 
             agent_generator = None # Ensure generator is reset for each iteration of the while True loop
+            thought_content_for_history = None # <<<< MODIFICATION: Initialize var to hold thought
 
             try: # This try block is for one pass of LLM call and its event processing
                 await self._prompt_assembler.prepare_llm_call_data(context) # Ensures history_for_call is fresh
@@ -661,11 +662,21 @@ class AgentCycleHandler:
                         llm_stream_ended_cleanly = False; break
 
                     elif event_type == "agent_thought":
-                        context.action_taken_this_cycle = True; context.thought_produced_this_cycle = True
-                        # ... (existing thought processing, KB saving) ...
-                        thought_content = event.get("content") # Simplified for brevity here
-                        if thought_content and context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant_thought", content=thought_content)
-                        if thought_content: await self._manager.send_to_ui(event) # Save to KB logic omitted for diff brevity but would be here
+                        context.action_taken_this_cycle = True
+                        context.thought_produced_this_cycle = True
+                        thought_content = event.get("content")
+                        if thought_content:
+                            # <<<< MODIFICATION: Capture the thought for message history
+                            thought_content_for_history = f"<think>{thought_content}</think>"
+                            if context.current_db_session_id:
+                                await self._manager.db_manager.log_interaction(
+                                    session_id=context.current_db_session_id,
+                                    agent_id=agent.agent_id,
+                                    role="assistant_thought",
+                                    content=thought_content
+                                )
+                            await self._manager.send_to_ui(event)
+                            # Knowledge base saving logic could go here as well
 
                     elif event_type == "agent_raw_response":
                         # Forward raw agent responses to the UI for display in Internal Comms
@@ -743,7 +754,15 @@ class AgentCycleHandler:
                         # with tool call XML properly stripped by the logic in `agent.core`.
                         # We will preserve this conversational text, as modern tool-calling models support it.
                         # This fixes a bug where legitimate conversational text was being discarded.
-                        assistant_message_for_history: MessageDict = {"role": "assistant", "content": content_for_history or None}
+
+                        # <<<< MODIFICATION: Prepend thought to history content
+                        final_content_for_history = ""
+                        if thought_content_for_history:
+                            final_content_for_history += thought_content_for_history + "\n"
+                        if content_for_history:
+                            final_content_for_history += content_for_history
+
+                        assistant_message_for_history: MessageDict = {"role": "assistant", "content": final_content_for_history.strip() or None}
 
                         if tool_calls:
                             assistant_message_for_history["tool_calls"] = tool_calls
@@ -1181,7 +1200,13 @@ class AgentCycleHandler:
 
                     elif event_type in ["response_chunk", "status", "final_response", "invalid_state_request_output"]:
                         if event_type == "final_response":
-                            final_content = event.get("content"); original_event_data = event
+                            final_content = event.get("content")
+                            original_event_data = event
+
+                            # <<<< MODIFICATION: Prepend thought to final content if it exists
+                            if thought_content_for_history:
+                                final_content = f"{thought_content_for_history}\n{final_content}"
+                                original_event_data['content'] = final_content # Update event data for UI/logging
 
                             # --- START: Worker Auto-Save File Feature ---
                             if agent.agent_type == AGENT_TYPE_WORKER and final_content and "<request_state state='worker_wait'/>" in final_content:
