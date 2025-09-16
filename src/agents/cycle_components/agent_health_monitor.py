@@ -565,26 +565,42 @@ class ConstitutionalGuardianHealthMonitor:
             return "low"
     
     def _generate_empty_response_guidance(self, agent: 'Agent', history_analysis: Dict) -> str:
-        """Generate specific guidance for agents with empty response issues."""
+        """Generate specific, context-aware guidance for agents with empty response issues."""
         
         base_msg = ("[Constitutional Guardian - CRITICAL VIOLATION]: You have been producing empty responses, "
                    "which violates the framework's core requirement for meaningful agent output. ")
-        
+
+        # Check if the agent has recently used 'list_tools'
+        recently_listed_tools = False
+        if 'recent_tool_usage' in history_analysis:
+            for tool_use in history_analysis['recent_tool_usage']:
+                # The tool name for listing tools is 'tool_information' with action 'list_tools'
+                if tool_use.get('tool') == 'tool_information':
+                    # This check is a simplification; a more robust check would parse arguments if available.
+                    # For now, any use of 'tool_information' is a strong hint.
+                    recently_listed_tools = True
+                    break
+
         # Add context-specific guidance based on history analysis
         if "Completion language detected" in history_analysis.get("loop_indicators", []):
             base_msg += ("You appear to have completed work. Provide a comprehensive summary of what you accomplished, "
                         "then transition to an appropriate state.")
+        elif recently_listed_tools:
+            base_msg += ("You have already listed the available tools. Repeating this action is not productive. "
+                         "You MUST now select a DIFFERENT tool from the list to continue your task, "
+                         "or provide a comprehensive summary of your findings and request a state change.")
         elif history_analysis.get("context_complexity") in ["high", "very_high"]:
             base_msg += ("Your context appears complex. Focus on the most important next step and execute it clearly.")
         elif not history_analysis.get("recent_tool_usage"):
-            base_msg += ("You haven't used any tools recently. Review your available tools and take concrete action.")
+            base_msg += ("You haven't used any tools recently. To get unstuck, your next action should be to review your available tools. "
+                         "Use `<tool_information><action>list_tools</action></tool_information>` and then choose a tool to proceed.")
         else:
-            base_msg += ("Review your recent actions and determine the next logical step to complete your task.")
+            base_msg += ("You are in a loop. Review your recent actions and determine a different, logical step to complete your task. Do not repeat the last action.")
             
         # Add agent-specific guidance
         if agent.agent_type == AGENT_TYPE_ADMIN:
             if agent.state == ADMIN_STATE_WORK:
-                base_msg += (" As Admin AI in work state, you must either continue your work with tools or "
+                base_msg += (" As Admin AI in work state, you must either continue your work with a new tool or "
                            "provide a final comprehensive response and transition states.")
             else:
                 base_msg += (" As Admin AI, you must engage with users and provide meaningful responses.")

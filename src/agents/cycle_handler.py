@@ -779,9 +779,7 @@ class AgentCycleHandler:
                         if content_for_history:
                             final_content_for_history += content_for_history
 
-                        # CRITICAL FIX: Changed `... or None` to `... or ""` to prevent null content,
-                        # which causes the agent to lose context and loop. An empty string is valid.
-                        assistant_message_for_history: MessageDict = {"role": "assistant", "content": final_content_for_history.strip() or ""}
+                        assistant_message_for_history: MessageDict = {"role": "assistant", "content": final_content_for_history.strip() or None}
 
                         if tool_calls:
                             assistant_message_for_history["tool_calls"] = tool_calls
