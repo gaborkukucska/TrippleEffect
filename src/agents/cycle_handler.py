@@ -732,6 +732,23 @@ class AgentCycleHandler:
                                     logger.info(f"CycleHandler: Processing embedded state change request '{requested_state}' from tool_requests response")
                                     context.state_change_requested_this_cycle = True
 
+                                    # <<< --- ROBUST FIX START --- >>>
+                                    # If this is a transition from startup that includes a tool call,
+                                    # inject a synthetic thought to bridge the context for the next cycle.
+                                    if agent.state == ADMIN_STATE_STARTUP and requested_state == ADMIN_STATE_WORK and tool_calls:
+                                        synthetic_thought = (
+                                            "<think>The user's request requires tool use. "
+                                            "I am transitioning to the 'work' state and executing the first tool call "
+                                            "to gather necessary information to complete the task.</think>"
+                                        )
+                                        logger.info(f"Injecting synthetic thought for startup->work transition for agent '{agent.agent_id}'.")
+                                        # Prepend this synthetic thought to any existing thought content
+                                        if thought_content_for_history:
+                                            thought_content_for_history = synthetic_thought + "\n" + thought_content_for_history
+                                        else:
+                                            thought_content_for_history = synthetic_thought
+                                    # <<< --- ROBUST FIX END --- >>>
+
                                     task_description_for_state_change = None
                                     if requested_state == ADMIN_STATE_WORK:
                                         # Find the last user message to use as the task description
