@@ -113,14 +113,25 @@ class KnowledgeBaseTool(BaseTool):
         }
         
         if not action:
-            return {"status": "error", "message": f"Missing required 'action' parameter. Must be one of: {', '.join(valid_actions)}."}
+            return {"status": "error", "message": f"Missing required 'action' parameter. Must be one of: {', '.join(valid_actions)}.", "error_type": "missing_parameter"}
         
         if action not in valid_actions:
             if action in action_suggestions:
                 suggested_action = action_suggestions[action]
-                return {"status": "error", "message": f"Invalid action '{action}'. Did you mean '{suggested_action}'? Valid actions are: {', '.join(valid_actions)}."}
+                return {
+                    "status": "error", 
+                    "message": f"Invalid action '{action}'. Did you mean '{suggested_action}'? Valid actions are: {', '.join(valid_actions)}.",
+                    "error_type": "invalid_action",
+                    "suggested_action": suggested_action,
+                    "valid_actions": valid_actions
+                }
             else:
-                return {"status": "error", "message": f"Invalid action '{action}'. Valid actions are: {', '.join(valid_actions)}."}
+                return {
+                    "status": "error", 
+                    "message": f"Invalid action '{action}'. Valid actions are: {', '.join(valid_actions)}.",
+                    "error_type": "invalid_action",
+                    "valid_actions": valid_actions
+                }
 
         current_session_db_id: Optional[int] = None
 

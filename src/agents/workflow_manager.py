@@ -116,6 +116,21 @@ class AgentWorkflowManager:
             if current_state != requested_state:
                 logger.info(f"WorkflowManager: Changing state for agent '{agent.agent_id}' ({agent.agent_type}) from '{current_state}' to '{requested_state}'.")
                 
+                # ENHANCED: Check for problematic loop transitions and add context preservation
+                if agent.agent_type == AGENT_TYPE_ADMIN and current_state == ADMIN_STATE_WORK:
+                    # If transitioning out of work state, ensure task completion is recorded
+                    self._record_work_completion(agent, current_state, requested_state)
+                    
+                    # Clear work-related tracking variables to prevent state contamination
+                    if hasattr(agent, '_consecutive_empty_work_cycles'):
+                        agent._consecutive_empty_work_cycles = 0
+                    if hasattr(agent, '_work_cycle_count'):
+                        agent._work_cycle_count = 0
+                    if hasattr(agent, 'tool_information_loop_detected'):
+                        delattr(agent, 'tool_information_loop_detected')
+                    if hasattr(agent, 'tool_execution_loop_detected'):
+                        delattr(agent, 'tool_execution_loop_detected')
+                
                 # If transitioning to the work state, set the task description
                 if requested_state == ADMIN_STATE_WORK and task_description:
                     agent.current_task_description = task_description
@@ -184,6 +199,32 @@ class AgentWorkflowManager:
         else:
             logger.warning(f"WorkflowManager: Invalid state transition requested for agent '{agent.agent_id}' ({agent.agent_type}) to state '{requested_state}'. Allowed states: {self._valid_states.get(agent.agent_type, [])}")
             return False
+
+    def _record_work_completion(self, agent: 'Agent', old_state: str, new_state: str) -> None:
+        """Record work completion when transitioning out of work state."""
+        try:
+            work_summary = {
+                'completed_at': time.time(),
+                'transition_from': old_state,
+                'transition_to': new_state,
+                'total_cycles': getattr(agent, '_work_cycle_count', 0),
+                'task_description': getattr(agent, 'current_task_description', 'N/A')
+            }
+            
+            # Store work completion record
+            if not hasattr(agent, '_work_completion_history'):
+                agent._work_completion_history = []
+            agent._work_completion_history.append(work_summary)
+            
+            # Keep only last 5 work sessions to avoid memory issues
+            if len(agent._work_completion_history) > 5:
+                agent._work_completion_history = agent._work_completion_history[-5:]
+                
+            logger.info(f"WorkflowManager: Recorded work completion for agent '{agent.agent_id}' - "
+                       f"{work_summary['total_cycles']} cycles, transitioning from '{old_state}' to '{new_state}'")
+                       
+        except Exception as e:
+            logger.error(f"WorkflowManager: Error recording work completion for '{agent.agent_id}': {e}")
 
     async def process_agent_output_for_workflow(
         self,
@@ -486,6 +527,14 @@ class AgentWorkflowManager:
         
         if agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_WORK:
             task_desc_for_prompt = agent.current_task_description
+            if not task_desc_for_prompt or task_desc_for_prompt.isspace():
+                # Fallback to find the last user message in history
+                logger.warning(f"Admin agent {agent.agent_id} in 'work' state has no task description. Searching history for last user message.")
+                for msg in reversed(agent.message_history):
+                    if msg.get("role") == "user":
+                        task_desc_for_prompt = msg.get("content")
+                        logger.info(f"Found last user message for Admin work state task: '{task_desc_for_prompt[:100]}...'")
+                        break
         else:
             task_desc_for_prompt = getattr(agent, 'initial_plan_description', None)
 
@@ -498,16 +547,11 @@ class AgentWorkflowManager:
                 agent._needs_initial_work_context = False
 
         # Fallback logic for task_description if it's still empty
-        if not task_desc_for_prompt:
+        if not task_desc_for_prompt or task_desc_for_prompt.isspace():
             if agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_WORK:
                 # This now serves as a fallback if the task description was not passed during state change for some reason.
-                logger.warning(f"Admin agent {agent.agent_id} in 'work' state has an empty task description. Injecting default tool-testing task as a fallback.")
-                task_desc_for_prompt = (
-                    "Your current task is to systematically test your available tools. "
-                    "You have already listed them. Now, you MUST process the list of tools one by one. "
-                    "Pick the first tool from the list that you have not already tested, and get more information about it using the 'get_info' action of the 'tool_information' tool. "
-                    "Then, in a subsequent turn, attempt to use one of its actions. Do not list the tools again."
-                )
+                logger.error(f"CRITICAL: Admin agent {agent.agent_id} in 'work' state has an empty task description even after fallback. The prompt will be empty.")
+                task_desc_for_prompt = "No task was provided. You must ask the user for a task."
             elif agent.agent_type == AGENT_TYPE_PM:
                 task_desc_for_prompt = '{task_description}' # Placeholder for PM, critical error
                 logger.error(f"CRITICAL: PM agent {agent.agent_id} in state {agent.state} has no 'initial_plan_description' and no injected context. Startup prompt will use a placeholder.")

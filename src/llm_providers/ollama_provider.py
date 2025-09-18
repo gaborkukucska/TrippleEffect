@@ -165,9 +165,10 @@ class OllamaProvider(BaseLLMProvider):
                     msg_to_send["tool_calls"] = tc
                 else:
                     logger.warning(f"tool_calls for assistant message is not in the expected format (list of dicts): {tc}")
-            if role == "tool":
-                if msg.get("tool_call_id"):
-                    msg_to_send["tool_call_id"] = msg.get("tool_call_id")
+            # No special handling for 'tool' role here anymore, as the content is already in processed_content.
+            # The 'tool_call_id' will be added if it exists on the original message.
+            if msg.get("tool_call_id"):
+                msg_to_send["tool_call_id"] = msg.get("tool_call_id")
             messages_for_ollama_payload.append(msg_to_send)
 
         payload = { "model": model, "messages": messages_for_ollama_payload, "stream": self.streaming_mode, "options": valid_options }

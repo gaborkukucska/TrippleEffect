@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from pathlib import Path
 
 from src.tools.base import BaseTool, ToolParameter
+from src.tools.error_handler import tool_error_handler, ErrorType
 # --- NEW: Import agent type constants ---
 from src.agents.constants import AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER
 # --- END NEW ---

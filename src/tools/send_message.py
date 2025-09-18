@@ -50,14 +50,44 @@ class SendMessageTool(BaseTool):
                  or an error message if basic validation fails (though ToolExecutor handles schema checks).
         """
         target_agent_id = kwargs.get("target_agent_id")
-        message_content = kwargs.get("message_content") # content checked by ToolExecutor based on schema
+        message_content = kwargs.get("message_content")
+
+        # Enhanced validation with better error messages
+        if not target_agent_id:
+            return {
+                "status": "error", 
+                "message": "Missing required 'target_agent_id' parameter. You must specify which agent to send the message to.",
+                "error_type": "missing_parameter",
+                "suggestions": [
+                    "Use 'manage_team' with action 'list_agents' to see available agents",
+                    "Ensure you use the exact agent ID, not the persona name"
+                ]
+            }
+        
+        if not message_content:
+            return {
+                "status": "error", 
+                "message": "Missing required 'message_content' parameter. You must provide the message to send.",
+                "error_type": "missing_parameter",
+                "suggestions": [
+                    "Include the content you want to communicate to the other agent",
+                    "For large content, consider saving to a file first and referencing it"
+                ]
+            }
+
+        # Check for common mistakes
+        if target_agent_id == agent_id:
+            return {
+                "status": "error",
+                "message": f"Cannot send message to yourself ('{agent_id}'). Use a different target agent.",
+                "error_type": "invalid_parameter",
+                "suggestions": [
+                    "Use 'manage_team' with action 'list_agents' to see other available agents",
+                    "Messages are for communication between different agents"
+                ]
+            }
 
         logger.info(f"SendMessageTool request validated for execution by '{agent_id}' targeting '{target_agent_id}'.")
-
-        # Note: The primary validation (required fields, basic types if specified in ToolParameter)
-        # happens in ToolExecutor based on the 'parameters' schema defined above.
-        # This execute method is called *after* that validation passes.
-        # We could add more specific validation here if needed (e.g., check target_agent_id format).
 
         # The return value of this execute method becomes the "tool result" message
         # that gets appended to the *sender's* history.

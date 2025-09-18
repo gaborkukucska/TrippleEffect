@@ -16,6 +16,7 @@ from src.tools.manage_team import ManageTeamTool
 from src.agents.constants import AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER
 from src.tools.project_management import ProjectManagementTool
 from src.api.websocket_manager import broadcast
+from src.tools.error_handler import tool_error_handler, ErrorType
 
 
 logger = logging.getLogger(__name__)
@@ -334,6 +335,56 @@ class ToolExecutor:
         error_lower = error_msg.lower()
         return any(pattern in error_lower for pattern in recoverable_patterns)
 
+    def _generate_enhanced_error_response(
+        self, 
+        error_type: ErrorType, 
+        tool_name: str, 
+        tool_args: Dict[str, Any], 
+        agent_id: str,
+        agent_context: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Generate enhanced error response using the centralized error handler"""
+        
+        # Get tool schema if available
+        tool_schema = None
+        available_actions = None
+        if tool_name in self.tools:
+            tool = self.tools[tool_name]
+            tool_schema = tool.get_schema()
+            
+            # Extract available actions from tool's get_detailed_usage if possible
+            try:
+                detailed_usage = tool.get_detailed_usage()
+                # Simple extraction of actions from usage text - could be enhanced
+                import re
+                action_matches = re.findall(r"action.*?['\"]([\w_]+)['\"]", detailed_usage, re.IGNORECASE)
+                if action_matches:
+                    available_actions = list(set(action_matches))
+            except Exception:
+                pass
+        
+        # Build agent context
+        if not agent_context:
+            agent_context = {"agent_id": agent_id}
+            
+        # Generate enhanced error response
+        error_response = tool_error_handler.generate_enhanced_error_response(
+            error_type=error_type,
+            tool_name=tool_name,
+            attempted_action=tool_args.get("action") if tool_args else None,
+            tool_args=tool_args,
+            agent_context=agent_context,
+            available_actions=available_actions,
+            tool_schema=tool_schema
+        )
+        
+        # Record error pattern for learning
+        pattern = error_response["learning_data"]["pattern"]
+        tool_error_handler.record_error_pattern(pattern, agent_id)
+        
+        # Format for agent consumption
+        return tool_error_handler.format_error_for_agent(error_response)
+
     def _generate_fallback_response(self, tool_name: str, tool_args: Dict[str, Any], error_msg: str) -> Any:
         """Generate a fallback response when tool execution fails completely"""
         fallback_response = {
@@ -382,13 +433,22 @@ class ToolExecutor:
         
         tool = self.tools.get(tool_name)
         if not tool:
-            error_msg = f"Error: Tool '{tool_name}' not found. Available tools: {list(self.tools.keys())}"
-            logger.error(f"[TOOL_EXEC_ERROR] ID:{execution_id} | {error_msg}")
+            # Use enhanced error handler for tool not found
+            agent_context = {
+                "agent_id": agent_id,
+                "agent_type": agent_type_for_auth if 'agent_type_for_auth' in locals() else "unknown"
+            }
+            enhanced_error = self._generate_enhanced_error_response(
+                ErrorType.TOOL_NOT_FOUND, tool_name, tool_args, agent_id, agent_context
+            )
+            
+            logger.error(f"[TOOL_EXEC_ERROR] ID:{execution_id} | Tool '{tool_name}' not found")
             self._update_execution_stats(success=False)
+            
             if tool_name == ManageTeamTool.name: 
-                return {"status": "error", "action": tool_args.get("action"), "message": error_msg, "execution_id": execution_id}
+                return {"status": "error", "action": tool_args.get("action"), "message": enhanced_error, "execution_id": execution_id}
             else:
-                return f"{error_msg} [ID:{execution_id}]"
+                return f"{enhanced_error} [ID:{execution_id}]"
 
         original_state = None
         current_agent_instance_for_tool_call = None 

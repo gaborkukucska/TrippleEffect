@@ -24,27 +24,118 @@ class PromptAssembler:
 
     async def _generate_system_health_report(self, agent: 'Agent') -> Optional[str]:
         """
-        Generates a concise system health report based on the agent's recent history.
-        (This logic is moved from the old CycleHandler)
+        Generates a concise system health report and task context for Admin AI.
+        This is critical for preventing infinite loops by providing context continuity.
         """
-        # Logic for health report generation will be placed here.
-        # For now, returning a placeholder.
-        # Note: This was simplified in previous steps to be a static message if last turn was OK.
-        # If more complex logic is needed again, it can be re-implemented here.
-        # Based on the log, the last version was simple.
         if not agent or not agent.message_history:
-             # If no history, assume it's the first turn for the agent or history was cleared.
             return "[Framework Internal Status: System is initializing or history is fresh. This is not a user query.]"
 
-        # Simplified version from logs:
-        # If the last message was not an error/tool failure, report OK.
-        # This check is simplistic and might need to be more robust based on actual desired behavior.
-        # For now, let's assume any recent activity implies 'OK' unless an error is explicitly logged.
-        # A more robust check would look at the *types* of recent messages.
-        # However, the log shows it simply injects "[Framework Internal Status: Last turn OK...]"
-        # if there wasn't a specific error from the *previous* cycle of THIS agent.
-        # The CycleContext will manage the "last_error_obj" for this agent's current cycle.
-        # So, if we reach here, it means the previous cycle for *this agent* didn't end in a failover.
+        # CRITICAL FIX: For Admin AI in work state, provide comprehensive action history and task context
+        if hasattr(agent, 'agent_type') and agent.agent_type == 'admin' and hasattr(agent, 'state') and agent.state == 'work':
+            report_parts = ["[Framework Context Report for Work State]"]
+            
+            # 1. Extract the original task description
+            original_task = agent.current_task_description
+            if not original_task:
+                for msg in reversed(agent.message_history):
+                    if msg.get("role") == "user":
+                        original_task = msg.get("content")
+                        break
+            original_task = original_task or "No specific task identified"
+            
+            report_parts.append(f"ORIGINAL TASK: {original_task}")
+            
+            # 2. Summarize recent actions and their outcomes
+            recent_actions = []
+            tool_results_summary = []
+            
+            # Look at last 10 messages for pattern analysis
+            for msg in reversed(agent.message_history[-10:]):
+                if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                    for tool_call in msg.get("tool_calls", []):
+                        tool_name = tool_call.get("name", "unknown")
+                        tool_args = tool_call.get("arguments", {})
+                        action_summary = f"{tool_name}"
+                        if isinstance(tool_args, dict) and "action" in tool_args:
+                            action_summary += f"({tool_args['action']})"
+                        recent_actions.append(action_summary)
+                        
+                elif msg.get("role") == "tool":
+                    tool_name = msg.get("name", "unknown")
+                    content = str(msg.get("content", ""))
+                    
+                    # Determine if tool was successful
+                    success = True
+                    try:
+                        if content.startswith("{") and content.endswith("}"):
+                            tool_data = json.loads(content)
+                            if isinstance(tool_data, dict) and tool_data.get("status") == "error":
+                                success = False
+                    except:
+                        if "error" in content.lower():
+                            success = False
+                    
+                    status = "SUCCESS" if success else "FAILED"
+                    result_preview = content[:100] + ("..." if len(content) > 100 else "")
+                    tool_results_summary.append(f"{tool_name}: {status} - {result_preview}")
+            
+            # Limit to last 5 actions to keep prompt manageable
+            if recent_actions:
+                report_parts.append(f"RECENT ACTIONS: {', '.join(recent_actions[-5:])}")
+            
+            if tool_results_summary:
+                report_parts.append(f"RECENT RESULTS: {'; '.join(tool_results_summary[-3:])}")
+            
+            # 3. Check for problematic patterns
+            warnings = []
+            
+            # Check for repeated actions
+            if len(recent_actions) >= 3:
+                last_action = recent_actions[-1] if recent_actions else ""
+                if recent_actions.count(last_action) >= 2:
+                    warnings.append(f"WARNING: Action '{last_action}' repeated multiple times")
+            
+            # Check for consecutive failures
+            recent_failures = [r for r in tool_results_summary[-3:] if "FAILED" in r]
+            if len(recent_failures) >= 2:
+                warnings.append("WARNING: Multiple recent tool failures detected")
+            
+            # Check for empty responses pattern
+            empty_responses = 0
+            for msg in reversed(agent.message_history[-5:]):
+                if msg.get("role") == "assistant" and not msg.get("content", "").strip() and not msg.get("tool_calls"):
+                    empty_responses += 1
+                else:
+                    break
+            
+            if empty_responses >= 2:
+                warnings.append(f"CRITICAL: {empty_responses} consecutive empty responses detected")
+            
+            # ENHANCED: Check for tool execution loops
+            if len(recent_actions) >= 4:
+                # Check for identical consecutive tool executions
+                last_two_actions = recent_actions[-2:]
+                if len(set(last_two_actions)) == 1:  # Both actions are identical
+                    warnings.append(f"CRITICAL: Repeated identical tool execution detected: '{last_two_actions[0]}'")
+            
+            if warnings:
+                report_parts.append("ALERTS: " + "; ".join(warnings))
+                report_parts.append("GUIDANCE: If you are repeating actions or getting stuck, try a different approach or summarize your progress and request a state change.")
+            
+            # 4. Provide progress context
+            if hasattr(agent, '_work_cycle_count'):
+                cycle_count = getattr(agent, '_work_cycle_count', 0)
+                if cycle_count > 0:
+                    report_parts.append(f"WORK SESSION: Cycle {cycle_count} - Focus on making measurable progress")
+            
+            # ENHANCED: Add specific guidance for breaking loops
+            if "CRITICAL" in " ".join(warnings):
+                report_parts.append("FORBIDDEN: You are NOT allowed to use the same tool again in this turn.")
+            report_parts.append("MANDATORY ACTION: If you see repeated actions above, you MUST take a different approach. Choose a different tool or request a state change.")
+            
+            return "\n".join(report_parts)
+        
+        # For non-work states or non-admin agents, provide basic status
         return "[Framework Internal Status: System operational. Continue your work as needed.]"
 
 

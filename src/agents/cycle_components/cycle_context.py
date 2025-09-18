@@ -35,6 +35,7 @@ class CycleContext(BaseModel):
     
     # Action Tracking
     action_taken_this_cycle: bool = Field(default=False, description="True if the agent took a meaningful action (tool, state change, plan).")
+    all_tool_results: Optional[List[Dict[str, Any]]] = Field(default=None, description="A list of all tool results from the current cycle.")
     executed_tool_successfully_this_cycle: bool = Field(default=False, description="True if at least one tool executed successfully in this cycle.")
     state_change_requested_this_cycle: bool = Field(default=False, description="True if a state change was requested by the agent.")
     plan_submitted_this_cycle: bool = Field(default=False, description="True if Admin AI submitted a plan this cycle.") # Still relevant if other agents can submit plans

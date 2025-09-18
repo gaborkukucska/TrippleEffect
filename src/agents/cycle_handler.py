@@ -25,6 +25,7 @@ from src.agents.constants import (
 # Import for keyword extraction
 from src.utils.text_utils import extract_keywords_from_text
 from src.tools.knowledge_base import KnowledgeBaseTool # Assuming this is the correct tool name
+from src.tools.error_handler import tool_error_handler, ErrorType
 
 from src.agents.cycle_components import (
     CycleContext,
@@ -378,6 +379,11 @@ class AgentCycleHandler:
             "**Step 2: Analyze and Test.**\n"
             "After you receive the list, pick ONE tool from the list that you have not recently used and test one of its actions. "
             "Use the `get_info` action of the `tool_information` tool first if you are unsure how to use it.\n\n"
+            "**CRITICAL REMINDERS:**\n"
+            "1. Execute ONLY ONE tool call per response to avoid overwhelming yourself\n"
+            "2. DO NOT repeat the same tool with identical parameters\n"
+            "3. After testing a tool, provide a brief summary of what you learned\n"
+            "4. When you have completed testing, transition to conversation state with: <request_state state='conversation'/>\n\n"
             f"**For context, here is a summary of tools currently available to you:**\n{tool_list_str}"
         )
         return task_message
@@ -472,13 +478,32 @@ class AgentCycleHandler:
                     if await self._context_summarizer.should_summarize_context(agent.agent_id, estimated_tokens, max_tokens):
                         logger.info(f"CycleHandler: Context summarization needed for agent '{agent.agent_id}' due to token limits")
                         try:
+                            # CRITICAL FIX: Preserve context anchors for Admin AI work state
+                            context_anchors = []
+                            if agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_WORK:
+                                # Preserve the original task description and recent meaningful interactions
+                                for msg in reversed(agent.message_history[-10:]):  # Look at last 10 messages
+                                    if msg.get("role") == "user" or (msg.get("role") == "system" and "current task" in msg.get("content", "").lower()):
+                                        context_anchors.append(msg)
+                                        if len(context_anchors) >= 3:  # Preserve up to 3 anchor messages
+                                            break
+                                context_anchors.reverse()  # Restore chronological order
+                                logger.info(f"CycleHandler: Preserved {len(context_anchors)} context anchors for Admin AI '{agent.agent_id}'")
+                            
                             success, summarized_context = await self._context_summarizer.summarize_agent_context(
                                 agent.agent_id, context.history_for_call
                             )
                             if success and summarized_context:
+                                # CRITICAL FIX: Insert context anchors into summarized context
+                                if context_anchors:
+                                    # Insert anchors at the appropriate position (before the last few messages)
+                                    insert_point = max(1, len(summarized_context) - 3)  # Keep system prompt at start
+                                    for i, anchor in enumerate(context_anchors):
+                                        summarized_context.insert(insert_point + i, anchor)
+                                    logger.info(f"CycleHandler: Inserted {len(context_anchors)} context anchors into summarized context")
+                                
                                 context.history_for_call = summarized_context
-                                # CRITICAL FIX: Also update the agent's persistent message history
-                                # This prevents repeated summarization and maintains context continuity
+                                # CRITICAL FIX: Also update the agent's persistent message history with anchors
                                 agent.message_history = summarized_context.copy()
                                 logger.info(f"CycleHandler: Context successfully summarized for agent '{agent.agent_id}', reduced to {len(summarized_context)} messages")
                                 logger.critical(f"CycleHandler: PERSISTENT HISTORY UPDATED for agent '{agent.agent_id}' - new persistent length: {len(agent.message_history)}")
@@ -489,6 +514,7 @@ class AgentCycleHandler:
                                     "agent_id": agent.agent_id,
                                     "original_message_count": len(agent.message_history),
                                     "summarized_message_count": len(summarized_context),
+                                    "context_anchors_preserved": len(context_anchors),
                                     "estimated_token_reduction": "50-75%"
                                 })
                         except Exception as summarization_error:
@@ -620,13 +646,41 @@ class AgentCycleHandler:
                         if context.current_db_session_id and raw_llm_response_with_error: 
                             await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id,agent_id=agent.agent_id,role="assistant",content=raw_llm_response_with_error)
                         
-                        # Check if we've already provided feedback for this specific error pattern to prevent loops
-                        error_signature = f"malformed_{malformed_tool_name}_{parsing_error_msg[:50]}"
+                        # CRITICAL FIX: Enhanced XML error feedback deduplication to prevent accumulation
+                        # Create broader error signatures to catch similar XML errors
+                        base_error_signature = f"xml_error_{malformed_tool_name}"
+                        detailed_error_signature = f"malformed_{malformed_tool_name}_{parsing_error_msg[:30]}"
+                        
                         if not hasattr(agent, '_recent_error_feedback'):
                             agent._recent_error_feedback = {}
-                            
-                        # Only provide feedback if we haven't seen this exact error recently
-                        if error_signature not in agent._recent_error_feedback or (time.time() - agent._recent_error_feedback[error_signature]) > 300:  # 5 minutes
+                        
+                        # CRITICAL: Check for any recent XML errors for this tool (much shorter timeframe)
+                        current_time = time.time()
+                        has_recent_error = False
+                        
+                        # Check if we've given feedback for this tool recently (last 30 seconds)
+                        for error_key, error_time in agent._recent_error_feedback.items():
+                            if (error_key.startswith(f"xml_error_{malformed_tool_name}") or 
+                                error_key.startswith(f"malformed_{malformed_tool_name}")) and \
+                               (current_time - error_time) < 30:  # Only 30 seconds
+                                has_recent_error = True
+                                break
+                        
+                        # CRITICAL: Also check if we have too many XML error messages in recent history
+                        xml_error_messages_in_recent_history = 0
+                        if hasattr(agent, 'message_history') and agent.message_history:
+                            for msg in agent.message_history[-5:]:  # Check last 5 messages
+                                if (msg.get('role') == 'system' and 
+                                    'XML Parsing Error' in msg.get('content', '')):
+                                    xml_error_messages_in_recent_history += 1
+                        
+                        # Only provide feedback if ALL conditions are met
+                        should_provide_feedback = (
+                            not has_recent_error and 
+                            xml_error_messages_in_recent_history < 2  # Max 2 XML error messages in recent history
+                        )
+                        
+                        if should_provide_feedback:
                             detailed_tool_usage = "Could not retrieve detailed usage for this tool."
                             if malformed_tool_name and malformed_tool_name in self._manager.tool_executor.tools:
                                 try: 
@@ -634,8 +688,14 @@ class AgentCycleHandler:
                                 except Exception as usage_exc: 
                                     logger.error(f"Failed to get detailed usage for tool {malformed_tool_name}: {usage_exc}")
                             
-                            # Generate more helpful feedback that addresses the specific XML issue
-                            if "list_tools" in parsing_error_msg:
+                            # CRITICAL FIX: Enhanced feedback for markdown fence XML errors
+                            if "markdown" in parsing_error_msg.lower() or "```" in raw_llm_response_with_error:
+                                feedback_to_agent = (f"[Framework Feedback: Malformed XML with Markdown]\n"
+                                                   f"❌ You used markdown code fences around XML: ```{malformed_tool_name}>...\n"
+                                                   f"✅ CORRECT format (no markdown fences): <{malformed_tool_name}><action>list_tools</action></{malformed_tool_name}>\n\n"
+                                                   f"REMEMBER: XML tool calls should NEVER be wrapped in markdown code blocks (```).\n"
+                                                   f"Use pure XML format only.")
+                            elif "list_tools" in parsing_error_msg:
                                 feedback_to_agent = (f"[Framework Feedback: Tool Usage Error]\n"
                                                    f"You attempted to use '{malformed_tool_name}' with tool_name='list_tools', but 'list_tools' is not a tool name - it's an action.\n"
                                                    f"Correct usage: <tool_information><action>list_tools</action></tool_information>\n"
@@ -647,16 +707,54 @@ class AgentCycleHandler:
                                                    f"Correct usage for '{malformed_tool_name}':\n{detailed_tool_usage}")
                             
                             agent.message_history.append({"role": "system", "content": feedback_to_agent})
-                            agent._recent_error_feedback[error_signature] = time.time()  # Record when we provided this feedback
+                            agent._recent_error_feedback[base_error_signature] = time.time()  # Record when we provided this feedback
                             
                             if context.current_db_session_id: 
                                 await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id,agent_id=agent.agent_id,role="system_error_feedback",content=feedback_to_agent)
                                 
                             await self._manager.send_to_ui({"type": "system_error_feedback","agent_id": agent.agent_id,"tool_name": malformed_tool_name,"error_message": parsing_error_msg,"detailed_usage": detailed_tool_usage,"original_attempt": raw_llm_response_with_error})
                             
-                            logger.info(f"CycleHandler: Provided XML error feedback to '{agent.agent_id}' for error pattern: {error_signature}")
+                            logger.info(f"CycleHandler: Provided XML error feedback to '{agent.agent_id}' for error pattern: {base_error_signature}")
                         else:
-                            logger.info(f"CycleHandler: Skipped duplicate XML error feedback for '{agent.agent_id}' - error pattern seen recently: {error_signature}")
+                            # CRITICAL FIX: If we're skipping feedback due to accumulation, aggressively clean existing XML errors  
+                            logger.warning(f"CycleHandler: XML error feedback spam detected for '{agent.agent_id}' - triggering history cleanup")
+                            
+                            # Remove excessive XML error messages from history to prevent overwhelming the AI
+                            if hasattr(agent, 'message_history') and agent.message_history:
+                                original_length = len(agent.message_history)
+                                cleaned_history = []
+                                xml_error_count = 0
+                                
+                                for msg in agent.message_history:
+                                    # Count and filter XML error messages
+                                    if (msg.get('role') == 'system' and 
+                                        'XML Parsing Error' in msg.get('content', '')):
+                                        xml_error_count += 1
+                                        # Only keep the most recent XML error message
+                                        if xml_error_count <= 1:
+                                            cleaned_history.append(msg)
+                                        else:
+                                            logger.info(f"CycleHandler: Removing duplicate XML error message #{xml_error_count}")
+                                    else:
+                                        cleaned_history.append(msg)
+                                
+                                if len(cleaned_history) != original_length:
+                                    agent.message_history = cleaned_history
+                                    logger.critical(f"CycleHandler: CLEANED XML error spam - reduced history from {original_length} to {len(cleaned_history)} messages for agent '{agent.agent_id}'")
+                                    
+                                    # Force database update
+                                    if context.current_db_session_id:
+                                        try:
+                                            await self._manager.db_manager.log_interaction(
+                                                session_id=context.current_db_session_id,
+                                                agent_id=agent.agent_id,
+                                                role="system_cleanup",
+                                                content=f"XML error spam cleanup: Removed {original_length - len(cleaned_history)} duplicate error messages"
+                                            )
+                                        except Exception as db_err:
+                                            logger.error(f"CycleHandler: Failed to log cleanup to DB: {db_err}")
+                            
+                            logger.info(f"CycleHandler: Skipped duplicate XML error feedback for '{agent.agent_id}' - error pattern seen recently: {base_error_signature}")
                         
                         context.needs_reactivation_after_cycle = True; context.last_error_content = f"Malformed XML for tool '{malformed_tool_name}'"; context.cycle_completed_successfully = False
                         llm_stream_ended_cleanly = False; break
@@ -686,9 +784,47 @@ class AgentCycleHandler:
                             logger.debug(f"CycleHandler '{agent.agent_id}': Forwarded agent_raw_response to UI")
 
                     elif event_type == "agent_state_change_requested":
-                        context.action_taken_this_cycle = True; context.state_change_requested_this_cycle = True; requested_state = event.get("requested_state")
-                        if self._manager.workflow_manager.change_state(agent, requested_state):
+                        context.action_taken_this_cycle = True
+                        context.state_change_requested_this_cycle = True
+                        requested_state = event.get("requested_state")
+                        task_description = event.get("task_description")
+
+                        # <<< --- ROBUST FIX START --- >>>
+                        # If transitioning to work state with no task, find the last user message.
+                        if requested_state == ADMIN_STATE_WORK and (not task_description or task_description.isspace()):
+                            logger.warning(f"CycleHandler: Admin AI '{agent.agent_id}' state change to '{ADMIN_STATE_WORK}' has no task description. Searching history for last user message.")
+                            found_task = False
+                            for msg in reversed(agent.message_history):
+                                if msg.get("role") == "user":
+                                    task_description = msg.get("content")
+                                    logger.info(f"CycleHandler: Found last user message and set as task description: '{task_description[:100]}...'")
+                                    found_task = True
+                                    break
+                            if not found_task:
+                                logger.error(f"CycleHandler: Could not find a previous user message to use as task description for state change to '{ADMIN_STATE_WORK}'. The agent might loop.")
+                        # <<< --- ROBUST FIX END --- >>>
+
+                        if self._manager.workflow_manager.change_state(agent, requested_state, task_description=task_description):
                             context.needs_reactivation_after_cycle = True
+                            
+                            # CRITICAL FIX: For Admin AI work state, inject task reminder to prevent infinite loops
+                            if agent.agent_type == AGENT_TYPE_ADMIN and requested_state == ADMIN_STATE_WORK and task_description:
+                                task_reminder_message = (
+                                    f"[Framework Context]: You are now in work state. Your current task is: {task_description[:200]}{'...' if len(task_description) > 200 else ''}\\n\\n"
+                                    "Work systematically towards completing this specific task. Avoid repeating the same tool calls. "
+                                    "When you have made sufficient progress or completed the task, provide a comprehensive summary "
+                                    "and request state change back to 'conversation'."
+                                )
+                                agent.message_history.append({"role": "system", "content": task_reminder_message})
+                                logger.info(f"CycleHandler: Injected task reminder for Admin AI '{agent.agent_id}' work state transition")
+                                
+                                if context.current_db_session_id:
+                                    await self._manager.db_manager.log_interaction(
+                                        session_id=context.current_db_session_id,
+                                        agent_id=agent.agent_id,
+                                        role="system_task_context",
+                                        content=task_reminder_message
+                                    )
                             # --- START MODIFICATION: Inject directive after PM state change to pm_activate_workers ---
                             if agent.agent_type == AGENT_TYPE_PM and requested_state == PM_STATE_ACTIVATE_WORKERS:
                                 logger.info(f"CycleHandler: PM '{agent.agent_id}' successfully changed to '{PM_STATE_ACTIVATE_WORKERS}'. Injecting specific follow-up directive.")
@@ -751,13 +887,25 @@ class AgentCycleHandler:
 
                                     task_description_for_state_change = None
                                     if requested_state == ADMIN_STATE_WORK:
-                                        # Find the last user message to use as the task description
-                                        for msg in reversed(agent.message_history):
-                                            if msg.get("role") == "user":
-                                                task_description_for_state_change = msg.get("content")
-                                                break
+                                        # Prioritize the task description from the event, if available
+                                        task_description_for_state_change = event.get("task_description")
+                                        
                                         if not task_description_for_state_change:
-                                            logger.warning(f"CycleHandler: Could not find a previous user message to use as task description for state change to '{requested_state}'.")
+                                            # Find the last user message to use as the task description
+                                            for msg in reversed(agent.message_history):
+                                                if msg.get("role") == "user":
+                                                    task_description_for_state_change = msg.get("content")
+                                                    break
+                                        
+                                        if not task_description_for_state_change:
+                                            # If no user message, check for a message from another agent
+                                            for msg in reversed(agent.message_history):
+                                                if msg.get("role") == "user" and "[From @" in msg.get("content"):
+                                                    task_description_for_state_change = msg.get("content")
+                                                    break
+                                        
+                                        if not task_description_for_state_change:
+                                            logger.warning(f"CycleHandler: Could not find a previous user or agent message to use as task description for state change to '{requested_state}'.")
 
                                     # Pass the task description to change_state
                                     if self._manager.workflow_manager.change_state(agent, requested_state, task_description=task_description_for_state_change):
@@ -799,6 +947,8 @@ class AgentCycleHandler:
                             )
                         
                         all_tool_results_for_history: List[MessageDict] = [] ; any_tool_success = False
+                        tool_results_text = ""  # NEW: Collect tool results as text to append to assistant message
+                        
                         for i, call_data in enumerate(tool_calls):
                             tool_name = call_data.get("name"); tool_id = call_data.get("id"); tool_args = call_data.get("arguments", {})
                             result_dict = await self._interaction_handler.execute_single_tool(agent, tool_id, tool_name, tool_args, self._manager.current_project, self._manager.current_session)
@@ -806,6 +956,10 @@ class AgentCycleHandler:
                                 history_item: MessageDict = {"role": "tool", "tool_call_id": result_dict.get("call_id", tool_id or f"unknown_id_{i}"), "name": result_dict.get("name", tool_name or f"unknown_tool_{i}"), "content": str(result_dict.get("content", "[Tool Error: No content]"))}
                                 all_tool_results_for_history.append(history_item)
                                 result_content_str = str(result_dict.get("content", ""))
+                                
+                                # NEW: Append tool result to text format for assistant message
+                                tool_results_text += f"\n\n[Tool Result: {tool_name}]\n{result_content_str}"
+                                
                                 tool_was_successful = True # Assume success by default
                                 try:
                                     # Attempt to parse the content as JSON. This handles tools that
@@ -823,19 +977,28 @@ class AgentCycleHandler:
                                 # ... (db log tool result, UI send) ...
                                 if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="tool", content=result_content_str, tool_results=[result_dict])
                                 await self._manager.send_to_ui({**result_dict, "type": "tool_result", "agent_id": agent.agent_id, "tool_sequence": f"{i+1}_of_{len(tool_calls)}"})
-                            else: all_tool_results_for_history.append({"role": "tool", "tool_call_id": tool_id or f"unknown_call_{i}", "name": tool_name or f"unknown_tool_{i}", "content": "[Tool Error: No result object]"})
-                        # CRITICAL FIX: Add diagnostic logging for message history persistence  
-                        logger.critical(f"CycleHandler: BEFORE appending tool results - agent '{agent.agent_id}' message_history length: {len(agent.message_history)}, history_id: {id(agent.message_history)}")
-                        for i, res_hist_item in enumerate(all_tool_results_for_history): 
-                            agent.message_history.append(res_hist_item)
-                            logger.critical(f"CycleHandler: APPENDED tool result {i+1}/{len(all_tool_results_for_history)} to agent '{agent.agent_id}' - new length: {len(agent.message_history)}")
-                        logger.critical(f"CycleHandler: AFTER appending all tool results - agent '{agent.agent_id}' message_history length: {len(agent.message_history)}, history_id: {id(agent.message_history)}")
+                            else: 
+                                all_tool_results_for_history.append({"role": "tool", "tool_call_id": tool_id or f"unknown_call_{i}", "name": tool_name or f"unknown_tool_{i}", "content": "[Tool Error: No result object]"})
+                                tool_results_text += f"\n\n[Tool Result: {tool_name}]\n[Tool Error: No result object]"
                         
-                        # CRITICAL FIX: Set tool success flags IMMEDIATELY after tool execution
-                        # This must happen BEFORE any PM-specific intervention logic to ensure Admin AI gets reactivated
+                        # CRITICAL FIX: Append tool results directly to the assistant message content
+                        if tool_results_text and agent.message_history and agent.message_history[-1].get("role") == "assistant":
+                            last_assistant_msg = agent.message_history[-1]
+                            original_content = last_assistant_msg.get("content", "")
+                            last_assistant_msg["content"] = original_content + tool_results_text
+                            logger.info(f"CycleHandler: Appended tool results to assistant message content for agent '{agent.agent_id}' - {len(tool_results_text)} chars")
+                        
+                        context.all_tool_results = all_tool_results_for_history
+                        
+                        # ROOT CAUSE FIX: Don't automatically set reactivation flag after tool execution
+                        # Let the NextStepScheduler decide if reactivation is needed based on agent state and tool results
                         context.executed_tool_successfully_this_cycle = any_tool_success
-                        context.needs_reactivation_after_cycle = True
-                        logger.critical(f"CycleHandler: CRITICAL - Tool success flags set for agent '{agent.agent_id}': executed_tool_successfully_this_cycle={any_tool_success}, needs_reactivation_after_cycle=True")
+                        # ROOT CAUSE FIX: Removed automatic reactivation - this was causing the infinite loop
+                        logger.critical(f"CycleHandler: Tool execution completed for agent '{agent.agent_id}': executed_tool_successfully_this_cycle={any_tool_success}, allowing natural processing")
+                        
+                        # ENHANCED: For Admin AI in work state, ensure proper reactivation even after tool execution
+                        if agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_WORK:
+                            logger.info(f"CycleHandler: Admin AI '{agent.agent_id}' in work state executed tools successfully - ensuring reactivation")
 
                         # --- START: PM Post-Tool State Transitions ---
                         # Track tool success/failure for PM loop detection
@@ -1471,6 +1634,7 @@ class AgentCycleHandler:
 
         # Record agent health metrics after cycle completion
         final_output_content = getattr(agent, 'text_buffer', '') or ''
+        logger.debug(f"CycleHandler: Recording agent cycle for '{agent.agent_id}' with content length: {len(final_output_content)}")
         self._health_monitor.record_agent_cycle(
             agent=agent,
             content=final_output_content,
@@ -1481,6 +1645,7 @@ class AgentCycleHandler:
 
         # Constitutional Guardian Health Intervention Check
         try:
+            logger.debug(f"CycleHandler: Analyzing agent health for '{agent.agent_id}'")
             needs_intervention, problem_desc, recovery_plan = await self._health_monitor.analyze_agent_health(agent)
             if needs_intervention and recovery_plan:
                 logger.error(f"CycleHandler: Constitutional Guardian intervening for agent '{agent.agent_id}': {problem_desc}")
@@ -1491,11 +1656,13 @@ class AgentCycleHandler:
                     logger.error(f"CycleHandler: Constitutional Guardian intervention successful for '{agent.agent_id}', agent will be reactivated")
                     
                     # If this was a critical violation (empty/identical responses), force immediate reactivation
-                    violation_types = ["empty_response_violation", "identical_response_violation"]
+                    violation_types = ["empty_response_violation", "identical_response_violation", "tool_information_loop_violation"]
                     if recovery_plan.get("type") in violation_types:
                         # Override normal scheduling to ensure immediate reactivation
                         await self._manager.schedule_cycle(agent, retry_count=0)
                         logger.error(f"CycleHandler: CRITICAL VIOLATION - Immediately reactivating agent '{agent.agent_id}' after Constitutional Guardian intervention")
+            else:
+                logger.debug(f"CycleHandler: No intervention needed for agent '{agent.agent_id}'")
         except Exception as health_error:
             logger.error(f"CycleHandler: Error during Constitutional Guardian health monitoring for '{agent.agent_id}': {health_error}", exc_info=True)
 

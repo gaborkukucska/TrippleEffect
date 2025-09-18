@@ -229,6 +229,48 @@ class ConstitutionalGuardianHealthMonitor:
             
         record = self._health_records[agent_id]
         
+        # CRITICAL FIX: Track identical tool executions specifically for tool_information loops
+        if hasattr(agent, 'message_history') and agent.message_history:
+            # Check for tool_information + list_tools pattern in recent messages
+            recent_tool_info_calls = []
+            for msg in reversed(agent.message_history[-5:]):  # Check last 5 messages
+                if msg.get('role') == 'assistant' and msg.get('tool_calls'):
+                    for tool_call in msg.get('tool_calls', []):
+                        if (tool_call.get('name') == 'tool_information' and 
+                            tool_call.get('arguments', {}).get('action') == 'list_tools'):
+                            recent_tool_info_calls.append(tool_call)
+                            
+            # If we have 2+ identical tool_information+list_tools calls, this is a critical loop
+            if len(recent_tool_info_calls) >= 2:
+                logger.error(f"ConstitutionalGuardian: DETECTED tool_information+list_tools loop for agent '{agent_id}' - {len(recent_tool_info_calls)} recent calls")
+                # Mark this as a critical pattern requiring immediate intervention
+                if not hasattr(record, 'tool_information_loop_detected'):
+                    record.tool_information_loop_detected = True
+                    record.tool_information_loop_count = len(recent_tool_info_calls)
+                else:
+                    record.tool_information_loop_count = len(recent_tool_info_calls)
+        
+        # ENHANCED: Track tool execution patterns for Admin AI work state
+        if hasattr(agent, 'message_history') and agent.message_history and agent.agent_type == 'admin' and agent.state == 'work':
+            # Check for repeated tool executions that indicate looping
+            recent_tool_executions = []
+            for msg in reversed(agent.message_history[-8:]):  # Check last 8 messages
+                if msg.get('role') == 'assistant' and msg.get('tool_calls'):
+                    for tool_call in msg.get('tool_calls', []):
+                        tool_signature = f"{tool_call.get('name')}:{tool_call.get('arguments', {})}"
+                        recent_tool_executions.append(tool_signature)
+            
+            # Check for identical consecutive tool executions
+            if len(recent_tool_executions) >= 3:
+                last_execution = recent_tool_executions[0] if recent_tool_executions else ""
+                if last_execution:
+                    identical_count = sum(1 for exec in recent_tool_executions if exec == last_execution)
+                    if identical_count >= 3:  # 3+ identical calls in recent history
+                        logger.error(f"ConstitutionalGuardian: DETECTED tool execution loop for Admin AI '{agent_id}' - '{last_execution}' repeated {identical_count} times")
+                        # Mark this as a critical pattern requiring immediate intervention
+                        record.tool_execution_loop_detected = True
+                        record.tool_execution_loop_count = identical_count
+        
         # Use the took_meaningful_action parameter for accurate tracking. This is the critical flag
         # that is only True if a tool was successfully run or a state change was requested.
         # The generic 'has_action' is too broad and counts any final text response as an action.
@@ -263,6 +305,35 @@ class ConstitutionalGuardianHealthMonitor:
             logger.debug(f"ConstitutionalGuardian: Skipping intervention for '{agent_id}' - recent action ({time_since_action:.1f}s ago)")
             return False, None, None
         
+        # CRITICAL FIX: Don't intervene on Admin AI welcome messages or legitimate responses
+        if hasattr(agent, 'agent_type') and agent.agent_type == 'admin':
+            # Check if this is a welcome message (legitimate startup behavior)
+            last_message = agent.message_history[-1] if agent.message_history else None
+            if last_message and last_message.get('role') == 'assistant':
+                content_lower = last_message.get('content', '').lower()
+                welcome_indicators = [
+                    'welcome to trippleeffect',
+                    'greetings! welcome',
+                    'would you like to get a new project started',
+                    'receive updates, adjust my settings',
+                    'casual chat'
+                ]
+                
+                if any(indicator in content_lower for indicator in welcome_indicators):
+                    logger.info(f"ConstitutionalGuardian: Skipping intervention for Admin AI '{agent_id}' - legitimate welcome message detected")
+                    return False, None, None
+                
+                # Check if this is a legitimate state transition request
+                if '<request_state' in last_message.get('content', '') and 'state=' in last_message.get('content', ''):
+                    logger.info(f"ConstitutionalGuardian: Skipping intervention for Admin AI '{agent_id}' - legitimate state transition detected")
+                    return False, None, None
+        
+        # PRIORITY 0: Block tool_information loop immediately (most critical)
+        if hasattr(record, 'tool_information_loop_detected') and record.tool_information_loop_detected:
+            if record.tool_information_loop_count >= 2:  # Even just 2 is a critical loop
+                logger.error(f"ConstitutionalGuardian: BLOCKING '{agent_id}' - tool_information+list_tools loop detected ({record.tool_information_loop_count} calls)")
+                return await self._create_tool_information_loop_intervention(agent, record)
+            
         # PRIORITY 1: Block empty responses immediately
         if record.consecutive_empty_responses >= self.empty_response_threshold:
             logger.error(f"ConstitutionalGuardian: BLOCKING '{agent_id}' - {record.consecutive_empty_responses} consecutive empty responses")
@@ -379,6 +450,49 @@ class ConstitutionalGuardianHealthMonitor:
                 }
             ]
         }
+        
+        return True, description, recovery
+    
+    async def _create_tool_information_loop_intervention(self, agent: 'Agent', record: AgentHealthRecord) -> Tuple[bool, str, Dict]:
+        """Create intervention for tool_information+list_tools loop."""
+        
+        # Analyze agent history to understand the cause
+        history_analysis = await self._analyze_agent_history(agent, "tool_information_loop")
+        
+        description = (f"Constitutional Guardian BLOCKED agent '{agent.agent_id}' - "
+                      f"tool_information+list_tools loop detected ({record.tool_information_loop_count} calls). "
+                      f"This indicates the agent is stuck in a critical infinite loop.")
+        
+        recovery = {
+            "type": "tool_information_loop_violation",
+            "severity": "critical",
+            "history_analysis": history_analysis,
+            "actions": [
+                {
+                    "action": "inject_guidance",
+                    "message": self._generate_tool_information_loop_guidance(agent, history_analysis)
+                },
+                {
+                    "action": "clear_problematic_context",
+                    "keep_last_n_messages": 2
+                },
+                {
+                    "action": "reset_status", 
+                    "new_status": AGENT_STATUS_IDLE
+                },
+                {
+                    "action": "provide_available_tools",
+                    "include_examples": True
+                }
+            ]
+        }
+        
+        # Add agent-specific recovery actions
+        if agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_WORK:
+            recovery["actions"].append({
+                "action": "suggest_work_completion",
+                "completion_message": self._generate_work_completion_message(agent, history_analysis)
+            })
         
         return True, description, recovery
     
@@ -567,8 +681,8 @@ class ConstitutionalGuardianHealthMonitor:
     def _generate_empty_response_guidance(self, agent: 'Agent', history_analysis: Dict) -> str:
         """Generate specific, context-aware guidance for agents with empty response issues."""
         
-        base_msg = ("[Constitutional Guardian - CRITICAL VIOLATION]: You have been producing empty responses, "
-                   "which violates the framework's core requirement for meaningful agent output. ")
+        base_msg = (f"[Constitutional Guardian - CRITICAL VIOLATION]: You have been producing empty responses, "
+                   f"which violates the framework's core requirement for meaningful agent output. ")
 
         # Check if the agent has recently used 'list_tools'
         recently_listed_tools = False
@@ -584,26 +698,31 @@ class ConstitutionalGuardianHealthMonitor:
         # Add context-specific guidance based on history analysis
         if "Completion language detected" in history_analysis.get("loop_indicators", []):
             base_msg += ("You appear to have completed work. Provide a comprehensive summary of what you accomplished, "
-                        "then transition to an appropriate state.")
+                        "then use <request_state state='admin_conversation'> to transition to an appropriate state.")
         elif recently_listed_tools:
             base_msg += ("You have already listed the available tools. Repeating this action is not productive. "
-                         "You MUST now select a DIFFERENT tool from the list to continue your task, "
-                         "or provide a comprehensive summary of your findings and request a state change.")
+                         "MANDATORY NEXT ACTION: Choose ONE specific tool from the list you already have. "
+                         "Use tool_information to get_info for that tool, then use the actual tool. "
+                         "Example: <tool_information><action>get_info</action><tool_name>file_system</tool_name></tool_information>")
         elif history_analysis.get("context_complexity") in ["high", "very_high"]:
-            base_msg += ("Your context appears complex. Focus on the most important next step and execute it clearly.")
+            base_msg += ("Your context appears complex. IMMEDIATE ACTION REQUIRED: "
+                        "Choose the simplest available tool and test it. "
+                        "Example: <file_system><action>list</action><path>.</path></file_system>")
         elif not history_analysis.get("recent_tool_usage"):
-            base_msg += ("You haven't used any tools recently. To get unstuck, your next action should be to review your available tools. "
-                         "Use `<tool_information><action>list_tools</action></tool_information>` and then choose a tool to proceed.")
+            base_msg += ("You haven't used any tools recently. MANDATORY IMMEDIATE ACTION: "
+                         "Use <tool_information><action>list_tools</action></tool_information> RIGHT NOW to see available tools.")
         else:
-            base_msg += ("You are in a loop. Review your recent actions and determine a different, logical step to complete your task. Do not repeat the last action.")
+            base_msg += ("You are in a loop. BREAK THE PATTERN: Choose a completely different approach. "
+                        "SUGGESTED ACTION: <file_system><action>list</action><path>.</path></file_system> to test a different tool.")
             
-        # Add agent-specific guidance
+        # Add agent-specific guidance with concrete XML examples
         if agent.agent_type == AGENT_TYPE_ADMIN:
             if agent.state == ADMIN_STATE_WORK:
-                base_msg += (" As Admin AI in work state, you must either continue your work with a new tool or "
-                           "provide a final comprehensive response and transition states.")
+                base_msg += (" As Admin AI in work state, your NEXT RESPONSE must include either: "
+                           "1) A tool call like <file_system><action>list</action><path>.</path></file_system>, OR "
+                           "2) A completion summary with <request_state state='admin_conversation'>")
             else:
-                base_msg += (" As Admin AI, you must engage with users and provide meaningful responses.")
+                base_msg += (" As Admin AI, provide a meaningful text response to the user about your current status.")
                 
         return base_msg
     
@@ -621,8 +740,24 @@ class ConstitutionalGuardianHealthMonitor:
         """Generate guidance to encourage agents to take action instead of just thinking."""
         
         return ("[Constitutional Guardian - ACTION REQUIRED]: You have been thinking without taking concrete action. "
-               "After using <think> tags to plan, you MUST execute actual tool calls or make decisions. "
+               "After using <tool_call> tags to plan, you MUST execute actual tool calls or make decisions. "
                "Stop overthinking and start acting on your plans.")
+    
+    def _generate_tool_information_loop_guidance(self, agent: 'Agent', history_analysis: Dict) -> str:
+        """Generate guidance for agents stuck in tool_information+list_tools loop (the exact pattern from logs)."""
+        
+        return ("[Constitutional Guardian - CRITICAL VIOLATION]: You are stuck in the exact infinite loop pattern "
+               "identified in the system logs - repeatedly calling tool_information with list_tools action. "
+               "This critical pattern must be broken immediately.\\n\\n"
+               "LOG PATTERN DETECTED: Multiple consecutive tool_information calls with action='list_tools'\\n\\n"
+               "MANDATORY LOOP-BREAKING INSTRUCTIONS:\\n"
+               "1. IMMEDIATELY STOP calling tool_information with list_tools - you already have the complete tool list\\n"
+               "2. AVAILABLE TOOLS: file_system, github_tool, knowledge_base, manage_team, project_management, send_message, system_help, tool_information, web_search\\n"
+               "3. CHOOSE ONE DIFFERENT TOOL (not tool_information) and test it with a simple action\\n"
+               "4. EXAMPLE VALID RESPONSE: <file_system><action>list</action><path>.</path></file_system>\\n"
+               "5. AFTER TESTING ONE TOOL: Provide summary and use <request_state state='conversation'/>\\n\\n"
+               "CRITICAL WARNING: Any further tool_information+list_tools calls will result in emergency system override.\\n"
+               "YOUR NEXT RESPONSE MUST NOT CONTAIN tool_information calls.")
     
     def _generate_state_progression_guidance(self, agent: 'Agent', history_analysis: Dict) -> str:
         """Generate guidance for agents stuck in the same state."""

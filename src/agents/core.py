@@ -122,8 +122,22 @@ class Agent:
         if self.manager: asyncio.create_task(self.manager.push_agent_status_update(self.agent_id))
 
     def set_state(self, new_state: str):
-        if self.state != new_state: logger.info(f"Agent {self.agent_id}: Workflow State changed from '{self.state}' to '{new_state}'"); self.state = new_state
-        else: logger.debug(f"Agent {self.agent_id}: set_state called with current state '{new_state}'. No change.")
+        if self.state != new_state: 
+            logger.info(f"Agent {self.agent_id}: Workflow State changed from '{self.state}' to '{new_state}'")
+            # Track state transitions for Admin AI work state loop detection
+            if not hasattr(self, '_state_transition_history'):
+                self._state_transition_history = []
+            self._state_transition_history.append({
+                'from_state': self.state,
+                'to_state': new_state,
+                'timestamp': time.time()
+            })
+            # Keep only last 10 transitions to avoid memory issues
+            if len(self._state_transition_history) > 10:
+                self._state_transition_history = self._state_transition_history[-10:]
+            self.state = new_state
+        else: 
+            logger.debug(f"Agent {self.agent_id}: set_state called with current state '{new_state}'. No change.")
 
     def ensure_sandbox_exists(self) -> bool:
         try: self.sandbox_path.mkdir(parents=True, exist_ok=True); return True
@@ -259,7 +273,20 @@ class Agent:
                         is_valid_state_request = self.manager.workflow_manager.is_valid_state(self.agent_type, requested_state)
                         if is_valid_state_request:
                             logger.info(f"Agent {self.agent_id}: Detected valid state request tag for '{requested_state}': {state_request_tag}")
-                            state_change_to_yield = {"type": "agent_state_change_requested", "requested_state": requested_state, "agent_id": self.agent_id}
+                            
+                            task_description_for_work_state = None
+                            # If transitioning to 'work' state, capture the preceding text as the task.
+                            if requested_state == ADMIN_STATE_WORK:
+                                task_description_for_work_state = remaining_text_after_processing_tags.split(state_request_tag)[0].strip()
+                                logger.info(f"Agent {self.agent_id}: Extracted task description for work state: '{task_description_for_work_state[:100]}...'")
+
+                            state_change_to_yield = {
+                                "type": "agent_state_change_requested",
+                                "requested_state": requested_state,
+                                "agent_id": self.agent_id,
+                                "task_description": task_description_for_work_state
+                            }
+
                             if cleaned_for_state_regex == state_request_tag: # If the *entire cleaned output* was the state request
                                 yield state_change_to_yield
                                 return # State change is the only action
@@ -356,26 +383,16 @@ class Agent:
                     logger.debug(f"Agent {self.agent_id} preparing to yield {len(tool_requests_to_yield)} tool requests.")
 
                     # Clean the response to get only the text/thought part for the history
-                    content_for_history = ""
+                    content_for_history = final_cleaned_response_for_tools_or_text
                     if valid_calls:
-                        # Sort spans to process them in order, avoiding issues with nested or overlapping matches
-                        sorted_spans = sorted([call[2] for call in valid_calls])
-
-                        content_parts = []
-                        last_end = 0
-                        # Reconstruct content from the parts of the string *not* within any tool call span
+                        # Sort spans in reverse order to avoid index shifting during removal
+                        sorted_spans = sorted([call[2] for call in valid_calls], reverse=True)
+                        
                         for start, end in sorted_spans:
-                            # Add the text segment between the end of the last tool call and the start of the current one
-                            content_parts.append(final_cleaned_response_for_tools_or_text[last_end:start])
-                            last_end = end
+                            # Remove the tool call XML from the content
+                            content_for_history = content_for_history[:start] + content_for_history[end:]
 
-                        # Add any remaining text that comes after the final tool call
-                        content_parts.append(final_cleaned_response_for_tools_or_text[last_end:])
-
-                        content_for_history = "".join(content_parts).strip()
-                    else:
-                        # If there were no valid tool calls, the whole cleaned response is the content
-                        content_for_history = final_cleaned_response_for_tools_or_text.strip()
+                    content_for_history = content_for_history.strip()
 
                     yield {
                         "type": "tool_requests",

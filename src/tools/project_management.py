@@ -66,8 +66,53 @@ class ProjectManagementTool(BaseTool):
         project_name = kwargs.get("project_name")
         session_name = kwargs.get("session_name")
 
+        # Check for common mistakes and provide helpful suggestions
+        action_suggestions = {
+            "create_task": "add_task",
+            "new_task": "add_task", 
+            "add": "add_task",
+            "create": "add_task",
+            "list": "list_tasks",
+            "show": "list_tasks",
+            "show_tasks": "list_tasks",
+            "get_tasks": "list_tasks",
+            "update_task": "modify_task",
+            "edit_task": "modify_task",
+            "change_task": "modify_task",
+            "update": "modify_task",
+            "edit": "modify_task",
+            "finish_task": "complete_task",
+            "done": "complete_task",
+            "finish": "complete_task",
+            "mark_complete": "complete_task"
+        }
+        
         if not action:
-            return {"status": "error", "message": "Missing required parameter: 'action'."}
+            return {
+                "status": "error", 
+                "message": "Missing required 'action' parameter. Must be one of: add_task, list_tasks, modify_task, complete_task.",
+                "error_type": "missing_parameter",
+                "valid_actions": ["add_task", "list_tasks", "modify_task", "complete_task"]
+            }
+        
+        valid_actions = ["add_task", "list_tasks", "modify_task", "complete_task"]
+        if action not in valid_actions:
+            if action in action_suggestions:
+                suggested_action = action_suggestions[action]
+                return {
+                    "status": "error", 
+                    "message": f"Invalid action '{action}'. Did you mean '{suggested_action}'? Valid actions are: {', '.join(valid_actions)}.",
+                    "error_type": "invalid_action",
+                    "suggested_action": suggested_action,
+                    "valid_actions": valid_actions
+                }
+            else:
+                return {
+                    "status": "error", 
+                    "message": f"Invalid action '{action}'. Valid actions are: {', '.join(valid_actions)}.",
+                    "error_type": "invalid_action",
+                    "valid_actions": valid_actions
+                }
         if not project_name or not session_name:
             return {"status": "error", "message": "Missing project/session context."}
 
