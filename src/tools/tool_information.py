@@ -105,6 +105,7 @@ class ToolInformationTool(BaseTool):
                     tools_details.append(f"• **{tool_info['name']}**: {tool_info['summary']}")
                 
                 tools_details.append(f"\nTo get detailed usage for any tool, use: <tool_information><action>get_info</action><tool_name>TOOL_NAME</tool_name></tool_information>")
+                tools_details.append(f"For per-action help on complex tools, add: <sub_action>ACTION_NAME</sub_action>")
                 
                 return {"status": "success", "message": "\n".join(tools_details)}
 
@@ -268,7 +269,7 @@ class ToolInformationTool(BaseTool):
             logger.error(f"Error generating usage from schema for {tool_name}: {e}", exc_info=True)
             return f"**Tool Name:** {tool_name}\n**Description:** {tool.description}\n**Error:** Unable to generate detailed usage information."
 
-    def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None) -> str: # Added agent_context to match BaseTool
+    def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None, sub_action: Optional[str] = None) -> str:
         """Returns detailed usage instructions for the ToolInformationTool."""
         usage = """
         **Tool Name:** tool_information
@@ -279,6 +280,7 @@ class ToolInformationTool(BaseTool):
 
         *   **action:** (string, required) - The operation: 'list_tools' or 'get_info'.
         *   **tool_name:** (string, optional) - Required only for `action='get_info'` if you want details for a *specific* tool. If omitted or set to 'all' for `get_info`, details for *all accessible* tools are returned. Not used by `list_tools`.
+        *   **sub_action:** (string, optional) - For `action='get_info'` on complex tools: specifies a sub-action to get detailed per-action help for (e.g., 'create_agent' for manage_team, 'read' for file_system, 'add_task' for project_management). When omitted, the tool returns a summary of all its actions.
 
         **Example Calls:**
 
@@ -303,6 +305,15 @@ class ToolInformationTool(BaseTool):
             <tool_information>
               <action>get_info</action>
               <tool_name>file_system</tool_name>
+            </tool_information>
+            ```
+
+        *   Get per-action help (e.g., just the 'create_agent' action of manage_team):
+            ```xml
+            <tool_information>
+              <action>get_info</action>
+              <tool_name>manage_team</tool_name>
+              <sub_action>create_agent</sub_action>
             </tool_information>
             ```
         """

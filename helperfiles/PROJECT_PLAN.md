@@ -1,7 +1,7 @@
 <!-- # START OF FILE helperfiles/PROJECT_PLAN.md -->
 # Project Plan: TrippleEffect
 
-**Version:** 2.40
+**Version:** 2.42
 **Date:** 2025-08-30
 
 ## 1. Project Goals
@@ -75,7 +75,8 @@
   * `KnowledgeBaseTool`: Save/Search knowledge (DB).
   * `ProjectManagementTool`: Add, list, modify, complete tasks using `tasklib` (assigns via CLI tags/UDA).
   * `ToolInformationTool`: Get detailed tool usage.
-* **Tool Executor (`ToolExecutor`):** Dynamic tool discovery, schema generation, execution with **authorization checks**.
+* **Tool Executor (`ToolExecutor`):** Dynamic tool discovery, schema generation, execution with **authorization checks**, and **contextual error help injection** (auto-includes relevant action documentation in error messages).
+* **Modular Tool Help System:** Segmented `get_detailed_usage(sub_action=...)` in `FileSystemTool`, `ProjectManagementTool`, and `ManageTeamTool`. Agents receive concise summaries by default and can request action-specific documentation.
 * **Configuration:** `config.yaml`, `.env`, `prompts.json`, `governance.yaml`.
 * **Session Persistence:** Save/Load state (filesystem).
 * **Human UI:** Dynamic updates, Session management, **Separated Chat and Internal Comms views (UI Refactor P22)**, Config View, Fixed message interleaving (P22), Increased internal history limit (P22), **Project approval workflow**.
@@ -95,7 +96,7 @@
 * **Phase 28: Advanced Memory & Learning.** (Feedback Loop, Learned Principles, Context Optimization).
 * **Phase 29: Proactive Behavior.** (Scheduling, Goal Management, Autonomous Planning).
 * **Phase 30+: Federated Communication (Layer 3).** (External Admin AI interaction - protocol, security, discovery).
-* **Phase 31+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), etc.
+* **Phase 31+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, etc.
 * Global Governance Principle Injection (Removed, replaced by CG review).
 * `TEAMS_CONFIG` and `allowed_sub_agent_models` (Removed from `ConfigManager`).
 
@@ -139,12 +140,20 @@
 * [X] **Recovery Strategy Implementation:** Intelligent recovery mechanisms including context clearing, status resets, guidance injection, workflow reminders, and tool availability updates based on specific problem analysis.
 * [X] **Performance Optimization:** Context optimization features including automatic summarization for resource-constrained environments and intelligent token management for improved performance with smaller models.
 
+**Incremental Improvements (v2.41 - v2.42, Completed)**
+
+* [X] **Modular Tool Help System (v2.42):** Refactored `get_detailed_usage()` across `FileSystemTool`, `ProjectManagementTool`, and `ManageTeamTool` to support `sub_action` parameter. Agents receive concise action summaries by default and can request detailed, action-specific documentation on demand.
+* [X] **Contextual Error Help Injection:** `ToolExecutor` now automatically fetches action-specific help when a tool execution fails and includes it in the error message via `ToolErrorHandler`, enabling agents to self-correct with targeted documentation.
+* [X] **Enhanced `ToolErrorHandler`:** Added `action_help` parameter to `generate_enhanced_error_response()` and `format_error_for_agent()` for richer error context.
+* [X] **New FileSystemTool Actions:** Added `append`, `insert_lines`, and `replace_lines` actions for granular file manipulation.
+* [X] **Type Safety Improvements:** Resolved all Pyright type errors across `executor.py`, `file_system.py`, `manage_team.py`, and `project_management.py`.
+
 **Future Goals:**
 
 * **Phase 28: Advanced Memory & Learning.** (Feedback Loop, Learned Principles, Advanced Context Management, Long-term Memory Systems).
 * **Phase 29: Proactive Behavior.** (Scheduling, Goal Management, Autonomous Planning, Predictive Actions).
 * **Phase 30+: Federated Communication (Layer 3).** (External Admin AI interaction - protocol, security, discovery, Cross-system coordination).
-* **Phase 31+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, **Full transition to on-demand tool help** (removing static descriptions from prompts), Distributed Processing, etc.
+* **Phase 31+:** New Admin AI Tools, LiteLLM Provider, Advanced Collaboration, Resource Limiting, Advanced DB/Vector Store, GeUI, Distributed Processing, etc.
 
 ## Recent Development Notes & Issue Resolutions
 

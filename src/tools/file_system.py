@@ -21,15 +21,12 @@ class FileSystemTool(BaseTool):
     """
     name: str = "file_system"
     auth_level: str = "worker" # Accessible by all
-    summary: Optional[str] = "Performs file system operations (read, write, list, mkdir, delete, find_replace) within allowed scopes."
+    summary: Optional[str] = "Performs file system operations (read, write, append, insert_lines, replace_lines, list, mkdir, delete, find_replace, regex_replace, copy, move) within allowed scopes. Use tool_information with sub_action for per-action help."
     description: str = ( # Updated description
-        "Reads, writes, lists files/directories, creates directories, deletes files or empty directories, "
-        "finds and replaces text or regex within a file, copies, or moves files/directories. "
+        "Reads, writes, appends, inserts, or replaces lines in files. Also lists, creates, or moves files/directories. "
         "Use 'scope' ('private', 'shared', or 'projects') to specify the target area. Default: 'private'. "
-        "Actions: 'read' (gets content), 'write' (saves content), 'list' (shows directory contents), "
-        "'mkdir' (creates a directory), 'delete' (removes file/empty dir), "
-        "'find_replace' (replaces text), 'regex_replace' (replaces text using regex), "
-        "'copy' (copies file/dir), 'move' (moves/renames file/dir). "
+        "Actions: 'read', 'write' (full overwrite), 'append' (add to end), 'insert_lines', 'replace_lines', "
+        "'list', 'mkdir', 'delete', 'find_replace', 'regex_replace', 'copy', 'move'. "
         "All paths are relative to the selected scope."
     )
     parameters: List[ToolParameter] = [
@@ -99,6 +96,24 @@ class FileSystemTool(BaseTool):
             description="Optional ending line number (1-indexed) for 'read'.",
             required=False,
         ),
+        ToolParameter(
+            name="insert_line",
+            type="integer",
+            description="Line number (1-indexed) where content should be inserted for 'insert_lines'.",
+            required=False,
+        ),
+        ToolParameter(
+            name="replace_start_line",
+            type="integer",
+            description="Starting line number (1-indexed, inclusive) for 'replace_lines'.",
+            required=False,
+        ),
+        ToolParameter(
+            name="replace_end_line",
+            type="integer",
+            description="Ending line number (1-indexed, inclusive) for 'replace_lines'.",
+            required=False,
+        ),
     ]
 
     async def execute(
@@ -126,10 +141,13 @@ class FileSystemTool(BaseTool):
         regex_pattern = kwargs.get("regex_pattern") # Used by regex_replace
         start_line = kwargs.get("start_line") # Used by read
         end_line = kwargs.get("end_line") # Used by read
+        insert_line = kwargs.get("insert_line") # Used by insert_lines
+        replace_start_line = kwargs.get("replace_start_line") # Used by replace_lines
+        replace_end_line = kwargs.get("replace_end_line") # Used by replace_lines
 
         if action == "write_file":
             action = "write"
-        valid_actions = ["read", "write", "list", "mkdir", "delete", "find_replace", "regex_replace", "copy", "move"]
+        valid_actions = ["read", "write", "append", "insert_lines", "replace_lines", "list", "mkdir", "delete", "find_replace", "regex_replace", "copy", "move"]
         
         # Check for common mistakes and provide helpful suggestions
         action_suggestions = {
@@ -199,7 +217,7 @@ class FileSystemTool(BaseTool):
                 return await self._write_file(base_path, filename, content, agent_id, scope_description)
             elif action == "list":
                 # relative_path default handled above
-                return await self._list_directory(base_path, relative_path, agent_id, scope_description)
+                return await self._list_directory(base_path, relative_path if isinstance(relative_path, str) else ".", agent_id, scope_description)
             elif action == "find_replace":
                 if not filename: return {"status": "error", "message": "'filename' parameter is required for 'find_replace'."}
                 if find_text is None: return {"status": "error", "message": "'find_text' parameter is required for 'find_replace'."}
@@ -210,6 +228,21 @@ class FileSystemTool(BaseTool):
                 if regex_pattern is None: return {"status": "error", "message": "'regex_pattern' parameter is required for 'regex_replace'."}
                 if replace_text is None: return {"status": "error", "message": "'replace_text' parameter is required for 'regex_replace'."}
                 return await self._regex_replace_in_file(base_path, filename, regex_pattern, replace_text, agent_id, scope_description)
+            elif action == "append":
+                if not filename: return {"status": "error", "message": "'filename' parameter is required for 'append'."}
+                if content is None: return {"status": "error", "message": "'content' parameter is required for 'append'."}
+                return await self._append_to_file(base_path, filename, content, agent_id, scope_description)
+            elif action == "insert_lines":
+                if not filename: return {"status": "error", "message": "'filename' parameter is required for 'insert_lines'."}
+                if insert_line is None: return {"status": "error", "message": "'insert_line' parameter is required for 'insert_lines'."}
+                if content is None: return {"status": "error", "message": "'content' parameter is required for 'insert_lines'."}
+                return await self._insert_lines_in_file(base_path, filename, insert_line, content, agent_id, scope_description)
+            elif action == "replace_lines":
+                if not filename: return {"status": "error", "message": "'filename' parameter is required for 'replace_lines'."}
+                if replace_start_line is None or replace_end_line is None: return {"status": "error", "message": "'replace_start_line' and 'replace_end_line' parameters are required for 'replace_lines'."}
+                if content is None: return {"status": "error", "message": "'content' parameter is required for 'replace_lines'."}
+                return await self._replace_lines_in_file(base_path, filename, replace_start_line, replace_end_line, content, agent_id, scope_description)
+
             # --- NEW: Handle mkdir and delete ---
             elif action == "mkdir":
                  if not relative_path: return {"status": "error", "message": "'path' parameter (directory path) is required for 'mkdir'."}
@@ -236,90 +269,143 @@ class FileSystemTool(BaseTool):
     # --- Detailed Usage Method ---
     def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None, sub_action: Optional[str] = None) -> str:
         """Returns detailed usage instructions for the FileSystemTool."""
-        usage = """**Tool Name:** file_system
+        
+        common_header = """**Tool Name:** file_system
 
 **Description:** Performs operations on files and directories within different scopes. All paths MUST be relative to the scope root.
 
-**CRITICAL - Valid Actions Only:** The following actions are the ONLY valid actions. Do NOT use variations like 'create_directory' or 'create_file':
-- read, write, list, mkdir, delete, find_replace, regex_replace, copy, move
+**CRITICAL - Valid Actions Only:** The following actions are the ONLY valid actions:
+read, write, append, insert_lines, replace_lines, list, mkdir, delete, find_replace, regex_replace, copy, move
 
 **Scopes:**
-*   `private`: Agent's own sandbox directory (e.g., `sandboxes/agent_.../`). Use for temporary files or agent-specific data. Default.
-*   `shared`: Current session's shared workspace (e.g., `projects/<project>/<session>/shared_workspace/`). Use for collaboration and final outputs. Requires project/session context.
-*   `projects`: The top-level projects directory (e.g., `projects/`). Use ONLY with the `list` action to see existing project folders.
-
-**Actions & Parameters:**
-
-1.  **read:** Reads the content of a file.
-    *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
-    *   `<filename>` (string, required): Relative path to the file (e.g., `data/input.txt`, `report.md`).
-    *   `<start_line>` (integer, optional): Line number to start reading from (1-indexed).
-    *   `<end_line>` (integer, optional): Line number to stop reading at (inclusive).
-    *   Example: `<file_system><action>read</action><scope>shared</scope><filename>results/analysis.txt</filename></file_system>`
-
-2.  **write:** Writes content to a file, creating directories if needed. Overwrites existing files.
-    *   **NOTE:** Use 'write' action to create files, NOT 'create_file'!
-    *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
-    *   `<filename>` (string, required): Relative path to the file (e.g., `code/script.py`, `output/summary.txt`).
-    *   `<content>` (string, required): The text content to write. **CRITICAL:** For large content (code, reports), use this action instead of putting content in `send_message`.
-    *   Example: `<file_system><action>write</action><scope>shared</scope><filename>drafts/report_v1.md</filename><content># Report Title...</content></file_system>`
-
-3.  **list:** Lists files and directories within a path.
-    *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
-    *   `<path>` (string, optional): Relative path to the directory. Defaults to '.' (the scope root) if omitted.
-    *   Example (List shared root): `<file_system><action>list</action><scope>shared</scope></file_system>`
-    *   Example (List subdir): `<file_system><action>list</action><scope>private</scope><path>temp_files</path></file_system>`
-    *   Example (List projects): `<file_system><action>list</action><scope>projects</scope></file_system>`
-
-4.  **mkdir:** Creates a directory, including parent directories if needed. (Cannot use `scope='projects'`)
-    *   **NOTE:** Use 'mkdir' action to create directories, NOT 'create_directory'!
-    *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
-    *   `<path>` (string, required): Relative path of the directory to create (e.g., `results/images`, `data`).
-    *   Example: `<file_system><action>mkdir</action><scope>shared</scope><path>final_report/data_files</path></file_system>`
-
-5.  **delete:** Deletes a file or an *empty* directory. Use with caution.
-    *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
-    *   `<path>` (string, required): Relative path to the file or empty directory to delete.
-    *   Example (Delete file): `<file_system><action>delete</action><scope>private</scope><path>old_draft.txt</path></file_system>`
-    *   Example (Delete empty dir): `<file_system><action>delete</action><scope>shared</scope><path>temp_output</path></file_system>`
-
-6.  **find_replace:** Finds and replaces all occurrences of text within a file. (Cannot use `scope='projects'`)
-    *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
-    *   `<filename>` (string, required): Relative path to the file to modify.
-    *   `<find_text>` (string, required): The exact text string to find.
-    *   `<replace_text>` (string, required): The text string to replace occurrences with.
-    *   Example: `<file_system><action>find_replace</action><scope>shared</scope><filename>config.yaml</filename><find_text>old_value</find_text><replace_text>new_value</replace_text></file_system>`
-
-7.  **regex_replace:** Finds and replaces using regular expressions. (Cannot use `scope='projects'`)
-    *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
-    *   `<filename>` (string, required): Relative path to the file to modify.
-    *   `<regex_pattern>` (string, required): The regular expression pattern to find.
-    *   `<replace_text>` (string, required): The text to replace matches with (can use group references like \\1).
-    *   Example: `<file_system><action>regex_replace</action><scope>shared</scope><filename>data.txt</filename><regex_pattern>^foo</regex_pattern><replace_text>bar</replace_text></file_system>`
-
-8.  **copy:** Copies a file or directory.
-    *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
-    *   `<path>` (string, required): The source path to copy.
-    *   `<destination_path>` (string, required): The target path.
-    *   Example: `<file_system><action>copy</action><path>src.txt</path><destination_path>dest.txt</destination_path></file_system>`
-
-9.  **move:** Moves or renames a file or directory.
-    *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
-    *   `<path>` (string, required): The source path to move.
-    *   `<destination_path>` (string, required): The target path.
-    *   Example: `<file_system><action>move</action><path>old_name.txt</path><destination_path>new_subdir/new_name.txt</destination_path></file_system>`
-
-**COMMON MISTAKES TO AVOID:**
-*   ❌ DON'T use 'create_directory' - use 'mkdir' instead
-*   ❌ DON'T use 'create_file' - use 'write' instead  
-*   ❌ DON'T use 'create' - use 'write' instead
-*   ❌ DON'T use 'make_directory' - use 'mkdir' instead
-
-**Important Notes:**
-*   Path Traversal (`../`, `/`) is blocked for security. All paths must be relative within the chosen scope.
-*   Ensure directories exist (using `mkdir`) before writing files into subdirectories if unsure.
+*   `private`: Agent's own sandbox directory (Default).
+*   `shared`: Current session's shared workspace. Requires project/session context.
+*   `projects`: Top-level projects directory (ONLY use with `list` action).
 """
-        return usage.strip()
+        
+        if sub_action == "read":
+            return common_header + """
+**Action: read**
+Reads the content of a file.
+*   `<filename>` (string, required): Relative path to the file.
+*   `<start_line>` (integer, optional): Line number to start reading from (1-indexed).
+*   `<end_line>` (integer, optional): Line number to stop reading at (inclusive).
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+        elif sub_action == "write":
+            return common_header + """
+**Action: write**
+Writes content to a file. Overwrites completely. For targeted edits, use `replace_lines` or `append` instead!
+*   `<filename>` (string, required): Relative path to the file.
+*   `<content>` (string, required): The complete file content to write.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+        elif sub_action == "append":
+            return common_header + """
+**Action: append**
+Appends text to the end of an existing file.
+*   `<filename>` (string, required): Relative path to the file.
+*   `<content>` (string, required): Text to append.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+        elif sub_action == "insert_lines":
+            return common_header + """
+**Action: insert_lines**
+Inserts a block of text at a specific line number, shifting subsequent lines down.
+*   `<filename>` (string, required): Relative path to the file.
+*   `<insert_line>` (integer, required): The line number (1-indexed) where the new `<content>` will be inserted.
+*   `<content>` (string, required): Text to insert.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+        elif sub_action == "replace_lines":
+            return common_header + """
+**Action: replace_lines**
+Replaces a specific block of existing lines with new content. STRONGLY RECOMMENDED for modifying existing files.
+*   `<filename>` (string, required): Relative path to the file.
+*   `<replace_start_line>` (integer, required): The first line number (1-indexed) to remove.
+*   `<replace_end_line>` (integer, required): The last line number (1-indexed) to remove (inclusive).
+*   `<content>` (string, required): The new text to replace the removed lines with.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+        elif sub_action == "list":
+            return common_header + """
+**Action: list**
+Lists files and directories within a path.
+*   `<path>` (string, optional): Relative directory path. Defaults to root of scope.
+*   `<scope>` (string, optional): 'private', 'shared', 'projects'. Default: 'private'.
+"""
+        elif sub_action == "mkdir":
+            return common_header + """
+**Action: mkdir**
+Creates a directory, including parent directories.
+*   `<path>` (string, required): Relative directory path.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+        elif sub_action == "delete":
+            return common_header + """
+**Action: delete**
+Deletes a file or an *empty* directory.
+*   `<path>` (string, required): Relative target path.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+        elif sub_action == "find_replace":
+            return common_header + """
+**Action: find_replace**
+Finds and replaces all occurrences of an EXACT string.
+*   `<filename>` (string, required): Relative path.
+*   `<find_text>` (string, required): Exact string to find.
+*   `<replace_text>` (string, required): Replacement string.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+        elif sub_action == "regex_replace":
+            return common_header + """
+**Action: regex_replace**
+Finds and replaces using regex.
+*   `<filename>` (string, required): Relative path.
+*   `<regex_pattern>` (string, required): Regex pattern.
+*   `<replace_text>` (string, required): Replacement string.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+        elif sub_action == "copy":
+            return common_header + """
+**Action: copy**
+Copies a file/directory.
+*   `<path>` (string, required): Source path.
+*   `<destination_path>` (string, required): Target path.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+        elif sub_action == "move":
+            return common_header + """
+**Action: move**
+Moves/renames a file/directory.
+*   `<path>` (string, required): Source path.
+*   `<destination_path>` (string, required): Target path.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+
+        # Return directory of commands
+        return common_header + """
+**Available Actions Summary:**
+1.  **read:** Reads file content. (Use start_line and end_line for large files).
+2.  **write:** Overwrites a file completely.
+3.  **append:** Adds text to the end of a file.
+4.  **insert_lines:** Inserts a block of text at a specific line.
+5.  **replace_lines:** Replaces a block of lines with new text.
+6.  **list:** Lists files in a directory.
+7.  **mkdir:** Creates a directory.
+8.  **delete:** Deletes a file or empty directory.
+9.  **find_replace:** Exact string replacement.
+10. **regex_replace:** Regex based string replacement.
+11. **copy:** Copies files/directories.
+12. **move:** Moves/renames files/directories.
+
+**To get detailed instructions and parameter lists for a specific action, call:**
+<tool_information>
+  <action>get_info</action>
+  <tool_name>file_system</tool_name>
+  <sub_action>ACTION_NAME</sub_action>
+</tool_information>
+"""
 
     async def _resolve_and_validate_path(self, base_path: Path, relative_file_path: str, agent_id: str, scope_description: str) -> Path | None:
         """ Resolves the relative path against the base path and validates it. """
@@ -342,7 +428,7 @@ class FileSystemTool(BaseTool):
                 logger.warning(f"Agent {agent_id} path traversal attempt blocked for {scope_description}: Resolved path {absolute_path} vs Base path {base_path_resolved}")
                 return None
         except ValueError as ve: # is_relative_to can raise ValueError on Windows if drives differ
-             logger.warning(f"Agent {agent_id} path validation error for {scope_description} ({ve}): Path '{relative_file_path}', Base: {base_path_resolved}")
+             logger.warning(f"Agent {agent_id} path validation error for {scope_description} ({ve}): Path '{relative_file_path}'")
              return None
         except Exception as e:
             logger.error(f"Error resolving/validating path '{relative_file_path}' for agent {agent_id} within {scope_description} ('{base_path}'): {e}", exc_info=True)
@@ -540,3 +626,66 @@ class FileSystemTool(BaseTool):
         except Exception as e:
             logger.error(f"Agent {agent_id} error moving '{relative_src}' to '{relative_dst}': {e}", exc_info=True)
             return {"status": "error", "message": f"Error moving '{relative_src}' to '{relative_dst}': {e}"}
+
+    async def _append_to_file(self, base_path: Path, filename: str, content: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+        val_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
+        if not val_path: return {"status": "error", "message": f"Invalid path '{filename}'."}
+        if val_path.is_dir(): return {"status": "error", "message": f"Cannot append. '{filename}' is a directory."}
+        try:
+            await asyncio.to_thread(val_path.parent.mkdir, parents=True, exist_ok=True)
+            def append_sync():
+                with open(val_path, 'a', encoding='utf-8') as f:
+                    f.write(content)
+            await asyncio.to_thread(append_sync)
+            logger.info(f"Agent {agent_id} appended to '{filename}' in {scope_description}")
+            return {"status": "success", "message": f"Successfully appended content to '{filename}'."}
+        except Exception as e:
+            logger.error(f"Agent {agent_id} error appending to '{filename}': {e}", exc_info=True)
+            return {"status": "error", "message": f"Error appending to '{filename}': {e}"}
+
+    async def _insert_lines_in_file(self, base_path: Path, filename: str, insert_line: int, content: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+        val_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
+        if not val_path: return {"status": "error", "message": f"Invalid path '{filename}'."}
+        if not val_path.is_file(): return {"status": "error", "message": f"File '{filename}' does not exist."}
+        try:
+            def insert_sync():
+                lines = val_path.read_text(encoding='utf-8').splitlines(True)
+                idx = max(0, insert_line - 1)
+                
+                new_lines = content.splitlines(True)
+                if new_lines and not new_lines[-1].endswith('\\n') and idx < len(lines):
+                    new_lines[-1] += '\\n'
+                    
+                lines = lines[:idx] + new_lines + lines[idx:]
+                val_path.write_text("".join(lines), encoding='utf-8')
+            await asyncio.to_thread(insert_sync)
+            logger.info(f"Agent {agent_id} inserted lines at {insert_line} in '{filename}' ({scope_description})")
+            return {"status": "success", "message": f"Successfully inserted content at line {insert_line} in '{filename}'."}
+        except Exception as e:
+            logger.error(f"Agent {agent_id} error inserting lines in '{filename}': {e}", exc_info=True)
+            return {"status": "error", "message": f"Error inserting lines in '{filename}': {e}"}
+
+    async def _replace_lines_in_file(self, base_path: Path, filename: str, start_line: int, end_line: int, content: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+        val_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
+        if not val_path: return {"status": "error", "message": f"Invalid path '{filename}'."}
+        if not val_path.is_file(): return {"status": "error", "message": f"File '{filename}' does not exist."}
+        if start_line > end_line or start_line < 1:
+            return {"status": "error", "message": f"Invalid line range: {start_line} to {end_line}."}
+        try:
+            def replace_sync():
+                lines = val_path.read_text(encoding='utf-8').splitlines(True)
+                start_idx = max(0, start_line - 1)
+                end_idx = max(start_idx, min(end_line, len(lines)))
+                
+                new_lines = content.splitlines(True)
+                if new_lines and not new_lines[-1].endswith('\\n') and end_idx < len(lines):
+                    new_lines[-1] += '\\n'
+                    
+                lines = lines[:start_idx] + new_lines + lines[end_idx:]
+                val_path.write_text("".join(lines), encoding='utf-8')
+            await asyncio.to_thread(replace_sync)
+            logger.info(f"Agent {agent_id} replaced lines {start_line}-{end_line} in '{filename}' ({scope_description})")
+            return {"status": "success", "message": f"Successfully replaced lines {start_line} to {end_line} in '{filename}'."}
+        except Exception as e:
+            logger.error(f"Agent {agent_id} error replacing lines in '{filename}': {e}", exc_info=True)
+            return {"status": "error", "message": f"Error replacing lines in '{filename}': {e}"}

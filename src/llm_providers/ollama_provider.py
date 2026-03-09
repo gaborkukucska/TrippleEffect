@@ -37,7 +37,7 @@ class OllamaProvider(BaseLLMProvider):
         self.base_url = (base_url or DEFAULT_OLLAMA_BASE_URL).rstrip('/')
         logger.info(f"OllamaProvider initialized. Using Base URL: {self.base_url}")
 
-        if api_key: logger.warning("OllamaProvider Warning: API key provided but not used.")
+        if api_key and api_key != 'ollama': logger.warning("OllamaProvider Warning: API key provided but not used.")
         self._model_registry = model_registry  # Reference to ModelRegistry for per-model metadata lookup
         self._session_timeout_config = kwargs.pop('timeout', None) # Pop before logging ignored, as it's handled
         if kwargs: # Log any other unexpected kwargs passed to constructor
@@ -170,7 +170,7 @@ class OllamaProvider(BaseLLMProvider):
         if model_info and model_info.get('model_template'):
             stripped_template = model_info['model_template'].strip()
             if stripped_template in ('{{ .Prompt }}', '{{ .Response }}', '{{ .System }}{{ .Prompt }}'):
-                logger.warning(f"OllamaProvider: Model '{model}' has a RAW template ('{stripped_template}'). "
+                logger.debug(f"OllamaProvider: Model '{model}' has a RAW template ('{stripped_template}'). "
                                f"Multi-turn /api/chat conversations may not be formatted correctly. "
                                f"Consider updating the model's Modelfile with a proper chat template.")
 

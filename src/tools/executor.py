@@ -29,7 +29,7 @@ class ToolExecutor:
         # Tool execution robustness settings
         self._max_retry_attempts = 3
         self._retry_delay_seconds = 1.0
-        self._execution_stats = {
+        self._execution_stats: Dict[str, Any] = {
             "total_attempts": 0,
             "successful_executions": 0, 
             "failed_executions": 0,
@@ -244,7 +244,7 @@ class ToolExecutor:
         """Get current execution statistics"""
         stats = self._execution_stats.copy()
         if stats["total_attempts"] > 0:
-            stats["success_rate"] = round((stats["successful_executions"] / stats["total_attempts"]) * 100, 2)
+            stats["success_rate"] = float(round((stats["successful_executions"] / stats["total_attempts"]) * 100, 2))
         else:
             stats["success_rate"] = 0.0
         return stats
@@ -345,9 +345,11 @@ class ToolExecutor:
     ) -> str:
         """Generate enhanced error response using the centralized error handler"""
         
-        # Get tool schema if available
         tool_schema = None
         available_actions = None
+        action_help = None
+        attempted_action = tool_args.get("action") if tool_args else None
+        
         if tool_name in self.tools:
             tool = self.tools[tool_name]
             tool_schema = tool.get_schema()
@@ -360,6 +362,15 @@ class ToolExecutor:
                 action_matches = re.findall(r"action.*?['\"]([\w_]+)['\"]", detailed_usage, re.IGNORECASE)
                 if action_matches:
                     available_actions = list(set(action_matches))
+                
+                # If we have an attempted action, try to fetch specific action help docs
+                if attempted_action:
+                    try:
+                        specific_help = tool.get_detailed_usage(agent_context=agent_context, sub_action=attempted_action)
+                        if specific_help:
+                            action_help = specific_help
+                    except Exception as help_err:
+                        logger.debug(f"Could not fetch action_help for sub_action {attempted_action}: {help_err}")
             except Exception:
                 pass
         
@@ -371,11 +382,12 @@ class ToolExecutor:
         error_response = tool_error_handler.generate_enhanced_error_response(
             error_type=error_type,
             tool_name=tool_name,
-            attempted_action=tool_args.get("action") if tool_args else None,
+            attempted_action=attempted_action,
             tool_args=tool_args,
             agent_context=agent_context,
             available_actions=available_actions,
-            tool_schema=tool_schema
+            tool_schema=tool_schema,
+            action_help=action_help
         )
         
         # Record error pattern for learning
@@ -433,13 +445,14 @@ class ToolExecutor:
         
         tool = self.tools.get(tool_name)
         if not tool:
+            agent_type_for_auth = "unknown"
             # Use enhanced error handler for tool not found
-            agent_context = {
+            agent_context_dict = {
                 "agent_id": agent_id,
-                "agent_type": agent_type_for_auth if 'agent_type_for_auth' in locals() else "unknown"
+                "agent_type": agent_type_for_auth
             }
             enhanced_error = self._generate_enhanced_error_response(
-                ErrorType.TOOL_NOT_FOUND, tool_name, tool_args, agent_id, agent_context
+                ErrorType.TOOL_NOT_FOUND, tool_name, tool_args, agent_id, agent_context_dict
             )
             
             logger.error(f"[TOOL_EXEC_ERROR] ID:{execution_id} | Tool '{tool_name}' not found")

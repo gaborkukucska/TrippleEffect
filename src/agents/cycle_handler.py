@@ -1160,7 +1160,8 @@ class AgentCycleHandler:
                                 )
                             elif called_tool_name == "manage_team" and called_tool_args.get("action") == "create_agent":
                                 # This was an agent creation action. This is the new, context-aware intervention logic.
-                                agent.successfully_created_agent_count_for_build += 1
+                                if any_tool_success:
+                                    agent.successfully_created_agent_count_for_build += 1
 
                                 # Get up-to-date team information
                                 team_id = self._manager.state_manager.get_agent_team(agent.agent_id)

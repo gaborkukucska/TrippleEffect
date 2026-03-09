@@ -51,7 +51,8 @@ class ToolErrorHandler:
         tool_args: Optional[Dict[str, Any]] = None,
         agent_context: Optional[Dict[str, Any]] = None,
         available_actions: Optional[List[str]] = None,
-        tool_schema: Optional[Dict[str, Any]] = None
+        tool_schema: Optional[Dict[str, Any]] = None,
+        action_help: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Generate enhanced error response with context-aware suggestions
@@ -67,7 +68,7 @@ class ToolErrorHandler:
             "suggestions": [],
             "corrected_examples": [],
             "alternative_tools": [],
-            "context_help": "",
+            "context_help": action_help or "",
             "execution_id": f"err_{tool_name}_{int(time.time())}",
             "learning_data": {
                 "pattern": f"{tool_name}_{error_type.value}_{attempted_action or 'unknown'}",
@@ -312,6 +313,9 @@ class ToolErrorHandler:
             
         if error_response.get("alternative_tools"):
             message_parts.append(f"\n[Alternative Tools]: {', '.join(error_response['alternative_tools'])}")
+            
+        if error_response.get("context_help"):
+            message_parts.append(f"\n[Action Usage Context]\n{error_response['context_help']}")
             
         return "\n".join(message_parts)
 

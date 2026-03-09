@@ -3,6 +3,7 @@
 
 # Python cache files
 __pycache__/
+.pytest_cache/
 
 # Environment variables - contains sensitive secrets
 .env

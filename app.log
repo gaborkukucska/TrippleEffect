@@ -1,7 +1,0 @@
-nohup: ignoring input
-Traceback (most recent call last):
-  File "<frozen runpy>", line 198, in _run_module_as_main
-  File "<frozen runpy>", line 88, in _run_code
-  File "/home/tom/TrippleEffect/src/main.py", line 2, in <module>
-    import uvicorn
-ModuleNotFoundError: No module named 'uvicorn'

@@ -103,7 +103,7 @@ async def scan_for_local_apis(ports: List[int], timeout: float) -> List[str]:
             try:
                 nm = nmap.PortScanner()
             except nmap.PortScannerError as init_err:
-                 logger.error(f"Failed to initialize nmap.PortScanner: {init_err}. Is nmap installed and in PATH?")
+                 logger.warning(f"Failed to initialize nmap.PortScanner: {init_err}. Is nmap installed and in PATH? Local network API scanning will be disabled.")
                  return None # Indicate failure
 
             # Construct nmap arguments
@@ -156,9 +156,9 @@ async def scan_for_local_apis(ports: List[int], timeout: float) -> List[str]:
         # --- END CORRECTED PARSING LOOP ---
 
     except FileNotFoundError:
-         logger.error("Nmap scan failed: 'nmap' command not found. Please ensure nmap is installed and in your system's PATH.")
+         logger.warning("Nmap scan failed: 'nmap' command not found. Please ensure nmap is installed and in your system's PATH for local network API scanning.")
     except ImportError:
-         logger.error("Nmap scan failed: 'python-nmap' library not found. Please install it (`pip install python-nmap`).")
+         logger.warning("Nmap scan failed: 'python-nmap' library not found. Please install it (`pip install python-nmap`) for local network API scanning.")
     except Exception as e:
         if isinstance(e, nmap.PortScannerError):
             logger.error(f"Nmap scan or XML parsing failed: {e}. This can happen on unstable networks or if the scan is interrupted. Returning empty list of found APIs.", exc_info=True)

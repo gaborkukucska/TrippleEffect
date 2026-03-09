@@ -174,8 +174,8 @@ Please provide your summary as plain text (no XML tags needed for this summariza
                 temperature=0.3,  # Lower temperature for more focused summaries
                 max_tokens=800    # Limit summary length
             ):
-                if chunk and hasattr(chunk, 'content') and chunk.content:
-                    summary_chunks.append(chunk.content)
+                if isinstance(chunk, dict) and chunk.get("type") == "response_chunk" and chunk.get("content"):
+                    summary_chunks.append(chunk["content"])
             
             # Restore original CG history
             cg_agent.message_history = original_history

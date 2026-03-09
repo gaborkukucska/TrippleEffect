@@ -157,8 +157,9 @@ This is the engine that drives the agent execution loop. It is stateless itself,
 
 This pair of components manages all agent interactions with the "outside world" via tools.
 
-- **`ToolExecutor`**: A simple but crucial component. It auto-discovers all available tool classes, instantiates them, and stores them in a dictionary keyed by the tool's name. It provides a single `execute_tool` method that takes the tool name and arguments.
+- **`ToolExecutor`**: A simple but crucial component. It auto-discovers all available tool classes, instantiates them, and stores them in a dictionary keyed by the tool's name. It provides a single `execute_tool` method that takes the tool name and arguments. When a tool execution fails, the `ToolExecutor` automatically fetches action-specific documentation from the tool's `get_detailed_usage(sub_action=...)` method and includes it in the error message sent back to the agent via the `ToolErrorHandler`, enabling context-aware self-correction.
 - **`InteractionHandler`**: Acts as a mediator between the `AgentCycleHandler` and the `ToolExecutor`. Its `execute_single_tool` method contains the boilerplate logic for calling the executor, handling exceptions, logging the result to the database, and formatting the output into the `role: "tool"` message structure that the agent expects in its history.
+- **Modular Tool Help System**: Major tools (`FileSystemTool`, `ProjectManagementTool`, `ManageTeamTool`) implement segmented `get_detailed_usage(sub_action=...)` methods. When called without a `sub_action`, they return a concise summary of all available actions. When called with a specific `sub_action` (e.g., `"read"`, `"add_task"`, `"create_agent"`), they return only the relevant action's detailed parameter documentation. This reduces token usage and improves agent context relevance.
 
 ### 4.5. `WorkflowManager` (`src/agents/workflow_manager.py`)
 
