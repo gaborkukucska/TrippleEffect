@@ -265,6 +265,32 @@ class DatabaseManager:
             return session_id
     # --- *** END NEW METHOD *** ---
 
+    async def get_recent_sessions_summary(self, limit: int = 5) -> str:
+        """ Returns a formatted string summary of recent sessions and their projects. """
+        async with self.get_session() as session:
+            # Join Session with Project to get the project name
+            stmt = (
+                select(Session, Project.name.label("project_name"))
+                .join(Project, Session.project_id == Project.id)
+                .order_by(desc(Session.start_time))
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            rows = result.all()
+            
+            if not rows:
+                return "No previous sessions found in memory."
+                
+            summary_lines = ["\n[SYSTEM MEMORY: Recent Projects and Sessions]"]
+            for row in rows:
+                sess = row.Session
+                proj_name = row.project_name
+                start_str = sess.start_time.strftime("%Y-%m-%d %H:%M:%S UTC") if sess.start_time else "Unknown"
+                status = "Completed" if sess.end_time else "InProgress/Interrupted"
+                summary_lines.append(f"- Project: '{proj_name}' | Session: '{sess.name}' | Started: {start_str} | Status: {status}")
+                
+            return "\n".join(summary_lines) + "\n"
+
 
     # --- Agent Records ---
     async def add_agent_record(self, session_id: int, agent_id: str, persona: str, model_config_dict: Optional[Dict] = None) -> Optional[AgentRecord]:

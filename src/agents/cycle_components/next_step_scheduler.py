@@ -46,22 +46,9 @@ class NextStepScheduler:
                 agent.message_history.append(tool_result)
             logger.info(f"NextStepScheduler: Appended {len(context.all_tool_results)} tool result(s) to agent '{agent_id}' history.")
 
-        # --- DIAGNOSTIC Location 2 (Start of schedule_next_step) ---
-        try:
-            history_preview = ""
-            history_len = "N/A"
-            history_id = "N/A"
-            if agent and hasattr(agent, 'message_history') and agent.message_history is not None:
-                history_len = len(agent.message_history)
-                history_id = id(agent.message_history)
-                if agent.message_history:
-                    # Preview the first few items if list is long, or all if short
-                    preview_items = agent.message_history[:3] # Use slicing for safety
-                    history_preview = json.dumps(preview_items, default=str)[:250] # Limit preview length
-            logger.critical(f"DIAGNOSTIC (NextStepScheduler - START of schedule_next_step): Agent ID: {getattr(agent, 'agent_id', 'N/A')}, Agent Obj ID: {id(agent) if agent else 'N/A'}, History ID: {history_id}, History Len: {history_len}, History Preview: {history_preview}...")
-        except Exception as diag_err:
-            logger.error(f"DIAGNOSTIC ERROR (NextStepScheduler - START): {diag_err}")
-        # --- END DIAGNOSTIC Location 2 ---
+        # --- Diagnostic: Log context at start of schedule_next_step ---
+        logger.debug(f"NextStepScheduler (START): Agent '{getattr(agent, 'agent_id', 'N/A')}', "
+                     f"History Len: {len(agent.message_history) if agent and hasattr(agent, 'message_history') and agent.message_history is not None else 'N/A'}")
 
 
         if context.trigger_failover:
@@ -138,6 +125,7 @@ class NextStepScheduler:
             }
             
             # BALANCED FIX: Admin AI work state logic - reactivate after tool execution to process results
+            # IMPORTANT: Only applies to ADMIN_STATE_WORK - other states (startup, conversation) should NOT loop
             if (agent.agent_type, agent.state) == (AGENT_TYPE_ADMIN, ADMIN_STATE_WORK):
                 if context.executed_tool_successfully_this_cycle:
                     logger.info(f"NextStepScheduler: Admin AI '{agent_id}' executed tools successfully - reactivating to process results")
@@ -170,12 +158,13 @@ class NextStepScheduler:
                 agent.set_status(AGENT_STATUS_IDLE)
                 await self._schedule_new_cycle(agent, 0)
             elif agent.agent_type == AGENT_TYPE_PM and \
-                 agent.state in [PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS] and \
-                 (not context.action_taken_this_cycle and not context.executed_tool_successfully_this_cycle): # MODIFIED HERE
-                logger.warning(f"NextStepScheduler: PM agent '{agent_id}' in state '{agent.state}' finished but took NO ACTION (and no tool was run). Reactivating to enforce workflow.")
+                 agent.state in [PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS]:
+                logger.info(f"NextStepScheduler: PM agent '{agent_id}' in state '{agent.state}' completed cycle. Reactivating to enforce transitional workflow.")
                 if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear()
-                agent.set_status(AGENT_STATUS_IDLE)
-                await self._schedule_new_cycle(agent, 0)
+                if agent.status != AGENT_STATUS_ERROR:
+                    if not (agent.status == AGENT_STATUS_AWAITING_USER_REVIEW_CG and getattr(agent, 'cg_awaiting_user_decision', False)):
+                        agent.set_status(AGENT_STATUS_IDLE)
+                        await self._schedule_new_cycle(agent, 0)
             else:
                 logger.info(f"NextStepScheduler: Agent '{agent_id}' ({context.current_model_key_for_tracking}) finished cycle cleanly, no specific reactivation needed by this scheduler.")
                 if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear()
@@ -193,23 +182,26 @@ class NextStepScheduler:
                     # Only set to IDLE if not awaiting user decision on a CG concern
                     if not (agent.status == AGENT_STATUS_AWAITING_USER_REVIEW_CG and getattr(agent, 'cg_awaiting_user_decision', False)):
                         agent.set_status(AGENT_STATUS_IDLE)
+
+                # CRITICAL FIX: PM agents in transitional states MUST be rescheduled even
+                # when the cycle did not complete successfully (e.g. malformed LLM output,
+                # failed tool call).  Previously PMs in build_team_tasks or
+                # activate_workers would silently stop here — this was the root cause of
+                # the "PM breakdown before workers start" bug.
+                if agent.agent_type == AGENT_TYPE_PM and \
+                   agent.state in [PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS]:
+                    logger.warning(f"NextStepScheduler: PM agent '{agent_id}' in transitional state '{agent.state}' had a FAILED cycle. Rescheduling to recover.")
+                    if agent.status != AGENT_STATUS_ERROR:
+                        agent.set_status(AGENT_STATUS_IDLE)
+                        await self._schedule_new_cycle(agent, 0)
+                        self._log_end_of_schedule_next_step(agent, "Path E-PM-Recovery")
+                        return
         
         self._log_end_of_schedule_next_step(agent, "Path E - Default End")
 
     def _log_end_of_schedule_next_step(self, agent: 'Agent', path_identifier: str) -> None:
-        try:
-            history_preview = ""
-            history_len = "N/A"
-            history_id = "N/A"
-            if agent and hasattr(agent, 'message_history') and agent.message_history is not None:
-                history_len = len(agent.message_history)
-                history_id = id(agent.message_history)
-                if agent.message_history:
-                    preview_items = agent.message_history[:3]
-                    history_preview = json.dumps(preview_items, default=str)[:250]
-            logger.critical(f"DIAGNOSTIC (NextStepScheduler - END of schedule_next_step via {path_identifier}): Agent ID: {getattr(agent, 'agent_id', 'N/A')}, Agent Obj ID: {id(agent) if agent else 'N/A'}, History ID: {history_id}, History Len: {history_len}, History Preview: {history_preview}...")
-        except Exception as diag_err:
-            logger.error(f"DIAGNOSTIC ERROR (NextStepScheduler - END): {diag_err}")
+        logger.debug(f"NextStepScheduler (END via {path_identifier}): Agent '{getattr(agent, 'agent_id', 'N/A')}', "
+                     f"History Len: {len(agent.message_history) if agent and hasattr(agent, 'message_history') and agent.message_history is not None else 'N/A'}")
 
     def _determine_reactivation_reason(self, context: 'CycleContext') -> str:
         if context.state_change_requested_this_cycle:
@@ -296,10 +288,10 @@ class NextStepScheduler:
                     
                     completion_message = (
                         "[EMERGENCY SYSTEM OVERRIDE]: You have ignored the previous intervention about the tool_information loop. "
-                        "The system is now automatically completing your task.\\n\\n"
+                        "The system is now automatically completing your task.\n\n"
                         "AUTOMATIC TASK COMPLETION: The Admin AI has successfully identified 9 available tools through the tool_information system. "
                         "The tools include: file_system, github_tool, knowledge_base, manage_team, project_management, send_message, "
-                        "system_help, tool_information, and web_search. Tool testing has been completed.\\n\\n"
+                        "system_help, tool_information, and web_search. Tool testing has been completed.\n\n"
                         "MANDATORY: Request state change immediately with: <request_state state='conversation'/>"
                     )
                     
@@ -331,14 +323,14 @@ class NextStepScheduler:
                     # First intervention for tool_information loop
                     loop_breaking_message = (
                         "[CRITICAL Framework Intervention]: You are stuck in a tool_information + list_tools infinite loop. "
-                        "This exact pattern matches the logs indicating you repeatedly call tool_information with list_tools action.\\n\\n"
-                        "LOOP DETECTION: Multiple consecutive tool_information calls with action='list_tools' detected.\\n\\n"
-                        "MANDATORY INSTRUCTIONS TO BREAK THE LOOP:\\n"
-                        "1. STOP calling tool_information with list_tools - you already have the tool list\\n"
-                        "2. You have these tools available: file_system, github_tool, knowledge_base, manage_team, project_management, send_message, system_help, tool_information, web_search\\n"
-                        "3. Choose ONE different tool (NOT tool_information) and test it\\n"
-                        "4. Example: <file_system><action>list</action><path>.</path></file_system>\\n"
-                        "5. After testing ONE tool, provide a summary and request: <request_state state='conversation'/>\\n\\n"
+                        "This exact pattern matches the logs indicating you repeatedly call tool_information with list_tools action.\n\n"
+                        "LOOP DETECTION: Multiple consecutive tool_information calls with action='list_tools' detected.\n\n"
+                        "MANDATORY INSTRUCTIONS TO BREAK THE LOOP:\n"
+                        "1. STOP calling tool_information with list_tools - you already have the tool list\n"
+                        "2. You have these tools available: file_system, github_tool, knowledge_base, manage_team, project_management, send_message, system_help, tool_information, web_search\n"
+                        "3. Choose ONE different tool (NOT tool_information) and test it\n"
+                        "4. Example: <file_system><action>list</action><path>.</path></file_system>\n"
+                        "5. After testing ONE tool, provide a summary and request: <request_state state='conversation'/>\n\n"
                         "CRITICAL: Your next response MUST NOT contain tool_information calls. Use a different tool or request state change."
                     )
                     
@@ -627,19 +619,8 @@ class NextStepScheduler:
 
     async def _schedule_new_cycle(self, agent: 'Agent', retry_count: int) -> None:
         """Schedules a new cycle for the agent using the AgentManager."""
-        try:
-            history_preview = ""
-            history_len = "N/A"
-            history_id = "N/A"
-            if agent and hasattr(agent, 'message_history') and agent.message_history is not None:
-                history_len = len(agent.message_history)
-                history_id = id(agent.message_history)
-                if agent.message_history:
-                    preview_items = agent.message_history[:3]
-                    history_preview = json.dumps(preview_items, default=str)[:250]
-            logger.critical(f"DIAGNOSTIC (NextStepScheduler - START of _schedule_new_cycle): Agent ID: {getattr(agent, 'agent_id', 'N/A')}, Agent Obj ID: {id(agent) if agent else 'N/A'}, History ID: {history_id}, History Len: {history_len}, History Preview: {history_preview}...")
-        except Exception as diag_err:
-            logger.error(f"DIAGNOSTIC ERROR (NextStepScheduler - _schedule_new_cycle START): {diag_err}")
+        logger.debug(f"NextStepScheduler (_schedule_new_cycle): Agent '{getattr(agent, 'agent_id', 'N/A')}', "
+                     f"History Len: {len(agent.message_history) if agent and hasattr(agent, 'message_history') and agent.message_history is not None else 'N/A'}")
 
         logger.info(f"NextStepScheduler._schedule_new_cycle: CRITICAL - Scheduling new cycle for agent ID '{agent.agent_id}', instance ID: {id(agent)}, retry: {retry_count}")
         try:

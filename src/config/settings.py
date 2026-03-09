@@ -146,11 +146,17 @@ class Settings:
 
         # --- CG Heartbeat Timer Intervals ---
         try:
+            self.CG_STRICTNESS_LEVEL: int = int(os.getenv("CG_STRICTNESS_LEVEL", "2"))
+            if self.CG_STRICTNESS_LEVEL not in [1, 2, 3]:
+                logger.warning(f"Invalid CG_STRICTNESS_LEVEL {self.CG_STRICTNESS_LEVEL}, using default 2 (Moderate).")
+                self.CG_STRICTNESS_LEVEL = 2
+                
             self.CG_HEARTBEAT_INTERVAL_SECONDS: float = float(os.getenv("CG_HEARTBEAT_INTERVAL_SECONDS", "60.0"))
             self.CG_STALLED_THRESHOLD_SECONDS: float = float(os.getenv("CG_STALLED_THRESHOLD_SECONDS", "300.0"))
-            logger.info(f"Loaded CG Heartbeat settings: Interval={self.CG_HEARTBEAT_INTERVAL_SECONDS}s, Threshold={self.CG_STALLED_THRESHOLD_SECONDS}s")
+            logger.info(f"Loaded CG settings: Strictness Level={self.CG_STRICTNESS_LEVEL}, Heartbeat Interval={self.CG_HEARTBEAT_INTERVAL_SECONDS}s, Threshold={self.CG_STALLED_THRESHOLD_SECONDS}s")
         except ValueError:
-            logger.warning("Invalid CG Heartbeat interval/threshold in .env, using defaults (60s/300s).")
+            logger.warning("Invalid CG settings in .env, using defaults (Strictness=2, 60s/300s).")
+            self.CG_STRICTNESS_LEVEL = 2
             self.CG_HEARTBEAT_INTERVAL_SECONDS = 60.0
             self.CG_STALLED_THRESHOLD_SECONDS = 300.0
 

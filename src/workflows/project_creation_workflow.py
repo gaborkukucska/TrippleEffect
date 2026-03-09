@@ -81,9 +81,14 @@ class ProjectCreationWorkflow(BaseWorkflow):
             if not manager.current_project or not manager.current_session:
                 raise ValueError("Cannot create PM agent: AgentManager is missing active project/session context.")
 
-            sanitized_project_title_for_id = re.sub(r'\W+', '_', project_title)
-            sanitized_session_name_for_id = re.sub(r'\W+', '_', manager.current_session)
-            pm_instance_id = f"pm_{sanitized_project_title_for_id}_{sanitized_session_name_for_id}"[:100] 
+            existing_pm_indices = []
+            for a_id, a_instance in manager.agents.items():
+                if getattr(a_instance, 'agent_type', '') == AGENT_TYPE_PM:
+                    match = re.match(r'^PM(\d+)$', a_id, re.IGNORECASE)
+                    if match:
+                        existing_pm_indices.append(int(match.group(1)))
+            next_pm_index = max(existing_pm_indices, default=0) + 1
+            pm_instance_id = f"PM{next_pm_index}"
             pm_bootstrap_config_id = "project_manager_agent"
 
             if pm_instance_id in manager.agents:

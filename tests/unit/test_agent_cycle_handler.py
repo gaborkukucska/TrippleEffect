@@ -1,6 +1,6 @@
 import asyncio
 import unittest
-from unittest.mock import MagicMock, patch, AsyncMock, call
+from unittest.mock import MagicMock, patch, AsyncMock, call, ANY
 import logging
 
 # Modules to be tested
@@ -12,8 +12,8 @@ from src.agents.constants import AGENT_STATUS_PROCESSING, AGENT_STATUS_IDLE
 from src.llm_providers.base import ToolResultDict, MessageDict
 from src.config.settings import Settings # To mock settings if needed by CycleHandler directly or context
 
-# Disable most logging output for tests unless specifically testing logging
-logging.disable(logging.CRITICAL)
+# Enable logging for debugging
+logging.getLogger().setLevel(logging.DEBUG)
 
 class TestAgentCycleHandlerMultiTool(unittest.TestCase):
 
@@ -25,7 +25,7 @@ class TestAgentCycleHandlerMultiTool(unittest.TestCase):
         self.manager_mock.workflow_manager = MagicMock()
         # CRITICAL FIX: Mock the return value of get_system_prompt to be a string
         self.manager_mock.workflow_manager.get_system_prompt.return_value = "Mock system prompt"
-        self.manager_mock.settings = MagicMock(spec=Settings) # Settings for CycleContext
+        self.manager_mock.settings = MagicMock() # Settings for CycleContext
         self.manager_mock.settings.MAX_STREAM_RETRIES = 1 # Simplify retry logic for tests
         self.manager_mock.settings.RETRY_DELAY_SECONDS = 0.01
         self.manager_mock.current_session_db_id = 12345 # For CycleContext
@@ -37,6 +37,7 @@ class TestAgentCycleHandlerMultiTool(unittest.TestCase):
         # Mock Agent
         self.agent_mock = MagicMock(spec=Agent)
         self.agent_mock.agent_id = "test_multi_tool_agent"
+        self.agent_mock.agent_type = "worker"
         self.agent_mock.provider_name = "mock_provider"
         self.agent_mock.model = "mock_model"
         self.agent_mock.message_history = []
@@ -49,6 +50,7 @@ class TestAgentCycleHandlerMultiTool(unittest.TestCase):
         # Initialize _failover_state if any error path in CycleHandler might access it
         self.agent_mock._failover_state = {} 
         self.agent_mock._failed_models_this_cycle = set()
+        self.agent_mock.needs_priority_recheck = False
 
 
         # Mock InteractionHandler
@@ -74,7 +76,8 @@ class TestAgentCycleHandlerMultiTool(unittest.TestCase):
         tool_requests_event = {
             "type": "tool_requests",
             "calls": [tool_call_1, tool_call_2],
-            "raw_assistant_response": "<tool_A>...</tool_A><tool_B>...</tool_B>"
+            "raw_assistant_response": "<tool_A>...</tool_A><tool_B>...</tool_B>",
+            "content_for_history": "<tool_A>...</tool_A><tool_B>...</tool_B>"
         }
         self.agent_mock.process_message.return_value = self._async_generator_from_list([tool_requests_event])
 
@@ -112,11 +115,11 @@ class TestAgentCycleHandlerMultiTool(unittest.TestCase):
 
         # 3. context.needs_reactivation_after_cycle (indirectly via NextStepScheduler)
         # We check if schedule_cycle was called for the current agent due to needs_reactivation_after_cycle being true
-        self.manager_mock.schedule_cycle.assert_called_with(self.agent_mock, 0) # Assuming retry_count 0 for next cycle
+        self.manager_mock.schedule_cycle.assert_not_called()
 
         # 4. UI and DB logging (check for calls with relevant content)
         self.assertEqual(self.manager_mock.send_to_ui.call_count, 2) # For 2 tool results
-        self.manager_mock.send_to_ui.assert_any_call(unittest.mock.ANY) # Basic check
+        self.manager_mock.send_to_ui.assert_any_call(ANY) # Basic check
         # More specific check for UI calls if needed:
         ui_call_args_list = self.manager_mock.send_to_ui.call_args_list
         self.assertIn(tool_result_1_content, str(ui_call_args_list[0]))
@@ -148,7 +151,8 @@ class TestAgentCycleHandlerMultiTool(unittest.TestCase):
         tool_requests_event = {
             "type": "tool_requests",
             "calls": [tool_call_1, tool_call_fail, tool_call_3],
-            "raw_assistant_response": "..." 
+            "raw_assistant_response": "...",
+            "content_for_history": "..."
         }
         self.agent_mock.process_message.return_value = self._async_generator_from_list([tool_requests_event])
 
@@ -169,8 +173,9 @@ class TestAgentCycleHandlerMultiTool(unittest.TestCase):
         self.assertEqual(self.agent_mock.message_history[2]["content"], tool_result_fail_content)
         self.assertEqual(self.agent_mock.message_history[3]["content"], tool_result_s2_content)
         
-        # 3. Agent should still be reactivated to process results (including the error)
-        self.manager_mock.schedule_cycle.assert_called_with(self.agent_mock, 0)
+        # 3. Needs reactivation? 
+        #    Logic now prevents immediate re-entry loops, so schedule_cycle is not called.
+        self.manager_mock.schedule_cycle.assert_not_called()
 
         # 4. UI and DB logging for all three results
         self.assertEqual(self.manager_mock.send_to_ui.call_count, 3)
@@ -181,7 +186,8 @@ class TestAgentCycleHandlerMultiTool(unittest.TestCase):
         tool_requests_event_empty = {
             "type": "tool_requests",
             "calls": [], # Empty list of calls
-            "raw_assistant_response": "Assistant said something but no tools." 
+            "raw_assistant_response": "Assistant said something but no tools.",
+            "content_for_history": "Assistant said something but no tools."
         }
         self.agent_mock.process_message.return_value = self._async_generator_from_list([tool_requests_event_empty])
 
@@ -195,11 +201,10 @@ class TestAgentCycleHandlerMultiTool(unittest.TestCase):
         self.assertEqual(self.agent_mock.message_history[0]["role"], "assistant")
         self.assertEqual(self.agent_mock.message_history[0]["content"], tool_requests_event_empty["raw_assistant_response"])
 
-        # 3. Needs reactivation? If no tools, agent effectively did nothing actionable this cycle.
-        #    The current logic for context.needs_reactivation_after_cycle = True for tool_requests.
-        #    This might be okay, as the agent might then respond with text.
-        #    Let's assume it's still reactivated to potentially produce a final_response.
-        self.manager_mock.schedule_cycle.assert_called_with(self.agent_mock, 0) 
+        # 3. Needs reactivation? The current logic sets needs_reactivation_after_cycle = False 
+        #    after tool execution to prevent immediate re-entry loops, relying on natural processing.
+        #    So schedule_cycle should NOT be called directly here.
+        self.manager_mock.schedule_cycle.assert_not_called() 
         
         # 4. DB logging for assistant response
         self.manager_mock.db_manager.log_interaction.assert_called_once_with(
@@ -210,6 +215,60 @@ class TestAgentCycleHandlerMultiTool(unittest.TestCase):
             tool_calls=[] # Should log the empty tool_calls list
         )
 
+
+
+    def test_scenario_4_duplicate_tool_calls_prevented(self):
+        # Tools with identical name and arguments should be deduplicated
+        tool_call_1 = {"id": "call_1", "name": "tool_A", "arguments": {"arg1": "val1"}}
+        tool_call_2 = {"id": "call_2", "name": "tool_A", "arguments": {"arg1": "val1"}} # Duplicate!
+        tool_call_3 = {"id": "call_3", "name": "tool_B", "arguments": {"arg2": "val2"}}
+        
+        tool_requests_event = {
+            "type": "tool_requests",
+            "calls": [tool_call_1, tool_call_2, tool_call_3],
+            "raw_assistant_response": "...",
+            "content_for_history": "..."
+        }
+        self.agent_mock.process_message.return_value = self._async_generator_from_list([tool_requests_event])
+
+        self.interaction_handler_mock.execute_single_tool.side_effect = [
+            {"call_id": "call_1", "name": "tool_A", "content": "Success A"},
+            {"call_id": "call_3", "name": "tool_B", "content": "Success B"}
+        ]
+
+        asyncio.run(self.cycle_handler.run_cycle(self.agent_mock, 0))
+
+        # Only 2 tools should be executed because call_2 is a duplicate of call_1
+        self.assertEqual(self.interaction_handler_mock.execute_single_tool.call_count, 2)
+        
+        # Verify call arguments to ensure correct tools were executed
+        self.interaction_handler_mock.execute_single_tool.assert_any_call(
+            self.agent_mock, tool_call_1["id"], tool_call_1["name"], tool_call_1["arguments"], 
+            self.manager_mock.current_project, self.manager_mock.current_session
+        )
+        self.interaction_handler_mock.execute_single_tool.assert_any_call(
+            self.agent_mock, tool_call_3["id"], tool_call_3["name"], tool_call_3["arguments"], 
+            self.manager_mock.current_project, self.manager_mock.current_session
+        )
+
+    def test_deduplicate_pm_framework_messages(self):
+        # Create an agent history with multiple [Framework System Message]s
+        self.agent_mock.message_history = [
+            {"role": "user", "content": "hello"},
+            {"role": "system", "content": "[Framework System Message] Old message 1"},
+            {"role": "assistant", "content": "thinking..."},
+            {"role": "system", "content": "[Framework System Message] Old message 2"},
+            {"role": "system", "content": "[Framework System Message] Newest message"}
+        ]
+        
+        # Call the deduplication helper
+        self.cycle_handler._deduplicate_pm_framework_messages(self.agent_mock)
+        
+        # History should now contain ZERO framework messages, leaving only 2 messages total,
+        # because the CycleHandler expects to append the new framework message immediately after.
+        self.assertEqual(len(self.agent_mock.message_history), 2)
+        self.assertEqual(self.agent_mock.message_history[0]["role"], "user")
+        self.assertEqual(self.agent_mock.message_history[1]["role"], "assistant")
 
 if __name__ == '__main__':
     unittest.main()

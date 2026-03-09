@@ -83,14 +83,20 @@ class ManageTeamTool(BaseTool):
         ToolParameter(
             name="system_prompt",
             type="string",
-            description="System prompt for create_agent. Defines the agent's role.",
-            required=False, # Required only for create_agent, checked in execute
+            description="System prompt for create_agent. Defines the agent's responsibilities.",
+            required=False,
+        ),
+        ToolParameter(
+            name="role",
+            type="string",
+            description="The exact kickoff role this agent fulfills (e.g., 'Coder', 'Tester'). Required for create_agent.",
+            required=False,
         ),
         ToolParameter(
             name="persona",
             type="string",
-            description="Display name for create_agent.",
-            required=False, # Required only for create_agent, checked in execute
+            description="Display name for create_agent. Should match the role or be a descriptive title.",
+            required=False,
         ),
          ToolParameter(
             name="temperature",
@@ -108,7 +114,7 @@ class ManageTeamTool(BaseTool):
         # --- End NEW Parameter ---
     ]
 
-    async def execute(self, agent_id: str, agent_sandbox_path: Path, **kwargs: Any) -> Any:
+    async def execute(self, agent_id: str, agent_sandbox_path: Path, project_name: Optional[str] = None, session_name: Optional[str] = None, **kwargs: Any) -> Any:
         """
         Validates parameters based on the specific management action requested.
         Returns a structured dictionary signaling the AgentManager/InteractionHandler to perform the action,
@@ -128,6 +134,16 @@ class ManageTeamTool(BaseTool):
         missing = []
 
         if action == "create_agent":
+            # If only role or persona is provided, use it for both
+            role = params.get("role")
+            persona = params.get("persona")
+            if role and not persona:
+                params["persona"] = role
+            elif persona and not role:
+                params["role"] = persona
+                persona = params.get("persona")
+                
+            if not params.get("role"): missing.append("'role'")
             if not params.get("system_prompt"): missing.append("'system_prompt'")
             if not params.get("persona"): missing.append("'persona'")
             if missing: error_message = f"Error: Missing required parameter(s) for 'create_agent': {', '.join(missing)}."
@@ -179,8 +195,8 @@ class ManageTeamTool(BaseTool):
         """
         project_name_placeholder = agent_context.get('project_name', '{project_name}') if agent_context else '{project_name}'
         team_id_placeholder = agent_context.get('team_id', f'team_{project_name_placeholder}') if agent_context else f'team_{project_name_placeholder}'
-        worker_agent_id_placeholder = f"worker_{project_name_placeholder}_1"
-        pm_agent_id_placeholder = f"pm_{project_name_placeholder}"
+        worker_agent_id_placeholder = "W1"
+        pm_agent_id_placeholder = "PM1"
 
         # Define valid states for PMs and Workers to list in the usage instructions
         valid_pm_states = [PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE, DEFAULT_STATE]
@@ -189,24 +205,24 @@ class ManageTeamTool(BaseTool):
         sub_action_details = {
             "create_agent": f"""
         **Sub-Action: create_agent**
-        Creates a new agent.
-        *   `<persona>` (string, required): Display name for the agent.
+        Creates a new worker agent for your team.
+        *   `<role>` (string, required): The EXACT role name from your kickoff plan that this agent fulfills (e.g., 'Coder', 'UI_Designer'). This MUST match the 'next role to create' instructions exactly.
+        *   `<persona>` (string, required): Display name for the agent. This can be the same as the role or a descriptive title.
         *   `<system_prompt>` (string, required): The main instruction set defining the agent's role, capabilities, and goal.
         *   `<agent_id>` (string, optional): A custom unique ID for the agent (e.g., `{worker_agent_id_placeholder}`). If omitted, one will be generated.
         *   `<team_id>` (string, optional): The ID of the team to assign this agent to (e.g., `{team_id_placeholder}`).
-        *   `<provider>` (string, optional): Specify an LLM provider (e.g., 'ollama', 'openrouter'). If omitted, the framework will auto-select one.
-        *   `<model>` (string, optional): Specify an LLM model (e.g., 'ollama/llama3.2:8b', 'openrouter/google/gemma-2-9b-it:free'). If omitted, the framework will auto-select one based on the provider or its own defaults.
+        *   `<provider>` (string, optional): Specify an LLM provider (e.g., 'ollama-local').
+        *   `<model>` (string, optional): Specify an LLM model (e.g., 'qwen3:14b').
         *   `<temperature>` (float, optional): Model temperature (e.g., 0.7). Defaults to framework settings if omitted.
         *   Example:
             ```xml
             <manage_team>
               <action>create_agent</action>
-              <agent_id>{worker_agent_id_placeholder}</agent_id>
-              <persona>Web Content Researcher</persona>
-              <system_prompt>You are a web researcher. Your goal is to find and summarize information on requested topics using the web_search tool. Provide concise summaries.</system_prompt>
-              <team_id>{team_id_placeholder}</team_id>
-              <provider>openrouter</provider>
-              <model>google/gemma-2-9b-it:free</model>
+              <role>UI_Designer</role>
+              <persona>UI/UX Designer</persona>
+              <system_prompt>You are a UI designer. Your goal is to design a clean, responsive web interface.</system_prompt>
+              <provider>ollama-local</provider>
+              <model>qwen3:14b</model>
             </manage_team>
             ```
         *   **XML Content Rules for Agent Creation:** Ensure all content within tags like `<system_prompt>` or `<persona>` is plain text. If you need to include characters like `<`, `>`, or `&` within these text blocks, they MUST be XML escaped (e.g., `&lt;` for `<`, `&gt;` for `>`, `&amp;` for `&`). Keep prompts clear and concise.

@@ -1,6 +1,7 @@
 # START OF FILE src/config/model_registry.py
 import asyncio
 import logging
+import re
 from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING, Any
 import aiohttp
 import json
@@ -29,7 +30,11 @@ class ModelInfo(TypedDict, total=False):
     name: Optional[str]
     description: Optional[str]
     provider: str
-    num_parameters: Optional[int] # New field for parameter count
+    num_parameters: Optional[int] # Field for parameter count
+    family: Optional[str] # Model family (e.g., 'gemma3', 'qwen3', 'llama')
+    model_stop_tokens: Optional[List[str]] # Stop tokens from model's Modelfile parameters
+    model_num_ctx: Optional[int] # Native num_ctx from model's Modelfile parameters
+    model_template: Optional[str] # Template string for raw-template detection
 # --- END NEW ---
 
 class ModelRegistry:
@@ -84,6 +89,49 @@ class ModelRegistry:
             logger.warning(f"Could not parse parameter string '{param_str}' to number.")
             return None
 
+    def _parse_ollama_parameters_string(self, parameters_str: str) -> Tuple[Optional[List[str]], Optional[int]]:
+        """
+        Parses the 'parameters' text block from Ollama's /api/show response.
+        Extracts stop tokens and num_ctx.
+        
+        The parameters block looks like:
+            num_ctx     65536
+            stop        "<end_of_turn>"
+            temperature 0.7
+        
+        Returns:
+            Tuple of (stop_tokens_list, num_ctx_value)
+        """
+        stop_tokens = []
+        num_ctx = None
+        
+        if not parameters_str or not isinstance(parameters_str, str):
+            return None, None
+        
+        for line in parameters_str.strip().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Parse 'stop' entries (can appear multiple times)
+            stop_match = re.match(r'^stop\s+["\']?(.*?)["\']?\s*$', line)
+            if stop_match:
+                stop_val = stop_match.group(1).strip()
+                if stop_val:
+                    stop_tokens.append(stop_val)
+                continue
+            
+            # Parse 'num_ctx' entry
+            ctx_match = re.match(r'^num_ctx\s+(\d+)', line)
+            if ctx_match:
+                try:
+                    num_ctx = int(ctx_match.group(1))
+                except ValueError:
+                    pass
+                continue
+        
+        return (stop_tokens if stop_tokens else None), num_ctx
+
     async def _verify_and_fetch_models(self, base_url: str) -> Optional[Tuple[str, str, List[ModelInfo]]]:
         """
         Verifies a potential local API endpoint and fetches its models.
@@ -133,7 +181,9 @@ class ModelRegistry:
                                     async with session.post(show_url, json={"name": model_name}, timeout=10) as show_response: # Use POST as per Ollama docs
                                         if show_response.status == 200:
                                             details_data = await show_response.json(content_type=None)
-                                            param_str = details_data.get("details", {}).get("parameter_size")
+                                            # --- Extract parameter_size (existing) ---
+                                            details_block = details_data.get("details", {})
+                                            param_str = details_block.get("parameter_size")
                                             if param_str:
                                                 num_params = self._parse_ollama_parameter_string_to_int(param_str)
                                                 if num_params is not None:
@@ -143,6 +193,34 @@ class ModelRegistry:
                                                     logger.debug(f"Ollama model '{model_name}': could not parse parameter string '{param_str}'.")
                                             else:
                                                 logger.debug(f"Ollama model '{model_name}': 'parameter_size' not found in /api/show details.")
+                                            
+                                            # --- Extract family ---
+                                            family = details_block.get("family")
+                                            if family:
+                                                model_info_dict["family"] = family
+                                                logger.debug(f"Ollama model '{model_name}': family='{family}'")
+                                            
+                                            # --- Extract template (for raw-template detection) ---
+                                            template = details_data.get("template")
+                                            if template:
+                                                model_info_dict["model_template"] = template
+                                                # Warn about raw templates that won't work well with /api/chat
+                                                stripped_template = template.strip()
+                                                if stripped_template in ('{{ .Prompt }}', '{{ .Response }}', '{{ .System }}{{ .Prompt }}'):
+                                                    logger.warning(f"Ollama model '{model_name}': Has RAW template '{stripped_template}'. "
+                                                                   f"This model may not work correctly with /api/chat for multi-turn conversations. "
+                                                                   f"Consider updating its Modelfile with a proper chat template.")
+                                            
+                                            # --- Extract stop tokens and num_ctx from parameters block ---
+                                            parameters_text = details_data.get("parameters")
+                                            if parameters_text:
+                                                parsed_stop, parsed_num_ctx = self._parse_ollama_parameters_string(parameters_text)
+                                                if parsed_stop:
+                                                    model_info_dict["model_stop_tokens"] = parsed_stop
+                                                    logger.debug(f"Ollama model '{model_name}': stop_tokens={parsed_stop}")
+                                                if parsed_num_ctx is not None:
+                                                    model_info_dict["model_num_ctx"] = parsed_num_ctx
+                                                    logger.debug(f"Ollama model '{model_name}': num_ctx={parsed_num_ctx}")
                                         else:
                                             logger.warning(f"Failed to get details for Ollama model '{model_name}' from {show_url}. Status: {show_response.status}")
                                 except Exception as detail_err:
@@ -507,6 +585,28 @@ class ModelRegistry:
         logger.debug(f"Could not find provider for model ID '{model_id}' (target name: '{target_model_name}')")
         return None
 
+    def get_model_info(self, model_id: str) -> Optional[ModelInfo]:
+        """
+        Looks up the full ModelInfo dict for a given model_id.
+        Searches across all available providers, preferring local Ollama providers.
+        The model_id can be a suffix (e.g., 'gemma3:4b-it-q4_K_M') or prefixed (e.g., 'ollama/gemma3:4b-it-q4_K_M').
+        
+        Returns:
+            The ModelInfo dict if found, or None.
+        """
+        target_model_name = model_id
+        if '/' in model_id:
+            _, target_model_name = model_id.split('/', 1)
+        
+        # Search local providers first (ollama-local-*), then others
+        for provider_name, models in sorted(self.available_models.items(), 
+                                             key=lambda x: (0 if x[0].startswith("ollama-local") else 1)):
+            for m in models:
+                if m.get("id") == target_model_name:
+                    return m
+        
+        logger.debug(f"get_model_info: Could not find ModelInfo for model ID '{model_id}' (target: '{target_model_name}')")
+        return None
 
     def get_formatted_available_models(self) -> str:
         """ Formats the available models for display using the helper method. """

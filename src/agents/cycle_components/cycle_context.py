@@ -1,7 +1,7 @@
 # START OF FILE src/agents/cycle_components/cycle_context.py
 import time
 from typing import TYPE_CHECKING, Optional, List, Dict, Any, Set
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 import asyncio # For asyncio.Lock
 
 # Import base types and Agent class if needed for type hinting
@@ -60,8 +60,7 @@ class CycleContext(BaseModel):
     # Misc
     current_db_session_id: Optional[int] = Field(default=None, description="Current database session ID.")
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     @classmethod
     def update_refs(cls, **localns: Any) -> None:

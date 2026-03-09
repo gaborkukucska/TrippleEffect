@@ -71,7 +71,7 @@ class PromptAssembler:
                             tool_data = json.loads(content)
                             if isinstance(tool_data, dict) and tool_data.get("status") == "error":
                                 success = False
-                    except:
+                    except (json.JSONDecodeError, TypeError, ValueError):
                         if "error" in content.lower():
                             success = False
                     

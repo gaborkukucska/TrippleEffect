@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import logging
 import re # Import re for find_replace
+import shutil # Added for copy and move
 
 from src.tools.base import BaseTool, ToolParameter
 from src.config.settings import settings # For PROJECTS_BASE_DIR
@@ -23,30 +24,31 @@ class FileSystemTool(BaseTool):
     summary: Optional[str] = "Performs file system operations (read, write, list, mkdir, delete, find_replace) within allowed scopes."
     description: str = ( # Updated description
         "Reads, writes, lists files/directories, creates directories, deletes files or empty directories, "
-        "or finds and replaces text within a file. "
+        "finds and replaces text or regex within a file, copies, or moves files/directories. "
         "Use 'scope' ('private', 'shared', or 'projects') to specify the target area. Default: 'private'. "
         "Actions: 'read' (gets content), 'write' (saves content), 'list' (shows directory contents), "
         "'mkdir' (creates a directory), 'delete' (removes file/empty dir), "
-        "'find_replace' (replaces text occurrences in a file). "
-        "All paths are relative to the selected scope root."
+        "'find_replace' (replaces text), 'regex_replace' (replaces text using regex), "
+        "'copy' (copies file/dir), 'move' (moves/renames file/dir). "
+        "All paths are relative to the selected scope."
     )
     parameters: List[ToolParameter] = [
         ToolParameter(
             name="action",
             type="string",
-            description="The operation: 'read', 'write', 'list', 'mkdir', 'delete', 'find_replace'.",
+            description="The operation: 'read', 'write', 'list', 'mkdir', 'delete', 'find_replace', 'regex_replace', 'copy', 'move'.",
             required=True,
         ),
         ToolParameter(
             name="scope",
             type="string",
-            description="Target scope: 'private' (agent's sandbox), 'shared' (session workspace), or 'projects' (top-level project list). Defaults to 'private'.",
-            required=False, # Default to private
+            description="Target scope: 'private' (agent's sandbox), 'shared' (session workspace), or 'projects' (top-level project list). Defaults to 'shared' for project workers, else 'private'.",
+            required=False, # Dynamically defaulted
         ),
         ToolParameter(
             name="filename",
             type="string", 
-            description="Relative path to the file within the scope. Required for 'read', 'write', 'find_replace'. Can also use 'filepath'.",
+            description="Relative path to the file within the scope. Required for 'read', 'write', 'find_replace', 'regex_replace'. Can also use 'filepath'.",
             required=False, # Dynamically required
         ),
         ToolParameter(
@@ -58,8 +60,14 @@ class FileSystemTool(BaseTool):
          ToolParameter(
             name="path",
             type="string",
-            description="Relative path to a directory or file. Required for 'list', 'mkdir', 'delete'. For 'list', defaults to '.' (scope root).",
+            description="Relative path to a directory or file. Required for 'list', 'mkdir', 'delete', 'copy' (as source), 'move' (as source). For 'list', defaults to '.' (scope root).",
             required=False, # Dynamically required by action
+        ),
+        ToolParameter(
+            name="destination_path",
+            type="string",
+            description="The target relative path. Required for 'copy', 'move'.",
+            required=False, # Dynamically required
         ),
         ToolParameter(
             name="find_text",
@@ -70,8 +78,26 @@ class FileSystemTool(BaseTool):
         ToolParameter(
             name="replace_text",
             type="string",
-            description="The text string to replace occurrences of 'find_text' with. Required for 'find_replace'.",
+            description="The text to replace matches with. Required for 'find_replace', 'regex_replace'.",
             required=False, # Dynamically required
+        ),
+        ToolParameter(
+            name="regex_pattern",
+            type="string",
+            description="The regular expression pattern to find. Required for 'regex_replace'.",
+            required=False, # Dynamically required
+        ),
+        ToolParameter(
+            name="start_line",
+            type="integer",
+            description="Optional starting line number (1-indexed) for 'read'.",
+            required=False,
+        ),
+        ToolParameter(
+            name="end_line",
+            type="integer",
+            description="Optional ending line number (1-indexed) for 'read'.",
+            required=False,
         ),
     ]
 
@@ -87,17 +113,23 @@ class FileSystemTool(BaseTool):
         Executes the file system operation based on the provided action and scope.
         """
         action = kwargs.get("action")
-        scope = kwargs.get("scope", "private").lower()
+        # Default to 'shared' if we have project context, else 'private'
+        default_scope = "shared" if project_name and session_name else "private"
+        scope = kwargs.get("scope", default_scope).lower()
         # Handle both 'filename' and 'filepath' parameters
-        filename = kwargs.get("filename") or kwargs.get("filepath") # Used by read, write, find_replace
+        filename = kwargs.get("filename") or kwargs.get("filepath") # Used by read, write, find_replace, regex_replace
         content = kwargs.get("content") # Used by write
-        relative_path = kwargs.get("path") # Used by list, mkdir, delete. Default for list is '.', set below if needed.
+        relative_path = kwargs.get("path") # Used by list, mkdir, delete, copy, move. Default for list is '.', set below if needed.
+        destination_path = kwargs.get("destination_path") # Used by copy, move
         find_text = kwargs.get("find_text") # Used by find_replace
-        replace_text = kwargs.get("replace_text") # Used by find_replace
+        replace_text = kwargs.get("replace_text") # Used by find_replace, regex_replace
+        regex_pattern = kwargs.get("regex_pattern") # Used by regex_replace
+        start_line = kwargs.get("start_line") # Used by read
+        end_line = kwargs.get("end_line") # Used by read
 
         if action == "write_file":
             action = "write"
-        valid_actions = ["read", "write", "list", "mkdir", "delete", "find_replace"]
+        valid_actions = ["read", "write", "list", "mkdir", "delete", "find_replace", "regex_replace", "copy", "move"]
         
         # Check for common mistakes and provide helpful suggestions
         action_suggestions = {
@@ -158,7 +190,7 @@ class FileSystemTool(BaseTool):
         try:
             if action == "read":
                 if not filename: return {"status": "error", "message": "'filename' parameter is required for 'read'."}
-                return await self._read_file(base_path, filename, agent_id, scope_description)
+                return await self._read_file(base_path, filename, start_line, end_line, agent_id, scope_description)
             elif action == "write":
                 if not filename: return {"status": "error", "message": "'filename' (or 'filepath') parameter is required for 'write'."}
                 if filename.endswith('/'):
@@ -173,6 +205,11 @@ class FileSystemTool(BaseTool):
                 if find_text is None: return {"status": "error", "message": "'find_text' parameter is required for 'find_replace'."}
                 if replace_text is None: return {"status": "error", "message": "'replace_text' parameter is required for 'find_replace'."}
                 return await self._find_replace_in_file(base_path, filename, find_text, replace_text, agent_id, scope_description)
+            elif action == "regex_replace":
+                if not filename: return {"status": "error", "message": "'filename' parameter is required for 'regex_replace'."}
+                if regex_pattern is None: return {"status": "error", "message": "'regex_pattern' parameter is required for 'regex_replace'."}
+                if replace_text is None: return {"status": "error", "message": "'replace_text' parameter is required for 'regex_replace'."}
+                return await self._regex_replace_in_file(base_path, filename, regex_pattern, replace_text, agent_id, scope_description)
             # --- NEW: Handle mkdir and delete ---
             elif action == "mkdir":
                  if not relative_path: return {"status": "error", "message": "'path' parameter (directory path) is required for 'mkdir'."}
@@ -180,6 +217,14 @@ class FileSystemTool(BaseTool):
             elif action == "delete":
                  if not relative_path: return {"status": "error", "message": "'path' parameter (file or directory path) is required for 'delete'."}
                  return await self._delete_item(base_path, relative_path, agent_id, scope_description)
+            elif action == "copy":
+                 if not relative_path: return {"status": "error", "message": "'path' parameter (source) is required for 'copy'."}
+                 if not destination_path: return {"status": "error", "message": "'destination_path' parameter is required for 'copy'."}
+                 return await self._copy_item(base_path, relative_path, destination_path, agent_id, scope_description)
+            elif action == "move":
+                 if not relative_path: return {"status": "error", "message": "'path' parameter (source) is required for 'move'."}
+                 if not destination_path: return {"status": "error", "message": "'destination_path' parameter is required for 'move'."}
+                 return await self._move_item(base_path, relative_path, destination_path, agent_id, scope_description)
             # --- END NEW ---
 
         except Exception as e:
@@ -196,7 +241,7 @@ class FileSystemTool(BaseTool):
 **Description:** Performs operations on files and directories within different scopes. All paths MUST be relative to the scope root.
 
 **CRITICAL - Valid Actions Only:** The following actions are the ONLY valid actions. Do NOT use variations like 'create_directory' or 'create_file':
-- read, write, list, mkdir, delete, find_replace
+- read, write, list, mkdir, delete, find_replace, regex_replace, copy, move
 
 **Scopes:**
 *   `private`: Agent's own sandbox directory (e.g., `sandboxes/agent_.../`). Use for temporary files or agent-specific data. Default.
@@ -208,6 +253,8 @@ class FileSystemTool(BaseTool):
 1.  **read:** Reads the content of a file.
     *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
     *   `<filename>` (string, required): Relative path to the file (e.g., `data/input.txt`, `report.md`).
+    *   `<start_line>` (integer, optional): Line number to start reading from (1-indexed).
+    *   `<end_line>` (integer, optional): Line number to stop reading at (inclusive).
     *   Example: `<file_system><action>read</action><scope>shared</scope><filename>results/analysis.txt</filename></file_system>`
 
 2.  **write:** Writes content to a file, creating directories if needed. Overwrites existing files.
@@ -242,6 +289,25 @@ class FileSystemTool(BaseTool):
     *   `<find_text>` (string, required): The exact text string to find.
     *   `<replace_text>` (string, required): The text string to replace occurrences with.
     *   Example: `<file_system><action>find_replace</action><scope>shared</scope><filename>config.yaml</filename><find_text>old_value</find_text><replace_text>new_value</replace_text></file_system>`
+
+7.  **regex_replace:** Finds and replaces using regular expressions. (Cannot use `scope='projects'`)
+    *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+    *   `<filename>` (string, required): Relative path to the file to modify.
+    *   `<regex_pattern>` (string, required): The regular expression pattern to find.
+    *   `<replace_text>` (string, required): The text to replace matches with (can use group references like \\1).
+    *   Example: `<file_system><action>regex_replace</action><scope>shared</scope><filename>data.txt</filename><regex_pattern>^foo</regex_pattern><replace_text>bar</replace_text></file_system>`
+
+8.  **copy:** Copies a file or directory.
+    *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+    *   `<path>` (string, required): The source path to copy.
+    *   `<destination_path>` (string, required): The target path.
+    *   Example: `<file_system><action>copy</action><path>src.txt</path><destination_path>dest.txt</destination_path></file_system>`
+
+9.  **move:** Moves or renames a file or directory.
+    *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+    *   `<path>` (string, required): The source path to move.
+    *   `<destination_path>` (string, required): The target path.
+    *   Example: `<file_system><action>move</action><path>old_name.txt</path><destination_path>new_subdir/new_name.txt</destination_path></file_system>`
 
 **COMMON MISTAKES TO AVOID:**
 *   ❌ DON'T use 'create_directory' - use 'mkdir' instead
@@ -283,13 +349,20 @@ class FileSystemTool(BaseTool):
             return None
 
 
-    async def _read_file(self, base_path: Path, filename: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+    async def _read_file(self, base_path: Path, filename: str, start_line: Optional[int], end_line: Optional[int], agent_id: str, scope_description: str) -> Dict[str, Any]:
         """Reads content from a file within the specified base path."""
         validated_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
         if not validated_path: return {"status": "error", "message": f"Invalid or disallowed file path '{filename}' in {scope_description}."}
         if not validated_path.is_file(): return {"status": "error", "message": f"File not found or is not a regular file at '{filename}' in {scope_description}."}
         try:
             content = await asyncio.to_thread(validated_path.read_text, encoding='utf-8')
+            if start_line is not None or end_line is not None:
+                lines = content.splitlines(True)
+                start_idx = max(0, start_line - 1) if start_line is not None else 0
+                end_idx = min(len(lines), end_line) if end_line is not None else len(lines)
+                if start_idx >= len(lines) or start_idx > end_idx:
+                    return {"status": "error", "message": f"Invalid start_line/end_line range for file with {len(lines)} lines."}
+                content = "".join(lines[start_idx:end_idx])
             logger.info(f"Agent {agent_id} successfully read file: '{filename}' from {scope_description}")
             return {"status": "success", "content": content}
         except FileNotFoundError: logger.warning(f"Agent {agent_id} file read error (FileNotFound): File not found at '{filename}' in {scope_description}."); return {"status": "error", "message": f"File not found at '{filename}' in {scope_description}."}
@@ -407,3 +480,63 @@ class FileSystemTool(BaseTool):
                  return {"status": "error", "message": f"Path '{relative_item_path}' is not a file or directory. Cannot delete."}
          except PermissionError: logger.error(f"Agent {agent_id} deletion error: Permission denied for '{relative_item_path}' in {scope_description}."); return {"status": "error", "message": f"Permission denied when deleting '{relative_item_path}'."}
          except Exception as e: logger.error(f"Agent {agent_id} error deleting '{relative_item_path}' in {scope_description}: {e}", exc_info=True); return {"status": "error", "message": f"Error deleting '{relative_item_path}': {type(e).__name__} - {e}"}
+
+    async def _regex_replace_in_file(self, base_path: Path, filename: str, regex_pattern: str, replace_text: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+        validated_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
+        if not validated_path: return {"status": "error", "message": f"Invalid or disallowed file path '{filename}' in {scope_description}."}
+        if not validated_path.is_file(): return {"status": "error", "message": f"File not found or is not a regular file at '{filename}' in {scope_description}."}
+        try:
+            def regex_replace_sync():
+                original_content = validated_path.read_text(encoding='utf-8')
+                new_content, count = re.subn(regex_pattern, replace_text, original_content, flags=re.MULTILINE)
+                if count > 0: validated_path.write_text(new_content, encoding='utf-8')
+                return count
+            
+            num_replacements = await asyncio.to_thread(regex_replace_sync)
+            message = f"Found 0 occurrences matching regex '{regex_pattern}' in '{filename}'. No changes made."
+            if num_replacements > 0:
+                message = f"Successfully replaced {num_replacements} match(es) in '{filename}'."
+                logger.info(f"Agent {agent_id}: Successfully replaced {num_replacements} match(es) in file '{filename}' in {scope_description}.")
+            else:
+                 logger.info(f"Agent {agent_id}: regex_replace completed for '{filename}' in {scope_description}. No matches found.")
+            return {"status": "success", "message": message, "replacements_made": num_replacements}
+        except FileNotFoundError: return {"status": "error", "message": f"File not found at '{filename}' in {scope_description}."}
+        except PermissionError: return {"status": "error", "message": f"Permission denied when accessing file '{filename}'."}
+        except re.error as e: return {"status": "error", "message": f"Invalid regex pattern '{regex_pattern}': {e}"}
+        except Exception as e: return {"status": "error", "message": f"Error during regex replace in '{filename}': {type(e).__name__} - {e}"}
+
+    async def _copy_item(self, base_path: Path, relative_src: str, relative_dst: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+        val_src = await self._resolve_and_validate_path(base_path, relative_src, agent_id, scope_description)
+        if not val_src: return {"status": "error", "message": f"Invalid source path '{relative_src}'."}
+        if not val_src.exists(): return {"status": "error", "message": f"Source '{relative_src}' does not exist."}
+        val_dst = await self._resolve_and_validate_path(base_path, relative_dst, agent_id, scope_description)
+        if not val_dst: return {"status": "error", "message": f"Invalid destination path '{relative_dst}'."}
+        
+        try:
+            await asyncio.to_thread(val_dst.parent.mkdir, parents=True, exist_ok=True)
+            if val_src.is_file():
+                await asyncio.to_thread(shutil.copy2, val_src, val_dst)
+            else:
+                if val_dst.exists(): return {"status": "error", "message": f"Destination '{relative_dst}' already exists."}
+                await asyncio.to_thread(shutil.copytree, val_src, val_dst)
+            logger.info(f"Agent {agent_id} copied '{relative_src}' to '{relative_dst}' in {scope_description}")
+            return {"status": "success", "message": f"Successfully copied '{relative_src}' to '{relative_dst}'."}
+        except Exception as e:
+            logger.error(f"Agent {agent_id} error copying '{relative_src}' to '{relative_dst}': {e}", exc_info=True)
+            return {"status": "error", "message": f"Error copying '{relative_src}' to '{relative_dst}': {e}"}
+
+    async def _move_item(self, base_path: Path, relative_src: str, relative_dst: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+        val_src = await self._resolve_and_validate_path(base_path, relative_src, agent_id, scope_description)
+        if not val_src: return {"status": "error", "message": f"Invalid source path '{relative_src}'."}
+        if not val_src.exists(): return {"status": "error", "message": f"Source '{relative_src}' does not exist."}
+        val_dst = await self._resolve_and_validate_path(base_path, relative_dst, agent_id, scope_description)
+        if not val_dst: return {"status": "error", "message": f"Invalid destination path '{relative_dst}'."}
+        
+        try:
+            await asyncio.to_thread(val_dst.parent.mkdir, parents=True, exist_ok=True)
+            await asyncio.to_thread(shutil.move, val_src, val_dst)
+            logger.info(f"Agent {agent_id} moved '{relative_src}' to '{relative_dst}' in {scope_description}")
+            return {"status": "success", "message": f"Successfully moved '{relative_src}' to '{relative_dst}'."}
+        except Exception as e:
+            logger.error(f"Agent {agent_id} error moving '{relative_src}' to '{relative_dst}': {e}", exc_info=True)
+            return {"status": "error", "message": f"Error moving '{relative_src}' to '{relative_dst}': {e}"}

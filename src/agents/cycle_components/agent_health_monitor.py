@@ -192,13 +192,36 @@ class ConstitutionalGuardianHealthMonitor:
         self._monitoring_active = True
         self._last_global_check = time.time()
         
-        # Configuration - More aggressive thresholds as requested
-        self.empty_response_threshold = 2  # Block after 2 empty responses
-        self.identical_response_threshold = 2  # Block after 2 identical responses
-        self.minimal_response_threshold = 3  # Block after 3 minimal responses
+        # Default Configuration (Level 2: Moderate)
+        self.empty_response_threshold = 2
+        self.identical_response_threshold = 2
+        self.minimal_response_threshold = 3
         self.stuck_state_threshold = 6
-        self.health_check_interval = 20  # Check every 20 seconds
-        self.stalled_after_success_threshold = 150  # 2.5 minutes of inactivity after successful action
+        self.health_check_interval = 20
+        self.stalled_after_success_threshold = 150
+        self.tool_execution_loop_threshold = 3
+        
+        # Adjust based on CG_STRICTNESS_LEVEL from settings
+        # 1 = Permissive, 2 = Moderate (Default), 3 = Strict
+        strictness = getattr(settings, 'CG_STRICTNESS_LEVEL', 2)
+        if strictness == 1:
+            logger.info("ConstitutionalGuardian: Using PERMISSIVE (Level 1) thresholds.")
+            self.empty_response_threshold = 4
+            self.identical_response_threshold = 4
+            self.minimal_response_threshold = 6
+            self.stuck_state_threshold = 10
+            self.stalled_after_success_threshold = 300
+            self.tool_execution_loop_threshold = 5
+        elif strictness == 3:
+            logger.info("ConstitutionalGuardian: Using STRICT (Level 3) thresholds.")
+            self.empty_response_threshold = 1
+            self.identical_response_threshold = 1
+            self.minimal_response_threshold = 2
+            self.stuck_state_threshold = 4
+            self.stalled_after_success_threshold = 90
+            self.tool_execution_loop_threshold = 2
+        else:
+            logger.info("ConstitutionalGuardian: Using MODERATE (Level 2) default thresholds.")
         
         # Contaminated history cleanup configuration
         self.contaminated_cleanup_interval = 300  # Check every 5 minutes
@@ -268,8 +291,9 @@ class ConstitutionalGuardianHealthMonitor:
                     if identical_count >= 3:  # 3+ identical calls in recent history
                         logger.error(f"ConstitutionalGuardian: DETECTED tool execution loop for Admin AI '{agent_id}' - '{last_execution}' repeated {identical_count} times")
                         # Mark this as a critical pattern requiring immediate intervention
-                        record.tool_execution_loop_detected = True
-                        record.tool_execution_loop_count = identical_count
+                        if identical_count >= self.tool_execution_loop_threshold:
+                            record.tool_execution_loop_detected = True
+                            record.tool_execution_loop_count = identical_count
         
         # Use the took_meaningful_action parameter for accurate tracking. This is the critical flag
         # that is only True if a tool was successfully run or a state change was requested.

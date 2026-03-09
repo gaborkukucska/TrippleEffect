@@ -33,18 +33,19 @@ class OllamaProvider(BaseLLMProvider):
     Creates a new ClientSession for each request to ensure clean state.
     """
 
-    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, **kwargs):
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, model_registry=None, **kwargs):
         self.base_url = (base_url or DEFAULT_OLLAMA_BASE_URL).rstrip('/')
         logger.info(f"OllamaProvider initialized. Using Base URL: {self.base_url}")
 
         if api_key: logger.warning("OllamaProvider Warning: API key provided but not used.")
+        self._model_registry = model_registry  # Reference to ModelRegistry for per-model metadata lookup
         self._session_timeout_config = kwargs.pop('timeout', None) # Pop before logging ignored, as it's handled
         if kwargs: # Log any other unexpected kwargs passed to constructor
             logger.warning(f"OllamaProvider __init__: Ignoring unexpected kwargs: {kwargs}")
             
         self.streaming_mode = True 
         mode_str = "Streaming"
-        logger.info(f"OllamaProvider initialized with aiohttp. Effective Base URL: {self.base_url}. Mode: {mode_str}. Sessions created per-request.")
+        logger.info(f"OllamaProvider initialized with aiohttp. Effective Base URL: {self.base_url}. Mode: {mode_str}. Sessions created per-request. ModelRegistry: {'available' if model_registry else 'not provided'}.")
 
     async def _create_request_session(self) -> aiohttp.ClientSession:
         if isinstance(self._session_timeout_config, aiohttp.ClientTimeout):
@@ -133,14 +134,47 @@ class OllamaProvider(BaseLLMProvider):
         if max_tokens is not None:
             valid_options["num_predict"] = max_tokens 
             logger.debug(f"Setting Ollama num_predict (max_tokens) to: {max_tokens}")
-        if "num_ctx" not in valid_options and "num_ctx" not in kwargs: # Check original kwargs too
-            valid_options["num_ctx"] = 8192 # Default context size
-            logger.debug("Added default context size 'num_ctx: 8192' to Ollama options.")
-        if "stop" not in valid_options and "stop" not in kwargs: # Check original kwargs too
-            valid_options["stop"] = ["<|eot_id|>"] # Common stop token for newer models
-            logger.debug("Added default stop token '<|eot_id|>' to Ollama options.")
+        # --- Per-model metadata lookup from ModelRegistry ---
+        model_info = None
+        if self._model_registry and hasattr(self._model_registry, 'get_model_info'):
+            model_info = self._model_registry.get_model_info(model)
+            if model_info:
+                logger.debug(f"OllamaProvider: Found model metadata for '{model}': family={model_info.get('family')}, "
+                             f"num_ctx={model_info.get('model_num_ctx')}, stop_tokens={model_info.get('model_stop_tokens')}, "
+                             f"template_preview={repr(str(model_info.get('model_template', ''))[:60])}")
+            else:
+                logger.debug(f"OllamaProvider: No model metadata found in registry for '{model}'.")
+        
+        # --- Set num_ctx: use model's native value, then fallback to 8192 ---
+        if "num_ctx" not in valid_options and "num_ctx" not in kwargs:
+            if model_info and model_info.get('model_num_ctx'):
+                native_num_ctx = model_info['model_num_ctx']
+                valid_options["num_ctx"] = native_num_ctx
+                logger.info(f"OllamaProvider: Using model-native num_ctx={native_num_ctx} for '{model}'.")
+            else:
+                valid_options["num_ctx"] = 8192  # Conservative fallback when no metadata available
+                logger.debug(f"OllamaProvider: No model-specific num_ctx found for '{model}', using default 8192.")
+        
+        # --- Set stop tokens: use model's native tokens, do NOT inject wrong defaults ---
+        if "stop" not in valid_options and "stop" not in kwargs:
+            if model_info and model_info.get('model_stop_tokens'):
+                native_stops = model_info['model_stop_tokens']
+                valid_options["stop"] = native_stops
+                logger.info(f"OllamaProvider: Using model-native stop tokens {native_stops} for '{model}'.")
+            else:
+                # Do NOT inject any stop token — let Ollama use the model's built-in template stop handling
+                logger.debug(f"OllamaProvider: No model-specific stop tokens found for '{model}'. "
+                             f"Relying on Ollama's built-in template stop handling (no stop token injected).")
+        
+        # --- Warn about raw templates ---
+        if model_info and model_info.get('model_template'):
+            stripped_template = model_info['model_template'].strip()
+            if stripped_template in ('{{ .Prompt }}', '{{ .Response }}', '{{ .System }}{{ .Prompt }}'):
+                logger.warning(f"OllamaProvider: Model '{model}' has a RAW template ('{stripped_template}'). "
+                               f"Multi-turn /api/chat conversations may not be formatted correctly. "
+                               f"Consider updating the model's Modelfile with a proper chat template.")
 
-        ignored_options = {k: v for k, v in raw_options.items() if k not in KNOWN_OLLAMA_OPTIONS and k != "stop"} # 'stop' handled above
+        ignored_options = {k: v for k, v in raw_options.items() if k not in KNOWN_OLLAMA_OPTIONS and k != "stop"}
         if ignored_options: logger.warning(f"OllamaProvider ignoring unknown options: {ignored_options}")
 
         messages_for_ollama_payload = []

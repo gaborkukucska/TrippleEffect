@@ -206,6 +206,15 @@ class AgentManager:
         if success and created_agent_id and self.current_session_db_id is not None:
             agent = self.agents.get(created_agent_id)
             if agent: await self.db_manager.add_agent_record(session_id=self.current_session_db_id, agent_id=agent.agent_id, persona=agent.persona, model_config_dict=agent.agent_config.get("config", {}))
+
+            # FIX: Deactivate bootstrap project_manager_agent when a dynamic PM is created
+            if agent and agent.agent_type == AGENT_TYPE_PM and created_agent_id not in self.bootstrap_agents:
+                bootstrap_pm = self.agents.get("project_manager_agent")
+                if bootstrap_pm and bootstrap_pm.agent_type == AGENT_TYPE_PM:
+                    logger.info(f"AgentManager: Dynamic PM '{created_agent_id}' created. Deactivating bootstrap 'project_manager_agent' to prevent interference.")
+                    bootstrap_pm.state = 'pm_idle'
+                    bootstrap_pm.set_status(AGENT_STATUS_IDLE)
+
         elif success and created_agent_id: logger.warning(f"Agent '{created_agent_id}' created but cannot log to DB: current_session_db_id is None.")
         return success, message, created_agent_id
 

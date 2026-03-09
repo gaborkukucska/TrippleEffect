@@ -12,11 +12,11 @@ import logging
 logging.disable(logging.CRITICAL)
 
 
-class TestModelRegistryParameterDiscovery(unittest.TestCase):
+class TestModelRegistryParameterDiscovery(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         # Mock Settings object
-        self.mock_settings = MagicMock(spec=Settings)
+        self.mock_settings = MagicMock()
         self.mock_settings.MODEL_TIER = "ALL" # Allow all models for discovery tests
         self.mock_settings.LOCAL_API_SCAN_ENABLED = True # Assume enabled for Ollama tests
         self.mock_settings.LOCAL_API_SCAN_PORTS = [11434]
@@ -66,15 +66,16 @@ class TestModelRegistryParameterDiscovery(unittest.TestCase):
             ]
         })
         # Configure the session context manager
-        mock_session_instance = AsyncMock()
-        mock_session_instance.__aenter__.return_value.get.return_value = mock_response_openrouter
-        mock_client_session_cls.return_value = mock_session_instance
-        
+        session_mock = MagicMock()
+        mock_client_session_cls.return_value.__aenter__.return_value = session_mock
+        get_ctx_openrouter = AsyncMock()
+        get_ctx_openrouter.__aenter__.return_value = mock_response_openrouter
+        session_mock.get = MagicMock(return_value=get_ctx_openrouter)
         # --- Run discovery ---
         # Temporarily make openrouter reachable for this test
         self.model_registry._reachable_providers["openrouter"] = self.mock_settings.OPENROUTER_BASE_URL
         await self.model_registry._discover_openrouter_models()
-        await self.model_registry._apply_filters() # Apply filters to populate available_models
+        self.model_registry._apply_filters() # Apply filters to populate available_models
 
         # --- Assertions ---
         openrouter_models = self.model_registry.available_models.get("openrouter", [])
@@ -112,34 +113,43 @@ class TestModelRegistryParameterDiscovery(unittest.TestCase):
         # Mocks for /api/show (one for each model)
         mock_response_show_llama3 = AsyncMock(); mock_response_show_llama3.status = 200
         mock_response_show_llama3.json = AsyncMock(return_value={"details": {"parameter_size": "8B"}})
+        mock_response_show_llama3.__aenter__.return_value = mock_response_show_llama3
         
         mock_response_show_codegemma = AsyncMock(); mock_response_show_codegemma.status = 200
         mock_response_show_codegemma.json = AsyncMock(return_value={"details": {"parameter_size": "7B"}})
+        mock_response_show_codegemma.__aenter__.return_value = mock_response_show_codegemma
 
         mock_response_show_phi3 = AsyncMock(); mock_response_show_phi3.status = 200
         mock_response_show_phi3.json = AsyncMock(return_value={"details": {"parameter_size": "3.8B"}}) # Test float parsing
+        mock_response_show_phi3.__aenter__.return_value = mock_response_show_phi3
 
         mock_response_show_no_details = AsyncMock(); mock_response_show_no_details.status = 200
         mock_response_show_no_details.json = AsyncMock(return_value={"details": {}}) # Missing parameter_size
+        mock_response_show_no_details.__aenter__.return_value = mock_response_show_no_details
 
         # Configure the session context manager to return different /api/show responses
-        mock_session_instance = AsyncMock()
+        session_mock = AsyncMock()
         
         # This mapping will determine which response is returned based on the URL or POST data
         def get_side_effect(url, **kwargs):
-            if "/api/tags" in url: return mock_response_tags
+            m = AsyncMock()
+            if "/api/tags" in url:
+                m.__aenter__.return_value = mock_response_tags
+                return m
             # For /api/show, it's a POST, so check kwargs['json']['name']
             if "/api/show" in url and kwargs.get('json'):
                 model_name_requested = kwargs['json']['name']
-                if model_name_requested == "ollama/llama3:8b": return mock_response_show_llama3
-                if model_name_requested == "ollama/codegemma:7b": return mock_response_show_codegemma
-                if model_name_requested == "ollama/phi3:3.8b": return mock_response_show_phi3
-                if model_name_requested == "ollama/no_details_model:latest": return mock_response_show_no_details
-            return AsyncMock(status=404) # Default fallback
+                if model_name_requested == "ollama/llama3:8b": m.__aenter__.return_value = mock_response_show_llama3; return m
+                if model_name_requested == "ollama/codegemma:7b": m.__aenter__.return_value = mock_response_show_codegemma; return m
+                if model_name_requested == "ollama/phi3:3.8b": m.__aenter__.return_value = mock_response_show_phi3; return m
+                if model_name_requested == "ollama/no_details_model:latest": m.__aenter__.return_value = mock_response_show_no_details; return m
+            err_mock = AsyncMock()
+            err_mock.__aenter__.return_value = AsyncMock(status=404)
+            return err_mock # Default fallback
 
-        mock_session_instance.__aenter__.return_value.get = AsyncMock(side_effect=get_side_effect)
-        mock_session_instance.__aenter__.return_value.post = AsyncMock(side_effect=get_side_effect) # /api/show is POST
-        mock_client_session_cls.return_value = mock_session_instance
+        session_mock.get = MagicMock(side_effect=get_side_effect)
+        session_mock.post = MagicMock(side_effect=get_side_effect) # /api/show is POST
+        mock_client_session_cls.return_value.__aenter__.return_value = session_mock
 
         # --- Run discovery (which includes _verify_and_fetch_models) ---
         # Need to mock scan_for_local_apis to return our test URL

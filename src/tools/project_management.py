@@ -9,12 +9,11 @@ try:
     from tasklib import TaskWarrior, Task
     TASKLIB_AVAILABLE = True
 except ImportError:
-    TaskWarrior = None
-    Task = None
+    from typing import Any
+    TaskWarrior: Any = None
+    Task: Any = None
     TASKLIB_AVAILABLE = False
 
-if TYPE_CHECKING:
-    from tasklib import TaskWarrior, Task
 
 from .base import BaseTool, ToolParameter
 from src.config.settings import BASE_DIR
@@ -43,28 +42,33 @@ class ProjectManagementTool(BaseTool):
         if not TASKLIB_AVAILABLE:
             logger.error("Tasklib library is not installed. ProjectManagementTool will not function.")
 
-    def _get_taskwarrior_instance(self, project_name: str, session_name: str) -> Optional['TaskWarrior']:
+    def _get_taskwarrior_instance(self, project_name: str, session_name: str) -> Any:
         if not TASKLIB_AVAILABLE:
             return None
+        data_path = BASE_DIR / "projects" / project_name / session_name / "task_data"
         try:
-            data_path = BASE_DIR / "projects" / project_name / session_name / "task_data"
             data_path.mkdir(parents=True, exist_ok=True)
             taskrc_path = data_path / '.taskrc'
             if not taskrc_path.exists():
                 with open(taskrc_path, 'w') as f:
                     f.write("uda.assignee.type=string\nuda.assignee.label=Assignee\n")
-            return TaskWarrior(data_location=str(data_path))
+            return TaskWarrior(data_location=str(data_path), taskrc_location=str(taskrc_path))
         except Exception as e:
              logger.error(f"Failed to initialize TaskWarrior at {data_path}: {e}", exc_info=True)
              return None
 
-    async def execute(self, **kwargs) -> Dict[str, Any]:
+    async def execute(
+        self,
+        agent_id: str,
+        agent_sandbox_path: Path,
+        project_name: Optional[str] = None,
+        session_name: Optional[str] = None,
+        **kwargs: Any
+    ) -> Dict[str, Any]:
         if not TASKLIB_AVAILABLE:
             return {"status": "error", "message": "Tasklib library not installed."}
 
         action = kwargs.get("action")
-        project_name = kwargs.get("project_name")
-        session_name = kwargs.get("session_name")
 
         # Check for common mistakes and provide helpful suggestions
         action_suggestions = {

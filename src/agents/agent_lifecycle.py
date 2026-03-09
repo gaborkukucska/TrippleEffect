@@ -469,6 +469,16 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
             logger.info(f"Lifecycle: Initial system prompt for bootstrap agent '{agent_id}' from config is being passed. WorkflowManager will set the state-specific prompt.")
         # --- End Prompt Assembly / Corrected Logging ---
 
+        # +++ INJECT ADMIN MEMORY HERE IF ADMIN AI +++
+        if agent_id == BOOTSTRAP_AGENT_ID:
+            try:
+                recent_memory = await manager.db_manager.get_recent_sessions_summary()
+                final_agent_config_data["admin_memory_context"] = recent_memory
+                logger.info(f"Lifecycle: Injected SYSTEM MEMORY context for '{BOOTSTRAP_AGENT_ID}'.")
+            except Exception as mem_err:
+                logger.error(f"Lifecycle: Failed to retrieve system memory for Admin AI: {mem_err}")
+                final_agent_config_data["admin_memory_context"] = "[SYSTEM MEMORY: Currently Unavailable]"
+
         tasks.append(_create_agent_internal(
             manager,
             agent_id_requested=agent_id,
@@ -784,8 +794,8 @@ async def _create_agent_internal(
     temperature = agent_config_data.get("temperature", settings.DEFAULT_TEMPERATURE)
     
     OPENAI_CLIENT_VALID_KWARGS = {"timeout", "http_client", "organization", "project"} 
-    allowed_provider_keys = ['api_key', 'base_url', 'referer']
-    framework_agent_config_keys = {'provider', 'model', 'system_prompt', 'temperature', 'persona', 'agent_type', 'team_id', 'plan_description', '_selection_method', 'project_name_context', 'initial_plan_description'}
+    framework_agent_config_keys = {'provider', 'model', 'system_prompt', 'temperature', 'persona', 'agent_type', 'team_id', 'plan_description', '_selection_method', 'project_name_context', 'initial_plan_description', 'role'}
+    allowed_provider_keys = {'api_key', 'base_url', 'referer'}
 
     client_init_kwargs = {}; api_call_options = {} 
 
@@ -807,6 +817,7 @@ async def _create_agent_internal(
         "model": model_id_canonical,
         "system_prompt": final_system_prompt,
         "persona": persona,
+        "role": agent_config_data.get("role", ""),
         "temperature": temperature,
         **api_call_options,
     }
@@ -848,6 +859,11 @@ async def _create_agent_internal(
         return False, msg, None
 
     logger.info(f"  Lifecycle: Determined ProviderClass '{ProviderClass.__name__}' for specific provider '{provider_name}' using base type '{base_name_for_class_lookup}'.")
+
+    # Pass model_registry to OllamaProvider so it can look up per-model metadata at runtime
+    if base_name_for_class_lookup == 'ollama' and ProviderClass == OllamaProvider:
+        final_provider_args['model_registry'] = model_registry
+        logger.debug(f"  Lifecycle: Passing model_registry to OllamaProvider for agent '{agent_id}'.")
 
     try:
         llm_provider_instance = ProviderClass(**final_provider_args)

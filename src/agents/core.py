@@ -63,6 +63,7 @@ class Agent:
         self._config_system_prompt: str = config.get("system_prompt", "") 
         self.temperature: float = float(config.get("temperature", settings.DEFAULT_TEMPERATURE))
         self.persona: str = config.get("persona", settings.DEFAULT_PERSONA)
+        self.role: str = config.get("role", "")
         self.agent_type: str = config.get("agent_type", "worker")
         self.agent_config: Dict[str, Any] = agent_config 
         self.provider_kwargs = {k: v for k, v in config.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'agent_type', 'api_key', 'base_url', 'referer', 'max_tokens', 'project_name_context', 'initial_plan_description']}
@@ -82,10 +83,12 @@ class Agent:
         self.needs_priority_recheck: bool = False
         self.intervention_applied_for_build_team_tasks: bool = False
         self.text_buffer: str = ""
-        self.sandbox_path: Path = BASE_DIR / "sandboxes" / f"agent_{self.agent_id}"
+        safe_agent_id = self.agent_id if self.agent_id.startswith(("agent_", "pm_", "admin_")) else f"agent_{self.agent_id}"
+        self.sandbox_path: Path = BASE_DIR / "sandboxes" / safe_agent_id
         self.raw_xml_tool_call_pattern = None
         self.markdown_xml_tool_call_pattern = None
         self.think_pattern = ROBUST_THINK_TAG_PATTERN
+        self._failover_state: Optional[Dict[str, Any]] = None
         self.initial_plan_description: Optional[str] = config.get("initial_plan_description")
         self.kick_off_task_count_for_build: Optional[int] = None # For PM to track how many workers to create
         self.successfully_created_agent_count_for_build: int = 0 # Counter for created workers in build phase
@@ -97,6 +100,24 @@ class Agent:
         self.cg_original_event_data: Optional[Dict[str, Any]] = None
         self.cg_awaiting_user_decision: bool = False
         self.cg_review_start_time: Optional[float] = None
+
+        # Dynamic tracking attributes set by workflow_manager / cycle_handler
+        self._consecutive_empty_work_cycles: int = 0
+        self._work_cycle_count: int = 0
+        self._project_completed: bool = False
+        self._project_completion_time: Optional[float] = None
+        self._periodic_cycle_count: int = 0
+        self._manage_unproductive_cycles: int = 0
+        self._work_completion_history: List[Dict[str, Any]] = []
+        self._state_transition_history: List[Dict[str, Any]] = []
+        self._needs_initial_work_context: bool = False
+        self._injected_task_description: Optional[str] = None
+        self.unassigned_tasks_summary: List[Dict[str, Any]] = []
+
+        # PM kickoff workflow attributes
+        self.kick_off_roles: List[str] = []
+        self.kick_off_tasks: List[str] = []
+        self.target_worker_agents_for_build: int = 0
 
 
         if self.manager and self.manager.tool_executor and self.manager.tool_executor.tools:
@@ -195,8 +216,9 @@ class Agent:
                 original_complete_response = complete_assistant_response # Retain the full original response for potential error reporting
 
                 # --- Check for Workflow Triggers First ---
+                workflow_result: Optional['WorkflowResult'] = None
                 if hasattr(self.manager, 'workflow_manager'):
-                    workflow_result: Optional['WorkflowResult'] = await self.manager.workflow_manager.process_agent_output_for_workflow(
+                    workflow_result = await self.manager.workflow_manager.process_agent_output_for_workflow(
                         self.manager, self, buffer_to_process
                     )
                     if workflow_result:
@@ -270,6 +292,8 @@ class Agent:
                     if state_match:
                         requested_state = state_match.group(1)
                         state_request_tag = state_match.group(0)
+                        # Resolve any alias to canonical name before validation and event propagation
+                        requested_state = self.manager.workflow_manager.resolve_state_alias(self.agent_type, requested_state)
                         is_valid_state_request = self.manager.workflow_manager.is_valid_state(self.agent_type, requested_state)
                         if is_valid_state_request:
                             logger.info(f"Agent {self.agent_id}: Detected valid state request tag for '{requested_state}': {state_request_tag}")
@@ -328,14 +352,16 @@ class Agent:
                         return
 
                 tool_requests_to_yield = []
+                valid_calls: List[Any] = []
+                parsing_errors: List[Any] = []
 
                 if self.manager.tool_executor and self.raw_xml_tool_call_pattern:
                     parsed_tool_calls_info = find_and_parse_xml_tool_calls(
                         final_cleaned_response_for_tools_or_text, self.manager.tool_executor.tools,
                         self.raw_xml_tool_call_pattern, self.markdown_xml_tool_call_pattern, self.agent_id
                     )
-                    valid_calls = parsed_tool_calls_info["valid_calls"]
-                    parsing_errors = parsed_tool_calls_info["parsing_errors"]
+                    valid_calls = list(parsed_tool_calls_info["valid_calls"])
+                    parsing_errors = list(parsed_tool_calls_info["parsing_errors"])
 
                     if parsing_errors: # Check for parsing errors first
                         first_error = parsing_errors[0]

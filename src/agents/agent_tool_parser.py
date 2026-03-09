@@ -1,5 +1,6 @@
 # START OF FILE src/agents/agent_tool_parser.py
 import re
+import json as json_module  # Renamed to avoid shadowing
 import html
 import logging
 from typing import List, Dict, Tuple, Any, Optional, Pattern, Union # Added Union
@@ -15,6 +16,109 @@ ParsingErrorDict = Dict[str, Union[str, bool, Tuple[int, int]]]
 # Define the structure for valid calls explicitly
 ValidCallTuple = Tuple[str, Dict[str, Any], Tuple[int, int]]
 
+# Regex for <tool_call>{"name": "...", "arguments": {...}}</tool_call> format (qwen3, etc.)
+TOOL_CALL_JSON_PATTERN = re.compile(
+    r'<tool_call>\s*(\{.*?\})\s*</tool_call>',
+    re.DOTALL
+)
+
+
+def _parse_tool_call_json_blocks(
+    text_buffer: str,
+    tools: Dict[str, BaseTool],
+    processed_spans: set,
+    agent_id: str
+) -> Tuple[List[ValidCallTuple], List[ParsingErrorDict]]:
+    """
+    Parse <tool_call>{"name": "tool_name", "arguments": {...}}</tool_call> format.
+    This is used by qwen3 and other models that wrap JSON tool calls in <tool_call> tags.
+    
+    Returns:
+        Tuple of (valid_calls, parsing_errors)
+    """
+    found_calls: List[ValidCallTuple] = []
+    errors: List[ParsingErrorDict] = []
+
+    for match in TOOL_CALL_JSON_PATTERN.finditer(text_buffer):
+        span = match.span()
+
+        # Check for overlap with already-processed spans
+        overlapping = False
+        for proc_start, proc_end in processed_spans:
+            if max(span[0], proc_start) < min(span[1], proc_end):
+                overlapping = True
+                break
+        if overlapping:
+            continue
+
+        json_str = match.group(1).strip()
+        try:
+            call_data = json_module.loads(json_str)
+        except json_module.JSONDecodeError as e:
+            logger.warning(f"Agent {agent_id}: <tool_call> JSON parse error: {e}. Raw: '{json_str[:200]}'")
+            errors.append({
+                "tool_name": "unknown",
+                "error_message": f"JSON parse error in <tool_call> block: {e}",
+                "xml_block": match.group(0),
+                "is_markdown": False,
+                "span": span
+            })
+            processed_spans.add(span)
+            continue
+
+        if not isinstance(call_data, dict):
+            logger.warning(f"Agent {agent_id}: <tool_call> JSON is not a dict: {type(call_data)}")
+            processed_spans.add(span)
+            continue
+
+        tool_name_from_json = call_data.get("name", "")
+        tool_args = call_data.get("arguments", {})
+
+        if not tool_name_from_json:
+            logger.warning(f"Agent {agent_id}: <tool_call> JSON missing 'name' field.")
+            errors.append({
+                "tool_name": "unknown",
+                "error_message": "Missing 'name' field in <tool_call> JSON.",
+                "xml_block": match.group(0),
+                "is_markdown": False,
+                "span": span
+            })
+            processed_spans.add(span)
+            continue
+
+        # Resolve tool name (case-insensitive match against registered tools)
+        actual_tool_name = next(
+            (name for name in tools if name.lower() == tool_name_from_json.lower()),
+            None
+        )
+
+        if not actual_tool_name:
+            logger.warning(
+                f"Agent {agent_id}: <tool_call> references tool '{tool_name_from_json}' "
+                f"which is not registered. Skipping."
+            )
+            processed_spans.add(span)
+            continue
+
+        # Ensure arguments is a dict
+        if not isinstance(tool_args, dict):
+            logger.warning(
+                f"Agent {agent_id}: <tool_call> 'arguments' for '{actual_tool_name}' "
+                f"is not a dict (got {type(tool_args).__name__}). Wrapping."
+            )
+            tool_args = {"value": str(tool_args)}
+
+        logger.info(
+            f"Agent {agent_id}: Parsed <tool_call> JSON format for tool "
+            f"'{actual_tool_name}' at span {span}. Args: {list(tool_args.keys())}"
+        )
+
+        found_calls.append((actual_tool_name, tool_args, span))
+        processed_spans.add(span)
+
+    return found_calls, errors
+
+
 def find_and_parse_xml_tool_calls(
     text_buffer: str,
     tools: Dict[str, BaseTool], # Pass the registered tools dict
@@ -26,6 +130,7 @@ def find_and_parse_xml_tool_calls(
     """
     Finds *all* occurrences of valid XML tool calls (raw or fenced)
     in the text_buffer, avoiding nested matches. Parses them and returns validated info.
+    Also supports <tool_call>{"name": "...", "arguments": {...}}</tool_call> JSON format.
     Returns a dictionary with 'valid_calls' and 'parsing_errors'.
     Uses ElementTree for more robust XML parsing.
     """
@@ -87,6 +192,65 @@ def find_and_parse_xml_tool_calls(
         # Handle XML entities that might be double-escaped
         cleaned = cleaned.replace("&amp;lt;", "&lt;").replace("&amp;gt;", "&gt;")
         
+        # Escape content inside known parameter tags to prevent ET.ParseError on unescaped HTML/XML
+        if tool_name in tools:
+            tool_schema = tools[tool_name].get_schema()
+            params = tool_schema.get('parameters', [])
+            param_names = [p['name'] for p in params]
+            
+            for param in params:
+                param_name = param['name']
+                
+                def _escape_raw_content(raw_text: str, p_name: str = param_name) -> str:
+                    """Escape raw content for safe XML embedding."""
+                    raw = html.unescape(raw_text)
+                    if raw.strip().startswith("<![CDATA[") and raw.strip().endswith("]]>"):
+                        raw = raw.strip()[9:-3]
+                    safe = raw.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                    return f"<{p_name}>{safe}</{p_name}>"
+
+                # Try standard match first: <param>...</param>
+                pattern = re.compile(rf"<{param_name}>(.*?)</{param_name}>", flags=re.IGNORECASE | re.DOTALL)
+                if pattern.search(cleaned):
+                    cleaned = pattern.sub(lambda m: _escape_raw_content(m.group(1)), cleaned)
+                else:
+                    # Fallback: handle missing closing tag (e.g., <content>HTML...</tool_name>)
+                    # The agent may have written <content><!DOCTYPE html>...</html></file_system>
+                    # without a proper </content> tag.
+                    open_tag_pattern = re.compile(rf"<{param_name}>(.*)", flags=re.IGNORECASE | re.DOTALL)
+                    open_match = open_tag_pattern.search(cleaned)
+                    if open_match:
+                        content_after_open = open_match.group(1)
+                        # Find the tool's closing tag or the next sibling param opening tag
+                        end_marker = f"</{tool_name}>"
+                        end_pos = content_after_open.rfind(end_marker)
+                        if end_pos == -1:
+                            # Try case-insensitive
+                            end_pos = content_after_open.lower().rfind(f"</{tool_name.lower()}>")
+                        
+                        if end_pos != -1:
+                            # Also check for any sibling param tags before the tool closing tag
+                            earliest_sibling = end_pos
+                            for other_param in param_names:
+                                if other_param == param_name:
+                                    continue
+                                # Check for <other_param> appearing before end_pos
+                                sibling_pos = content_after_open.find(f"<{other_param}>")
+                                if sibling_pos == -1:
+                                    sibling_pos = content_after_open.lower().find(f"<{other_param.lower()}>")
+                                if sibling_pos != -1 and sibling_pos < earliest_sibling:
+                                    earliest_sibling = sibling_pos
+                            
+                            # The actual content is everything up to the earliest boundary
+                            actual_content = content_after_open[:earliest_sibling]
+                            remainder = content_after_open[earliest_sibling:]
+                            
+                            # Rebuild: replace the broken section with escaped content + proper closing tag + remainder
+                            escaped_section = _escape_raw_content(actual_content)
+                            rebuilt = cleaned[:open_match.start()] + escaped_section + remainder
+                            cleaned = rebuilt
+                            logger.info(f"[SANITIZE] Fixed missing </{param_name}> tag for tool '{tool_name}'. Extracted and escaped {len(actual_content)} chars of content.")
+
         return cleaned
 
     def _generate_corrected_xml_example(tool_name: str, tools: Dict[str, BaseTool]) -> str:
@@ -239,13 +403,24 @@ def find_and_parse_xml_tool_calls(
             # Consider adding to processed_spans here if we want to ensure an erroneous block isn't re-processed by a less specific regex:
             processed_spans.add(match_span)
 
+    # 3. Fallback: Parse <tool_call>{"name": "...", "arguments": {...}}</tool_call> JSON format
+    # This handles models like qwen3 that use JSON-in-XML format instead of pure XML
+    if not found_calls_details and not parsing_errors:
+        json_calls, json_errors = _parse_tool_call_json_blocks(
+            text_buffer, tools, processed_spans, agent_id
+        )
+        if json_calls:
+            found_calls_details.extend(json_calls)
+            logger.info(f"Agent {agent_id}: Found {len(json_calls)} valid <tool_call> JSON format call(s) in buffer.")
+        if json_errors:
+            parsing_errors.extend(json_errors)
 
     if not found_calls_details and not parsing_errors:
         logger.debug(f"Agent {agent_id}: [PARSE_DEBUG] No valid XML tool calls or parsing errors found in buffer after full processing.")
     elif found_calls_details:
-        logger.info(f"Agent {agent_id}: Found {len(found_calls_details)} valid XML tool call(s) in buffer.")
+        logger.info(f"Agent {agent_id}: Found {len(found_calls_details)} valid tool call(s) in buffer (XML + JSON formats).")
     if parsing_errors:
-         logger.info(f"Agent {agent_id}: Encountered {len(parsing_errors)} XML parsing error(s) in buffer.")
+         logger.info(f"Agent {agent_id}: Encountered {len(parsing_errors)} tool call parsing error(s) in buffer.")
 
     return {"valid_calls": found_calls_details, "parsing_errors": parsing_errors}
 # END OF FILE src/agents/agent_tool_parser.py

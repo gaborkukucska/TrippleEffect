@@ -52,7 +52,7 @@ async def _check_provider_health(base_url: str, timeout: int = 3) -> bool:
     try:
         async with aiohttp.ClientSession() as session:
             # Use a HEAD request for efficiency, fallback to GET if needed
-            async with session.head(check_url, timeout=timeout, allow_redirects=False) as response:
+            async with session.head(check_url, timeout=aiohttp.ClientTimeout(total=timeout), allow_redirects=False) as response:
                 # Consider any 2xx or 3xx status as reachable for basic check
                 if 200 <= response.status < 400:
                     logger.debug(f"Health check successful for {check_url} (Status: {response.status})")
@@ -60,7 +60,7 @@ async def _check_provider_health(base_url: str, timeout: int = 3) -> bool:
                 else:
                     # Try GET if HEAD failed or gave non-success status
                     logger.debug(f"HEAD request failed ({response.status}), trying GET for {check_url}")
-                    async with session.get(check_url, timeout=timeout) as get_response:
+                    async with session.get(check_url, timeout=aiohttp.ClientTimeout(total=timeout)) as get_response:
                          if 200 <= get_response.status < 400:
                               logger.debug(f"Health check successful for {check_url} via GET (Status: {get_response.status})")
                               return True
@@ -86,7 +86,7 @@ async def _select_alternate_models(
     """Selects up to max_alternates different models from the same provider."""
     logger.debug(f"Selecting alternate models for provider '{provider}', original: '{original_model}', tried: {tried_models_on_key}, max: {max_alternates}")
     
-    candidate_model_infos: List[ModelInfo] = []
+    candidate_model_infos: List[Dict[str, Any]] = []
     all_provider_models_from_registry = model_registry.get_available_models_dict().get(provider, [])
 
     for model_data in all_provider_models_from_registry:
@@ -113,7 +113,7 @@ async def _select_alternate_models(
         
         if tier_compatible:
             # Ensure 'provider' key is in model_data for the sorter
-            model_data_copy = model_data.copy()
+            model_data_copy = dict(model_data)
             model_data_copy["provider"] = provider # The specific provider name
             candidate_model_infos.append(model_data_copy)
         else:
@@ -130,7 +130,6 @@ async def _select_alternate_models(
     provider_metrics = {}
     base_provider_name = provider.split("-local-")[0].split("-proxy")[0] # Get base name like "ollama"
     
-    all_metrics = manager.performance_tracker.get_all_metrics()
     provider_specific_metrics_for_sorter = {}
 
     for model_info_dict in candidate_model_infos:
@@ -231,6 +230,12 @@ async def _try_switch_agent(
         final_provider_args.pop('agent_type', None)
         # --- End explicit removal ---
 
+        # Pass model_registry to OllamaProvider so it can look up per-model metadata at runtime
+        from src.llm_providers.ollama_provider import OllamaProvider as OllamaProviderClass
+        if ProviderClass == OllamaProviderClass:
+            final_provider_args['model_registry'] = model_registry
+            logger.debug(f"Failover: Passing model_registry to OllamaProvider for agent '{agent_id}'.")
+
         logger.debug(f"Instantiating {ProviderClass.__name__} with args: { {k: (v[:10]+'...' if k=='api_key' and isinstance(v, str) else v) for k,v in final_provider_args.items()} }")
         new_provider_instance = ProviderClass(**final_provider_args)
 
@@ -293,7 +298,7 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
     agent = manager.agents.get(agent_id)
     if not agent:
         logger.error(f"Failover Error: Agent '{agent_id}' not found during failover.")
-        return
+        return False
 
     # --- Initialize Failover State ---
     # Use a dictionary attached to the agent instance to track state across potential retries *within* the failover sequence.
@@ -321,6 +326,8 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
             agent._failover_state["tried_keys_on_current_external"] = set()
         if "tried_models_on_current_external_key" not in agent._failover_state:
             agent._failover_state["tried_models_on_current_external_key"] = set()
+        if "failover_attempt_count" not in agent._failover_state:
+            agent._failover_state["failover_attempt_count"] = 0
     # --- END DEFENSIVE INITIALIZATION ---
 
     failover_state = agent._failover_state
@@ -445,7 +452,7 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
         # Get all models for this specific local provider instance
         all_models_for_this_local_provider_raw = all_available.get(local_provider, [])
         
-        candidate_local_model_infos: List[ModelInfo] = []
+        candidate_local_model_infos: List[Dict[str, Any]] = []
         for model_data in all_models_for_this_local_provider_raw:
             model_id = model_data.get("id")
             if not model_id: continue
@@ -453,7 +460,7 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
                 logger.debug(f"Skipping local model '{model_id}' on '{local_provider}': already tried.")
                 continue
             
-            model_data_copy = model_data.copy()
+            model_data_copy = dict(model_data)
             model_data_copy["provider"] = local_provider # Specific provider name
             candidate_local_model_infos.append(model_data_copy)
 
@@ -580,7 +587,7 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
 
             # --- New Logic: Prioritize agent's original_model on new provider/key ---
             agent_original_model_on_this_provider = None
-            if any(m_info['id'] == original_model for m_info in all_external_provider_models_raw):
+            if any(m_info.get('id') == original_model for m_info in all_external_provider_models_raw):
                 original_model_suitable_tier = False
                 if current_model_tier == "ALL": original_model_suitable_tier = True
                 elif current_model_tier == "FREE" and external_provider == "openrouter" and ":free" in original_model.lower(): original_model_suitable_tier = True
@@ -594,7 +601,7 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
             else:
                 # --- Existing Logic: Attempt to select initial model using comprehensive sort if original_model not prioritized ---
                 logger.debug(f"Agent's original model not prioritized for '{external_provider}'. Attempting comprehensive sort.")
-                candidate_external_model_infos: List[ModelInfo] = []
+                candidate_external_model_infos: List[Dict[str, Any]] = []
                 for model_data in all_external_provider_models_raw:
                     m_id = model_data.get("id")
                     if not m_id: continue
@@ -612,7 +619,7 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
                         logger.debug(f"Skipping model '{m_id}' for initial try on '{external_provider}': not compatible with tier '{current_model_tier}'.")
                         continue
 
-                    model_data_copy = model_data.copy()
+                    model_data_copy = dict(model_data)
                     model_data_copy["provider"] = external_provider # Specific provider name
                     candidate_external_model_infos.append(model_data_copy)
 
@@ -644,7 +651,8 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
                     logger.debug(f"Comprehensive sort failed. Using Fallback B for '{external_provider}'.")
                     if all_external_provider_models_raw: # Ensure there are models to iterate
                         for m_info_fb in all_external_provider_models_raw:
-                            m_id_fb = m_info_fb['id']
+                            m_id_fb = m_info_fb.get('id')
+                            if not m_id_fb: continue
                             if m_id_fb == original_model: continue # Already considered
 
                             model_suitable_tier_fb = False
