@@ -137,7 +137,7 @@ async def scan_for_local_apis(ports: List[int], timeout: float) -> List[str]:
 
             logger.debug(f"Checking nmap results for host: {host_ip} (Type: {type(host_ip)})")
             # --- MODIFIED: Access underlying dictionary directly ---
-            host_data = scanner._scan_result.get('scan', {}).get(host_ip)
+            host_data = scanner._scan_result.get('scan', {}).get(host_ip) # type: ignore[reportAttributeAccessIssue]
             if host_data and 'tcp' in host_data:
             # --- END MODIFICATION ---
                 for port in ports:

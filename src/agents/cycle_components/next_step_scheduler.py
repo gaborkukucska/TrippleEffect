@@ -53,7 +53,7 @@ class NextStepScheduler:
 
         if context.trigger_failover:
             logger.warning(f"NextStepScheduler: Agent '{agent_id}' ({context.current_model_key_for_tracking}) requires failover. Error: {context.last_error_content[:100]}")
-            failover_successful = await self._manager.handle_agent_model_failover(agent_id, context.last_error_obj)
+            failover_successful = await self._manager.handle_agent_model_failover(agent_id, context.last_error_obj or Exception("Unknown error triggering failover"))
             if failover_successful:
                 logger.info(f"NextStepScheduler: Failover successful for agent '{agent_id}'. Agent config updated. Re-scheduling cycle.")
                 await self._schedule_new_cycle(agent, 0) # Reset retry count for new config

@@ -51,6 +51,10 @@ class TestAgentCycleHandlerMultiTool(unittest.TestCase):
         self.agent_mock._failover_state = {} 
         self.agent_mock._failed_models_this_cycle = set()
         self.agent_mock.needs_priority_recheck = False
+        
+        # Mock LLM provider to fix AttributeError in cycle_handler.py:587
+        self.agent_mock.llm_provider = MagicMock()
+        self.agent_mock.llm_provider.max_tokens = 8000
 
 
         # Mock InteractionHandler
@@ -103,15 +107,16 @@ class TestAgentCycleHandlerMultiTool(unittest.TestCase):
         )
 
         # 2. agent.message_history updated
-        self.assertEqual(len(self.agent_mock.message_history), 3) # 1 assistant (tool_requests) + 2 tool results
-        self.assertEqual(self.agent_mock.message_history[0]["role"], "assistant")
-        self.assertEqual(self.agent_mock.message_history[0]["content"], tool_requests_event["raw_assistant_response"])
-        self.assertEqual(self.agent_mock.message_history[1]["role"], "tool")
-        self.assertEqual(self.agent_mock.message_history[1]["tool_call_id"], "call_1")
-        self.assertEqual(self.agent_mock.message_history[1]["content"], tool_result_1_content)
+        self.assertEqual(len(self.agent_mock.message_history), 4) # 1 system + 1 assistant (tool_requests) + 2 tool results
+        self.assertEqual(self.agent_mock.message_history[0]["role"], "system")
+        self.assertEqual(self.agent_mock.message_history[1]["role"], "assistant")
+        self.assertEqual(self.agent_mock.message_history[1]["content"], tool_requests_event["raw_assistant_response"])
         self.assertEqual(self.agent_mock.message_history[2]["role"], "tool")
-        self.assertEqual(self.agent_mock.message_history[2]["tool_call_id"], "call_2")
-        self.assertEqual(self.agent_mock.message_history[2]["content"], tool_result_2_content)
+        self.assertEqual(self.agent_mock.message_history[2]["tool_call_id"], "call_1")
+        self.assertEqual(self.agent_mock.message_history[2]["content"], tool_result_1_content)
+        self.assertEqual(self.agent_mock.message_history[3]["role"], "tool")
+        self.assertEqual(self.agent_mock.message_history[3]["tool_call_id"], "call_2")
+        self.assertEqual(self.agent_mock.message_history[3]["content"], tool_result_2_content)
 
         # 3. context.needs_reactivation_after_cycle (indirectly via NextStepScheduler)
         # We check if schedule_cycle was called for the current agent due to needs_reactivation_after_cycle being true
@@ -168,10 +173,12 @@ class TestAgentCycleHandlerMultiTool(unittest.TestCase):
         self.assertEqual(self.interaction_handler_mock.execute_single_tool.call_count, 3)
 
         # 2. All results in history
-        self.assertEqual(len(self.agent_mock.message_history), 4) # 1 assistant, 3 tool results
-        self.assertEqual(self.agent_mock.message_history[1]["content"], tool_result_s1_content)
-        self.assertEqual(self.agent_mock.message_history[2]["content"], tool_result_fail_content)
-        self.assertEqual(self.agent_mock.message_history[3]["content"], tool_result_s2_content)
+        self.assertEqual(len(self.agent_mock.message_history), 5) # 1 system, 1 assistant, 3 tool results
+        self.assertEqual(self.agent_mock.message_history[0]["role"], "system")
+        self.assertEqual(self.agent_mock.message_history[1]["role"], "assistant")
+        self.assertEqual(self.agent_mock.message_history[2]["content"], tool_result_s1_content)
+        self.assertEqual(self.agent_mock.message_history[3]["content"], tool_result_fail_content)
+        self.assertEqual(self.agent_mock.message_history[4]["content"], tool_result_s2_content)
         
         # 3. Needs reactivation? 
         #    Logic now prevents immediate re-entry loops, so schedule_cycle is not called.
@@ -196,10 +203,11 @@ class TestAgentCycleHandlerMultiTool(unittest.TestCase):
         # 1. execute_single_tool should not be called
         self.interaction_handler_mock.execute_single_tool.assert_not_called()
         
-        # 2. Message history should contain assistant's raw response
-        self.assertEqual(len(self.agent_mock.message_history), 1)
-        self.assertEqual(self.agent_mock.message_history[0]["role"], "assistant")
-        self.assertEqual(self.agent_mock.message_history[0]["content"], tool_requests_event_empty["raw_assistant_response"])
+        # 2. Message history should contain system prompt and assistant's raw response
+        self.assertEqual(len(self.agent_mock.message_history), 2)
+        self.assertEqual(self.agent_mock.message_history[0]["role"], "system")
+        self.assertEqual(self.agent_mock.message_history[1]["role"], "assistant")
+        self.assertEqual(self.agent_mock.message_history[1]["content"], tool_requests_event_empty["raw_assistant_response"])
 
         # 3. Needs reactivation? The current logic sets needs_reactivation_after_cycle = False 
         #    after tool execution to prevent immediate re-entry loops, relying on natural processing.

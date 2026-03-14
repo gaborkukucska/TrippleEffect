@@ -28,12 +28,12 @@ class ProjectCreationWorkflow(BaseWorkflow):
     """
     name: str = "project_creation"
     trigger_tag_name: str = "plan" 
-    allowed_agent_type: str = AGENT_TYPE_ADMIN
-    allowed_agent_state: str = ADMIN_STATE_PLANNING
+    allowed_agent_type: Optional[str] = AGENT_TYPE_ADMIN
+    allowed_agent_state: Optional[str] = ADMIN_STATE_PLANNING
     description: str = "Orchestrates project initialization: creates the initial project task and a dedicated Project Manager agent from an Admin AI's plan."
     expected_xml_schema: str = "<plan><title>Project Title</title>\n  <_raw_plan_body_>(Raw plan description, Markdown is okay here)</_raw_plan_body_>\n</plan>"
 
-    async def execute(
+    async def execute( # type: ignore[reportIncompatibleMethodOverride]
         self,
         manager: 'AgentManager',
         agent: 'Agent', 

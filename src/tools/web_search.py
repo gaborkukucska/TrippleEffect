@@ -2,7 +2,7 @@
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import aiohttp
 from bs4 import BeautifulSoup
 import urllib.parse
@@ -36,7 +36,7 @@ class WebSearchTool(BaseTool):
         ToolParameter(name="search_depth", type="string", description="Tavily only: 'basic' or 'advanced'.", required=False),
     ]
 
-    async def execute(self, agent_id: str, **kwargs: Any) -> Dict[str, Any]:
+    async def execute(self, agent_id: str, **kwargs: Any) -> Dict[str, Any]: # type: ignore[reportIncompatibleMethodOverride]
         query = kwargs.get("query")
         
         # Enhanced validation with better error messages
@@ -144,11 +144,11 @@ class WebSearchTool(BaseTool):
                 ]
             }
 
-    async def _perform_search(self, query: str, num_results: int, search_depth: str) -> (Optional[List[Dict]], str):
+    async def _perform_search(self, query: str, num_results: int, search_depth: str) -> Tuple[Optional[List[Dict[str, Any]]], str]:
         if TAVILY_AVAILABLE and settings.TAVILY_API_KEY:
             try:
-                tavily = TavilyClient(api_key=settings.TAVILY_API_KEY)
-                response = await asyncio.to_thread(tavily.search, query=query, search_depth=search_depth, max_results=num_results)
+                tavily = TavilyClient(api_key=settings.TAVILY_API_KEY) # type: ignore
+                response = await asyncio.to_thread(tavily.search, query=query, search_depth=search_depth, max_results=num_results) # type: ignore
                 if "results" in response:
                     return [self._standardize_result(r) for r in response["results"]], "Tavily API"
             except Exception as e:
@@ -165,7 +165,7 @@ class WebSearchTool(BaseTool):
 
         try:
             async with aiohttp.ClientSession(headers=HEADERS) as session:
-                async with session.get(search_url, timeout=15) as response:
+                async with session.get(search_url, timeout=aiohttp.ClientTimeout(total=15)) as response:
                     response.raise_for_status()
                     html_content = await response.text()
 

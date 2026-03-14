@@ -145,6 +145,7 @@ class ModelRegistry:
 
         # --- Generate unique provider name based on IP ---
         ip_suffix = "unknown-host" # Default
+        host = "unknown"
         try:
             if not base_url.startswith(('http://', 'https://')):
                 base_url_for_parse = f"http://{base_url}"
@@ -159,7 +160,7 @@ class ModelRegistry:
         ollama_check_url = f"{base_url}/api/tags"
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(ollama_check_url, timeout=5) as response:
+                async with session.get(ollama_check_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
                     if response.status == 200:
                         data = await response.json(content_type=None) # Ollama might not set content_type correctly
                         raw_models_data = data.get("models", [])
@@ -178,7 +179,7 @@ class ModelRegistry:
                                 model_info_dict: ModelInfo = {"id": model_name, "provider": unique_provider_name, "name": model_name}
                                 try:
                                     show_url = f"{base_url}/api/show"
-                                    async with session.post(show_url, json={"name": model_name}, timeout=10) as show_response: # Use POST as per Ollama docs
+                                    async with session.post(show_url, json={"name": model_name}, timeout=aiohttp.ClientTimeout(total=10)) as show_response: # Use POST as per Ollama docs
                                         if show_response.status == 200:
                                             details_data = await show_response.json(content_type=None)
                                             # --- Extract parameter_size (existing) ---
@@ -220,7 +221,19 @@ class ModelRegistry:
                                                     logger.debug(f"Ollama model '{model_name}': stop_tokens={parsed_stop}")
                                                 if parsed_num_ctx is not None:
                                                     model_info_dict["model_num_ctx"] = parsed_num_ctx
-                                                    logger.debug(f"Ollama model '{model_name}': num_ctx={parsed_num_ctx}")
+                                                    logger.debug(f"Ollama model '{model_name}': num_ctx={parsed_num_ctx} (from parameters block)")
+                                            
+                                            # --- Fallback: Extract context_length from model_info dict ---
+                                            # Models like qwen3 don't put num_ctx in the parameters text block,
+                                            # but store it in model_info under keys like "qwen3.context_length".
+                                            if not model_info_dict.get("model_num_ctx"):
+                                                model_info_data = details_data.get("model_info", {})
+                                                if isinstance(model_info_data, dict):
+                                                    for key, val in model_info_data.items():
+                                                        if key.endswith(".context_length") and isinstance(val, int):
+                                                            model_info_dict["model_num_ctx"] = val
+                                                            logger.debug(f"Ollama model '{model_name}': num_ctx={val} (from model_info key '{key}')")
+                                                            break
                                         else:
                                             logger.warning(f"Failed to get details for Ollama model '{model_name}' from {show_url}. Status: {show_response.status}")
                                 except Exception as detail_err:
@@ -228,7 +241,7 @@ class ModelRegistry:
                                 final_models_list.append(model_info_dict)
                             if not final_models_list and raw_models_list: # If detail fetching failed for all but tags worked
                                 logger.warning(f"Ollama endpoint {base_url}: Failed to fetch details for any models, using names from /api/tags only.")
-                                final_models_list = [ModelInfo(id=m.get("name"), provider=unique_provider_name) for m in raw_models_list if m.get("name")]
+                                final_models_list = [ModelInfo(id=str(m.get("name")), provider=unique_provider_name) for m in raw_models_list if m.get("name")]
 
                         else: logger.debug(f"Endpoint {ollama_check_url} returned 200 but response format doesn't match Ollama /api/tags.")
                     else: logger.debug(f"Ollama check failed for {base_url}. Status: {response.status}")
@@ -242,7 +255,7 @@ class ModelRegistry:
                 logger.debug(f"Trying OpenAI compatible check: {check_url}")
                 try:
                     async with aiohttp.ClientSession() as session: # New session for LiteLLM check
-                        async with session.get(check_url, timeout=5) as response:
+                        async with session.get(check_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
                             if response.status == 200:
                                 data = await response.json(content_type=None)
                                 models_data_openai = data.get("data", [])
@@ -336,6 +349,9 @@ class ModelRegistry:
                 if isinstance(result, tuple) and len(result) == 3:
                     provider_name, verified_url, models = result
                     if provider_name and verified_url and models:
+                        is_loopback = False
+                        port_part = 0
+                        canonical_service_id = ("unknown", 0)
                         try:
                             host_part = verified_url.split('//')[1].split('/')[0].split(':')[0]
                             port_part_str = verified_url.split(':')[-1].split('/')[0]
@@ -440,7 +456,7 @@ class ModelRegistry:
         try:
             async with aiohttp.ClientSession(headers=headers) as session:
                 logger.debug(f"Requesting OpenRouter models from {models_url} using key ending '...{discovery_key[-4:]}'")
-                async with session.get(models_url, timeout=20) as response:
+                async with session.get(models_url, timeout=aiohttp.ClientTimeout(total=20)) as response:
                     if response.status == 200:
                         data = await response.json(); models_data = data.get("data", [])
                         if models_data:

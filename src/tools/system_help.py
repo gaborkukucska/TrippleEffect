@@ -29,7 +29,7 @@ class SystemHelpTool(BaseTool):
         ToolParameter(name="agent_id_filter", type="string", description="Filter logs by agent ID.", required=False),
     ]
 
-    async def execute(self, agent_id: str, manager: 'AgentManager', **kwargs: Any) -> Dict[str, Any]:
+    async def execute(self, agent_id: str, manager: 'AgentManager', **kwargs: Any) -> Dict[str, Any]: # type: ignore[reportIncompatibleMethodOverride]
         action = kwargs.get("action")
         if not action or action not in ["get_time", "search_logs"]:
             return {"status": "error", "message": "Invalid action. Must be 'get_time' or 'search_logs'."}

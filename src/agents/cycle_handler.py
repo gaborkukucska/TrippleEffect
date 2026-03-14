@@ -4,7 +4,7 @@ import json
 import logging
 import time
 import re
-from typing import TYPE_CHECKING, Dict, Any, Optional, List
+from typing import TYPE_CHECKING, Dict, Any, Optional, List, Tuple
 
 from src.llm_providers.base import ToolResultDict, MessageDict  # type: ignore[import]
 from src.agents.core import Agent  # type: ignore[import]
@@ -15,7 +15,7 @@ from src.agents.constants import (  # type: ignore[import]
     AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_AWAITING_TOOL,
     AGENT_STATUS_AWAITING_CG_REVIEW, AGENT_STATUS_AWAITING_USER_REVIEW_CG, # Added for CG
     AGENT_STATUS_ERROR, AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER,
-    ADMIN_STATE_PLANNING, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STARTUP, ADMIN_STATE_WORK,
+    ADMIN_STATE_PLANNING, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STARTUP, ADMIN_STATE_WORK, ADMIN_STATE_STANDBY,
     PM_STATE_STARTUP, PM_STATE_MANAGE, PM_STATE_WORK, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_STANDBY,
     WORKER_STATE_WAIT, REQUEST_STATE_TAG_PATTERN,
     CONSTITUTIONAL_GUARDIAN_AGENT_ID, # Added for CG
@@ -406,11 +406,18 @@ class AgentCycleHandler:
         keeping only the most recent one. This prevents message accumulation
         that confuses the LLM into re-executing already-completed actions
         (e.g. creating duplicate agents for the same role).
+        
+        Matches all framework message variants:
+        - [Framework System Message]
+        - [Framework System Message - DUPLICATE BLOCKED]
+        - [Framework System Message - AUTO-ADVANCE]
         """
         if not agent.message_history:
             return
 
-        FRAMEWORK_MSG_PREFIX = "[Framework System Message]"
+        # Use a broad prefix to catch all variants:
+        # "[Framework System Message]", "[Framework System Message - DUPLICATE BLOCKED]", etc.
+        FRAMEWORK_MSG_PREFIX = "[Framework System Message"
         # Find indices of all framework system messages
         framework_msg_indices: List[int] = []
         for i, msg in enumerate(agent.message_history):
@@ -433,7 +440,68 @@ class AgentCycleHandler:
                 f"history reduced from {original_len} to {len(agent.message_history)} messages."
             )
 
-    async def run_cycle(self, agent: Agent, retry_count: int = 0):
+    def _detect_cross_cycle_duplicate_tool_call(self, agent: Agent, tool_name: str, tool_args: Dict[str, Any]) -> Optional[str]:
+        """
+        Detect if a tool call with the same name and arguments already succeeded
+        in a previous cycle (i.e., it exists as an assistant+tool pair in history).
+        
+        Returns the content of the previous successful tool result if a duplicate
+        is found, or None if this is a fresh call.
+        """
+        if not agent.message_history:
+            return None
+        
+        # Create signature for the current call
+        current_sig = (tool_name, json.dumps(tool_args, sort_keys=True))
+        
+        def _is_equivalent(sig1: Tuple[str, str], sig2: Tuple[str, str]) -> bool:
+            if sig1 == sig2:
+                return True
+            tname1, targs1_json = sig1
+            tname2, targs2_json = sig2
+            if tname1 != tname2:
+                return False
+            if tname1 == "manage_team":
+                try:
+                    args1 = json.loads(targs1_json)
+                    args2 = json.loads(targs2_json)
+                    if args1.get("action") == "create_agent" and args2.get("action") == "create_agent":
+                        p1 = args1.get("persona") or args1.get("role")
+                        p2 = args2.get("persona") or args2.get("role")
+                        if p1 and p2 and str(p1).strip().lower() == str(p2).strip().lower():
+                            return True
+                except Exception:
+                    pass
+            return False
+
+        # Scan history in reverse for assistant messages with matching tool calls
+        for i in range(len(agent.message_history) - 1, -1, -1):
+            msg = agent.message_history[i]
+            if msg.get("role") != "assistant":
+                continue
+            
+            for tc in msg.get("tool_calls", []):
+                prev_sig = (tc.get("name"), json.dumps(tc.get("arguments", {}), sort_keys=True))
+                if _is_equivalent(prev_sig, current_sig):
+                    # Found a matching call - now look for its successful tool result
+                    tc_id = tc.get("id")
+                    for j in range(i + 1, len(agent.message_history)):
+                        result_msg = agent.message_history[j]
+                        if (result_msg.get("role") == "tool" and
+                            result_msg.get("tool_call_id") == tc_id):
+                            result_content = result_msg.get("content", "")
+                            # Check if the result was successful
+                            try:
+                                result_data = json.loads(result_content)
+                                if isinstance(result_data, dict) and result_data.get("status") == "error":
+                                    continue  # Previous call failed, allow retry
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+                            return result_content  # Found a successful duplicate
+        
+        return None
+
+    async def run_cycle(self, agent: Agent, retry_count: int = 0): # pyright: ignore[reportGeneralTypeIssues]
         logger.critical(f"!!! CycleHandler: run_cycle TASK STARTED for Agent '{agent.agent_id}' (Retry: {retry_count}) !!!")
         
         # CRITICAL FIX: Check if agent is awaiting Constitutional Guardian review before proceeding
@@ -518,7 +586,14 @@ class AgentCycleHandler:
                     # Get max tokens from agent's LLM provider (default to 8000 if not available)
                     max_tokens = getattr(agent.llm_provider, 'max_tokens', 8000) if agent.llm_provider else 8000
                     
-                    if await self._context_summarizer.should_summarize_context(agent.agent_id, estimated_tokens, max_tokens):
+                    # Look up model's native num_ctx for dynamic threshold
+                    model_num_ctx = None
+                    if hasattr(self._manager, 'model_registry') and self._manager.model_registry:
+                        _model_info = self._manager.model_registry.get_model_info(agent.model)
+                        if _model_info:
+                            model_num_ctx = _model_info.get('model_num_ctx')
+                    
+                    if await self._context_summarizer.should_summarize_context(agent.agent_id, estimated_tokens, max_tokens, message_history=context.history_for_call, model_num_ctx=model_num_ctx):
                         logger.info(f"CycleHandler: Context summarization needed for agent '{agent.agent_id}' due to token limits")
                         try:
                             # CRITICAL FIX: Preserve context anchors for Admin AI work state
@@ -628,13 +703,28 @@ class AgentCycleHandler:
 
                         if workflow_result.tasks_to_schedule:
                             for task_agent, task_retry_count in workflow_result.tasks_to_schedule:
-                                if task_agent and isinstance(task_agent, Agent): await self._manager.schedule_cycle(task_agent, task_retry_count)
+                                if task_agent and isinstance(task_agent, Agent):
+                                    if task_agent.agent_id == agent.agent_id:
+                                        # CRITICAL FIX: Do NOT call schedule_cycle for the current agent inline.
+                                        # Doing so fires a concurrent asyncio task that starts a new LLM call
+                                        # while this cycle's finally block hasn't run yet, causing DOUBLE LLM calls.
+                                        # Instead, defer to next_step_scheduler by setting the reactivation flag.
+                                        logger.info(
+                                            f"CycleHandler '{agent.agent_id}': Workflow '{workflow_result.workflow_name}' "
+                                            f"requests re-scheduling of SELF. Deferring to NextStepScheduler "
+                                            f"(setting needs_reactivation_after_cycle=True) to prevent concurrent LLM calls."
+                                        )
+                                        context.needs_reactivation_after_cycle = True
+                                    else:
+                                        # For OTHER agents, scheduling inline is safe — they run independently.
+                                        await self._manager.schedule_cycle(task_agent, task_retry_count)
                                 else: logger.warning(f"CycleHandler '{agent.agent_id}': Workflow '{workflow_result.workflow_name}' invalid agent schedule request.")
                         if workflow_result.success:
                             context.cycle_completed_successfully = True
-                            # Default reactivation logic
-                            context.needs_reactivation_after_cycle = not (workflow_result.tasks_to_schedule and any(ts_agent.agent_id == agent.agent_id for ts_agent, _ in workflow_result.tasks_to_schedule)) and \
-                                                                bool(workflow_result.next_agent_state or workflow_result.tasks_to_schedule)
+                            # needs_reactivation_after_cycle may already be True from self-scheduling above.
+                            # Only override if it wasn't already set for self-rescheduling.
+                            if not context.needs_reactivation_after_cycle:
+                                context.needs_reactivation_after_cycle = bool(workflow_result.next_agent_state or workflow_result.tasks_to_schedule)
 
                             # Specific intervention for Admin AI after project_creation workflow
                             if agent.agent_id == BOOTSTRAP_AGENT_ID and workflow_result.workflow_name == "project_creation":
@@ -748,6 +838,10 @@ class AgentCycleHandler:
                                                    f"You attempted to use '{malformed_tool_name}' with tool_name='list_tools', but 'list_tools' is not a tool name - it's an action.\n"
                                                    f"Correct usage: <tool_information><action>list_tools</action></tool_information>\n"
                                                    f"This will list all available tools and their summaries.")
+                            elif malformed_tool_name == "unknown":
+                                feedback_to_agent = (f"[Framework Feedback: XML Parsing Error]\n"
+                                                   f"Your tool call was malformed: {parsing_error_msg}\n"
+                                                   f"Please check your syntax. You must specify a valid tool name from your system instructions.")
                             else:
                                 feedback_to_agent = (f"[Framework Feedback: XML Parsing Error]\n"
                                                    f"Your XML for '{malformed_tool_name}' was malformed: {parsing_error_msg}\n"
@@ -853,7 +947,17 @@ class AgentCycleHandler:
                         # <<< --- ROBUST FIX END --- >>>
 
                         if self._manager.workflow_manager.change_state(agent, requested_state, task_description=task_description):
-                            context.needs_reactivation_after_cycle = True
+                            # Reactivate unless transitioning to an idle state
+                            idle_states = [PM_STATE_STANDBY, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STANDBY, WORKER_STATE_WAIT]
+                            
+                            # Resolve alias just to be safe
+                            resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state)
+                            
+                            if resolved_requested in idle_states:
+                                context.needs_reactivation_after_cycle = False
+                                logger.info(f"CycleHandler: Agent '{agent.agent_id}' transitioned to idle state '{resolved_requested}'. Not reactivating.")
+                            else:
+                                context.needs_reactivation_after_cycle = True
                             
                             # CRITICAL FIX: For Admin AI work state, inject task reminder to prevent infinite loops
                             if agent.agent_type == AGENT_TYPE_ADMIN and requested_state == ADMIN_STATE_WORK and task_description:
@@ -893,8 +997,20 @@ class AgentCycleHandler:
                                     )
                             # --- END MODIFICATION ---
                         else:
-                            # If change_state returned False (e.g., invalid state), still likely needs reactivation to retry or get error feedback.
-                            context.needs_reactivation_after_cycle = True
+                            # change_state returned False. Check if it's already in the requested state.
+                            resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state)
+                            if agent.state == resolved_requested:
+                                logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Assuming idle/done if it's an idle state.")
+                                idle_states = [PM_STATE_STANDBY, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STANDBY, WORKER_STATE_WAIT]
+                                if resolved_requested in idle_states:
+                                    context.needs_reactivation_after_cycle = False
+                                else:
+                                    context.needs_reactivation_after_cycle = True
+                            else:
+                                # Truly invalid state transition. Let it reactivate to correct itself (with an error message).
+                                context.needs_reactivation_after_cycle = True
+                                invalid_msg = f"[Framework Error]: Invalid state requested: '{requested_state}'. Please check valid states for your role."
+                                agent.message_history.append({"role": "system", "content": invalid_msg})
 
                         if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="agent_state_change", content=f"State changed to: {requested_state}")
                         await self._manager.send_to_ui(event)
@@ -1002,6 +1118,7 @@ class AgentCycleHandler:
                         # FIX: Deduplicate identical tool calls to prevent duplicate operations
                         seen_tool_signatures: set = set()
                         deduplicated_tool_calls: list = []
+                        cross_cycle_duplicate_blocked: bool = False # Flag to prevent state interventions from overriding duplicate warnings
                         for call_data in tool_calls:
                             # Create a signature from tool name + serialized arguments
                             sig = (call_data.get("name"), json.dumps(call_data.get("arguments", {}), sort_keys=True))
@@ -1022,6 +1139,138 @@ class AgentCycleHandler:
                         
                         for i, call_data in enumerate(deduplicated_tool_calls):
                             tool_name = call_data.get("name"); tool_id = call_data.get("id"); tool_args = call_data.get("arguments", {})
+                            
+                            # --- CROSS-CYCLE DUPLICATE DETECTION for PM agents ---
+                            # Check if this exact tool call already succeeded in a previous cycle.
+                            # If so, skip re-execution and inject a forceful directive to advance.
+                            if agent.agent_type == AGENT_TYPE_PM and agent.state in [
+                                PM_STATE_ACTIVATE_WORKERS, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_MANAGE
+                            ]:
+                                prev_result = self._detect_cross_cycle_duplicate_tool_call(agent, tool_name, tool_args)
+                                if prev_result is not None:
+                                    # Track duplicate count for escalation
+                                    if not hasattr(agent, '_duplicate_tool_call_count'):
+                                        agent._duplicate_tool_call_count = 0
+                                    agent._duplicate_tool_call_count += 1
+                                    
+                                    logger.warning(
+                                        f"CycleHandler: CROSS-CYCLE DUPLICATE DETECTED for PM '{agent.agent_id}' - "
+                                        f"tool '{tool_name}' with same args already succeeded. "
+                                        f"Duplicate count: {agent._duplicate_tool_call_count}. Skipping re-execution."
+                                    )
+                                    
+                                    # Use the cached result instead of re-executing
+                                    history_item: MessageDict = {
+                                        "role": "tool",
+                                        "tool_call_id": tool_id or f"cached_id_{i}",
+                                        "name": tool_name or f"unknown_tool_{i}",
+                                        "content": prev_result
+                                    }
+                                    all_tool_results_for_history.append(history_item)
+                                    any_tool_success = True
+                                    
+                                    # Inject escalated directive based on duplicate count
+                                    if agent._duplicate_tool_call_count >= 3 and agent.state in [
+                                        PM_STATE_ACTIVATE_WORKERS, PM_STATE_BUILD_TEAM_TASKS
+                                    ]:
+                                        cross_cycle_duplicate_blocked = True
+                                        action_performed = tool_args.get("action", "")
+                                        
+                                        # Special fast-path: list_tasks → auto-execute list_agents
+                                        if action_performed == "list_tasks" and agent.state == PM_STATE_ACTIVATE_WORKERS:
+                                            logger.warning(
+                                                f"CycleHandler: AUTO-ADVANCING PM '{agent.agent_id}' after "
+                                                f"{agent._duplicate_tool_call_count} duplicate '{tool_name}' calls. "
+                                                f"Executing list_agents automatically."
+                                            )
+                                            team_id = f"team_{agent.agent_config.get('config', {}).get('project_name_context', 'Unknown')}"
+                                            auto_result = await self._interaction_handler.execute_single_tool(
+                                                agent, f"auto_list_agents_{i}", "manage_team",
+                                                {"action": "list_agents", "team_id": team_id},
+                                                self._manager.current_project, self._manager.current_session
+                                            )
+                                            if auto_result:
+                                                auto_history: MessageDict = {
+                                                    "role": "tool",
+                                                    "tool_call_id": f"auto_list_agents_{i}",
+                                                    "name": "manage_team",
+                                                    "content": str(auto_result.get("content", "[Error]"))
+                                                }
+                                                all_tool_results_for_history.append(auto_history)
+                                                escalation_msg: MessageDict = {
+                                                    "role": "system",
+                                                    "content": (
+                                                        "[Framework System Message - AUTO-ADVANCE]: You called list_tasks "
+                                                        f"{agent._duplicate_tool_call_count} times with identical arguments. "
+                                                        "The framework has automatically executed list_agents for you. "
+                                                        "The agent list result is shown above. "
+                                                        "Your MANDATORY next action is to assign the first unassigned task "
+                                                        "to a suitable worker agent using: "
+                                                        "<project_management><action>modify_task</action>"
+                                                        "<task_id>TASK_UUID</task_id>"
+                                                        "<assignee_agent_id>WORKER_ID</assignee_agent_id>"
+                                                        "<tags>+WORKER_ID,assigned</tags>"
+                                                        "</project_management>"
+                                                    )
+                                                }
+                                                self._deduplicate_pm_framework_messages(agent)
+                                                all_tool_results_for_history.append(escalation_msg)
+                                                agent._duplicate_tool_call_count = 0  # Reset after auto-advance
+                                        else:
+                                            # GENERAL FORCE-ADVANCE: For any tool type, force PM to pm_manage
+                                            logger.warning(
+                                                f"CycleHandler: FORCE-ADVANCING PM '{agent.agent_id}' to "
+                                                f"'{PM_STATE_MANAGE}' after {agent._duplicate_tool_call_count} "
+                                                f"duplicate '{tool_name}' calls in state '{agent.state}'."
+                                            )
+                                            self._manager.workflow_manager.change_state(agent, PM_STATE_MANAGE)
+                                            escalation_msg: MessageDict = {
+                                                "role": "system",
+                                                "content": (
+                                                    f"[Framework System Message - FORCE ADVANCE]: You called "
+                                                    f"'{tool_name}' {agent._duplicate_tool_call_count} times with "
+                                                    f"identical arguments. The framework has force-advanced you to "
+                                                    f"the '{PM_STATE_MANAGE}' state. Review your task list and "
+                                                    f"proceed with the next logical step."
+                                                )
+                                            }
+                                            self._deduplicate_pm_framework_messages(agent)
+                                            all_tool_results_for_history.append(escalation_msg)
+                                            agent._duplicate_tool_call_count = 0
+                                            context.needs_reactivation_after_cycle = True
+                                    else:
+                                        cross_cycle_duplicate_blocked = True
+                                        # Inject an escalated directive - stronger than the normal one
+                                        escalation_msg: MessageDict = {
+                                            "role": "system",
+                                            "content": (
+                                                f"[Framework System Message - DUPLICATE BLOCKED]: You already called "
+                                                f"'{tool_name}' with these exact arguments and it succeeded. "
+                                                f"The result was returned from cache (shown above). "
+                                                f"DO NOT call '{tool_name}' again with the same arguments. "
+                                                f"You MUST proceed to the NEXT step in your workflow NOW."
+                                            )
+                                        }
+                                        self._deduplicate_pm_framework_messages(agent)
+                                        all_tool_results_for_history.append(escalation_msg)
+                                    
+                                    # Log to DB
+                                    if context.current_db_session_id:
+                                        await self._manager.db_manager.log_interaction(
+                                            session_id=context.current_db_session_id,
+                                            agent_id=agent.agent_id,
+                                            role="tool",
+                                            content=prev_result,
+                                            tool_results=[{"call_id": tool_id, "name": tool_name, "content": prev_result}]
+                                        )
+                                    
+                                    continue  # Skip actual tool execution
+                                else:
+                                    # Not a duplicate - reset counter
+                                    if hasattr(agent, '_duplicate_tool_call_count'):
+                                        agent._duplicate_tool_call_count = 0
+                            # --- END CROSS-CYCLE DUPLICATE DETECTION ---
+                            
                             result_dict = await self._interaction_handler.execute_single_tool(agent, tool_id, tool_name, tool_args, self._manager.current_project, self._manager.current_session)
                             if result_dict:
                                 history_item: MessageDict = {"role": "tool", "tool_call_id": result_dict.get("call_id", tool_id or f"unknown_id_{i}"), "name": result_dict.get("name", tool_name or f"unknown_tool_{i}"), "content": str(result_dict.get("content", "[Tool Error: No content]"))}
@@ -1115,7 +1364,7 @@ class AgentCycleHandler:
                         # --- START: PM Build Team Tasks State Interventions ---
                         if agent.agent_type == AGENT_TYPE_PM and \
                            agent.state == PM_STATE_BUILD_TEAM_TASKS and \
-                           tool_calls and len(tool_calls) >= 1:  # Match on last tool call
+                           tool_calls and len(tool_calls) >= 1:
 
                             called_tool_name = tool_calls[-1].get("name")  # Use last tool call
                             called_tool_args = tool_calls[-1].get("arguments", {})
@@ -1244,20 +1493,27 @@ class AgentCycleHandler:
                         elif agent.agent_type == AGENT_TYPE_PM and \
                              agent.state == PM_STATE_ACTIVATE_WORKERS and \
                              any_tool_success and \
-                             tool_calls and len(tool_calls) >= 1:  # Match on last tool call
+                             tool_calls and len(tool_calls) >= 1 and \
+                             not cross_cycle_duplicate_blocked:  # Match on last tool call and not blocked
 
                             called_tool_name = tool_calls[-1].get("name")  # Use last tool call
                             called_tool_args = tool_calls[-1].get("arguments", {})
                             directive_message_content = None
 
                             if called_tool_name == "project_management":
-                                last_tool_result_content = all_tool_results_for_history[-1].get("content", "{}")  # Match last result to last call
+                                last_tool_result_content = "{}"
+                                for item in reversed(all_tool_results_for_history):
+                                    if item.get("role") == "tool":
+                                        last_tool_result_content = item.get("content", "{}")
+                                        break
+                                
                                 try:
                                     tool_result_json = json.loads(last_tool_result_content)
                                     tool_status = tool_result_json.get("status")
                                 except json.JSONDecodeError:
-                                    tool_status = "error"
-                                    tool_result_json = {}
+                                    # Fallback to check if it's a string from a standard non-JSON tool
+                                    tool_status = "error" if "error" in last_tool_result_content.lower() else "success"
+                                    tool_result_json = {"status": tool_status, "message": last_tool_result_content}
 
                                 if tool_status == "error":
                                     error_message = tool_result_json.get("message", "An unspecified error occurred.")
@@ -1692,6 +1948,13 @@ class AgentCycleHandler:
                                     if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content_from_buffer)
                                     await self._manager.send_to_ui(mock_event_data)
                                     context.cycle_completed_successfully = True
+                                    
+                                    # NEW: Auto-transition Admin AI from conversation to standby
+                                    if agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_CONVERSATION:
+                                        if not context.state_change_requested_this_cycle and not context.executed_tool_successfully_this_cycle:
+                                            logger.info(f"CycleHandler: Admin AI '{agent.agent_id}' in conversation state produced text response. Auto-transitioning to standby mode.")
+                                            self._manager.workflow_manager.change_state(agent, ADMIN_STATE_STANDBY)
+                                            context.needs_reactivation_after_cycle = False
                                 else:
                                     agent.cg_original_text = final_content_from_buffer; agent.cg_concern_details = cg_verdict; agent.cg_original_event_data = mock_event_data
                                     agent.cg_awaiting_user_decision = True; agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG)

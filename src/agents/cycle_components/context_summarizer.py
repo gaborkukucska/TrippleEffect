@@ -29,7 +29,9 @@ class ContextSummarizer:
         self.max_chunk_size = 8000  # Conservative chunk size for small local LLMs
         self.overlap_size = 200     # Small overlap between chunks
         
-    async def should_summarize_context(self, agent_id: str, context_length: int, max_tokens: int) -> bool:
+    async def should_summarize_context(self, agent_id: str, context_length: int, max_tokens: int,
+                                        message_history: Optional[List[Dict[str, Any]]] = None,
+                                        model_num_ctx: Optional[int] = None) -> bool:
         """
         Determine if context should be summarized based on token limits.
         
@@ -37,14 +39,38 @@ class ContextSummarizer:
             agent_id: The agent whose context is being checked
             context_length: Current estimated context length in tokens
             max_tokens: Maximum tokens allowed for the model
+            message_history: Optional message history to check for existing summaries
+            model_num_ctx: Optional model-specific context window size for dynamic threshold
             
         Returns:
             True if summarization should be triggered
         """
         from src.config.settings import settings
-        threshold = settings.SUMMARIZER_TRIGGER_THRESHOLD
+        # Dynamic threshold: use 50% of model's context window if available
+        if model_num_ctx and model_num_ctx > 0:
+            threshold = int(model_num_ctx * 0.5)
+            logger.debug(f"Context summarizer: Using dynamic threshold {threshold} "
+                        f"(50% of model num_ctx={model_num_ctx}) for agent {agent_id}")
+        else:
+            threshold = settings.SUMMARIZER_TRIGGER_THRESHOLD
         
         if context_length > threshold:
+            # CRITICAL FIX: Prevent infinite summarization loops.
+            # If the context already contains summaries, don't re-summarize.
+            # This happens when the system prompt + minimum retained messages
+            # already exceed the threshold — re-summarizing won't help.
+            if message_history:
+                summary_count = sum(
+                    1 for msg in message_history
+                    if msg.get('role') == 'system' and '[CONTEXT SUMMARY' in msg.get('content', '')
+                )
+                if summary_count >= 2:
+                    logger.info(f"Context summarization SKIPPED for agent {agent_id}. "
+                               f"Context: {context_length} tokens > Threshold: {threshold}, "
+                               f"but {summary_count} summaries already present — "
+                               f"re-summarizing would cause an infinite loop.")
+                    return False
+            
             logger.info(f"Context summarization triggered for agent {agent_id}. "
                        f"Context: {context_length} tokens, Threshold: {threshold}")
             return True
@@ -168,14 +194,14 @@ Please provide your summary as plain text (no XML tags needed for this summariza
             
             # Use the CG's LLM provider directly for summarization
             summary_chunks = []
-            async for chunk in cg_agent.llm_provider.stream_completion(
+            async for response_chunk in cg_agent.llm_provider.stream_completion(
                 model=cg_agent.model,
                 messages=temp_history,
                 temperature=0.3,  # Lower temperature for more focused summaries
                 max_tokens=800    # Limit summary length
             ):
-                if isinstance(chunk, dict) and chunk.get("type") == "response_chunk" and chunk.get("content"):
-                    summary_chunks.append(chunk["content"])
+                if isinstance(response_chunk, dict) and response_chunk.get("type") == "response_chunk" and response_chunk.get("content"):
+                    summary_chunks.append(response_chunk["content"])
             
             # Restore original CG history
             cg_agent.message_history = original_history
@@ -233,9 +259,10 @@ Please provide your summary as plain text (no XML tags needed for this summariza
             "content": f"[CONTEXT SUMMARY 2/2 - {timestamp}]\n\n{summary2}"
         })
         
-        # 3. Keep the last 10 messages from the original history to preserve immediate context
-        # This is a much safer approach than trying to selectively filter messages.
-        num_messages_to_keep = 10
+        # 3. Keep the last 6 messages from the original history to preserve immediate context
+        # Reduced from 10 to help keep total token count below the summarization threshold
+        # and prevent infinite summarize→LLM→summarize loops.
+        num_messages_to_keep = 6
         if len(original_history) > num_messages_to_keep:
             recent_history = original_history[-num_messages_to_keep:]
             # Avoid duplicating the system message if it's already in the recent history

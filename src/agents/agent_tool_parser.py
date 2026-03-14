@@ -76,9 +76,10 @@ def _parse_tool_call_json_blocks(
 
         if not tool_name_from_json:
             logger.warning(f"Agent {agent_id}: <tool_call> JSON missing 'name' field.")
+            available_tools = ", ".join(f"'{name}'" for name in tools.keys())
             errors.append({
-                "tool_name": "unknown",
-                "error_message": "Missing 'name' field in <tool_call> JSON.",
+                "tool_name": "unknown_json_tool",
+                "error_message": f"You output an empty <tool_call> block with no 'name'. You MUST specify the 'name' of the tool you intend to use. Available tools are: {available_tools}.",
                 "xml_block": match.group(0),
                 "is_markdown": False,
                 "span": span

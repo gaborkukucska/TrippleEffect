@@ -151,6 +151,7 @@ This is the engine that drives the agent execution loop. It is stateless itself,
     - **`XMLValidator`**: A utility used to validate and attempt recovery of malformed XML tool calls from an agent's response.
     - **`ContextSummarizer`**: An intelligent component that monitors the token count of an agent's history and, if it exceeds a threshold, uses an LLM to summarize the context, preventing token overflow errors with smaller models.
     - **`AgentHealthMonitor`**: Tracks agent behavior over multiple cycles to detect problematic patterns like loops, empty responses, or repetitive actions, and can trigger recovery plans.
+    - **Cross-Cycle Duplicate Detection**: A specialized mechanism that detects when PM agents repeat identical tool calls across consecutive cycles. When detected, tool execution is skipped (cached results are served), escalated directives are injected, and after 3+ consecutive duplicates the framework auto-advances the workflow by executing the next expected tool call on the agent's behalf.
     - **`OutcomeDeterminer` & `NextStepScheduler`**: These work together at the end of the cycle to analyze what happened and decide whether the agent should be set to `IDLE` or be immediately re-scheduled.
 
 ### 4.4. `InteractionHandler` & `ToolExecutor` (`src/agents/interaction_handler.py`, `src/tools/executor.py`)

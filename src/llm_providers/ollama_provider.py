@@ -149,11 +149,12 @@ class OllamaProvider(BaseLLMProvider):
         if "num_ctx" not in valid_options and "num_ctx" not in kwargs:
             if model_info and model_info.get('model_num_ctx'):
                 native_num_ctx = model_info['model_num_ctx']
-                valid_options["num_ctx"] = native_num_ctx
-                logger.info(f"OllamaProvider: Using model-native num_ctx={native_num_ctx} for '{model}'.")
+                capped_num_ctx = min(native_num_ctx, getattr(settings, 'OLLAMA_MAX_CTX_CAP', 32768))
+                valid_options["num_ctx"] = capped_num_ctx
+                logger.info(f"OllamaProvider: Using model-native num_ctx={native_num_ctx} (capped to {capped_num_ctx}) for '{model}'.")
             else:
-                valid_options["num_ctx"] = 8192  # Conservative fallback when no metadata available
-                logger.debug(f"OllamaProvider: No model-specific num_ctx found for '{model}', using default 8192.")
+                valid_options["num_ctx"] = getattr(settings, 'OLLAMA_MAX_CTX_CAP', 8192)  # Conservative fallback when no metadata available
+                logger.debug(f"OllamaProvider: No model-specific num_ctx found for '{model}', using default {valid_options['num_ctx']}.")
         
         # --- Set stop tokens: use model's native tokens, do NOT inject wrong defaults ---
         if "stop" not in valid_options and "stop" not in kwargs:
@@ -178,8 +179,25 @@ class OllamaProvider(BaseLLMProvider):
         if ignored_options: logger.warning(f"OllamaProvider ignoring unknown options: {ignored_options}")
 
         messages_for_ollama_payload = []
+        first_system_seen = False
         for msg in messages:
             role = msg.get("role")
+            # FIX: Ollama concatenates ALL system messages into .System at the prompt
+            # top, displacing mid-conversation framework guidance (e.g. team status,
+            # duplicate-blocked directives) from their correct chronological position.
+            # Most open-source model templates (Qwen3, Llama, etc.) only render system
+            # messages at the top, not inline. Convert non-initial system messages to
+            # "tool" role so they render as <tool_response> in the conversation flow
+            # where the model can properly attend to them.
+            if role == "system":
+                if first_system_seen:
+                    role = "tool"
+                    logger.debug(
+                        f"OllamaProvider: Converting mid-conversation system message to 'tool' role "
+                        f"to keep it in conversation flow. Content preview: {str(msg.get('content', ''))[:80]}..."
+                    )
+                else:
+                    first_system_seen = True
             content = msg.get("content")
             processed_content = "" 
             if content is not None:

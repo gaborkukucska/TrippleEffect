@@ -13,7 +13,7 @@ from src.llm_providers.base import BaseLLMProvider
 # Import settings and model_registry, BASE_DIR
 from src.config.settings import settings, model_registry, BASE_DIR
 # --- Import centralized constants ---
-from src.agents.constants import BOOTSTRAP_AGENT_ID, KNOWN_OLLAMA_OPTIONS
+from src.agents.constants import BOOTSTRAP_AGENT_ID, CONSTITUTIONAL_GUARDIAN_AGENT_ID, KNOWN_OLLAMA_OPTIONS
 # --- End Import ---
 
 # Import PROVIDER_CLASS_MAP and BOOTSTRAP_AGENT_ID from the refactored manager
@@ -162,7 +162,7 @@ async def _select_best_available_model( # Added current_rr_indices_override to s
 
     logger.info("API-first Round-Robin strategy did not yield a model. Falling back to Comprehensive Selection...")
 
-    all_models_from_registry: Dict[str, List[Dict[str, Any]]] = manager.model_registry.get_available_models_dict()
+    all_models_from_registry = manager.model_registry.get_available_models_dict()
     if not all_models_from_registry:
         logger.warning("Comprehensive Fallback: No models available in the registry.")
         return None, None, None, None
@@ -170,7 +170,7 @@ async def _select_best_available_model( # Added current_rr_indices_override to s
     flattened_model_infos: List[Dict[str, Any]] = []
     for specific_provider_name_comp, models_list_comp in all_models_from_registry.items():
         for model_data_comp in models_list_comp:
-            model_info_copy_comp = model_data_comp.copy()
+            model_info_copy_comp = dict(model_data_comp)
             model_info_copy_comp["provider"] = specific_provider_name_comp
             flattened_model_infos.append(model_info_copy_comp)
             
@@ -184,7 +184,9 @@ async def _select_best_available_model( # Added current_rr_indices_override to s
         metrics_for_sorter[prov] = {}
         base_prov = prov.split("-local-")[0].split("-proxy")[0]
         for m_info in model_list:
-            m_id = m_info['id']
+            m_id = m_info.get('id')
+            if not m_id:
+                continue
             model_perf = all_perf_metrics_raw.get(base_prov, {}).get(m_id)
             if model_perf:
                 metrics_for_sorter[prov][m_id] = model_perf
@@ -268,7 +270,13 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
     for agent_conf_entry in agent_configs_list:
         agent_id = agent_conf_entry.get("agent_id")
         if not agent_id:
-            logger.warning("Lifecycle: Skipping bootstrap agent due to missing 'agent_id'.")
+            logger.warning("Lifecycle: Skipping bootstrap agent configuration due to missing 'agent_id'.")
+            continue
+            
+        # Bootstrap the core Admin AI and Constitutional Guardian. Other agents in
+        # config.yaml act as templates for dynamic instantiation.
+        if agent_id not in (BOOTSTRAP_AGENT_ID, CONSTITUTIONAL_GUARDIAN_AGENT_ID):
+            logger.info(f"Lifecycle: Skipping bootstrap of '{agent_id}'. Non-core agents are instantiated dynamically.")
             continue
 
         agent_config_data = agent_conf_entry.get("config", {})
@@ -580,6 +588,23 @@ async def _create_agent_internal(
          msg = f"Lifecycle Error: Missing persona for agent '{agent_id}'."
          logger.error(msg); return False, msg, None
 
+    # --- Apply Template Config for Dynamic Agents ---
+    if not is_bootstrap:
+        agent_type = agent_config_data.get("agent_type")
+        if agent_type:
+            # Look up the corresponding config template from settings.AGENT_CONFIGURATIONS
+            template_config = next((cfg.get("config", {}) for cfg in settings.AGENT_CONFIGURATIONS if cfg.get("agent_id", "").startswith(agent_type)), None)
+            if template_config:
+                # Inherit specific keys if they are not explicitly set in agent_config_data
+                for key in ["provider", "model", "temperature", "max_tokens", "num_predict"]:
+                    if key in template_config and not agent_config_data.get(key):
+                        agent_config_data[key] = template_config[key]
+                        logger.debug(f"Lifecycle: Agent '{agent_id}' inherited '{key}'={template_config[key]} from '{agent_type}' template.")
+                
+                # Update local variables with potentially inherited values
+                provider_name = agent_config_data.get("provider")
+                model_id_canonical = agent_config_data.get("model")
+
     # --- START: Generic Local Provider Mapping for Dynamic Agents ---
     specific_provider_name_resolved = provider_name # Will be updated if generic is resolved
     model_suffix_for_check = model_id_canonical # Will be updated if prefix is part of canonical
@@ -682,7 +707,7 @@ async def _create_agent_internal(
     if base_provider_name_val in ["ollama", "litellm"]: # This refers to generic base types or specific instances mapped to them
             # For specific local instances (e.g. ollama-local-ip), provider_name is specific.
             # For generic "ollama" that might not have resolved, this check is still relevant.
-            if not model_registry.is_provider_discovered(provider_name): # Check specific instance if provider_name is specific, or generic if not
+            if provider_name not in model_registry._reachable_providers: # Check specific instance if provider_name is specific, or generic if not
                 msg = f"{error_prefix} Local provider type/instance '{provider_name}' not discovered/verified by ModelRegistry.";
                 logger.error(msg); return False, msg, None
     else: # Non-dynamic specific name (e.g. "openai", "openrouter")
@@ -731,7 +756,7 @@ async def _create_agent_internal(
         return False, error_msg_val, None
 
     if not model_registry.is_model_available(provider_name, model_id_for_provider): # Uses specific provider_name
-        available_list_str = ", ".join(model_registry.get_available_models_list(provider=provider_name)) or "(None available)"
+        available_list_str = ", ".join(model_registry.get_available_models_list(provider_name)) or "(None available)"
         msg = f"{error_prefix} Model suffix '{model_id_for_provider}' not available for specific provider '{provider_name}'. Available: [{available_list_str}]"
         logger.error(msg); return False, msg, None
     # --- End Provider/Model Validation ---
@@ -931,14 +956,43 @@ async def create_agent_instance(
     # --- END MODIFICATION ---
     
     # Start with essential args
-    agent_config_data = { "system_prompt": system_prompt, "persona": persona }
+    agent_config_data: Dict[str, Any] = { "system_prompt": system_prompt, "persona": persona }
     
     # Add optional args if provided
     if provider: agent_config_data["provider"] = provider
     if model: agent_config_data["model"] = model
     if temperature is not None: agent_config_data["temperature"] = temperature
     
-    # Merge any other kwargs passed (e.g., plan_description)
+    # Call the internal creation logic
+    # First determine agent_type to lookup template fallback
+    from src.agents.constants import AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER
+    determined_agent_type = kwargs.get('agent_type', AGENT_TYPE_WORKER)
+    if agent_id_requested == BOOTSTRAP_AGENT_ID:
+        determined_agent_type = AGENT_TYPE_ADMIN
+    elif agent_id_requested and (agent_id_requested.startswith("PM") or agent_id_requested.startswith("pm_")):
+        determined_agent_type = AGENT_TYPE_PM
+        
+    # Attempt to find a matching config template
+    template_config = {}
+    from src.config.settings import settings
+    for conf in settings.AGENT_CONFIGURATIONS:
+        c = conf.get("config", {})
+        if c.get("agent_type") == determined_agent_type:
+            template_config = c
+            # Skip specialized system agents when picking generically
+            if conf.get("agent_id") not in ["constitutional_guardian_ai", "vision_agent"]:
+                break
+                
+    if not agent_config_data.get("provider") and template_config.get("provider"):
+        agent_config_data["provider"] = template_config.get("provider")
+        logger.info(f"Lifecycle: Inherited provider '{template_config.get('provider')}' from config.yaml for agent type '{determined_agent_type}'.")
+    if not agent_config_data.get("model") and template_config.get("model"):
+        agent_config_data["model"] = template_config.get("model")
+        logger.info(f"Lifecycle: Inherited model '{template_config.get('model')}' from config.yaml for agent type '{determined_agent_type}'.")
+    if "temperature" not in agent_config_data and "temperature" in template_config:
+         agent_config_data["temperature"] = template_config.get("temperature")
+
+    # Merge any other kwargs passed
     agent_config_data.update(kwargs)
     
     # Call the internal creation logic

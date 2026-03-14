@@ -206,15 +206,20 @@ class AgentWorkflowManager:
                 # PM State-specific logic
                 if agent.agent_type == AGENT_TYPE_PM:
                     if requested_state == PM_STATE_MANAGE:
-                        agent._pm_needs_initial_list_tools = True
-                        agent.clear_history()
-                        logger.info(f"WorkflowManager: Cleared history for PM agent '{agent.agent_id}' upon entering state 'PM_STATE_MANAGE' to ensure a clean start for the management loop.")
+                        if current_state != PM_STATE_ACTIVATE_WORKERS:
+                            agent._pm_needs_initial_list_tools = True
+                            agent.clear_history()
+                            agent._last_system_prompt_state = None  # Force fresh prompt generation after history clear
+                            logger.info(f"WorkflowManager: Cleared history for PM agent '{agent.agent_id}' upon entering state 'PM_STATE_MANAGE' to ensure a clean start for the management loop.")
+                        else:
+                            logger.info(f"WorkflowManager: Preserved history for PM agent '{agent.agent_id}' entering 'PM_STATE_MANAGE' from '{current_state}' to keep completion context.")
                     elif hasattr(agent, '_pm_needs_initial_list_tools'):
                         agent._pm_needs_initial_list_tools = False
 
                     # Per user request, clear history when entering activate_workers state
                     if requested_state == PM_STATE_ACTIVATE_WORKERS:
                         agent.clear_history()
+                        agent._last_system_prompt_state = None  # Force fresh prompt generation after history clear
                         logger.info(f"WorkflowManager: Cleared history for PM agent '{agent.agent_id}' upon entering state '{requested_state}'.")
 
                 if hasattr(agent, 'manager') and hasattr(agent.manager, 'send_to_ui'):
@@ -658,7 +663,7 @@ class AgentWorkflowManager:
                 task_desc_for_prompt = '{task_description}' # Generic placeholder
                 logger.warning(f"Agent {agent.agent_id} ({agent.agent_type}) in state {agent.state} has no task description. Using generic placeholder.")
 
-        personality_text = agent._config_system_prompt.strip() if agent.agent_type == AGENT_TYPE_ADMIN and hasattr(agent, '_config_system_prompt') else ""
+        personality_text = agent._config_system_prompt.strip() if hasattr(agent, '_config_system_prompt') and agent._config_system_prompt else ""
         if agent.agent_type == AGENT_TYPE_ADMIN and "admin_memory_context" in agent.agent_config.get("config", {}):
             memory_context = agent.agent_config["config"]["admin_memory_context"]
             personality_text += f"\n\n{memory_context}"
@@ -671,7 +676,8 @@ class AgentWorkflowManager:
             "pm_agent_id": getattr(agent, 'delegated_pm_id', '{pm_agent_id}'),
             "task_description": task_desc_for_prompt, 
             self._standard_instructions_map.get(agent.agent_type, "standard_framework_instructions"): formatted_standard_instructions,
-            "personality_instructions": personality_text
+            "personality_instructions": personality_text,
+            "role": getattr(agent, 'role', 'General Worker')
         }
         try:
             final_prompt = state_prompt_template.format(**state_formatting_context)

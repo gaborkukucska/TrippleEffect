@@ -27,7 +27,7 @@ class ToolInformationTool(BaseTool):
         "Retrieves information about tools accessible to the calling agent. "
         "Actions: 'list_tools' (provides names and summaries), 'get_info' (provides detailed usage)."
     )
-    summary: str = "Lists accessible tools or gets detailed usage for a specific tool." # Add summary
+    summary: Optional[str] = "Lists accessible tools or gets detailed usage for a specific tool." # Add summary
     parameters: List[ToolParameter] = [
         ToolParameter(
             name="action",
@@ -49,13 +49,13 @@ class ToolInformationTool(BaseTool):
         ),
     ]
 
-    async def execute(
+    async def execute( # type: ignore[reportIncompatibleMethodOverride]
         self,
         agent_id: str,
         agent_sandbox_path: Path,
         manager: 'AgentManager',
         **kwargs: Any
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, Any]: # type: ignore[reportIncompatibleMethodOverride]
         action = kwargs.get("action")
         tool_name_req = kwargs.get("tool_name", "all")
         sub_action_req = kwargs.get("sub_action")

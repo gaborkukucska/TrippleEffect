@@ -2,7 +2,7 @@
 <!-- # IT IS CRITICAL THAT ALL AIs and LLMs FOLLOW THE DEVELOPMENT INSTRUCTIONS IN THE `helperfiles/DEVELOPMENT_RULES.md` FILE WHEN FURTHER DEVELOPING THIS FRAMEWORK!!! -->
 # TrippleEffect Multi-Agent Framework
 
-**Version:** 2.42 <!-- Updated Version -->
+**Version:** 2.43 <!-- Updated Version -->
 
 **TrippleEffect** is an asynchronous, collaborative multi-agent framework built with Python, FastAPI, and WebSockets. It features a central **Admin AI** that initiates projects and a dedicated **Project Manager** agent per session that handles detailed task creation/tracking and agent/team creation/coordination. This framework is predominantly developed by various LLMs guided by Gabby.
 
@@ -33,6 +33,7 @@ chmod +x setup.sh run.sh
 *   **Constitutional Guardian (CG) Agent:** A specialized agent (`constitutional_guardian_ai`) reviews final textual outputs of other agents against predefined governance principles (from `governance.yaml`). If a concern is raised, the original agent's output is paused, and a UI notification is generated, allowing for user intervention (approve, stop agent, or provide feedback for retry). This feature's backend logic is implemented; UI/API for full user interaction is pending.
 *   **Advanced Agent Health Monitoring:** Enhanced Constitutional Guardian system with comprehensive agent health monitoring capabilities:
     *   **Agent Health Monitor**: Tracks agent behavior patterns, detects infinite loops, empty responses, and problematic patterns
+    *   **Cross-Cycle Duplicate Detection**: Detects when PM agents repeat identical tool calls across consecutive cycles. Serves cached results, injects escalated directives, and auto-advances the workflow after persistent duplicates.
     *   **XML Validator**: Automatic detection and recovery of malformed XML tool calls
     *   **Context Summarizer**: Manages conversation context for optimal performance with smaller models
     *   **Next Step Scheduler**: Intelligent agent reactivation and workflow continuation logic
@@ -58,6 +59,7 @@ chmod +x setup.sh run.sh
 *   **Dynamic Agent/Team Creation:** Manage agents and teams on the fly using `ManageTeamTool`.
 *   **Advanced Agent Health System:** Comprehensive monitoring and recovery capabilities:
     *   **Loop Detection**: Automatically detects and resolves infinite loops, empty responses, and stuck patterns
+    *   **Cross-Cycle Duplicate Prevention**: Detects and intercepts repeated identical tool calls across agent cycles, serving cached results and auto-advancing stalled workflows
     *   **XML Recovery**: Intelligent parsing and recovery of malformed XML tool calls
     *   **Context Optimization**: Automatic context summarization for improved performance
     *   **Workflow Continuation**: Smart reactivation logic for multi-step agent workflows

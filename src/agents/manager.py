@@ -175,17 +175,18 @@ class AgentManager:
         if not project_record: project_record = await self.db_manager.add_project(name=project_name)
         if not project_record or project_record.id is None:
             logger.error(f"Failed to get or create project DB record for '{project_name}'!"); return
-        self.current_project_db_id = project_record.id
+        project_id = project_record.id
+        self.current_project_db_id = project_id # type: ignore[reportAttributeAccessIssue]
         if loading:
-            found_session_id = await self.db_manager.get_session_id_by_name(self.current_project_db_id, session_name)
-            if found_session_id: self.current_session_db_id = found_session_id
+            found_session_id = await self.db_manager.get_session_id_by_name(project_id, session_name) # type: ignore[reportArgumentType]
+            if found_session_id: self.current_session_db_id = found_session_id # type: ignore[reportAttributeAccessIssue]
             else:
-                 new_session_record = await self.db_manager.start_session(self.current_project_db_id, session_name)
-                 if new_session_record and new_session_record.id: self.current_session_db_id = new_session_record.id
+                 new_session_record = await self.db_manager.start_session(project_id, session_name) # type: ignore[reportArgumentType]
+                 if new_session_record and new_session_record.id: self.current_session_db_id = new_session_record.id # type: ignore[reportAttributeAccessIssue]
                  else: logger.error(f"Failed to create new DB session record for loaded session '{project_name}/{session_name}'!")
         else:
-            session_record = await self.db_manager.start_session(self.current_project_db_id, session_name)
-            if session_record and session_record.id: self.current_session_db_id = session_record.id
+            session_record = await self.db_manager.start_session(project_id, session_name) # type: ignore[reportArgumentType]
+            if session_record and session_record.id: self.current_session_db_id = session_record.id # type: ignore[reportAttributeAccessIssue]
             else: logger.error(f"Failed to start new DB session record for '{session_name}'!")
         logger.info(f"DB Context: ProjectID={self.current_project_db_id}, SessionID={self.current_session_db_id}")
 
@@ -240,6 +241,11 @@ class AgentManager:
         except Exception as e:
             logger.error(f"Manager: FAILED to create asyncio task for agent '{agent.agent_id}' cycle: {e}", exc_info=True)
             return None
+
+    async def handle_user_override(self, override_data: Dict[str, Any]):
+        """Handle user override submission (stub)."""
+        logger.warning("handle_user_override is not fully implemented in AgentManager.")
+        pass
 
     async def handle_user_message(self, message: str, client_id: Optional[str] = None):
         if self.current_project is None or self.current_session_db_id is None:

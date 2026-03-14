@@ -152,6 +152,7 @@ class PMKickoffWorkflow(BaseWorkflow):
         if all_tasks_created_successfully:
             logger.info(f"PMKickoffWorkflow: All tasks created for PM '{agent.agent_id}'. Preparing successful result with reschedule.")
             agent.clear_history()
+            agent._last_system_prompt_state = None  # Force fresh prompt generation after history clear
             logger.info(f"PMKickoffWorkflow: Cleared history for PM agent '{agent.agent_id}' before transitioning to PM_STATE_BUILD_TEAM_TASKS.")
 
             # Store the identified roles and tasks on the agent for the next state

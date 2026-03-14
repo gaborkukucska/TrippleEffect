@@ -448,12 +448,17 @@ class AgentInteractionHandler:
                         logger.info(f"[WORKER_ACTIVATION_DEBUG] Using fallback task description: '{task_description_for_worker}'")
                     
                     if task_description_for_worker:
-                        logger.info(f"InteractionHandler: Task '{action_performed}' successful for assignee '{assignee_id}'. Attempting worker activation.")
-                        await self._manager.activate_worker_with_task_details(
-                            worker_agent_id=assignee_id,
-                            task_id_from_tool=task_identifier_for_activation,
-                            task_description_from_tool=task_description_for_worker
-                        )
+                        assignee_agent = self._manager.agents.get(assignee_id)
+                        if assignee_agent and getattr(assignee_agent, 'agent_type', None) == AGENT_TYPE_WORKER:
+                            logger.info(f"InteractionHandler: Task '{action_performed}' successful for assignee '{assignee_id}'. Attempting worker activation.")
+                            await self._manager.activate_worker_with_task_details(
+                                worker_agent_id=assignee_id,
+                                task_id_from_tool=task_identifier_for_activation,
+                                task_description_from_tool=task_description_for_worker
+                            )
+                        else:
+                            agent_type_str = getattr(assignee_agent, 'agent_type', 'Unknown') if assignee_agent else 'Not Found'
+                            logger.debug(f"InteractionHandler: Task '{action_performed}' successful for assignee '{assignee_id}'. Skipping worker activation because assignee is '{agent_type_str}'.")
 
                     # Notification to the PM about worker activation can be added here if desired,
                     # or handled by the PM agent itself when it processes the successful tool result.

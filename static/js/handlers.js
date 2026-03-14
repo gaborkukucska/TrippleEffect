@@ -451,6 +451,34 @@ export const handleWebSocketMessage = (data) => {
                 targetAreaId = 'internal-comms-area';
                 shouldDisplay = true;
                 break;
+            case 'context_summarization':
+                console.log("Handler: Explicitly handling context_summarization for", data.agent_id);
+                displayContent = `📝 Context Summarized (${escapeHTML(data.agent_id || 'Unknown Agent')}): ${data.original_message_count || '?'} → ${data.summarized_message_count || '?'} messages`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'system_event';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
+            case 'cg_cycle_blocked':
+            case 'cycle_blocked':
+                console.log(`Handler: Explicitly handling ${messageType} for`, data.agent_id);
+                displayContent = `⏸️ Cycle Blocked (${escapeHTML(data.agent_id || 'Unknown Agent')}): ${escapeHTML(data.message || 'Blocked')}`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'system_event';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
+            case 'xml_recovery_success':
+                console.log("Handler: Explicitly handling xml_recovery_success for", data.agent_id);
+                displayContent = `🔧 XML Recovery (${escapeHTML(data.agent_id || 'Unknown Agent')}): Recovered ${data.recovered_calls || '?'} tool call(s)`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'system_event';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
             // --- END NEW handlers ---
 
             default:

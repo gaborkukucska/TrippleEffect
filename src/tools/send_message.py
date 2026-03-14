@@ -34,7 +34,7 @@ class SendMessageTool(BaseTool):
         ),
     ]
 
-    async def execute(self, agent_id: str, agent_sandbox_path: Path, **kwargs: Any) -> Any:
+    async def execute(self, agent_id: str, agent_sandbox_path: Path, project_name: Optional[str] = None, session_name: Optional[str] = None, **kwargs: Any) -> Any:
         """
         Validates parameters provided for the tool call.
         The actual message routing is handled by the AgentManager intercepting the tool request.

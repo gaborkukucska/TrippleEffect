@@ -9,7 +9,8 @@ import datetime # Added for update timestamp
 
 # SQLAlchemy imports
 from sqlalchemy import create_engine, Column, Integer, String, Text, Float, DateTime, ForeignKey, JSON, Index, select, desc, func, update # Added update
-from sqlalchemy.orm import sessionmaker, relationship, DeclarativeBase
+from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func as sql_func # Alias sql functions
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession # Use Async Engine
 
@@ -24,8 +25,8 @@ DB_FILE_PATH = BASE_DIR / "data" / DEFAULT_DB_FILENAME
 DB_URL = f"sqlite+aiosqlite:///{DB_FILE_PATH}" # Use aiosqlite for async
 
 # Define the Base for declarative models
-class Base(DeclarativeBase):
-    pass
+from typing import Any
+Base: Any = declarative_base()
 
 # --- SQLAlchemy Models ---
 
@@ -138,9 +139,9 @@ class DatabaseManager:
             logger.info(f"Ensured database directory exists: {db_path.parent}")
 
             self._engine = create_async_engine(self.db_url, echo=False) # Set echo=True for debugging SQL
-            self._session_local = sessionmaker(
-                bind=self._engine,
-                class_=AsyncSession,
+            self._session_local = sessionmaker( # type: ignore
+                bind=self._engine, # type: ignore[reportArgumentType]
+                class_=AsyncSession, # type: ignore
                 expire_on_commit=False, # Important for async sessions
                 autocommit=False,
                 autoflush=False,
@@ -173,7 +174,7 @@ class DatabaseManager:
              # Raise a clear error if trying to get a session before init is complete/successful
              raise RuntimeError("DatabaseManager._initialize_db() must be awaited successfully before getting a session.")
 
-        session: AsyncSession = self._session_local()
+        session: AsyncSession = self._session_local() # type: ignore
         try:
             yield session
             await session.commit()
@@ -201,7 +202,7 @@ class DatabaseManager:
                  return existing # Return existing project
             # Create new project
             new_project = Project(name=name, description=description)
-            session.add(new_project)
+            session.add(new_project) # type: ignore
             await session.flush() # Flush to get the ID
             await session.refresh(new_project)
             logger.info(f"Added new project '{name}' with ID {new_project.id}.")
@@ -222,7 +223,7 @@ class DatabaseManager:
         """ Creates a new session record for a project. """
         async with self.get_session() as session:
             new_session = Session(project_id=project_id, name=session_name)
-            session.add(new_session)
+            session.add(new_session) # type: ignore
             await session.flush()
             await session.refresh(new_session)
             logger.info(f"Started new session '{session_name}' (ID: {new_session.id}) for Project ID {project_id}.")
@@ -236,7 +237,7 @@ class DatabaseManager:
             db_session = result.scalars().first()
             if db_session:
                 # Use the database's current timestamp function
-                db_session.end_time = sql_func.now() # Or specific dialect function if needed
+                db_session.end_time = datetime.datetime.now(datetime.timezone.utc) # type: ignore[reportAttributeAccessIssue]
                 await session.flush()
                 logger.info(f"Marked session ID {session_id} as ended.")
             else:
@@ -310,7 +311,7 @@ class DatabaseManager:
                 persona=persona,
                 model_config_json=model_config_dict # SQLAlchemy handles JSON conversion
             )
-            session.add(new_agent_record)
+            session.add(new_agent_record) # type: ignore
             await session.flush()
             await session.refresh(new_agent_record)
             logger.info(f"Added record for agent '{agent_id}' (Persona: '{persona}') in Session ID {session_id}.")
@@ -336,7 +337,7 @@ class DatabaseManager:
                  tool_calls_json=tool_calls, # Can be None
                  tool_results_json=tool_results # Can be None
              )
-             session.add(interaction)
+             session.add(interaction) # type: ignore
              await session.flush()
              await session.refresh(interaction)
              logger.debug(f"Logged interaction ID {interaction.id} (Agent: {agent_id}, Role: {role}) for Session ID {session_id}.")
@@ -360,7 +361,7 @@ class DatabaseManager:
                 source_interaction_id=interaction_id,
                 importance_score=importance
             )
-            session.add(knowledge)
+            session.add(knowledge) # type: ignore
             await session.flush()
             await session.refresh(knowledge)
             logger.info(f"Saved knowledge ID {knowledge.id} (Keywords: '{keywords[:50]}...').")

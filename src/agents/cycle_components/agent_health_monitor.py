@@ -48,7 +48,11 @@ class AgentHealthRecord:
         self.last_analysis_time = 0
         self.intervention_history = []
         self.contaminated_messages_detected = 0
-        self.last_cleanup_time = 0
+        self.last_cleanup_time: float = 0.0
+        self.tool_information_loop_detected: bool = False
+        self.tool_information_loop_count: int = 0
+        self.tool_execution_loop_detected: bool = False
+        self.tool_execution_loop_count: int = 0
         
     def record_response(self, content: str, has_action: bool, has_thought: bool, current_state: str):
         """Record a new response and update health metrics."""
@@ -137,7 +141,7 @@ class AgentHealthRecord:
         if len(self.response_hashes) < 3:
             return False
             
-        recent_hashes = [h[0] for h in self.response_hashes[-5:]]
+        recent_hashes = [h[0] for h in list(self.response_hashes)[-5:]]
         
         # Check for exact duplicates
         if len(set(recent_hashes)) < len(recent_hashes) * 0.7:
@@ -829,12 +833,14 @@ class ConstitutionalGuardianHealthMonitor:
                 await self._execute_recovery_action(agent, action, recovery_plan.get("history_analysis", {}))
                 
             # Log the intervention to database
-            await self._manager.db_manager.log_interaction(
-                session_id=self._manager.current_session_db_id,
-                agent_id=agent.agent_id,
-                role="constitutional_guardian_intervention",
-                content=f"Constitutional Guardian intervention: {intervention_type} - {recovery_plan.get('description', '')}"
-            )
+            session_db_id = getattr(self._manager, 'current_session_db_id', None)
+            if session_db_id is not None:
+                await self._manager.db_manager.log_interaction(
+                    session_id=session_db_id,
+                    agent_id=agent.agent_id,
+                    role="constitutional_guardian_intervention",
+                    content=f"Constitutional Guardian intervention: {intervention_type} - {recovery_plan.get('description', '')}"
+                )
             
             # Notify UI with detailed information
             await self._manager.send_to_ui({
@@ -1173,8 +1179,8 @@ class ConstitutionalGuardianHealthMonitor:
                 # Delete contaminated interactions
                 if contaminated_ids:
                     delete_stmt = delete(Interaction).where(Interaction.id.in_(contaminated_ids))
-                    result = await session.execute(delete_stmt)
-                    removed_count = result.rowcount
+                    await session.execute(delete_stmt)
+                    removed_count = len(contaminated_ids)
                     logger.info(f"ConstitutionalGuardian: Automatically removed {removed_count} contaminated database interactions")
                     return removed_count
                 

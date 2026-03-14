@@ -1,6 +1,7 @@
 # START OF FILE src/tools/tool_parser.py
 import xml.etree.ElementTree as ET
 from typing import Dict, Any
+import re
 
 def parse_tool_call(tool_call_xml: str) -> Dict[str, Any]:
     try:
@@ -13,6 +14,12 @@ def parse_tool_call(tool_call_xml: str) -> Dict[str, Any]:
     except ET.ParseError as e:
         # Attempt to handle minor formatting issues
         try:
+            # Try to extract tool_name manually since parsing failed
+            match = re.search(r'<([a-zA-Z0-9_]+)>', tool_call_xml)
+            if not match:
+                return {"error": f"Failed to parse tool call: {str(e)}"}
+            tool_name = match.group(1)
+
             # Remove any text after the closing tool tag
             closing_tag_index = tool_call_xml.rfind('</' + tool_name + '>')
             if closing_tag_index != -1:

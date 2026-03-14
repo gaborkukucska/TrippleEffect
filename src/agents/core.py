@@ -107,11 +107,14 @@ class Agent:
         self._project_completed: bool = False
         self._project_completion_time: Optional[float] = None
         self._periodic_cycle_count: int = 0
+        self._periodic_cycle_window_start: float = 0.0
+        self._last_periodic_check_time: float = 0.0
         self._manage_unproductive_cycles: int = 0
         self._work_completion_history: List[Dict[str, Any]] = []
         self._state_transition_history: List[Dict[str, Any]] = []
         self._needs_initial_work_context: bool = False
         self._injected_task_description: Optional[str] = None
+        self._last_system_prompt_state: Optional[Tuple[str, Optional[str]]] = None  # Tracks (agent_type, state) for prompt reuse
         self.unassigned_tasks_summary: List[Dict[str, Any]] = []
 
         # PM kickoff workflow attributes
@@ -408,15 +411,16 @@ class Agent:
                 if tool_requests_to_yield:
                     logger.debug(f"Agent {self.agent_id} preparing to yield {len(tool_requests_to_yield)} tool requests.")
 
-                    # Clean the response to get only the text/thought part for the history
+                    # We no longer remove the tool call XML from the content so the LLM remembers its actions.
+                    # This prevents the LLM from being "blind" to the exact parameters it just generated.
                     content_for_history = final_cleaned_response_for_tools_or_text
-                    if valid_calls:
-                        # Sort spans in reverse order to avoid index shifting during removal
-                        sorted_spans = sorted([call[2] for call in valid_calls], reverse=True)
-                        
-                        for start, end in sorted_spans:
-                            # Remove the tool call XML from the content
-                            content_for_history = content_for_history[:start] + content_for_history[end:]
+                    # if valid_calls:
+                    #     # Sort spans in reverse order to avoid index shifting during removal
+                    #     sorted_spans = sorted([call[2] for call in valid_calls], reverse=True)
+                    #     
+                    #     for start, end in sorted_spans:
+                    #         # Remove the tool call XML from the content
+                    #         content_for_history = content_for_history[:start] + content_for_history[end:]
 
                     content_for_history = content_for_history.strip()
 

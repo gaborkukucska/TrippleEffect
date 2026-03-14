@@ -154,6 +154,7 @@ class FileSystemTool(BaseTool):
             "create_directory": "mkdir",
             "create_file": "write", 
             "create": "write",
+            "create_folder": "mkdir",
             "make_directory": "mkdir",
             "make_dir": "mkdir",
             "new_file": "write",
@@ -167,13 +168,18 @@ class FileSystemTool(BaseTool):
             "remove": "delete"
         }
         
+        # Track whether an auto-correction was applied for feedback
+        auto_corrected_from: Optional[str] = None
+        
         if not action:
             return {"status": "error", "message": f"Missing required 'action' parameter. Must be one of: {', '.join(valid_actions)}."}
         
         if action not in valid_actions:
             if action in action_suggestions:
-                suggested_action = action_suggestions[action]
-                return {"status": "error", "message": f"Invalid action '{action}'. Did you mean '{suggested_action}'? Valid actions are: {', '.join(valid_actions)}."}
+                corrected_action = action_suggestions[action]
+                logger.info(f"FileSystemTool: Auto-correcting action '{action}' to '{corrected_action}' for agent '{agent_id}'.")
+                auto_corrected_from = action
+                action = corrected_action  # Auto-correct and continue execution
             else:
                 return {"status": "error", "message": f"Invalid action '{action}'. Valid actions are: {', '.join(valid_actions)}."}
         if scope not in ["private", "shared", "projects"]: # Added 'projects' scope
@@ -205,66 +211,78 @@ class FileSystemTool(BaseTool):
              relative_path = "."
 
         # Execute action
+        result: Optional[Dict[str, Any]] = None
         try:
             if action == "read":
                 if not filename: return {"status": "error", "message": "'filename' parameter is required for 'read'."}
-                return await self._read_file(base_path, filename, start_line, end_line, agent_id, scope_description)
+                result = await self._read_file(base_path, filename, start_line, end_line, agent_id, scope_description)
             elif action == "write":
                 if not filename: return {"status": "error", "message": "'filename' (or 'filepath') parameter is required for 'write'."}
                 if filename.endswith('/'):
                     return {"status": "error", "message": f"The path '{filename}' appears to be a directory. Please use the 'mkdir' action to create directories."}
                 if content is None: return {"status": "error", "message": "'content' parameter is required for 'write'."}
-                return await self._write_file(base_path, filename, content, agent_id, scope_description)
+                result = await self._write_file(base_path, filename, content, agent_id, scope_description)
             elif action == "list":
                 # relative_path default handled above
-                return await self._list_directory(base_path, relative_path if isinstance(relative_path, str) else ".", agent_id, scope_description)
+                result = await self._list_directory(base_path, relative_path if isinstance(relative_path, str) else ".", agent_id, scope_description)
             elif action == "find_replace":
                 if not filename: return {"status": "error", "message": "'filename' parameter is required for 'find_replace'."}
                 if find_text is None: return {"status": "error", "message": "'find_text' parameter is required for 'find_replace'."}
                 if replace_text is None: return {"status": "error", "message": "'replace_text' parameter is required for 'find_replace'."}
-                return await self._find_replace_in_file(base_path, filename, find_text, replace_text, agent_id, scope_description)
+                result = await self._find_replace_in_file(base_path, filename, find_text, replace_text, agent_id, scope_description)
             elif action == "regex_replace":
                 if not filename: return {"status": "error", "message": "'filename' parameter is required for 'regex_replace'."}
                 if regex_pattern is None: return {"status": "error", "message": "'regex_pattern' parameter is required for 'regex_replace'."}
                 if replace_text is None: return {"status": "error", "message": "'replace_text' parameter is required for 'regex_replace'."}
-                return await self._regex_replace_in_file(base_path, filename, regex_pattern, replace_text, agent_id, scope_description)
+                result = await self._regex_replace_in_file(base_path, filename, regex_pattern, replace_text, agent_id, scope_description)
             elif action == "append":
                 if not filename: return {"status": "error", "message": "'filename' parameter is required for 'append'."}
                 if content is None: return {"status": "error", "message": "'content' parameter is required for 'append'."}
-                return await self._append_to_file(base_path, filename, content, agent_id, scope_description)
+                result = await self._append_to_file(base_path, filename, content, agent_id, scope_description)
             elif action == "insert_lines":
                 if not filename: return {"status": "error", "message": "'filename' parameter is required for 'insert_lines'."}
                 if insert_line is None: return {"status": "error", "message": "'insert_line' parameter is required for 'insert_lines'."}
                 if content is None: return {"status": "error", "message": "'content' parameter is required for 'insert_lines'."}
-                return await self._insert_lines_in_file(base_path, filename, insert_line, content, agent_id, scope_description)
+                result = await self._insert_lines_in_file(base_path, filename, insert_line, content, agent_id, scope_description)
             elif action == "replace_lines":
                 if not filename: return {"status": "error", "message": "'filename' parameter is required for 'replace_lines'."}
                 if replace_start_line is None or replace_end_line is None: return {"status": "error", "message": "'replace_start_line' and 'replace_end_line' parameters are required for 'replace_lines'."}
                 if content is None: return {"status": "error", "message": "'content' parameter is required for 'replace_lines'."}
-                return await self._replace_lines_in_file(base_path, filename, replace_start_line, replace_end_line, content, agent_id, scope_description)
+                result = await self._replace_lines_in_file(base_path, filename, replace_start_line, replace_end_line, content, agent_id, scope_description)
 
             # --- NEW: Handle mkdir and delete ---
             elif action == "mkdir":
                  if not relative_path: return {"status": "error", "message": "'path' parameter (directory path) is required for 'mkdir'."}
-                 return await self._create_directory(base_path, relative_path, agent_id, scope_description)
+                 result = await self._create_directory(base_path, relative_path, agent_id, scope_description)
             elif action == "delete":
                  if not relative_path: return {"status": "error", "message": "'path' parameter (file or directory path) is required for 'delete'."}
-                 return await self._delete_item(base_path, relative_path, agent_id, scope_description)
+                 result = await self._delete_item(base_path, relative_path, agent_id, scope_description)
             elif action == "copy":
                  if not relative_path: return {"status": "error", "message": "'path' parameter (source) is required for 'copy'."}
                  if not destination_path: return {"status": "error", "message": "'destination_path' parameter is required for 'copy'."}
-                 return await self._copy_item(base_path, relative_path, destination_path, agent_id, scope_description)
+                 result = await self._copy_item(base_path, relative_path, destination_path, agent_id, scope_description)
             elif action == "move":
                  if not relative_path: return {"status": "error", "message": "'path' parameter (source) is required for 'move'."}
                  if not destination_path: return {"status": "error", "message": "'destination_path' parameter is required for 'move'."}
-                 return await self._move_item(base_path, relative_path, destination_path, agent_id, scope_description)
+                 result = await self._move_item(base_path, relative_path, destination_path, agent_id, scope_description)
             # --- END NEW ---
 
         except Exception as e:
             logger.error(f"Unexpected error executing file system tool (Action: {action}, Scope: {scope}) for agent {agent_id}: {e}", exc_info=True)
             return {"status": "error", "message": f"Error executing file system tool ({action} in {scope}): {type(e).__name__} - {e}"}
 
-        return {"status": "error", "message": "Unknown state in file system tool."} # Should not be reached
+        if result is None:
+            return {"status": "error", "message": "Unknown state in file system tool."} # Should not be reached
+
+        # Append auto-correction feedback to successful results so the agent learns
+        if auto_corrected_from and result.get("status") == "success":
+            correction_note = (
+                f" [Note: The action '{auto_corrected_from}' was auto-corrected to '{action}'. "
+                f"Please use '{action}' directly in future calls.]"
+            )
+            result["message"] = result.get("message", "") + correction_note
+
+        return result
 
     # --- Detailed Usage Method ---
     def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None, sub_action: Optional[str] = None) -> str:
