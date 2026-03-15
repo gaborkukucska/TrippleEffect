@@ -6,6 +6,9 @@ from typing import Any, Dict, List, Optional
 import logging
 import re # Import re for find_replace
 import shutil # Added for copy and move
+from diff_match_patch import diff_match_patch # Added for search_replace_block
+import git # Added for git integration
+from git.exc import InvalidGitRepositoryError, GitCommandError
 
 from src.tools.base import BaseTool, ToolParameter
 from src.config.settings import settings # For PROJECTS_BASE_DIR
@@ -26,14 +29,14 @@ class FileSystemTool(BaseTool):
         "Reads, writes, appends, inserts, or replaces lines in files. Also lists, creates, or moves files/directories. "
         "Use 'scope' ('private', 'shared', or 'projects') to specify the target area. Default: 'private'. "
         "Actions: 'read', 'write' (for NEW files only), 'append' (add to end), 'insert_lines', 'replace_lines', "
-        "'list', 'mkdir', 'delete', 'find_replace', 'regex_replace', 'copy', 'move'. "
+        "'list', 'mkdir', 'delete', 'find_replace', 'regex_replace', 'copy', 'move', 'search_replace_block', 'git_commit', 'git_status', 'git_diff'. "
         "All paths are relative to the selected scope."
     )
     parameters: List[ToolParameter] = [
         ToolParameter(
             name="action",
             type="string",
-            description="The operation: 'read', 'write', 'list', 'mkdir', 'delete', 'find_replace', 'regex_replace', 'copy', 'move'.",
+            description="The operation: 'read', 'write', 'list', 'mkdir', 'delete', 'find_replace', 'regex_replace', 'copy', 'move', 'search_replace_block', 'git_commit', 'git_status', 'git_diff'.",
             required=True,
         ),
         ToolParameter(
@@ -114,6 +117,42 @@ class FileSystemTool(BaseTool):
             description="Ending line number (1-indexed, inclusive) for 'replace_lines'.",
             required=False,
         ),
+        ToolParameter(
+            name="search_block",
+            type="string",
+            description="The exact (or slightly fuzzy) block of text to find. Required for 'search_replace_block'.",
+            required=False,
+        ),
+        ToolParameter(
+            name="replace_block",
+            type="string",
+            description="The block of text to replace it with. Required for 'search_replace_block'.",
+            required=False,
+        ),
+        ToolParameter(
+            name="commit_message",
+            type="string",
+            description="The message for the git commit. Required for 'git_commit'.",
+            required=False,
+        ),
+        ToolParameter(
+            name="branch",
+            type="string",
+            description="Branch name. Used for 'git_checkout', and 'git_branch' (to create).",
+            required=False,
+        ),
+        ToolParameter(
+            name="files",
+            type="string",
+            description="Comma-separated files or pattern (e.g. '.'). Required for 'git_add' to stage files.",
+            required=False,
+        ),
+        ToolParameter(
+            name="remote",
+            type="string",
+            description="Git remote name (default: 'origin'). Used for 'git_push' and 'git_pull'.",
+            required=False,
+        ),
     ]
 
     async def execute(
@@ -146,10 +185,21 @@ class FileSystemTool(BaseTool):
         insert_line = kwargs.get("insert_line") # Used by insert_lines
         replace_start_line = kwargs.get("replace_start_line") # Used by replace_lines
         replace_end_line = kwargs.get("replace_end_line") # Used by replace_lines
+        search_block = kwargs.get("search_block") # Used by search_replace_block
+        replace_block_param = kwargs.get("replace_block") # Used by search_replace_block
+        commit_message = kwargs.get("commit_message") # Used by git_commit
+        branch = kwargs.get("branch") # Used by git_checkout, git_branch
+        files_to_add = kwargs.get("files") # Used by git_add
+        remote = kwargs.get("remote", "origin") # Used by git_push, git_pull
 
         if action == "write_file":
             action = "write"
-        valid_actions = ["read", "write", "append", "insert_lines", "replace_lines", "list", "mkdir", "delete", "find_replace", "regex_replace", "copy", "move"]
+        valid_actions = [
+            "read", "write", "append", "insert_lines", "replace_lines", "search_replace_block", 
+            "list", "mkdir", "delete", "find_replace", "regex_replace", "copy", "move", 
+            "git_commit", "git_status", "git_diff", "git_log", "git_branch", "git_checkout", 
+            "git_pull", "git_push", "git_add"
+        ]
         
         # Check for common mistakes and provide helpful suggestions
         action_suggestions = {
@@ -252,6 +302,34 @@ class FileSystemTool(BaseTool):
                 if replace_start_line is None or replace_end_line is None: return {"status": "error", "message": "'replace_start_line' and 'replace_end_line' parameters are required for 'replace_lines'."}
                 if content is None: return {"status": "error", "message": "'content' parameter is required for 'replace_lines'."}
                 result = await self._replace_lines_in_file(base_path, filename, replace_start_line, replace_end_line, content, agent_id, scope_description)
+            elif action == "search_replace_block":
+                if not filename: return {"status": "error", "message": "'filename' parameter is required for 'search_replace_block'."}
+                if search_block is None: return {"status": "error", "message": "'search_block' parameter is required for 'search_replace_block'."}
+                if replace_block_param is None: return {"status": "error", "message": "'replace_block' parameter is required for 'search_replace_block'."}
+                result = await self._search_replace_block_in_file(base_path, filename, search_block, replace_block_param, agent_id, scope_description)
+
+            # --- Git integration ---
+            elif action == "git_commit":
+                if not commit_message: return {"status": "error", "message": "'commit_message' parameter is required for 'git_commit'."}
+                result = await self._git_commit(base_path, relative_path if isinstance(relative_path, str) else ".", commit_message, agent_id, scope_description)
+            elif action == "git_status":
+                result = await self._git_status(base_path, relative_path if isinstance(relative_path, str) else ".", agent_id, scope_description)
+            elif action == "git_diff":
+                result = await self._git_diff(base_path, relative_path if isinstance(relative_path, str) else ".", agent_id, scope_description)
+            elif action == "git_log":
+                result = await self._git_log(base_path, relative_path if isinstance(relative_path, str) else ".", agent_id, scope_description)
+            elif action == "git_branch":
+                result = await self._git_branch(base_path, relative_path if isinstance(relative_path, str) else ".", branch, agent_id, scope_description)
+            elif action == "git_checkout":
+                if not branch: return {"status": "error", "message": "'branch' parameter is required for 'git_checkout'."}
+                result = await self._git_checkout(base_path, relative_path if isinstance(relative_path, str) else ".", branch, agent_id, scope_description)
+            elif action == "git_add":
+                if not files_to_add: return {"status": "error", "message": "'files' parameter is required for 'git_add'."}
+                result = await self._git_add(base_path, relative_path if isinstance(relative_path, str) else ".", files_to_add, agent_id, scope_description)
+            elif action == "git_pull":
+                result = await self._git_pull(base_path, relative_path if isinstance(relative_path, str) else ".", remote, agent_id, scope_description)
+            elif action == "git_push":
+                result = await self._git_push(base_path, relative_path if isinstance(relative_path, str) else ".", remote, agent_id, scope_description)
 
             # --- NEW: Handle mkdir and delete ---
             elif action == "mkdir":
@@ -403,6 +481,85 @@ Moves/renames a file/directory.
 *   `<destination_path>` (string, required): Target path.
 *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
 """
+        elif sub_action == "search_replace_block":
+            return common_header + """
+**Action: search_replace_block**
+Finds a specific block of code and replaces it with a new block, automatically handling slight indentation mismatches.
+*   `<filename>` (string, required): Relative path to the file.
+*   `<search_block>` (string, required): The exact (or slightly fuzzy) block of text to replace.
+*   `<replace_block>` (string, required): The new content to insert in its place.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+        elif sub_action == "git_commit":
+            return common_header + """
+**Action: git_commit**
+Commits changes in the specified scope (if it is a git repository).
+*   `<commit_message>` (string, required): The message for the commit.
+*   `<path>` (string, optional): The directory to run the commit in. Defaults to root of scope.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+        elif sub_action == "git_status":
+            return common_header + """
+**Action: git_status**
+Gets the git status for the specified scope (if it is a git repository).
+*   `<path>` (string, optional): The directory to run git status in. Defaults to root of scope.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+        elif sub_action == "git_diff":
+            return common_header + """
+**Action: git_diff**
+Gets the git diff for the specified scope (if it is a git repository).
+*   `<path>` (string, optional): The directory to run git diff in. Defaults to root of scope.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+
+        elif sub_action == "git_log":
+            return common_header + """
+**Action: git_log**
+Gets the git commit history for the specified scope.
+*   `<path>` (string, optional): The directory to run git log in. Defaults to root of scope.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+        elif sub_action == "git_branch":
+            return common_header + """
+**Action: git_branch**
+Lists branches or creates a new one if `<branch>` is provided.
+*   `<branch>` (string, optional): Name of the new branch to create.
+*   `<path>` (string, optional): The directory to run git branch in. Defaults to root of scope.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+        elif sub_action == "git_checkout":
+            return common_header + """
+**Action: git_checkout**
+Switches to a specified branch.
+*   `<branch>` (string, required): Name of the branch to checkout.
+*   `<path>` (string, optional): The directory to run git checkout in. Defaults to root of scope.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+        elif sub_action == "git_add":
+            return common_header + """
+**Action: git_add**
+Stages files for commit.
+*   `<files>` (string, required): Comma-separated list of files, or '.' for all.
+*   `<path>` (string, optional): The directory to run git add in. Defaults to root of scope.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+        elif sub_action == "git_pull":
+            return common_header + """
+**Action: git_pull**
+Pulls changes from a remote repository.
+*   `<remote>` (string, optional): The remote to pull from (default: 'origin').
+*   `<path>` (string, optional): The directory to run git pull in. Defaults to root of scope.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+        elif sub_action == "git_push":
+            return common_header + """
+**Action: git_push**
+Pushes changes to a remote repository.
+*   `<remote>` (string, optional): The remote to push to (default: 'origin').
+*   `<path>` (string, optional): The directory to run git push in. Defaults to root of scope.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
 
         # Return directory of commands
         return common_header + """
@@ -419,6 +576,16 @@ Moves/renames a file/directory.
 10. **regex_replace:** Regex based string replacement.
 11. **copy:** Copies files/directories.
 12. **move:** Moves/renames files/directories.
+13. **search_replace_block:** Fuzzy search and replace code blocks.
+14. **git_commit:** Commits modifications via Git.
+15. **git_status:** Gets repository status.
+16. **git_diff:** Gets undiscarded modifications.
+17. **git_log:** Gets repository commit history.
+18. **git_branch:** Lists or creates branches.
+19. **git_checkout:** Switches branches.
+20. **git_add:** Stages files.
+21. **git_pull:** Pulls from remote.
+22. **git_push:** Pushes to remote.
 
 **To get detailed instructions and parameter lists for a specific action, call:**
 <tool_information>
@@ -724,3 +891,211 @@ Moves/renames a file/directory.
         except Exception as e:
             logger.error(f"Agent {agent_id} error replacing lines in '{filename}': {e}", exc_info=True)
             return {"status": "error", "message": f"Error replacing lines in '{filename}': {e}"}
+
+    async def _search_replace_block_in_file(self, base_path: Path, filename: str, search_block: str, replace_block: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+        val_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
+        if not val_path: return {"status": "error", "message": f"Invalid path '{filename}'."}
+        if not val_path.is_file(): return {"status": "error", "message": f"File '{filename}' does not exist."}
+        try:
+            def search_replace_sync():
+                original_content = val_path.read_text(encoding='utf-8')
+                
+                # Fast path: exact match
+                if search_block in original_content:
+                    new_content = original_content.replace(search_block, replace_block, 1)
+                    val_path.write_text(new_content, encoding='utf-8')
+                    return True, "Exact match found and replaced."
+
+                # Fallback: diff_match_patch
+                dmp = diff_match_patch()
+                patches = dmp.patch_make(search_block, replace_block)
+                new_content, results = dmp.patch_apply(patches, original_content)
+                
+                if not any(results):
+                    return False, "Could not find a matching block to replace. Please check your search block."
+                
+                val_path.write_text(new_content, encoding='utf-8')
+                return True, "Fuzzy match found and replaced."
+
+            success, msg = await asyncio.to_thread(search_replace_sync)
+            
+            if success:
+                logger.info(f"Agent {agent_id} search/replace block in '{filename}' ({scope_description}): {msg}")
+                return {"status": "success", "message": f"Successfully replaced block in '{filename}'. ({msg})"}
+            else:
+                logger.warning(f"Agent {agent_id} failed search/replace block in '{filename}' ({scope_description}): {msg}")
+                return {"status": "error", "message": msg}
+        except Exception as e:
+            logger.error(f"Agent {agent_id} error replacing block in '{filename}': {e}", exc_info=True)
+            return {"status": "error", "message": f"Error replacing block in '{filename}': {e}"}
+
+    async def _git_commit(self, base_path: Path, relative_path: str, commit_message: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+        val_path = await self._resolve_and_validate_path(base_path, relative_path, agent_id, scope_description)
+        if not val_path: return {"status": "error", "message": f"Invalid path '{relative_path}'."}
+        try:
+            def git_commit_sync():
+                repo = git.Repo(val_path, search_parent_directories=True)
+                repo.git.add(all=True)
+                repo.index.commit(commit_message)
+                return repo.head.commit.hexsha
+            
+            commit_sha = await asyncio.to_thread(git_commit_sync)
+            logger.info(f"Agent {agent_id} created git commit {commit_sha[:7]} in {scope_description}")
+            return {"status": "success", "message": f"Successfully created git commit: {commit_sha[:7]} - {commit_message}"}
+        except InvalidGitRepositoryError:
+            return {"status": "error", "message": f"Path '{relative_path}' is not within a valid git repository."}
+        except GitCommandError as e:
+            return {"status": "error", "message": f"Git command failed: {e}"}
+        except Exception as e:
+            logger.error(f"Agent {agent_id} error committing in '{relative_path}': {e}", exc_info=True)
+            return {"status": "error", "message": f"Error committing: {e}"}
+
+    async def _git_status(self, base_path: Path, relative_path: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+        val_path = await self._resolve_and_validate_path(base_path, relative_path, agent_id, scope_description)
+        if not val_path: return {"status": "error", "message": f"Invalid path '{relative_path}'."}
+        try:
+            def git_status_sync():
+                repo = git.Repo(val_path, search_parent_directories=True)
+                return repo.git.status()
+            
+            status_output = await asyncio.to_thread(git_status_sync)
+            return {"status": "success", "message": f"Git status:\n{status_output}"}
+        except InvalidGitRepositoryError:
+            return {"status": "error", "message": f"Path '{relative_path}' is not within a valid git repository."}
+        except Exception as e:
+            logger.error(f"Agent {agent_id} error getting git status in '{relative_path}': {e}", exc_info=True)
+            return {"status": "error", "message": f"Error getting git status: {e}"}
+
+    async def _git_diff(self, base_path: Path, relative_path: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+        val_path = await self._resolve_and_validate_path(base_path, relative_path, agent_id, scope_description)
+        if not val_path: return {"status": "error", "message": f"Invalid path '{relative_path}'."}
+        try:
+            def git_diff_sync():
+                repo = git.Repo(val_path, search_parent_directories=True)
+                return repo.git.diff()
+            
+            diff_output = await asyncio.to_thread(git_diff_sync)
+            if not diff_output:
+                diff_output = "No current modifications."
+            return {"status": "success", "message": f"Git diff:\n{diff_output}"}
+        except InvalidGitRepositoryError:
+            return {"status": "error", "message": f"Path '{relative_path}' is not within a valid git repository."}
+        except Exception as e:
+            logger.error(f"Agent {agent_id} error getting git diff in '{relative_path}': {e}", exc_info=True)
+            return {"status": "error", "message": f"Error getting git diff: {e}"}
+
+    async def _git_log(self, base_path: Path, relative_path: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+        val_path = await self._resolve_and_validate_path(base_path, relative_path, agent_id, scope_description)
+        if not val_path: return {"status": "error", "message": f"Invalid path '{relative_path}'."}
+        try:
+            def git_log_sync():
+                repo = git.Repo(val_path, search_parent_directories=True)
+                return repo.git.log('-n', '10', '--oneline') # Limit to 10 for token safety
+            
+            log_output = await asyncio.to_thread(git_log_sync)
+            return {"status": "success", "message": f"Git log (last 10):\n{log_output}"}
+        except InvalidGitRepositoryError:
+            return {"status": "error", "message": f"Path '{relative_path}' is not within a valid git repository."}
+        except GitCommandError as e:
+            return {"status": "error", "message": f"Git error getting log: {e}"}
+        except Exception as e:
+            logger.error(f"Agent {agent_id} error getting git log in '{relative_path}': {e}", exc_info=True)
+            return {"status": "error", "message": f"Error getting git log: {e}"}
+
+    async def _git_branch(self, base_path: Path, relative_path: str, branch: Optional[str], agent_id: str, scope_description: str) -> Dict[str, Any]:
+        val_path = await self._resolve_and_validate_path(base_path, relative_path, agent_id, scope_description)
+        if not val_path: return {"status": "error", "message": f"Invalid path '{relative_path}'."}
+        try:
+            def git_branch_sync():
+                repo = git.Repo(val_path, search_parent_directories=True)
+                if branch:
+                    repo.git.branch(branch)
+                    return f"Created branch '{branch}'"
+                else:
+                    return repo.git.branch()
+            
+            result_output = await asyncio.to_thread(git_branch_sync)
+            return {"status": "success", "message": f"Git branch result:\n{result_output}"}
+        except InvalidGitRepositoryError:
+            return {"status": "error", "message": f"Path '{relative_path}' is not within a valid git repository."}
+        except GitCommandError as e:
+            return {"status": "error", "message": f"Git error on branch: {e}"}
+        except Exception as e:
+            logger.error(f"Agent {agent_id} error executing git branch in '{relative_path}': {e}", exc_info=True)
+            return {"status": "error", "message": f"Error executing git branch: {e}"}
+
+    async def _git_checkout(self, base_path: Path, relative_path: str, branch: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+        val_path = await self._resolve_and_validate_path(base_path, relative_path, agent_id, scope_description)
+        if not val_path: return {"status": "error", "message": f"Invalid path '{relative_path}'."}
+        try:
+            def git_checkout_sync():
+                repo = git.Repo(val_path, search_parent_directories=True)
+                repo.git.checkout(branch)
+                return f"Switched or checked out to '{branch}'"
+            
+            result_output = await asyncio.to_thread(git_checkout_sync)
+            return {"status": "success", "message": result_output}
+        except InvalidGitRepositoryError:
+            return {"status": "error", "message": f"Path '{relative_path}' is not within a valid git repository."}
+        except GitCommandError as e:
+            return {"status": "error", "message": f"Git error on checkout: {e}"}
+        except Exception as e:
+            logger.error(f"Agent {agent_id} error checking out branch in '{relative_path}': {e}", exc_info=True)
+            return {"status": "error", "message": f"Error checking out branch: {e}"}
+
+    async def _git_add(self, base_path: Path, relative_path: str, files_to_add: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+        val_path = await self._resolve_and_validate_path(base_path, relative_path, agent_id, scope_description)
+        if not val_path: return {"status": "error", "message": f"Invalid path '{relative_path}'."}
+        try:
+            def git_add_sync():
+                repo = git.Repo(val_path, search_parent_directories=True)
+                # Split comma separated files
+                files_list = [f.strip() for f in files_to_add.split(',') if f.strip()]
+                repo.git.add(*files_list)
+                return f"Staged: {', '.join(files_list)}"
+            
+            result_output = await asyncio.to_thread(git_add_sync)
+            return {"status": "success", "message": result_output}
+        except InvalidGitRepositoryError:
+            return {"status": "error", "message": f"Path '{relative_path}' is not within a valid git repository."}
+        except GitCommandError as e:
+            return {"status": "error", "message": f"Git error on add: {e}"}
+        except Exception as e:
+            logger.error(f"Agent {agent_id} error staging files in '{relative_path}': {e}", exc_info=True)
+            return {"status": "error", "message": f"Error staging files: {e}"}
+
+    async def _git_pull(self, base_path: Path, relative_path: str, remote: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+        val_path = await self._resolve_and_validate_path(base_path, relative_path, agent_id, scope_description)
+        if not val_path: return {"status": "error", "message": f"Invalid path '{relative_path}'."}
+        try:
+            def git_pull_sync():
+                repo = git.Repo(val_path, search_parent_directories=True)
+                return repo.git.pull(remote)
+            
+            result_output = await asyncio.to_thread(git_pull_sync)
+            return {"status": "success", "message": f"Git pull successful:\n{result_output}"}
+        except InvalidGitRepositoryError:
+            return {"status": "error", "message": f"Path '{relative_path}' is not within a valid git repository."}
+        except GitCommandError as e:
+            return {"status": "error", "message": f"Git error pulling repository: {e}"}
+        except Exception as e:
+            logger.error(f"Agent {agent_id} error pulling repo in '{relative_path}': {e}", exc_info=True)
+            return {"status": "error", "message": f"Error pulling repo: {e}"}
+
+    async def _git_push(self, base_path: Path, relative_path: str, remote: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+        val_path = await self._resolve_and_validate_path(base_path, relative_path, agent_id, scope_description)
+        if not val_path: return {"status": "error", "message": f"Invalid path '{relative_path}'."}
+        try:
+            def git_push_sync():
+                repo = git.Repo(val_path, search_parent_directories=True)
+                return repo.git.push(remote)
+            
+            result_output = await asyncio.to_thread(git_push_sync)
+            return {"status": "success", "message": f"Git push successful:\n{result_output}"}
+        except InvalidGitRepositoryError:
+            return {"status": "error", "message": f"Path '{relative_path}' is not within a valid git repository."}
+        except GitCommandError as e:
+            return {"status": "error", "message": f"Git error pushing repository: {e}"}
+        except Exception as e:
+            logger.error(f"Agent {agent_id} error pushing repo in '{relative_path}': {e}", exc_info=True)
+            return {"status": "error", "message": f"Error pushing repo: {e}"}

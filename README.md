@@ -79,7 +79,7 @@ chmod +x setup.sh run.sh
     *   **Conversation State:** Focuses on user interaction, KB search/save, monitoring PM updates, and identifying new tasks. Uses `<request_state state='planning'>` to signal task identification.
     *   **Planning State:** Focuses solely on creating a plan with a `<title>` tag. Framework handles project/PM creation upon plan submission.
 *   **XML Tooling:** Agents request tool use via XML format. Available tools:
-    *   `FileSystemTool`: Read, Write, List, Mkdir, Delete (File/Empty Dir), Find/Replace in private sandbox or shared workspace.
+    *   `FileSystemTool`: Read, Write, List, Mkdir, Delete, Find/Replace, Fuzzy Search/Replace (`search_replace_block`), and Git operations (`git_commit`, `git_status`, `git_diff`) in sandbox or shared workspaces.
     *   `GitHubTool`: List Repos, List Files (Recursive), Read File content using PAT.
     *   `ManageTeamTool`: Create/Delete Agents/Teams, Assign Agents, List Agents/Teams, Get Agent Details.
     *   `SendMessageTool`: Communicate between agents within a team or with Admin AI (using exact agent IDs).
@@ -191,7 +191,8 @@ chmod +x setup.sh run.sh
 
 *   **Current Version:** 2.42
 *   **Completed Phases:** 1-27, plus incremental improvements. (Phase 27 focused on Advanced Agent Health Monitoring, Constitutional Guardian enhancements, and comprehensive loop detection and recovery systems).
-*   **Recent Enhancements (v2.40 - v2.42):**
+*   **Recent Enhancements (v2.40 - v2.43):**
+    *   **FileSystemTool Upgrades (v2.43):** Integrated `GitPython` and `diff-match-patch` for robust LLM-friendly file edits (`search_replace_block`) and native Git repository awareness (`git_status`, `git_commit`, `git_diff`).
     *   **Modular Tool Help System (v2.42):** Refactored `get_detailed_usage()` across `FileSystemTool`, `ProjectManagementTool`, and `ManageTeamTool` to support `sub_action` parameter. Agents now receive concise action summaries by default and can request detailed, action-specific documentation. Error messages automatically include contextual help for the failed action.
     *   **Enhanced Error Handler:** `ToolErrorHandler` now accepts and formats `action_help` in error responses, enabling agents to self-correct with targeted documentation.
     *   **New FileSystemTool Actions:** Added `append`, `insert_lines`, and `replace_lines` for granular file manipulation.

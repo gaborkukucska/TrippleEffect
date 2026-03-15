@@ -243,7 +243,7 @@ This means agents automatically receive the relevant documentation for the speci
 ### Existing Implementations
 
 The following tools already implement modular help:
-*   `FileSystemTool` — 12 actions (`read`, `write`, `append`, `insert_lines`, `replace_lines`, `list`, `mkdir`, `delete`, `find_replace`, `regex_replace`, `copy`, `move`)
+*   `FileSystemTool` — 16 actions (`read`, `write`, `append`, `insert_lines`, `replace_lines`, `search_replace_block`, `list`, `mkdir`, `delete`, `find_replace`, `regex_replace`, `copy`, `move`, `git_commit`, `git_status`, `git_diff`)
 *   `ProjectManagementTool` — 4 actions (`add_task`, `modify_task`, `get_tasks`, `get_project_state`)
 *   `ManageTeamTool` — 4 actions (`create_agent`, `set_agent_state`, `send_message`, `get_team_status`)
 

@@ -210,7 +210,13 @@ class ProjectManagementTool(BaseTool):
                 if "status" in kwargs: task['status'] = kwargs["status"]; modified_fields.append("status")
                 if "priority" in kwargs: task['priority'] = kwargs["priority"]; modified_fields.append("priority")
                 if "tags" in kwargs: task['tags'] = set(kwargs["tags"]); modified_fields.append("tags")
-                if kwargs.get("assignee_agent_id"): task['assignee'] = kwargs["assignee_agent_id"]; modified_fields.append("assignee")
+                
+                if kwargs.get("assignee_agent_id"): 
+                    new_assignee = kwargs["assignee_agent_id"]
+                    if task['assignee'] == new_assignee:
+                        return {"status": "error", "message": f"The task assignee remains unchanged. Task current status: {task['status']}."}
+                    task['assignee'] = new_assignee
+                    modified_fields.append("assignee")
                 if "depends" in kwargs:
                     try:
                         dep_id = kwargs["depends"]

@@ -659,6 +659,25 @@ class AgentManager:
             logger.info(f"AgentManager: Initialized worker '{worker_agent_id}' with system prompt containing injected task context.")
         else:
             logger.debug(f"AgentManager: Worker '{worker_agent_id}' already has message history. Injecting framework directive to wake from prior state.")
+            
+            # Condense the history for the worker to avoid blowing up context window
+            # Retain system prompt (index 0). Retain last 2-4 messages. Condense the rest.
+            if len(worker_agent.message_history) > 6:
+                # Keep system prompt
+                sys_prompt = worker_agent.message_history[0]
+                
+                # We can inject a summary message
+                summary_msg = {
+                    "role": "system",
+                    "content": "[Framework System Reminder]: This agent has preserved history from previous tasks. Older task execution details have been condensed to save memory. You retain your knowledge and capabilities."
+                }
+                
+                # Keep the last 4 messages to preserve immediate recent context (likely the transition to worker_wait)
+                recent_msgs = worker_agent.message_history[-4:]
+                
+                worker_agent.message_history = [sys_prompt, summary_msg] + recent_msgs
+                logger.info(f"AgentManager: Condensed history for worker '{worker_agent_id}' down to {len(worker_agent.message_history)} messages.")
+
             # Wake up the worker with a system directive so it doesn't repeat its last wait state
             worker_agent.message_history.append({
                 "role": "user",

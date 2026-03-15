@@ -16,6 +16,7 @@ __pycache__/
 venv/
 
 # other
+tests/
 data/
 logs/
 projects/
