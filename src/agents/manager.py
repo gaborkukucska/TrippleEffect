@@ -658,7 +658,12 @@ class AgentManager:
             })
             logger.info(f"AgentManager: Initialized worker '{worker_agent_id}' with system prompt containing injected task context.")
         else:
-            logger.debug(f"AgentManager: Worker '{worker_agent_id}' already has message history, skipping system prompt initialization.")
+            logger.debug(f"AgentManager: Worker '{worker_agent_id}' already has message history. Injecting framework directive to wake from prior state.")
+            # Wake up the worker with a system directive so it doesn't repeat its last wait state
+            worker_agent.message_history.append({
+                "role": "user",
+                "content": f"[Framework Directive]: You have been assigned a new task: {task_description_from_tool}\nThe system prompt has been updated with this goal. You MUST now begin executing it."
+            })
 
         # Log this activation and context injection to DB for traceability
         if self.current_session_db_id:

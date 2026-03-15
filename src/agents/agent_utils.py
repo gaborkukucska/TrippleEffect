@@ -47,16 +47,29 @@ def sort_models_by_size_performance_id(
         if 'id' not in enriched_model:
             logger.warning(f"Model info missing 'id', skipping: {enriched_model}")
             continue
-        
+            
+        model_id = enriched_model['id'].lower()
         provider = enriched_model.get("provider", "unknown_provider_for_sort")
 
         # Get performance score
         score = DEFAULT_PERFORMANCE_SCORE
         if performance_metrics and provider in performance_metrics:
-            model_specific_metrics = performance_metrics[provider].get(enriched_model["id"])
+            model_specific_metrics = performance_metrics[provider].get(model_id) or performance_metrics[provider].get(enriched_model["id"])
             if model_specific_metrics and "score" in model_specific_metrics:
                 score = model_specific_metrics["score"]
         enriched_model["performance_score"] = score
+        
+        # Filter out obvious non-chat / embedding models if they have no proven performance score
+        if score <= 0.0:
+            if "embed" in model_id or "nomic" in model_id:
+                logger.debug(f"Filtering out likely embedding/non-chat model '{model_id}' from failover candidates.")
+                continue
+            
+            # Also filter out models that we know have a raw template, as they likely aren't chat models
+            model_template = str(enriched_model.get("model_template", "")).strip()
+            if model_template in ('{{ .Prompt }}', '{{ .Response }}', '{{ .System }}{{ .Prompt }}'):
+                logger.debug(f"Filtering out model '{model_id}' with RAW template '{model_template}' from failover candidates.")
+                continue
         
         # Get num_parameters, ensure it's comparable
         num_params = enriched_model.get("num_parameters")

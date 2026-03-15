@@ -306,10 +306,13 @@ class AgentCycleHandler:
                             else: # Empty stripped_verdict — fail-open to prevent indefinite agent stalls
                                 logger.warning("CG returned empty verdict. Failing open (treating as <OK/>) to prevent agent stall.")
                                 verdict_to_return = OK_TAG
+                except Exception as eval_e:
+                    logger.error(f"Error during Constitutional Guardian evaluation: {eval_e}", exc_info=True)
+                    verdict_to_return = "<OK/>" # Fail-open in case of evaluation error
 
-                except Exception as e:
-                    logger.error(f"Error during Constitutional Guardian LLM call or verdict parsing: {e}", exc_info=True)
-                    verdict_to_return = "Constitutional Guardian encountered an error during verdict processing."
+        except Exception as outer_e:
+            logger.error(f"Critical error setting up Constitutional Guardian evaluation: {outer_e}", exc_info=True)
+            verdict_to_return = "<OK/>" # Fail-open in case of critical setup error
 
         finally: # Outer finally
             if cg_agent:
@@ -320,6 +323,12 @@ class AgentCycleHandler:
                 else:
                     logger.error("AgentManager instance not found or lacks push_agent_status_update, cannot revert CG status for UI.")
 
+        # Ensure verdict_to_return is ALWAYS assigned before returning
+        if verdict_to_return is None:
+            logger.error("verdict_to_return was None at the end of CG evaluation. Defaulting to fail-open (<OK/>).")
+            verdict_to_return = "<OK/>"
+
+        logger.info(f"Final CG evaluation verdict being returned: '{verdict_to_return[:50]}...'")
         return verdict_to_return
 
     def _generate_empty_response_guidance(self, agent: 'Agent') -> str:
@@ -1073,11 +1082,14 @@ class AgentCycleHandler:
                                         if not task_description_for_state_change:
                                             logger.warning(f"CycleHandler: Could not find a previous user or agent message to use as task description for state change to '{requested_state}'.")
 
-                                    # Pass the task description to change_state
                                     if self._manager.workflow_manager.change_state(agent, requested_state, task_description=task_description_for_state_change):
                                         logger.info(f"CycleHandler: Successfully changed agent '{agent.agent_id}' state to '{requested_state}' during tool processing")
                                     else:
-                                        logger.warning(f"CycleHandler: Failed to change agent '{agent.agent_id}' state to '{requested_state}' during tool processing")
+                                        resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state)
+                                        if agent.state == resolved_requested:
+                                            logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Assuming idle/done if it's an idle state.")
+                                        else:
+                                            logger.warning(f"CycleHandler: Failed to change agent '{agent.agent_id}' state to '{requested_state}' during tool processing")
 
                         # Construct and append the assistant message for history
                         # Construct and append the assistant message for history

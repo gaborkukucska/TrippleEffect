@@ -151,9 +151,26 @@ class ProjectManagementTool(BaseTool):
             elif action == "list_tasks":
                 tasks_query = tw.tasks.all()
                 if kwargs.get("project_filter"): tasks_query = tasks_query.filter(project=kwargs["project_filter"])
+                if kwargs.get("status_filter"): tasks_query = tasks_query.filter(status=kwargs["status_filter"])
 
                 tasks = tasks_query.all()
-                minimal_task_list = [{"uuid": task['uuid'], "id": task['id'], "description": task['description'], "status": task['status'], "depends": [t['uuid'] for t in (task['depends'] if task['depends'] is not None else [])]} for task in tasks]
+                if "tags_filter" in kwargs:
+                    try:
+                        filter_tags = set(tag.strip() for tag in kwargs["tags_filter"].split(","))
+                        mode = kwargs.get("tags_filter_mode", "include")
+                        filtered_tasks = []
+                        for task in tasks:
+                            task_tags = set(task['tags'] if task['tags'] is not None else [])
+                            if mode == "include" and filter_tags.issubset(task_tags):
+                                filtered_tasks.append(task)
+                            elif mode == "any" and filter_tags.intersection(task_tags):
+                                filtered_tasks.append(task)
+                            elif mode == "exclude" and not filter_tags.intersection(task_tags):
+                                filtered_tasks.append(task)
+                        tasks = filtered_tasks
+                    except Exception as e:
+                        logger.warning(f"Error filtering tasks by tags: {e}")
+                minimal_task_list = [{"uuid": task['uuid'], "id": task['id'], "description": task['description'], "status": task['status'], "assignee": task['assignee'] if task['assignee'] is not None else None, "tags": list(task['tags'] if task['tags'] is not None else []), "depends": [t['uuid'] for t in (task['depends'] if task['depends'] is not None else [])]} for task in tasks]
                 return {"status": "success", "message": f"Found {len(minimal_task_list)} task(s).", "tasks": minimal_task_list}
 
             elif action == "modify_task":

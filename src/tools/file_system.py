@@ -25,7 +25,7 @@ class FileSystemTool(BaseTool):
     description: str = ( # Updated description
         "Reads, writes, appends, inserts, or replaces lines in files. Also lists, creates, or moves files/directories. "
         "Use 'scope' ('private', 'shared', or 'projects') to specify the target area. Default: 'private'. "
-        "Actions: 'read', 'write' (full overwrite), 'append' (add to end), 'insert_lines', 'replace_lines', "
+        "Actions: 'read', 'write' (for NEW files only), 'append' (add to end), 'insert_lines', 'replace_lines', "
         "'list', 'mkdir', 'delete', 'find_replace', 'regex_replace', 'copy', 'move'. "
         "All paths are relative to the selected scope."
     )
@@ -131,11 +131,13 @@ class FileSystemTool(BaseTool):
         # Default to 'shared' if we have project context, else 'private'
         default_scope = "shared" if project_name and session_name else "private"
         scope = kwargs.get("scope", default_scope).lower()
-        # Handle both 'filename' and 'filepath' parameters
         filename = kwargs.get("filename") or kwargs.get("filepath") # Used by read, write, find_replace, regex_replace
+        if isinstance(filename, str): filename = filename.strip()
         content = kwargs.get("content") # Used by write
         relative_path = kwargs.get("path") # Used by list, mkdir, delete, copy, move. Default for list is '.', set below if needed.
+        if isinstance(relative_path, str): relative_path = relative_path.strip()
         destination_path = kwargs.get("destination_path") # Used by copy, move
+        if isinstance(destination_path, str): destination_path = destination_path.strip()
         find_text = kwargs.get("find_text") # Used by find_replace
         replace_text = kwargs.get("replace_text") # Used by find_replace, regex_replace
         regex_pattern = kwargs.get("regex_pattern") # Used by regex_replace
@@ -193,7 +195,8 @@ class FileSystemTool(BaseTool):
             if not base_path.is_dir(): return {"status": "error", "message": f"Agent's private sandbox directory does not exist at {base_path}"}
         elif scope == "shared":
             if not project_name or not session_name: return {"status": "error", "message": "Cannot use 'shared' scope - project/session context is missing."}
-            base_path = settings.PROJECTS_BASE_DIR / project_name / session_name / "shared_workspace"; scope_description = f"shared workspace for '{project_name}/{session_name}'"
+            safe_project_name = project_name.replace(" ", "_").strip()
+            base_path = settings.PROJECTS_BASE_DIR / safe_project_name / session_name / "shared_workspace"; scope_description = f"shared workspace for '{safe_project_name}/{session_name}'"
             try:
                 # Ensure shared workspace base exists (don't need output subdir here)
                 await asyncio.to_thread(base_path.mkdir, parents=True, exist_ok=True)
@@ -313,7 +316,7 @@ Reads the content of a file.
         elif sub_action == "write":
             return common_header + """
 **Action: write**
-Writes content to a file. Overwrites completely. For targeted edits, use `replace_lines` or `append` instead!
+Writes content to a NEW file (Forbidden on existing files to save tokens/prevent data loss). For targeted edits on existing files, use `replace_lines`, `find_replace`, `regex_replace`, or `append`!
 *   `<filename>` (string, required): Relative path to the file.
 *   `<content>` (string, required): The complete file content to write.
 *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
@@ -428,6 +431,11 @@ Moves/renames a file/directory.
     async def _resolve_and_validate_path(self, base_path: Path, relative_file_path: str, agent_id: str, scope_description: str) -> Path | None:
         """ Resolves the relative path against the base path and validates it. """
         if not relative_file_path: logger.warning(f"Agent {agent_id} provided empty path/filename for {scope_description}."); return None
+        
+        # Sanitize the path: strip spaces and replace internal spaces with underscores
+        if isinstance(relative_file_path, str):
+            relative_file_path = relative_file_path.strip().replace(" ", "_")
+            
         try:
             # Handle potential path normalization issues
             # Disallow paths starting with '/' or containing '..'
@@ -479,6 +487,15 @@ Moves/renames a file/directory.
         validated_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
         if not validated_path: return {"status": "error", "message": f"Invalid or disallowed file path '{filename}' in {scope_description}."}
         if validated_path.is_dir(): logger.warning(f"Agent {agent_id} attempted to write to directory: {filename} in {scope_description}"); return {"status": "error", "message": f"Cannot write file. '{filename}' points to an existing directory."}
+        
+        # Prevent overwriting existing files to force surgical edits
+        if validated_path.exists():
+            logger.warning(f"Agent {agent_id} attempted to overwrite existing file '{filename}'. Write rejected to strongly encourage find/replace targeted edits.")
+            return {
+                "status": "error", 
+                "message": f"File '{filename}' already exists. Overwriting entire existing files using 'write' is disabled to save tokens and prevent accidental losses. Please use 'read' to view the file and then use 'find_replace', 'regex_replace', 'insert_lines', or 'append' to modify specific sections. If you must recreate the file from scratch, use 'delete' first."
+            }
+            
         try:
             await asyncio.to_thread(validated_path.parent.mkdir, parents=True, exist_ok=True)
             await asyncio.to_thread(validated_path.write_text, content, encoding='utf-8')

@@ -168,8 +168,9 @@ class PromptAssembler:
             len(agent.message_history) > 0 and
             agent.message_history[0].get("role") == "system"
         )
+        needs_new_context = getattr(agent, '_needs_initial_work_context', False)
 
-        if last_prompt_state == current_state_key and has_existing_system_prompt:
+        if last_prompt_state == current_state_key and has_existing_system_prompt and not needs_new_context:
             # Same state as when we last injected - reuse the existing prompt
             context.final_system_prompt = agent.message_history[0]["content"]
             logger.debug(f"PromptAssembler: Reusing existing system prompt for '{agent.agent_id}' (state unchanged: {agent.state}).")
@@ -181,6 +182,9 @@ class PromptAssembler:
             else:
                 context.final_system_prompt = manager.workflow_manager.get_system_prompt(agent, manager)
             logger.debug(f"PromptAssembler: Generated fresh system prompt for agent '{agent.agent_id}' (Type: {agent.agent_type}, State: {agent.state}).")
+            
+            if needs_new_context:
+                agent._needs_initial_work_context = False
 
         # 2. Prepare History for LLM Call
         history_for_call = agent.message_history.copy() # Start with agent's current history

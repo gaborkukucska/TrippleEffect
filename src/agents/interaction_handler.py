@@ -456,6 +456,10 @@ class AgentInteractionHandler:
                                 task_id_from_tool=task_identifier_for_activation,
                                 task_description_from_tool=task_description_for_worker
                             )
+                            
+                            # Append confirmation so the PM knows the worker is active
+                            notification = f"\n\n[Framework Notification]: Worker '{assignee_id}' has been automatically activated and is now working on this task. Do not re-assign this task."
+                            result_content += notification
                         else:
                             agent_type_str = getattr(assignee_agent, 'agent_type', 'Unknown') if assignee_agent else 'Not Found'
                             logger.debug(f"InteractionHandler: Task '{action_performed}' successful for assignee '{assignee_id}'. Skipping worker activation because assignee is '{agent_type_str}'.")

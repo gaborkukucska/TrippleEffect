@@ -40,6 +40,9 @@ export const handleWebSocketMessage = (data) => {
                 if (!statusPayload.agent_id && agentId) statusPayload.agent_id = agentId;
                 updateKnownAgentStatus(agentId, statusPayload);
                 triggerStatusRedraw = true;
+                
+                // Trigger UI loading indicator
+                ui.updateAgentLoadingIndicator(agentId, statusPayload.status, statusPayload.persona || agentPersona);
             } else {
                  console.warn("Handler: Received agent_status_update without valid status object:", data);
             }
@@ -76,7 +79,16 @@ export const handleWebSocketMessage = (data) => {
              triggerStatusRedraw = true;
         } else if (messageType === 'session_loaded') {
             console.log("Handler: Handling session_loaded event.");
-            if (DOM.conversationArea) DOM.conversationArea.innerHTML = ''; // Clear chat
+            if (DOM.conversationArea) {
+                DOM.conversationArea.innerHTML = ''; // Clear chat
+                
+                // Show System Loading message
+                const loadingMsg = document.createElement('div');
+                loadingMsg.id = 'system-loading-indicator';
+                loadingMsg.className = 'message status loading-indicator agent_response';
+                loadingMsg.innerHTML = '<span class="agent-label">System:</span><span class="message-content" style="opacity:0.6"><i>System Loading...</i></span>';
+                DOM.conversationArea.appendChild(loadingMsg);
+            }
             ws.sendMessage(JSON.stringify({ type: 'get_full_status' }));
             triggerStatusRedraw = true;
         }
@@ -228,6 +240,10 @@ export const handleWebSocketMessage = (data) => {
                      targetAreaId = 'internal-comms-area';
                      displayType = 'response_chunk';
                  }
+                 
+                 // Clear indicator when stream starts
+                 ui.clearAgentLoadingIndicator(displayAgentId);
+                 
                  // Handle empty chunks if necessary
                  if (displayContent === undefined || displayContent === null) {
                      displayContent = '[Empty Chunk]';
@@ -236,6 +252,13 @@ export const handleWebSocketMessage = (data) => {
                  break;
             case 'agent_response': // Assuming this is used for the final complete message from Admin AI
             case 'final_response': // Handling both just in case
+                 // Remove System Loading message if it exists
+                 const sysLoading = document.getElementById('system-loading-indicator');
+                 if (sysLoading) sysLoading.remove();
+                 
+                 // Clear indicator when stream completes
+                 ui.clearAgentLoadingIndicator(displayAgentId);
+                 
                  if (agentId === 'admin_ai') {
                      targetAreaId = 'conversation-area'; // <<< CORRECT: Final message goes to main chat
                      displayType = 'agent_response'; // Style as agent response
