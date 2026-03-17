@@ -194,63 +194,76 @@ def find_and_parse_xml_tool_calls(
         cleaned = cleaned.replace("&amp;lt;", "&lt;").replace("&amp;gt;", "&gt;")
         
         # Escape content inside known parameter tags to prevent ET.ParseError on unescaped HTML/XML
+        # IMPORTANT: Also escape content in ALIAS tags that LLMs commonly use instead of schema names
+        PARAM_ALIAS_MAP = {
+            "file_system": {
+                "search_block": ["search", "search_string", "find", "find_text", "search_text"],
+                "replace_block": ["replace", "replacement", "replace_string", "replace_text"],
+                "filename": ["filepath", "file_path", "file_name", "path", "file"],
+                "file_content": ["content", "text", "data", "body"],
+                "new_content": ["content", "text", "new_text"],
+            }
+        }
+        
+        # Build a complete list of tag names whose content should be escaped
+        all_escapable_tags: set = set()
         if tool_name in tools:
             tool_schema = tools[tool_name].get_schema()
             params = tool_schema.get('parameters', [])
             param_names = [p['name'] for p in params]
+            all_escapable_tags.update(param_names)
             
-            for param in params:
-                param_name = param['name']
-                
-                def _escape_raw_content(raw_text: str, p_name: str = param_name) -> str:
-                    """Escape raw content for safe XML embedding."""
-                    raw = html.unescape(raw_text)
-                    if raw.strip().startswith("<![CDATA[") and raw.strip().endswith("]]>"):
-                        raw = raw.strip()[9:-3]
-                    safe = raw.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-                    return f"<{p_name}>{safe}</{p_name}>"
+            # Add aliases from the map
+            tool_aliases = PARAM_ALIAS_MAP.get(tool_name, {})
+            for canonical, aliases in tool_aliases.items():
+                all_escapable_tags.add(canonical)
+                all_escapable_tags.update(aliases)
+        else:
+            param_names = []
+        
+        for tag_name in all_escapable_tags:
+            def _escape_raw_content(raw_text: str, p_name: str = tag_name) -> str:
+                """Escape raw content for safe XML embedding."""
+                raw = html.unescape(raw_text)
+                if raw.strip().startswith("<![CDATA[") and raw.strip().endswith("]]>"):
+                    raw = raw.strip()[9:-3]
+                safe = raw.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                return f"<{p_name}>{safe}</{p_name}>"
 
-                # Try standard match first: <param>...</param>
-                pattern = re.compile(rf"<{param_name}>(.*?)</{param_name}>", flags=re.IGNORECASE | re.DOTALL)
-                if pattern.search(cleaned):
-                    cleaned = pattern.sub(lambda m: _escape_raw_content(m.group(1)), cleaned)
-                else:
-                    # Fallback: handle missing closing tag (e.g., <content>HTML...</tool_name>)
-                    # The agent may have written <content><!DOCTYPE html>...</html></file_system>
-                    # without a proper </content> tag.
-                    open_tag_pattern = re.compile(rf"<{param_name}>(.*)", flags=re.IGNORECASE | re.DOTALL)
-                    open_match = open_tag_pattern.search(cleaned)
-                    if open_match:
-                        content_after_open = open_match.group(1)
-                        # Find the tool's closing tag or the next sibling param opening tag
-                        end_marker = f"</{tool_name}>"
-                        end_pos = content_after_open.rfind(end_marker)
-                        if end_pos == -1:
-                            # Try case-insensitive
-                            end_pos = content_after_open.lower().rfind(f"</{tool_name.lower()}>")
+            # Try standard match first: <param>...</param>
+            pattern = re.compile(rf"<{tag_name}>(.*?)</{tag_name}>", flags=re.IGNORECASE | re.DOTALL)
+            if pattern.search(cleaned):
+                cleaned = pattern.sub(lambda m: _escape_raw_content(m.group(1)), cleaned)
+            else:
+                # Fallback: handle missing closing tag (e.g., <content>HTML...</tool_name>)
+                open_tag_pattern = re.compile(rf"<{tag_name}>(.*)", flags=re.IGNORECASE | re.DOTALL)
+                open_match = open_tag_pattern.search(cleaned)
+                if open_match:
+                    content_after_open = open_match.group(1)
+                    end_marker = f"</{tool_name}>"
+                    end_pos = content_after_open.rfind(end_marker)
+                    if end_pos == -1:
+                        end_pos = content_after_open.lower().rfind(f"</{tool_name.lower()}>")
+                    
+                    if end_pos != -1:
+                        earliest_sibling = end_pos
+                        all_known_tags = all_escapable_tags | set(param_names)
+                        for other_tag in all_known_tags:
+                            if other_tag == tag_name:
+                                continue
+                            sibling_pos = content_after_open.find(f"<{other_tag}>")
+                            if sibling_pos == -1:
+                                sibling_pos = content_after_open.lower().find(f"<{other_tag.lower()}>")
+                            if sibling_pos != -1 and sibling_pos < earliest_sibling:
+                                earliest_sibling = sibling_pos
                         
-                        if end_pos != -1:
-                            # Also check for any sibling param tags before the tool closing tag
-                            earliest_sibling = end_pos
-                            for other_param in param_names:
-                                if other_param == param_name:
-                                    continue
-                                # Check for <other_param> appearing before end_pos
-                                sibling_pos = content_after_open.find(f"<{other_param}>")
-                                if sibling_pos == -1:
-                                    sibling_pos = content_after_open.lower().find(f"<{other_param.lower()}>")
-                                if sibling_pos != -1 and sibling_pos < earliest_sibling:
-                                    earliest_sibling = sibling_pos
-                            
-                            # The actual content is everything up to the earliest boundary
-                            actual_content = content_after_open[:earliest_sibling]
-                            remainder = content_after_open[earliest_sibling:]
-                            
-                            # Rebuild: replace the broken section with escaped content + proper closing tag + remainder
-                            escaped_section = _escape_raw_content(actual_content)
-                            rebuilt = cleaned[:open_match.start()] + escaped_section + remainder
-                            cleaned = rebuilt
-                            logger.info(f"[SANITIZE] Fixed missing </{param_name}> tag for tool '{tool_name}'. Extracted and escaped {len(actual_content)} chars of content.")
+                        actual_content = content_after_open[:earliest_sibling]
+                        remainder = content_after_open[earliest_sibling:]
+                        
+                        escaped_section = _escape_raw_content(actual_content)
+                        rebuilt = cleaned[:open_match.start()] + escaped_section + remainder
+                        cleaned = rebuilt
+                        logger.info(f"[SANITIZE] Fixed missing </{tag_name}> tag for tool '{tool_name}'. Extracted and escaped {len(actual_content)} chars of content.")
 
         return cleaned
 

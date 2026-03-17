@@ -426,12 +426,15 @@ class AgentCycleHandler:
 
         # Use a broad prefix to catch all variants:
         # "[Framework System Message]", "[Framework System Message - DUPLICATE BLOCKED]", etc.
-        FRAMEWORK_MSG_PREFIX = "[Framework System Message"
-        # Find indices of all framework system messages
+        # Also catch Constitutional Guardian messages to prevent them from accumulating
+        FRAMEWORK_MSG_PREFIXES = ["[Framework System Message", "[Constitutional Guardian"]
+        # Find indices of all framework and CG system messages
         framework_msg_indices: List[int] = []
         for i, msg in enumerate(agent.message_history):
-            if msg.get("role") == "system" and msg.get("content", "").startswith(FRAMEWORK_MSG_PREFIX):
-                framework_msg_indices.append(i)
+            if msg.get("role") == "system":
+                content = msg.get("content", "")
+                if any(content.startswith(prefix) for prefix in FRAMEWORK_MSG_PREFIXES):
+                    framework_msg_indices.append(i)
 
         # Remove ALL previous framework messages, because a new,
         # updated one will be injected immediately after this is called.
@@ -863,7 +866,7 @@ class AgentCycleHandler:
                             if context.current_db_session_id: 
                                 await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id,agent_id=agent.agent_id,role="system_error_feedback",content=feedback_to_agent)
                                 
-                            await self._manager.send_to_ui({"type": "system_error_feedback","agent_id": agent.agent_id,"tool_name": malformed_tool_name,"error_message": parsing_error_msg,"detailed_usage": detailed_tool_usage,"original_attempt": raw_llm_response_with_error})
+                            await self._manager.send_to_ui({"type": "system_error_feedback","agent_id": agent.agent_id,"tool_name": malformed_tool_name,"error_message": parsing_error_msg,"content": feedback_to_agent,"detailed_usage": detailed_tool_usage,"original_attempt": raw_llm_response_with_error})
                             
                             logger.info(f"CycleHandler: Provided XML error feedback to '{agent.agent_id}' for error pattern: {base_error_signature}")
                         else:
@@ -1227,7 +1230,9 @@ class AgentCycleHandler:
                                                 }
                                                 self._deduplicate_pm_framework_messages(agent)
                                                 all_tool_results_for_history.append(escalation_msg)
-                                                agent._duplicate_tool_call_count = 0  # Reset after auto-advance
+                                                # CRITICAL FIX: Do NOT reset to 0. Set to string threshold - 1 (which is 2)
+                                                # so the next duplicate triggers the general FORCE-ADVANCE below.
+                                                agent._duplicate_tool_call_count = 2 
                                         else:
                                             # GENERAL FORCE-ADVANCE: For any tool type, force PM to pm_manage
                                             logger.warning(
@@ -1283,7 +1288,21 @@ class AgentCycleHandler:
                                         agent._duplicate_tool_call_count = 0
                             # --- END CROSS-CYCLE DUPLICATE DETECTION ---
                             
-                            result_dict = await self._interaction_handler.execute_single_tool(agent, tool_id, tool_name, tool_args, self._manager.current_project, self._manager.current_session)
+                            # --- SEND_MESSAGE MULTI-TOOL CONSTRAINT ---
+                            if len(tool_calls) > 1 and tool_name == "send_message":
+                                logger.warning(f"Agent {agent.agent_id} attempted to use send_message alongside other tools. Blocking send_message.")
+                                error_msg = "ERROR: You cannot use the 'send_message' tool in the same response as other tools. You must use it on its own AFTER reviewing the feedback from your other tool calls."
+                                result_dict = {
+                                    "status": "error",
+                                    "message": error_msg,
+                                    "content": error_msg,
+                                    "call_id": tool_id or f"unknown_id_{i}",
+                                    "name": tool_name
+                                }
+                            else:
+                                result_dict = await self._interaction_handler.execute_single_tool(agent, tool_id, tool_name, tool_args, self._manager.current_project, self._manager.current_session)
+                            # --- END SEND_MESSAGE MULTI-TOOL CONSTRAINT ---
+                            
                             if result_dict:
                                 history_item: MessageDict = {"role": "tool", "tool_call_id": result_dict.get("call_id", tool_id or f"unknown_id_{i}"), "name": result_dict.get("name", tool_name or f"unknown_tool_{i}"), "content": str(result_dict.get("content", "[Tool Error: No content]"))}
                                 all_tool_results_for_history.append(history_item)

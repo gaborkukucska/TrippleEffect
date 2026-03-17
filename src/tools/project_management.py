@@ -134,8 +134,27 @@ class ProjectManagementTool(BaseTool):
                 if kwargs.get("priority"): add_cmd_args.append(f'priority:{kwargs["priority"]}')
                 if kwargs.get("project_filter"): add_cmd_args.append(f'project:{kwargs["project_filter"]}')
                 if kwargs.get("assignee_agent_id"): add_cmd_args.append(f'assignee:"{kwargs["assignee_agent_id"]}"')
-                if kwargs.get("tags"): add_cmd_args.extend([f'+{tag}' for tag in kwargs["tags"]])
-                if kwargs.get("depends"): add_cmd_args.append(f'depends:{kwargs["depends"]}')
+                if kwargs.get("tags"):
+                    tags_arg = kwargs["tags"]
+                    if isinstance(tags_arg, str):
+                        tags_list = [tag.strip() for tag in tags_arg.split(',') if tag.strip()]
+                    else:
+                        tags_list = tags_arg
+                    add_cmd_args.extend([f'+{tag}' for tag in tags_list])
+                    
+                if kwargs.get("depends"): 
+                    dep_val = str(kwargs["depends"]).strip()
+                    # Validate dependency format: must be either an integer ID or a UUID format
+                    is_valid_uuid = bool(re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', dep_val, re.IGNORECASE))
+                    is_valid_id = dep_val.isdigit()
+                    
+                    if not (is_valid_uuid or is_valid_id):
+                        return {
+                            "status": "error", 
+                            "message": f"Invalid dependency format: '{dep_val}'. Dependencies MUST be specified using either a valid Taskwarrior integer ID or a standard UUID (e.g., '123e4567-e89b-12d3-a456-426614174000'). Temporary placeholder IDs like 'T1_1' are NOT supported.",
+                            "error_type": "invalid_dependency_format"
+                        }
+                    add_cmd_args.append(f'depends:{dep_val}')
 
                 add_output_lines = tw.execute_command(add_cmd_args)
                 id_match = re.search(r'Created task (\d+)\.', "\n".join(add_output_lines))
@@ -209,12 +228,18 @@ class ProjectManagementTool(BaseTool):
                 if "description" in kwargs: task['description'] = kwargs["description"]; modified_fields.append("description")
                 if "status" in kwargs: task['status'] = kwargs["status"]; modified_fields.append("status")
                 if "priority" in kwargs: task['priority'] = kwargs["priority"]; modified_fields.append("priority")
-                if "tags" in kwargs: task['tags'] = set(kwargs["tags"]); modified_fields.append("tags")
+                if "tags" in kwargs: 
+                    tags_arg = kwargs["tags"]
+                    if isinstance(tags_arg, str):
+                        task['tags'] = set([tag.strip() for tag in tags_arg.split(',') if tag.strip()])
+                    else:
+                        task['tags'] = set(tags_arg)
+                    modified_fields.append("tags")
                 
                 if kwargs.get("assignee_agent_id"): 
                     new_assignee = kwargs["assignee_agent_id"]
                     if task['assignee'] == new_assignee:
-                        return {"status": "error", "message": f"The task assignee remains unchanged. Task current status: {task['status']}."}
+                        return {"status": "error", "message": f"The task '{task_id}' is ALREADY ASSIGNED to '{new_assignee}' and its current status is '{task['status']}'. You must NOT reassign it again. Wait for the agent to finish or send them a message."}
                     task['assignee'] = new_assignee
                     modified_fields.append("assignee")
                 if "depends" in kwargs:

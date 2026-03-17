@@ -648,6 +648,35 @@ class AgentManager:
         if worker_agent.status != AGENT_STATUS_IDLE: # If state didn't change but status was e.g. ERROR
             worker_agent.set_status(AGENT_STATUS_IDLE)
 
+        # --- Generate workspace file listing for shared awareness ---
+        workspace_listing = ""
+        try:
+            from pathlib import Path
+            if self.current_project and self.current_session:
+                safe_project_name = re.sub(r'[^\w\-. ]', '_', self.current_project)
+                workspace_path = settings.PROJECTS_BASE_DIR / safe_project_name / self.current_session / "shared_workspace"
+                workspace_path.mkdir(parents=True, exist_ok=True)
+                
+                # Auto-create whiteboard.md if it doesn't exist yet
+                whiteboard_path = workspace_path / "whiteboard.md"
+                if not whiteboard_path.exists():
+                    whiteboard_path.write_text(f"# {self.current_project} - Shared Whiteboard\n\nUse this file to share progress, designs, and notes with your teammates.\n\n")
+                    logger.info(f"AgentManager: Auto-created whiteboard.md for project '{self.current_project}'.")
+                
+                file_list = []
+                for item in sorted(workspace_path.rglob("*")):
+                    if item.is_file():
+                        rel = item.relative_to(workspace_path)
+                        file_list.append(str(rel))
+                if file_list:
+                    workspace_listing = "\n\n[SHARED WORKSPACE FILES - already created by your team]\n" + "\n".join(f"  - {f}" for f in file_list[:50])
+                    if len(file_list) > 50:
+                        workspace_listing += f"\n  ... and {len(file_list) - 50} more files"
+                    workspace_listing += "\nDo NOT recreate these files. Read them first if relevant to your task."
+                    logger.info(f"AgentManager: Generated workspace listing ({len(file_list)} files) for worker '{worker_agent_id}'.")
+        except Exception as e:
+            logger.warning(f"AgentManager: Could not generate workspace listing for '{worker_agent_id}': {e}")
+
         # CRITICAL FIX: Initialize the worker's message history with the proper system prompt
         # This ensures the worker has context when it starts its first cycle
         if not worker_agent.message_history:  # Only if history is empty
@@ -678,10 +707,10 @@ class AgentManager:
                 worker_agent.message_history = [sys_prompt, summary_msg] + recent_msgs
                 logger.info(f"AgentManager: Condensed history for worker '{worker_agent_id}' down to {len(worker_agent.message_history)} messages.")
 
-            # Wake up the worker with a system directive so it doesn't repeat its last wait state
+            # Wake up the worker with a system directive and workspace context so it knows what exists
             worker_agent.message_history.append({
                 "role": "user",
-                "content": f"[Framework Directive]: You have been assigned a new task: {task_description_from_tool}\nThe system prompt has been updated with this goal. You MUST now begin executing it."
+                "content": f"[Framework Directive]: You have been assigned a new task: {task_description_from_tool}\nThe system prompt has been updated with this goal. You MUST now begin executing it.{workspace_listing}"
             })
 
         # Log this activation and context injection to DB for traceability

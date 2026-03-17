@@ -185,8 +185,8 @@ class FileSystemTool(BaseTool):
         insert_line = kwargs.get("insert_line") # Used by insert_lines
         replace_start_line = kwargs.get("replace_start_line") # Used by replace_lines
         replace_end_line = kwargs.get("replace_end_line") # Used by replace_lines
-        search_block = kwargs.get("search_block") # Used by search_replace_block
-        replace_block_param = kwargs.get("replace_block") # Used by search_replace_block
+        search_block = kwargs.get("search_block") or kwargs.get("search") or kwargs.get("search_string") or kwargs.get("find") or kwargs.get("find_text") # Used by search_replace_block
+        replace_block_param = kwargs.get("replace_block") or kwargs.get("replace") or kwargs.get("replacement") or kwargs.get("replace_string") or kwargs.get("replace_text") # Used by search_replace_block
         commit_message = kwargs.get("commit_message") # Used by git_commit
         branch = kwargs.get("branch") # Used by git_checkout, git_branch
         files_to_add = kwargs.get("files") # Used by git_add
