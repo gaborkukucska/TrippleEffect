@@ -115,6 +115,8 @@ class Agent:
         self._needs_initial_work_context: bool = False
         self._injected_task_description: Optional[str] = None
         self._last_system_prompt_state: Optional[Tuple[str, Optional[str]]] = None  # Tracks (agent_type, state) for prompt reuse
+        self._pre_report_check_state: Optional[str] = None # Tracks previous state before auto-switching to report check
+        self.message_inbox: List[MessageDict] = [] # Inbox for messages received while busy
         self.unassigned_tasks_summary: List[Dict[str, Any]] = []
 
         # PM kickoff workflow attributes

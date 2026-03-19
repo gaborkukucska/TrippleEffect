@@ -16,7 +16,8 @@ from src.agents.constants import (
     ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK, ADMIN_STATE_STANDBY,
     PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_STANDBY,
     PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS,
-    WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_WAIT,
+    PM_STATE_REPORT_CHECK,
+    WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_REPORT, WORKER_STATE_WAIT,
     DEFAULT_STATE, BOOTSTRAP_AGENT_ID, AGENT_STATUS_IDLE
 )
 from src.config.settings import settings, BASE_DIR
@@ -35,8 +36,8 @@ class AgentWorkflowManager:
     def __init__(self):
         self._valid_states: Dict[str, List[str]] = {
             AGENT_TYPE_ADMIN: [ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK, ADMIN_STATE_STANDBY, DEFAULT_STATE],
-            AGENT_TYPE_PM: [PM_STATE_STARTUP, PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_STANDBY, DEFAULT_STATE],
-            AGENT_TYPE_WORKER: [WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_WAIT, DEFAULT_STATE]
+            AGENT_TYPE_PM: [PM_STATE_STARTUP, PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_REPORT_CHECK, PM_STATE_STANDBY, DEFAULT_STATE],
+            AGENT_TYPE_WORKER: [WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_REPORT, WORKER_STATE_WAIT, DEFAULT_STATE]
         }
         self._prompt_map: Dict[Tuple[str, str], str] = {
             (AGENT_TYPE_ADMIN, ADMIN_STATE_STARTUP): "admin_ai_startup_prompt",
@@ -53,11 +54,13 @@ class AgentWorkflowManager:
             (AGENT_TYPE_PM, PM_STATE_ACTIVATE_WORKERS): "pm_activate_workers_prompt",     
             (AGENT_TYPE_PM, PM_STATE_WORK): "pm_work_prompt",
             (AGENT_TYPE_PM, PM_STATE_MANAGE): "pm_manage_prompt",
+            (AGENT_TYPE_PM, PM_STATE_REPORT_CHECK): "pm_report_check_prompt",
             (AGENT_TYPE_PM, PM_STATE_STANDBY): "pm_standby_prompt",
             (AGENT_TYPE_PM, DEFAULT_STATE): "default_system_prompt",
 
             (AGENT_TYPE_WORKER, WORKER_STATE_STARTUP): "worker_startup_prompt",
             (AGENT_TYPE_WORKER, WORKER_STATE_WORK): "worker_work_prompt",
+            (AGENT_TYPE_WORKER, WORKER_STATE_REPORT): "worker_report_prompt",
             (AGENT_TYPE_WORKER, WORKER_STATE_WAIT): "worker_wait_prompt",
             (AGENT_TYPE_WORKER, DEFAULT_STATE): "default_system_prompt"
         }
@@ -78,9 +81,11 @@ class AgentWorkflowManager:
             (AGENT_TYPE_PM, "activate_workers"): PM_STATE_ACTIVATE_WORKERS,
             (AGENT_TYPE_PM, "standby"): PM_STATE_STANDBY,
             (AGENT_TYPE_PM, "manage"): PM_STATE_MANAGE,
+            (AGENT_TYPE_PM, "report_check"): PM_STATE_REPORT_CHECK,
             (AGENT_TYPE_PM, "work"): PM_STATE_WORK,
             (AGENT_TYPE_WORKER, "startup"): WORKER_STATE_STARTUP,
             (AGENT_TYPE_WORKER, "work"): WORKER_STATE_WORK,
+            (AGENT_TYPE_WORKER, "report"): WORKER_STATE_REPORT,
             (AGENT_TYPE_WORKER, "wait"): WORKER_STATE_WAIT,
         }
         self.workflows: Dict[str, BaseWorkflow] = {}
@@ -221,6 +226,18 @@ class AgentWorkflowManager:
                         agent.clear_history()
                         agent._last_system_prompt_state = None  # Force fresh prompt generation after history clear
                         logger.info(f"WorkflowManager: Cleared history for PM agent '{agent.agent_id}' upon entering state '{requested_state}'.")
+
+                    # --- DELIVERY OF QUEUED MESSAGES ---
+                    if requested_state in [PM_STATE_MANAGE, PM_STATE_STANDBY, PM_STATE_REPORT_CHECK]:
+                        if hasattr(agent, 'message_inbox') and agent.message_inbox:
+                            logger.info(f"WorkflowManager: PM agent '{agent.agent_id}' entering safe state '{requested_state}'. Delivering {len(agent.message_inbox)} queued messages from inbox.")
+                            # We prefix the first queued message with a small system note for context context
+                            agent.message_inbox[0]["content"] = f"[System Note: The following message was queued while you were busy] {agent.message_inbox[0]['content']}"
+                            agent.message_history.extend(agent.message_inbox)
+                            agent.message_inbox = []
+                            # Force fresh system prompt generation so messages are picked up clearly
+                            agent._last_system_prompt_state = None
+                    # --- END DELIVERY ---
 
                 if hasattr(agent, 'manager') and hasattr(agent.manager, 'send_to_ui'):
                     asyncio.create_task(agent.manager.send_to_ui({
@@ -450,6 +467,21 @@ class AgentWorkflowManager:
             return agent.agent_config['config']['project_name_context']
         return manager.current_project or "N/A"
 
+    def _get_agent_task_titles(self, agent: 'Agent', manager: 'AgentManager') -> list:
+        """Get a list of assigned task titles for an agent.
+        Uses the agent's injected task description as the primary source.
+        Returns a list of short task title strings."""
+        titles = []
+        # Check for injected task description (set when worker is activated with a task)
+        task_desc = getattr(agent, '_injected_task_description', None)
+        if task_desc and isinstance(task_desc, str) and task_desc.strip():
+            # Use first line as title, truncate if needed
+            first_line = task_desc.strip().split('\n')[0].strip()
+            if len(first_line) > 60:
+                first_line = first_line[:57] + "..."
+            titles.append(first_line)
+        return titles
+
     def _build_address_book(self, agent: 'Agent', manager: 'AgentManager') -> str:
         content_lines = []
         agent_type = agent.agent_type
@@ -500,8 +532,11 @@ class AgentWorkflowManager:
             if unique_workers:
                 content_lines.append(f"- Your Worker Agents (Project '{agent_project_name}'):")
                 for worker in unique_workers:
-                    worker_team = manager.state_manager.get_agent_team(worker.agent_id) or "N/A"
-                    content_lines.append(f"  - {worker.agent_id} (Persona: {worker.persona}, Team: {worker_team})")
+                    worker_role = getattr(worker, 'role', None) or getattr(worker, 'persona', 'General Worker')
+                    worker_state = getattr(worker, 'state', 'unknown')
+                    worker_tasks = self._get_agent_task_titles(worker, manager)
+                    task_info = f" | Tasks: {', '.join(worker_tasks)}" if worker_tasks else ""
+                    content_lines.append(f"  - {worker.agent_id} (Role: {worker_role}, State: {worker_state}{task_info})")
             else:
                 content_lines.append(f"- Your Worker Agents (Project '{agent_project_name}'): (None created yet or in your project)")
         elif agent_type == AGENT_TYPE_WORKER:
@@ -528,7 +563,11 @@ class AgentWorkflowManager:
                 other_team_members = [tm for tm in team_members if tm.agent_id != agent_id]
                 if other_team_members:
                     content_lines.append(f"- Your Team Members (Team: {team_id}):")
-                    for member in other_team_members: content_lines.append(f"  - {member.agent_id} (Persona: {member.persona}, Type: {member.agent_type})")
+                    for member in other_team_members:
+                        member_role = getattr(member, 'role', None) or getattr(member, 'persona', 'Unknown')
+                        member_tasks = self._get_agent_task_titles(member, manager)
+                        task_info = f" | Tasks: {', '.join(member_tasks)}" if member_tasks else ""
+                        content_lines.append(f"  - {member.agent_id} (Role: {member_role}{task_info})")
                 else: content_lines.append(f"- Your Team Members (Team: {team_id}): (No other members)")
             else: content_lines.append("- Your Team Members: (Not currently in a team)")
         if not content_lines: return "(No specific contacts identified for your role in the current context)"

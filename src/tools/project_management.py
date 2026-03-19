@@ -148,13 +148,12 @@ class ProjectManagementTool(BaseTool):
                     is_valid_uuid = bool(re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', dep_val, re.IGNORECASE))
                     is_valid_id = dep_val.isdigit()
                     
-                    if not (is_valid_uuid or is_valid_id):
-                        return {
-                            "status": "error", 
-                            "message": f"Invalid dependency format: '{dep_val}'. Dependencies MUST be specified using either a valid Taskwarrior integer ID or a standard UUID (e.g., '123e4567-e89b-12d3-a456-426614174000'). Temporary placeholder IDs like 'T1_1' are NOT supported.",
-                            "error_type": "invalid_dependency_format"
-                        }
-                    add_cmd_args.append(f'depends:{dep_val}')
+                    if is_valid_uuid or is_valid_id:
+                        add_cmd_args.append(f'depends:{dep_val}')
+                    else:
+                        # Skip invalid dependency format (e.g., placeholder IDs like 'T1_1')
+                        # but still create the task without it
+                        logger.warning(f"ProjectManagementTool: Skipping invalid dependency format: '{dep_val}'. Task will be created without this dependency.")
 
                 add_output_lines = tw.execute_command(add_cmd_args)
                 id_match = re.search(r'Created task (\d+)\.', "\n".join(add_output_lines))
@@ -194,13 +193,35 @@ class ProjectManagementTool(BaseTool):
 
             elif action == "modify_task":
                 task_id = kwargs.get("task_id")
-                if not task_id:
+                if task_id is None or task_id == "":
                     return {"status": "error", "message": "Missing 'task_id' for 'modify_task'."}
+                if str(task_id) == "0":
+                    return {"status": "error", "message": "Task ID '0' indicates a completed or deleted task. You must use the task's 'uuid' to modify it, or realize it is already completed."}
+
+                if "field" in kwargs and "value" in kwargs:
+                    field = str(kwargs["field"]).lower().strip()
+                    value = kwargs["value"]
+                    if field in ["status", "description", "priority", "tags", "depends"]:
+                        kwargs[field] = value
+                    elif field in ["assignee", "assignee_agent_id"]:
+                        kwargs["assignee_agent_id"] = value
 
                 try:
-                    task = tw.tasks.get(uuid=task_id) if '-' in task_id else tw.tasks.get(id=int(task_id))
+                    t_id_str = str(task_id)
+                    if '-' in t_id_str and len(t_id_str) > 10:
+                        task = tw.tasks.get(uuid=t_id_str)
+                    elif t_id_str.isdigit():
+                        task = tw.tasks.get(id=int(t_id_str))
+                    else:
+                        matching = tw.tasks.filter(description=t_id_str)
+                        if len(matching) != 1:
+                            matching = tw.tasks.filter(description=t_id_str.replace('_', ' '))
+                        if len(matching) == 1:
+                            task = matching[0]
+                        else:
+                            raise ValueError("Task not found by description")
                 except Exception:
-                    return {"status": "error", "message": f"Task with ID or UUID '{task_id}' not found."}
+                    return {"status": "error", "message": f"Task '{task_id}' not found. Verify ID or exact Name."}
 
                 # Validate status if provided
                 if "status" in kwargs:
@@ -263,15 +284,35 @@ class ProjectManagementTool(BaseTool):
 
             elif action == "complete_task":
                 task_id = kwargs.get("task_id")
-                if not task_id:
+                if task_id is None or task_id == "":
                     return {"status": "error", "message": "Missing 'task_id' for 'complete_task'."}
+                if str(task_id) == "0":
+                    return {"status": "error", "message": "Task ID '0' indicates a completed or deleted task. You must use the task's 'uuid' to modify it, or realize it is already completed."}
 
                 try:
-                    task = tw.tasks.get(uuid=task_id) if '-' in task_id else tw.tasks.get(id=int(task_id))
+                    t_id_str = str(task_id)
+                    if '-' in t_id_str and len(t_id_str) > 10:
+                        task = tw.tasks.get(uuid=t_id_str)
+                    elif t_id_str.isdigit():
+                        task = tw.tasks.get(id=int(t_id_str))
+                    else:
+                        matching = tw.tasks.filter(description=t_id_str)
+                        if len(matching) != 1:
+                            matching = tw.tasks.filter(description=t_id_str.replace('_', ' '))
+                        if len(matching) == 1:
+                            task = matching[0]
+                        else:
+                            raise ValueError("Task not found by description")
                 except Exception:
-                    return {"status": "error", "message": f"Task with ID or UUID '{task_id}' not found."}
+                    return {"status": "error", "message": f"Task '{task_id}' not found. Verify ID or exact Name."}
 
-                task.done()
+                try:
+                    task.done()
+                except Exception as e:
+                    if "completed" in str(e).lower() or "Cannot complete a completed task" in str(e):
+                        return {"status": "success", "message": f"Task '{task_id}' is already completed.", "task_uuid": task['uuid'], "task_id": task['id']}
+                    raise e
+                    
                 return {"status": "success", "message": f"Task '{task_id}' marked as completed.", "task_uuid": task['uuid'], "task_id": task['id']}
 
             else:

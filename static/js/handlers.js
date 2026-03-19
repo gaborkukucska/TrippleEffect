@@ -184,6 +184,23 @@ export const handleWebSocketMessage = (data) => {
                 shouldDisplay = true; // Let displayMessage handle it
                 break;
 
+            case 'constitutional_guardian_intervention':
+                console.log("Handler: Formatting constitutional_guardian_intervention for internal comms", data);
+                displayAgentId = escapeHTML(data.agent_id || 'system');
+                displayPersonaForUI = 'Constitutional Guardian';
+                const severity = escapeHTML(data.severity || 'info');
+                const interventionType = escapeHTML(data.intervention_type || 'general');
+                const desc = escapeHTML(data.description || 'Intervention triggered.');
+                
+                displayContent = `<strong style="color:var(--accent-color);">[GUARDIAN INTERVENTION: ${interventionType.toUpperCase()}]</strong>
+                                  <br>Severity: <em>${severity}</em>
+                                  <br>${desc}`;
+                
+                displayType = 'system_event';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
             case 'cg_concern': // Renamed from constitutional_concern
                 console.log("Handler: Formatting cg_concern for main chat", data);
                 // Fields based on observed log: { agent_id, concern_details, original_text, type: "cg_concern" }
@@ -402,6 +419,15 @@ export const handleWebSocketMessage = (data) => {
                 displayContent = `⚖️ Constitutional Concern Raised (${escapeHTML(data.agent_id || 'Unknown Agent')}): ${escapeHTML(data.content || data.concern_details || 'No details')}`;
                 displayAgentId = data.agent_id || 'system';
                 displayType = 'constitutional_concern';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
+            case 'constitutional_guardian_intervention':
+                console.log("Handler: Explicitly handling constitutional_guardian_intervention for", data.agent_id);
+                displayContent = `🚨 CG Intervention (${escapeHTML(data.agent_id || 'Unknown Agent')}): ${escapeHTML(data.intervention_type || data.content || 'Pattern Detected')}`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'system_event';
                 targetAreaId = 'internal-comms-area';
                 shouldDisplay = true;
                 break;

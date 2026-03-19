@@ -36,6 +36,7 @@ agents:
       # model: "deepseek-r1:14b"
       # model: "qwen3-coder:30b"
       model: "qwen3:14b"
+      # model: "qwen3.5:9b-q8_0"
       # model: "gpt-oss:20b"
       # model: "ollama/llama3.2:3b-instruct-q4_K_M" # Make sure the selected local model is available on a local API
 
@@ -54,6 +55,7 @@ agents:
       # model: "deepseek-r1:14b"
       # model: "qwen3-coder:30b"
       model: "qwen3:14b"
+      # model: "qwen3.5:9b-q8_0"
       # model: "gpt-oss:20b"
       # model: "granite3.3:2b"
       # model: "ollama/llama3.2:3b-instruct-q4_K_M" # Make sure the selected local model is available on a local API
@@ -91,6 +93,7 @@ agents:
       # model: "deepseek-r1:14b"
       # model: "qwen3-coder:30b"
       model: "qwen3:14b"
+      # model: "qwen3.5:9b-q8_0"
       # model: "gpt-oss:20b"
       # model: "granite3.3:2b"
       # model: "ollama/llama3.2:3b-instruct-q4_K_M" # Make sure the selected local model is available on a local API

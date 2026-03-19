@@ -177,8 +177,8 @@ class FileSystemTool(BaseTool):
         if isinstance(relative_path, str): relative_path = relative_path.strip()
         destination_path = kwargs.get("destination_path") # Used by copy, move
         if isinstance(destination_path, str): destination_path = destination_path.strip()
-        find_text = kwargs.get("find_text") # Used by find_replace
-        replace_text = kwargs.get("replace_text") # Used by find_replace, regex_replace
+        find_text = kwargs.get("find_text") or kwargs.get("search") or kwargs.get("find") # Used by find_replace
+        replace_text = kwargs.get("replace_text") or kwargs.get("replace") or kwargs.get("replacement") # Used by find_replace, regex_replace
         regex_pattern = kwargs.get("regex_pattern") # Used by regex_replace
         start_line = kwargs.get("start_line") # Used by read
         end_line = kwargs.get("end_line") # Used by read
@@ -452,8 +452,8 @@ Deletes a file or an *empty* directory.
 **Action: find_replace**
 Finds and replaces all occurrences of an EXACT string.
 *   `<filename>` (string, required): Relative path.
-*   `<find_text>` (string, required): Exact string to find.
-*   `<replace_text>` (string, required): Replacement string.
+*   `<find_text>` (string, required): Exact string to find. (Can also use `<find>` or `<search>`)
+*   `<replace_text>` (string, required): Replacement string. (Can also use `<replace>`)
 *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
 """
         elif sub_action == "regex_replace":
@@ -486,8 +486,8 @@ Moves/renames a file/directory.
 **Action: search_replace_block**
 Finds a specific block of code and replaces it with a new block, automatically handling slight indentation mismatches.
 *   `<filename>` (string, required): Relative path to the file.
-*   `<search_block>` (string, required): The exact (or slightly fuzzy) block of text to replace.
-*   `<replace_block>` (string, required): The new content to insert in its place.
+*   `<search_block>` (string, required): The exact (or slightly fuzzy) block of text to replace. (Can also use `<search>` or `<find>`)
+*   `<replace_block>` (string, required): The new content to insert in its place. (Can also use `<replace_text>`)
 *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
 """
         elif sub_action == "git_commit":

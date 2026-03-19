@@ -17,7 +17,9 @@ from src.agents.constants import (  # type: ignore[import]
     AGENT_STATUS_ERROR, AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER,
     ADMIN_STATE_PLANNING, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STARTUP, ADMIN_STATE_WORK, ADMIN_STATE_STANDBY,
     PM_STATE_STARTUP, PM_STATE_MANAGE, PM_STATE_WORK, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_STANDBY,
-    WORKER_STATE_WAIT, REQUEST_STATE_TAG_PATTERN,
+    PM_STATE_REPORT_CHECK,
+    WORKER_STATE_WAIT, WORKER_STATE_WORK, WORKER_STATE_REPORT,
+    REQUEST_STATE_TAG_PATTERN,
     CONSTITUTIONAL_GUARDIAN_AGENT_ID, # Added for CG
     BOOTSTRAP_AGENT_ID
 )
@@ -1289,7 +1291,18 @@ class AgentCycleHandler:
                             # --- END CROSS-CYCLE DUPLICATE DETECTION ---
                             
                             # --- SEND_MESSAGE MULTI-TOOL CONSTRAINT ---
-                            if len(tool_calls) > 1 and tool_name == "send_message":
+                            # Workers in worker_work state should never use send_message - they must switch to worker_report first
+                            if agent.agent_type == AGENT_TYPE_WORKER and agent.state == WORKER_STATE_WORK and tool_name == "send_message":
+                                logger.warning(f"Agent {agent.agent_id} attempted to use send_message in worker_work state. Blocking - must use worker_report state.")
+                                error_msg = "ERROR: You cannot use 'send_message' in the WORK state. To report progress or ask questions, first switch to the report state: <request_state state='worker_report'/>. The report state is specifically designed for communicating with your PM."
+                                result_dict = {
+                                    "status": "error",
+                                    "message": error_msg,
+                                    "content": error_msg,
+                                    "call_id": tool_id or f"unknown_id_{i}",
+                                    "name": tool_name
+                                }
+                            elif len(tool_calls) > 1 and tool_name == "send_message":
                                 logger.warning(f"Agent {agent.agent_id} attempted to use send_message alongside other tools. Blocking send_message.")
                                 error_msg = "ERROR: You cannot use the 'send_message' tool in the same response as other tools. You must use it on its own AFTER reviewing the feedback from your other tool calls."
                                 result_dict = {
@@ -1390,6 +1403,18 @@ class AgentCycleHandler:
                                 self._manager.workflow_manager.change_state(agent, PM_STATE_MANAGE)
                                 # Reactivate immediately to start the management loop.
                                 context.needs_reactivation_after_cycle = True
+
+                            # --- PM REPORT CHECK: Auto-transition back after responding ---
+                            if agent.state == PM_STATE_REPORT_CHECK and called_tool_name == "send_message":
+                                previous_state = getattr(agent, '_pre_report_check_state', PM_STATE_MANAGE)
+                                logger.info(f"CycleHandler: PM '{agent.agent_id}' responded to worker in pm_report_check. Auto-transitioning back to '{previous_state}'.")
+                                self._manager.workflow_manager.change_state(agent, previous_state)
+                                # Clean up the stored state
+                                if hasattr(agent, '_pre_report_check_state'):
+                                    del agent._pre_report_check_state
+                                # Reactivate to continue management
+                                context.needs_reactivation_after_cycle = True
+                            # --- END PM REPORT CHECK ---
 
 
                         # --- START: PM Build Team Tasks State Interventions ---

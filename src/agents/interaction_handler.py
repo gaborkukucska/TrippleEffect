@@ -17,8 +17,10 @@ from src.tools.tool_parser import parse_tool_call  # type: ignore[import]
 # Import status constants and agent types
 from src.agents.constants import (  # type: ignore[import]
     AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_EXECUTING_TOOL,
-    AGENT_TYPE_WORKER, WORKER_STATE_WORK, BOOTSTRAP_AGENT_ID, AGENT_STATUS_ERROR, # Added BOOTSTRAP_AGENT_ID
-    AGENT_STATUS_AWAITING_CG_REVIEW, AGENT_STATUS_AWAITING_USER_REVIEW_CG # Added CG states
+    AGENT_TYPE_WORKER, AGENT_TYPE_PM, WORKER_STATE_WORK, BOOTSTRAP_AGENT_ID, AGENT_STATUS_ERROR,
+    AGENT_STATUS_AWAITING_CG_REVIEW, AGENT_STATUS_AWAITING_USER_REVIEW_CG, # Added CG states
+    PM_STATE_REPORT_CHECK, PM_STATE_STARTUP, PM_STATE_BUILD_TEAM_TASKS,
+    PM_STATE_ACTIVATE_WORKERS, PM_STATE_WORK
 )
 
 # Import helper for prompt update
@@ -300,7 +302,46 @@ class AgentInteractionHandler:
             return None
 
         formatted_message: MessageDict = { "role": "user", "content": f"[From @{sender_id} ({sender_agent.persona})]: {message_content}" }; # Added sender persona
+        
+        # --- BLOCK MESSAGES TO PM IN HIGH-FOCUS STATES ---
+        HIGH_FOCUS_PM_STATES = [
+            PM_STATE_STARTUP,
+            PM_STATE_BUILD_TEAM_TASKS,
+            PM_STATE_ACTIVATE_WORKERS,
+            PM_STATE_WORK
+        ]
+        
+        if target_agent.agent_type == AGENT_TYPE_PM and target_agent.state in HIGH_FOCUS_PM_STATES:
+            logger.info(f"InteractionHandler: Target PM '{resolved_target_id}' is in high-focus state '{target_agent.state}'. Queuing message.")
+            if not hasattr(target_agent, 'message_inbox'):
+                target_agent.message_inbox = []
+            target_agent.message_inbox.append(formatted_message)
+            
+            # Send feedback to the sender
+            feedback_message: MessageDict = {
+                "role": "tool", 
+                "tool_call_id": f"send_message_delayed_{target_identifier}", 
+                "content": f"[Manager Feedback]: Your message was queued because the PM is currently in a high-focus task. It will be delivered when the PM is available."
+            }
+            sender_agent.message_history.append(feedback_message)
+            return None
+        # --- END BLOCK MESSAGES TO PM ---
+        
         target_agent.message_history.append(formatted_message); logger.debug(f"InteractionHandler: Appended message from '{sender_id}' to history of '{resolved_target_id}'.")
+
+        # --- AUTO-SWITCH PM TO REPORT CHECK WHEN WORKER MESSAGES ---
+        # When a worker sends a message to their PM, auto-switch the PM to pm_report_check
+        # so it gets a focused report-response prompt. PM keeps its memory and tools.
+        if (sender_agent.agent_type == AGENT_TYPE_WORKER and 
+            target_agent.agent_type == AGENT_TYPE_PM and
+            target_agent.state != PM_STATE_REPORT_CHECK):  # Don't re-switch if already in report_check
+            logger.info(f"InteractionHandler: Worker '{sender_id}' sent message to PM '{resolved_target_id}'. Auto-switching PM to pm_report_check (from '{target_agent.state}').")
+            target_agent._pre_report_check_state = target_agent.state
+            self._manager.workflow_manager.change_state(target_agent, PM_STATE_REPORT_CHECK)
+            # Force fresh system prompt regeneration on next cycle
+            if hasattr(target_agent, '_last_system_prompt_state'):
+                target_agent._last_system_prompt_state = None
+        # --- END AUTO-SWITCH ---
 
         activation_task = None
         if target_agent.status == AGENT_STATUS_IDLE:
