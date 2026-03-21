@@ -194,10 +194,12 @@ An agent's behavior, system prompt, and expected output are determined by the co
     -   `build_team_tasks`: A guided state where the PM creates a team and then creates the necessary worker agents one by one. The framework injects system messages to guide the PM through this sequential process.
     -   `activate_workers`: A state where the PM assigns the previously defined tasks to the newly created worker agents.
     -   `manage`: The PM's main operational loop. It periodically activates to monitor task progress, review completed work, and report status back to the Admin AI.
+    -   `report_check`: A focused, temporary state the PM automatically enters when receiving a message from a worker. After reading and replying, the PM auto-resolves back to its previous state (e.g., `manage` or `standby`).
     -   `standby`: A dormant state entered after a project is considered complete.
 
 -   **Worker Agent States**:
     -   `work`: The primary state where the agent executes a specific task it has been assigned.
+    -   `report`: A dedicated state for workers to compile progress reports or ask questions to the PM without mixing communication and tool workloads.
     -   `wait`: A state where the agent has completed its task and is waiting for the PM to review its work and provide a new task.
 
 ### 5.2. Communication Protocols
@@ -223,7 +225,9 @@ Communication within the framework is handled through several distinct channels.
     ```
     This strict format ensures reliable parsing and execution.
 
--   **Agent <-> Agent (`SendMessageTool`)**: Agents can communicate directly with one another using the `SendMessageTool`. The tool takes a `target_agent_id` and `message_content` as parameters. When executed, the framework appends the message content to the target agent's message history, prefixed with `[From @sender_agent_id]:`, and schedules a cycle for the target agent if it is idle. This enables sophisticated, hierarchical delegation and reporting.
+-   **Agent <-> Agent (`SendMessageTool`) & Message Inboxing**: Agents can communicate directly with one another using the `SendMessageTool`. The tool takes a `target_agent_id` and `message_content` as parameters. 
+    - **Safe State Delivery:** If the target agent is in a safe, interruptible state (like `wait`, `manage`, or `standby`), the framework appends the message directly to its history and schedules a cycle.
+    - **Message Inboxing (Deferred Delivery):** If the target agent is in a high-focus or busy phase (like a PM in `startup` or a Worker in `report`), the `InteractionHandler` routes the message to the agent's `message_inbox`. The `WorkflowManager` later flushes this inbox securely when the agent naturally transitions to a safe state, preventing context pollution and infinite loops.
 
 ## 6. Conclusion and Intended Potential
 

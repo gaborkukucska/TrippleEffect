@@ -639,6 +639,28 @@ class AgentManager:
 
         logger.info(f"AgentManager: Activating worker '{worker_agent_id}' for task ID '{task_id_from_tool}' with description: '{task_description_from_tool[:100]}...'")
 
+        # --- BLOCK PREEMPTIVE ACTIVATION IF WORKER IS BUSY ---
+        from src.agents.constants import WORKER_STATE_REPORT, WORKER_STATE_WORK
+        if worker_agent.state in [WORKER_STATE_REPORT, WORKER_STATE_WORK]:
+            logger.info(f"AgentManager: Worker '{worker_agent_id}' is currently in '{worker_agent.state}'. "
+                        f"Task '{task_id_from_tool}' is assigned but activation is deferred. "
+                        f"The worker will naturally pick it up after its current work/report.")
+            
+            # Queue the activation directive in the inbox so it's delivered when the state changes.
+            # We also defer setting the context variables so the worker's current cycle isn't corrupted.
+            activation_message = {
+                "role": "user",
+                "content": f"[Framework Directive]: You have been assigned a new task: {task_description_from_tool}\nThe system prompt has been updated with this goal. You MUST now begin executing it (request state change to worker_work if currently waiting).",
+                "_deferred_task_description": task_description_from_tool,
+                "_deferred_task_id": task_id_from_tool
+            }
+            if not hasattr(worker_agent, 'message_inbox'):
+                worker_agent.message_inbox = []
+            worker_agent.message_inbox.append(activation_message)
+            
+            return # Skip immediate state change and scheduling
+        # --- END BLOCK ---
+
         worker_agent._injected_task_description = task_description_from_tool
         worker_agent._needs_initial_work_context = True
         worker_agent.current_task_id = task_id_from_tool # Store the task ID as well

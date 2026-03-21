@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 # Tool Call Patterns (XML only)
 XML_TOOL_CALL_PATTERN = None
-MARKDOWN_FENCE_XML_PATTERN = r"```(?:[a-zA-Z]*\n)?\s*(<({tool_names})>[\s\S]*?</\2>)\s*\n?```"
+MARKDOWN_FENCE_XML_PATTERN = r"```(?:[a-zA-Z]*\n)?\s*(<({tool_names})(?:\s+[^>]*)?(?:>[\s\S]*?</\2>|/>))\s*\n?```"
 THINK_TAG_PATTERN = r"<think>([\s\S]*?)</think>"
 ROBUST_THINK_TAG_PATTERN = re.compile(r"<think>(.*?)(?:</think>|<(?=[^/]))", re.DOTALL | re.IGNORECASE)
 
@@ -66,7 +66,7 @@ class Agent:
         self.role: str = config.get("role", "")
         self.agent_type: str = config.get("agent_type", "worker")
         self.agent_config: Dict[str, Any] = agent_config 
-        self.provider_kwargs = {k: v for k, v in config.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'agent_type', 'api_key', 'base_url', 'referer', 'max_tokens', 'project_name_context', 'initial_plan_description']}
+        self.provider_kwargs = {k: v for k, v in config.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'agent_type', 'api_key', 'base_url', 'referer', 'max_tokens', 'project_name_context', 'initial_plan_description', 'admin_memory_context', 'role', 'personality']}
         self.llm_provider: BaseLLMProvider = llm_provider
         self.manager: 'AgentManager' = manager
         self.status: str = AGENT_STATUS_IDLE
@@ -130,7 +130,7 @@ class Agent:
             if tool_names:
                 safe_tool_names_lower = [re.escape(name.lower()) for name in tool_names]
                 tool_names_pattern_group_lower = '|'.join(safe_tool_names_lower)
-                raw_pattern_str = rf"<({tool_names_pattern_group_lower})>([\s\S]*?)</\1>"
+                raw_pattern_str = rf"<({tool_names_pattern_group_lower})(?:\s+[^>]*)?(?:>[\s\S]*?</\1>|/>)"
                 self.raw_xml_tool_call_pattern = re.compile(raw_pattern_str, re.IGNORECASE | re.DOTALL)
                 md_xml_pattern_str = MARKDOWN_FENCE_XML_PATTERN.format(tool_names=tool_names_pattern_group_lower)
                 self.markdown_xml_tool_call_pattern = re.compile(md_xml_pattern_str, re.IGNORECASE | re.DOTALL | re.MULTILINE)
@@ -191,6 +191,17 @@ class Agent:
                 yield {"type": "error", "content": f"[Agent Error: Could not ensure sandbox {self.sandbox_path}]", "_exception_obj": OSError(f"Could not ensure sandbox {self.sandbox_path}")}; return
 
             max_tokens_override = None
+            # Determine max_tokens based on agent type and state from settings
+            if self.agent_type == AGENT_TYPE_PM:
+                if self.state == PM_STATE_STARTUP: max_tokens_override = settings.PM_STARTUP_STATE_MAX_TOKENS
+                elif self.state == PM_STATE_WORK: max_tokens_override = settings.PM_WORK_STATE_MAX_TOKENS
+                elif self.state == PM_STATE_MANAGE: max_tokens_override = settings.PM_MANAGE_STATE_MAX_TOKENS
+            elif self.agent_type == AGENT_TYPE_WORKER:
+                if self.state == WORKER_STATE_STARTUP: max_tokens_override = settings.WORKER_STARTUP_STATE_MAX_TOKENS
+                elif self.state == WORKER_STATE_WORK: max_tokens_override = settings.WORKER_WORK_STATE_MAX_TOKENS
+                elif self.state == WORKER_STATE_WAIT: max_tokens_override = settings.WORKER_WAIT_STATE_MAX_TOKENS
+            if max_tokens_override is not None:
+                logger.info(f"Agent {self.agent_id}: Applying max_tokens={max_tokens_override} for state '{self.state}'")
 
             provider_stream = self.llm_provider.stream_completion(
                 messages=history_to_use, model=self.model, temperature=self.temperature,
@@ -389,7 +400,7 @@ class Agent:
                         yield {
                             "type": "malformed_tool_call",
                             "tool_name": "unknown", 
-                            "error_message": "Tool call detected but parsing failed. Please ensure proper XML format without markdown code fences.",
+                            "error_message": "Tool call detected but parsing failed. Please ensure proper XML format.",
                             "malformed_xml_block": final_cleaned_response_for_tools_or_text,
                             "raw_assistant_response": original_complete_response,
                             "agent_id": self.agent_id

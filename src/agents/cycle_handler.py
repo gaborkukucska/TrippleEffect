@@ -417,11 +417,17 @@ class AgentCycleHandler:
         keeping only the most recent one. This prevents message accumulation
         that confuses the LLM into re-executing already-completed actions
         (e.g. creating duplicate agents for the same role).
-        
+
         Matches all framework message variants:
         - [Framework System Message]
         - [Framework System Message - DUPLICATE BLOCKED]
         - [Framework System Message - AUTO-ADVANCE]
+
+        NOTE: Also catches role='user' messages starting with these prefixes,
+        because pm_kickoff_workflow injects the kickoff plan directive as a
+        'user' message starting with '[Framework System Message]'. Without this,
+        that message persists across cycles and appears duplicated alongside the
+        newer 'system' role framework messages added by cycle_handler.
         """
         if not agent.message_history:
             return
@@ -430,12 +436,16 @@ class AgentCycleHandler:
         # "[Framework System Message]", "[Framework System Message - DUPLICATE BLOCKED]", etc.
         # Also catch Constitutional Guardian messages to prevent them from accumulating
         FRAMEWORK_MSG_PREFIXES = ["[Framework System Message", "[Constitutional Guardian"]
-        # Find indices of all framework and CG system messages
+        # Find indices of all framework and CG messages (both 'system' and 'user' roles)
         framework_msg_indices: List[int] = []
         for i, msg in enumerate(agent.message_history):
-            if msg.get("role") == "system":
+            role = msg.get("role")
+            if role in ("system", "user"):  # Check both roles — kickoff directive uses 'user'
                 content = msg.get("content", "")
                 if any(content.startswith(prefix) for prefix in FRAMEWORK_MSG_PREFIXES):
+                    # DO NOT delete if it contains the Master Kickoff Plan or Tool Usage Info
+                    if "**MASTER KICKOFF PLAN SUMMARY**" in content or "**create_agent Tool Usage:**" in content:
+                        continue
                     framework_msg_indices.append(i)
 
         # Remove ALL previous framework messages, because a new,
@@ -592,6 +602,10 @@ class AgentCycleHandler:
 
             try: # This try block is for one pass of LLM call and its event processing
                 await self._prompt_assembler.prepare_llm_call_data(context) # Ensures history_for_call is fresh
+
+                # (Proactive start-of-cycle deduplication was removed from here because it
+                # prematurely erased the tool usage instructions and kickoff plan generated
+                # in the previous turn before the LLM could read them.)
                 
                 # Check if context summarization is needed for small local LLMs
                 try:
@@ -840,14 +854,8 @@ class AgentCycleHandler:
                                 except Exception as usage_exc: 
                                     logger.error(f"Failed to get detailed usage for tool {malformed_tool_name}: {usage_exc}")
                             
-                            # CRITICAL FIX: Enhanced feedback for markdown fence XML errors
-                            if "markdown" in parsing_error_msg.lower() or "```" in raw_llm_response_with_error:
-                                feedback_to_agent = (f"[Framework Feedback: Malformed XML with Markdown]\n"
-                                                   f"❌ You used markdown code fences around XML: ```{malformed_tool_name}>...\n"
-                                                   f"✅ CORRECT format (no markdown fences): <{malformed_tool_name}><action>list_tools</action></{malformed_tool_name}>\n\n"
-                                                   f"REMEMBER: XML tool calls should NEVER be wrapped in markdown code blocks (```).\n"
-                                                   f"Use pure XML format only.")
-                            elif "list_tools" in parsing_error_msg:
+                            # CRITICAL FIX: Removed enhanced feedback for markdown fences, as the parser already strips them.
+                            if "list_tools" in parsing_error_msg:
                                 feedback_to_agent = (f"[Framework Feedback: Tool Usage Error]\n"
                                                    f"You attempted to use '{malformed_tool_name}' with tool_name='list_tools', but 'list_tools' is not a tool name - it's an action.\n"
                                                    f"Correct usage: <tool_information><action>list_tools</action></tool_information>\n"
@@ -859,7 +867,7 @@ class AgentCycleHandler:
                             else:
                                 feedback_to_agent = (f"[Framework Feedback: XML Parsing Error]\n"
                                                    f"Your XML for '{malformed_tool_name}' was malformed: {parsing_error_msg}\n"
-                                                   f"Please check your XML syntax. Remove any markdown code fences (```) around XML.\n\n"
+                                                   f"Please check your XML syntax.\n\n"
                                                    f"Correct usage for '{malformed_tool_name}':\n{detailed_tool_usage}")
                             
                             agent.message_history.append({"role": "system", "content": feedback_to_agent})
@@ -1036,6 +1044,10 @@ class AgentCycleHandler:
                         raw_assistant_response = event.get("raw_assistant_response")
                         content_for_history = event.get("content_for_history")
 
+                        # Variables to hold state change info until tools finish executing
+                        deferred_state_change = None
+                        deferred_task_desc = None
+
                         # CRITICAL FIX: Check if the raw response also contains a state change request
                         # This handles the case where agent produces both state change + tool calls in same response
                         if raw_assistant_response and hasattr(self, 'request_state_pattern'):
@@ -1047,6 +1059,7 @@ class AgentCycleHandler:
                                 if self._manager.workflow_manager.is_valid_state(agent.agent_type, requested_state):
                                     logger.info(f"CycleHandler: Processing embedded state change request '{requested_state}' from tool_requests response")
                                     context.state_change_requested_this_cycle = True
+                                    context.needs_reactivation_after_cycle = True  # Ensure the agent wakes up in the new state
 
                                     # <<< --- ROBUST FIX START --- >>>
                                     # If this is a transition from startup that includes a tool call,
@@ -1087,14 +1100,8 @@ class AgentCycleHandler:
                                         if not task_description_for_state_change:
                                             logger.warning(f"CycleHandler: Could not find a previous user or agent message to use as task description for state change to '{requested_state}'.")
 
-                                    if self._manager.workflow_manager.change_state(agent, requested_state, task_description=task_description_for_state_change):
-                                        logger.info(f"CycleHandler: Successfully changed agent '{agent.agent_id}' state to '{requested_state}' during tool processing")
-                                    else:
-                                        resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state)
-                                        if agent.state == resolved_requested:
-                                            logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Assuming idle/done if it's an idle state.")
-                                        else:
-                                            logger.warning(f"CycleHandler: Failed to change agent '{agent.agent_id}' state to '{requested_state}' during tool processing")
+                                    deferred_state_change = requested_state
+                                    deferred_task_desc = task_description_for_state_change
 
                         # Construct and append the assistant message for history
                         # Construct and append the assistant message for history
@@ -1404,17 +1411,7 @@ class AgentCycleHandler:
                                 # Reactivate immediately to start the management loop.
                                 context.needs_reactivation_after_cycle = True
 
-                            # --- PM REPORT CHECK: Auto-transition back after responding ---
-                            if agent.state == PM_STATE_REPORT_CHECK and called_tool_name == "send_message":
-                                previous_state = getattr(agent, '_pre_report_check_state', PM_STATE_MANAGE)
-                                logger.info(f"CycleHandler: PM '{agent.agent_id}' responded to worker in pm_report_check. Auto-transitioning back to '{previous_state}'.")
-                                self._manager.workflow_manager.change_state(agent, previous_state)
-                                # Clean up the stored state
-                                if hasattr(agent, '_pre_report_check_state'):
-                                    del agent._pre_report_check_state
-                                # Reactivate to continue management
-                                context.needs_reactivation_after_cycle = True
-                            # --- END PM REPORT CHECK ---
+
 
 
                         # --- START: PM Build Team Tasks State Interventions ---
@@ -1600,10 +1597,24 @@ class AgentCycleHandler:
                                             "Your mandatory next action is to get the list of available agents using the `<manage_team><action>list_agents</action>...</manage_team>` tool."
                                         )
                                     elif action_performed == "modify_task":
-                                        assigned_task_uuid = called_tool_args.get("task_id")
+                                        # The tool result contains the definitive UUID of the task that was modified
+                                        assigned_task_uuid = tool_result_json.get("task_uuid")
+                                        
+                                        # Fallback to the requested task_id if task_uuid isn't in the response yet
+                                        if not assigned_task_uuid:
+                                            assigned_task_uuid = str(called_tool_args.get("task_id", "")).strip()
+
                                         if hasattr(agent, 'unassigned_tasks_summary') and isinstance(agent.unassigned_tasks_summary, list) and assigned_task_uuid:
-                                            # Remove the assigned task from our summary
-                                            agent.unassigned_tasks_summary = [t for t in agent.unassigned_tasks_summary if t.get("uuid") != assigned_task_uuid]
+                                            new_summary = []
+                                            for t in agent.unassigned_tasks_summary:
+                                                is_match = False
+                                                if t.get("uuid") == assigned_task_uuid: is_match = True
+                                                # Fallback fuzzy match just in case
+                                                elif t.get("description") and assigned_task_uuid.lower() in t.get("description").lower(): is_match = True
+                                                
+                                                if not is_match:
+                                                    new_summary.append(t)
+                                            agent.unassigned_tasks_summary = new_summary
 
                                         # Now, generate a new summary of remaining tasks
                                         remaining_tasks = getattr(agent, 'unassigned_tasks_summary', [])
@@ -1700,6 +1711,21 @@ class AgentCycleHandler:
                                         content=directive_message_content
                                     )
                         # --- END: PM Manage State Interventions ---
+
+                        # --- DEFERRED EMBEDDED STATE CHANGE ---
+                        # Execute the embedded state change AFTER all tools have finished executing.
+                        # This prevents the state change from altering the agent's state before 
+                        # tools that depend on the original state (like send_message in worker_report) can run.
+                        if deferred_state_change:
+                            if self._manager.workflow_manager.change_state(agent, deferred_state_change, task_description=deferred_task_desc):
+                                logger.info(f"CycleHandler: Successfully changed agent '{agent.agent_id}' state to '{deferred_state_change}' after tool processing")
+                            else:
+                                resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, deferred_state_change)
+                                if agent.state == resolved_requested:
+                                    logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Assuming idle/done if it's an idle state.")
+                                else:
+                                    logger.warning(f"CycleHandler: Failed to change agent '{agent.agent_id}' state to '{deferred_state_change}' after tool processing")
+                        # --- END DEFERRED EMBEDDED STATE CHANGE ---
 
                         llm_stream_ended_cleanly = False; break
 

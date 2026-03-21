@@ -296,5 +296,19 @@ Five separate loop detection/intervention systems operate simultaneously (`Agent
 **Fix 8b:** Modified worker PM resolution in `_build_address_book` to prefer dynamic PMs (PM1, PM2, ...) over bootstrapped `project_manager_agent`.
 **Fix 8c:** Added auto-deactivation in `get_system_prompt`: when a bootstrapped PM has no plan and a dynamic PM exists for the same project, it transitions to `pm_idle` state instead of spinning uselessly.
 
+#### Phase H: Agent State Isolation & PM Loop Fixes (March 2026)
+
+**Problem 1 (`send_message` / Work Mix-up):** Workers frequently misused `send_message` alongside other tools like `file_system`, causing parser errors when trying to report progress mid-task.
+**Fix 1:** Created new, strictly separated `worker_report` and `pm_report_check` states. `send_message` was removed from `work` states to force structural communication isolation and prevent multi-tool call failure modes.
+
+**Problem 2 (Context Destruction via Preemptive Activation):** The PM assigned kick-off tasks to workers while they were deeply focused (e.g., in `worker_report`), forcefully altering their state and corrupting their thought buffers.
+**Fix 2:** Implemented a new `message_inbox` in the `Agent` core. When the PM assigns a task to a busy worker, `manager.py` defers the context change by pushing it into the inbox. `workflow_manager.py` cleanly flushes and applies these context updates only when the worker naturally transitions to a safe state like `worker_wait`.
+
+**Problem 3 (Worker Output Loops in Report State):** A bug in `cycle_handler.py` failed to set the `needs_reactivation_after_cycle` flag when parsing embedded state transitions. Additionally, `WORKER_STATE_REPORT` was missing from `next_step_scheduler.py`'s persistent states, causing the worker to stall indefinitely instead of completing its report.
+**Fix 3:** Assigned `context.needs_reactivation_after_cycle = True` inside the embedded state request block, and added `WORKER_STATE_REPORT` to the `persistent_states` tuple to ensure the worker inherently continues looping until its report is finished.
+
+**Problem 4 (PM Endless Loop During `activate_workers`):** The PM repeatedly reassigned the same task despite TaskWarrior success. This occurred because the PM used a text description inside `<modify_task>`, but the framework's internal `unassigned_tasks_summary` mandated a strict UUID match to remove it from the backlog.
+**Fix 4:** Reworked `cycle_handler.py` to extract and match purely on the `task_uuid` explicitly returned by the `modify_task` tool result JSON, guaranteeing absolute synchronization between the framework's backlog and TaskWarrior.
+
 ---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

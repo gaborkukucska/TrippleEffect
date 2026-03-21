@@ -16,13 +16,38 @@
 - **Files:** `src/agents/constants.py`, `src/agents/workflow_manager.py`, `src/agents/cycle_handler.py`, `src/agents/interaction_handler.py`, `prompts.json`
 
 ### 2. PM Context Disrupted in High-Focus States
+
 - **Severity:** High
 - **Description:** Workers occasionally send progress reports or questions while the PM is actively building the project plan, assembling the team, or assigning kick-off tasks. This sudden context shift confuses the PM and disrupts the core setup workflow.
 - **Root Cause:** The `interaction_handler` delivered messages directly into the PM's immediate history regardless of the PM's current phase of work, injecting irrelevant information.
 - **Fix:** (RESOLVED) Implemented message queuing. `src/agents/core.py`'s `Agent` class has been given a `message_inbox`. `interaction_handler.py` intercepts messages arriving while the PM is in `pm_startup`, `pm_build_team_tasks`, `pm_activate_workers`, or `pm_work` and delays them. `workflow_manager.py` checks the inbox when the PM transitions back into a safe state (`pm_manage`, `pm_standby`) and injects the queued messages.
 - **Files:** `src/agents/core.py`, `src/agents/interaction_handler.py`, `src/agents/workflow_manager.py`
 
-### 3. PM Stalls in `list_tasks` Loop
+### 2.5. Worker Agent Preemptive Activation During Report Phase
+
+- **Severity:** High
+- **Description:** When a worker is in the `WORKER_STATE_REPORT` state (e.g. creating a progress report to send to the PM), if the PM happens to assign them a new task, the framework automatically forces their state to `WORKER_STATE_WORK`. This causes the worker to suddenly change behavior mid-cycle and produce a normal work response (e.g. attempting to do work instead of finishing the report).
+- **Root Cause:** `activate_worker_with_task_details` in `manager.py` unconditionally changed the worker's state and injected the new task directive into its active history, disrupting the internal report context.
+- **Fix:** (RESOLVED) Implemented an activation block in `activate_worker_with_task_details` if the worker is in `WORKER_STATE_REPORT`. The activation framework directive is instead pushed to the `message_inbox`. `workflow_manager.py` was then updated to flush worker's inbox when transitioning into `WORKER_STATE_WAIT` or `WORKER_STATE_WORK`. Lastly, the wait/startup prompts in `prompts.json` were modified to explicitly tell workers to request `worker_work` state when reading these directives.
+- **Files:** `src/agents/manager.py`, `src/agents/workflow_manager.py`, `prompts.json`
+
+### 3. Worker Drops Out of Reporting State Early
+
+- **Severity:** High
+- **Description:** When a worker outputs `<request_state state='worker_report'/>` alongside other tool calls (like task modification or file writing) and the tools resolve or fail, the cycle terminates instead of restarting the worker in the new `worker_report` state.
+- **Root Cause:** In `cycle_handler.py`, an embedded state change correctly triggered the transition but forgot to set the `needs_reactivation_after_cycle` flag. Furthermore, `worker_report` was not added to the `persistent_states` list in `next_step_scheduler.py`.
+- **Fix:** (RESOLVED) Assigned `context.needs_reactivation_after_cycle = True` when parsing embedded state changes, and added `WORKER_STATE_REPORT` to the `persistent_states` tuple in the scheduler.
+- **Files:** `src/agents/cycle_components/next_step_scheduler.py`, `src/agents/cycle_handler.py`
+
+### 4. PM Repeats Task Assignments in `activate_workers`
+
+- **Severity:** High
+- **Description:** The PM loops and re-assigns the first task continuously after all tasks have technically been assigned to workers.
+- **Root Cause:** When the PM used `modify_task` to assign a task, it sometimes used the task's text description or short integer ID instead of the full UUID. While TaskWarrior accepts this, the `unassigned_tasks_summary` logic in `cycle_handler.py` performed a strict string comparison against the framework's stored UUIDs. When the match failed, the assigned task was never removed from the "remaining tasks" summary. The PM saw the first task persisting in its list of unassigned tasks and attempted to reassign it recursively.
+- **Fix:** (RESOLVED) Updated `cycle_handler.py` to parse the definitive `task_uuid` returned within the `modify_task` tool execution result. This guarantees that the correct UUID is used to drop the task from the internal tracker, regardless of whether the LLM queried it via ID, description, or UUID.
+- **Files:** `src/agents/cycle_handler.py`
+
+### 5. PM Stalls in `list_tasks` Loop
 
 - **Severity:** High
 - **Description:** The PM repeatedly calls `list_tasks` without taking further action.

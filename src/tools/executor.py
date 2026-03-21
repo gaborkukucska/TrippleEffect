@@ -476,33 +476,33 @@ class ToolExecutor:
             agent_type_for_auth = "framework" 
             logger.debug(f"ToolExecutor: Allowing tool '{tool_name}' for internal framework call by '{agent_id}'.")
         elif manager and hasattr(manager, 'agents') and isinstance(manager.agents, dict):
-            # --- MORE DETAILED LOGGING FOR THE MANAGER AND AGENTS DICT ITSELF ---
-            logger.critical(f"ToolExecutor: Auth: Manager object received by execute_tool: id={id(manager)}, type={type(manager)}")
-            logger.critical(f"ToolExecutor: Auth: manager.agents dictionary ID: {id(manager.agents)}")
-            logger.critical(f"ToolExecutor: Auth: Attempting lookup for agent_id='{agent_id}' (type: {type(agent_id)}, repr: {repr(agent_id)})")
+            # --- DEBUG LOGGING FOR AUTH ---
+            logger.debug(f"ToolExecutor: Auth: Manager object received by execute_tool: id={id(manager)}, type={type(manager)}")
+            logger.debug(f"ToolExecutor: Auth: manager.agents dictionary ID: {id(manager.agents)}")
+            logger.debug(f"ToolExecutor: Auth: Attempting lookup for agent_id='{agent_id}' (type: {type(agent_id)}, repr: {repr(agent_id)})")
             current_manager_agents_keys = list(manager.agents.keys()) # Snapshot before get
-            logger.critical(f"ToolExecutor: Auth: Keys in manager.agents ({len(current_manager_agents_keys)}) BEFORE get: {current_manager_agents_keys}")
-            
+            logger.debug(f"ToolExecutor: Auth: Keys in manager.agents ({len(current_manager_agents_keys)}) BEFORE get: {current_manager_agents_keys}")
+
             current_agent_instance_for_tool_call = manager.agents.get(agent_id) # THE LOOKUP
-            
+
             is_key_present_after_get = agent_id in manager.agents # Check again after get, though unlikely to change
-            logger.critical(f"ToolExecutor: Auth: Is agent_id='{agent_id}' in manager.agents keys AFTER get? {is_key_present_after_get}")
-            # --- END MORE DETAILED LOGGING ---
+            logger.debug(f"ToolExecutor: Auth: Is agent_id='{agent_id}' in manager.agents keys AFTER get? {is_key_present_after_get}")
+            # --- END AUTH DEBUG LOGGING ---
             
             if current_agent_instance_for_tool_call:
                 original_state = current_agent_instance_for_tool_call.state
                 agent_type_for_auth = getattr(current_agent_instance_for_tool_call, 'agent_type', AGENT_TYPE_WORKER) 
-                logger.critical(f"ToolExecutor: Auth: Found agent instance for '{agent_id}'. Original state: '{original_state}', Determined Type for Auth: '{agent_type_for_auth}', Tool auth level: '{tool_auth_level}'")
+                logger.debug(f"ToolExecutor: Auth: Found agent instance for '{agent_id}'. Original state: '{original_state}', Determined Type for Auth: '{agent_type_for_auth}', Tool auth level: '{tool_auth_level}'")
 
                 if agent_type_for_auth == AGENT_TYPE_ADMIN:
-                    is_authorized = True 
-                    logger.critical(f"ToolExecutor: Auth: ADMIN agent '{agent_id}' authorized for tool '{tool_name}'")
+                    is_authorized = True
+                    logger.debug(f"ToolExecutor: Auth: ADMIN agent '{agent_id}' authorized for tool '{tool_name}'")
                 elif agent_type_for_auth == AGENT_TYPE_PM:
                     is_authorized = tool_auth_level in [AGENT_TYPE_PM, AGENT_TYPE_WORKER]
-                    logger.critical(f"ToolExecutor: Auth: PM agent '{agent_id}' authorization check: tool_auth_level='{tool_auth_level}' in ['pm', 'worker'] = {is_authorized}")
+                    logger.debug(f"ToolExecutor: Auth: PM agent '{agent_id}' authorization check: tool_auth_level='{tool_auth_level}' in ['pm', 'worker'] = {is_authorized}")
                 elif agent_type_for_auth == AGENT_TYPE_WORKER:
                     is_authorized = tool_auth_level == AGENT_TYPE_WORKER
-                    logger.critical(f"ToolExecutor: Auth: WORKER agent '{agent_id}' authorization check: tool_auth_level='{tool_auth_level}' == 'worker' = {is_authorized}")
+                    logger.debug(f"ToolExecutor: Auth: WORKER agent '{agent_id}' authorization check: tool_auth_level='{tool_auth_level}' == 'worker' = {is_authorized}")
                 else: 
                     logger.error(f"ToolExecutor: Auth: Unknown agent type '{agent_type_for_auth}' for agent '{agent_id}'. Denying tool use.")
             else:
@@ -548,15 +548,13 @@ class ToolExecutor:
                     tool_args['action'] = corrected_action
 
             schema = tool.get_schema()
-            validated_args = {}
+            validated_args = tool_args.copy()
             missing_required = []
             if schema.get('parameters'):
                 for param_info in schema['parameters']:
                     param_name = param_info['name']
                     is_required = param_info.get('required', True)
-                    if param_name in tool_args:
-                        validated_args[param_name] = tool_args[param_name]
-                    elif is_required:
+                    if param_name not in tool_args and is_required:
                         missing_required.append(param_name)
 
             if missing_required:

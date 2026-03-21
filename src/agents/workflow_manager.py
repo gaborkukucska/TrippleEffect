@@ -238,6 +238,26 @@ class AgentWorkflowManager:
                             # Force fresh system prompt generation so messages are picked up clearly
                             agent._last_system_prompt_state = None
                     # --- END DELIVERY ---
+                    
+                # Worker State-specific logic
+                elif agent.agent_type == AGENT_TYPE_WORKER:
+                    # --- DELIVERY OF QUEUED ACTIVATION MESSAGES ---
+                    if requested_state in [WORKER_STATE_WAIT, WORKER_STATE_WORK]:
+                        if hasattr(agent, 'message_inbox') and agent.message_inbox:
+                            logger.info(f"WorkflowManager: Worker agent '{agent.agent_id}' entering safe state '{requested_state}'. Delivering {len(agent.message_inbox)} queued messages from inbox.")
+                            
+                            # Extract any deferred context variables before delivering the messages
+                            for msg in agent.message_inbox:
+                                if "_deferred_task_description" in msg:
+                                    agent._injected_task_description = msg.pop("_deferred_task_description")
+                                    agent._needs_initial_work_context = True
+                                if "_deferred_task_id" in msg:
+                                    agent.current_task_id = msg.pop("_deferred_task_id")
+                                    
+                            agent.message_history.extend(agent.message_inbox)
+                            agent.message_inbox = []
+                            agent._last_system_prompt_state = None  # Force fresh system prompt generation
+                    # --- END DELIVERY ---
 
                 if hasattr(agent, 'manager') and hasattr(agent.manager, 'send_to_ui'):
                     asyncio.create_task(agent.manager.send_to_ui({

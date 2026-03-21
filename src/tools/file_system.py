@@ -130,6 +130,24 @@ class FileSystemTool(BaseTool):
             required=False,
         ),
         ToolParameter(
+            name="expected_replacements",
+            type="integer",
+            description="Optional. For 'search_replace_block': if the tool finds multiple matching blocks and reports the count N, you MUST re-send the call with this set to N to confirm replacing all N occurrences.",
+            required=False,
+        ),
+        ToolParameter(
+            name="start_marker",
+            type="string",
+            description="Optional for 'search_replace_block': a unique string marking the start of the block to replace. Can be used instead of 'search_block'.",
+            required=False,
+        ),
+        ToolParameter(
+            name="end_marker",
+            type="string",
+            description="Optional for 'search_replace_block': a unique string marking the end of the block to replace. Must be used with 'start_marker'.",
+            required=False,
+        ),
+        ToolParameter(
             name="commit_message",
             type="string",
             description="The message for the git commit. Required for 'git_commit'.",
@@ -155,6 +173,14 @@ class FileSystemTool(BaseTool):
         ),
     ]
 
+    @staticmethod
+    def _first_of(*values):
+        """Return the first value that is not None. Preserves empty strings and other falsy values like 0."""
+        for v in values:
+            if v is not None:
+                return v
+        return None
+
     async def execute(
         self,
         agent_id: str,
@@ -170,23 +196,41 @@ class FileSystemTool(BaseTool):
         # Default to 'shared' if we have project context, else 'private'
         default_scope = "shared" if project_name and session_name else "private"
         scope = kwargs.get("scope", default_scope).lower()
-        filename = kwargs.get("filename") or kwargs.get("filepath") # Used by read, write, find_replace, regex_replace
+        _fo = self._first_of # Shorthand — preserves empty strings unlike `or`
+        filename = _fo(kwargs.get("filename"), kwargs.get("filepath")) # Used by read, write, find_replace, regex_replace
         if isinstance(filename, str): filename = filename.strip()
-        content = kwargs.get("content") # Used by write
-        relative_path = kwargs.get("path") # Used by list, mkdir, delete, copy, move. Default for list is '.', set below if needed.
+        content = _fo(kwargs.get("content"), kwargs.get("text")) # Used by write, append, insert_lines
+        relative_path = _fo(kwargs.get("path"), kwargs.get("filename"), kwargs.get("filepath")) # Used by list, mkdir, delete, copy, move
         if isinstance(relative_path, str): relative_path = relative_path.strip()
         destination_path = kwargs.get("destination_path") # Used by copy, move
         if isinstance(destination_path, str): destination_path = destination_path.strip()
-        find_text = kwargs.get("find_text") or kwargs.get("search") or kwargs.get("find") # Used by find_replace
-        replace_text = kwargs.get("replace_text") or kwargs.get("replace") or kwargs.get("replacement") # Used by find_replace, regex_replace
+        find_text = _fo(kwargs.get("find_text"), kwargs.get("search"), kwargs.get("find")) # Used by find_replace
+        replace_text = _fo(kwargs.get("replace_text"), kwargs.get("replace"), kwargs.get("replacement"), kwargs.get("replacement_text")) # Used by find_replace, regex_replace
         regex_pattern = kwargs.get("regex_pattern") # Used by regex_replace
         start_line = kwargs.get("start_line") # Used by read
         end_line = kwargs.get("end_line") # Used by read
-        insert_line = kwargs.get("insert_line") # Used by insert_lines
-        replace_start_line = kwargs.get("replace_start_line") # Used by replace_lines
-        replace_end_line = kwargs.get("replace_end_line") # Used by replace_lines
-        search_block = kwargs.get("search_block") or kwargs.get("search") or kwargs.get("search_string") or kwargs.get("find") or kwargs.get("find_text") # Used by search_replace_block
-        replace_block_param = kwargs.get("replace_block") or kwargs.get("replace") or kwargs.get("replacement") or kwargs.get("replace_string") or kwargs.get("replace_text") # Used by search_replace_block
+        insert_line = _fo(kwargs.get("insert_line"), kwargs.get("line_number"), kwargs.get("line"), kwargs.get("at_line"), kwargs.get("position")) # Used by insert_lines
+        replace_start_line = _fo(kwargs.get("replace_start_line"), kwargs.get("start_line_number")) # Used by replace_lines
+        replace_end_line = _fo(kwargs.get("replace_end_line"), kwargs.get("end_line_number")) # Used by replace_lines
+        # Auto-cast all line-number params to int if they are numeric strings
+        def _safe_int(val):
+            if val is None: return None
+            try: return int(val)
+            except (ValueError, TypeError): return val
+        start_line = _safe_int(start_line)
+        end_line = _safe_int(end_line)
+        insert_line = _safe_int(insert_line)  # May remain a string if it's a search hint — handled later
+        replace_start_line = _safe_int(replace_start_line)
+        replace_end_line = _safe_int(replace_end_line)
+        search_block = _fo(kwargs.get("search_block"), kwargs.get("search"), kwargs.get("search_string"), kwargs.get("find"), kwargs.get("find_text")) # Used by search_replace_block
+        replace_block_param = _fo(kwargs.get("replace_block"), kwargs.get("replace"), kwargs.get("replacement"), kwargs.get("replace_string"), kwargs.get("replace_text")) # Used by search_replace_block
+        expected_replacements = kwargs.get("expected_replacements")  # Used by search_replace_block for multi-match confirmation
+        start_marker = _fo(kwargs.get("start_marker"), kwargs.get("start"), kwargs.get("start_string"), kwargs.get("start_line"), kwargs.get("start_pattern"))
+        end_marker = _fo(kwargs.get("end_marker"), kwargs.get("end"), kwargs.get("end_string"), kwargs.get("end_line"), kwargs.get("end_pattern"))
+        try:
+            expected_replacements = int(expected_replacements) if expected_replacements is not None else None
+        except (ValueError, TypeError):
+            expected_replacements = None
         commit_message = kwargs.get("commit_message") # Used by git_commit
         branch = kwargs.get("branch") # Used by git_checkout, git_branch
         files_to_add = kwargs.get("files") # Used by git_add
@@ -294,9 +338,23 @@ class FileSystemTool(BaseTool):
                 result = await self._append_to_file(base_path, filename, content, agent_id, scope_description)
             elif action == "insert_lines":
                 if not filename: return {"status": "error", "message": "'filename' parameter is required for 'insert_lines'."}
-                if insert_line is None: return {"status": "error", "message": "'insert_line' parameter is required for 'insert_lines'."}
                 if content is None: return {"status": "error", "message": "'content' parameter is required for 'insert_lines'."}
-                result = await self._insert_lines_in_file(base_path, filename, insert_line, content, agent_id, scope_description)
+                # Support search-based insertion: if insert_line is missing or non-numeric,
+                # check if search/find_text was provided to locate the insertion point.
+                search_anchor = _fo(kwargs.get("search"), kwargs.get("after"), kwargs.get("before"))
+                if insert_line is None or (isinstance(insert_line, str) and not insert_line.isdigit()):
+                    if search_anchor:
+                        # Resolve insertion point by finding the search anchor text in the file
+                        resolved = await self._resolve_insert_line_from_search(
+                            base_path, filename, search_anchor, agent_id, scope_description,
+                            position_hint=insert_line if isinstance(insert_line, str) else kwargs.get("position", "after")
+                        )
+                        if resolved is None:
+                            return {"status": "error", "message": f"Could not find search anchor '{search_anchor}' in file '{filename}' for insert_lines."}
+                        insert_line = resolved
+                    else:
+                        return {"status": "error", "message": "'insert_line' parameter (integer line number) is required for 'insert_lines'. Alternatively, provide a '<search>' text to insert after."}
+                result = await self._insert_lines_in_file(base_path, filename, int(insert_line), content, agent_id, scope_description)
             elif action == "replace_lines":
                 if not filename: return {"status": "error", "message": "'filename' parameter is required for 'replace_lines'."}
                 if replace_start_line is None or replace_end_line is None: return {"status": "error", "message": "'replace_start_line' and 'replace_end_line' parameters are required for 'replace_lines'."}
@@ -304,9 +362,10 @@ class FileSystemTool(BaseTool):
                 result = await self._replace_lines_in_file(base_path, filename, replace_start_line, replace_end_line, content, agent_id, scope_description)
             elif action == "search_replace_block":
                 if not filename: return {"status": "error", "message": "'filename' parameter is required for 'search_replace_block'."}
-                if search_block is None: return {"status": "error", "message": "'search_block' parameter is required for 'search_replace_block'."}
+                if search_block is None and (start_marker is None or end_marker is None): 
+                    return {"status": "error", "message": "'search_block' OR both 'start_marker' and 'end_marker' are required for 'search_replace_block'."}
                 if replace_block_param is None: return {"status": "error", "message": "'replace_block' parameter is required for 'search_replace_block'."}
-                result = await self._search_replace_block_in_file(base_path, filename, search_block, replace_block_param, agent_id, scope_description)
+                result = await self._search_replace_block_in_file(base_path, filename, search_block, replace_block_param, agent_id, scope_description, expected_replacements=expected_replacements, start_marker=start_marker, end_marker=end_marker)
 
             # --- Git integration ---
             elif action == "git_commit":
@@ -394,7 +453,7 @@ Reads the content of a file.
         elif sub_action == "write":
             return common_header + """
 **Action: write**
-Writes content to a NEW file (Forbidden on existing files to save tokens/prevent data loss). For targeted edits on existing files, use `replace_lines`, `find_replace`, `regex_replace`, or `append`!
+Writes content to a NEW file (Forbidden on existing files to save tokens/prevent data loss). For targeted edits on existing files, use `replace_lines`, `find_replace`, `regex_replace`, or `append`! DO NOT use `write` to create directories — use `mkdir` instead!
 *   `<filename>` (string, required): Relative path to the file.
 *   `<content>` (string, required): The complete file content to write.
 *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
@@ -484,10 +543,16 @@ Moves/renames a file/directory.
         elif sub_action == "search_replace_block":
             return common_header + """
 **Action: search_replace_block**
-Finds a specific block of code and replaces it with a new block, automatically handling slight indentation mismatches.
+Finds a specific block of code/text and replaces it with new content. Uses a 3-tier matching strategy:
+1. **Exact match** — if the `search_block` appears exactly once, it is replaced.
+2. **First/last line match** — if exact match fails, the first and last non-empty lines of `search_block` are used to locate the block in the file. Useful when indentation or internal whitespace may differ slightly.
+3. **Fuzzy match** — `diff_match_patch` fallback for slight variations.
+
+**Parameters:**
 *   `<filename>` (string, required): Relative path to the file.
-*   `<search_block>` (string, required): The exact (or slightly fuzzy) block of text to replace. (Can also use `<search>` or `<find>`)
-*   `<replace_block>` (string, required): The new content to insert in its place. (Can also use `<replace_text>`)
+*   `<search_block>` (string, required): The block of text to find. Provide at minimum the **first and last unique lines** of the block. (Can also use `<search>` or `<find>`)
+*   `<replace_block>` (string, required): The new content to replace the found block with. (Can also use `<replace_text>`)
+*   `<expected_replacements>` (integer, optional): **Required for multi-match cases.** If the tool reports it found N matches, re-send with `<expected_replacements>N</expected_replacements>` to confirm replacing all N occurrences.
 *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
 """
         elif sub_action == "git_commit":
@@ -668,6 +733,10 @@ Pushes changes to a remote repository.
             await asyncio.to_thread(validated_path.write_text, content, encoding='utf-8')
             logger.info(f"Agent {agent_id} successfully wrote file: '{filename}' to {scope_description}")
             return {"status": "success", "message": f"Successfully wrote content to '{filename}' in {scope_description}."}
+        except FileExistsError:
+            logger.warning(f"Agent {agent_id} attempted to write file '{filename}' but a parent path exists as a file."); return {"status": "error", "message": f"Cannot write to '{filename}': A parent path already exists but is a FILE, not a directory. Did you previously use 'write' instead of 'mkdir' to create a directory?"}
+        except NotADirectoryError:
+            logger.warning(f"Agent {agent_id} attempted to write file '{filename}' but a parent path is not a directory."); return {"status": "error", "message": f"Cannot write to '{filename}': A parent path already exists but is a FILE, not a directory. Did you previously use 'write' instead of 'mkdir' to create a directory?"}
         except PermissionError: logger.error(f"Agent {agent_id} file write error: Permission denied for '{filename}' in {scope_description}."); return {"status": "error", "message": f"Permission denied when writing to file '{filename}'."}
         except Exception as e: logger.error(f"Agent {agent_id} error writing file '{filename}' in {scope_description}: {e}", exc_info=True); return {"status": "error", "message": f"Error writing file '{filename}': {type(e).__name__} - {e}"}
 
@@ -845,6 +914,22 @@ Pushes changes to a remote repository.
             logger.error(f"Agent {agent_id} error appending to '{filename}': {e}", exc_info=True)
             return {"status": "error", "message": f"Error appending to '{filename}': {e}"}
 
+    async def _resolve_insert_line_from_search(self, base_path: Path, filename: str, search_text: str, agent_id: str, scope_description: str, position_hint: str = "after") -> Optional[int]:
+        """Resolve a line number by searching for an anchor string in the file."""
+        val_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
+        if not val_path or not val_path.is_file(): return None
+        try:
+            lines = val_path.read_text(encoding='utf-8').splitlines()
+            for i, line in enumerate(lines):
+                if search_text in line:
+                    if position_hint and position_hint.lower() in ("before",):
+                        return i + 1  # Insert before the matched line (1-indexed)
+                    else:
+                        return i + 2  # Insert after the matched line (1-indexed)
+            return None
+        except Exception:
+            return None
+
     async def _insert_lines_in_file(self, base_path: Path, filename: str, insert_line: int, content: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
         val_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
         if not val_path: return {"status": "error", "message": f"Invalid path '{filename}'."}
@@ -892,33 +977,141 @@ Pushes changes to a remote repository.
             logger.error(f"Agent {agent_id} error replacing lines in '{filename}': {e}", exc_info=True)
             return {"status": "error", "message": f"Error replacing lines in '{filename}': {e}"}
 
-    async def _search_replace_block_in_file(self, base_path: Path, filename: str, search_block: str, replace_block: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+    async def _search_replace_block_in_file(self, base_path: Path, filename: str, search_block: Optional[str], replace_block: str, agent_id: str, scope_description: str, expected_replacements: Optional[int] = None, start_marker: Optional[str] = None, end_marker: Optional[str] = None) -> Dict[str, Any]:
         val_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
         if not val_path: return {"status": "error", "message": f"Invalid path '{filename}'."}
         if not val_path.is_file(): return {"status": "error", "message": f"File '{filename}' does not exist."}
         try:
             def search_replace_sync():
                 original_content = val_path.read_text(encoding='utf-8')
-                
-                # Fast path: exact match
-                if search_block in original_content:
-                    new_content = original_content.replace(search_block, replace_block, 1)
-                    val_path.write_text(new_content, encoding='utf-8')
-                    return True, "Exact match found and replaced."
 
-                # Fallback: diff_match_patch
+                if start_marker and end_marker:
+                    start_idx = original_content.find(start_marker)
+                    if start_idx == -1: return False, f"start_marker '{start_marker}' not found in the file."
+                    end_idx = original_content.find(end_marker, start_idx + len(start_marker))
+                    if end_idx == -1: return False, f"end_marker '{end_marker}' not found after the start_marker."
+                    
+                    old_block = original_content[start_idx:end_idx + len(end_marker)]
+                    exact_count = original_content.count(old_block)
+                    if exact_count == 1:
+                        new_content = original_content.replace(old_block, replace_block, 1)
+                        val_path.write_text(new_content, encoding='utf-8')
+                        return True, "Marker block found and replaced successfully."
+                    elif exact_count > 1:
+                        if expected_replacements is not None and expected_replacements == exact_count:
+                            new_content = original_content.replace(old_block, replace_block)
+                            val_path.write_text(new_content, encoding='utf-8')
+                            return True, f"Replaced all {exact_count} identical marker blocks."
+                        return False, f"Found {exact_count} identical marker blocks. Re-send with expected_replacements={exact_count} to confirm."
+                    return False, "Failed to extract old block using markers."
+
+                if search_block is None:
+                    return False, "Unexpected: search_block is None but markers were not used."
+
+                # ── TIER 1: Exact substring match ─────────────────────────────────
+                    exact_count = original_content.count(search_block)
+                    if exact_count == 1:
+                        new_content = original_content.replace(search_block, replace_block, 1)
+                        val_path.write_text(new_content, encoding='utf-8')
+                        return True, "Exact match found and replaced."
+
+                    if exact_count > 1:
+                        if expected_replacements is not None and expected_replacements == exact_count:
+                            new_content = original_content.replace(search_block, replace_block)
+                            val_path.write_text(new_content, encoding='utf-8')
+                            return True, f"Replaced all {exact_count} exact occurrences (confirmed by expected_replacements)."
+                        return False, (
+                            f"Found {exact_count} exact matches. To replace ALL {exact_count} occurrences, "
+                            f"re-send this call with <expected_replacements>{exact_count}</expected_replacements>. "
+                            f"To replace only ONE, provide a more specific search_block that is unique in the file."
+                        )
+
+                    # ── TIER 2: First/last line matching ──────────────────────────────
+                # Extract first and last non-empty lines of the search block.
+                # This lets the LLM provide just the anchor lines when the full block
+                # is hard to reproduce exactly, saving tokens.
+                search_lines = [l for l in search_block.splitlines() if l.strip()]
+                if len(search_lines) >= 2:
+                    first_line = search_lines[0]
+                    last_line = search_lines[-1]
+                    file_lines = original_content.splitlines(keepends=True)
+
+                    # Find all start indices in file_lines where first_line occurs
+                    start_indices = [
+                        i for i, fl in enumerate(file_lines)
+                        if fl.rstrip('\n\r') == first_line or fl.strip() == first_line.strip()
+                    ]
+
+                    matched_spans = []
+                    for start_idx in start_indices:
+                        # From start_idx, search forward for the last_line
+                        for end_idx in range(start_idx, min(start_idx + len(search_lines) * 3, len(file_lines))):
+                            if file_lines[end_idx].rstrip('\n\r') == last_line or file_lines[end_idx].strip() == last_line.strip():
+                                matched_spans.append((start_idx, end_idx))
+                                break  # Take the shortest matching span from this start
+
+                    if len(matched_spans) == 1:
+                        start_idx, end_idx = matched_spans[0]
+                        before = "".join(file_lines[:start_idx])
+                        after = "".join(file_lines[end_idx + 1:])
+                        # Preserve trailing newline convention of the replaced block
+                        replacement = replace_block
+                        if not replacement.endswith('\n') and after:
+                            replacement += '\n'
+                        new_content = before + replacement + after
+                        val_path.write_text(new_content, encoding='utf-8')
+                        return True, (
+                            f"First/last line match found (lines {start_idx+1}–{end_idx+1}) and replaced."
+                        )
+
+                    if len(matched_spans) > 1:
+                        n = len(matched_spans)
+                        if expected_replacements is not None and expected_replacements == n:
+                            # Replace all spans in reverse order to keep indices valid
+                            file_lines_mut = list(file_lines)
+                            for start_idx, end_idx in reversed(matched_spans):
+                                replacement = replace_block
+                                if not replacement.endswith('\n'):
+                                    replacement += '\n'
+                                file_lines_mut[start_idx:end_idx + 1] = [replacement]
+                            val_path.write_text("".join(file_lines_mut), encoding='utf-8')
+                            return True, f"Replaced all {n} first/last-line matches (confirmed by expected_replacements)."
+                        return False, (
+                            f"First/last line anchor matched {n} distinct blocks. "
+                            f"To replace ALL {n}, re-send with <expected_replacements>{n}</expected_replacements>. "
+                            f"To replace only one, provide a more specific search_block with unique surrounding lines."
+                        )
+
+                # ── TIER 3: Fuzzy fallback (diff_match_patch) ─────────────────────
                 dmp = diff_match_patch()
+                dmp.Match_Distance = len(original_content) * 10
+                
+                idx = dmp.match_main(original_content, search_block, 0)
                 patches = dmp.patch_make(search_block, replace_block)
+                if idx != -1:
+                    for p in patches:
+                        p.start1 += idx
+                        p.start2 += idx
+
                 new_content, results = dmp.patch_apply(patches, original_content)
-                
+
                 if not any(results):
-                    return False, "Could not find a matching block to replace. Please check your search block."
-                
+                    # Provide useful context: show first/last line of search_block
+                    preview_first = search_lines[0][:80] if search_lines else "(empty)"
+                    preview_last  = search_lines[-1][:80] if len(search_lines) > 1 else ""
+                    hint = (
+                        f"Could not find a matching block. "
+                        f"Searched for block starting with: {repr(preview_first)}"
+                        + (f" and ending with: {repr(preview_last)}" if preview_last else "") +
+                        ". Please read the file and verify the exact content before retrying."
+                    )
+                    return False, hint
+
                 val_path.write_text(new_content, encoding='utf-8')
                 return True, "Fuzzy match found and replaced."
 
             success, msg = await asyncio.to_thread(search_replace_sync)
-            
+
             if success:
                 logger.info(f"Agent {agent_id} search/replace block in '{filename}' ({scope_description}): {msg}")
                 return {"status": "success", "message": f"Successfully replaced block in '{filename}'. ({msg})"}

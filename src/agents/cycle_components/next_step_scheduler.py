@@ -12,8 +12,8 @@ from src.agents.constants import (
     ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK,
     PM_STATE_STARTUP, PM_STATE_MANAGE, PM_STATE_WORK,
     # Add new PM states for checks
-    PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS,
-    WORKER_STATE_WAIT, WORKER_STATE_WORK
+    PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_REPORT_CHECK,
+    WORKER_STATE_WAIT, WORKER_STATE_WORK, WORKER_STATE_REPORT
 )
 
 if TYPE_CHECKING:
@@ -121,6 +121,7 @@ class NextStepScheduler:
             persistent_states = {
                 (AGENT_TYPE_PM, PM_STATE_MANAGE),
                 (AGENT_TYPE_WORKER, WORKER_STATE_WORK),
+                (AGENT_TYPE_WORKER, WORKER_STATE_REPORT),
                 (AGENT_TYPE_ADMIN, ADMIN_STATE_WORK)
             }
             
@@ -150,10 +151,8 @@ class NextStepScheduler:
             # Admin AI should process tool results naturally without forced immediate reactivation
             # --- End Persistent Agent Logic ---
             elif agent.agent_type == AGENT_TYPE_PM and \
-               agent.state == PM_STATE_STARTUP and \
-               not context.action_taken_this_cycle and \
-               not context.thought_produced_this_cycle: 
-                logger.warning(f"NextStepScheduler: PM agent '{agent_id}' in PM_STARTUP finished but took NO action (tool/state/thought). Reactivating to enforce startup workflow.")
+                 agent.state == PM_STATE_STARTUP:
+                logger.warning(f"NextStepScheduler: PM agent '{agent_id}' in PM_STARTUP finished the cycle but failed to transition out. Reactivating to enforce startup workflow.")
                 if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear()
                 agent.set_status(AGENT_STATUS_IDLE)
                 await self._schedule_new_cycle(agent, 0)
@@ -165,6 +164,15 @@ class NextStepScheduler:
                     if not (agent.status == AGENT_STATUS_AWAITING_USER_REVIEW_CG and getattr(agent, 'cg_awaiting_user_decision', False)):
                         agent.set_status(AGENT_STATUS_IDLE)
                         await self._schedule_new_cycle(agent, 0)
+            elif agent.agent_type == AGENT_TYPE_PM and \
+                 agent.state == PM_STATE_REPORT_CHECK and not context.state_change_requested_this_cycle:
+                logger.warning(f"NextStepScheduler: PM agent '{agent_id}' in pm_report_check forgot to request state change. Auto-reverting to pm_manage.")
+                if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear()
+                if agent.status != AGENT_STATUS_ERROR:
+                    if not (agent.status == AGENT_STATUS_AWAITING_USER_REVIEW_CG and getattr(agent, 'cg_awaiting_user_decision', False)):
+                        self._manager.workflow_manager.change_state(agent, PM_STATE_MANAGE)
+                        agent.set_status(AGENT_STATUS_IDLE)
+                        # Let the periodic timer wake it up to prevent busy-looping
             else:
                 logger.info(f"NextStepScheduler: Agent '{agent_id}' ({context.current_model_key_for_tracking}) finished cycle cleanly, no specific reactivation needed by this scheduler.")
                 if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear()

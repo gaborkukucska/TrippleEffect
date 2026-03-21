@@ -305,6 +305,11 @@ def find_and_parse_xml_tool_calls(
                 error_message = f"XML root tag '{root.tag}' does not match expected tool name '{identified_tool_name}'. Expected: <{identified_tool_name}>...</{identified_tool_name}>"
                 return None, error_message
 
+            # Extract attributes first
+            for key, val in root.attrib.items():
+                tool_args[key] = html.unescape(val)
+
+            # Extract child elements (they override attributes if same name)
             for child in root:
                 param_name = child.tag
                 param_value = child.text.strip() if child.text else ""

@@ -500,7 +500,7 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
     logger.debug(f"Lifecycle: Gathered bootstrap agent creation results (Count: {len(results)}): {results}")
     # --- End added logging ---
     successful_ids = []
-    num_expected_tasks = len([cfg for cfg in agent_configs_list if cfg.get("agent_id")])
+    num_expected_tasks = len(tasks)  # Only count agents actually scheduled for bootstrap (not template-only configs)
     if len(results) != num_expected_tasks:
         logger.error(f"Lifecycle: Mismatch between expected bootstrap tasks ({num_expected_tasks}) and results received ({len(results)}). Some initializations might have failed early.")
     else:
