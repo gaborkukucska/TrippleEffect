@@ -16,7 +16,8 @@ from src.agents.constants import (
     ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK, ADMIN_STATE_STANDBY,
     PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_STANDBY,
     PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS,
-    WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_WAIT,
+    PM_STATE_REPORT_CHECK,
+    WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_REPORT, WORKER_STATE_WAIT,
     DEFAULT_STATE, BOOTSTRAP_AGENT_ID, AGENT_STATUS_IDLE
 )
 from src.config.settings import settings, BASE_DIR
@@ -35,8 +36,8 @@ class AgentWorkflowManager:
     def __init__(self):
         self._valid_states: Dict[str, List[str]] = {
             AGENT_TYPE_ADMIN: [ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK, ADMIN_STATE_STANDBY, DEFAULT_STATE],
-            AGENT_TYPE_PM: [PM_STATE_STARTUP, PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_STANDBY, DEFAULT_STATE],
-            AGENT_TYPE_WORKER: [WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_WAIT, DEFAULT_STATE]
+            AGENT_TYPE_PM: [PM_STATE_STARTUP, PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_REPORT_CHECK, PM_STATE_STANDBY, DEFAULT_STATE],
+            AGENT_TYPE_WORKER: [WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_REPORT, WORKER_STATE_WAIT, DEFAULT_STATE]
         }
         self._prompt_map: Dict[Tuple[str, str], str] = {
             (AGENT_TYPE_ADMIN, ADMIN_STATE_STARTUP): "admin_ai_startup_prompt",
@@ -53,11 +54,13 @@ class AgentWorkflowManager:
             (AGENT_TYPE_PM, PM_STATE_ACTIVATE_WORKERS): "pm_activate_workers_prompt",     
             (AGENT_TYPE_PM, PM_STATE_WORK): "pm_work_prompt",
             (AGENT_TYPE_PM, PM_STATE_MANAGE): "pm_manage_prompt",
+            (AGENT_TYPE_PM, PM_STATE_REPORT_CHECK): "pm_report_check_prompt",
             (AGENT_TYPE_PM, PM_STATE_STANDBY): "pm_standby_prompt",
             (AGENT_TYPE_PM, DEFAULT_STATE): "default_system_prompt",
 
             (AGENT_TYPE_WORKER, WORKER_STATE_STARTUP): "worker_startup_prompt",
             (AGENT_TYPE_WORKER, WORKER_STATE_WORK): "worker_work_prompt",
+            (AGENT_TYPE_WORKER, WORKER_STATE_REPORT): "worker_report_prompt",
             (AGENT_TYPE_WORKER, WORKER_STATE_WAIT): "worker_wait_prompt",
             (AGENT_TYPE_WORKER, DEFAULT_STATE): "default_system_prompt"
         }
@@ -65,6 +68,25 @@ class AgentWorkflowManager:
             AGENT_TYPE_ADMIN: "admin_standard_framework_instructions",
             AGENT_TYPE_PM: "pm_standard_framework_instructions",
             AGENT_TYPE_WORKER: "worker_standard_framework_instructions",
+        }
+        # Map of common LLM shorthand state names to their actual constant values.
+        # Small LLMs (e.g. gemma3:4b) consistently produce short names like 'conversation'
+        # instead of the full internal name 'admin_conversation', causing invalid state rejections.
+        self._state_aliases: Dict[Tuple[str, str], str] = {
+            (AGENT_TYPE_ADMIN, "conversation"): ADMIN_STATE_CONVERSATION,
+            (AGENT_TYPE_ADMIN, "standby"): ADMIN_STATE_STANDBY,
+            (AGENT_TYPE_PM, "startup"): PM_STATE_STARTUP,
+            (AGENT_TYPE_PM, "plan_decomposition"): PM_STATE_PLAN_DECOMPOSITION,
+            (AGENT_TYPE_PM, "build_team_tasks"): PM_STATE_BUILD_TEAM_TASKS,
+            (AGENT_TYPE_PM, "activate_workers"): PM_STATE_ACTIVATE_WORKERS,
+            (AGENT_TYPE_PM, "standby"): PM_STATE_STANDBY,
+            (AGENT_TYPE_PM, "manage"): PM_STATE_MANAGE,
+            (AGENT_TYPE_PM, "report_check"): PM_STATE_REPORT_CHECK,
+            (AGENT_TYPE_PM, "work"): PM_STATE_WORK,
+            (AGENT_TYPE_WORKER, "startup"): WORKER_STATE_STARTUP,
+            (AGENT_TYPE_WORKER, "work"): WORKER_STATE_WORK,
+            (AGENT_TYPE_WORKER, "report"): WORKER_STATE_REPORT,
+            (AGENT_TYPE_WORKER, "wait"): WORKER_STATE_WAIT,
         }
         self.workflows: Dict[str, BaseWorkflow] = {}
         self._workflow_triggers: Dict[Tuple[str, str, str], BaseWorkflow] = {}
@@ -104,18 +126,52 @@ class AgentWorkflowManager:
             except Exception as e: logger.error(f"Error processing workflow module {module_name_full}: {e}", exc_info=True)
         logger.info(f"AgentWorkflowManager: Workflow discovery complete. {len(self.workflows)} workflows loaded. {len(self._workflow_triggers)} triggers registered.")
 
-    def is_valid_state(self, agent_type: str, state: str) -> bool:
-        return state in self._valid_states.get(agent_type, [])
+    def resolve_state_alias(self, agent_type: str, state: str) -> str:
+        """Resolve a potentially aliased state name to its canonical form."""
+        resolved = self._state_aliases.get((agent_type, state))
+        if resolved:
+            logger.info(f"WorkflowManager: Resolved state alias '{state}' -> '{resolved}' for agent type '{agent_type}'")
+            return resolved
+        return state
 
-    def change_state(self, agent: 'Agent', requested_state: str) -> bool:
+    def is_valid_state(self, agent_type: str, state: str) -> bool:
+        # First try direct match, then try alias resolution
+        if state in self._valid_states.get(agent_type, []):
+            return True
+        resolved = self.resolve_state_alias(agent_type, state)
+        return resolved in self._valid_states.get(agent_type, [])
+
+    def change_state(self, agent: 'Agent', requested_state: str, task_description: Optional[str] = None) -> bool:
         if not hasattr(agent, 'agent_type') or not agent.agent_type:
             logger.error(f"Cannot change state for agent '{agent.agent_id}': Missing 'agent_type'.")
             return False
+        # Resolve any alias before proceeding
+        requested_state = self.resolve_state_alias(agent.agent_type, requested_state)
         if self.is_valid_state(agent.agent_type, requested_state):
             current_state = agent.state
             if current_state != requested_state:
                 logger.info(f"WorkflowManager: Changing state for agent '{agent.agent_id}' ({agent.agent_type}) from '{current_state}' to '{requested_state}'.")
                 
+                # ENHANCED: Check for problematic loop transitions and add context preservation
+                if agent.agent_type == AGENT_TYPE_ADMIN and current_state == ADMIN_STATE_WORK:
+                    # If transitioning out of work state, ensure task completion is recorded
+                    self._record_work_completion(agent, current_state, requested_state)
+                    
+                    # Clear work-related tracking variables to prevent state contamination
+                    if hasattr(agent, '_consecutive_empty_work_cycles'):
+                        agent._consecutive_empty_work_cycles = 0
+                    if hasattr(agent, '_work_cycle_count'):
+                        agent._work_cycle_count = 0
+                    if hasattr(agent, 'tool_information_loop_detected'):
+                        delattr(agent, 'tool_information_loop_detected')
+                    if hasattr(agent, 'tool_execution_loop_detected'):
+                        delattr(agent, 'tool_execution_loop_detected')
+                
+                # If transitioning to the work state, set the task description
+                if requested_state == ADMIN_STATE_WORK and task_description:
+                    agent.current_task_description = task_description
+                    logger.info(f"WorkflowManager: Set task description for agent '{agent.agent_id}' for work state: '{task_description[:100]}...'")
+
                 # Enhanced state tracking for PM completion detection
                 if agent.agent_type == AGENT_TYPE_PM:
                     # Track state transition timing for completion detection
@@ -155,16 +211,53 @@ class AgentWorkflowManager:
                 # PM State-specific logic
                 if agent.agent_type == AGENT_TYPE_PM:
                     if requested_state == PM_STATE_MANAGE:
-                        agent._pm_needs_initial_list_tools = True
-                        agent.clear_history()
-                        logger.info(f"WorkflowManager: Cleared history for PM agent '{agent.agent_id}' upon entering state 'PM_STATE_MANAGE' to ensure a clean start for the management loop.")
+                        if current_state != PM_STATE_ACTIVATE_WORKERS:
+                            agent._pm_needs_initial_list_tools = True
+                            agent.clear_history()
+                            agent._last_system_prompt_state = None  # Force fresh prompt generation after history clear
+                            logger.info(f"WorkflowManager: Cleared history for PM agent '{agent.agent_id}' upon entering state 'PM_STATE_MANAGE' to ensure a clean start for the management loop.")
+                        else:
+                            logger.info(f"WorkflowManager: Preserved history for PM agent '{agent.agent_id}' entering 'PM_STATE_MANAGE' from '{current_state}' to keep completion context.")
                     elif hasattr(agent, '_pm_needs_initial_list_tools'):
                         agent._pm_needs_initial_list_tools = False
 
                     # Per user request, clear history when entering activate_workers state
                     if requested_state == PM_STATE_ACTIVATE_WORKERS:
                         agent.clear_history()
+                        agent._last_system_prompt_state = None  # Force fresh prompt generation after history clear
                         logger.info(f"WorkflowManager: Cleared history for PM agent '{agent.agent_id}' upon entering state '{requested_state}'.")
+
+                    # --- DELIVERY OF QUEUED MESSAGES ---
+                    if requested_state in [PM_STATE_MANAGE, PM_STATE_STANDBY, PM_STATE_REPORT_CHECK]:
+                        if hasattr(agent, 'message_inbox') and agent.message_inbox:
+                            logger.info(f"WorkflowManager: PM agent '{agent.agent_id}' entering safe state '{requested_state}'. Delivering {len(agent.message_inbox)} queued messages from inbox.")
+                            # We prefix the first queued message with a small system note for context context
+                            agent.message_inbox[0]["content"] = f"[System Note: The following message was queued while you were busy] {agent.message_inbox[0]['content']}"
+                            agent.message_history.extend(agent.message_inbox)
+                            agent.message_inbox = []
+                            # Force fresh system prompt generation so messages are picked up clearly
+                            agent._last_system_prompt_state = None
+                    # --- END DELIVERY ---
+                    
+                # Worker State-specific logic
+                elif agent.agent_type == AGENT_TYPE_WORKER:
+                    # --- DELIVERY OF QUEUED ACTIVATION MESSAGES ---
+                    if requested_state in [WORKER_STATE_WAIT, WORKER_STATE_WORK]:
+                        if hasattr(agent, 'message_inbox') and agent.message_inbox:
+                            logger.info(f"WorkflowManager: Worker agent '{agent.agent_id}' entering safe state '{requested_state}'. Delivering {len(agent.message_inbox)} queued messages from inbox.")
+                            
+                            # Extract any deferred context variables before delivering the messages
+                            for msg in agent.message_inbox:
+                                if "_deferred_task_description" in msg:
+                                    agent._injected_task_description = msg.pop("_deferred_task_description")
+                                    agent._needs_initial_work_context = True
+                                if "_deferred_task_id" in msg:
+                                    agent.current_task_id = msg.pop("_deferred_task_id")
+                                    
+                            agent.message_history.extend(agent.message_inbox)
+                            agent.message_inbox = []
+                            agent._last_system_prompt_state = None  # Force fresh system prompt generation
+                    # --- END DELIVERY ---
 
                 if hasattr(agent, 'manager') and hasattr(agent.manager, 'send_to_ui'):
                     asyncio.create_task(agent.manager.send_to_ui({
@@ -179,6 +272,32 @@ class AgentWorkflowManager:
         else:
             logger.warning(f"WorkflowManager: Invalid state transition requested for agent '{agent.agent_id}' ({agent.agent_type}) to state '{requested_state}'. Allowed states: {self._valid_states.get(agent.agent_type, [])}")
             return False
+
+    def _record_work_completion(self, agent: 'Agent', old_state: str, new_state: str) -> None:
+        """Record work completion when transitioning out of work state."""
+        try:
+            work_summary = {
+                'completed_at': time.time(),
+                'transition_from': old_state,
+                'transition_to': new_state,
+                'total_cycles': getattr(agent, '_work_cycle_count', 0),
+                'task_description': getattr(agent, 'current_task_description', 'N/A')
+            }
+            
+            # Store work completion record
+            if not hasattr(agent, '_work_completion_history'):
+                agent._work_completion_history = []
+            agent._work_completion_history.append(work_summary)
+            
+            # Keep only last 5 work sessions to avoid memory issues
+            if len(agent._work_completion_history) > 5:
+                agent._work_completion_history = agent._work_completion_history[-5:]
+                
+            logger.info(f"WorkflowManager: Recorded work completion for agent '{agent.agent_id}' - "
+                       f"{work_summary['total_cycles']} cycles, transitioning from '{old_state}' to '{new_state}'")
+                       
+        except Exception as e:
+            logger.error(f"WorkflowManager: Error recording work completion for '{agent.agent_id}': {e}")
 
     async def process_agent_output_for_workflow(
         self,
@@ -319,6 +438,19 @@ class AgentWorkflowManager:
 
                         else: 
                             try:
+                                if isinstance(workflow_instance, PMKickoffWorkflow) and trigger_tag == "kickoff_plan":
+                                    def escape_tag_content(tag_name: str):
+                                        def _replacer(m):
+                                            return f"<{tag_name}>{html.escape(m.group(1))}</{tag_name}>"
+                                        return _replacer
+                                    # Escape content in both <task> and <role> tags to prevent XML parse errors
+                                    for tag_to_escape in ["task", "role"]:
+                                        xml_full_trigger_block = re.sub(
+                                            rf"<{tag_to_escape}>([\s\S]*?)</{tag_to_escape}>",
+                                            escape_tag_content(tag_to_escape),
+                                            xml_full_trigger_block,
+                                            flags=re.IGNORECASE
+                                        )
                                 xml_element_for_workflow = ET.fromstring(xml_full_trigger_block)
                             except ET.ParseError as e:
                                 logger.error(f"Failed to parse XML for workflow trigger '{trigger_tag}': {e}. Content: {xml_full_trigger_block[:200]}...")
@@ -355,6 +487,21 @@ class AgentWorkflowManager:
             return agent.agent_config['config']['project_name_context']
         return manager.current_project or "N/A"
 
+    def _get_agent_task_titles(self, agent: 'Agent', manager: 'AgentManager') -> list:
+        """Get a list of assigned task titles for an agent.
+        Uses the agent's injected task description as the primary source.
+        Returns a list of short task title strings."""
+        titles = []
+        # Check for injected task description (set when worker is activated with a task)
+        task_desc = getattr(agent, '_injected_task_description', None)
+        if task_desc and isinstance(task_desc, str) and task_desc.strip():
+            # Use first line as title, truncate if needed
+            first_line = task_desc.strip().split('\n')[0].strip()
+            if len(first_line) > 60:
+                first_line = first_line[:57] + "..."
+            titles.append(first_line)
+        return titles
+
     def _build_address_book(self, agent: 'Agent', manager: 'AgentManager') -> str:
         content_lines = []
         agent_type = agent.agent_type
@@ -363,7 +510,10 @@ class AgentWorkflowManager:
 
         if agent_type == AGENT_TYPE_ADMIN:
             content_lines.append(f"- Admin AI (Yourself): {agent_id}")
-            pms = [ag for ag_id, ag in manager.agents.items() if ag.agent_type == AGENT_TYPE_PM and ag_id != agent_id]
+            # Filter: exclude bootstrapped PM agents when dynamic PMs (PM1, PM2, ...) exist
+            all_pms = [ag for ag_id, ag in manager.agents.items() if ag.agent_type == AGENT_TYPE_PM and ag_id != agent_id]
+            has_dynamic_pms = any(re.match(r'^PM\d+$', pm.agent_id, re.IGNORECASE) for pm in all_pms)
+            pms = [pm for pm in all_pms if not (has_dynamic_pms and pm.agent_id in manager.bootstrap_agents)]
             if pms:
                 content_lines.append("- Project Managers (PMs):")
                 for pm in pms:
@@ -374,7 +524,10 @@ class AgentWorkflowManager:
         elif agent_type == AGENT_TYPE_PM:
             content_lines.append(f"- Project Manager (Yourself): {agent_id} for Project '{agent_project_name}'")
             content_lines.append(f"- Admin AI: {BOOTSTRAP_AGENT_ID}")
-            other_pms = [ag for ag_id, ag in manager.agents.items() if ag.agent_type == AGENT_TYPE_PM and ag_id != agent_id]
+            # Filter: exclude bootstrapped PM agents from "other PMs" when dynamic PMs exist
+            all_other_pms = [ag for ag_id, ag in manager.agents.items() if ag.agent_type == AGENT_TYPE_PM and ag_id != agent_id]
+            has_dynamic_other_pms = any(re.match(r'^PM\d+$', pm.agent_id, re.IGNORECASE) for pm in all_other_pms)
+            other_pms = [pm for pm in all_other_pms if not (has_dynamic_other_pms and pm.agent_id in manager.bootstrap_agents)]
             if other_pms:
                 content_lines.append("- Other Project Managers:")
                 for pm in other_pms:
@@ -399,19 +552,29 @@ class AgentWorkflowManager:
             if unique_workers:
                 content_lines.append(f"- Your Worker Agents (Project '{agent_project_name}'):")
                 for worker in unique_workers:
-                    worker_team = manager.state_manager.get_agent_team(worker.agent_id) or "N/A"
-                    content_lines.append(f"  - {worker.agent_id} (Persona: {worker.persona}, Team: {worker_team})")
+                    worker_role = getattr(worker, 'role', None) or getattr(worker, 'persona', 'General Worker')
+                    worker_state = getattr(worker, 'state', 'unknown')
+                    worker_tasks = self._get_agent_task_titles(worker, manager)
+                    task_info = f" | Tasks: {', '.join(worker_tasks)}" if worker_tasks else ""
+                    content_lines.append(f"  - {worker.agent_id} (Role: {worker_role}, State: {worker_state}{task_info})")
             else:
                 content_lines.append(f"- Your Worker Agents (Project '{agent_project_name}'): (None created yet or in your project)")
         elif agent_type == AGENT_TYPE_WORKER:
             content_lines.append(f"- Worker (Yourself): {agent_id} for Project '{agent_project_name}'")
             content_lines.append(f"- Admin AI: {BOOTSTRAP_AGENT_ID}")
+            # Prefer dynamic PMs (PM1, PM2, ...) over bootstrapped project_manager_agent
             my_pm: Optional['Agent'] = None
+            fallback_pm: Optional['Agent'] = None
             for pm_candidate in manager.agents.values():
                 if pm_candidate.agent_type == AGENT_TYPE_PM:
                     pm_candidate_project_name = self._get_agent_project_name(pm_candidate, manager)
                     if pm_candidate_project_name == agent_project_name:
-                        my_pm = pm_candidate; break 
+                        if pm_candidate.agent_id not in manager.bootstrap_agents:
+                            my_pm = pm_candidate; break  # Dynamic PM found, use it
+                        elif fallback_pm is None:
+                            fallback_pm = pm_candidate  # Keep as fallback
+            if my_pm is None:
+                my_pm = fallback_pm  # Fall back to bootstrapped PM if no dynamic PM exists
             if my_pm: content_lines.append(f"- Your Project Manager: {my_pm.agent_id} (Persona: {my_pm.persona})")
             else: content_lines.append("- Your Project Manager: (Not identified for this project)")
             team_id = manager.state_manager.get_agent_team(agent_id)
@@ -420,7 +583,11 @@ class AgentWorkflowManager:
                 other_team_members = [tm for tm in team_members if tm.agent_id != agent_id]
                 if other_team_members:
                     content_lines.append(f"- Your Team Members (Team: {team_id}):")
-                    for member in other_team_members: content_lines.append(f"  - {member.agent_id} (Persona: {member.persona}, Type: {member.agent_type})")
+                    for member in other_team_members:
+                        member_role = getattr(member, 'role', None) or getattr(member, 'persona', 'Unknown')
+                        member_tasks = self._get_agent_task_titles(member, manager)
+                        task_info = f" | Tasks: {', '.join(member_tasks)}" if member_tasks else ""
+                        content_lines.append(f"  - {member.agent_id} (Role: {member_role}{task_info})")
                 else: content_lines.append(f"- Your Team Members (Team: {team_id}): (No other members)")
             else: content_lines.append("- Your Team Members: (Not currently in a team)")
         if not content_lines: return "(No specific contacts identified for your role in the current context)"
@@ -432,7 +599,7 @@ class AgentWorkflowManager:
             return settings.PROMPTS.get("default_system_prompt", "Error: Default prompt missing.")
 
         standard_instructions_key = self._standard_instructions_map.get(agent.agent_type)
-        standard_instructions_template = settings.PROMPTS.get(standard_instructions_key, "Error: Standard instructions template missing.")
+        standard_instructions_template = settings.PROMPTS.get(standard_instructions_key or "", "Error: Standard instructions template missing.")
 
         address_book_content = self._build_address_book(agent, manager)
         agent_project_name_for_context = self._get_agent_project_name(agent, manager)
@@ -475,33 +642,90 @@ class AgentWorkflowManager:
         try: formatted_standard_instructions = standard_instructions_template.format(**standard_formatting_context)
         except Exception as e: logger.error(f"Error formatting standard instructions: {e}"); formatted_standard_instructions = standard_instructions_template
         
-        state_prompt_key = self._prompt_map.get((agent.agent_type, agent.state)) or self._prompt_map.get((agent.agent_type, DEFAULT_STATE))
+        # Append Governance Principles to standard instructions
+        if hasattr(settings, 'GOVERNANCE_PRINCIPLES') and settings.GOVERNANCE_PRINCIPLES:
+            relevant_principles = []
+            for gp in settings.GOVERNANCE_PRINCIPLES:
+                if not gp.get('enabled', False):
+                    continue
+                applies_to = gp.get('applies_to', [])
+                if "all_agents" in applies_to or agent.agent_type in applies_to:
+                    relevant_principles.append(gp)
+            
+            if relevant_principles:
+                gp_text = "\n\n--- Governance Principles ---\n"
+                for gp in relevant_principles:
+                    gp_text += f"Principle: {gp['name']} (ID: {gp.get('id', 'N/A')})\n{gp['text']}\n"
+                gp_text += "--- End Governance Principles ---\n"
+                formatted_standard_instructions += gp_text
+        # Append Admin Memory Context if available
+        if agent.agent_type == AGENT_TYPE_ADMIN:
+            admin_memory = None
+            if hasattr(agent, 'agent_config') and isinstance(agent.agent_config, dict):
+                config_dict = agent.agent_config.get('config', {})
+                admin_memory = config_dict.get('admin_memory_context')
+            if admin_memory:
+                formatted_standard_instructions += f"\n{admin_memory}\n"
+        
+        state_prompt_key = self._prompt_map.get((agent.agent_type, agent.state or DEFAULT_STATE)) or self._prompt_map.get((agent.agent_type, DEFAULT_STATE))
         if not state_prompt_key: return settings.PROMPTS.get("default_system_prompt", "Error: Default prompt missing.")
         state_prompt_template = settings.PROMPTS.get(state_prompt_key, "Error: State-specific prompt template missing.")
         
-        task_desc_for_prompt = getattr(agent, 'initial_plan_description', None)
+        if agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_WORK:
+            task_desc_for_prompt = agent.current_task_description
+            if not task_desc_for_prompt or task_desc_for_prompt.isspace():
+                # Fallback to find the last user message in history
+                logger.warning(f"Admin agent {agent.agent_id} in 'work' state has no task description. Searching history for last user message.")
+                for msg in reversed(agent.message_history):
+                    if msg.get("role") == "user":
+                        task_desc_for_prompt = msg.get("content") or ""
+                        logger.info(f"Found last user message for Admin work state task: '{task_desc_for_prompt[:100]}...'")
+                        break
+        else:
+            task_desc_for_prompt = getattr(agent, 'initial_plan_description', None)
 
-        # === MODIFICATION START ===
-        # Use injected task description for newly activated workers
+        # Use injected task description for newly activated workers, overriding other values
         if agent.agent_type == AGENT_TYPE_WORKER and agent.state == WORKER_STATE_WORK:
-            if hasattr(agent, '_needs_initial_work_context') and agent._needs_initial_work_context and \
-               hasattr(agent, '_injected_task_description') and agent._injected_task_description is not None:
+            if hasattr(agent, '_injected_task_description') and agent._injected_task_description is not None:
                 task_desc_for_prompt = agent._injected_task_description
-                logger.info(f"WorkflowManager: Using injected task description for worker {agent.agent_id} for initial work context: '{str(task_desc_for_prompt)[:100]}...'")
-                agent._needs_initial_work_context = False
 
-        # Refined fallback logic for task_description
-        if task_desc_for_prompt is None:
-            if agent.agent_type == AGENT_TYPE_PM:
-                task_desc_for_prompt = '{task_description}' # Placeholder for PM, critical error
-                logger.error(f"CRITICAL: PM agent {agent.agent_id} in state {agent.state} has no 'initial_plan_description' and no injected context. Startup prompt will use a placeholder.")
+        # Fallback logic for task_description if it's still empty
+        if not task_desc_for_prompt or task_desc_for_prompt.isspace():
+            if agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_WORK:
+                # This now serves as a fallback if the task description was not passed during state change for some reason.
+                logger.error(f"CRITICAL: Admin agent {agent.agent_id} in 'work' state has an empty task description even after fallback. The prompt will be empty.")
+                task_desc_for_prompt = "No task was provided. You must ask the user for a task."
+            elif agent.agent_type == AGENT_TYPE_PM:
+                # Check if this is a bootstrapped PM and a dynamic PM already exists
+                if agent.agent_id in manager.bootstrap_agents:
+                    agent_proj = self._get_agent_project_name(agent, manager)
+                    has_dynamic_pm = any(
+                        ag.agent_type == AGENT_TYPE_PM and ag.agent_id not in manager.bootstrap_agents
+                        and self._get_agent_project_name(ag, manager) == agent_proj
+                        for ag in manager.agents.values()
+                    )
+                    if has_dynamic_pm:
+                        logger.info(f"Bootstrapped PM '{agent.agent_id}' has no plan and dynamic PM exists for project '{agent_proj}'. Auto-deactivating.")
+                        agent.state = 'pm_idle'
+                        agent.status = AGENT_STATUS_IDLE
+                        task_desc_for_prompt = 'Standby - dynamic PM has taken over.'
+                    else:
+                        task_desc_for_prompt = '{task_description}'
+                        logger.error(f"CRITICAL: PM agent {agent.agent_id} in state {agent.state} has no 'initial_plan_description' and no injected context. Startup prompt will use a placeholder.")
+                else:
+                    task_desc_for_prompt = '{task_description}'
+                    logger.error(f"CRITICAL: PM agent {agent.agent_id} in state {agent.state} has no 'initial_plan_description' and no injected context. Startup prompt will use a placeholder.")
             elif agent.agent_type == AGENT_TYPE_WORKER:
                 task_desc_for_prompt = "No task description provided." # Specific message for Worker
                 logger.warning(f"Worker agent {agent.agent_id} in state {agent.state} has no 'initial_plan_description' and no injected context. Using default message.")
-            else: # For Admin or other types if applicable
+            else: # For other agents/states
                 task_desc_for_prompt = '{task_description}' # Generic placeholder
                 logger.warning(f"Agent {agent.agent_id} ({agent.agent_type}) in state {agent.state} has no task description. Using generic placeholder.")
-        # === MODIFICATION END ===
+
+        personality_text = agent._config_system_prompt.strip() if hasattr(agent, '_config_system_prompt') and agent._config_system_prompt else ""
+        if agent.agent_type == AGENT_TYPE_ADMIN and "admin_memory_context" in agent.agent_config.get("config", {}):
+            memory_context = agent.agent_config["config"]["admin_memory_context"]
+            personality_text += f"\n\n{memory_context}"
 
         state_formatting_context = {
             "agent_id": agent.agent_id, "persona": agent.persona,
@@ -511,7 +735,8 @@ class AgentWorkflowManager:
             "pm_agent_id": getattr(agent, 'delegated_pm_id', '{pm_agent_id}'),
             "task_description": task_desc_for_prompt, 
             self._standard_instructions_map.get(agent.agent_type, "standard_framework_instructions"): formatted_standard_instructions,
-            "personality_instructions": agent._config_system_prompt.strip() if agent.agent_type == AGENT_TYPE_ADMIN and hasattr(agent, '_config_system_prompt') else ""
+            "personality_instructions": personality_text,
+            "role": getattr(agent, 'role', 'General Worker')
         }
         try:
             final_prompt = state_prompt_template.format(**state_formatting_context)

@@ -4,30 +4,33 @@ import json
 import logging
 from typing import TYPE_CHECKING, Dict, Any, Optional, List, Tuple
 import copy # Import copy for deepcopy
+import re # Import re for matching agent IDs
 import time # Import time for failed_tool_result timestamp
 
 # Import base types and tools
-from src.llm_providers.base import ToolResultDict, MessageDict
-from src.tools.manage_team import ManageTeamTool
-from src.tools.send_message import SendMessageTool
-from src.tools.project_management import ProjectManagementTool # Import ProjectManagementTool
-from src.tools.tool_parser import parse_tool_call # This seems unused, consider removing if not needed elsewhere
+from src.llm_providers.base import ToolResultDict, MessageDict  # type: ignore[import]
+from src.tools.manage_team import ManageTeamTool  # type: ignore[import]
+from src.tools.send_message import SendMessageTool  # type: ignore[import]
+from src.tools.project_management import ProjectManagementTool  # type: ignore[import]
+from src.tools.tool_parser import parse_tool_call  # type: ignore[import]
 
 # Import status constants and agent types
-from src.agents.constants import (
+from src.agents.constants import (  # type: ignore[import]
     AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_EXECUTING_TOOL,
-    AGENT_TYPE_WORKER, WORKER_STATE_WORK, BOOTSTRAP_AGENT_ID, AGENT_STATUS_ERROR, # Added BOOTSTRAP_AGENT_ID
-    AGENT_STATUS_AWAITING_CG_REVIEW, AGENT_STATUS_AWAITING_USER_REVIEW_CG # Added CG states
+    AGENT_TYPE_WORKER, AGENT_TYPE_PM, WORKER_STATE_WORK, BOOTSTRAP_AGENT_ID, AGENT_STATUS_ERROR,
+    AGENT_STATUS_AWAITING_CG_REVIEW, AGENT_STATUS_AWAITING_USER_REVIEW_CG, # Added CG states
+    PM_STATE_REPORT_CHECK, PM_STATE_STARTUP, PM_STATE_BUILD_TEAM_TASKS,
+    PM_STATE_ACTIVATE_WORKERS, PM_STATE_WORK
 )
 
 # Import helper for prompt update
-from src.agents.prompt_utils import update_agent_prompt_team_id
+from src.agents.prompt_utils import update_agent_prompt_team_id  # type: ignore[import]
 
 # Type hinting for AgentManager and Agent
 if TYPE_CHECKING:
-    from src.agents.manager import AgentManager # Keep BOOTSTRAP_AGENT_ID here if only used in this file
-    from src.agents.core import Agent
-    from src.agents.workflow_manager import AgentWorkflowManager # For type hinting
+    from src.agents.manager import AgentManager  # type: ignore[import]
+    from src.agents.core import Agent  # type: ignore[import]
+    from src.agents.workflow_manager import AgentWorkflowManager  # type: ignore[import]
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +41,7 @@ class AgentInteractionHandler:
     and processing for ManageTeamTool actions like get_agent_details and set_agent_state.
     """
     def __init__(self, manager: 'AgentManager'):
-        self._manager = manager
+        self._manager: Any = manager
         logger.info("AgentInteractionHandler initialized.")
 
     async def handle_manage_team_action(
@@ -74,10 +77,10 @@ class AgentInteractionHandler:
                 success, message = await self._manager.state_manager.delete_existing_team(team_id_param)
             elif action_to_perform == "add_agent_to_team":
                 success, message = await self._manager.state_manager.add_agent_to_team(agent_id_param, team_id_param)
-                if success: await update_agent_prompt_team_id(self._manager, agent_id_param, team_id_param)
+                if success and agent_id_param: await update_agent_prompt_team_id(self._manager, agent_id_param, team_id_param)
             elif action_to_perform == "remove_agent_from_team":
                 success, message = await self._manager.state_manager.remove_agent_from_team(agent_id_param, team_id_param)
-                if success: await update_agent_prompt_team_id(self._manager, agent_id_param, None)
+                if success and agent_id_param: await update_agent_prompt_team_id(self._manager, agent_id_param, None)
             elif action_to_perform == "list_agents":
                 result_data = self._manager.get_agent_info_list_sync(filter_team_id=team_id_param)
                 success = True
@@ -87,6 +90,8 @@ class AgentInteractionHandler:
                 success = True
                 message = f"Found {len(result_data)} team(s)."
             elif action_to_perform == "get_agent_details":
+                if not agent_id_param:
+                    return {"status": "error", "message": "No agent_id provided for get_agent_details."}
                 success, message, result_data = self._get_agent_details(agent_id_param)
             elif action_to_perform == "set_agent_state":
                 success, message, result_data = await self._set_agent_state(action_params)
@@ -138,12 +143,46 @@ class AgentInteractionHandler:
             return False, f"Failed to change state for agent '{agent_id}'.", None
 
     async def _handle_create_agent(self, params: Dict[str, Any], calling_agent_id: str) -> Tuple[bool, str, Optional[Dict]]:
+        from src.agents.constants import AGENT_TYPE_PM, PM_STATE_BUILD_TEAM_TASKS
+        
+        # Strict framework role validation removed per user request to allow LLM autonomy.
+        agent_id_requested = params.get("agent_id")
+        
+        # Check for duplicate persona in the team before creating
+        persona_requested = params.get("persona") or params.get("role")
+        if persona_requested:
+            creator_team_id = self._manager.state_manager.get_agent_team(calling_agent_id)
+            if not creator_team_id:
+                creator_team_id = params.get("team_id")
+            
+            if creator_team_id:
+                all_agents_in_team = self._manager.state_manager.get_agents_in_team(creator_team_id)
+                for existing_agent in all_agents_in_team:
+                    if getattr(existing_agent, 'agent_type', '') == AGENT_TYPE_WORKER:
+                        existing_persona = getattr(existing_agent, 'persona', '')
+                        if existing_persona and existing_persona.lower().strip() == persona_requested.lower().strip():
+                            logger.warning(f"InteractionHandler: Prevented duplicate agent creation. Persona '{persona_requested}' already exists in team '{creator_team_id}'.")
+                            return False, f"Agent creation failed: An agent with the role/persona '{persona_requested}' already exists in your team. Do not create duplicate roles.", None
+
+        # Determine if we should auto-assign a worker name
+        if not agent_id_requested or not re.match(r'^W\d+$', agent_id_requested, re.IGNORECASE):
+            existing_w_indices = []
+            for a_id, a_instance in self._manager.agents.items():
+                if getattr(a_instance, 'agent_type', '') == AGENT_TYPE_WORKER:
+                    match = re.match(r'^W(\d+)$', a_id, re.IGNORECASE)
+                    if match:
+                        existing_w_indices.append(int(match.group(1)))
+            next_w_index = max(existing_w_indices, default=0) + 1
+            agent_id_requested = f"W{next_w_index}"
+            params["agent_id"] = agent_id_requested
+
         success, message, created_agent_id = await self._manager.create_agent_instance(
-            agent_id_requested=params.get("agent_id"),
+            agent_id_requested=agent_id_requested,
             provider=params.get("provider"),
             model=params.get("model"),
             system_prompt=params.get("system_prompt"),
             persona=params.get("persona"),
+            role=params.get("role"),
             team_id=params.get("team_id"),
             temperature=params.get("temperature")
         )
@@ -159,7 +198,36 @@ class AgentInteractionHandler:
         }
 
         creator_team_id = self._manager.state_manager.get_agent_team(calling_agent_id)
+        
+        # Fallback: if creator has no team, check for team_id in params or auto-create from project context
+        if not creator_team_id:
+            # Option 1: team_id was explicitly provided in the create_agent params
+            param_team_id = params.get("team_id")
+            if param_team_id:
+                creator_team_id = param_team_id
+                logger.info(f"InteractionHandler: Creator '{calling_agent_id}' has no team. Using team_id from params: '{param_team_id}'")
+            else:
+                # Option 2: auto-generate team from project context
+                project_name = params.get("project_name")
+                if project_name:
+                    creator_team_id = f"team_{project_name}"
+                    logger.info(f"InteractionHandler: Creator '{calling_agent_id}' has no team. Auto-generating from project: '{creator_team_id}'")
+                elif self._manager.current_project:
+                    creator_team_id = f"team_{self._manager.current_project}"
+                    logger.info(f"InteractionHandler: Creator '{calling_agent_id}' has no team. Auto-generating from manager project: '{creator_team_id}'")
+        
         if creator_team_id:
+            # Ensure the team exists
+            await self._manager.state_manager.create_new_team(creator_team_id)
+            
+            # Add the creator to the team if not already in it
+            if not self._manager.state_manager.get_agent_team(calling_agent_id):
+                add_creator_success, add_creator_msg = await self._manager.state_manager.add_agent_to_team(calling_agent_id, creator_team_id)
+                if add_creator_success:
+                    logger.info(f"InteractionHandler: Auto-added creator '{calling_agent_id}' to team '{creator_team_id}'")
+                    await update_agent_prompt_team_id(self._manager, calling_agent_id, creator_team_id)
+            
+            # Add the new agent to the team
             add_success, add_message = await self._manager.state_manager.add_agent_to_team(created_agent_id, creator_team_id)
             if add_success:
                 result_data["team_id"] = creator_team_id
@@ -189,10 +257,15 @@ class AgentInteractionHandler:
             resolved_target_id = target_identifier; target_agent = self._manager.agents[resolved_target_id]; logger.debug(f"SendMsg: Resolved target '{target_identifier}' directly by ID.")
         else:
             logger.debug(f"SendMsg: Target '{target_identifier}' not found by ID. Trying persona match...")
-            matches = []; target_persona_lower = target_identifier.lower()
+            matches: List[Any] = []; target_persona_lower = target_identifier.lower()
             for agent in self._manager.agents.values():
-                if hasattr(agent, 'persona') and isinstance(agent.persona, str) and agent.persona.lower() == target_persona_lower: matches.append(agent)
-            if len(matches) == 1: target_agent = matches[0]; resolved_target_id = target_agent.agent_id; logger.info(f"SendMsg: Resolved target '{target_identifier}' by unique persona match to agent ID '{resolved_target_id}'.")
+                persona_val = getattr(agent, 'persona', None)
+                if isinstance(persona_val, str) and persona_val.lower() == target_persona_lower: matches.append(agent)
+            if len(matches) == 1:
+                matched_agent: Any = matches[0]
+                target_agent = matched_agent
+                resolved_target_id = str(matched_agent.agent_id)
+                logger.info(f"SendMsg: Resolved target '{target_identifier}' by unique persona match to agent ID '{resolved_target_id}'.")
             elif len(matches) > 1: error_msg = f"Failed to send message: Target persona '{target_identifier}' is ambiguous. Multiple agents found: {[a.agent_id for a in matches]}. Use the exact agent_id."; logger.warning(f"InteractionHandler SendMsg route error from '{sender_id}': {error_msg}")
             else: error_msg = f"Failed to send message: Target agent ID or persona '{target_identifier}' not found."; logger.error(f"InteractionHandler SendMsg route error from '{sender_id}': {error_msg}")
 
@@ -203,13 +276,72 @@ class AgentInteractionHandler:
         if not target_agent or not resolved_target_id:
              logger.error(f"Internal error: Target agent or ID is None after resolution for target '{target_identifier}'."); feedback_message: MessageDict = { "role": "tool", "tool_call_id": f"send_message_failed_{target_identifier}", "content": f"[Manager Feedback for SendMessage]: Internal error resolving target agent."}; sender_agent.message_history.append(feedback_message); return None
 
-        sender_team = self._manager.state_manager.get_agent_team(sender_id); target_team = self._manager.state_manager.get_agent_team(resolved_target_id)
-        allowed = (sender_id == BOOTSTRAP_AGENT_ID or resolved_target_id == BOOTSTRAP_AGENT_ID or (sender_team and sender_team == target_team))
+        assert target_agent is not None  # type narrowing for checker
+        assert resolved_target_id is not None  # type narrowing for checker
+
+        sender_team = self._manager.state_manager.get_agent_team(sender_id) 
+        target_team = self._manager.state_manager.get_agent_team(resolved_target_id)
+        
+        # Also check if they share the same project
+        sender_project = self._manager.workflow_manager._get_agent_project_name(sender_agent, self._manager)
+        target_project = self._manager.workflow_manager._get_agent_project_name(target_agent, self._manager)
+        
+        allowed = (
+            sender_id == BOOTSTRAP_AGENT_ID or 
+            resolved_target_id == BOOTSTRAP_AGENT_ID or 
+            (sender_team and sender_team == target_team) or
+            (sender_project != "N/A" and sender_project == target_project)
+        )
+        
         if not allowed:
-            error_msg = f"Message blocked: Sender '{sender_id}' (Team: {sender_team or 'N/A'}) cannot send to Target '{resolved_target_id}' (Persona: {target_agent.persona}, Team: {target_team or 'N/A'}). Only communication within the same team or with Admin AI is permitted."; logger.warning(f"InteractionHandler: {error_msg}"); feedback_message: MessageDict = { "role": "tool", "tool_call_id": f"send_message_failed_{target_identifier}", "content": f"[Manager Feedback for SendMessage]: {error_msg}" }; sender_agent.message_history.append(feedback_message); logger.debug(f"InteractionHandler: Appended 'communication blocked' feedback to sender '{sender_id}' history."); return None
+            error_msg = f"Message blocked: Sender '{sender_id}' (Team: {sender_team or 'N/A'}, Project: {sender_project}) cannot send to Target '{resolved_target_id}' (Persona: {target_agent.persona}, Team: {target_team or 'N/A'}, Project: {target_project}). Communication requires same team, same project, or Admin AI."
+            logger.warning(f"InteractionHandler: {error_msg}")
+            feedback_message: MessageDict = {"role": "tool", "tool_call_id": f"send_message_failed_{target_identifier}", "content": f"[Manager Feedback for SendMessage]: {error_msg}"}
+            sender_agent.message_history.append(feedback_message)
+            logger.debug(f"InteractionHandler: Appended 'communication blocked' feedback to sender '{sender_id}' history.")
+            return None
 
         formatted_message: MessageDict = { "role": "user", "content": f"[From @{sender_id} ({sender_agent.persona})]: {message_content}" }; # Added sender persona
+        
+        # --- BLOCK MESSAGES TO PM IN HIGH-FOCUS STATES ---
+        HIGH_FOCUS_PM_STATES = [
+            PM_STATE_STARTUP,
+            PM_STATE_BUILD_TEAM_TASKS,
+            PM_STATE_ACTIVATE_WORKERS,
+            PM_STATE_WORK
+        ]
+        
+        if target_agent.agent_type == AGENT_TYPE_PM and target_agent.state in HIGH_FOCUS_PM_STATES:
+            logger.info(f"InteractionHandler: Target PM '{resolved_target_id}' is in high-focus state '{target_agent.state}'. Queuing message.")
+            if not hasattr(target_agent, 'message_inbox'):
+                target_agent.message_inbox = []
+            target_agent.message_inbox.append(formatted_message)
+            
+            # Send feedback to the sender
+            feedback_message: MessageDict = {
+                "role": "tool", 
+                "tool_call_id": f"send_message_delayed_{target_identifier}", 
+                "content": f"[Manager Feedback]: Your message was queued because the PM is currently in a high-focus task. It will be delivered when the PM is available."
+            }
+            sender_agent.message_history.append(feedback_message)
+            return None
+        # --- END BLOCK MESSAGES TO PM ---
+        
         target_agent.message_history.append(formatted_message); logger.debug(f"InteractionHandler: Appended message from '{sender_id}' to history of '{resolved_target_id}'.")
+
+        # --- AUTO-SWITCH PM TO REPORT CHECK WHEN WORKER MESSAGES ---
+        # When a worker sends a message to their PM, auto-switch the PM to pm_report_check
+        # so it gets a focused report-response prompt. PM keeps its memory and tools.
+        if (sender_agent.agent_type == AGENT_TYPE_WORKER and 
+            target_agent.agent_type == AGENT_TYPE_PM and
+            target_agent.state != PM_STATE_REPORT_CHECK):  # Don't re-switch if already in report_check
+            logger.info(f"InteractionHandler: Worker '{sender_id}' sent message to PM '{resolved_target_id}'. Auto-switching PM to pm_report_check (from '{target_agent.state}').")
+            target_agent._pre_report_check_state = target_agent.state
+            self._manager.workflow_manager.change_state(target_agent, PM_STATE_REPORT_CHECK)
+            # Force fresh system prompt regeneration on next cycle
+            if hasattr(target_agent, '_last_system_prompt_state'):
+                target_agent._last_system_prompt_state = None
+        # --- END AUTO-SWITCH ---
 
         activation_task = None
         if target_agent.status == AGENT_STATUS_IDLE:
@@ -276,8 +408,8 @@ class AgentInteractionHandler:
             else:
                 await self.route_and_activate_agent_message(
                     sender_id=agent.agent_id,
-                    target_identifier=target_id,
-                    message_content=message_content
+                    target_identifier=str(target_id),
+                    message_content=str(message_content)
                 )
                 # The tool result for the *sender* is a simple confirmation.
                 result_content = f"Message routing to agent '{target_id}' initiated by manager."
@@ -357,12 +489,21 @@ class AgentInteractionHandler:
                         logger.info(f"[WORKER_ACTIVATION_DEBUG] Using fallback task description: '{task_description_for_worker}'")
                     
                     if task_description_for_worker:
-                        logger.info(f"InteractionHandler: Task '{action_performed}' successful for assignee '{assignee_id}'. Attempting worker activation.")
-                        await self._manager.activate_worker_with_task_details(
-                            worker_agent_id=assignee_id,
-                            task_id_from_tool=task_identifier_for_activation,
-                            task_description_from_tool=task_description_for_worker
-                        )
+                        assignee_agent = self._manager.agents.get(assignee_id)
+                        if assignee_agent and getattr(assignee_agent, 'agent_type', None) == AGENT_TYPE_WORKER:
+                            logger.info(f"InteractionHandler: Task '{action_performed}' successful for assignee '{assignee_id}'. Attempting worker activation.")
+                            await self._manager.activate_worker_with_task_details(
+                                worker_agent_id=assignee_id,
+                                task_id_from_tool=task_identifier_for_activation,
+                                task_description_from_tool=task_description_for_worker
+                            )
+                            
+                            # Append confirmation so the PM knows the worker is active
+                            notification = f"\n\n[Framework Notification]: Worker '{assignee_id}' has been automatically activated and is now working on this task. Do not re-assign this task."
+                            result_content += notification
+                        else:
+                            agent_type_str = getattr(assignee_agent, 'agent_type', 'Unknown') if assignee_agent else 'Not Found'
+                            logger.debug(f"InteractionHandler: Task '{action_performed}' successful for assignee '{assignee_id}'. Skipping worker activation because assignee is '{agent_type_str}'.")
 
                     # Notification to the PM about worker activation can be added here if desired,
                     # or handled by the PM agent itself when it processes the successful tool result.

@@ -28,12 +28,12 @@ class ProjectCreationWorkflow(BaseWorkflow):
     """
     name: str = "project_creation"
     trigger_tag_name: str = "plan" 
-    allowed_agent_type: str = AGENT_TYPE_ADMIN
-    allowed_agent_state: str = ADMIN_STATE_PLANNING
+    allowed_agent_type: Optional[str] = AGENT_TYPE_ADMIN
+    allowed_agent_state: Optional[str] = ADMIN_STATE_PLANNING
     description: str = "Orchestrates project initialization: creates the initial project task and a dedicated Project Manager agent from an Admin AI's plan."
     expected_xml_schema: str = "<plan><title>Project Title</title>\n  <_raw_plan_body_>(Raw plan description, Markdown is okay here)</_raw_plan_body_>\n</plan>"
 
-    async def execute(
+    async def execute( # type: ignore[reportIncompatibleMethodOverride]
         self,
         manager: 'AgentManager',
         agent: 'Agent', 
@@ -46,8 +46,12 @@ class ProjectCreationWorkflow(BaseWorkflow):
 
         title_element = xml_data.find("title")
         if title_element is not None and title_element.text:
-            project_title = html.unescape(title_element.text.strip())
-            logger.info(f"ProjectCreationWorkflow: Extracted title='{project_title}' from <title> element.")
+            raw_title = html.unescape(title_element.text.strip())
+            # Sanitize project title: replace spaces and non-alphanumeric characters with underscores
+            sanitized_title = re.sub(r'[^\w]', '_', raw_title)
+            # Compress multiple underscores into one
+            project_title = re.sub(r'_+', '_', sanitized_title).strip('_')
+            logger.info(f"ProjectCreationWorkflow: Extracted and sanitized title='{project_title}' from <title> (Original: '{raw_title}').")
         else:
             logger.error("ProjectCreationWorkflow: <title> sub-element not found or empty in provided XML data by AgentWorkflowManager.")
             return WorkflowResult(
@@ -81,9 +85,14 @@ class ProjectCreationWorkflow(BaseWorkflow):
             if not manager.current_project or not manager.current_session:
                 raise ValueError("Cannot create PM agent: AgentManager is missing active project/session context.")
 
-            sanitized_project_title_for_id = re.sub(r'\W+', '_', project_title)
-            sanitized_session_name_for_id = re.sub(r'\W+', '_', manager.current_session)
-            pm_instance_id = f"pm_{sanitized_project_title_for_id}_{sanitized_session_name_for_id}"[:100] 
+            existing_pm_indices = []
+            for a_id, a_instance in manager.agents.items():
+                if getattr(a_instance, 'agent_type', '') == AGENT_TYPE_PM:
+                    match = re.match(r'^PM(\d+)$', a_id, re.IGNORECASE)
+                    if match:
+                        existing_pm_indices.append(int(match.group(1)))
+            next_pm_index = max(existing_pm_indices, default=0) + 1
+            pm_instance_id = f"PM{next_pm_index}"
             pm_bootstrap_config_id = "project_manager_agent"
 
             if pm_instance_id in manager.agents:

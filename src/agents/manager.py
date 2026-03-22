@@ -175,17 +175,18 @@ class AgentManager:
         if not project_record: project_record = await self.db_manager.add_project(name=project_name)
         if not project_record or project_record.id is None:
             logger.error(f"Failed to get or create project DB record for '{project_name}'!"); return
-        self.current_project_db_id = project_record.id
+        project_id = project_record.id
+        self.current_project_db_id = project_id # type: ignore[reportAttributeAccessIssue]
         if loading:
-            found_session_id = await self.db_manager.get_session_id_by_name(self.current_project_db_id, session_name)
-            if found_session_id: self.current_session_db_id = found_session_id
+            found_session_id = await self.db_manager.get_session_id_by_name(project_id, session_name) # type: ignore[reportArgumentType]
+            if found_session_id: self.current_session_db_id = found_session_id # type: ignore[reportAttributeAccessIssue]
             else:
-                 new_session_record = await self.db_manager.start_session(self.current_project_db_id, session_name)
-                 if new_session_record and new_session_record.id: self.current_session_db_id = new_session_record.id
+                 new_session_record = await self.db_manager.start_session(project_id, session_name) # type: ignore[reportArgumentType]
+                 if new_session_record and new_session_record.id: self.current_session_db_id = new_session_record.id # type: ignore[reportAttributeAccessIssue]
                  else: logger.error(f"Failed to create new DB session record for loaded session '{project_name}/{session_name}'!")
         else:
-            session_record = await self.db_manager.start_session(self.current_project_db_id, session_name)
-            if session_record and session_record.id: self.current_session_db_id = session_record.id
+            session_record = await self.db_manager.start_session(project_id, session_name) # type: ignore[reportArgumentType]
+            if session_record and session_record.id: self.current_session_db_id = session_record.id # type: ignore[reportAttributeAccessIssue]
             else: logger.error(f"Failed to start new DB session record for '{session_name}'!")
         logger.info(f"DB Context: ProjectID={self.current_project_db_id}, SessionID={self.current_session_db_id}")
 
@@ -206,6 +207,15 @@ class AgentManager:
         if success and created_agent_id and self.current_session_db_id is not None:
             agent = self.agents.get(created_agent_id)
             if agent: await self.db_manager.add_agent_record(session_id=self.current_session_db_id, agent_id=agent.agent_id, persona=agent.persona, model_config_dict=agent.agent_config.get("config", {}))
+
+            # FIX: Deactivate bootstrap project_manager_agent when a dynamic PM is created
+            if agent and agent.agent_type == AGENT_TYPE_PM and created_agent_id not in self.bootstrap_agents:
+                bootstrap_pm = self.agents.get("project_manager_agent")
+                if bootstrap_pm and bootstrap_pm.agent_type == AGENT_TYPE_PM:
+                    logger.info(f"AgentManager: Dynamic PM '{created_agent_id}' created. Deactivating bootstrap 'project_manager_agent' to prevent interference.")
+                    bootstrap_pm.state = 'pm_idle'
+                    bootstrap_pm.set_status(AGENT_STATUS_IDLE)
+
         elif success and created_agent_id: logger.warning(f"Agent '{created_agent_id}' created but cannot log to DB: current_session_db_id is None.")
         return success, message, created_agent_id
 
@@ -231,6 +241,11 @@ class AgentManager:
         except Exception as e:
             logger.error(f"Manager: FAILED to create asyncio task for agent '{agent.agent_id}' cycle: {e}", exc_info=True)
             return None
+
+    async def handle_user_override(self, override_data: Dict[str, Any]):
+        """Handle user override submission (stub)."""
+        logger.warning("handle_user_override is not fully implemented in AgentManager.")
+        pass
 
     async def handle_user_message(self, message: str, client_id: Optional[str] = None):
         if self.current_project is None or self.current_session_db_id is None:
@@ -624,6 +639,28 @@ class AgentManager:
 
         logger.info(f"AgentManager: Activating worker '{worker_agent_id}' for task ID '{task_id_from_tool}' with description: '{task_description_from_tool[:100]}...'")
 
+        # --- BLOCK PREEMPTIVE ACTIVATION IF WORKER IS BUSY ---
+        from src.agents.constants import WORKER_STATE_REPORT, WORKER_STATE_WORK
+        if worker_agent.state in [WORKER_STATE_REPORT, WORKER_STATE_WORK]:
+            logger.info(f"AgentManager: Worker '{worker_agent_id}' is currently in '{worker_agent.state}'. "
+                        f"Task '{task_id_from_tool}' is assigned but activation is deferred. "
+                        f"The worker will naturally pick it up after its current work/report.")
+            
+            # Queue the activation directive in the inbox so it's delivered when the state changes.
+            # We also defer setting the context variables so the worker's current cycle isn't corrupted.
+            activation_message = {
+                "role": "user",
+                "content": f"[Framework Directive]: You have been assigned a new task: {task_description_from_tool}\nThe system prompt has been updated with this goal. You MUST now begin executing it (request state change to worker_work if currently waiting).",
+                "_deferred_task_description": task_description_from_tool,
+                "_deferred_task_id": task_id_from_tool
+            }
+            if not hasattr(worker_agent, 'message_inbox'):
+                worker_agent.message_inbox = []
+            worker_agent.message_inbox.append(activation_message)
+            
+            return # Skip immediate state change and scheduling
+        # --- END BLOCK ---
+
         worker_agent._injected_task_description = task_description_from_tool
         worker_agent._needs_initial_work_context = True
         worker_agent.current_task_id = task_id_from_tool # Store the task ID as well
@@ -632,6 +669,35 @@ class AgentManager:
         self.workflow_manager.change_state(worker_agent, WORKER_STATE_WORK) # This also sets status to IDLE if state changes
         if worker_agent.status != AGENT_STATUS_IDLE: # If state didn't change but status was e.g. ERROR
             worker_agent.set_status(AGENT_STATUS_IDLE)
+
+        # --- Generate workspace file listing for shared awareness ---
+        workspace_listing = ""
+        try:
+            from pathlib import Path
+            if self.current_project and self.current_session:
+                safe_project_name = re.sub(r'[^\w\-. ]', '_', self.current_project)
+                workspace_path = settings.PROJECTS_BASE_DIR / safe_project_name / self.current_session / "shared_workspace"
+                workspace_path.mkdir(parents=True, exist_ok=True)
+                
+                # Auto-create whiteboard.md if it doesn't exist yet
+                whiteboard_path = workspace_path / "whiteboard.md"
+                if not whiteboard_path.exists():
+                    whiteboard_path.write_text(f"# {self.current_project} - Shared Whiteboard\n\nUse this file to share progress, designs, and notes with your teammates.\n\n")
+                    logger.info(f"AgentManager: Auto-created whiteboard.md for project '{self.current_project}'.")
+                
+                file_list = []
+                for item in sorted(workspace_path.rglob("*")):
+                    if item.is_file():
+                        rel = item.relative_to(workspace_path)
+                        file_list.append(str(rel))
+                if file_list:
+                    workspace_listing = "\n\n[SHARED WORKSPACE FILES - already created by your team]\n" + "\n".join(f"  - {f}" for f in file_list[:50])
+                    if len(file_list) > 50:
+                        workspace_listing += f"\n  ... and {len(file_list) - 50} more files"
+                    workspace_listing += "\nDo NOT recreate these files. Read them first if relevant to your task."
+                    logger.info(f"AgentManager: Generated workspace listing ({len(file_list)} files) for worker '{worker_agent_id}'.")
+        except Exception as e:
+            logger.warning(f"AgentManager: Could not generate workspace listing for '{worker_agent_id}': {e}")
 
         # CRITICAL FIX: Initialize the worker's message history with the proper system prompt
         # This ensures the worker has context when it starts its first cycle
@@ -643,7 +709,31 @@ class AgentManager:
             })
             logger.info(f"AgentManager: Initialized worker '{worker_agent_id}' with system prompt containing injected task context.")
         else:
-            logger.debug(f"AgentManager: Worker '{worker_agent_id}' already has message history, skipping system prompt initialization.")
+            logger.debug(f"AgentManager: Worker '{worker_agent_id}' already has message history. Injecting framework directive to wake from prior state.")
+            
+            # Condense the history for the worker to avoid blowing up context window
+            # Retain system prompt (index 0). Retain last 2-4 messages. Condense the rest.
+            if len(worker_agent.message_history) > 6:
+                # Keep system prompt
+                sys_prompt = worker_agent.message_history[0]
+                
+                # We can inject a summary message
+                summary_msg = {
+                    "role": "system",
+                    "content": "[Framework System Reminder]: This agent has preserved history from previous tasks. Older task execution details have been condensed to save memory. You retain your knowledge and capabilities."
+                }
+                
+                # Keep the last 4 messages to preserve immediate recent context (likely the transition to worker_wait)
+                recent_msgs = worker_agent.message_history[-4:]
+                
+                worker_agent.message_history = [sys_prompt, summary_msg] + recent_msgs
+                logger.info(f"AgentManager: Condensed history for worker '{worker_agent_id}' down to {len(worker_agent.message_history)} messages.")
+
+            # Wake up the worker with a system directive and workspace context so it knows what exists
+            worker_agent.message_history.append({
+                "role": "user",
+                "content": f"[Framework Directive]: You have been assigned a new task: {task_description_from_tool}\nThe system prompt has been updated with this goal. You MUST now begin executing it.{workspace_listing}"
+            })
 
         # Log this activation and context injection to DB for traceability
         if self.current_session_db_id:

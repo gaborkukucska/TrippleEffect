@@ -177,3 +177,73 @@ Okay, I can calculate that for you.
 ```
 
 The framework parses this, calls the execute method, and the tool's string result (e.g., "Calculation result: 123.45 multiply 67.8 = 8370.01") is added back into the agent's message history.
+
+## Implementing Modular Tool Help (`get_detailed_usage`)
+
+Tools should implement segmented help documentation via the `get_detailed_usage` method. This allows agents to request help for specific actions rather than receiving the entire documentation block, reducing token usage and improving context relevance.
+
+### How It Works
+
+The `BaseTool.get_detailed_usage()` method accepts an optional `sub_action` parameter:
+
+*   **No `sub_action`** → Return a concise summary listing all available actions with one-line descriptions, plus instructions for requesting detailed help.
+*   **With `sub_action`** → Return the common header + detailed parameters/examples for that specific action only.
+
+### Implementation Pattern
+
+```python
+def get_detailed_usage(self, agent_context: Optional[Dict] = None, sub_action: Optional[str] = None) -> str:
+    common_header = """
+**Tool Name:** my_tool
+**Description:** Brief description of what the tool does.
+"""
+    # Specific action help sections
+    action_details = {
+        "action_one": """
+**Action: action_one**
+Does something specific.
+*   `<param1>` (string, required): Description.
+*   `<param2>` (integer, optional): Description.
+""",
+        "action_two": """
+**Action: action_two**
+Does something else.
+*   `<param1>` (string, required): Description.
+""",
+    }
+
+    # If a specific sub_action is requested, return just that section
+    if sub_action and sub_action in action_details:
+        return common_header + action_details[sub_action]
+
+    # Otherwise, return summary with instructions to get specific help
+    return common_header + """
+**Available Actions Summary:**
+1.  **action_one:** Does something specific.
+2.  **action_two:** Does something else.
+
+**To get detailed instructions for a specific action, call:**
+<tool_information>
+  <action>get_info</action>
+  <tool_name>my_tool</tool_name>
+  <sub_action>ACTION_NAME</sub_action>
+</tool_information>
+"""
+```
+
+### Contextual Error Help Injection
+
+When a tool execution fails, the `ToolExecutor` automatically:
+1.  Extracts the `action` from the failed tool call arguments.
+2.  Calls `tool.get_detailed_usage(sub_action=action)` to get the relevant help section.
+3.  Passes this `action_help` to the `ToolErrorHandler`, which includes it in the error message sent back to the agent.
+
+This means agents automatically receive the relevant documentation for the specific action that failed, enabling them to self-correct without needing to request help manually.
+
+### Existing Implementations
+
+The following tools already implement modular help:
+*   `FileSystemTool` — 16 actions (`read`, `write`, `append`, `insert_lines`, `replace_lines`, `search_replace_block`, `list`, `mkdir`, `delete`, `find_replace`, `regex_replace`, `copy`, `move`, `git_commit`, `git_status`, `git_diff`)
+*   `ProjectManagementTool` — 4 actions (`add_task`, `modify_task`, `get_tasks`, `get_project_state`)
+*   `ManageTeamTool` — 4 actions (`create_agent`, `set_agent_state`, `send_message`, `get_team_status`)
+

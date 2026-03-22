@@ -16,6 +16,7 @@ from src.tools.manage_team import ManageTeamTool
 from src.agents.constants import AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER
 from src.tools.project_management import ProjectManagementTool
 from src.api.websocket_manager import broadcast
+from src.tools.error_handler import tool_error_handler, ErrorType
 
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ class ToolExecutor:
         # Tool execution robustness settings
         self._max_retry_attempts = 3
         self._retry_delay_seconds = 1.0
-        self._execution_stats = {
+        self._execution_stats: Dict[str, Any] = {
             "total_attempts": 0,
             "successful_executions": 0, 
             "failed_executions": 0,
@@ -243,7 +244,7 @@ class ToolExecutor:
         """Get current execution statistics"""
         stats = self._execution_stats.copy()
         if stats["total_attempts"] > 0:
-            stats["success_rate"] = round((stats["successful_executions"] / stats["total_attempts"]) * 100, 2)
+            stats["success_rate"] = float(round((stats["successful_executions"] / stats["total_attempts"]) * 100, 2))
         else:
             stats["success_rate"] = 0.0
         return stats
@@ -334,6 +335,68 @@ class ToolExecutor:
         error_lower = error_msg.lower()
         return any(pattern in error_lower for pattern in recoverable_patterns)
 
+    def _generate_enhanced_error_response(
+        self, 
+        error_type: ErrorType, 
+        tool_name: str, 
+        tool_args: Dict[str, Any], 
+        agent_id: str,
+        agent_context: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Generate enhanced error response using the centralized error handler"""
+        
+        tool_schema = None
+        available_actions = None
+        action_help = None
+        attempted_action = tool_args.get("action") if tool_args else None
+        
+        if tool_name in self.tools:
+            tool = self.tools[tool_name]
+            tool_schema = tool.get_schema()
+            
+            # Extract available actions from tool's get_detailed_usage if possible
+            try:
+                detailed_usage = tool.get_detailed_usage()
+                # Simple extraction of actions from usage text - could be enhanced
+                import re
+                action_matches = re.findall(r"action.*?['\"]([\w_]+)['\"]", detailed_usage, re.IGNORECASE)
+                if action_matches:
+                    available_actions = list(set(action_matches))
+                
+                # If we have an attempted action, try to fetch specific action help docs
+                if attempted_action:
+                    try:
+                        specific_help = tool.get_detailed_usage(agent_context=agent_context, sub_action=attempted_action)
+                        if specific_help:
+                            action_help = specific_help
+                    except Exception as help_err:
+                        logger.debug(f"Could not fetch action_help for sub_action {attempted_action}: {help_err}")
+            except Exception:
+                pass
+        
+        # Build agent context
+        if not agent_context:
+            agent_context = {"agent_id": agent_id}
+            
+        # Generate enhanced error response
+        error_response = tool_error_handler.generate_enhanced_error_response(
+            error_type=error_type,
+            tool_name=tool_name,
+            attempted_action=attempted_action,
+            tool_args=tool_args,
+            agent_context=agent_context,
+            available_actions=available_actions,
+            tool_schema=tool_schema,
+            action_help=action_help
+        )
+        
+        # Record error pattern for learning
+        pattern = error_response["learning_data"]["pattern"]
+        tool_error_handler.record_error_pattern(pattern, agent_id)
+        
+        # Format for agent consumption
+        return tool_error_handler.format_error_for_agent(error_response)
+
     def _generate_fallback_response(self, tool_name: str, tool_args: Dict[str, Any], error_msg: str) -> Any:
         """Generate a fallback response when tool execution fails completely"""
         fallback_response = {
@@ -382,13 +445,23 @@ class ToolExecutor:
         
         tool = self.tools.get(tool_name)
         if not tool:
-            error_msg = f"Error: Tool '{tool_name}' not found. Available tools: {list(self.tools.keys())}"
-            logger.error(f"[TOOL_EXEC_ERROR] ID:{execution_id} | {error_msg}")
+            agent_type_for_auth = "unknown"
+            # Use enhanced error handler for tool not found
+            agent_context_dict = {
+                "agent_id": agent_id,
+                "agent_type": agent_type_for_auth
+            }
+            enhanced_error = self._generate_enhanced_error_response(
+                ErrorType.TOOL_NOT_FOUND, tool_name, tool_args, agent_id, agent_context_dict
+            )
+            
+            logger.error(f"[TOOL_EXEC_ERROR] ID:{execution_id} | Tool '{tool_name}' not found")
             self._update_execution_stats(success=False)
+            
             if tool_name == ManageTeamTool.name: 
-                return {"status": "error", "action": tool_args.get("action"), "message": error_msg, "execution_id": execution_id}
+                return {"status": "error", "action": tool_args.get("action"), "message": enhanced_error, "execution_id": execution_id}
             else:
-                return f"{error_msg} [ID:{execution_id}]"
+                return f"{enhanced_error} [ID:{execution_id}]"
 
         original_state = None
         current_agent_instance_for_tool_call = None 
@@ -403,33 +476,33 @@ class ToolExecutor:
             agent_type_for_auth = "framework" 
             logger.debug(f"ToolExecutor: Allowing tool '{tool_name}' for internal framework call by '{agent_id}'.")
         elif manager and hasattr(manager, 'agents') and isinstance(manager.agents, dict):
-            # --- MORE DETAILED LOGGING FOR THE MANAGER AND AGENTS DICT ITSELF ---
-            logger.critical(f"ToolExecutor: Auth: Manager object received by execute_tool: id={id(manager)}, type={type(manager)}")
-            logger.critical(f"ToolExecutor: Auth: manager.agents dictionary ID: {id(manager.agents)}")
-            logger.critical(f"ToolExecutor: Auth: Attempting lookup for agent_id='{agent_id}' (type: {type(agent_id)}, repr: {repr(agent_id)})")
+            # --- DEBUG LOGGING FOR AUTH ---
+            logger.debug(f"ToolExecutor: Auth: Manager object received by execute_tool: id={id(manager)}, type={type(manager)}")
+            logger.debug(f"ToolExecutor: Auth: manager.agents dictionary ID: {id(manager.agents)}")
+            logger.debug(f"ToolExecutor: Auth: Attempting lookup for agent_id='{agent_id}' (type: {type(agent_id)}, repr: {repr(agent_id)})")
             current_manager_agents_keys = list(manager.agents.keys()) # Snapshot before get
-            logger.critical(f"ToolExecutor: Auth: Keys in manager.agents ({len(current_manager_agents_keys)}) BEFORE get: {current_manager_agents_keys}")
-            
+            logger.debug(f"ToolExecutor: Auth: Keys in manager.agents ({len(current_manager_agents_keys)}) BEFORE get: {current_manager_agents_keys}")
+
             current_agent_instance_for_tool_call = manager.agents.get(agent_id) # THE LOOKUP
-            
+
             is_key_present_after_get = agent_id in manager.agents # Check again after get, though unlikely to change
-            logger.critical(f"ToolExecutor: Auth: Is agent_id='{agent_id}' in manager.agents keys AFTER get? {is_key_present_after_get}")
-            # --- END MORE DETAILED LOGGING ---
+            logger.debug(f"ToolExecutor: Auth: Is agent_id='{agent_id}' in manager.agents keys AFTER get? {is_key_present_after_get}")
+            # --- END AUTH DEBUG LOGGING ---
             
             if current_agent_instance_for_tool_call:
                 original_state = current_agent_instance_for_tool_call.state
                 agent_type_for_auth = getattr(current_agent_instance_for_tool_call, 'agent_type', AGENT_TYPE_WORKER) 
-                logger.critical(f"ToolExecutor: Auth: Found agent instance for '{agent_id}'. Original state: '{original_state}', Determined Type for Auth: '{agent_type_for_auth}', Tool auth level: '{tool_auth_level}'")
+                logger.debug(f"ToolExecutor: Auth: Found agent instance for '{agent_id}'. Original state: '{original_state}', Determined Type for Auth: '{agent_type_for_auth}', Tool auth level: '{tool_auth_level}'")
 
                 if agent_type_for_auth == AGENT_TYPE_ADMIN:
-                    is_authorized = True 
-                    logger.critical(f"ToolExecutor: Auth: ADMIN agent '{agent_id}' authorized for tool '{tool_name}'")
+                    is_authorized = True
+                    logger.debug(f"ToolExecutor: Auth: ADMIN agent '{agent_id}' authorized for tool '{tool_name}'")
                 elif agent_type_for_auth == AGENT_TYPE_PM:
                     is_authorized = tool_auth_level in [AGENT_TYPE_PM, AGENT_TYPE_WORKER]
-                    logger.critical(f"ToolExecutor: Auth: PM agent '{agent_id}' authorization check: tool_auth_level='{tool_auth_level}' in ['pm', 'worker'] = {is_authorized}")
+                    logger.debug(f"ToolExecutor: Auth: PM agent '{agent_id}' authorization check: tool_auth_level='{tool_auth_level}' in ['pm', 'worker'] = {is_authorized}")
                 elif agent_type_for_auth == AGENT_TYPE_WORKER:
                     is_authorized = tool_auth_level == AGENT_TYPE_WORKER
-                    logger.critical(f"ToolExecutor: Auth: WORKER agent '{agent_id}' authorization check: tool_auth_level='{tool_auth_level}' == 'worker' = {is_authorized}")
+                    logger.debug(f"ToolExecutor: Auth: WORKER agent '{agent_id}' authorization check: tool_auth_level='{tool_auth_level}' == 'worker' = {is_authorized}")
                 else: 
                     logger.error(f"ToolExecutor: Auth: Unknown agent type '{agent_type_for_auth}' for agent '{agent_id}'. Denying tool use.")
             else:
@@ -473,17 +546,22 @@ class ToolExecutor:
                     corrected_action = action_corrections[action]
                     logger.info(f"Auto-correcting file_system action '{action}' to '{corrected_action}' for agent {agent_id}")
                     tool_args['action'] = corrected_action
-
+            elif tool_name == 'send_message':
+                if "target_agent_id" not in tool_args:
+                    alias = tool_args.get("target") or tool_args.get("agent") or tool_args.get("recipient") or tool_args.get("to")
+                    if alias: tool_args["target_agent_id"] = alias
+                if "message_content" not in tool_args:
+                    alias = tool_args.get("content") or tool_args.get("message") or tool_args.get("text")
+                    if alias: tool_args["message_content"] = alias
+                    
             schema = tool.get_schema()
-            validated_args = {}
+            validated_args = tool_args.copy()
             missing_required = []
             if schema.get('parameters'):
                 for param_info in schema['parameters']:
                     param_name = param_info['name']
                     is_required = param_info.get('required', True)
-                    if param_name in tool_args:
-                        validated_args[param_name] = tool_args[param_name]
-                    elif is_required:
+                    if param_name not in tool_args and is_required:
                         missing_required.append(param_name)
 
             if missing_required:

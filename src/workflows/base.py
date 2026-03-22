@@ -1,7 +1,7 @@
 # START OF FILE src/workflows/base.py
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List, Tuple, TYPE_CHECKING
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 import xml.etree.ElementTree as ET
 
 if TYPE_CHECKING:
@@ -18,12 +18,7 @@ class WorkflowResult(BaseModel):
     ui_message_data: Optional[Dict[str, Any]] = Field(default=None, description="Data to be sent to the UI, if any.")
     tasks_to_schedule: Optional[List[Tuple['Agent', int]]] = Field(default=None, description="List of (Agent, retry_count) tuples for cycles to be scheduled by the manager.")
 
-    class Config:
-        arbitrary_types_allowed = True
-
-    @classmethod
-    def PydanticConfig(cls):
-         return cls.Config
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     @classmethod
     def update_refs(cls, **localns: Any) -> None:

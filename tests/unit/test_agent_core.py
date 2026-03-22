@@ -35,6 +35,7 @@ class TestAgentProcessMessageToolCalls(unittest.TestCase):
         self.mock_manager.db_manager = AsyncMock() # For db logging if any path hits it
         self.mock_manager.cycle_handler = MagicMock() # For state request pattern if needed
         self.mock_manager.cycle_handler.request_state_pattern = re.compile(r"<request_state state='(\w+)'>")
+        self.mock_manager.cycle_handler._detect_potential_tool_calls.return_value = False
 
 
         # Agent configuration
@@ -62,7 +63,7 @@ class TestAgentProcessMessageToolCalls(unittest.TestCase):
 
 
     async def run_process_message_and_collect_events(self, stream_events: list):
-        self.mock_llm_provider.stream_completion = AsyncMock(return_value=self._async_generator_from_list(stream_events))
+        self.mock_llm_provider.stream_completion = MagicMock(return_value=self._async_generator_from_list(stream_events))
         
         collected_events = []
         # The agent.process_message is an async generator
@@ -85,7 +86,7 @@ class TestAgentProcessMessageToolCalls(unittest.TestCase):
             {"type": "response_chunk", "content": raw_tool_call_xml}
         ]
         # Mock find_and_parse_xml_tool_calls
-        mock_find_parse.return_value = [(tool_name, tool_args, raw_tool_call_xml)]
+        mock_find_parse.return_value = {"valid_calls": [(tool_name, tool_args, (0, len(raw_tool_call_xml)))], "parsing_errors": []}
 
         events = asyncio.run(self.run_process_message_and_collect_events(llm_response_events))
         
@@ -116,10 +117,17 @@ class TestAgentProcessMessageToolCalls(unittest.TestCase):
             {"type": "response_chunk", "content": full_llm_response_content}
         ]
         # Mock find_and_parse_xml_tool_calls to return multiple calls
-        mock_find_parse.return_value = [
-            (tool1_name, tool1_args, raw_tool1_xml),
-            (tool2_name, tool2_args, raw_tool2_xml)
-        ]
+        span1_start = 0
+        span1_end = len(raw_tool1_xml)
+        span2_start = len(raw_tool1_xml) + 1 # +1 for newline
+        span2_end = span2_start + len(raw_tool2_xml)
+        mock_find_parse.return_value = {
+            "valid_calls": [
+                (tool1_name, tool1_args, (span1_start, span1_end)),
+                (tool2_name, tool2_args, (span2_start, span2_end))
+            ],
+            "parsing_errors": []
+        }
 
         events = asyncio.run(self.run_process_message_and_collect_events(llm_response_events))
 
@@ -141,9 +149,9 @@ class TestAgentProcessMessageToolCalls(unittest.TestCase):
 
         # Check logger.info for processing all
         self.assertTrue(mock_log_info.called)
-        info_args, _ = mock_log_info.call_args
-        self.assertIn("found 2 tool calls", info_args[0])
-        self.assertIn("Processing all", info_args[0])
+        log_msgs = [call[0][0] for call in mock_log_info.call_args_list]
+        self.assertTrue(any("found 2 tool calls" in msg for msg in log_msgs))
+        self.assertTrue(any("Processing all" in msg for msg in log_msgs))
 
         # Check logger.debug for preparing to yield
         self.assertTrue(mock_log_debug.called)
@@ -157,7 +165,7 @@ class TestAgentProcessMessageToolCalls(unittest.TestCase):
         llm_response_events = [
             {"type": "response_chunk", "content": plain_text_response}
         ]
-        mock_find_parse.return_value = [] # No tools found
+        mock_find_parse.return_value = {"valid_calls": [], "parsing_errors": []} # No tools found
 
         events = asyncio.run(self.run_process_message_and_collect_events(llm_response_events))
 
@@ -184,7 +192,7 @@ class TestAgentProcessMessageToolCalls(unittest.TestCase):
         ]
         
         # find_and_parse_xml_tool_calls will be called with the text *after* the think tag is removed.
-        mock_find_parse.return_value = [(tool_name, tool_args, raw_tool_call_xml)]
+        mock_find_parse.return_value = {"valid_calls": [(tool_name, tool_args, (0, len(raw_tool_call_xml)))], "parsing_errors": []}
 
         events = asyncio.run(self.run_process_message_and_collect_events(llm_response_events))
 

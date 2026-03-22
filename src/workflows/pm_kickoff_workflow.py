@@ -1,7 +1,7 @@
 # START OF FILE src/workflows/pm_kickoff_workflow.py
 import logging
 import xml.etree.ElementTree as ET
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional
 
 from .base import BaseWorkflow, WorkflowResult
 from src.agents.constants import (
@@ -25,8 +25,8 @@ class PMKickoffWorkflow(BaseWorkflow):
     """
     name: str = "pm_project_kickoff"
     trigger_tag_name: str = "kickoff_plan"  # PM directly outputs this new tag
-    allowed_agent_type: str = AGENT_TYPE_PM
-    allowed_agent_state: str = PM_STATE_STARTUP
+    allowed_agent_type: Optional[str] = AGENT_TYPE_PM
+    allowed_agent_state: Optional[str] = PM_STATE_STARTUP
     description: str = (
         "Processes a PM's kickoff plan from <kickoff_plan> XML, creating tasks "
         "in TaskWarrior, storing the identified unique roles, and transitioning "
@@ -49,12 +49,12 @@ class PMKickoffWorkflow(BaseWorkflow):
         self,
         manager: 'AgentManager',
         agent: 'Agent',  # This will be the PM agent
-        xml_data: ET.Element  # This is the <kickoff_plan> element
+        data_input: Any  # This is the <kickoff_plan> element (ET.Element)
     ) -> WorkflowResult:
         logger.info(f"Executing PMKickoffWorkflow for PM agent '{agent.agent_id}'.")
 
         # --- Extract Roles ---
-        roles_element = xml_data.find("roles")
+        roles_element = data_input.find("roles")
         role_names: List[str] = []
         if roles_element is not None:
             for role_element in roles_element.findall("role"):
@@ -74,7 +74,7 @@ class PMKickoffWorkflow(BaseWorkflow):
         logger.info(f"PMKickoffWorkflow: Extracted {len(role_names)} unique roles for agent '{agent.agent_id}': {role_names}")
 
         # --- Extract Tasks ---
-        tasks_element = xml_data.find("tasks")
+        tasks_element = data_input.find("tasks")
         task_descriptions: List[str] = []
         if tasks_element is not None:
             for task_element in tasks_element.findall("task"):
@@ -152,6 +152,7 @@ class PMKickoffWorkflow(BaseWorkflow):
         if all_tasks_created_successfully:
             logger.info(f"PMKickoffWorkflow: All tasks created for PM '{agent.agent_id}'. Preparing successful result with reschedule.")
             agent.clear_history()
+            agent._last_system_prompt_state = None  # Force fresh prompt generation after history clear
             logger.info(f"PMKickoffWorkflow: Cleared history for PM agent '{agent.agent_id}' before transitioning to PM_STATE_BUILD_TEAM_TASKS.")
 
             # Store the identified roles and tasks on the agent for the next state
@@ -231,28 +232,48 @@ class PMKickoffWorkflow(BaseWorkflow):
                     logger.error(f"PMKickoffWorkflow: Exception while trying to complete initial project plan task '{initial_project_task_uuid_to_complete}': {e_complete}", exc_info=True)
             # --- END MODIFICATION ---
 
-            # Format the roles and tasks for inclusion in the message
-            formatted_role_list = "\n".join([f"- {role}" for role in role_names])
-            formatted_task_list = "\n".join([f"{i+1}. {desc}" for i, desc in enumerate(task_descriptions)])
+            # NOTE: create_team and tool_information auto-execution has been REMOVED
+            # from this workflow. The cycle_handler.py handles these operations when
+            # the PM naturally calls those tools, preventing double-execution that
+            # caused confusion and duplicate actions.
+            team_id = f"team_{project_context}"
 
+            # Format the roles and tasks for inclusion in the message
+            formatted_role_xml = "\n".join([f"    <role>{role}</role>" for role in role_names])
+            formatted_task_xml = "\n".join([f"    <task>{desc}</task>" for desc in task_descriptions])
+
+            first_role_to_create = role_names[0] if role_names else "Worker"
+            
             directive_message_content = (
                 "[Framework System Message]\n"
                 "Your previous state 'pm_startup' and its associated plan are complete.\n\n"
                 "**MASTER KICKOFF PLAN SUMMARY**\n"
-                "**Identified Roles for Team:**\n{formatted_role_list}\n\n"
-                "**Kick-off Tasks Created:**\n{formatted_task_list}\n\n"
-                "You are NOW in state 'pm_build_team_tasks'.\n"
-                "Your SOLE FOCUS now is to build the team by creating one agent for each of the unique roles listed above. "
-                "Follow the workflow in your new system prompt precisely."
+                "<kickoff_plan>\n"
+                "  <roles>\n"
+                "{formatted_role_xml}\n"
+                "  </roles>\n"
+                "  <tasks>\n"
+                "{formatted_task_xml}\n"
+                "  </tasks>\n"
+                "</kickoff_plan>\n\n"
+                "You are NOW in state 'pm_build_team_tasks'.\n\n"
+                "**YOUR WORKFLOW:**\n"
+                "Step 1: Create a team using '<manage_team><action>create_team</action><team_id>{team_id}</team_id></manage_team>'\n"
+                "Step 2: The framework will automatically retrieve create_agent tool info for you.\n"
+                "Step 3: Create one worker agent per role listed above. Do NOT create duplicate roles.\n"
+                "Step 4: Once all roles are filled, request state change to 'pm_activate_workers'.\n\n"
+                "Your MANDATORY FIRST ACTION is Step 1: Create the team '{team_id}'.\n"
+                f"Your FIRST role to create after the team is formed will be: **'{first_role_to_create}'**."
             )
 
             final_directive_content = directive_message_content.format(
-                formatted_role_list=formatted_role_list,
-                formatted_task_list=formatted_task_list
+                formatted_role_xml=formatted_role_xml,
+                formatted_task_xml=formatted_task_xml,
+                team_id=team_id
             )
 
-            agent.message_history.append({"role": "system", "content": final_directive_content})
-            logger.info(f"PMKickoffWorkflow: Injected directive system message for PM agent '{agent.agent_id}' for state PM_STATE_BUILD_TEAM_TASKS, detailing {len(task_descriptions)} kick-off tasks with explicit numbering.")
+            agent.message_history.append({"role": "user", "content": final_directive_content})
+            logger.info(f"PMKickoffWorkflow: Injected directive user message for PM agent '{agent.agent_id}' for state PM_STATE_BUILD_TEAM_TASKS, detailing {len(task_descriptions)} kick-off tasks with explicit numbering.")
 
             return WorkflowResult(
                 success=True,

@@ -123,7 +123,7 @@ class GitHubTool(BaseTool):
         logger.debug(f"Making GitHub request: {method} {url} Params: {params}")
         try:
             async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.request(method, url, params=params, timeout=20) as response:
+                async with session.request(method, url, params=params, timeout=aiohttp.ClientTimeout(total=20)) as response:
                     remaining = response.headers.get("X-RateLimit-Remaining")
                     reset_time = response.headers.get("X-RateLimit-Reset")
                     if remaining and reset_time:
@@ -161,7 +161,7 @@ class GitHubTool(BaseTool):
         except FileNotFoundError as e: raise e
         except PermissionError as e: raise e
         except aiohttp.ClientError as e: logger.error(f"HTTP Client Error making GitHub request to {url}: {e}"); raise Exception(f"Network error accessing GitHub API: {e}") from e
-        except asyncio.TimeoutError: logger.error(f"Timeout error making GitHub request to {url}"); raise Exception("Timeout connecting to GitHub API.") from e
+        except asyncio.TimeoutError as e: logger.error(f"Timeout error making GitHub request to {url}"); raise Exception("Timeout connecting to GitHub API.") from e
         except Exception as e:
              if not isinstance(e, (FileNotFoundError, PermissionError, ValueError)):
                  logger.error(f"Unexpected error during GitHub request to {url}: {e}", exc_info=True)
@@ -327,7 +327,7 @@ class GitHubTool(BaseTool):
                              if file_size > MAX_DOWNLOAD_SIZE:
                                  return {"status": "error", "message": f"File '{path}' is too large ({file_size} bytes) to download directly."}
                              async with aiohttp.ClientSession() as dl_session:
-                                 async with dl_session.get(download_url, timeout=30) as dl_response:
+                                 async with dl_session.get(download_url, timeout=aiohttp.ClientTimeout(total=30)) as dl_response:
                                      if dl_response.status == 200:
                                          content_bytes = await dl_response.read()
                                      else:
@@ -361,3 +361,5 @@ class GitHubTool(BaseTool):
         except Exception as e:
             logger.error(f"Unexpected error executing GitHub tool ({action}) for agent {agent_id}: {e}", exc_info=True)
             return {"status": "error", "message": f"Error executing GitHub tool ({action}): {type(e).__name__} - {e}"}
+            
+        return {"status": "error", "message": f"Execution reached an unexpected path for action {action}."}

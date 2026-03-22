@@ -141,6 +141,44 @@ else
 fi
 # --- End Taskwarrior Check ---
 
+# --- Nmap Check and Installation ---
+echo "Checking for 'nmap' command-line tool..."
+if ! command -v nmap &> /dev/null
+then
+    echo "nmap not found. Attempting to install it automatically for local API discovery..."
+    INSTALL_CMD=""
+    if [ "$OS_TYPE" == "linux" ]; then
+        if command -v apt-get &> /dev/null; then
+            INSTALL_CMD="sudo apt-get update && sudo apt-get install -y nmap"
+        elif command -v dnf &> /dev/null; then
+            INSTALL_CMD="sudo dnf install -y nmap"
+        elif command -v yum &> /dev/null; then
+            INSTALL_CMD="sudo yum install -y nmap"
+        elif command -v pacman &> /dev/null; then
+            INSTALL_CMD="sudo pacman -S --noconfirm nmap"
+        fi
+    elif [ "$OS_TYPE" == "macos" ]; then
+        if command -v brew &> /dev/null; then
+            INSTALL_CMD="brew install nmap"
+        fi
+    fi
+
+    if [ -n "$INSTALL_CMD" ]; then
+        echo "Running: $INSTALL_CMD"
+        eval "$INSTALL_CMD"
+        if [ $? -eq 0 ]; then
+            echo "✅ nmap successfully installed."
+        else
+            echo "🔴 Failed to install nmap automatically. Local API scanning may be disabled."
+        fi
+    else
+        echo "🔴 Could not determine how to install nmap on this OS. Please install it manually if desired."
+    fi
+else
+    echo "✅ nmap is installed."
+fi
+# --- End Nmap Check ---
+
 # --- .env File and API Key Setup ---
 ENV_FILE=".env"
 ENV_EXAMPLE_FILE=".env.example"

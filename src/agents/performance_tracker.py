@@ -96,6 +96,7 @@ class ModelPerformanceTracker:
         """Asynchronously saves the current metrics to the JSON file."""
         async with self._lock:
             logger.info(f"Saving performance metrics to: {self.metrics_file}")
+            temp_file_path: Optional[Path] = None
             try:
                 # Ensure directory exists just before saving
                 await asyncio.to_thread(self._ensure_data_dir)

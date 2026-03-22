@@ -40,6 +40,9 @@ export const handleWebSocketMessage = (data) => {
                 if (!statusPayload.agent_id && agentId) statusPayload.agent_id = agentId;
                 updateKnownAgentStatus(agentId, statusPayload);
                 triggerStatusRedraw = true;
+                
+                // Trigger UI loading indicator
+                ui.updateAgentLoadingIndicator(agentId, statusPayload.status, statusPayload.persona || agentPersona);
             } else {
                  console.warn("Handler: Received agent_status_update without valid status object:", data);
             }
@@ -76,7 +79,16 @@ export const handleWebSocketMessage = (data) => {
              triggerStatusRedraw = true;
         } else if (messageType === 'session_loaded') {
             console.log("Handler: Handling session_loaded event.");
-            if (DOM.conversationArea) DOM.conversationArea.innerHTML = ''; // Clear chat
+            if (DOM.conversationArea) {
+                DOM.conversationArea.innerHTML = ''; // Clear chat
+                
+                // Show System Loading message
+                const loadingMsg = document.createElement('div');
+                loadingMsg.id = 'system-loading-indicator';
+                loadingMsg.className = 'message status loading-indicator agent_response';
+                loadingMsg.innerHTML = '<span class="agent-label">System:</span><span class="message-content" style="opacity:0.6"><i>System Loading...</i></span>';
+                DOM.conversationArea.appendChild(loadingMsg);
+            }
             ws.sendMessage(JSON.stringify({ type: 'get_full_status' }));
             triggerStatusRedraw = true;
         }
@@ -172,6 +184,23 @@ export const handleWebSocketMessage = (data) => {
                 shouldDisplay = true; // Let displayMessage handle it
                 break;
 
+            case 'constitutional_guardian_intervention':
+                console.log("Handler: Formatting constitutional_guardian_intervention for internal comms", data);
+                displayAgentId = escapeHTML(data.agent_id || 'system');
+                displayPersonaForUI = 'Constitutional Guardian';
+                const severity = escapeHTML(data.severity || 'info');
+                const interventionType = escapeHTML(data.intervention_type || 'general');
+                const desc = escapeHTML(data.description || 'Intervention triggered.');
+                
+                displayContent = `<strong style="color:var(--accent-color);">[GUARDIAN INTERVENTION: ${interventionType.toUpperCase()}]</strong>
+                                  <br>Severity: <em>${severity}</em>
+                                  <br>${desc}`;
+                
+                displayType = 'system_event';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
             case 'cg_concern': // Renamed from constitutional_concern
                 console.log("Handler: Formatting cg_concern for main chat", data);
                 // Fields based on observed log: { agent_id, concern_details, original_text, type: "cg_concern" }
@@ -228,6 +257,10 @@ export const handleWebSocketMessage = (data) => {
                      targetAreaId = 'internal-comms-area';
                      displayType = 'response_chunk';
                  }
+                 
+                 // Clear indicator when stream starts
+                 ui.clearAgentLoadingIndicator(displayAgentId);
+                 
                  // Handle empty chunks if necessary
                  if (displayContent === undefined || displayContent === null) {
                      displayContent = '[Empty Chunk]';
@@ -236,6 +269,13 @@ export const handleWebSocketMessage = (data) => {
                  break;
             case 'agent_response': // Assuming this is used for the final complete message from Admin AI
             case 'final_response': // Handling both just in case
+                 // Remove System Loading message if it exists
+                 const sysLoading = document.getElementById('system-loading-indicator');
+                 if (sysLoading) sysLoading.remove();
+                 
+                 // Clear indicator when stream completes
+                 ui.clearAgentLoadingIndicator(displayAgentId);
+                 
                  if (agentId === 'admin_ai') {
                      targetAreaId = 'conversation-area'; // <<< CORRECT: Final message goes to main chat
                      displayType = 'agent_response'; // Style as agent response
@@ -383,6 +423,15 @@ export const handleWebSocketMessage = (data) => {
                 shouldDisplay = true;
                 break;
 
+            case 'constitutional_guardian_intervention':
+                console.log("Handler: Explicitly handling constitutional_guardian_intervention for", data.agent_id);
+                displayContent = `🚨 CG Intervention (${escapeHTML(data.agent_id || 'Unknown Agent')}): ${escapeHTML(data.intervention_type || data.content || 'Pattern Detected')}`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'system_event';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
             case 'awaiting_user_review_cg': // From logs: "Final status for this attempt: awaiting_user_review_cg"
                 console.log("Handler: Explicitly handling awaiting_user_review_cg for", data.agent_id);
                 displayContent = `⏳ Awaiting User Review (${escapeHTML(data.agent_id || 'Unknown Agent')}): Constitutional Guardian review pending`;
@@ -451,6 +500,34 @@ export const handleWebSocketMessage = (data) => {
                 targetAreaId = 'internal-comms-area';
                 shouldDisplay = true;
                 break;
+            case 'context_summarization':
+                console.log("Handler: Explicitly handling context_summarization for", data.agent_id);
+                displayContent = `📝 Context Summarized (${escapeHTML(data.agent_id || 'Unknown Agent')}): ${data.original_message_count || '?'} → ${data.summarized_message_count || '?'} messages`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'system_event';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
+            case 'cg_cycle_blocked':
+            case 'cycle_blocked':
+                console.log(`Handler: Explicitly handling ${messageType} for`, data.agent_id);
+                displayContent = `⏸️ Cycle Blocked (${escapeHTML(data.agent_id || 'Unknown Agent')}): ${escapeHTML(data.message || 'Blocked')}`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'system_event';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
+            case 'xml_recovery_success':
+                console.log("Handler: Explicitly handling xml_recovery_success for", data.agent_id);
+                displayContent = `🔧 XML Recovery (${escapeHTML(data.agent_id || 'Unknown Agent')}): Recovered ${data.recovered_calls || '?'} tool call(s)`;
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'system_event';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
             // --- END NEW handlers ---
 
             default:
