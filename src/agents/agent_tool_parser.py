@@ -197,11 +197,15 @@ def find_and_parse_xml_tool_calls(
         # IMPORTANT: Also escape content in ALIAS tags that LLMs commonly use instead of schema names
         PARAM_ALIAS_MAP = {
             "file_system": {
-                "search_block": ["search", "search_string", "find", "find_text", "search_text"],
-                "replace_block": ["replace", "replacement", "replace_string", "replace_text"],
+                "search_block": ["search", "search_string", "find", "find_text", "search_text", "search_term"],
+                "replace_block": ["replace", "replacement", "replace_string", "replace_text", "replace_term"],
                 "filename": ["filepath", "file_path", "file_name", "path", "file"],
                 "file_content": ["content", "text", "data", "body"],
                 "new_content": ["content", "text", "new_text"],
+            },
+            "send_message": {
+                "message_content": ["content", "message", "text"],
+                "target_agent_id": ["target", "agent", "recipient", "to"],
             }
         }
         

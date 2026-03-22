@@ -546,7 +546,14 @@ class ToolExecutor:
                     corrected_action = action_corrections[action]
                     logger.info(f"Auto-correcting file_system action '{action}' to '{corrected_action}' for agent {agent_id}")
                     tool_args['action'] = corrected_action
-
+            elif tool_name == 'send_message':
+                if "target_agent_id" not in tool_args:
+                    alias = tool_args.get("target") or tool_args.get("agent") or tool_args.get("recipient") or tool_args.get("to")
+                    if alias: tool_args["target_agent_id"] = alias
+                if "message_content" not in tool_args:
+                    alias = tool_args.get("content") or tool_args.get("message") or tool_args.get("text")
+                    if alias: tool_args["message_content"] = alias
+                    
             schema = tool.get_schema()
             validated_args = tool_args.copy()
             missing_required = []

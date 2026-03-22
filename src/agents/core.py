@@ -397,10 +397,27 @@ class Agent:
                          hasattr(self.manager.cycle_handler, '_detect_potential_tool_calls') and \
                          self.manager.cycle_handler._detect_potential_tool_calls(final_cleaned_response_for_tools_or_text):
                         logger.warning(f"Agent {self.agent_id}: Detected potential tool calls but parsing failed completely.")
+                        
+                        # Diagnose specific XML issues to give better feedback
+                        issues = []
+                        tool_names = list(self.manager.tool_executor.tools.keys()) if self.manager.tool_executor else []
+                        for tool in tool_names:
+                            open_tags = len(re.findall(rf"<{tool}\b[^>]*>", final_cleaned_response_for_tools_or_text, re.IGNORECASE))
+                            close_tags = len(re.findall(rf"</{tool}>", final_cleaned_response_for_tools_or_text, re.IGNORECASE))
+                            if open_tags > close_tags:
+                                issues.append(f"You opened <{tool}> {open_tags} time(s) but only closed it {close_tags} time(s). Every tool call MUST end with </{tool}>.")
+                            elif close_tags > open_tags:
+                                issues.append(f"You have {close_tags} </{tool}> closing tags but only {open_tags} opening <{tool}> tags.")
+                        
+                        if not issues:
+                            issues.append("Check for missing ending tags (like </action> or </content>), unescaped characters like '<' or '&' inside your parameters, or text appearing outside the XML blocks.")
+                            
+                        specific_error_msg = "Tool call detected but parsing failed. Please fix these issues:\n- " + "\n- ".join(issues)
+                        
                         yield {
                             "type": "malformed_tool_call",
                             "tool_name": "unknown", 
-                            "error_message": "Tool call detected but parsing failed. Please ensure proper XML format.",
+                            "error_message": specific_error_msg,
                             "malformed_xml_block": final_cleaned_response_for_tools_or_text,
                             "raw_assistant_response": original_complete_response,
                             "agent_id": self.agent_id

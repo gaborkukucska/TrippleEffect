@@ -180,24 +180,34 @@ class OllamaProvider(BaseLLMProvider):
 
         messages_for_ollama_payload = []
         first_system_seen = False
+        
+        # Models that need tool/system messages mapped to 'user' role due to their chat 
+        # templates or Ollama's stripping behavior when native tools are disabled.
+        models_needing_user_workaround = ["llama", "qwen", "mistral", "gemma", "phi", "deepseek"]
+        needs_user_workaround = any(m in model.lower() for m in models_needing_user_workaround)
+        
         for msg in messages:
             role = msg.get("role")
-            # FIX: Ollama concatenates ALL system messages into .System at the prompt
-            # top, displacing mid-conversation framework guidance (e.g. team status,
-            # duplicate-blocked directives) from their correct chronological position.
-            # Most open-source model templates (Qwen3, Llama, etc.) only render system
-            # messages at the top, not inline. Convert non-initial system messages to
-            # "tool" role so they render as <tool_response> in the conversation flow
-            # where the model can properly attend to them.
+            
             if role == "system":
                 if first_system_seen:
-                    role = "tool"
-                    logger.debug(
-                        f"OllamaProvider: Converting mid-conversation system message to 'tool' role "
-                        f"to keep it in conversation flow. Content preview: {str(msg.get('content', ''))[:80]}..."
-                    )
+                    if needs_user_workaround:
+                        role = "user"
+                        logger.debug(
+                            f"OllamaProvider: Converting mid-conversation system message to 'user' role "
+                            f"for model '{model}'. Content preview: {str(msg.get('content', ''))[:80]}..."
+                        )
+                    else:
+                        logger.debug(f"OllamaProvider: Keeping mid-conversation system role for model '{model}'.")
                 else:
                     first_system_seen = True
+            elif role == "tool":
+                if needs_user_workaround:
+                    role = "user"
+                    logger.debug(f"OllamaProvider: Converting 'tool' role message to 'user' role for model '{model}'.")
+                else:
+                    logger.debug(f"OllamaProvider: Keeping 'tool' role for model '{model}'.")
+
             content = msg.get("content")
             processed_content = "" 
             if content is not None:
@@ -210,17 +220,15 @@ class OllamaProvider(BaseLLMProvider):
                         logger.warning(f"Message content for role '{role}' was not a string ({type(content)}) and could not be JSON serialized. Converted to string.")
                 else:
                     processed_content = content
+            
+            # If this is a converted tool message, explicitly format it so the LLM knows what it is.
+            if msg.get("role") == "tool" and role == "user":
+                tool_name = msg.get("name", "unknown")
+                processed_content = f"<tool_response name='{tool_name}'>\n{processed_content}\n</tool_response>"
+
             msg_to_send: Dict[str, Any] = {"role": role, "content": processed_content}
-            if role == "assistant" and msg.get("tool_calls"):
-                tc = msg.get("tool_calls")
-                if isinstance(tc, list) and all(isinstance(t, dict) for t in tc):
-                    msg_to_send["tool_calls"] = tc
-                else:
-                    logger.warning(f"tool_calls for assistant message is not in the expected format (list of dicts): {tc}")
-            # No special handling for 'tool' role here anymore, as the content is already in processed_content.
-            # The 'tool_call_id' will be added if it exists on the original message.
-            if msg.get("tool_call_id"):
-                msg_to_send["tool_call_id"] = msg.get("tool_call_id")
+            # We explicitly DO NOT send `tool_calls` because TrippleEffect relies on XML-in-content 
+            # and sending native tool_calls without the tools parameter confuses Ollama.
             messages_for_ollama_payload.append(msg_to_send)
 
         payload = { "model": model, "messages": messages_for_ollama_payload, "stream": self.streaming_mode, "options": valid_options }

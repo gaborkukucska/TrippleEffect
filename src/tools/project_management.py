@@ -225,7 +225,7 @@ class ProjectManagementTool(BaseTool):
                 return {"status": "success", "message": f"Found {len(minimal_task_list)} task(s).", "tasks": minimal_task_list}
 
             elif action == "modify_task":
-                task_id = kwargs.get("task_id")
+                task_id = kwargs.get("task_id") or kwargs.get("task_uuid")
                 if task_id is None or task_id == "":
                     return {"status": "error", "message": "Missing 'task_id' for 'modify_task'."}
                 
@@ -316,7 +316,7 @@ class ProjectManagementTool(BaseTool):
                         return {"status": "error", "message": f"Dependency task '{kwargs['depends']}' not found. Integer IDs shift when tasks are completed. Use UUID or custom alias instead. Detail: {e}"}
 
                 if not modified_fields:
-                    return {"status": "error", "message": "No valid fields provided for modification."}
+                    return {"status": "error", "message": "No valid fields provided for modification. Valid fields are: status, description, priority, tags, depends, assignee_agent_id."}
 
                 task.save()
                 assignee_to_return = kwargs.get("assignee_agent_id") or task['assignee']
@@ -324,7 +324,7 @@ class ProjectManagementTool(BaseTool):
                 return {"status": "success", "message": f"Task '{task_id}' modified successfully.", "task_uuid": task['uuid'], "task_id": task['id'], "modified_fields": modified_fields, "description": task['description'], "assignee": assignee_to_return, "depends": depends_list}
 
             elif action == "complete_task":
-                task_id = kwargs.get("task_id")
+                task_id = kwargs.get("task_id") or kwargs.get("task_uuid")
                 if task_id is None or task_id == "":
                     return {"status": "error", "message": "Missing 'task_id' for 'complete_task'."}
                 

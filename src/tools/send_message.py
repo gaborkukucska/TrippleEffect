@@ -49,8 +49,8 @@ class SendMessageTool(BaseTool):
             str: A confirmation message indicating the message is being routed by the manager,
                  or an error message if basic validation fails (though ToolExecutor handles schema checks).
         """
-        target_agent_id = kwargs.get("target_agent_id")
-        message_content = kwargs.get("message_content")
+        target_agent_id = kwargs.get("target_agent_id") or kwargs.get("target") or kwargs.get("agent") or kwargs.get("recipient") or kwargs.get("to")
+        message_content = kwargs.get("message_content") or kwargs.get("content") or kwargs.get("message") or kwargs.get("text")
 
         # Enhanced validation with better error messages
         if not target_agent_id:

@@ -1309,7 +1309,7 @@ class AgentCycleHandler:
                                     "call_id": tool_id or f"unknown_id_{i}",
                                     "name": tool_name
                                 }
-                            elif len(tool_calls) > 1 and tool_name == "send_message":
+                            elif any(t.get("name") != "send_message" for t in tool_calls) and tool_name == "send_message":
                                 logger.warning(f"Agent {agent.agent_id} attempted to use send_message alongside other tools. Blocking send_message.")
                                 error_msg = "ERROR: You cannot use the 'send_message' tool in the same response as other tools. You must use it on its own AFTER reviewing the feedback from your other tool calls."
                                 result_dict = {

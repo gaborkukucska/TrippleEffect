@@ -102,19 +102,19 @@ class FileSystemTool(BaseTool):
         ToolParameter(
             name="insert_line",
             type="integer",
-            description="Line number (1-indexed) where content should be inserted for 'insert_lines'.",
+            description="Line number (1-indexed) where content should be inserted for 'insert_lines'. Alternatively, use '<search>' to find a text anchor and insert relative to it.",
             required=False,
         ),
         ToolParameter(
             name="replace_start_line",
             type="integer",
-            description="Starting line number (1-indexed, inclusive) for 'replace_lines'.",
+            description="Starting line number (1-indexed, inclusive) for 'replace_lines'. Also accepts 'start_line'.",
             required=False,
         ),
         ToolParameter(
             name="replace_end_line",
             type="integer",
-            description="Ending line number (1-indexed, inclusive) for 'replace_lines'.",
+            description="Ending line number (1-indexed, inclusive) for 'replace_lines'. Also accepts 'end_line'.",
             required=False,
         ),
         ToolParameter(
@@ -204,14 +204,14 @@ class FileSystemTool(BaseTool):
         if isinstance(relative_path, str): relative_path = relative_path.strip()
         destination_path = kwargs.get("destination_path") # Used by copy, move
         if isinstance(destination_path, str): destination_path = destination_path.strip()
-        find_text = _fo(kwargs.get("find_text"), kwargs.get("search"), kwargs.get("find")) # Used by find_replace
-        replace_text = _fo(kwargs.get("replace_text"), kwargs.get("replace"), kwargs.get("replacement"), kwargs.get("replacement_text")) # Used by find_replace, regex_replace
+        find_text = _fo(kwargs.get("find_text"), kwargs.get("search"), kwargs.get("find"), kwargs.get("search_string"), kwargs.get("search_text"), kwargs.get("search_term")) # Used by find_replace
+        replace_text = _fo(kwargs.get("replace_text"), kwargs.get("replace"), kwargs.get("replacement"), kwargs.get("replacement_text"), kwargs.get("replace_string"), kwargs.get("replace_term")) # Used by find_replace, regex_replace
         regex_pattern = kwargs.get("regex_pattern") # Used by regex_replace
         start_line = kwargs.get("start_line") # Used by read
         end_line = kwargs.get("end_line") # Used by read
-        insert_line = _fo(kwargs.get("insert_line"), kwargs.get("line_number"), kwargs.get("line"), kwargs.get("at_line"), kwargs.get("position")) # Used by insert_lines
-        replace_start_line = _fo(kwargs.get("replace_start_line"), kwargs.get("start_line_number")) # Used by replace_lines
-        replace_end_line = _fo(kwargs.get("replace_end_line"), kwargs.get("end_line_number")) # Used by replace_lines
+        insert_line = _fo(kwargs.get("insert_line"), kwargs.get("line_number"), kwargs.get("line"), kwargs.get("at_line")) # Used by insert_lines (NOTE: 'position' excluded — it's a semantic hint like 'after'/'before', not a line number)
+        replace_start_line = _fo(kwargs.get("replace_start_line"), kwargs.get("start_line_number"), kwargs.get("from_line")) # Used by replace_lines
+        replace_end_line = _fo(kwargs.get("replace_end_line"), kwargs.get("end_line_number"), kwargs.get("to_line")) # Used by replace_lines
         # Auto-cast all line-number params to int if they are numeric strings
         def _safe_int(val):
             if val is None: return None
@@ -222,8 +222,8 @@ class FileSystemTool(BaseTool):
         insert_line = _safe_int(insert_line)  # May remain a string if it's a search hint — handled later
         replace_start_line = _safe_int(replace_start_line)
         replace_end_line = _safe_int(replace_end_line)
-        search_block = _fo(kwargs.get("search_block"), kwargs.get("search"), kwargs.get("search_string"), kwargs.get("find"), kwargs.get("find_text")) # Used by search_replace_block
-        replace_block_param = _fo(kwargs.get("replace_block"), kwargs.get("replace"), kwargs.get("replacement"), kwargs.get("replace_string"), kwargs.get("replace_text")) # Used by search_replace_block
+        search_block = _fo(kwargs.get("search_block"), kwargs.get("search"), kwargs.get("search_string"), kwargs.get("find"), kwargs.get("find_text"), kwargs.get("search_term"), kwargs.get("search_text")) # Used by search_replace_block
+        replace_block_param = _fo(kwargs.get("replace_block"), kwargs.get("replace"), kwargs.get("replacement"), kwargs.get("replace_string"), kwargs.get("replace_text"), kwargs.get("replace_term")) # Used by search_replace_block
         expected_replacements = kwargs.get("expected_replacements")  # Used by search_replace_block for multi-match confirmation
         start_marker = _fo(kwargs.get("start_marker"), kwargs.get("start"), kwargs.get("start_string"), kwargs.get("start_line"), kwargs.get("start_pattern"))
         end_marker = _fo(kwargs.get("end_marker"), kwargs.get("end"), kwargs.get("end_string"), kwargs.get("end_line"), kwargs.get("end_pattern"))
@@ -261,7 +261,9 @@ class FileSystemTool(BaseTool):
             "list_directory": "list",
             "delete_file": "delete",
             "remove_file": "delete",
-            "remove": "delete"
+            "remove": "delete",
+            "insert_line": "insert_lines",
+            "replace_line": "replace_lines"
         }
         
         # Track whether an auto-correction was applied for feedback
@@ -341,13 +343,14 @@ class FileSystemTool(BaseTool):
                 if content is None: return {"status": "error", "message": "'content' parameter is required for 'insert_lines'."}
                 # Support search-based insertion: if insert_line is missing or non-numeric,
                 # check if search/find_text was provided to locate the insertion point.
+                position_kwarg = kwargs.get("position", "after")  # Semantic hint: 'before' or 'after'
                 search_anchor = _fo(kwargs.get("search"), kwargs.get("after"), kwargs.get("before"))
                 if insert_line is None or (isinstance(insert_line, str) and not insert_line.isdigit()):
                     if search_anchor:
                         # Resolve insertion point by finding the search anchor text in the file
                         resolved = await self._resolve_insert_line_from_search(
                             base_path, filename, search_anchor, agent_id, scope_description,
-                            position_hint=insert_line if isinstance(insert_line, str) else kwargs.get("position", "after")
+                            position_hint=insert_line if isinstance(insert_line, str) else position_kwarg
                         )
                         if resolved is None:
                             return {"status": "error", "message": f"Could not find search anchor '{search_anchor}' in file '{filename}' for insert_lines."}
@@ -357,6 +360,11 @@ class FileSystemTool(BaseTool):
                 result = await self._insert_lines_in_file(base_path, filename, int(insert_line), content, agent_id, scope_description)
             elif action == "replace_lines":
                 if not filename: return {"status": "error", "message": "'filename' parameter is required for 'replace_lines'."}
+                # Fallback: LLMs frequently use start_line/end_line instead of replace_start_line/replace_end_line
+                if replace_start_line is None and start_line is not None:
+                    replace_start_line = _safe_int(start_line)
+                if replace_end_line is None and end_line is not None:
+                    replace_end_line = _safe_int(end_line)
                 if replace_start_line is None or replace_end_line is None: return {"status": "error", "message": "'replace_start_line' and 'replace_end_line' parameters are required for 'replace_lines'."}
                 if content is None: return {"status": "error", "message": "'content' parameter is required for 'replace_lines'."}
                 result = await self._replace_lines_in_file(base_path, filename, replace_start_line, replace_end_line, content, agent_id, scope_description)
@@ -471,17 +479,40 @@ Appends text to the end of an existing file.
 **Action: insert_lines**
 Inserts a block of text at a specific line number, shifting subsequent lines down.
 *   `<filename>` (string, required): Relative path to the file.
-*   `<insert_line>` (integer, required): The line number (1-indexed) where the new `<content>` will be inserted.
+*   `<insert_line>` (integer): The line number (1-indexed) where the new `<content>` will be inserted. **Either `<insert_line>` or `<search>` is required.**
+*   `<search>` (string): Instead of a line number, provide a text string to search for in the file. The new content will be inserted relative to the first matching line.
+*   `<position>` (string, optional): 'after' (default) or 'before'. Controls whether content is inserted after or before the `<search>` match.
 *   `<content>` (string, required): Text to insert.
 *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   Example (by line number):
+    ```xml
+    <file_system>
+      <action>insert_lines</action>
+      <filename>server.js</filename>
+      <insert_line>10</insert_line>
+      <content>const express = require('express');</content>
+      <scope>shared</scope>
+    </file_system>
+    ```
+*   Example (by search anchor):
+    ```xml
+    <file_system>
+      <action>insert_lines</action>
+      <filename>package.json</filename>
+      <search>"dependencies": {</search>
+      <position>before</position>
+      <content>  "devDependencies": { "jest": "^29.0.0" },</content>
+      <scope>shared</scope>
+    </file_system>
+    ```
 """
         elif sub_action == "replace_lines":
             return common_header + """
 **Action: replace_lines**
 Replaces a specific block of existing lines with new content. STRONGLY RECOMMENDED for modifying existing files.
 *   `<filename>` (string, required): Relative path to the file.
-*   `<replace_start_line>` (integer, required): The first line number (1-indexed) to remove.
-*   `<replace_end_line>` (integer, required): The last line number (1-indexed) to remove (inclusive).
+*   `<replace_start_line>` (integer, required): The first line number (1-indexed) to remove. Also accepts `<start_line>`.
+*   `<replace_end_line>` (integer, required): The last line number (1-indexed) to remove (inclusive). Also accepts `<end_line>`.
 *   `<content>` (string, required): The new text to replace the removed lines with.
 *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
 """
@@ -632,7 +663,7 @@ Pushes changes to a remote repository.
 1.  **read:** Reads file content. (Use start_line and end_line for large files).
 2.  **write:** Overwrites a file completely.
 3.  **append:** Adds text to the end of a file.
-4.  **insert_lines:** Inserts a block of text at a specific line.
+4.  **insert_lines:** Inserts a block of text at a specific line number, or relative to a search anchor.
 5.  **replace_lines:** Replaces a block of lines with new text.
 6.  **list:** Lists files in a directory.
 7.  **mkdir:** Creates a directory.
@@ -931,6 +962,11 @@ Pushes changes to a remote repository.
             return None
 
     async def _insert_lines_in_file(self, base_path: Path, filename: str, insert_line: int, content: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+        # Defensive: ensure insert_line is always int even if caller passes a string
+        try:
+            insert_line = int(insert_line)
+        except (ValueError, TypeError):
+            return {"status": "error", "message": f"'insert_line' must be an integer line number, got '{insert_line}'."}
         val_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
         if not val_path: return {"status": "error", "message": f"Invalid path '{filename}'."}
         if not val_path.is_file(): return {"status": "error", "message": f"File '{filename}' does not exist."}
@@ -1009,22 +1045,22 @@ Pushes changes to a remote repository.
                     return False, "Unexpected: search_block is None but markers were not used."
 
                 # ── TIER 1: Exact substring match ─────────────────────────────────
-                    exact_count = original_content.count(search_block)
-                    if exact_count == 1:
-                        new_content = original_content.replace(search_block, replace_block, 1)
-                        val_path.write_text(new_content, encoding='utf-8')
-                        return True, "Exact match found and replaced."
+                exact_count = original_content.count(search_block)
+                if exact_count == 1:
+                    new_content = original_content.replace(search_block, replace_block, 1)
+                    val_path.write_text(new_content, encoding='utf-8')
+                    return True, "Exact match found and replaced."
 
-                    if exact_count > 1:
-                        if expected_replacements is not None and expected_replacements == exact_count:
-                            new_content = original_content.replace(search_block, replace_block)
-                            val_path.write_text(new_content, encoding='utf-8')
-                            return True, f"Replaced all {exact_count} exact occurrences (confirmed by expected_replacements)."
-                        return False, (
-                            f"Found {exact_count} exact matches. To replace ALL {exact_count} occurrences, "
-                            f"re-send this call with <expected_replacements>{exact_count}</expected_replacements>. "
-                            f"To replace only ONE, provide a more specific search_block that is unique in the file."
-                        )
+                if exact_count > 1:
+                    if expected_replacements is not None and expected_replacements == exact_count:
+                        new_content = original_content.replace(search_block, replace_block)
+                        val_path.write_text(new_content, encoding='utf-8')
+                        return True, f"Replaced all {exact_count} exact occurrences (confirmed by expected_replacements)."
+                    return False, (
+                        f"Found {exact_count} exact matches. To replace ALL {exact_count} occurrences, "
+                        f"re-send this call with <expected_replacements>{exact_count}</expected_replacements>. "
+                        f"To replace only ONE, provide a more specific search_block that is unique in the file."
+                    )
 
                     # ── TIER 2: First/last line matching ──────────────────────────────
                 # Extract first and last non-empty lines of the search block.

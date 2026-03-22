@@ -1,11 +1,34 @@
 # TrippleEffect - Current Issues
 
-**Last Updated:** 2026-03-18
-**Based on log:** `startup_1773800202`
+**Last Updated:** 2026-03-21
+**Based on log:** `startup_1774068944` and `startup_1774077203`
 
 ---
 
 ## Recently Resolved Issues
+
+### 0. `insert_lines` Crashes with `'str' - 'int'` TypeError
+
+- **Severity:** High (causes tool execution failure and blocks worker progress)
+- **Description:** The `insert_lines` action in `FileSystemTool` crashed with `unsupported operand type(s) for -: 'str' and 'int'` inside `_insert_lines_in_file`. This occurred 3 times in `startup_1774068944`, blocking Worker W1 from editing `package.json`.
+- **Root Cause:** Three compounding issues:
+  1. The `position` kwarg (e.g., `<position>after</position>`) was included in the `_fo()` alias chain for `insert_line`, causing non-numeric strings like `"after"` to leak through as the line number value.
+  2. The internal `_insert_lines_in_file` method trusted its caller to pass an `int` and had no defensive conversion.
+  3. LLMs sometimes used `<action>insert_line</action>` (singular) which was not recognized as an alias.
+- **Fix:** (RESOLVED)
+  1. Removed `kwargs.get("position")` from the `insert_line` alias chain — `position` is now treated as a semantic hint ("before"/"after") only.
+  2. Added defensive `int()` conversion inside `_insert_lines_in_file` with a graceful error return.
+  3. Added `insert_line` → `insert_lines` and `replace_line` → `replace_lines` to the action alias map.
+  4. Properly routed the `position` kwarg as `position_hint` for search-based insertion.
+- **Files:** `src/tools/file_system.py`
+
+### 0.5. `search_replace_block` Skips Exact Matches
+
+- **Severity:** High
+- **Description:** The `search_replace_block` tool was consistently failing to find matches even when the provided block was exactly present in the file.
+- **Root Cause:** A critical indentation error in `src/tools/file_system.py`. The "Tier 1: Exact substring match" logic was indented 4 spaces too far, placing it inside an `if search_block is None:` block that immediately returned `False`. Thus, exact matches were completely unreachable dead code, forcing the tool to fall back to fuzzy/first-last matching which often failed or corrupted blocks.
+- **Fix:** (RESOLVED) Dedented the Tier 1 exact match block by 4 spaces so it correctly executes when `search_block` is provided, restoring reliable exact replace functionality.
+- **Files:** `src/tools/file_system.py`
 
 ### 1. `send_message` Tool Isolation Violations
 
