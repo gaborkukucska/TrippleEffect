@@ -7,6 +7,22 @@
 
 ## Recently Resolved Issues
 
+### -2. Worker Inactivity (Empty `worker_work` responses)
+
+- **Severity:** High
+- **Description:** Workers were transitioning to `worker_work` but producing empty responses (0 tokens) leading to endless idle states.
+- **Root Cause:** Two interconnected bugs: 1) Initializing a brand new worker agent missed appending the `[Framework Directive]` task assignment prompt if the worker had no prior history. 2) When utilizing `<request_state>`, the framework updated the state but failed to inject a `user` message confirming the transition, meaning the LLM received a context ending with an `assistant` tag.
+- **Fix:** (RESOLVED) Aligned indentation in `activate_worker_with_task_details` to reliably append the activation message. Added a `[System State Change]` user injection in `cycle_handler.py` to prompt the LLM to resume activity within its newly generated system prompt context.
+- **Files:** `src/agents/manager.py`, `src/agents/cycle_handler.py`
+
+### -1. PM Interrupting Worker Decomposition (Decompose Loop)
+
+- **Severity:** High
+- **Description:** Workers would get stuck in the `worker_decompose` state, constantly having their context wiped and replaced with new task assignments from the PM before they could finish breaking down their first task.
+- **Root Cause:** The `WORKER_STATE_DECOMPOSE` state was missing from the "busy states" check in `manager.py`. The PM eagerly assigned multiple tasks sequentially, forcibly reactivating the worker and destroying its short-term memory each time.
+- **Fix:** (RESOLVED) Added `WORKER_STATE_DECOMPOSE` to the list of busy states in `activate_worker_with_task_details`. Incoming tasks are now properly routed to the worker's `message_inbox` until decomposition is complete.
+- **Files:** `src/agents/manager.py`
+
 ### 0. `insert_lines` Crashes with `'str' - 'int'` TypeError
 
 - **Severity:** High (causes tool execution failure and blocks worker progress)

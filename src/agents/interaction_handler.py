@@ -400,8 +400,9 @@ class AgentInteractionHandler:
         # --- Special Handling for send_message ---
         if tool_name == SendMessageTool.name:
             logger.debug(f"InteractionHandler: Intercepting '{tool_name}' for direct handling.")
-            target_id = tool_args.get("target_agent_id")
-            message_content = tool_args.get("message_content")
+            target_id = tool_args.get("target_agent_id") or tool_args.get("target") or tool_args.get("agent") or tool_args.get("recipient") or tool_args.get("to")
+            message_content = tool_args.get("message_content") or tool_args.get("content") or tool_args.get("message") or tool_args.get("text")
+            
             if not target_id or message_content is None:
                 result_content = "[ToolExec Error: `target_agent_id` and `message_content` are required for send_message.]"
                 raw_result = {"status": "error", "message": result_content}

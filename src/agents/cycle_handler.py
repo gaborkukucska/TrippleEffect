@@ -18,7 +18,7 @@ from src.agents.constants import (  # type: ignore[import]
     ADMIN_STATE_PLANNING, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STARTUP, ADMIN_STATE_WORK, ADMIN_STATE_STANDBY,
     PM_STATE_STARTUP, PM_STATE_MANAGE, PM_STATE_WORK, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_STANDBY,
     PM_STATE_REPORT_CHECK,
-    WORKER_STATE_WAIT, WORKER_STATE_WORK, WORKER_STATE_REPORT,
+    WORKER_STATE_WAIT, WORKER_STATE_WORK, WORKER_STATE_REPORT, WORKER_STATE_DECOMPOSE,
     REQUEST_STATE_TAG_PATTERN,
     CONSTITUTIONAL_GUARDIAN_AGENT_ID, # Added for CG
     BOOTSTRAP_AGENT_ID
@@ -953,6 +953,12 @@ class AgentCycleHandler:
                         requested_state = event.get("requested_state")
                         task_description = event.get("task_description")
 
+                        # Record the agent's action in its history so it knows it made the request
+                        agent.message_history.append({
+                            "role": "assistant",
+                            "content": f"<request_state state='{requested_state}'/>"
+                        })
+
                         # <<< --- ROBUST FIX START --- >>>
                         # If transitioning to work state with no task, find the last user message.
                         if requested_state == ADMIN_STATE_WORK and (not task_description or task_description.isspace()):
@@ -1035,6 +1041,14 @@ class AgentCycleHandler:
                                 agent.message_history.append({"role": "system", "content": invalid_msg})
 
                         if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="agent_state_change", content=f"State changed to: {requested_state}")
+                        
+                        # CRITICAL FIX: Append a user message so the next cycle has a clear trigger to start generating
+                        # Without this, the last message is the assistant's <request_state> tag, causing empty outputs
+                        agent.message_history.append({
+                            "role": "user",
+                            "content": f"[System State Change]: State changed to {requested_state}. Your instructions have been updated. Please proceed."
+                        })
+                        
                         await self._manager.send_to_ui(event)
                         llm_stream_ended_cleanly = False; break
 
@@ -1414,6 +1428,27 @@ class AgentCycleHandler:
 
 
 
+                        # --- START: WORKER Decompose State Interventions ---
+                        if agent.agent_type == AGENT_TYPE_WORKER and \
+                           agent.state == WORKER_STATE_DECOMPOSE and \
+                           any_tool_success and tool_calls and len(tool_calls) >= 1:
+
+                            called_tool_name = tool_calls[-1].get("name")
+                            called_tool_args = tool_calls[-1].get("arguments", {})
+
+                            if called_tool_name == "project_management" and called_tool_args.get("action") == "add_task":
+                                logger.info(f"CycleHandler: Worker '{agent.agent_id}' successfully added a sub-task. Injecting directive to transition.")
+                                directive_message_content = (
+                                    "[Framework System Message]: You have successfully added a sub-task. "
+                                    "If you have finished decomposing your assignment into sub-tasks, your MANDATORY NEXT ACTION is to output ONLY:\n"
+                                    "<request_state state='worker_work'/>\n"
+                                    "If you need to add more sub-tasks, continue using the project_management tool."
+                                )
+                                directive_msg: MessageDict = {"role": "system", "content": directive_message_content}
+                                all_tool_results_for_history.append(directive_msg)
+                                context.needs_reactivation_after_cycle = True
+                        # --- END WORKER Decompose State Interventions ---
+
                         # --- START: PM Build Team Tasks State Interventions ---
                         if agent.agent_type == AGENT_TYPE_PM and \
                            agent.state == PM_STATE_BUILD_TEAM_TASKS and \
@@ -1719,12 +1754,22 @@ class AgentCycleHandler:
                         if deferred_state_change:
                             if self._manager.workflow_manager.change_state(agent, deferred_state_change, task_description=deferred_task_desc):
                                 logger.info(f"CycleHandler: Successfully changed agent '{agent.agent_id}' state to '{deferred_state_change}' after tool processing")
+                                
+                                # CRITICAL FIX: Append a user message so the next cycle has a clear trigger to start generating
+                                # Without this, the last message is the assistant's <request_state> tag, causing empty outputs
+                                agent.message_history.append({
+                                    "role": "user",
+                                    "content": f"[System State Change]: State changed to {deferred_state_change}. Your instructions have been updated. Please proceed."
+                                })
                             else:
                                 resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, deferred_state_change)
                                 if agent.state == resolved_requested:
                                     logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Assuming idle/done if it's an idle state.")
                                 else:
                                     logger.warning(f"CycleHandler: Failed to change agent '{agent.agent_id}' state to '{deferred_state_change}' after tool processing")
+                                    # Truly invalid state transition. Let it reactivate to correct itself (with an error message).
+                                    invalid_msg = f"[Framework Error]: Invalid state requested: '{deferred_state_change}'. Please check valid states for your role."
+                                    agent.message_history.append({"role": "system", "content": invalid_msg})
                         # --- END DEFERRED EMBEDDED STATE CHANGE ---
 
                         llm_stream_ended_cleanly = False; break

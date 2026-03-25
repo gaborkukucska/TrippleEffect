@@ -27,7 +27,7 @@ from src.agents.constants import (
     AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER,
     ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK,
     PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE,
-    WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_WAIT,
+    WORKER_STATE_STARTUP, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK, WORKER_STATE_WAIT,
     DEFAULT_STATE
 )
 # --- END Import status and state constants ---
@@ -198,15 +198,45 @@ class Agent:
                 elif self.state == PM_STATE_MANAGE: max_tokens_override = settings.PM_MANAGE_STATE_MAX_TOKENS
             elif self.agent_type == AGENT_TYPE_WORKER:
                 if self.state == WORKER_STATE_STARTUP: max_tokens_override = settings.WORKER_STARTUP_STATE_MAX_TOKENS
+                elif self.state == WORKER_STATE_DECOMPOSE: max_tokens_override = settings.WORKER_DECOMPOSE_STATE_MAX_TOKENS
                 elif self.state == WORKER_STATE_WORK: max_tokens_override = settings.WORKER_WORK_STATE_MAX_TOKENS
                 elif self.state == WORKER_STATE_WAIT: max_tokens_override = settings.WORKER_WAIT_STATE_MAX_TOKENS
             if max_tokens_override is not None:
                 logger.info(f"Agent {self.agent_id}: Applying max_tokens={max_tokens_override} for state '{self.state}'")
 
+            tool_schemas = None
+            if settings.NATIVE_TOOL_CALLING_ENABLED and self.manager and getattr(self.manager, 'tool_executor', None):
+                # Native tools should only be provided to states that expect interactive tool usage.
+                # States outputting structural XML (like startup, report_check) break if forced into tool-call mode.
+                if self.state in {ADMIN_STATE_WORK, PM_STATE_WORK, PM_STATE_MANAGE, WORKER_STATE_WORK, WORKER_STATE_DECOMPOSE}:
+                    tool_schemas = []
+                    for tool_name, tool in self.manager.tool_executor.tools.items():
+                        # Restrict WORKER_STATE_DECOMPOSE to only the project_management tool
+                        if self.agent_type == AGENT_TYPE_WORKER and self.state == WORKER_STATE_DECOMPOSE:
+                            if tool_name != 'project_management':
+                                continue
+                                
+                        # Apply standard auth checks for native tools
+                        tool_auth_level = getattr(tool, 'auth_level', 'worker')
+                        is_authorized = False
+                        if self.agent_type == AGENT_TYPE_ADMIN:
+                            is_authorized = True
+                        elif self.agent_type == AGENT_TYPE_PM:
+                            is_authorized = tool_auth_level in ['pm', 'worker']
+                        elif self.agent_type == AGENT_TYPE_WORKER:
+                            is_authorized = tool_auth_level == 'worker'
+                            
+                        if is_authorized:
+                            tool_schemas.append(tool.get_json_schema())
+                else:
+                    logger.debug(f"Agent {self.agent_id}: State '{self.state}' is structural and does not use tools. Native tools payload omitted.")
+
             provider_stream = self.llm_provider.stream_completion(
                 messages=history_to_use, model=self.model, temperature=self.temperature,
-                max_tokens=max_tokens_override, **self.provider_kwargs
+                max_tokens=max_tokens_override, tools=tool_schemas, **self.provider_kwargs
             )
+            
+            native_tool_calls_received = []
 
             async for event in provider_stream:
                 event_type = event.get("type")
@@ -214,6 +244,8 @@ class Agent:
                     content = event.get("content", "")
                     if content: self.text_buffer += content; complete_assistant_response += content; yielded_chunks = True
                     yield {"type": "response_chunk", "content": content, "agent_id": self.agent_id}
+                elif event_type == "native_tool_calls":
+                    native_tool_calls_received.extend(event.get("tool_calls", []))
                 elif event_type == "status": event["agent_id"] = self.agent_id; yield event
                 elif event_type == "error":
                     error_content = f"[{self.provider_name} Error] {event.get('content', 'Unknown provider error')}"
@@ -371,7 +403,25 @@ class Agent:
                 valid_calls: List[Any] = []
                 parsing_errors: List[Any] = []
 
-                if self.manager.tool_executor and self.raw_xml_tool_call_pattern:
+                if native_tool_calls_received:
+                    logger.info(f"Agent {self.agent_id} received {len(native_tool_calls_received)} native tool calls. Bypassing XML parsing.")
+                    for call_data in native_tool_calls_received:
+                        func = call_data.get("function", {})
+                        tool_name = func.get("name")
+                        try:
+                            arguments = func.get("arguments", {})
+                            if isinstance(arguments, str):
+                                arguments = json.loads(arguments)
+                            call_id = call_data.get("id", f"native_call_{self.agent_id}_{int(time.time() * 1000)}_{os.urandom(2).hex()}")
+                            if tool_name in self.manager.tool_executor.tools:
+                                tool_requests_to_yield.append({"id": call_id, "name": tool_name, "arguments": arguments})
+                            else:
+                                logger.warning(f"Agent {self.agent_id}: Native Tool name '{tool_name}' not found in ToolExecutor.")
+                        except Exception as e:
+                            logger.error(f"Failed to parse native tool call arguments for {tool_name}: {e}")
+                            parsing_errors.append({"tool_name": tool_name, "error_message": f"Native JSON Args Error: {str(e)}", "xml_block": str(call_data)})
+
+                elif self.manager.tool_executor and self.raw_xml_tool_call_pattern:
                     parsed_tool_calls_info = find_and_parse_xml_tool_calls(
                         final_cleaned_response_for_tools_or_text, self.manager.tool_executor.tools,
                         self.raw_xml_tool_call_pattern, self.markdown_xml_tool_call_pattern, self.agent_id

@@ -25,7 +25,7 @@
 * **Implement automatic model/provider failover** for agents experiencing persistent errors during generation, following preference tiers (Local -> Free -> Paid). *(Completed)*
 * **Implement basic performance metric tracking** (success rate, latency) per model, persisting data. *(Completed)*
 * Implement a **Human User Interface** reflecting system state and communication layers, including **project approval workflow**. *(Completed - Refactored in P22, Approval in P24)*
-* Utilize **XML-based tool calling** with **sequential execution** (one tool type per turn enforced). *(Completed, Enhanced in P25)*
+* Utilize **Native JSON schemas** for tool execution (default) with **XML-based tool calling fallback** for legacy configurations. *(Completed, Upgraded in Phase I)*
 * Allow tool use in sandboxed or **shared workspaces** with **authorization checks** based on agent type. *(Completed, Auth added P25)*
 * Implement **automatic project/session context setting** (DB and filesystem). *(Completed)*
 * Implement **automatic model selection** for dynamic agents if not specified. *(Refined in P26b)*
@@ -65,7 +65,7 @@
 * **Performance Tracking (`ModelPerformanceTracker`):** Tracks metrics, saves to JSON.
 * **Automatic Agent Failover:** Handles provider/model switching.
 * **Dynamic Agent/Team Management:** In-memory CRUD via Admin AI tool calls.
-* **Enhanced Tooling (XML Format):**
+* **Enhanced Tooling Architecture:** Tools natively generate strict JSON schemas via Pydantic auto-translation (`get_json_schema()`), enabling dual-compatibility (Native JSON schemas + XML Fallbacks).
   * `FileSystemTool`: Read/Write/List/FindReplace/Mkdir/Delete.
   * `GitHubTool`: List Repos/Files (Recursive), Read File.
   * `ManageTeamTool`: Agent/Team CRUD, Assign, List, Get Details.
@@ -309,6 +309,22 @@ Five separate loop detection/intervention systems operate simultaneously (`Agent
 
 **Problem 4 (PM Endless Loop During `activate_workers`):** The PM repeatedly reassigned the same task despite TaskWarrior success. This occurred because the PM used a text description inside `<modify_task>`, but the framework's internal `unassigned_tasks_summary` mandated a strict UUID match to remove it from the backlog.
 **Fix 4:** Reworked `cycle_handler.py` to extract and match purely on the `task_uuid` explicitly returned by the `modify_task` tool result JSON, guaranteeing absolute synchronization between the framework's backlog and TaskWarrior.
+
+#### Phase I: Native JSON Tool Calling Upgrade (March 2026)
+
+**Problem 1 (XML Constraint & Hallucination):** The framework's absolute reliance on XML parsing severely limited model compatibility, specifically for advanced reasoning models (like `qwen3` and OpenAI models) which expect native JSON tool arrays and frequently hallucinated or produced malformed XML (`<tool_call>...`) despite prompt instructions.
+**Fix 1:** Introduced the `NATIVE_TOOL_CALLING_ENABLED` configuration flag (defaulting to True). `BaseTool` received a permanent `get_json_schema()` method to auto-generate strict JSON schema objects directly from existing Pydantic `ToolParameter` classes. Provider layers (`ollama_provider.py`, `openai_provider.py`) were overhauled to optionally pass the native `tools` array into the completion payload and yield newly architected `native_tool_calls` events alongside the traditional text streams.
+
+**Problem 2 (XML Prompt Collision):** Hardcoded XML tool examples injected via `prompts.json` collided with the new JSON mechanics, forcing native-JSON-capable models to forcibly print XML blocks out of pure instruction adherence, resulting in fatal framework `XML ParseError` loops.
+**Fix 2:** Refactored `src/agents/workflow_manager.py` and `prompts.json` to employ a dynamic parameter injection system (`{tool_examples}`). When native tools are enabled, the XML instructions are silently dropped from the context window assembly and replaced naturally by JSON fallback guidance, providing seamless context synchronization without relying on unreliable regex string replacement.
+
+#### Phase J: Worker Task Decomposition & Inactivity Fixes (March 2026)
+
+**Problem 1 (Worker Decompose Loop):** The PM eagerly assigned multiple tasks sequentially to workers before they could complete their mandatory task decomposition. Because `WORKER_STATE_DECOMPOSE` was missing from the "busy states" check, the PM forcibly wiped the short-term memory of workers mid-decomposition, causing an endless loop where workers never reached the work state.
+**Fix 1:** Added `WORKER_STATE_DECOMPOSE` to `manager.py`. The PM now correctly queues tasks in the worker's `message_inbox` while the worker breaks down its initial kick-off task.
+
+**Problem 2 (Empty LLM Generations in Work State):** Workers successfully transitioned to `worker_work` but outputted 0 tokens. This was caused by two edge cases: 1) Initializing a brand-new worker failed to inject the system directive if history was empty. 2) Using `<request_state>` updated internal state but failed to inject a `<user>` state transition confirmation message, leaving the context window ending with an `assistant` tag.
+**Fix 2:** Fixed the history indentation bug in `manager.py` and implemented dynamic `[System State Change]` user message injection in `cycle_handler.py` to prompt the LLM to resume activity within its newly generated system context.
 
 ---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

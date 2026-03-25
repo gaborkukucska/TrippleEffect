@@ -640,8 +640,8 @@ class AgentManager:
         logger.info(f"AgentManager: Activating worker '{worker_agent_id}' for task ID '{task_id_from_tool}' with description: '{task_description_from_tool[:100]}...'")
 
         # --- BLOCK PREEMPTIVE ACTIVATION IF WORKER IS BUSY ---
-        from src.agents.constants import WORKER_STATE_REPORT, WORKER_STATE_WORK
-        if worker_agent.state in [WORKER_STATE_REPORT, WORKER_STATE_WORK]:
+        from src.agents.constants import WORKER_STATE_REPORT, WORKER_STATE_WORK, WORKER_STATE_DECOMPOSE
+        if worker_agent.state in [WORKER_STATE_REPORT, WORKER_STATE_WORK, WORKER_STATE_DECOMPOSE]:
             logger.info(f"AgentManager: Worker '{worker_agent_id}' is currently in '{worker_agent.state}'. "
                         f"Task '{task_id_from_tool}' is assigned but activation is deferred. "
                         f"The worker will naturally pick it up after its current work/report.")
@@ -650,7 +650,7 @@ class AgentManager:
             # We also defer setting the context variables so the worker's current cycle isn't corrupted.
             activation_message = {
                 "role": "user",
-                "content": f"[Framework Directive]: You have been assigned a new task: {task_description_from_tool}\nThe system prompt has been updated with this goal. You MUST now begin executing it (request state change to worker_work if currently waiting).",
+                "content": f"[Framework Directive]: You have been assigned a new task: {task_description_from_tool}\nThe system prompt has been updated with this goal. You MUST now begin executing it (request state change to worker_decompose if currently waiting).",
                 "_deferred_task_description": task_description_from_tool,
                 "_deferred_task_id": task_id_from_tool
             }
@@ -666,7 +666,8 @@ class AgentManager:
         worker_agent.current_task_id = task_id_from_tool # Store the task ID as well
 
         # Ensure the agent is in the correct state and status to be scheduled
-        self.workflow_manager.change_state(worker_agent, WORKER_STATE_WORK) # This also sets status to IDLE if state changes
+        from src.agents.constants import WORKER_STATE_DECOMPOSE
+        self.workflow_manager.change_state(worker_agent, WORKER_STATE_DECOMPOSE) # This also sets status to IDLE if state changes
         if worker_agent.status != AGENT_STATUS_IDLE: # If state didn't change but status was e.g. ERROR
             worker_agent.set_status(AGENT_STATUS_IDLE)
 
@@ -729,11 +730,11 @@ class AgentManager:
                 worker_agent.message_history = [sys_prompt, summary_msg] + recent_msgs
                 logger.info(f"AgentManager: Condensed history for worker '{worker_agent_id}' down to {len(worker_agent.message_history)} messages.")
 
-            # Wake up the worker with a system directive and workspace context so it knows what exists
-            worker_agent.message_history.append({
-                "role": "user",
-                "content": f"[Framework Directive]: You have been assigned a new task: {task_description_from_tool}\nThe system prompt has been updated with this goal. You MUST now begin executing it.{workspace_listing}"
-            })
+        # Wake up the worker with a system directive and workspace context so it knows what exists
+        worker_agent.message_history.append({
+            "role": "user",
+            "content": f"[Framework Directive]: You have been assigned a new task: {task_description_from_tool}\nThe system prompt has been updated with this goal. You MUST now begin executing it.{workspace_listing}"
+        })
 
         # Log this activation and context injection to DB for traceability
         if self.current_session_db_id:

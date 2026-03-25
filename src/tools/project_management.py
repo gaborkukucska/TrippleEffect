@@ -101,6 +101,8 @@ class ProjectManagementTool(BaseTool):
             "show": "list_tasks",
             "show_tasks": "list_tasks",
             "get_tasks": "list_tasks",
+            "update_task_status": "modify_task",
+            "update_status": "modify_task",
             "update_task": "modify_task",
             "edit_task": "modify_task",
             "change_task": "modify_task",
@@ -159,7 +161,13 @@ class ProjectManagementTool(BaseTool):
                     return {"status": "error", "message": "Missing 'title' or 'description' for 'add_task'."}
 
                 task = Task(tw, description=main_desc)
-                if kwargs.get("priority"): task['priority'] = kwargs["priority"]
+                if kwargs.get("priority"):
+                    prio = str(kwargs["priority"]).upper()
+                    if prio in ['HIGH', 'H']: prio = 'H'
+                    elif prio in ['MEDIUM', 'M']: prio = 'M'
+                    elif prio in ['LOW', 'L']: prio = 'L'
+                    else: return {"status": "error", "message": f"Invalid priority '{kwargs['priority']}'. Valid priorities are: H (high), M (medium), L (low)."}
+                    task['priority'] = prio
                 if kwargs.get("project_filter"): task['project'] = kwargs["project_filter"]
                 if kwargs.get("assignee_agent_id"): task['assignee'] = kwargs["assignee_agent_id"]
                 if kwargs.get("tags"):
@@ -287,7 +295,14 @@ class ProjectManagementTool(BaseTool):
                 modified_fields = []
                 if "description" in kwargs: task['description'] = kwargs["description"]; modified_fields.append("description")
                 if "status" in kwargs: task['status'] = kwargs["status"]; modified_fields.append("status")
-                if "priority" in kwargs: task['priority'] = kwargs["priority"]; modified_fields.append("priority")
+                if "priority" in kwargs: 
+                    prio = str(kwargs["priority"]).upper()
+                    if prio in ['HIGH', 'H']: prio = 'H'
+                    elif prio in ['MEDIUM', 'M']: prio = 'M'
+                    elif prio in ['LOW', 'L']: prio = 'L'
+                    elif prio in ['', 'NONE', 'NULL']: prio = ''
+                    else: return {"status": "error", "message": f"Invalid priority '{kwargs['priority']}'. Valid priorities are: H (high), M (medium), L (low)."}
+                    task['priority'] = prio; modified_fields.append("priority")
                 if "tags" in kwargs: 
                     tags_arg = kwargs["tags"]
                     if isinstance(tags_arg, str):

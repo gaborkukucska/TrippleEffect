@@ -35,6 +35,7 @@ PM_STATE_WORK = "pm_work" # Generic work state for PM if needed outside structur
 
 # --- WORKER Agent Workflow State Constants ---
 WORKER_STATE_STARTUP = "worker_startup" # Startup state for Worker
+WORKER_STATE_DECOMPOSE = "worker_decompose" # State for Worker breaking tasks into sub-tasks
 WORKER_STATE_WORK = "worker_work" # State for active tool use/task execution for Worker
 WORKER_STATE_REPORT = "worker_report" # State for worker reporting progress/questions to PM
 WORKER_STATE_WAIT = "worker_wait" # State for worker waiting

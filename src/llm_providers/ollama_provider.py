@@ -232,6 +232,13 @@ class OllamaProvider(BaseLLMProvider):
             messages_for_ollama_payload.append(msg_to_send)
 
         payload = { "model": model, "messages": messages_for_ollama_payload, "stream": self.streaming_mode, "options": valid_options }
+
+        use_streaming_mode = self.streaming_mode
+        if settings.NATIVE_TOOL_CALLING_ENABLED and tools:
+            payload["tools"] = tools
+            payload["stream"] = False  # Disable streaming for tool calls to ensure cleaner parsing
+            use_streaming_mode = False
+            logger.info("OllamaProvider: Native tool calling enabled. Attaching tools and forcing stream=False.")
         
         try:
             full_payload_json_str_for_debug = json.dumps(payload, indent=2)
@@ -369,7 +376,7 @@ class OllamaProvider(BaseLLMProvider):
             stream_error_occurred = False
             stream_error_obj = None
             try:
-                if self.streaming_mode:
+                if use_streaming_mode:
                     logger.debug("Starting streaming using response.content.iter_any()")
                     async for chunk in response.content.iter_any():
                         if not chunk: continue
@@ -452,9 +459,29 @@ class OllamaProvider(BaseLLMProvider):
                              stream_error_obj = ValueError(f"[Ollama Error]: {error_msg}")
                              yield {"type": "error", "content": f"[Ollama Error]: {error_msg}", "_exception_obj": stream_error_obj}
                          elif response_data.get("message") and isinstance(response_data["message"], dict):
-                             full_content = response_data["message"].get("content");
-                             if full_content: logger.info(f"Non-streaming len: {len(full_content)}"); yield {"type": "response_chunk", "content": full_content}
-                             else: logger.warning("Non-streaming message content empty.")
+                             msg = response_data["message"]
+                             tool_calls = msg.get("tool_calls")
+                             full_content = msg.get("content", "")
+                             
+                             if tool_calls:
+                                 logger.info(f"Ollama returned native tool_calls: {tool_calls}")
+                                 yield {"type": "native_tool_calls", "tool_calls": tool_calls}
+                             elif full_content:
+                                 # Fallback: check if content is a JSON string representing a tool call (Qwen2.5 behavior)
+                                 try:
+                                     parsed_content = json.loads(full_content)
+                                     if isinstance(parsed_content, dict) and "name" in parsed_content and "arguments" in parsed_content:
+                                         logger.info(f"Ollama (Qwen workaround) parsed raw JSON content as tool_call: {parsed_content}")
+                                         yield {"type": "native_tool_calls", "tool_calls": [{"function": parsed_content}]}
+                                     else:
+                                         logger.info(f"Non-streaming len: {len(full_content)}")
+                                         yield {"type": "response_chunk", "content": full_content}
+                                 except json.JSONDecodeError:
+                                     logger.info(f"Non-streaming len: {len(full_content)}")
+                                     yield {"type": "response_chunk", "content": full_content}
+                             else:
+                                 logger.warning("Non-streaming message content empty.")
+
                              if response_data.get("done", False): logger.debug("Non-streaming done=true.")
                              else: logger.warning("Non-streaming missing done=true.")
                          else:

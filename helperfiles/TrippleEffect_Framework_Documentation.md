@@ -198,7 +198,8 @@ An agent's behavior, system prompt, and expected output are determined by the co
     -   `standby`: A dormant state entered after a project is considered complete.
 
 -   **Worker Agent States**:
-    -   `work`: The primary state where the agent executes a specific task it has been assigned.
+    -   `decompose`: The initial state when a task is assigned. The worker must break the task down into trackable sub-tasks using the `project_management` tool before beginning execution. Tool access is strictly limited in this state.
+    -   `work`: The primary state where the agent executes a specific task or sub-task it has been assigned.
     -   `report`: A dedicated state for workers to compile progress reports or ask questions to the PM without mixing communication and tool workloads.
     -   `wait`: A state where the agent has completed its task and is waiting for the PM to review its work and provide a new task.
 
@@ -215,7 +216,9 @@ Communication within the framework is handled through several distinct channels.
     -   Give context for a new state (e.g., "You are now in the 'work' state. Your task is...").
     -   Intervene to break loops (e.g., "You appear to be stuck. Please try a different tool.").
 
--   **Agent <-> Tools (XML)**: The definitive method for an agent to request a tool execution is by outputting a structured XML block in its response. The framework uses regex (`raw_xml_tool_call_pattern`) to parse these blocks. The format is always:
+-   **Agent <-> Tools (Native JSON / XML)**: The definitive method for an agent to request a tool execution is automatically handled depending on the `NATIVE_TOOL_CALLING_ENABLED` setting. 
+    - **Native JSON (Default):** For modern models (OpenAI, Anthropic, Qwen3), `BaseTool` automatically converts its Python properties into rich JSON schemas. The application orchestrator parses the returned `tool_calls` array, bypassing text parsing altogether.
+    - **XML Fallback:** If native capability is turned off, the agent outputs a structured XML block in its textural response. The framework uses regex (`raw_xml_tool_call_pattern`) to parse these blocks. The format is always:
     ```xml
     <tool_name>
         <action>action_to_perform</action>
@@ -223,7 +226,7 @@ Communication within the framework is handled through several distinct channels.
         <param2>value2</param2>
     </tool_name>
     ```
-    This strict format ensures reliable parsing and execution.
+    This hybrid system ensures backward compatibility while capitalizing on modern deterministic JSON tool execution.
 
 -   **Agent <-> Agent (`SendMessageTool`) & Message Inboxing**: Agents can communicate directly with one another using the `SendMessageTool`. The tool takes a `target_agent_id` and `message_content` as parameters. 
     - **Safe State Delivery:** If the target agent is in a safe, interruptible state (like `wait`, `manage`, or `standby`), the framework appends the message directly to its history and schedules a cycle.

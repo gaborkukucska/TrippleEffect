@@ -699,6 +699,20 @@ Pushes changes to a remote repository.
         if isinstance(relative_file_path, str):
             relative_file_path = relative_file_path.strip().replace(" ", "_")
             
+            # Agent pathing workaround: LLMs often mistakenly prepend "shared/" or "shared/project_name/" 
+            # to their paths when working in the shared workspace because of prompt wording.
+            if "shared workspace" in scope_description:
+                parts = tuple(Path(relative_file_path).parts)
+                if parts and parts[0] == "shared":
+                    parts = parts[1:] # Strip 'shared/'
+                    
+                    # See if they also included the project name (which is the parent of the parent of the shared_workspace)
+                    # base_path is: .../projects/ProjectName/SessionName/shared_workspace
+                    if parts and len(base_path.parents) >= 2 and parts[0] == base_path.parent.parent.name:
+                        parts = parts[1:] # Strip 'ProjectName/'
+
+                    relative_file_path = str(Path(*parts)) if parts else "."
+            
         try:
             # Handle potential path normalization issues
             # Disallow paths starting with '/' or containing '..'

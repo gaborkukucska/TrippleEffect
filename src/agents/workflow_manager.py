@@ -17,7 +17,7 @@ from src.agents.constants import (
     PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_STANDBY,
     PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS,
     PM_STATE_REPORT_CHECK,
-    WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_REPORT, WORKER_STATE_WAIT,
+    WORKER_STATE_STARTUP, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK, WORKER_STATE_REPORT, WORKER_STATE_WAIT,
     DEFAULT_STATE, BOOTSTRAP_AGENT_ID, AGENT_STATUS_IDLE
 )
 from src.config.settings import settings, BASE_DIR
@@ -37,7 +37,7 @@ class AgentWorkflowManager:
         self._valid_states: Dict[str, List[str]] = {
             AGENT_TYPE_ADMIN: [ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK, ADMIN_STATE_STANDBY, DEFAULT_STATE],
             AGENT_TYPE_PM: [PM_STATE_STARTUP, PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_REPORT_CHECK, PM_STATE_STANDBY, DEFAULT_STATE],
-            AGENT_TYPE_WORKER: [WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_REPORT, WORKER_STATE_WAIT, DEFAULT_STATE]
+            AGENT_TYPE_WORKER: [WORKER_STATE_STARTUP, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK, WORKER_STATE_REPORT, WORKER_STATE_WAIT, DEFAULT_STATE]
         }
         self._prompt_map: Dict[Tuple[str, str], str] = {
             (AGENT_TYPE_ADMIN, ADMIN_STATE_STARTUP): "admin_ai_startup_prompt",
@@ -59,6 +59,7 @@ class AgentWorkflowManager:
             (AGENT_TYPE_PM, DEFAULT_STATE): "default_system_prompt",
 
             (AGENT_TYPE_WORKER, WORKER_STATE_STARTUP): "worker_startup_prompt",
+            (AGENT_TYPE_WORKER, WORKER_STATE_DECOMPOSE): "worker_decompose_prompt",
             (AGENT_TYPE_WORKER, WORKER_STATE_WORK): "worker_work_prompt",
             (AGENT_TYPE_WORKER, WORKER_STATE_REPORT): "worker_report_prompt",
             (AGENT_TYPE_WORKER, WORKER_STATE_WAIT): "worker_wait_prompt",
@@ -84,6 +85,7 @@ class AgentWorkflowManager:
             (AGENT_TYPE_PM, "report_check"): PM_STATE_REPORT_CHECK,
             (AGENT_TYPE_PM, "work"): PM_STATE_WORK,
             (AGENT_TYPE_WORKER, "startup"): WORKER_STATE_STARTUP,
+            (AGENT_TYPE_WORKER, "decompose"): WORKER_STATE_DECOMPOSE,
             (AGENT_TYPE_WORKER, "work"): WORKER_STATE_WORK,
             (AGENT_TYPE_WORKER, "report"): WORKER_STATE_REPORT,
             (AGENT_TYPE_WORKER, "wait"): WORKER_STATE_WAIT,
@@ -241,6 +243,56 @@ class AgentWorkflowManager:
                     
                 # Worker State-specific logic
                 elif agent.agent_type == AGENT_TYPE_WORKER:
+                    # --- DECOMPOSE TRANSITION VALIDATION ---
+                    if current_state == WORKER_STATE_DECOMPOSE and requested_state == WORKER_STATE_WORK:
+                        valid_transition = True
+                        if hasattr(agent, 'manager') and hasattr(agent.manager, 'tool_executor') and 'project_management' in agent.manager.tool_executor.tools:
+                            pm_tool = agent.manager.tool_executor.tools['project_management']
+                            try:
+                                agent_proj = self._get_agent_project_name(agent, agent.manager)
+                                agent_session = agent.manager.current_session
+                                tw = pm_tool._get_taskwarrior_instance(agent_proj, agent_session)
+                                
+                                if tw and getattr(agent, 'current_task_id', None):
+                                    aliases = pm_tool._load_aliases(agent_proj, agent_session)
+                                    task_id_str = str(agent.current_task_id).strip()
+                                    if task_id_str in aliases:
+                                        task_id_str = aliases[task_id_str]
+                                    
+                                    try:
+                                        if '-' in task_id_str and len(task_id_str) > 10:
+                                            main_task = tw.tasks.get(uuid=task_id_str)
+                                        elif task_id_str.isdigit():
+                                            main_task = tw.tasks.get(id=int(task_id_str))
+                                        else:
+                                            main_task = None
+                                            
+                                        if main_task:
+                                            subtasks = tw.tasks.filter(depends=main_task)
+                                            if len(subtasks) == 0:
+                                                valid_transition = False
+                                        else:
+                                            logger.warning(f"WorkflowManager: Could not retrieve task '{task_id_str}' for validation. Proceeding without sub-task validation.")
+                                    except Exception as e:
+                                        logger.warning(f"WorkflowManager: Could not retrieve task '{task_id_str}' for validation: {e}. Proceeding without sub-task validation.")
+                            except Exception as e:
+                                logger.error(f"WorkflowManager: Error validating subtask creation for {agent.agent_id}: {e}", exc_info=True)
+                                
+                        if not valid_transition:
+                            logger.warning(f"WorkflowManager: Agent '{agent.agent_id}' attempted to leave decompose state without creating subtasks for task '{agent.current_task_id}'. Rejecting transition.")
+                            feedback_msg = (
+                                f"[Framework Feedback]\nTransition to '{WORKER_STATE_WORK}' rejected. "
+                                f"You MUST use the `project_management` tool (`add_task` action) to create sub-tasks for your assigned task "
+                                f"(task_id: {agent.current_task_id}) before starting work. Ensure you set the `depends` parameter "
+                                f"on the new sub-tasks to your assigned task ID."
+                            )
+                            if not hasattr(agent, 'message_history'):
+                                agent.message_history = []
+                            agent.message_history.append({"role": "system", "content": feedback_msg})
+                            agent._last_system_prompt_state = None # Force prompt refresh
+                            return False
+                    # --- END DECOMPOSE TRANSITION VALIDATION ---
+
                     # --- DELIVERY OF QUEUED ACTIVATION MESSAGES ---
                     if requested_state in [WORKER_STATE_WAIT, WORKER_STATE_WORK]:
                         if hasattr(agent, 'message_inbox') and agent.message_inbox:
@@ -613,6 +665,72 @@ class AgentWorkflowManager:
                         f"```xml\n{html.escape(wf_instance.expected_xml_schema)}\n```" 
                     )
                     break
+        xml_tool_instructions = """[TOOL USE - CRITICAL FORMATS]
+- **Tool Discovery:** To know what tools are available, use `<tool_information><action>list_tools</action></tool_information>`
+- **Tool Details:** To know how a specific tool works, first perform the `list_tools` call, then use `<tool_information><action>get_info</action><tool_name>TOOL_NAME</tool_name></tool_information>` where `TOOL_NAME` you need to replace with the name of the specific tool you got from the 'list_tools' call
+
+[XML FORMAT RULES - READ CAREFULLY]
+1. **tool_information** is for getting information ABOUT tools, NOT for executing other tools
+2. NEVER use nested tool names like: `<tool_information><action>execute</action><tool_name>other_tool</tool_name></tool_information>` - THIS IS WRONG
+3. Each tool has its own XML format - get the format using tool_information first
+4. Examples of CORRECT formats:
+   - List tools: `<tool_information><action>list_tools</action></tool_information>`
+   - Get tool info: `<tool_information><action>get_info</action><tool_name>file_system</tool_name></tool_information>`
+   - Use file_system: `<file_system><action>write</action><filepath>test.txt</filepath><content>Hello</content></file_system>`
+5. NEVER put <parameters> tags inside tool_information - use the actual tool parameters"""
+
+        native_tool_instructions = """[TOOL USE]
+- **Native JSON Tools:** You have access to native JSON tool calling capabilities.
+- **Workflow:** Use the provided JSON tool functions to execute actions. Do NOT output XML `<tool_name>...</tool_name>` tags to call tools. Simply call the tool naturally! Your tool calls will be intercepted and executed by the system automatically."""
+
+        state_uses_native_tools = agent.state in {ADMIN_STATE_WORK, PM_STATE_WORK, PM_STATE_MANAGE, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK}
+        use_native_instructions = settings.NATIVE_TOOL_CALLING_ENABLED and state_uses_native_tools
+
+        tool_instructions = native_tool_instructions if use_native_instructions else xml_tool_instructions
+
+        xml_tool_examples = """[EXAMPLE TOOL USE RESPONSE]
+<think>I need to save the main application logic I've written.</think>
+<file_system><action>write</action><filepath>src/main.py</filepath><content># Python application code...</content></file_system>
+
+[EXAMPLE: SWITCHING TO REPORT STATE]
+<think>I have completed the first milestone. I need to report my progress to the PM.</think>
+<request_state state='worker_report'/>"""
+
+        native_tool_examples = """[EXAMPLE: SWITCHING TO REPORT STATE]
+<think>I have completed the first milestone using my native tools. I need to report my progress to the PM.</think>
+<request_state state='worker_report'/>"""
+
+        xml_report_examples = """[EXAMPLE: MILESTONE REPORT]
+<think>I completed the database schema and saved it. I still have more work to do.</think>
+<send_message><target_agent_id>PM1</target_agent_id><message_content>Milestone complete: Database schema created and saved to db/schema.sql. Moving on to implementing the API endpoints next.</message_content></send_message>
+<request_state state='worker_work'/>
+
+[EXAMPLE: FINAL REPORT]
+<think>All sub-tasks are done and the main task is marked completed. Time for my final report.</think>
+<send_message><target_agent_id>PM1</target_agent_id><message_content>Task complete: 'Implement User Authentication'. Created login page (ui/login.html), auth API (api/auth.py), and user model (models/user.py). All files saved to workspace.</message_content></send_message>
+<request_state state='worker_wait'/>"""
+
+        native_report_examples = """[EXAMPLE: MILESTONE REPORT]
+<think>I completed the database schema and saved it. I still have more work to do.</think>
+(Call the send_message tool here using native JSON)
+<request_state state='worker_work'/>
+
+[EXAMPLE: FINAL REPORT]
+<think>All sub-tasks are done and the main task is marked completed. Time for my final report.</think>
+(Call the send_message tool here using native JSON)
+<request_state state='worker_wait'/>"""
+
+        tool_examples = native_tool_examples if use_native_instructions else xml_tool_examples
+        report_examples = native_report_examples if use_native_instructions else xml_report_examples
+
+        xml_whiteboard_read = "`<file_system><action>read</action><filepath>whiteboard.md</filepath></file_system>`"
+        json_whiteboard_read = "using the `file_system` tool (read action)"
+        whiteboard_read_example = json_whiteboard_read if use_native_instructions else xml_whiteboard_read
+
+        xml_workspace_list = "`<file_system><action>list</action></file_system>`"
+        json_workspace_list = "using the `file_system` tool (list action)"
+        workspace_list_example = json_workspace_list if use_native_instructions else xml_workspace_list
+
         standard_formatting_context = {
             "agent_id": agent.agent_id, "agent_type": agent.agent_type,
             "team_id": manager.state_manager.get_agent_team(agent.agent_id) or "N/A",
@@ -621,7 +739,8 @@ class AgentWorkflowManager:
             "address_book": address_book_content,
             "available_workflow_trigger": available_workflow_trigger_info,
             "pm_provider": "N/A", # Default if not PM or not found
-            "pm_model": "N/A"    # Default if not PM or not found
+            "pm_model": "N/A",    # Default if not PM or not found
+            "tool_instructions": tool_instructions
         }
 
         if agent.agent_type == AGENT_TYPE_PM:
@@ -685,7 +804,7 @@ class AgentWorkflowManager:
             task_desc_for_prompt = getattr(agent, 'initial_plan_description', None)
 
         # Use injected task description for newly activated workers, overriding other values
-        if agent.agent_type == AGENT_TYPE_WORKER and agent.state == WORKER_STATE_WORK:
+        if agent.agent_type == AGENT_TYPE_WORKER and agent.state in (WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK):
             if hasattr(agent, '_injected_task_description') and agent._injected_task_description is not None:
                 task_desc_for_prompt = agent._injected_task_description
 
@@ -736,7 +855,12 @@ class AgentWorkflowManager:
             "task_description": task_desc_for_prompt, 
             self._standard_instructions_map.get(agent.agent_type, "standard_framework_instructions"): formatted_standard_instructions,
             "personality_instructions": personality_text,
-            "role": getattr(agent, 'role', 'General Worker')
+            "role": getattr(agent, 'role', 'General Worker'),
+            "tool_instructions": tool_instructions,
+            "tool_examples": tool_examples,
+            "report_examples": report_examples,
+            "whiteboard_read_example": whiteboard_read_example,
+            "workspace_list_example": workspace_list_example
         }
         try:
             final_prompt = state_prompt_template.format(**state_formatting_context)
