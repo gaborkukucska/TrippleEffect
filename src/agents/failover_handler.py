@@ -408,11 +408,67 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
     # Get unique provider names that indicate local instances
     local_provider_names = sorted([p for p in all_available if "-local-" in p or "-proxy" in p])
 
+    # --- PASS 1: Try the SAME (original/preferred) model on a DIFFERENT healthy local API ---
+    # This is the cheapest failover path as it avoids model reloads on Ollama instances.
+    logger.info(f"Failover Step 1a: Trying preferred model '{original_model}' on alternative local APIs...")
+    for local_provider in local_provider_names:
+        # Skip the provider that just failed
+        if local_provider == failed_provider:
+            logger.debug(f"Pass 1 - Skipping local provider '{local_provider}': same as failed provider.")
+            if is_provider_level_error:
+                failover_state["tried_local_providers"].add(local_provider)
+            continue
+        # Skip providers already fully tried
+        if local_provider in failover_state["tried_local_providers"]:
+            logger.debug(f"Pass 1 - Skipping local provider '{local_provider}': already marked as tried.")
+            continue
+
+        # Initialize tried set for this provider
+        if local_provider not in failover_state["tried_models_per_local_provider"]:
+            failover_state["tried_models_per_local_provider"][local_provider] = set()
+
+        # Skip if original model already tried on this provider
+        if original_model in failover_state["tried_models_per_local_provider"][local_provider]:
+            logger.debug(f"Pass 1 - Skipping '{original_model}' on '{local_provider}': already tried.")
+            continue
+
+        # Check if the original model is available on this provider
+        models_on_provider = all_available.get(local_provider, [])
+        has_original_model = any(m.get("id") == original_model for m in models_on_provider)
+        if not has_original_model:
+            logger.debug(f"Pass 1 - Skipping '{local_provider}': preferred model '{original_model}' not available.")
+            continue
+
+        # Health check
+        provider_url = model_registry.get_reachable_provider_url(local_provider)
+        if not provider_url:
+            logger.warning(f"Pass 1 - Could not get URL for '{local_provider}'. Skipping.")
+            failover_state["tried_local_providers"].add(local_provider)
+            continue
+        provider_seems_healthy = await _check_provider_health(provider_url)
+        if not provider_seems_healthy:
+            logger.warning(f"Pass 1 - Health check failed for '{local_provider}'. Skipping.")
+            failover_state["tried_local_providers"].add(local_provider)
+            continue
+
+        # Try switching to the same model on the healthy alternative API
+        logger.info(f"Failover Pass 1: Trying PREFERRED model '{original_model}' on alternative API '{local_provider}' (no model reload expected).")
+        switched = await _try_switch_agent(manager, agent, local_provider, original_model, None)
+        if switched:
+            logger.info(f"Failover Pass 1 SUCCESS: Agent '{agent_id}' switched to same model '{original_model}' on '{local_provider}'.")
+            return True
+        else:
+            logger.warning(f"Failover Pass 1: _try_switch_agent failed for '{local_provider}/{original_model}'.")
+            failover_state["tried_models_per_local_provider"][local_provider].add(original_model)
+
+    logger.info("Failover Step 1a: Preferred model not available on any alternative healthy local API.")
+
+    # --- PASS 2: Try alternative models on all healthy local providers ---
+    logger.info("Failover Step 1b: Trying alternative models on local providers...")
     for local_provider in local_provider_names:
         # --- Skip this specific provider instance if it's the one that just failed with a provider-level error ---
         if local_provider == failed_provider and is_provider_level_error:
             logger.debug(f"Skipping local provider '{local_provider}': It just failed with a provider-level error ({error_type_name}).")
-            # Ensure it's marked as tried so we don't loop back to it unnecessarily if failover continues
             failover_state["tried_local_providers"].add(local_provider)
             continue
         # --- Also skip if it was marked tried in a previous failover step (e.g., exhausted models) ---
@@ -422,10 +478,8 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
 
         logger.info(f"Considering local provider: {local_provider}")
 
-        # --- NEW: Perform health check ONLY if this provider *wasn't* the one that just failed with a provider-level error ---
-        # If it *was* the one that failed with a provider-level error, we already know it's likely down.
-        # If the failure was model-specific, we need to check if the provider is *still* up before trying alternates.
-        provider_seems_healthy = True # Assume healthy unless check fails
+        # Perform health check
+        provider_seems_healthy = True
         if not (local_provider == failed_provider and is_provider_level_error):
             provider_url = model_registry.get_reachable_provider_url(local_provider)
             if provider_url:
@@ -433,23 +487,20 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
                 provider_seems_healthy = await _check_provider_health(provider_url)
                 if not provider_seems_healthy:
                     logger.warning(f"Health check failed for local provider '{local_provider}'. Skipping model attempts.")
-                    failover_state["tried_local_providers"].add(local_provider) # Mark as tried due to health check failure
-                    continue # Move to the next local provider
+                    failover_state["tried_local_providers"].add(local_provider)
+                    continue
             else:
                 logger.warning(f"Could not get URL for local provider '{local_provider}' to perform health check. Assuming unhealthy.")
-                provider_seems_healthy = False
-                failover_state["tried_local_providers"].add(local_provider) # Mark as tried
-                continue # Move to the next local provider
+                failover_state["tried_local_providers"].add(local_provider)
+                continue
 
         # --- Proceed only if provider seems healthy ---
         logger.info(f"Trying models on local provider: {local_provider}")
         
-        # Initialize tried_models_per_local_provider for the current provider if not already
         if local_provider not in failover_state["tried_models_per_local_provider"]:
             failover_state["tried_models_per_local_provider"][local_provider] = set()
         tried_on_this_provider = failover_state["tried_models_per_local_provider"][local_provider]
 
-        # Get all models for this specific local provider instance
         all_models_for_this_local_provider_raw = all_available.get(local_provider, [])
         
         candidate_local_model_infos: List[Dict[str, Any]] = []
@@ -461,13 +512,12 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
                 continue
             
             model_data_copy = dict(model_data)
-            model_data_copy["provider"] = local_provider # Specific provider name
+            model_data_copy["provider"] = local_provider
             candidate_local_model_infos.append(model_data_copy)
 
         if not candidate_local_model_infos:
             logger.warning(f"No untried models found for local provider '{local_provider}'.")
         else:
-            # Prepare performance metrics for these candidates
             local_provider_metrics_for_sorter = {}
             base_local_provider_name = local_provider.split("-local-")[0].split("-proxy")[0]
             
@@ -478,7 +528,7 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
                     if local_provider not in local_provider_metrics_for_sorter:
                          local_provider_metrics_for_sorter[local_provider] = {}
                     local_provider_metrics_for_sorter[local_provider][m_id_suffix] = metrics
-                else: # Default if no metrics found
+                else:
                     if local_provider not in local_provider_metrics_for_sorter:
                          local_provider_metrics_for_sorter[local_provider] = {}
                     local_provider_metrics_for_sorter[local_provider][m_id_suffix] = {"score": 0.0, "latency": float('inf'), "calls": 0}
@@ -492,7 +542,6 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
             models_available_on_provider_tried = False
             for sorted_model_info in sorted_local_models_to_try:
                 local_model_id_to_try = sorted_model_info["id"]
-                # Redundant check, already filtered, but defensive:
                 if local_model_id_to_try in tried_on_this_provider: continue
 
                 models_available_on_provider_tried = True
@@ -509,8 +558,7 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
             if not models_available_on_provider_tried:
                  logger.warning(f"No untried models found or switch failed for all models on local provider: {local_provider} after comprehensive sort.")
         
-        # Mark the provider as fully tried *only after checking all its models*
-        failover_state["tried_local_providers"].add(local_provider) # Mark provider tried after exhausting its models
+        failover_state["tried_local_providers"].add(local_provider)
         logger.warning(f"Exhausted all models for local provider: {local_provider}")
 
     logger.info("Failover Step 1: Finished trying local providers.")

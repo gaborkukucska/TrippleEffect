@@ -327,4 +327,47 @@ Five separate loop detection/intervention systems operate simultaneously (`Agent
 **Fix 2:** Fixed the history indentation bug in `manager.py` and implemented dynamic `[System State Change]` user message injection in `cycle_handler.py` to prompt the LLM to resume activity within its newly generated system context.
 
 ---
+
+#### Phase K: PM Startup Strategy & Task Dependency Enhancements (March 2026)
+
+**Problem 1 (Premature Task Assignment):** The PM's kick-off plan included testing and documentation tasks that couldn't be started until development was complete, leading to idle workers and wasted cycles.
+**Fix 1:** Updated `pm_startup_prompt` in `prompts.yaml` to restrict kick-off tasks to three categories only: research (web/document/memory search), project setup (folder structure, requirements, environment), and foundational development (well-commented, debug-logged code). Testing and documentation are explicitly excluded from the initial plan and deferred to later project phases.
+
+**Problem 2 (No Dependencies Between Kick-off Tasks):** Tasks created during the kickoff phase had no dependency relationships, allowing the PM to assign dependent tasks (e.g., coding before research) simultaneously.
+**Fix 2:** Extended the `<task>` XML schema in `pm_startup_prompt` with `id` and `depends_on` attributes. Updated `pm_kickoff_workflow.py` to parse these attributes and pass them as `task_id` (alias) and `depends` to the `project_management` tool, leveraging the existing alias resolution system to create real TaskWarrior dependencies at task creation time.
+
+**Problem 3 (Invalid `update_task_status` Action):** LLMs frequently hallucinated the action `update_task_status` when trying to modify task status via the `project_management` tool, causing `[TOOL_EXEC_FAILED]` errors.
+**Fix 3:** Added `"update_task_status"` and `"update_status"` to the `action_suggestions` dictionary in `project_management.py`, auto-correcting them to `"modify_task"`.
+
+**Problem 4 (file_system List Retries on Non-Existent Directories):** When a worker called `file_system` with `action=list` on a subdirectory that didn't exist yet (e.g., `frontend`), the tool returned an error status. The executor's retry logic then retried the same call 3 times before finally failing, wasting time and log space.
+**Fix 4:** Changed `_list_directory` in `file_system.py` to return a `status: success` response with `items: []` and a helpful message listing the workspace root contents when the requested subdirectory doesn't exist. This guides the agent to create the directory with `mkdir` instead of triggering retries.
+
+**Problem 5 (PM Assigns All Tasks Ignoring Dependencies):** Despite the `pm_activate_workers_prompt` instructing the PM to only assign actionable tasks, the framework's own system message in `cycle_handler.py` overrode this by saying "Your mandatory next action is to assign the next task" — forcing the PM to assign ALL 6 tasks including those with unmet dependencies.
+**Fix 5:** Enhanced `cycle_handler.py` to track `depends` in `unassigned_tasks_summary` and check task dependencies before generating system directives. When all remaining tasks have unmet dependencies, the framework now instructs the PM to report completion and transition to manage state instead of continuing to assign blocked tasks.
+**Problem 6 (Think-Tag Prefix Blocks Kickoff Plan Parsing):** When the PM (especially qwen3.5 models) outputs `<think>...</think>` tags before the `<kickoff_plan>` XML in startup state, the `workflow_manager.py` rejects the output as having a "problematic prefix". The existing `<think>` block allowance only covered the old `task_list` trigger tag, not the newer `kickoff_plan` trigger. This caused infinite retry loops where the PM keeps producing valid plans that the framework keeps rejecting.
+**Fix 6:** Extended the `<think>` block prefix allowance condition in `workflow_manager.py` (line 436) from `trigger_tag == "task_list"` to `trigger_tag in ("task_list", "kickoff_plan")`, allowing both kickoff trigger formats to accept `<think>` prefixes.
+
+**Problem 7 (Comma-Separated Dependencies Silently Dropped):** When the LLM sent `depends: "task_1,task_2,task_3"` (multiple alias IDs as a comma-separated string), `project_management.py` treated the entire string as a single value, failed UUID/ID validation, and silently dropped all dependencies with a warning log.
+**Fix 7:** Refactored the dependency parsing block in `project_management.py` to split comma-separated `depends` values into individual items, resolve each through the alias system independently, and add all found dependencies as a set. Single-value inputs continue to work unchanged.
+
+**Problem 8 (Worker Self-Activation Directive Flooding):** When a worker created sub-tasks assigned to itself (via `add_task` with `assignee_agent_id` matching its own ID), `interaction_handler.py` called `activate_worker_with_task_details()` for each sub-task. Since the worker was already busy in `worker_decompose`, all activations were deferred — queuing 5+ `[Framework Directive]: You have been assigned a new task` messages into the worker's inbox. When the worker transitioned to `worker_work`, all directives were injected at once, confusing the model about which task to work on.
+**Fix 8:** Added a self-activation guard in `interaction_handler.py` that checks if `assignee_id == agent.agent_id`. When a worker assigns a task to itself (self-decomposition), activation is skipped entirely. Cross-agent activation (PM assigning to a worker) is unaffected.
+
+**Problem 9 (Infinite "Already In State" Reactivation Loop):** When a worker requested a state it was already in (e.g., `worker_work` while already in `worker_work`), `cycle_handler.py` set `needs_reactivation_after_cycle = True` for all non-idle states. This appended a `[System State Change]` message and re-ran the cycle, but the LLM produced the same `<request_state>` output, creating an infinite loop consuming resources without progress.
+**Fix 9:** Changed the same-state handling in `cycle_handler.py` to always set `needs_reactivation_after_cycle = False` regardless of state type. If an agent requests a state it's already in, it's treated as a no-op. The agent health monitor can intervene if the pattern indicates a stuck agent.
+
+---
+
+#### Phase L: Worker Ecosystem Stability (March 2026)
+
+**Problem 1 (Unassigned Sub-Tasks Created by Workers):** When workers (like W1) decomposed their assigned tasks into sub-tasks using the `project_management.py` tool (`add_task`), they often failed to provide the `assignee_agent_id` parameter. This caused the tasks to remain unassigned, confusing the worker when it transitioned to work state.
+**Fix 1:** Added auto-assignment logic in `project_management.py` so that if the calling agent is a worker and no `assignee_agent_id` is explicitly passed in the tool arguments, the generated task is automatically assigned to the caller.
+
+**Problem 2 (Worker Cross-Cycle Duplicate Tool Loop):** Workers exhibiting confusion (e.g. looking for work but finding none) would repeatedly execute the `file_system` read action on `whiteboard.md` infinitely. While the cross-cycle duplicate tool call mechanism intercepted these duplicate calls, it was artificially restricted to only PM agents, allowing the workers to loop forever undetected.
+**Fix 2:** Expanded the duplicate tool call detection scope (`_detect_cross_cycle_duplicate_tool_call`) in `cycle_handler.py` to include `AGENT_TYPE_WORKER`. Additionally, implemented a new escalation block specifically for workers: when `_duplicate_tool_call_count >= 3`, the framework injects a strong `[Framework System Message - AUTO-ADVANCE]` forcing the worker to stop repeating the exact identical tool call and to transition to a new tool or the `worker_report` state.
+
+**Problem 3 (Project Filter Hallucination):** The LLM occasionally made typos when providing the `project_filter` argument to `list_tasks` (e.g., spelling "Snake_Game" as "Sake_Game"). Because `project_management.py` trusted the LLM-provided string to filter the list query, it incorrectly returned `0 task(s)` to the PM.
+**Fix 3:** Implemented a "Project Filter Guard" in `project_management.py`. Whenever the tool is executed, it now forces `kwargs["project_filter"]` to exactly match the authenticated `project_name` provided by the framework context. This protects the native task database queries from any LLM spelling mistakes or hallucinations.
+
+---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

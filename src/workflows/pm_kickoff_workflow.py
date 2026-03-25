@@ -36,11 +36,11 @@ class PMKickoffWorkflow(BaseWorkflow):
         "<kickoff_plan>\n"
         "  <roles>\n"
         "    <role>First Unique Role (e.g., Coder)</role>\n"
-        "    <role>Second Unique Role (e.g., Tester)</role>\n"
+        "    <role>Second Unique Role (e.g., Technical_Writer)</role>\n"
         "  </roles>\n"
         "  <tasks>\n"
-        "    <task>High-level kick-off task 1 description</task>\n"
-        "    <task>High-level kick-off task 2 description</task>\n"
+        "    <task id=\"task_1\">High-level kick-off task 1 description</task>\n"
+        "    <task id=\"task_2\" depends_on=\"task_1\">High-level kick-off task 2 description</task>\n"
         "  </tasks>\n"
         "</kickoff_plan>"
     )
@@ -76,10 +76,16 @@ class PMKickoffWorkflow(BaseWorkflow):
         # --- Extract Tasks ---
         tasks_element = data_input.find("tasks")
         task_descriptions: List[str] = []
+        task_info_list: List[dict] = []
         if tasks_element is not None:
             for task_element in tasks_element.findall("task"):
                 if task_element.text and task_element.text.strip():
                     task_descriptions.append(task_element.text.strip())
+                    task_info_list.append({
+                        "id": task_element.get("id"),
+                        "depends_on": task_element.get("depends_on"),
+                        "description": task_element.text.strip()
+                    })
         
         if not task_descriptions:
             logger.warning(f"PMKickoffWorkflow: No tasks found in <kickoff_plan> from agent '{agent.agent_id}'.")
@@ -112,7 +118,8 @@ class PMKickoffWorkflow(BaseWorkflow):
                 next_agent_status=AGENT_STATUS_IDLE
             )
 
-        for i, task_desc in enumerate(task_descriptions):
+        for i, task_info in enumerate(task_info_list):
+            task_desc = task_info["description"]
             task_tool_args = {
                 "action": "add_task",
                 "description": f"Kick-off Task {i+1}: {task_desc}",
@@ -121,6 +128,10 @@ class PMKickoffWorkflow(BaseWorkflow):
                 "tags": ["kickoff", "pm_decomposed", f"task_order_{i+1}"],
                 "assignee_agent_id": agent.agent_id
             }
+            if task_info.get("id"):
+                task_tool_args["task_id"] = task_info["id"]
+            if task_info.get("depends_on"):
+                task_tool_args["depends"] = task_info["depends_on"]
             try:
                 logger.debug(f"PMKickoffWorkflow: Attempting to create task via ToolExecutor: {task_tool_args}")
                 task_result = await manager.tool_executor.execute_tool(
@@ -240,7 +251,12 @@ class PMKickoffWorkflow(BaseWorkflow):
 
             # Format the roles and tasks for inclusion in the message
             formatted_role_xml = "\n".join([f"    <role>{role}</role>" for role in role_names])
-            formatted_task_xml = "\n".join([f"    <task>{desc}</task>" for desc in task_descriptions])
+            formatted_task_xml = "\n".join([
+                f"    <task id=\"{ti.get('id', '')}\" depends_on=\"{ti.get('depends_on', '')}\">{ti['description']}</task>" 
+                if ti.get('id') or ti.get('depends_on') 
+                else f"    <task>{ti['description']}</task>"
+                for ti in task_info_list
+            ])
 
             first_role_to_create = role_names[0] if role_names else "Worker"
             

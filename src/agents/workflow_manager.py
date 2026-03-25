@@ -294,7 +294,9 @@ class AgentWorkflowManager:
                     # --- END DECOMPOSE TRANSITION VALIDATION ---
 
                     # --- DELIVERY OF QUEUED ACTIVATION MESSAGES ---
-                    if requested_state in [WORKER_STATE_WAIT, WORKER_STATE_WORK]:
+                    # Only deliver new queued tasks when the worker is fully idle (WAIT state).
+                    # Delivering them during WORK disrupts the worker's current focus.
+                    if requested_state == WORKER_STATE_WAIT:
                         if hasattr(agent, 'message_inbox') and agent.message_inbox:
                             logger.info(f"WorkflowManager: Worker agent '{agent.agent_id}' entering safe state '{requested_state}'. Delivering {len(agent.message_inbox)} queued messages from inbox.")
                             
@@ -430,10 +432,10 @@ class AgentWorkflowManager:
                                 logger.debug(f"Workflow trigger '{trigger_tag}' for agent '{agent.agent_id}' found, but problematic trailing text detected: '{text_after_xml_tag[:50]}...'. Skipping.")
                                 continue
 
-                            # Specific check for PM in startup state with "task_list" trigger
+                            # Specific check for PM in startup state with kickoff triggers
                             if agent.agent_type == AGENT_TYPE_PM and \
                                agent.state == PM_STATE_STARTUP and \
-                               trigger_tag == "task_list":
+                               trigger_tag in ("task_list", "kickoff_plan"):
 
                                 if text_before_xml_tag: # Only check if there's actually text before
                                     think_block_pattern = r"^\s*<think>[\s\S]+?</think>\s*$" # Allows surrounding whitespace around think block itself
@@ -683,7 +685,7 @@ class AgentWorkflowManager:
 - **Native JSON Tools:** You have access to native JSON tool calling capabilities.
 - **Workflow:** Use the provided JSON tool functions to execute actions. Do NOT output XML `<tool_name>...</tool_name>` tags to call tools. Simply call the tool naturally! Your tool calls will be intercepted and executed by the system automatically."""
 
-        state_uses_native_tools = agent.state in {ADMIN_STATE_WORK, PM_STATE_WORK, PM_STATE_MANAGE, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK}
+        state_uses_native_tools = agent.state in {ADMIN_STATE_WORK, ADMIN_STATE_CONVERSATION, PM_STATE_WORK, PM_STATE_MANAGE, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK}
         use_native_instructions = settings.NATIVE_TOOL_CALLING_ENABLED and state_uses_native_tools
 
         tool_instructions = native_tool_instructions if use_native_instructions else xml_tool_instructions

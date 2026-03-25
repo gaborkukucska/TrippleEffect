@@ -790,7 +790,19 @@ Pushes changes to a remote repository.
         """Lists files and directories within a specified sub-directory of the base path."""
         validated_path = await self._resolve_and_validate_path(base_path, relative_dir, agent_id, scope_description)
         if not validated_path: return {"status": "error", "message": f"Invalid or disallowed path '{relative_dir}' in {scope_description}."}
-        if not validated_path.is_dir(): logger.warning(f"Agent {agent_id} attempted to list non-existent directory: {relative_dir} in {scope_description}"); return {"status": "error", "message": f"Path '{relative_dir}' does not exist or is not a directory in {scope_description}."}
+        if not validated_path.is_dir():
+            logger.warning(f"Agent {agent_id} attempted to list non-existent directory: {relative_dir} in {scope_description}")
+            # Instead of erroring (which triggers retries), return helpful info with root listing
+            try:
+                root_items = await asyncio.to_thread(os.listdir, base_path)
+                root_listing = "\n".join([f"- {item}" for item in sorted(root_items)]) if root_items else "(empty workspace)"
+            except Exception:
+                root_listing = "(could not list root)"
+            return {
+                "status": "success",
+                "message": f"Path '{relative_dir}' does not exist yet in {scope_description}. You may need to create it first using 'mkdir'. Here are the current contents of the workspace root:\n{root_listing}",
+                "items": []
+            }
         try:
             items = await asyncio.to_thread(os.listdir, validated_path)
             if not items: logger.info(f"Agent {agent_id} listed empty directory: '{relative_dir}' in {scope_description}"); return {"status": "success", "message": f"Directory '{relative_dir}' in {scope_description} is empty.", "items": []}

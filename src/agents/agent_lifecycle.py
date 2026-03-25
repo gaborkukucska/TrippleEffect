@@ -622,7 +622,7 @@ async def _create_agent_internal(
         found_specific_instance = False
         if specific_instances:
             # Prefer round-robin for fairness if multiple instances have the model
-            rr_key = f"{provider_name}_dynamic_pm_assignment" # Unique key for this round robin
+            rr_key = provider_name # Use base provider name to unify round-robin pool
             start_index = manager.local_api_usage_round_robin_index.get(rr_key, 0)
 
             for i in range(len(specific_instances)):
@@ -669,8 +669,12 @@ async def _create_agent_internal(
 
         logger.debug(f"Dynamic agent auto-selection in _create_agent_internal: _select_best_available_model returned provider='{selected_provider}', model_suffix='{selected_model_suffix}', rr_base_type='{rr_base_type}', rr_idx_chosen='{rr_idx_chosen}'")
 
-        # If API-first RR was used by _select_best_available_model for a dynamic agent, it would have updated the global index itself.
-        # No special handling of rr_base_type or rr_idx_chosen is needed here in _create_agent_internal for dynamic agents.
+        # If API-first RR was used by _select_best_available_model for a dynamic agent, we must update the global index.
+        if rr_base_type and rr_idx_chosen is not None:
+            specific_local_provider_list_for_update = manager.available_local_providers_list.get(rr_base_type)
+            if specific_local_provider_list_for_update and len(specific_local_provider_list_for_update) > 0:
+                manager.local_api_usage_round_robin_index[rr_base_type] = (rr_idx_chosen + 1) % len(specific_local_provider_list_for_update)
+                logger.info(f"Lifecycle: Auto-selection for dynamic agent '{agent_id}' used API-first RR. Updated global round-robin index for '{rr_base_type}' to {manager.local_api_usage_round_robin_index[rr_base_type]}.")
 
         if not selected_provider or not selected_model_suffix:
             msg = f"Lifecycle Error: Automatic model selection failed for agent '{agent_id}'. No suitable model found."

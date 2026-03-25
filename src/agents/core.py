@@ -208,7 +208,7 @@ class Agent:
             if settings.NATIVE_TOOL_CALLING_ENABLED and self.manager and getattr(self.manager, 'tool_executor', None):
                 # Native tools should only be provided to states that expect interactive tool usage.
                 # States outputting structural XML (like startup, report_check) break if forced into tool-call mode.
-                if self.state in {ADMIN_STATE_WORK, PM_STATE_WORK, PM_STATE_MANAGE, WORKER_STATE_WORK, WORKER_STATE_DECOMPOSE}:
+                if self.state in {ADMIN_STATE_WORK, ADMIN_STATE_CONVERSATION, PM_STATE_WORK, PM_STATE_MANAGE, WORKER_STATE_WORK, WORKER_STATE_DECOMPOSE}:
                     tool_schemas = []
                     for tool_name, tool in self.manager.tool_executor.tools.items():
                         # Restrict WORKER_STATE_DECOMPOSE to only the project_management tool

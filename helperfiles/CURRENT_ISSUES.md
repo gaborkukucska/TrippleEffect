@@ -101,6 +101,27 @@
 - **Fix:** (RESOLVED) Updated the `add_task` action in `project_management.py` to filter out invalid dependency formats with a warning instead of returning an error, allowing task creation to proceed.
 - **File:** `src/tools/project_management.py`
 
+### 7.5. Comma-Separated Dependencies Silently Dropped
+
+- **Severity:** High
+- **Description:** When the LLM sent `depends: "task_1,task_2,task_3"` (comma-separated alias IDs), `project_management.py` treated the entire string as a single value, failed validation, and silently dropped all dependencies.
+- **Fix:** (RESOLVED) Refactored dependency parsing to split comma-separated values and resolve each item independently through the alias/UUID/ID system.
+- **File:** `src/tools/project_management.py`
+
+### 7.6. Worker Self-Activation Directive Flooding
+
+- **Severity:** High
+- **Description:** When a worker created sub-tasks assigned to itself via `add_task`, `interaction_handler.py` triggered `activate_worker_with_task_details()` for each one. Since the worker was busy, 5+ directives were deferred and injected at once, confusing the model.
+- **Fix:** (RESOLVED) Added a self-activation guard: if `assignee_id == agent.agent_id`, skip activation. Cross-agent activation (PM → worker) is unaffected.
+- **File:** `src/agents/interaction_handler.py`
+
+### 7.7. Infinite "Already In State" Reactivation Loop
+
+- **Severity:** Critical
+- **Description:** When a worker requested a state it was already in (e.g., `worker_work` → `worker_work`), `cycle_handler.py` forced reactivation for non-idle states, feeding back the same state-change message and creating an infinite loop.
+- **Fix:** (RESOLVED) Same-state requests are now always treated as no-op (no reactivation), preventing the loop.
+- **File:** `src/agents/cycle_handler.py`
+
 ---
 
 ## Critical Issues

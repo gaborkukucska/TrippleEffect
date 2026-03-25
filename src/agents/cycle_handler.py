@@ -973,6 +973,34 @@ class AgentCycleHandler:
                             if not found_task:
                                 logger.error(f"CycleHandler: Could not find a previous user message to use as task description for state change to '{ADMIN_STATE_WORK}'. The agent might loop.")
                         # <<< --- ROBUST FIX END --- >>>
+                        # FIX: Prevent PM from going to standby while workers are still active.
+                        # If workers are in decompose/work/report/startup, the PM must stay in
+                        # pm_manage to monitor progress and assign follow-up tasks.
+                        if agent.agent_type == AGENT_TYPE_PM and requested_state in ('pm_standby', PM_STATE_STANDBY):
+                            team_id = self._manager.state_manager.get_agent_team(agent.agent_id)
+                            if team_id:
+                                team_agents = self._manager.state_manager.get_agents_in_team(team_id)
+                                worker_idle_states = {WORKER_STATE_WAIT, None}
+                                active_workers = [
+                                    a for a in team_agents
+                                    if a.agent_type == AGENT_TYPE_WORKER and a.state not in worker_idle_states
+                                ]
+                                if active_workers:
+                                    active_ids = [f"{a.agent_id}({a.state})" for a in active_workers]
+                                    logger.warning(
+                                        f"CycleHandler: PM '{agent.agent_id}' requested pm_standby but "
+                                        f"{len(active_workers)} workers are still active: {active_ids}. "
+                                        f"Redirecting to pm_manage."
+                                    )
+                                    requested_state = PM_STATE_MANAGE
+                                    standby_redirect_msg = (
+                                        f"[Framework System Message]: You requested standby, but "
+                                        f"{len(active_workers)} worker(s) are still active: "
+                                        f"{', '.join(active_ids)}. You have been redirected to pm_manage "
+                                        f"to continue monitoring their progress. Use list_tasks to check "
+                                        f"current status."
+                                    )
+                                    agent.message_history.append({"role": "system", "content": standby_redirect_msg})
 
                         if self._manager.workflow_manager.change_state(agent, requested_state, task_description=task_description):
                             # Reactivate unless transitioning to an idle state
@@ -1028,12 +1056,10 @@ class AgentCycleHandler:
                             # change_state returned False. Check if it's already in the requested state.
                             resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state)
                             if agent.state == resolved_requested:
-                                logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Assuming idle/done if it's an idle state.")
-                                idle_states = [PM_STATE_STANDBY, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STANDBY, WORKER_STATE_WAIT]
-                                if resolved_requested in idle_states:
-                                    context.needs_reactivation_after_cycle = False
-                                else:
-                                    context.needs_reactivation_after_cycle = True
+                                logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Treating as no-op to prevent reactivation loop.")
+                                # Always suppress reactivation for same-state requests.
+                                # Reactivating just feeds the same state-change message back, causing infinite loops.
+                                context.needs_reactivation_after_cycle = False
                             else:
                                 # Truly invalid state transition. Let it reactivate to correct itself (with an error message).
                                 context.needs_reactivation_after_cycle = True
@@ -1178,12 +1204,28 @@ class AgentCycleHandler:
                         for i, call_data in enumerate(deduplicated_tool_calls):
                             tool_name = call_data.get("name"); tool_id = call_data.get("id"); tool_args = call_data.get("arguments", {})
                             
-                            # --- CROSS-CYCLE DUPLICATE DETECTION for PM agents ---
+                            # --- CROSS-CYCLE DUPLICATE DETECTION ---
                             # Check if this exact tool call already succeeded in a previous cycle.
                             # If so, skip re-execution and inject a forceful directive to advance.
-                            if agent.agent_type == AGENT_TYPE_PM and agent.state in [
-                                PM_STATE_ACTIVATE_WORKERS, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_MANAGE
-                            ]:
+                            is_eligible_pm = agent.agent_type == AGENT_TYPE_PM and agent.state in [PM_STATE_ACTIVATE_WORKERS, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_MANAGE]
+                            is_eligible_worker = agent.agent_type == AGENT_TYPE_WORKER
+                            
+                            # FIX: In pm_manage, list_tasks is a monitoring operation whose
+                            # results change over time as workers complete tasks.  Exempt it
+                            # from duplicate detection so the PM always gets fresh status.
+                            is_manage_monitoring_read = (
+                                agent.agent_type == AGENT_TYPE_PM
+                                and agent.state == PM_STATE_MANAGE
+                                and tool_name == "project_management"
+                                and tool_args.get("action") == "list_tasks"
+                            )
+                            if is_manage_monitoring_read:
+                                logger.debug(
+                                    f"CycleHandler: Allowing list_tasks for PM '{agent.agent_id}' in pm_manage "
+                                    f"(monitoring read - exempt from duplicate detection)."
+                                )
+                            
+                            if (is_eligible_pm or is_eligible_worker) and not is_manage_monitoring_read:
                                 prev_result = self._detect_cross_cycle_duplicate_tool_call(agent, tool_name, tool_args)
                                 if prev_result is not None:
                                     # Track duplicate count for escalation
@@ -1192,7 +1234,7 @@ class AgentCycleHandler:
                                     agent._duplicate_tool_call_count += 1
                                     
                                     logger.warning(
-                                        f"CycleHandler: CROSS-CYCLE DUPLICATE DETECTED for PM '{agent.agent_id}' - "
+                                        f"CycleHandler: CROSS-CYCLE DUPLICATE DETECTED for '{agent.agent_id}' - "
                                         f"tool '{tool_name}' with same args already succeeded. "
                                         f"Duplicate count: {agent._duplicate_tool_call_count}. Skipping re-execution."
                                     )
@@ -1208,76 +1250,125 @@ class AgentCycleHandler:
                                     any_tool_success = True
                                     
                                     # Inject escalated directive based on duplicate count
-                                    if agent._duplicate_tool_call_count >= 3 and agent.state in [
-                                        PM_STATE_ACTIVATE_WORKERS, PM_STATE_BUILD_TEAM_TASKS
-                                    ]:
-                                        cross_cycle_duplicate_blocked = True
-                                        action_performed = tool_args.get("action", "")
-                                        
-                                        # Special fast-path: list_tasks → auto-execute list_agents
-                                        if action_performed == "list_tasks" and agent.state == PM_STATE_ACTIVATE_WORKERS:
-                                            logger.warning(
-                                                f"CycleHandler: AUTO-ADVANCING PM '{agent.agent_id}' after "
-                                                f"{agent._duplicate_tool_call_count} duplicate '{tool_name}' calls. "
-                                                f"Executing list_agents automatically."
-                                            )
-                                            team_id = f"team_{agent.agent_config.get('config', {}).get('project_name_context', 'Unknown')}"
-                                            auto_result = await self._interaction_handler.execute_single_tool(
-                                                agent, f"auto_list_agents_{i}", "manage_team",
-                                                {"action": "list_agents", "team_id": team_id},
-                                                self._manager.current_project, self._manager.current_session
-                                            )
-                                            if auto_result:
-                                                auto_history: MessageDict = {
-                                                    "role": "tool",
-                                                    "tool_call_id": f"auto_list_agents_{i}",
-                                                    "name": "manage_team",
-                                                    "content": str(auto_result.get("content", "[Error]"))
-                                                }
-                                                all_tool_results_for_history.append(auto_history)
-                                                escalation_msg: MessageDict = {
-                                                    "role": "system",
-                                                    "content": (
-                                                        "[Framework System Message - AUTO-ADVANCE]: You called list_tasks "
-                                                        f"{agent._duplicate_tool_call_count} times with identical arguments. "
-                                                        "The framework has automatically executed list_agents for you. "
-                                                        "The agent list result is shown above. "
-                                                        "Your MANDATORY next action is to assign the first unassigned task "
-                                                        "to a suitable worker agent using: "
-                                                        "<project_management><action>modify_task</action>"
-                                                        "<task_id>TASK_UUID</task_id>"
-                                                        "<assignee_agent_id>WORKER_ID</assignee_agent_id>"
-                                                        "<tags>+WORKER_ID,assigned</tags>"
-                                                        "</project_management>"
+                                    if agent._duplicate_tool_call_count >= 3:
+                                        if agent.agent_type == AGENT_TYPE_PM and agent.state in [
+                                            PM_STATE_ACTIVATE_WORKERS, PM_STATE_BUILD_TEAM_TASKS
+                                        ]:
+                                            cross_cycle_duplicate_blocked = True
+                                            action_performed = tool_args.get("action", "")
+                                            
+                                            # Special fast-path: list_tasks → auto-execute list_agents
+                                            if action_performed == "list_tasks" and agent.state == PM_STATE_ACTIVATE_WORKERS:
+                                                logger.warning(
+                                                    f"CycleHandler: AUTO-ADVANCING PM '{agent.agent_id}' after "
+                                                    f"{agent._duplicate_tool_call_count} duplicate '{tool_name}' calls. "
+                                                    f"Executing list_agents automatically."
+                                                )
+                                                team_id = f"team_{agent.agent_config.get('config', {}).get('project_name_context', 'Unknown')}"
+                                                auto_result = await self._interaction_handler.execute_single_tool(
+                                                    agent, f"auto_list_agents_{i}", "manage_team",
+                                                    {"action": "list_agents", "team_id": team_id},
+                                                    self._manager.current_project, self._manager.current_session
+                                                )
+                                                if auto_result:
+                                                    auto_history: MessageDict = {
+                                                        "role": "tool",
+                                                        "tool_call_id": f"auto_list_agents_{i}",
+                                                        "name": "manage_team",
+                                                        "content": str(auto_result.get("content", "[Error]"))
+                                                    }
+                                                    all_tool_results_for_history.append(auto_history)
+                                                    escalation_msg: MessageDict = {
+                                                        "role": "system",
+                                                        "content": (
+                                                            "[Framework System Message - AUTO-ADVANCE]: You called list_tasks "
+                                                            f"{agent._duplicate_tool_call_count} times with identical arguments. "
+                                                            "The framework has automatically executed list_agents for you. "
+                                                            "The agent list result is shown above. "
+                                                            "Your MANDATORY next action is to assign the first unassigned task "
+                                                            "to a suitable worker agent using: "
+                                                            "<project_management><action>modify_task</action>"
+                                                            "<task_id>TASK_UUID</task_id>"
+                                                            "<assignee_agent_id>WORKER_ID</assignee_agent_id>"
+                                                            "<tags>+WORKER_ID,assigned</tags>"
+                                                            "</project_management>"
+                                                        )
+                                                    }
+                                                    self._deduplicate_pm_framework_messages(agent)
+                                                    all_tool_results_for_history.append(escalation_msg)
+                                                    # CRITICAL FIX: Do NOT reset to 0. Set to string threshold - 1 (which is 2)
+                                                    # so the next duplicate triggers the general FORCE-ADVANCE below.
+                                                    agent._duplicate_tool_call_count = 2 
+                                            else:
+                                                # GENERAL FORCE-ADVANCE: For any tool type, force PM to pm_manage
+                                                # FIX: If already in pm_manage, inject corrective directive instead of
+                                                # a no-op state change that resets the counter and loops forever.
+                                                if agent.state == PM_STATE_MANAGE:
+                                                    logger.warning(
+                                                        f"CycleHandler: PM '{agent.agent_id}' stuck in "
+                                                        f"'{PM_STATE_MANAGE}' after {agent._duplicate_tool_call_count} "
+                                                        f"duplicate '{tool_name}' calls. Injecting corrective directive."
                                                     )
-                                                }
-                                                self._deduplicate_pm_framework_messages(agent)
-                                                all_tool_results_for_history.append(escalation_msg)
-                                                # CRITICAL FIX: Do NOT reset to 0. Set to string threshold - 1 (which is 2)
-                                                # so the next duplicate triggers the general FORCE-ADVANCE below.
-                                                agent._duplicate_tool_call_count = 2 
-                                        else:
-                                            # GENERAL FORCE-ADVANCE: For any tool type, force PM to pm_manage
+                                                    escalation_msg: MessageDict = {
+                                                        "role": "system",
+                                                        "content": (
+                                                            f"[Framework System Message - STUCK LOOP DETECTED]: You have called "
+                                                            f"'{tool_name}' {agent._duplicate_tool_call_count} times with "
+                                                            f"identical arguments in the pm_manage state. The cached result is shown above. "
+                                                            f"STOP calling the same tool. You MUST now do ONE of the following:\n"
+                                                            f"1. If workers are busy: Send a status check message to a worker using <send_message>.\n"
+                                                            f"2. If tasks are completed: Review them and add a '+closed' tag using <project_management>.\n"
+                                                            f"3. If all tasks are done: Report completion to admin_ai using <send_message>.\n"
+                                                            f"4. If nothing needs action: Wait. The framework will reactivate you periodically."
+                                                        )
+                                                    }
+                                                    self._deduplicate_pm_framework_messages(agent)
+                                                    all_tool_results_for_history.append(escalation_msg)
+                                                    # Keep count at threshold-1 so next duplicate triggers again
+                                                    agent._duplicate_tool_call_count = 2
+                                                else:
+                                                    logger.warning(
+                                                        f"CycleHandler: FORCE-ADVANCING PM '{agent.agent_id}' to "
+                                                        f"'{PM_STATE_MANAGE}' after {agent._duplicate_tool_call_count} "
+                                                        f"duplicate '{tool_name}' calls in state '{agent.state}'."
+                                                    )
+                                                    self._manager.workflow_manager.change_state(agent, PM_STATE_MANAGE)
+                                                    escalation_msg: MessageDict = {
+                                                        "role": "system",
+                                                        "content": (
+                                                            f"[Framework System Message - FORCE ADVANCE]: You called "
+                                                            f"'{tool_name}' {agent._duplicate_tool_call_count} times with "
+                                                            f"identical arguments. The framework has force-advanced you to "
+                                                            f"the '{PM_STATE_MANAGE}' state. Review your task list and "
+                                                            f"proceed with the next logical step."
+                                                        )
+                                                    }
+                                                    self._deduplicate_pm_framework_messages(agent)
+                                                    all_tool_results_for_history.append(escalation_msg)
+                                                    agent._duplicate_tool_call_count = 0
+                                                context.needs_reactivation_after_cycle = True
+                                        elif agent.agent_type == AGENT_TYPE_WORKER:
+                                            # Escalation for workers
+                                            cross_cycle_duplicate_blocked = True
                                             logger.warning(
-                                                f"CycleHandler: FORCE-ADVANCING PM '{agent.agent_id}' to "
-                                                f"'{PM_STATE_MANAGE}' after {agent._duplicate_tool_call_count} "
-                                                f"duplicate '{tool_name}' calls in state '{agent.state}'."
+                                                f"CycleHandler: FORCE-ADVANCING worker '{agent.agent_id}' after "
+                                                f"{agent._duplicate_tool_call_count} duplicate '{tool_name}' calls."
                                             )
-                                            self._manager.workflow_manager.change_state(agent, PM_STATE_MANAGE)
                                             escalation_msg: MessageDict = {
                                                 "role": "system",
                                                 "content": (
-                                                    f"[Framework System Message - FORCE ADVANCE]: You called "
-                                                    f"'{tool_name}' {agent._duplicate_tool_call_count} times with "
-                                                    f"identical arguments. The framework has force-advanced you to "
-                                                    f"the '{PM_STATE_MANAGE}' state. Review your task list and "
-                                                    f"proceed with the next logical step."
+                                                    f"[Framework System Message - AUTO-ADVANCE]: You have called the exact same "
+                                                    f"tool ('{tool_name}') with identical arguments {agent._duplicate_tool_call_count} times "
+                                                    "without making progress (the result is cached). "
+                                                    "Your MANDATORY NEXT ACTION is to stop repeating yourself and either execute a DIFFERENT tool, "
+                                                    "or request a state change if you are stuck or finished (<request_state state='worker_report'/>)."
                                                 )
                                             }
-                                            self._deduplicate_pm_framework_messages(agent)
+                                            if hasattr(self, '_deduplicate_pm_framework_messages'):
+                                                self._deduplicate_pm_framework_messages(agent)
                                             all_tool_results_for_history.append(escalation_msg)
-                                            agent._duplicate_tool_call_count = 0
-                                            context.needs_reactivation_after_cycle = True
+                                            # Keep the count at 2 so the next failure triggers again
+                                            agent._duplicate_tool_call_count = 2
                                     else:
                                         cross_cycle_duplicate_blocked = True
                                         # Inject an escalated directive - stronger than the normal one
@@ -1291,7 +1382,8 @@ class AgentCycleHandler:
                                                 f"You MUST proceed to the NEXT step in your workflow NOW."
                                             )
                                         }
-                                        self._deduplicate_pm_framework_messages(agent)
+                                        if hasattr(self, '_deduplicate_pm_framework_messages'):
+                                            self._deduplicate_pm_framework_messages(agent)
                                         all_tool_results_for_history.append(escalation_msg)
                                     
                                     # Log to DB
@@ -1353,8 +1445,11 @@ class AgentCycleHandler:
                                     if isinstance(tool_result_data, dict) and tool_result_data.get("status") == "error":
                                         tool_was_successful = False
                                 except (json.JSONDecodeError, TypeError):
-                                    # If it's not valid JSON, fall back to the old string check for compatibility.
-                                    if "error" in result_content_str.lower():
+                                    # If it's not valid JSON, fall back to string checks for compatibility.
+                                    # Check for both "error" and "failed" — tool failures return
+                                    # "[Tool Execution Failed]" which doesn't contain "error".
+                                    result_lower = result_content_str.lower()
+                                    if "error" in result_lower or "[tool execution failed]" in result_lower:
                                         tool_was_successful = False
 
                                 if tool_was_successful:
@@ -1616,6 +1711,7 @@ class AgentCycleHandler:
                                         tasks = tool_result_json.get("tasks", [])
                                         task_summary_lines = []
                                         agent.unassigned_tasks_summary = [] # Clear previous summary
+                                        agent._all_kickoff_task_uuids = set()  # Track all kickoff UUIDs for dependency checking
                                         for task in tasks:
                                             if not isinstance(task, dict): continue
                                             uuid = task.get("uuid")
@@ -1623,7 +1719,8 @@ class AgentCycleHandler:
                                             truncated_desc = (desc[:75] + '...') if len(desc) > 75 else desc
                                             if uuid:
                                                 task_summary_lines.append(f"- {truncated_desc} (UUID: {uuid})")
-                                                agent.unassigned_tasks_summary.append({"uuid": uuid, "description": desc})
+                                                agent.unassigned_tasks_summary.append({"uuid": uuid, "description": desc, "depends": task.get("depends", [])})
+                                                agent._all_kickoff_task_uuids.add(uuid)
 
                                         summary_str = "\n".join(task_summary_lines) if task_summary_lines else "No unassigned tasks found."
                                         directive_message_content = (
@@ -1663,17 +1760,45 @@ class AgentCycleHandler:
                                             )
                                         else:
                                             task_summary_lines = []
+                                            # Check which remaining tasks actually have NO unmet dependencies
+                                            assigned_uuids = set()
+                                            if hasattr(agent, 'unassigned_tasks_summary'):
+                                                # Collect UUIDs of tasks we've already assigned (not in remaining list)
+                                                all_kickoff = getattr(agent, '_all_kickoff_task_uuids', set())
+                                                remaining_uuids = {t.get("uuid") for t in remaining_tasks}
+                                                assigned_uuids = all_kickoff - remaining_uuids
+
+                                            actionable_count = 0
                                             for task_info in remaining_tasks:
                                                 desc = task_info.get("description", "No description")
                                                 uuid = task_info.get("uuid")
+                                                deps = task_info.get("depends", [])
                                                 truncated_desc = (desc[:75] + '...') if len(desc) > 75 else desc
-                                                task_summary_lines.append(f"- {truncated_desc} (UUID: {uuid})")
+                                                # A task is actionable if all its dependencies are in assigned_uuids (already assigned)
+                                                has_unmet_deps = any(dep not in assigned_uuids for dep in deps) if deps else False
+                                                dep_note = " [BLOCKED - has unmet dependencies]" if has_unmet_deps else ""
+                                                task_summary_lines.append(f"- {truncated_desc} (UUID: {uuid}){dep_note}")
+                                                if not has_unmet_deps:
+                                                    actionable_count += 1
+
                                             summary_str = "\n".join(task_summary_lines)
-                                            directive_message_content = (
-                                                f"[Framework System Message]: Task assignment processed successfully. Here are the remaining unassigned tasks:\n"
-                                                f"{summary_str}\n\n"
-                                                "Your mandatory next action is to assign the next task from this list to a suitable agent."
-                                            )
+
+                                            if actionable_count > 0:
+                                                directive_message_content = (
+                                                    f"[Framework System Message]: Task assignment processed successfully. Here are the remaining unassigned tasks:\n"
+                                                    f"{summary_str}\n\n"
+                                                    "Your mandatory next action is to assign the next ACTIONABLE (non-blocked) task from this list to a suitable agent."
+                                                )
+                                            else:
+                                                # All remaining tasks are blocked by dependencies
+                                                project_name = agent.agent_config.get("config", {}).get("project_name_context", "Unknown Project")
+                                                directive_message_content = (
+                                                    f"[Framework System Message]: Task assignment processed successfully. The remaining tasks all have unmet dependencies:\n"
+                                                    f"{summary_str}\n\n"
+                                                    "All actionable kick-off tasks have been assigned. Your MANDATORY next action is to report this to the Admin AI and transition to manage state. "
+                                                    f"Use the send_message tool to send the following message to '{BOOTSTRAP_AGENT_ID}':\n"
+                                                    f"'Project `{project_name}` initial actionable kick-off tasks assigned. Remaining tasks are dependency-blocked and will be assigned as prerequisites complete.'"
+                                                )
                             elif called_tool_name == "manage_team" and called_tool_args.get("action") == "list_agents":
                                 # This intervention is now more intelligent. It re-presents the simplified task list.
                                 task_summary_lines = []
@@ -1764,7 +1889,7 @@ class AgentCycleHandler:
                             else:
                                 resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, deferred_state_change)
                                 if agent.state == resolved_requested:
-                                    logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Assuming idle/done if it's an idle state.")
+                                    logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Treating as no-op to prevent reactivation loop.")
                                 else:
                                     logger.warning(f"CycleHandler: Failed to change agent '{agent.agent_id}' state to '{deferred_state_change}' after tool processing")
                                     # Truly invalid state transition. Let it reactivate to correct itself (with an error message).

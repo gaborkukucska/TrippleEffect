@@ -9,11 +9,11 @@ from src.agents.constants import (
     AGENT_STATUS_IDLE, AGENT_STATUS_ERROR,
     AGENT_STATUS_AWAITING_USER_REVIEW_CG, # Added for CG logic
     AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER,
-    ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK,
+    ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK, ADMIN_STATE_STANDBY,
     PM_STATE_STARTUP, PM_STATE_MANAGE, PM_STATE_WORK,
     # Add new PM states for checks
     PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_REPORT_CHECK,
-    WORKER_STATE_WAIT, WORKER_STATE_WORK, WORKER_STATE_REPORT
+    WORKER_STATE_WAIT, WORKER_STATE_WORK, WORKER_STATE_REPORT, WORKER_STATE_DECOMPOSE
 )
 
 if TYPE_CHECKING:
@@ -122,12 +122,24 @@ class NextStepScheduler:
                 (AGENT_TYPE_PM, PM_STATE_MANAGE),
                 (AGENT_TYPE_WORKER, WORKER_STATE_WORK),
                 (AGENT_TYPE_WORKER, WORKER_STATE_REPORT),
-                (AGENT_TYPE_ADMIN, ADMIN_STATE_WORK)
+                (AGENT_TYPE_ADMIN, ADMIN_STATE_WORK),
             }
             
+            # Admin planning state: reactivate ONLY after tool execution so the LLM can
+            # process the result and produce a plan.  Do NOT add to persistent_states
+            # (that would cause infinite generation loops).
+            if (agent.agent_type, agent.state) == (AGENT_TYPE_ADMIN, ADMIN_STATE_PLANNING):
+                if context.executed_tool_successfully_this_cycle:
+                    logger.info(f"NextStepScheduler: Admin AI '{agent_id}' executed tool in planning state - reactivating to process result and produce plan.")
+                    agent.set_status(AGENT_STATUS_IDLE)
+                    await self._schedule_new_cycle(agent, 0)
+                    self._log_end_of_schedule_next_step(agent, "Path B-Planning-ToolReactivation")
+                    return
+                else:
+                    logger.info(f"NextStepScheduler: Admin AI '{agent_id}' finished planning cycle without tool use - allowing natural idle (plan output expected).")
             # BALANCED FIX: Admin AI work state logic - reactivate after tool execution to process results
             # IMPORTANT: Only applies to ADMIN_STATE_WORK - other states (startup, conversation) should NOT loop
-            if (agent.agent_type, agent.state) == (AGENT_TYPE_ADMIN, ADMIN_STATE_WORK):
+            elif (agent.agent_type, agent.state) == (AGENT_TYPE_ADMIN, ADMIN_STATE_WORK):
                 if context.executed_tool_successfully_this_cycle:
                     logger.info(f"NextStepScheduler: Admin AI '{agent_id}' executed tools successfully - reactivating to process results")
                     agent.set_status(AGENT_STATUS_IDLE)
@@ -164,6 +176,15 @@ class NextStepScheduler:
                     if not (agent.status == AGENT_STATUS_AWAITING_USER_REVIEW_CG and getattr(agent, 'cg_awaiting_user_decision', False)):
                         agent.set_status(AGENT_STATUS_IDLE)
                         await self._schedule_new_cycle(agent, 0)
+            # FIX: worker_decompose is a transitional state requiring multiple
+            # add_task calls.  Without reactivation the worker goes idle after
+            # its first tool call and never wakes up.
+            elif agent.agent_type == AGENT_TYPE_WORKER and \
+                 agent.state == WORKER_STATE_DECOMPOSE and not context.state_change_requested_this_cycle:
+                logger.info(f"NextStepScheduler: Worker '{agent_id}' in worker_decompose state completed cycle. Reactivating for continued decomposition.")
+                if agent.status != AGENT_STATUS_ERROR:
+                    agent.set_status(AGENT_STATUS_IDLE)
+                    await self._schedule_new_cycle(agent, 0)
             elif agent.agent_type == AGENT_TYPE_PM and \
                  agent.state == PM_STATE_REPORT_CHECK and not context.state_change_requested_this_cycle:
                 logger.warning(f"NextStepScheduler: PM agent '{agent_id}' in pm_report_check forgot to request state change. Auto-reverting to pm_manage.")

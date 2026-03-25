@@ -137,6 +137,11 @@ class ProjectManagementTool(BaseTool):
                 }
         if not project_name or not session_name:
             return {"status": "error", "message": "Missing project/session context."}
+            
+        # [CRITICAL GUARD] Override any user/LLM-provided project_filter with the authenticated context project_name.
+        # This prevents Hallucinations/Typos (like "Snake" vs "Sake") from causing empty task list queries 
+        # or creating tasks with incorrect project attributes in the dedicated taskwarrior DB.
+        kwargs["project_filter"] = project_name
 
         tw = self._get_taskwarrior_instance(project_name, session_name)
         if not tw:
@@ -169,7 +174,13 @@ class ProjectManagementTool(BaseTool):
                     else: return {"status": "error", "message": f"Invalid priority '{kwargs['priority']}'. Valid priorities are: H (high), M (medium), L (low)."}
                     task['priority'] = prio
                 if kwargs.get("project_filter"): task['project'] = kwargs["project_filter"]
-                if kwargs.get("assignee_agent_id"): task['assignee'] = kwargs["assignee_agent_id"]
+                
+                if kwargs.get("assignee_agent_id"): 
+                    task['assignee'] = kwargs["assignee_agent_id"]
+                elif agent_id.startswith("W"):
+                    # Auto-assign the task to the worker who is creating it if no assignee is specified
+                    task['assignee'] = agent_id
+                    
                 if kwargs.get("tags"):
                     tags_arg = kwargs["tags"]
                     if isinstance(tags_arg, str):
@@ -178,21 +189,30 @@ class ProjectManagementTool(BaseTool):
                         task['tags'] = set(tags_arg)
                     
                 if kwargs.get("depends"): 
-                    dep_val = str(kwargs["depends"]).strip()
-                    if dep_val in aliases:
-                        dep_val = aliases[dep_val]
+                    dep_val_raw = str(kwargs["depends"]).strip()
+                    # Support comma-separated dependency lists (e.g. "task_1,task_2,task_3")
+                    dep_items = [d.strip() for d in dep_val_raw.split(',') if d.strip()]
+                    resolved_deps = set()
+                    for dep_item in dep_items:
+                        # Resolve aliases first
+                        if dep_item in aliases:
+                            dep_item = aliases[dep_item]
                         
-                    is_valid_uuid = bool(re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', dep_val, re.IGNORECASE))
-                    is_valid_id = dep_val.isdigit()
-                    
-                    if is_valid_uuid or is_valid_id:
-                        try:
-                            dep_task = tw.tasks.get(uuid=dep_val) if is_valid_uuid else tw.tasks.get(id=int(dep_val))
-                            task['depends'] = {dep_task}
-                        except Exception as e:
-                            logger.warning(f"ProjectManagementTool: Dependency task '{dep_val}' not found: {e}. Task will be created without this dependency.")
-                    else:
-                        logger.warning(f"ProjectManagementTool: Skipping invalid dependency format: '{dep_val}'.")
+                        is_valid_uuid = bool(re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', dep_item, re.IGNORECASE))
+                        is_valid_id = dep_item.isdigit()
+                        
+                        if is_valid_uuid or is_valid_id:
+                            try:
+                                dep_task = tw.tasks.get(uuid=dep_item) if is_valid_uuid else tw.tasks.get(id=int(dep_item))
+                                resolved_deps.add(dep_task)
+                                logger.info(f"ProjectManagementTool: Resolved dependency '{dep_item}' -> UUID '{dep_task['uuid']}'.")
+                            except Exception as e:
+                                logger.warning(f"ProjectManagementTool: Dependency task '{dep_item}' not found: {e}. Skipping this dependency.")
+                        else:
+                            logger.warning(f"ProjectManagementTool: Skipping invalid dependency format: '{dep_item}' (from raw: '{dep_val_raw}').")
+                    if resolved_deps:
+                        task['depends'] = resolved_deps
+                        logger.info(f"ProjectManagementTool: Set {len(resolved_deps)} dependencies for task.")
 
                 try:
                     task.save()
