@@ -29,7 +29,7 @@ class FileSystemTool(BaseTool):
         "Reads, writes, appends, inserts, or replaces lines in files. Also lists, creates, or moves files/directories. "
         "Use 'scope' ('private', 'shared', or 'projects') to specify the target area. Default: 'private'. "
         "Actions: 'read', 'write' (for NEW files only), 'append' (add to end), 'insert_lines', 'replace_lines', "
-        "'list', 'mkdir', 'delete', 'find_replace', 'regex_replace', 'copy', 'move', 'search_replace_block', 'git_commit', 'git_status', 'git_diff'. "
+        "'list', 'mkdir', 'delete', 'find_replace', 'regex_replace', 'copy', 'move', 'search_replace_block', 'git_commit', 'git_status', 'git_diff', 'git_init'. "
         "All paths are relative to the selected scope."
     )
     parameters: List[ToolParameter] = [
@@ -242,7 +242,7 @@ class FileSystemTool(BaseTool):
             "read", "write", "append", "insert_lines", "replace_lines", "search_replace_block", 
             "list", "mkdir", "delete", "find_replace", "regex_replace", "copy", "move", 
             "git_commit", "git_status", "git_diff", "git_log", "git_branch", "git_checkout", 
-            "git_pull", "git_push", "git_add"
+            "git_pull", "git_push", "git_add", "git_init"
         ]
         
         # Check for common mistakes and provide helpful suggestions
@@ -263,7 +263,17 @@ class FileSystemTool(BaseTool):
             "remove_file": "delete",
             "remove": "delete",
             "insert_line": "insert_lines",
-            "replace_line": "replace_lines"
+            "replace_line": "replace_lines",
+            "commit": "git_commit",
+            "status": "git_status",
+            "diff": "git_diff",
+            "log": "git_log",
+            "branch": "git_branch",
+            "checkout": "git_checkout",
+            "pull": "git_pull",
+            "push": "git_push",
+            "add": "git_add",
+            "init": "git_init"
         }
         
         # Track whether an auto-correction was applied for feedback
@@ -393,6 +403,8 @@ class FileSystemTool(BaseTool):
             elif action == "git_add":
                 if not files_to_add: return {"status": "error", "message": "'files' parameter is required for 'git_add'."}
                 result = await self._git_add(base_path, relative_path if isinstance(relative_path, str) else ".", files_to_add, agent_id, scope_description)
+            elif action == "git_init":
+                result = await self._git_init(base_path, relative_path if isinstance(relative_path, str) else ".", agent_id, scope_description)
             elif action == "git_pull":
                 result = await self._git_pull(base_path, relative_path if isinstance(relative_path, str) else ".", remote, agent_id, scope_description)
             elif action == "git_push":
@@ -586,6 +598,13 @@ Finds a specific block of code/text and replaces it with new content. Uses a 3-t
 *   `<expected_replacements>` (integer, optional): **Required for multi-match cases.** If the tool reports it found N matches, re-send with `<expected_replacements>N</expected_replacements>` to confirm replacing all N occurrences.
 *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
 """
+        elif sub_action == "git_init":
+            return common_header + """
+**Action: git_init**
+Initializes a new git repository in the specified path.
+*   `<path>` (string, optional): The directory to run git init in. Defaults to root of scope.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
         elif sub_action == "git_commit":
             return common_header + """
 **Action: git_commit**
@@ -682,6 +701,7 @@ Pushes changes to a remote repository.
 20. **git_add:** Stages files.
 21. **git_pull:** Pulls from remote.
 22. **git_push:** Pushes to remote.
+23. **git_init:** Initializes a new git repository.
 
 **To get detailed instructions and parameter lists for a specific action, call:**
 <tool_information>
@@ -706,12 +726,12 @@ Pushes changes to a remote repository.
                 if parts and parts[0] == "shared":
                     parts = parts[1:] # Strip 'shared/'
                     
-                    # See if they also included the project name (which is the parent of the parent of the shared_workspace)
-                    # base_path is: .../projects/ProjectName/SessionName/shared_workspace
-                    if parts and len(base_path.parents) >= 2 and parts[0] == base_path.parent.parent.name:
-                        parts = parts[1:] # Strip 'ProjectName/'
+                # See if they also included the project name (which is the parent of the parent of the shared_workspace)
+                # base_path is: .../projects/ProjectName/SessionName/shared_workspace
+                if parts and len(base_path.parents) >= 2 and parts[0] == base_path.parent.parent.name:
+                    parts = parts[1:] # Strip 'ProjectName/'
 
-                    relative_file_path = str(Path(*parts)) if parts else "."
+                relative_file_path = str(Path(*parts)) if parts else "."
             
         try:
             # Handle potential path normalization issues
@@ -1318,6 +1338,21 @@ Pushes changes to a remote repository.
         except Exception as e:
             logger.error(f"Agent {agent_id} error staging files in '{relative_path}': {e}", exc_info=True)
             return {"status": "error", "message": f"Error staging files: {e}"}
+
+    async def _git_init(self, base_path: Path, relative_path: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+        val_path = await self._resolve_and_validate_path(base_path, relative_path, agent_id, scope_description)
+        if not val_path: return {"status": "error", "message": f"Invalid path '{relative_path}'."}
+        try:
+            def git_init_sync():
+                repo = git.Repo.init(val_path)
+                return "Initialized empty Git repository"
+            
+            result_output = await asyncio.to_thread(git_init_sync)
+            logger.info(f"Agent {agent_id} initialized git repo in '{relative_path}' ({scope_description})")
+            return {"status": "success", "message": result_output}
+        except Exception as e:
+            logger.error(f"Agent {agent_id} error initializing git repo in '{relative_path}': {e}", exc_info=True)
+            return {"status": "error", "message": f"Error initializing git repo: {e}"}
 
     async def _git_pull(self, base_path: Path, relative_path: str, remote: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
         val_path = await self._resolve_and_validate_path(base_path, relative_path, agent_id, scope_description)

@@ -34,6 +34,7 @@ class ProjectManagementTool(BaseTool):
         ToolParameter(name="status", type="str", required=False, description="New status for the task."),
         ToolParameter(name="priority", type="str", required=False, description="Task priority."),
         ToolParameter(name="project_filter", type="str", required=False, description="Filter tasks by project."),
+        ToolParameter(name="assignee_filter", type="str", required=False, description="Filter tasks by assignee."),
         ToolParameter(name="tags", type="list", required=False, description="List of tags."),
         ToolParameter(name="depends", type="str", required=False, description="Dependency task UUID."),
         ToolParameter(name="assignee_agent_id", type="str", required=False, description="Agent ID for assignment."),
@@ -230,7 +231,16 @@ class ProjectManagementTool(BaseTool):
             elif action == "list_tasks":
                 tasks_query = tw.tasks.all()
                 if kwargs.get("project_filter"): tasks_query = tasks_query.filter(project=kwargs["project_filter"])
-                if kwargs.get("status_filter"): tasks_query = tasks_query.filter(status=kwargs["status_filter"])
+                if kwargs.get("status_filter"): 
+                    tasks_query = tasks_query.filter(status=kwargs["status_filter"])
+                else:
+                    # Default: filter out completed tasks to save tokens
+                    tasks_query = tasks_query.pending()
+                if "assignee_filter" in kwargs: 
+                    tasks_query = tasks_query.filter(assignee=kwargs["assignee_filter"])
+                elif agent_id and agent_id.startswith("W"):
+                    # Auto-filter for the specific worker if no filter is provided
+                    tasks_query = tasks_query.filter(assignee=agent_id)
 
                 tasks = tasks_query.all()
                 if "tags_filter" in kwargs:
@@ -249,7 +259,18 @@ class ProjectManagementTool(BaseTool):
                         tasks = filtered_tasks
                     except Exception as e:
                         logger.warning(f"Error filtering tasks by tags: {e}")
-                minimal_task_list = [{"uuid": task['uuid'], "id": task['id'], "description": task['description'], "status": task['status'], "assignee": task['assignee'] if task['assignee'] is not None else None, "tags": list(task['tags'] if task['tags'] is not None else []), "depends": [t['uuid'] for t in (task['depends'] if task['depends'] is not None else [])]} for task in tasks]
+                
+                # Create a truly minimal output format
+                minimal_task_list = [
+                    {
+                        "uuid": task['uuid'], 
+                        "description": task['description'], 
+                        "status": task['status'], 
+                        "assignee": task['assignee'] if task['assignee'] is not None else None,
+                        "depends": [t['uuid'] for t in (task['depends'] if task['depends'] is not None else [])]
+                    } 
+                    for task in tasks
+                ]
                 return {"status": "success", "message": f"Found {len(minimal_task_list)} task(s).", "tasks": minimal_task_list}
 
             elif action == "modify_task":
@@ -334,9 +355,13 @@ class ProjectManagementTool(BaseTool):
                 if kwargs.get("assignee_agent_id"): 
                     new_assignee = kwargs["assignee_agent_id"]
                     if task['assignee'] == new_assignee:
-                        return {"status": "error", "message": f"The task '{task_id}' is ALREADY ASSIGNED to '{new_assignee}' and its current status is '{task['status']}'. You must NOT reassign it again. Wait for the agent to finish or send them a message."}
-                    task['assignee'] = new_assignee
-                    modified_fields.append("assignee")
+                        # Silently accept redundant assignment to prevent LLM retry loops
+                        pass
+                    elif task['status'] == 'pending' and task['assignee'] and task['assignee'] != agent_id and not agent_id.startswith("admin"):
+                        return {"status": "error", "message": f"Task '{task_id}' is already 'pending' and actively assigned to '{task['assignee']}'. Reassigning active tasks owned by others is blocked to prevent disruption. Only the assignee can hand it off, or its status must first be changed to 'waiting'."}
+                    else:
+                        task['assignee'] = new_assignee
+                        modified_fields.append("assignee")
                 if "depends" in kwargs:
                     try:
                         dep_id = str(kwargs["depends"]).strip()
@@ -441,12 +466,14 @@ Creates a new task.
 Lists existing tasks.
 *   `<project_filter>` (string, optional): Filter tasks by a specific project name.
 *   `<status_filter>` (string, optional): Filter by status (e.g., 'pending', 'completed').
+*   `<assignee_filter>` (string, optional): Filter by assigned agent ID.
 *   `<tags_filter>` (string, optional): Filter by a comma-separated list of tags.
 *   Example:
     ```xml
     <project_management>
       <action>list_tasks</action>
       <project_filter>{project_name_placeholder}</project_filter>
+      <assignee_filter>{project_name_placeholder}_worker_1</assignee_filter>
       <status_filter>pending</status_filter>
     </project_management>
     ```

@@ -1,11 +1,51 @@
 # TrippleEffect - Current Issues
 
-**Last Updated:** 2026-03-21
-**Based on log:** `startup_1774068944` and `startup_1774077203`
+**Last Updated:** 2026-03-26
+**Based on log:** `app_20260326_153524_1540238.log` and prior runs
 
 ---
 
 ## Recently Resolved Issues
+
+### -5. Constitutional Guardian Returns Empty Verdict
+
+- **Severity:** High (previously classified Low — actual impact was severe)
+- **Description:** The CG frequently returned empty verdicts, causing it to fail open and bypass governance checks entirely. In the latest log, this occurred on nearly every CG call.
+- **Root Cause:** The `max_tokens_for_verdict` was hardcoded to `250` in `cycle_handler.py`. Models using `<think>` blocks (e.g., Qwen3 reasoning variants) exhausted the 250-token limit on internal reasoning before outputting the final `<OK/>` or `<CONCERN>` verdict, resulting in empty `content` fields.
+- **Fix:** (RESOLVED) Replaced the hardcoded limit with a configurable `CG_MAX_TOKENS` setting (default `4000`), sourced from `settings.py` via `getattr(settings, 'CG_MAX_TOKENS', 4000)`.
+- **Files:** `src/agents/cycle_handler.py`, `src/config/settings.py`
+
+### -4.5. False-Positive Stuck-State CG Interventions
+
+- **Severity:** High (caused repeated unnecessary CG interventions for productive agents)
+- **Description:** The Constitutional Guardian's `AgentHealthMonitor` falsely flagged workers (W1, W2, W3) in `worker_work` and the PM (PM1) in `pm_manage` as "stuck" even while they were actively executing tools (web searches, file writes, task management). W1/W3 hit 17 cycles, W2 hit 12 cycles, PM1 hit 19→22+ cycles, all triggering repeated CG interventions that polluted agent history with system messages.
+- **Root Cause:** `cycle_count_in_current_state` in `AgentHealthRecord.record_response()` only reset when the agent's state *changed*. It did not reset when the agent took meaningful action (successful tool calls). This meant agents legitimately staying in their working state (doing real productive work) accumulated cycles and hit the `stuck_state_threshold` (default: 6).
+- **Fix:** (RESOLVED) Added an `elif has_action` branch in `record_response()` that resets `cycle_count_in_current_state = 1` whenever the agent successfully executes tools, so productive agents are not falsely flagged. Truly stuck agents (no tool calls, no meaningful output) are still caught.
+- **Files:** `src/agents/cycle_components/agent_health_monitor.py`
+
+### -4. Ollama Tool Response XML Hallucinations (Stall)
+
+- **Severity:** High
+- **Description:** Workers (specifically Qwen 3.5 via Ollama) got stuck in an infinite loop outputting `<tool_response name='web_search'>` text instead of invoking tools.
+- **Root Cause:** The `OllamaProvider` was wrapping tool execution results in `<tool_response>` XML tags. Seeing these XML formatting tags in its message history tricked the autoregressive Qwen model into continuously generating the exact same tags itself.
+- **Fix:** (RESOLVED) Updated `src/llm_providers/ollama_provider.py` to strip the XML `<tool_response>` wrapper and replace it with a plain-text Markdown equivalent (`--- Tool Response (name) ---`).
+- **Files:** `src/llm_providers/ollama_provider.py`
+
+### -3. Workspace Path Project Nesting Bug
+
+- **Severity:** High
+- **Description:** Worker agents incorrectly resolved the `ProjectName` internally as a sub-directory component of the `WorkspacePath`, nesting their projects incorrectly.
+- **Root Cause:** The `file_system` tool was exclusively stripping the internal project name from the *beginning* of tool paths rather than safely mapping paths to the global workspace root boundary constraint.
+- **Fix:** (RESOLVED) Hardened `FileSystemTool._resolve_path()` to treat the `WorkspacePath` as the absolute isolated root regardless of whether the LLM path includes the project name prefix alias. Added validation to prevent sandbox escape.
+- **Files:** `src/tools/file_system.py`
+
+### -2.5. PM/Worker Context Bloat on `list_tasks`
+
+- **Severity:** Moderate
+- **Description:** `list_tasks` output was enormous, returning full schema objects and threatening token limits. Workers lacked a way to easily filter out tasks unassigned to them.
+- **Root Cause:** Raw Taskwarrior models being JSON dumped into the agent history.
+- **Fix:** (RESOLVED) Severely trimmed returned fields to `uuid`, `description`, `status`, `assignee`, and `depends`. Added an `assignee_filter` parameter. If a Worker calls `list_tasks` without a filter, the system automatically forces it to filter by their agent ID. Additionally, `list_tasks` now defaults to `.pending()` when no `status_filter` is provided, automatically excluding completed/deleted tasks to further reduce token consumption.
+- **Files:** `src/tools/project_management.py`
 
 ### -2. Worker Inactivity (Empty `worker_work` responses)
 
@@ -182,13 +222,6 @@
 ---
 
 ## Low / Informational Issues
-
-### 6. Constitutional Guardian Returns Empty Verdict
-
-- **Severity:** Low (fails open as `<OK/>`)
-- **Description:** CG returned an empty verdict once (line 3977), treated as OK to prevent stall. This is likely due to the CG model producing an empty response.
-- **Fix:** No immediate fix needed; the fail-open behavior is correct. Monitor frequency in future runs.
-- **File:** `src/agents/cycle_handler.py`
 
 ### 7. Duplicate `create_team` Calls
 

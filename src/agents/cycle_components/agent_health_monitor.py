@@ -107,6 +107,9 @@ class AgentHealthRecord:
         if not self.state_change_history or self.state_change_history[-1][0] != current_state:
             self.state_change_history.append((current_state, current_time))
             self.cycle_count_in_current_state = 1
+        elif has_action:
+            # Agent is making progress in the same state (successful tool calls) - reset counter
+            self.cycle_count_in_current_state = 1
         else:
             self.cycle_count_in_current_state += 1
             

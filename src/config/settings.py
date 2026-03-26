@@ -170,8 +170,9 @@ class Settings:
 
         # --- Tool Configuration ---
         self.GITHUB_ACCESS_TOKEN: Optional[str] = os.getenv("GITHUB_ACCESS_TOKEN")
-        self.TAVILY_API_KEY: Optional[str] = os.getenv("TAVILY_API_KEY")
-        if self.TAVILY_API_KEY: logger.debug("Settings Init: Found TAVILY_API_KEY.")
+        self.SEARXNG_URL: Optional[str] = os.getenv("SEARXNG_URL")
+        self.SEARXNG_FORMAT: str = os.getenv("SEARXNG_FORMAT", "json")
+        if self.SEARXNG_URL: logger.debug(f"Settings Init: Found SEARXNG_URL.")
         
         # --- Load Prompts from YAML ---
         self._load_prompts_from_yaml()
@@ -220,6 +221,9 @@ class Settings:
         # --- Max WORKER Wait State Tokens ---
         try: self.WORKER_WAIT_STATE_MAX_TOKENS: int = int(os.getenv("WORKER_WAIT_STATE_MAX_TOKENS", "512")); logger.info(f"Loaded WORKER_WAIT_STATE_MAX_TOKENS: {self.WORKER_WAIT_STATE_MAX_TOKENS}")
         except ValueError: logger.warning("Invalid WORKER_WAIT_STATE_MAX_TOKENS, using 512."); self.WORKER_WAIT_STATE_MAX_TOKENS = 512
+        # --- Max CG Verdict Tokens ---
+        try: self.CG_MAX_TOKENS: int = int(os.getenv("CG_MAX_TOKENS", "4000")); logger.info(f"Loaded CG_MAX_TOKENS: {self.CG_MAX_TOKENS}")
+        except ValueError: logger.warning("Invalid CG_MAX_TOKENS, using 4000."); self.CG_MAX_TOKENS = 4000
 
         # --- Ollama Max Context Cap ---
         try: self.OLLAMA_MAX_CTX_CAP: int = int(os.getenv("OLLAMA_MAX_CTX_CAP", "32768")); logger.info(f"Loaded OLLAMA_MAX_CTX_CAP: {self.OLLAMA_MAX_CTX_CAP}")
@@ -396,8 +400,8 @@ class Settings:
         # Tool Specific Keys
         if self.GITHUB_ACCESS_TOKEN: logger.info("✅ GitHub Access Token: Found")
         else: logger.info("ℹ️ INFO: GITHUB_ACCESS_TOKEN not set (GitHub tool limited).")
-        if self.TAVILY_API_KEY: logger.info("✅ Tavily API Key: Found")
-        else: logger.info("ℹ️ INFO: TAVILY_API_KEY not set (Web Search uses fallback).")
+        if self.SEARXNG_URL: logger.info(f"✅ SearXNG URL: Found at {self.SEARXNG_URL}")
+        else: logger.info("ℹ️ INFO: SEARXNG_URL not set (Web Search uses fallback).")
         print("-" * 30)
 
     def get_provider_config(self, provider_name: str) -> Dict[str, Any]:

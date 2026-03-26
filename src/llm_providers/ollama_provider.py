@@ -224,7 +224,7 @@ class OllamaProvider(BaseLLMProvider):
             # If this is a converted tool message, explicitly format it so the LLM knows what it is.
             if msg.get("role") == "tool" and role == "user":
                 tool_name = msg.get("name", "unknown")
-                processed_content = f"<tool_response name='{tool_name}'>\n{processed_content}\n</tool_response>"
+                processed_content = f"--- Tool Response ({tool_name}) ---\n{processed_content}\n-----------------------"
 
             msg_to_send: Dict[str, Any] = {"role": role, "content": processed_content}
             # We explicitly DO NOT send `tool_calls` because TrippleEffect relies on XML-in-content 

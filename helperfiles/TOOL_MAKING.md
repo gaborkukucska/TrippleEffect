@@ -248,6 +248,7 @@ This means agents automatically receive the relevant documentation for the speci
 
 The following tools already implement modular help:
 
-* `FileSystemTool` — 16 actions (`read`, `write`, `append`, `insert_lines`, `replace_lines`, `search_replace_block`, `list`, `mkdir`, `delete`, `find_replace`, `regex_replace`, `copy`, `move`, `git_commit`, `git_status`, `git_diff`)
-* `ProjectManagementTool` — 4 actions (`add_task`, `modify_task`, `get_tasks`, `get_project_state`)
+* `FileSystemTool` — 17 actions (`read`, `write`, `append`, `insert_lines`, `replace_lines`, `search_replace_block`, `list`, `mkdir`, `delete`, `find_replace`, `regex_replace`, `copy`, `move`, `git_init`, `git_commit`, `git_status`, `git_diff`). **Note**: The file system tool robustly enforces an absolute `WorkspacePath` barrier boundary, preventing LLMs from incorrectly nesting isolated projects into subdirectories.
+* `ProjectManagementTool` — 4 actions (`add_task`, `modify_task`, `list_tasks`, `get_project_state`). **Note**: The `list_tasks` action returns a highly optimized, minified schema that auto-filters tasks assigned specifically to the calling Worker agent to prevent context window explosion.
 * `ManageTeamTool` — 4 actions (`create_agent`, `set_agent_state`, `send_message`, `get_team_status`)
+* `WebSearchTool` — 1 action (`web_search`). **Note**: Integrated with local SearXNG engine.

@@ -1,7 +1,7 @@
 <!-- # START OF FILE helperfiles/PROJECT_PLAN.md -->
 # Project Plan: TrippleEffect
 
-**Version:** 2.42
+**Version:** 2.43
 **Date:** 2025-08-30
 
 ## 1. Project Goals
@@ -368,6 +368,22 @@ Five separate loop detection/intervention systems operate simultaneously (`Agent
 
 **Problem 3 (Project Filter Hallucination):** The LLM occasionally made typos when providing the `project_filter` argument to `list_tasks` (e.g., spelling "Snake_Game" as "Sake_Game"). Because `project_management.py` trusted the LLM-provided string to filter the list query, it incorrectly returned `0 task(s)` to the PM.
 **Fix 3:** Implemented a "Project Filter Guard" in `project_management.py`. Whenever the tool is executed, it now forces `kwargs["project_filter"]` to exactly match the authenticated `project_name` provided by the framework context. This protects the native task database queries from any LLM spelling mistakes or hallucinations.
+
+---
+
+#### Phase M: Constitutional Guardian & Health Monitor Stabilization (March 2026)
+
+**Problem 1 (CG Empty Verdict — Widespread):** The Constitutional Guardian returned empty verdicts on nearly every call, causing it to fail open and bypass governance checks entirely. Models using `<think>` blocks exhausted the hardcoded `max_tokens_for_verdict = 250` on internal reasoning before outputting any verdict content.
+**Fix 1:** Replaced the hardcoded 250-token limit with a configurable `CG_MAX_TOKENS` setting (default `4000`) in `settings.py`, accessed via `getattr(settings, 'CG_MAX_TOKENS', 4000)` in `cycle_handler.py`.
+
+**Problem 2 (PM Task Listing Token Overhead):** `list_tasks` returned all tasks including completed/deleted ones when no `status_filter` was specified, bloating agent context with irrelevant information and wasting tokens.
+**Fix 2:** Modified `list_tasks` in `project_management.py` to default to `.pending()` when no `status_filter` is provided, automatically excluding completed and deleted tasks from output.
+
+**Problem 3 (False-Positive Stuck-State CG Interventions):** Workers (W1, W2, W3) in `worker_work` and PM1 in `pm_manage` were falsely flagged as "stuck" by the `AgentHealthMonitor` despite actively executing tools (web searches, file writes, task management). W1/W3 accumulated 17 cycles, W2 hit 12, and PM1 reached 22+, all triggering repeated CG "STATE PROGRESSION REQUIRED" interventions that polluted agent history.
+**Root Cause:** `cycle_count_in_current_state` in `AgentHealthRecord.record_response()` only reset on state changes, not when the agent took meaningful action (successful tool calls). Agents legitimately staying in their working state hit the `stuck_state_threshold` (default: 6) while doing productive work.
+**Fix 3:** Added an `elif has_action` branch in `record_response()` that resets `cycle_count_in_current_state = 1` when the agent successfully executes tools. Truly stuck agents (no tool calls, no output) are still caught.
+
+**Files:** `src/agents/cycle_handler.py`, `src/config/settings.py`, `src/tools/project_management.py`, `src/agents/cycle_components/agent_health_monitor.py`
 
 ---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

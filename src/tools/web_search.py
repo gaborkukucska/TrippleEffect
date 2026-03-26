@@ -9,12 +9,6 @@ import urllib.parse
 
 from src.tools.base import BaseTool, ToolParameter
 from src.config.settings import settings
-try:
-    from tavily import TavilyClient
-    TAVILY_AVAILABLE = True
-except ImportError:
-    TavilyClient = None
-    TAVILY_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +27,9 @@ class WebSearchTool(BaseTool):
     parameters: List[ToolParameter] = [
         ToolParameter(name="query", type="string", description="The search query.", required=True),
         ToolParameter(name="num_results", type="integer", description="Max number of results (default 3).", required=False),
-        ToolParameter(name="search_depth", type="string", description="Tavily only: 'basic' or 'advanced'.", required=False),
+        ToolParameter(name="engines", type="string", description="Optional comma-separated list of engines (e.g., 'google,bing').", required=False),
+        ToolParameter(name="time_range", type="string", description="Optional time range (e.g. 'day', 'week', 'month', 'year').", required=False),
+        ToolParameter(name="language", type="string", description="Optional language code (e.g. 'en', 'fr').", required=False),
     ]
 
     async def execute(self, agent_id: str, **kwargs: Any) -> Dict[str, Any]: # type: ignore[reportIncompatibleMethodOverride]
@@ -86,22 +82,14 @@ class WebSearchTool(BaseTool):
                 ]
             }
 
-        search_depth = kwargs.get("search_depth", "basic").lower()
-        if search_depth not in ["basic", "advanced"]:
-            return {
-                "status": "error",
-                "message": f"Invalid search_depth '{search_depth}'. Must be 'basic' or 'advanced'.",
-                "error_type": "invalid_parameter",
-                "suggestions": [
-                    "Use 'basic' for quick searches",
-                    "Use 'advanced' for more thorough results (if Tavily API is available)"
-                ]
-            }
+        engines = kwargs.get("engines")
+        time_range = kwargs.get("time_range")
+        language = kwargs.get("language", "en")
 
-        logger.info(f"Agent {agent_id} performing web search for: '{query[:100]}...' (num_results={num_results}, depth={search_depth})")
+        logger.info(f"Agent {agent_id} performing web search for: '{query[:100]}...' (num_results={num_results})")
 
         try:
-            results, source = await self._perform_search(query, num_results, search_depth)
+            results, source = await self._perform_search(query, num_results, engines, time_range, language)
 
             if results is None:
                 return {
@@ -144,20 +132,38 @@ class WebSearchTool(BaseTool):
                 ]
             }
 
-    async def _perform_search(self, query: str, num_results: int, search_depth: str) -> Tuple[Optional[List[Dict[str, Any]]], str]:
-        if TAVILY_AVAILABLE and settings.TAVILY_API_KEY:
+    async def _perform_search(self, query: str, num_results: int, engines: Optional[str] = None, time_range: Optional[str] = None, language: str = "en") -> Tuple[Optional[List[Dict[str, Any]]], str]:
+        if settings.SEARXNG_URL:
             try:
-                tavily = TavilyClient(api_key=settings.TAVILY_API_KEY) # type: ignore
-                response = await asyncio.to_thread(tavily.search, query=query, search_depth=search_depth, max_results=num_results) # type: ignore
-                if "results" in response:
-                    return [self._standardize_result(r) for r in response["results"]], "Tavily API"
+                base_url = settings.SEARXNG_URL.rstrip('/')
+                search_url = f"{base_url}/search"
+                params = {
+                    "q": query,
+                    "format": settings.SEARXNG_FORMAT,
+                    "language": language,
+                }
+                if engines: params["engines"] = engines
+                if time_range: params["time_range"] = time_range
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(search_url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                        response.raise_for_status()
+                        data = await response.json()
+                
+                results = []
+                # SearXNG returns 'results' list
+                for r in data.get("results", [])[:num_results]:
+                    results.append({
+                        "title": r.get("title", "N/A"),
+                        "url": r.get("url", "N/A"),
+                        "snippet": r.get("content", "N/A")
+                    })
+                return results, "SearXNG API"
             except Exception as e:
-                logger.error(f"Tavily API search failed: {e}", exc_info=True)
+                logger.error(f"SearXNG API search failed: {e}", exc_info=True)
+                # Fallback to scraping if SearXNG fails
 
         return await self._search_with_scraping(query, num_results), "DuckDuckGo Scraping"
-
-    def _standardize_result(self, result: Dict) -> Dict:
-        return {"title": result.get("title"), "url": result.get("url"), "snippet": result.get("content")}
 
     async def _search_with_scraping(self, query: str, num_results: int) -> Optional[List[Dict]]:
         encoded_query = urllib.parse.quote_plus(query)
@@ -195,13 +201,15 @@ class WebSearchTool(BaseTool):
         **Tool Name:** web_search
 
         **Description:**
-        Performs a web search using the Tavily API if available, otherwise falls back to scraping DuckDuckGo. Returns a list of search results including title, URL, and snippet.
+        Performs a web search using the SearXNG API if configured, otherwise falls back to scraping DuckDuckGo. Returns a list of search results including title, URL, and snippet.
 
         **Parameters:**
 
         *   `<query>` (string, required): The search query. Be specific for better results.
         *   `<num_results>` (integer, optional): The maximum number of search results to return. Defaults to 3.
-        *   `<search_depth>` (string, optional): (Tavily API only) The depth of the search. Can be 'basic' or 'advanced'. 'Advanced' is more thorough but slower and uses more credits. Defaults to 'basic'.
+        *   `<engines>` (string, optional): (SearXNG only) Comma-separated list of engines (e.g. 'google,bing,wikipedia').
+        *   `<time_range>` (string, optional): (SearXNG only) Time range ('day', 'week', 'month', 'year').
+        *   `<language>` (string, optional): Language code (e.g. 'en'). Defaults to 'en'.
 
         **Example XML Call:**
 
@@ -213,11 +221,12 @@ class WebSearchTool(BaseTool):
             </web_search>
             ```
 
-        *   To perform an advanced search using the Tavily API:
+        *   To perform a specialized search:
             ```xml
             <web_search>
-              <query>latest advancements in large language models</query>
-              <search_depth>advanced</search_depth>
+              <query>latest python release details</query>
+              <engines>google,duckduckgo</engines>
+              <time_range>month</time_range>
             </web_search>
             ```
         """

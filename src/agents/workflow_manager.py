@@ -291,6 +291,19 @@ class AgentWorkflowManager:
                             agent.message_history.append({"role": "system", "content": feedback_msg})
                             agent._last_system_prompt_state = None # Force prompt refresh
                             return False
+                        
+                        # --- DECOMPOSE TO WORK: CONTEXT CLEARING ---
+                        # Condense history to prevent autoregressive looping where the agent
+                        # repeatedly outputs `<request_state state='worker_work'/>`
+                        logger.info(f"WorkflowManager: Worker '{agent.agent_id}' transitioning to work state. Condensing history to prevent looping.")
+                        if hasattr(agent, 'message_history') and agent.message_history:
+                            sys_prompt = agent.message_history[0] if agent.message_history[0].get("role") == "system" else None
+                            if sys_prompt:
+                                agent.message_history = [sys_prompt]
+                            else:
+                                agent.message_history = []
+                        agent._last_system_prompt_state = None  # Force fresh system prompt generation
+                        # --- END DECOMPOSE TO WORK ---
                     # --- END DECOMPOSE TRANSITION VALIDATION ---
 
                     # --- DELIVERY OF QUEUED ACTIVATION MESSAGES ---

@@ -158,9 +158,11 @@ This is the engine that drives the agent execution loop. It is stateless itself,
 
 This pair of components manages all agent interactions with the "outside world" via tools.
 
+- **`OllamaProvider` & XML Hallucination Guard**: Handles translations between the framework and local Ollama models. To prevent deeply autoregressive models (like Qwen) from getting stuck into XML-generation loops, this provider intentionally avoids wrapping execution results in native XML `<tool_response>` tags within the agent message history, converting them instead to plain ASCII markdown `--- Tool Response ---` wrappers to stabilize local model text generation.
 - **`ToolExecutor`**: A simple but crucial component. It auto-discovers all available tool classes, instantiates them, and stores them in a dictionary keyed by the tool's name. It provides a single `execute_tool` method that takes the tool name and arguments. When a tool execution fails, the `ToolExecutor` automatically fetches action-specific documentation from the tool's `get_detailed_usage(sub_action=...)` method and includes it in the error message sent back to the agent via the `ToolErrorHandler`, enabling context-aware self-correction.
 - **`InteractionHandler`**: Acts as a mediator between the `AgentCycleHandler` and the `ToolExecutor`. Its `execute_single_tool` method contains the boilerplate logic for calling the executor, handling exceptions, logging the result to the database, and formatting the output into the `role: "tool"` message structure that the agent expects in its history.
-- **Modular Tool Help System**: Major tools (`FileSystemTool`, `ProjectManagementTool`, `ManageTeamTool`) implement segmented `get_detailed_usage(sub_action=...)` methods. When called without a `sub_action`, they return a concise summary of all available actions. When called with a specific `sub_action` (e.g., `"read"`, `"add_task"`, `"create_agent"`), they return only the relevant action's detailed parameter documentation. This reduces token usage and improves agent context relevance.
+- **Modular Tool Help System**: Major tools (`FileSystemTool`, `ProjectManagementTool`, `ManageTeamTool`, `WebSearchTool`) implement segmented `get_detailed_usage(sub_action=...)` methods. When called without a `sub_action`, they return a concise summary of all available actions. When called with a specific `sub_action` (e.g., `"read"`, `"add_task"`, `"create_agent"`), they return only the relevant action's detailed parameter documentation.
+- **Web Search Integration**: The `WebSearchTool` integrates deeply with **SearXNG** (configured via `.env`) as the primary open-source intelligence gathering mechanism, falling back to a custom DuckDuckGo scraper if the self-hosted engine is unavailable.
 
 ### 4.5. `WorkflowManager` (`src/agents/workflow_manager.py`)
 
@@ -174,8 +176,8 @@ The `WorkflowManager` handles high-level, framework-defined processes that are t
 
 The framework includes a dedicated safety and reliability layer, embodied by the `ConstitutionalGuardian` (CG) agent and the `AgentHealthMonitor`.
 
-- **`ConstitutionalGuardian`**: A specialized, non-interactive agent (`constitutional_guardian_ai`). Before any `final_response` from another agent is committed, the text is sent to the CG. The CG uses a dedicated system prompt and the principles defined in `governance.yaml` to check for violations. It returns either `<OK/>` or `<CONCERN>...</CONCERN>`. If a concern is raised, the original agent is paused, and user intervention is required.
-- **`AgentHealthMonitor`**: As described in the `AgentCycleHandler` section, this component acts as an automated check against common agent failure modes. It is a key part of the framework's resilience, capable of intervening with corrective feedback or forcing an agent into an error state to prevent infinite loops.
+- **`ConstitutionalGuardian`**: A specialized, non-interactive agent (`constitutional_guardian_ai`). Before any `final_response` from another agent is committed, the text is sent to the CG. The CG uses a dedicated system prompt and the principles defined in `governance.yaml` to check for violations. It returns either `<OK/>` or `<CONCERN>...</CONCERN>`. If a concern is raised, the original agent is paused, and user intervention is required. The CG's verdict generation uses a configurable token limit (`CG_MAX_TOKENS`, default `4000`) to ensure models with internal reasoning processes (e.g., `<think>` blocks) have sufficient output space to complete their verdicts.
+- **`AgentHealthMonitor`**: As described in the `AgentCycleHandler` section, this component acts as an automated check against common agent failure modes. It is a key part of the framework's resilience, capable of intervening with corrective feedback or forcing an agent into an error state to prevent infinite loops. The monitor tracks `cycle_count_in_current_state` for each agent, which resets not only on state changes but also when the agent takes meaningful action (successful tool calls), preventing false-positive "stuck in state" interventions for agents legitimately performing productive work in their current state.
 
 ## 5. State and Communication Model
 
@@ -199,7 +201,7 @@ An agent's behavior, system prompt, and expected output are determined by the co
 
 -   **Worker Agent States**:
     -   `decompose`: The initial state when a task is assigned. The worker must break the task down into trackable sub-tasks using the `project_management` tool before beginning execution. Tool access is strictly limited in this state.
-    -   `work`: The primary state where the agent executes a specific task or sub-task it has been assigned.
+    -   `work`: The primary state where the agent executes a specific task or sub-task it has been assigned. **Note**: When transitioning into this state, the framework uses an active context condensation mechanism (clearing previous conversation history) to prevent the LLM from getting stuck in autoregressive state-request loops.
     -   `report`: A dedicated state for workers to compile progress reports or ask questions to the PM without mixing communication and tool workloads.
     -   `wait`: A state where the agent has completed its task and is waiting for the PM to review its work and provide a new task.
 

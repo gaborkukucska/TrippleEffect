@@ -125,8 +125,7 @@ class PMKickoffWorkflow(BaseWorkflow):
                 "description": f"Kick-off Task {i+1}: {task_desc}",
                 "priority": "H",
                 "project_filter": project_context,
-                "tags": ["kickoff", "pm_decomposed", f"task_order_{i+1}"],
-                "assignee_agent_id": agent.agent_id
+                "tags": ["kickoff", "pm_decomposed", f"task_order_{i+1}"]
             }
             if task_info.get("id"):
                 task_tool_args["task_id"] = task_info["id"]

@@ -222,7 +222,7 @@ class AgentCycleHandler:
                     {"role": "system", "content": formatted_cg_system_prompt},
                     {"role": "system", "content": f"---\nText for Constitutional Review:\n---\n{original_agent_final_text}"}
                 ]
-                max_tokens_for_verdict = 250
+                max_tokens_for_verdict = getattr(settings, 'CG_MAX_TOKENS', 4000)
 
                 try: # Inner try for LLM call and parsing (original try...except block content)
                     logger.info(f"Requesting CG verdict via stream_completion for text: '{original_agent_final_text[:100]}...'")
