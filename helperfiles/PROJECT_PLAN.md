@@ -1,7 +1,7 @@
 <!-- # START OF FILE helperfiles/PROJECT_PLAN.md -->
 # Project Plan: TrippleEffect
 
-**Version:** 2.43
+**Version:** 2.44
 **Date:** 2025-08-30
 
 ## 1. Project Goals
@@ -384,6 +384,48 @@ Five separate loop detection/intervention systems operate simultaneously (`Agent
 **Fix 3:** Added an `elif has_action` branch in `record_response()` that resets `cycle_count_in_current_state = 1` when the agent successfully executes tools. Truly stuck agents (no tool calls, no output) are still caught.
 
 **Files:** `src/agents/cycle_handler.py`, `src/config/settings.py`, `src/tools/project_management.py`, `src/agents/cycle_components/agent_health_monitor.py`
+
+---
+
+#### Phase N: Failover & Context Optimization (March 2026)
+
+**Problem 1 (Failover Cascade Death — No Tool Support Check):** When worker W1 failed on `ollama-local-192-168-0-22` (500 error), the failover handler switched to `ollama-local-192-168-0-24` with the same model. That host's `qwen3.5:9b-q4_K_M` returned 400: "does not support tools". Failover then tried `qwen3-coder:30b` on .22 — also lacking tool support. W1 produced 4 consecutive empty responses and was CG-BLOCKED. The failover handler validated provider health and model *availability* but not tool *capability*.
+**Fix 1:** Added a module-level `_models_without_tool_support` runtime blacklist in `failover_handler.py`. When a "does not support tools" error is detected, the `(provider, model)` pair is permanently blacklisted for the process lifetime. Both Pass 1 (preferred model on alternate APIs) and Pass 2 (alternative model candidates) check the blacklist before attempting any switch.
+
+**Problem 2 (Duplicate Cached Result Context Bloat):** Over 910 cross-cycle duplicate tool detections, the framework returned the full cached result each time as a tool response in agent history. Since these results could be thousands of characters, this added significant token consumption for information the agent had already seen.
+**Fix 2:** Truncated cached duplicate results to 200 characters max in `cycle_handler.py`, appending a `[TRUNCATED - duplicate call, full result already returned previously]` suffix. Full results are still logged to DB.
+
+**Problem 3 (`mark_completed` Action Hallucination):** Worker W1 used `mark_completed` instead of the correct `complete_task` action. The existing alias map covered `mark_complete` (without trailing 'd') but not `mark_completed`.
+**Fix 3:** Added `mark_completed`, `complete`, and `task_complete` to the `action_suggestions` alias map in `project_management.py`.
+
+**Problem 4 (Append Missing Filename):** Workers called `file_system` with `action=append` without the `filename` parameter. Already handled by existing validation at line 348. No code change needed.
+
+**Files:** `src/agents/failover_handler.py`, `src/agents/cycle_handler.py`, `src/tools/project_management.py`
+
+---
+
+#### Phase O: Worker Persistent State Stagnation Interventions (March 2026)
+
+**Problem 1 (Worker Stubbornly Repeating Identical Tool Calls):** Log analysis of a 656k-line database run revealed that workers (W2, W3) would occasionally enter an autoregressive loop. When modifying a task to `completed` via `modify_task` or when repeatedly calling the exact identical `send_message`, the framework's `CycleHandler` successfully blocked the cross-cycle duplicates and injected a strong `[Framework System Message - AUTO-ADVANCE]` directive. However, because smaller models (e.g. Qwen 3.5 9b) sometimes ignore appended system directives when their prior generation momentum is high, the worker would immediately *hallucinate the exact same tool call again*, resulting in infinite stagnation (e.g. W2 generated 27 identical calls in a row).
+**Fix 1:** Introduced a "Hard Framework Loop Intervention" in `NextStepScheduler.schedule_next_step`. When any agent in a persistent state (`WORKER_STATE_WORK`, `WORKER_STATE_REPORT`, `PM_STATE_MANAGE`, `PM_STATE_WORK`) completes a cycle, the scheduler now checks `is_stuck_in_loop` (triggered after 4 consecutive duplicates). If true, the scheduler bypasses the AI entirely and forces an emergency state transition mapping:
+- Looping `worker_work` -> forces transition to `worker_report`.
+- Looping `worker_report` -> forces transition to `worker_wait`.
+- Looping PMs -> triggers a hard context refresh/intervention.
+This entirely breaks the LLM's autoregressive death spiral by physically moving the agent to a different state machine node where they are forced to process new logic or wait.
+
+**Files:** `src/agents/cycle_components/next_step_scheduler.py`
+
+---
+
+#### Phase P: PM Audit State & Proactive CG Escalation (March 2026)
+
+**Problem 1 (Undocumented/Unverified Project Completion):** PMs immediately messaged the Admin AI that the project was complete when their task list was exhausted, without doing any verification against the original instructions or documentation.
+**Fix 1:** Created the `pm_audit` state. The PM securely transitions into this verification phase to review structural requirements, scan the codebase, and optionally run tests before compiling and sending a final Audit Report to the Admin AI. Only afterward will the PM transition to `pm_standby`.
+
+**Problem 2 (Silent Agent Autoregressive Stalling):** Deep worker agent stalls (such as empty response loops) were passively blocked by the Constitutional Guardian, but supervising agents (PMs) remained completely unaware that their workers were frozen.
+**Fix 2:** Upgraded the `AgentHealthMonitor` to deploy proactive escalation reports. When a stall threshold is crossed, the CG constructs a diagnostic report with the stalled agent's history and dispatches it directly into the supervisor's `message_inbox`, dynamically instructing them to use `send_message` for targeted Help/Human-in-the-Loop recovery.
+
+**Files:** `src/agents/cycle_components/agent_health_monitor.py`, `src/agents/constants.py`, `src/agents/workflow_manager.py`, `src/agents/core.py`, `prompts.yaml`
 
 ---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

@@ -16,7 +16,7 @@ from src.agents.constants import (
     ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK, ADMIN_STATE_STANDBY,
     PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_STANDBY,
     PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS,
-    PM_STATE_REPORT_CHECK,
+    PM_STATE_REPORT_CHECK, PM_STATE_AUDIT,
     WORKER_STATE_STARTUP, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK, WORKER_STATE_REPORT, WORKER_STATE_WAIT,
     DEFAULT_STATE, BOOTSTRAP_AGENT_ID, AGENT_STATUS_IDLE
 )
@@ -36,7 +36,7 @@ class AgentWorkflowManager:
     def __init__(self):
         self._valid_states: Dict[str, List[str]] = {
             AGENT_TYPE_ADMIN: [ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK, ADMIN_STATE_STANDBY, DEFAULT_STATE],
-            AGENT_TYPE_PM: [PM_STATE_STARTUP, PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_REPORT_CHECK, PM_STATE_STANDBY, DEFAULT_STATE],
+            AGENT_TYPE_PM: [PM_STATE_STARTUP, PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_REPORT_CHECK, PM_STATE_AUDIT, PM_STATE_STANDBY, DEFAULT_STATE],
             AGENT_TYPE_WORKER: [WORKER_STATE_STARTUP, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK, WORKER_STATE_REPORT, WORKER_STATE_WAIT, DEFAULT_STATE]
         }
         self._prompt_map: Dict[Tuple[str, str], str] = {
@@ -55,6 +55,7 @@ class AgentWorkflowManager:
             (AGENT_TYPE_PM, PM_STATE_WORK): "pm_work_prompt",
             (AGENT_TYPE_PM, PM_STATE_MANAGE): "pm_manage_prompt",
             (AGENT_TYPE_PM, PM_STATE_REPORT_CHECK): "pm_report_check_prompt",
+            (AGENT_TYPE_PM, PM_STATE_AUDIT): "pm_audit_prompt",
             (AGENT_TYPE_PM, PM_STATE_STANDBY): "pm_standby_prompt",
             (AGENT_TYPE_PM, DEFAULT_STATE): "default_system_prompt",
 
@@ -83,6 +84,7 @@ class AgentWorkflowManager:
             (AGENT_TYPE_PM, "standby"): PM_STATE_STANDBY,
             (AGENT_TYPE_PM, "manage"): PM_STATE_MANAGE,
             (AGENT_TYPE_PM, "report_check"): PM_STATE_REPORT_CHECK,
+            (AGENT_TYPE_PM, "audit"): PM_STATE_AUDIT,
             (AGENT_TYPE_PM, "work"): PM_STATE_WORK,
             (AGENT_TYPE_WORKER, "startup"): WORKER_STATE_STARTUP,
             (AGENT_TYPE_WORKER, "decompose"): WORKER_STATE_DECOMPOSE,
@@ -174,6 +176,18 @@ class AgentWorkflowManager:
                     agent.current_task_description = task_description
                     logger.info(f"WorkflowManager: Set task description for agent '{agent.agent_id}' for work state: '{task_description[:100]}...'")
 
+                if agent.agent_type == AGENT_TYPE_ADMIN:
+                    # --- DELIVERY OF QUEUED MESSAGES ---
+                    if requested_state in [ADMIN_STATE_CONVERSATION, ADMIN_STATE_STANDBY]:
+                        if hasattr(agent, 'message_inbox') and agent.message_inbox:
+                            logger.info(f"WorkflowManager: Admin AI '{agent.agent_id}' entering safe state '{requested_state}'. Delivering {len(agent.message_inbox)} queued messages from inbox.")
+                            agent.message_inbox[0]["content"] = f"[System Note: The following message was queued while you were busy] {agent.message_inbox[0]['content']}"
+                            agent.message_history.extend(agent.message_inbox)
+                            agent.message_inbox = []
+                            # Force fresh system prompt generation so messages are picked up clearly
+                            agent._last_system_prompt_state = None
+                    # --- END DELIVERY ---
+
                 # Enhanced state tracking for PM completion detection
                 if agent.agent_type == AGENT_TYPE_PM:
                     # Track state transition timing for completion detection
@@ -230,7 +244,7 @@ class AgentWorkflowManager:
                         logger.info(f"WorkflowManager: Cleared history for PM agent '{agent.agent_id}' upon entering state '{requested_state}'.")
 
                     # --- DELIVERY OF QUEUED MESSAGES ---
-                    if requested_state in [PM_STATE_MANAGE, PM_STATE_STANDBY, PM_STATE_REPORT_CHECK]:
+                    if requested_state in [PM_STATE_MANAGE, PM_STATE_STANDBY, PM_STATE_REPORT_CHECK, PM_STATE_AUDIT]:
                         if hasattr(agent, 'message_inbox') and agent.message_inbox:
                             logger.info(f"WorkflowManager: PM agent '{agent.agent_id}' entering safe state '{requested_state}'. Delivering {len(agent.message_inbox)} queued messages from inbox.")
                             # We prefix the first queued message with a small system note for context context
@@ -251,10 +265,10 @@ class AgentWorkflowManager:
                             try:
                                 agent_proj = self._get_agent_project_name(agent, agent.manager)
                                 agent_session = agent.manager.current_session
-                                tw = pm_tool._get_taskwarrior_instance(agent_proj, agent_session)
+                                tw = pm_tool._get_taskwarrior_instance(agent_proj, agent_session) # type: ignore
                                 
                                 if tw and getattr(agent, 'current_task_id', None):
-                                    aliases = pm_tool._load_aliases(agent_proj, agent_session)
+                                    aliases = pm_tool._load_aliases(agent_proj, agent_session) # type: ignore
                                     task_id_str = str(agent.current_task_id).strip()
                                     if task_id_str in aliases:
                                         task_id_str = aliases[task_id_str]
@@ -698,7 +712,7 @@ class AgentWorkflowManager:
 - **Native JSON Tools:** You have access to native JSON tool calling capabilities.
 - **Workflow:** Use the provided JSON tool functions to execute actions. Do NOT output XML `<tool_name>...</tool_name>` tags to call tools. Simply call the tool naturally! Your tool calls will be intercepted and executed by the system automatically."""
 
-        state_uses_native_tools = agent.state in {ADMIN_STATE_WORK, ADMIN_STATE_CONVERSATION, PM_STATE_WORK, PM_STATE_MANAGE, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK}
+        state_uses_native_tools = agent.state in {ADMIN_STATE_WORK, ADMIN_STATE_CONVERSATION, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_AUDIT, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK}
         use_native_instructions = settings.NATIVE_TOOL_CALLING_ENABLED and state_uses_native_tools
 
         tool_instructions = native_tool_instructions if use_native_instructions else xml_tool_instructions

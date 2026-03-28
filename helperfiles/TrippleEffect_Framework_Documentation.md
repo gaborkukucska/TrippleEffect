@@ -152,7 +152,7 @@ This is the engine that drives the agent execution loop. It is stateless itself,
     - **`ContextSummarizer`**: An intelligent component that monitors the token count of an agent's history and, if it exceeds a threshold, uses an LLM to summarize the context, preventing token overflow errors with smaller models.
     - **`AgentHealthMonitor`**: Tracks agent behavior over multiple cycles to detect problematic patterns like loops, empty responses, or repetitive actions, and can trigger recovery plans.
     - **Cross-Cycle Duplicate Detection**: A specialized mechanism that detects when PM agents repeat identical tool calls across consecutive cycles. When detected, tool execution is skipped (cached results are served), escalated directives are injected, and after 3+ consecutive duplicates the framework auto-advances the workflow by executing the next expected tool call on the agent's behalf.
-    - **`OutcomeDeterminer` & `NextStepScheduler`**: These work together at the end of the cycle to analyze what happened and decide whether the agent should be set to `IDLE` or be immediately re-scheduled.
+    - **`OutcomeDeterminer` & `NextStepScheduler`**: These work together at the end of the cycle to analyze what happened and decide whether the agent should be set to `IDLE` or be immediately re-scheduled. The `NextStepScheduler` strictly enforces **State Resilience**, specifically ensuring that Project Managers (e.g., in `pm_report_check`) persist in their current specific interaction state after successfully executing tools, rather than being aggressively reset to baseline states, preventing premature workflow cutoffs.
 
 ### 4.4. `InteractionHandler` & `ToolExecutor` (`src/agents/interaction_handler.py`, `src/tools/executor.py`)
 
@@ -160,8 +160,9 @@ This pair of components manages all agent interactions with the "outside world" 
 
 - **`OllamaProvider` & XML Hallucination Guard**: Handles translations between the framework and local Ollama models. To prevent deeply autoregressive models (like Qwen) from getting stuck into XML-generation loops, this provider intentionally avoids wrapping execution results in native XML `<tool_response>` tags within the agent message history, converting them instead to plain ASCII markdown `--- Tool Response ---` wrappers to stabilize local model text generation.
 - **`ToolExecutor`**: A simple but crucial component. It auto-discovers all available tool classes, instantiates them, and stores them in a dictionary keyed by the tool's name. It provides a single `execute_tool` method that takes the tool name and arguments. When a tool execution fails, the `ToolExecutor` automatically fetches action-specific documentation from the tool's `get_detailed_usage(sub_action=...)` method and includes it in the error message sent back to the agent via the `ToolErrorHandler`, enabling context-aware self-correction.
-- **`InteractionHandler`**: Acts as a mediator between the `AgentCycleHandler` and the `ToolExecutor`. Its `execute_single_tool` method contains the boilerplate logic for calling the executor, handling exceptions, logging the result to the database, and formatting the output into the `role: "tool"` message structure that the agent expects in its history.
+- **`InteractionHandler`**: Acts as a mediator between the `AgentCycleHandler` and the `ToolExecutor`. Its `execute_single_tool` method contains the boilerplate logic for calling the executor, handling exceptions, logging the result to the database, and formatting the output into the `role: "tool"` message structure that the agent expects in its history. Crucially, it manages **Synchronous Message Queuing**: All cross-agent communication is completely asynchronous and non-interruptive. When an agent receives a message, it is silently placed in their `message_inbox`. The inbox is exclusively flushed into their active history when the agent transitions into a safe idle state (`worker_wait`, `pm_standby`) OR immediately after the agent themselves successfully dispatches an outbound message, guaranteeing unbroken thought loops.
 - **Modular Tool Help System**: Major tools (`FileSystemTool`, `ProjectManagementTool`, `ManageTeamTool`, `WebSearchTool`) implement segmented `get_detailed_usage(sub_action=...)` methods. When called without a `sub_action`, they return a concise summary of all available actions. When called with a specific `sub_action` (e.g., `"read"`, `"add_task"`, `"create_agent"`), they return only the relevant action's detailed parameter documentation.
+- **Strict Path Sandboxing**: The `FileSystemTool` inherently enforces a hard partition at the `shared_workspace` directory. Regardless of what path the agent provides (even if they erroneously prepend session strings or project IDs), the `_resolve_and_validate_path` engine aggressively sanitizes and strips anomalous prefixes to ensure perfectly flat, consistent folder topologies across the entire session team.
 - **Web Search Integration**: The `WebSearchTool` integrates deeply with **SearXNG** (configured via `.env`) as the primary open-source intelligence gathering mechanism, falling back to a custom DuckDuckGo scraper if the self-hosted engine is unavailable.
 
 ### 4.5. `WorkflowManager` (`src/agents/workflow_manager.py`)
@@ -177,7 +178,32 @@ The `WorkflowManager` handles high-level, framework-defined processes that are t
 The framework includes a dedicated safety and reliability layer, embodied by the `ConstitutionalGuardian` (CG) agent and the `AgentHealthMonitor`.
 
 - **`ConstitutionalGuardian`**: A specialized, non-interactive agent (`constitutional_guardian_ai`). Before any `final_response` from another agent is committed, the text is sent to the CG. The CG uses a dedicated system prompt and the principles defined in `governance.yaml` to check for violations. It returns either `<OK/>` or `<CONCERN>...</CONCERN>`. If a concern is raised, the original agent is paused, and user intervention is required. The CG's verdict generation uses a configurable token limit (`CG_MAX_TOKENS`, default `4000`) to ensure models with internal reasoning processes (e.g., `<think>` blocks) have sufficient output space to complete their verdicts.
-- **`AgentHealthMonitor`**: As described in the `AgentCycleHandler` section, this component acts as an automated check against common agent failure modes. It is a key part of the framework's resilience, capable of intervening with corrective feedback or forcing an agent into an error state to prevent infinite loops. The monitor tracks `cycle_count_in_current_state` for each agent, which resets not only on state changes but also when the agent takes meaningful action (successful tool calls), preventing false-positive "stuck in state" interventions for agents legitimately performing productive work in their current state.
+- **`AgentHealthMonitor`**: As described in the `AgentCycleHandler` section, this component acts as an automated check against common agent failure modes. It is a key part of the framework's resilience, capable of intervening with corrective feedback or forcing an agent into an error state to prevent infinite loops. The monitor tracks `cycle_count_in_current_state` for each agent. **Proactive Escalation:** If an agent stalls relentlessly (e.g., empty response loops), the CG steps in, intercepts the loop, and dynamically constructs a diagnostic report containing recent errors and tool calls. It then dispatches this report directly into the `message_inbox` of the stalled agent's supervisor (Admin AI or Project Manager) via the `InteractionHandler`, instructing them to deploy targeted Human-in-the-Loop style recovery via their own `send_message` tools.
+
+### 4.7. Failover Handler & Tool Support Blacklist
+
+The `failover_handler.py` module manages automatic model/provider failover when agents encounter persistent errors. It follows a preference order: (1) same model on alternate local APIs, (2) alternative models on local providers, (3) external providers with API keys.
+
+- **Tool Support Blacklist**: A module-level `_models_without_tool_support` set tracks `(provider, model)` pairs that have returned "does not support tools" errors at runtime. Before attempting any failover switch, both Pass 1 (preferred model on alternate APIs) and Pass 2 (alternative model candidates) check this blacklist, preventing cascade failures where agents cycle through multiple models that all lack native tool calling capability.
+- **Health Checks**: Before switching to a local provider, the handler performs HTTP health checks on the target API endpoint.
+
+### 4.8. Cross-Cycle Duplicate Detection & Result Truncation
+
+The `AgentCycleHandler` maintains a per-agent cache of recent tool calls and their results. When an agent calls the exact same tool with identical arguments across consecutive cycles, the framework:
+
+1. Returns a **truncated** cached result (max 200 characters) to save context tokens, since the agent already received the full result previously.
+2. Injects a `[Framework System Message - DUPLICATE BLOCKED]` directive instructing the agent to proceed to the next workflow step.
+3. After 3+ consecutive duplicates, escalates with `[AUTO-ADVANCE]` — for PMs this forces a state transition; for workers it injects a strong corrective directive.
+4. Calls `_deduplicate_pm_framework_messages()` before each injection to remove old framework messages, preventing context bloat.
+
+### 4.9. Tool Action Alias Auto-Correction
+
+Both `ProjectManagementTool` and `FileSystemTool` include `action_suggestions` dictionaries that automatically correct common LLM action hallucinations (e.g., `mark_completed` → `complete_task`, `create_directory` → `mkdir`). When an invalid action is detected and a mapping exists, the tool auto-corrects and continues execution, appending a correction note to the successful result so the agent learns the correct action name.
+
+### 4.10. Persistent State Loop Overrides
+
+Agents in persistent states (like `worker_work`, `worker_report`, `pm_manage`) automatically reactivate to process results or wait for new input. However, smaller models occasionally enter autoregressive generation loops, repeating the identical tool call (e.g. `modify_task` or `send_message`) infinitely despite the `CycleHandler`'s duplicate block and `AUTO-ADVANCE` directives.
+To prevent this death spiral, `NextStepScheduler.schedule_next_step` includes a hard framework intervention block. If an agent hits 4 consecutive duplicate cross-cycle failures while in a persistent state, the scheduler intercepts the cycle, skips the LLM generation entirely, and forces a hard state transition (e.g., `worker_work` -> `worker_report`, `worker_report` -> `worker_wait`). This forces the agent into a completely different operational context, breaking the loop.
 
 ## 5. State and Communication Model
 
@@ -195,9 +221,10 @@ An agent's behavior, system prompt, and expected output are determined by the co
     -   `startup`: The initial state for a new PM. Its goal is to take the initial plan from the Admin AI and break it down into a list of specific, actionable tasks for worker agents, outputting them in a `<task_list>` XML block.
     -   `build_team_tasks`: A guided state where the PM creates a team and then creates the necessary worker agents one by one. The framework injects system messages to guide the PM through this sequential process.
     -   `activate_workers`: A state where the PM assigns the previously defined tasks to the newly created worker agents.
-    -   `manage`: The PM's main operational loop. It periodically activates to monitor task progress, review completed work, and report status back to the Admin AI.
+    -   `manage`: The PM's main operational loop. It periodically activates to monitor task progress, review completed work, and assign new tasks.
     -   `report_check`: A focused, temporary state the PM automatically enters when receiving a message from a worker. After reading and replying, the PM auto-resolves back to its previous state (e.g., `manage` or `standby`).
-    -   `standby`: A dormant state entered after a project is considered complete.
+    -   `audit`: A verification phase entered when the PM believes all assigned tasks are complete. The PM reviews documents, scans the codebase, and runs tests to ensure the overall project goals were met before formally declaring success.
+    -   `standby`: A dormant state entered after a project is considered fully complete and the audit report has been filed to the Admin AI.
 
 -   **Worker Agent States**:
     -   `decompose`: The initial state when a task is assigned. The worker must break the task down into trackable sub-tasks using the `project_management` tool before beginning execution. Tool access is strictly limited in this state.

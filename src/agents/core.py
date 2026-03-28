@@ -26,7 +26,7 @@ from src.agents.constants import (
     AGENT_STATUS_AWAITING_TOOL, AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_ERROR,
     AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER,
     ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK,
-    PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE,
+    PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_AUDIT,
     WORKER_STATE_STARTUP, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK, WORKER_STATE_WAIT,
     DEFAULT_STATE
 )
@@ -196,6 +196,7 @@ class Agent:
                 if self.state == PM_STATE_STARTUP: max_tokens_override = settings.PM_STARTUP_STATE_MAX_TOKENS
                 elif self.state == PM_STATE_WORK: max_tokens_override = settings.PM_WORK_STATE_MAX_TOKENS
                 elif self.state == PM_STATE_MANAGE: max_tokens_override = settings.PM_MANAGE_STATE_MAX_TOKENS
+                elif self.state == PM_STATE_AUDIT: max_tokens_override = settings.PM_MANAGE_STATE_MAX_TOKENS
             elif self.agent_type == AGENT_TYPE_WORKER:
                 if self.state == WORKER_STATE_STARTUP: max_tokens_override = settings.WORKER_STARTUP_STATE_MAX_TOKENS
                 elif self.state == WORKER_STATE_DECOMPOSE: max_tokens_override = settings.WORKER_DECOMPOSE_STATE_MAX_TOKENS
@@ -208,7 +209,7 @@ class Agent:
             if settings.NATIVE_TOOL_CALLING_ENABLED and self.manager and getattr(self.manager, 'tool_executor', None):
                 # Native tools should only be provided to states that expect interactive tool usage.
                 # States outputting structural XML (like startup, report_check) break if forced into tool-call mode.
-                if self.state in {ADMIN_STATE_WORK, ADMIN_STATE_CONVERSATION, PM_STATE_WORK, PM_STATE_MANAGE, WORKER_STATE_WORK, WORKER_STATE_DECOMPOSE}:
+                if self.state in {ADMIN_STATE_WORK, ADMIN_STATE_CONVERSATION, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_AUDIT, WORKER_STATE_WORK, WORKER_STATE_DECOMPOSE}:
                     tool_schemas = []
                     for tool_name, tool in self.manager.tool_executor.tools.items():
                         # Restrict WORKER_STATE_DECOMPOSE to only the project_management tool
@@ -316,7 +317,7 @@ class Agent:
                     thinking_lower = think_content_extracted.lower()
                     completion_thoughts = any(re.search(pattern, thinking_lower) for pattern in completion_indicators)
                     
-                    if completion_thoughts and self.state in [PM_STATE_MANAGE, PM_STATE_WORK]:
+                    if completion_thoughts and self.state in [PM_STATE_MANAGE, PM_STATE_WORK, PM_STATE_AUDIT]:
                         logger.info(f"Agent {self.agent_id} (PM) showing completion thoughts. Checking project status.")
                         yield {"type": "pm_completion_detection", "agent_id": self.agent_id, "thinking_content": think_content_extracted}
                         # Allow processing to continue for normal tool calls or state changes

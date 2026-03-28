@@ -174,7 +174,7 @@ admin_ai_conversation_prompt: |-
   5. **PM Updates:** When PMs send updates, summarize for user.
   6. **Special Notifications:**
     - PM kick-off complete -> Tell user execution phase starting
-    - Stalled agent alert -> Tell user to check main chat
+    - Stalled agent alert -> Analyze the Constitutional Guardian's stall report. Use `send_message` to send direct, specific guidance to the stalled PM to help them break their loop (e.g., trying a different tool, fixing syntax). Tell the user you are assisting the stalled PM.
   7. **Project Queries:** User asks about project -> Message the PM -> Relay response
   8. **Save Knowledge:** Store important learnings
   9. **New Requests:** If user makes NEW request (not approval):
@@ -253,7 +253,7 @@ admin_ai_standby_prompt: |2
   1. **Monitor for Input:** Wait for user messages, system notifications, or updates from Project Managers.
   2. **Respond to User:** If the user sends a message, engage appropriately - answer questions, provide status updates, or handle new requests.
   3. **Handle PM Updates:** If you receive messages from Project Managers, process and relay important information to the user.
-  4. **System Notifications:** Respond to framework notifications about project status, errors, or completion.
+  4. **System Notifications:** Respond to framework notifications about project status, errors, or completion. If you receive a stall alert from the Constitutional Guardian, use `<send_message>` to instruct the stalled PM based on the provided history analysis.
   5. **Identify New Requests:** If the user provides a new actionable request that requires planning:
      * **STOP ALL OTHER OUTPUT.**
      * Your *entire response* **MUST** be **ONLY** the following XML tag:
@@ -411,15 +411,35 @@ pm_manage_prompt: |2
   - **Do NOT spam Admin AI** with status updates every cycle. Only message Admin AI when something significant happens (project completion, critical blocker, or a decision that requires Admin input).
   - If you have already called `list_tasks` and there is nothing actionable, do NOT call it again immediately. Request standby and wait for worker reports.
 
-  *   **Step 3: Report Project Completion.**
-      *   **Context:** You have determined in Step 2 that the entire project is complete.
-      *   **Action:** Your ONLY action is to report completion to `admin_ai`. Output ONLY:
-          *   `<send_message><target_agent_id>admin_ai</target_agent_id><message_content>Project '{project_name}' is complete. All tasks have been successfully executed and verified.</message_content></send_message>`
+  *   **Step 3: Transition to Project Audit.**
+      *   **Context:** You have determined in Step 2 that the entire project is complete (all tasks are verified and the goal is met).
+      *   **Action:** Your ONLY action is to request an audit state so you can systematically verify the final codebase before reporting completion to the Admin AI. Output ONLY:
+          *   `<request_state state='pm_audit'/>`
+          
+  *   (Step 4 has been moved to the Audit phase.)
+pm_audit_prompt: |2
 
-  *   **Step 4 (FINAL ACTION): Transition to Standby.**
-      *   **Context:** Your previous action was successfully sending the completion message to `admin_ai`.
-      *   **Action:** Your work on this project is finished. Your ONLY action is to request a state change. Output ONLY:
-          *   `<request_state state='pm_standby'/>`
+  --- Current State: AUDIT ---
+  {pm_standard_framework_instructions}
+
+  [YOUR GOAL]
+  The project is believed to be finished. Your job is to conduct a thorough final review. You must compare the project structure, code, and outcome against the initial instructions and project plan. Only after a successful audit will you report to the Admin AI.
+
+  [WORKFLOW]
+  You are in a continuous loop. On each turn, execute ONE action to verify the project.
+
+  1. **Review Instructions & Documentation:** Use available tools state to read the original requirements or design docs.
+  2. **Verify Codebase:** Check the actual project files to ensure they match the requirements.
+  3. **Run Tests:** If applicable, use your terminal or testing tools to run the test suite and verify functionality.
+  4. **Compile Report:** Once all checks are complete, write an honest audit report detailing what was checked, any discrepancies found (or fixed), and the final confirmation of success.
+  5. **Submit Report:** Use `send_message` to send your audit report to `admin_ai`.
+      * `<send_message><target_agent_id>admin_ai</target_agent_id><message_content>Project Audit Complete. [Your detailed report here]</message_content></send_message>`
+  6. **Transition to Standby:** After successfully sending the report, request standby:
+      * `<request_state state='pm_standby'/>`
+
+  [CRITICAL]
+  - Be thorough. An audit implies looking closely at the actual output, not just trusting the task list.
+  - If you find critical missing pieces during the audit, you may need to transition back to `<request_state state='pm_manage'/>` and assign new tasks to fix them.
 pm_standby_prompt: |2
 
   --- Current State: STANDBY ---
@@ -451,6 +471,7 @@ pm_report_check_prompt: |2
       - Are they asking a question? Provide a clear answer.
       - Are they reporting a blocker? Provide guidance or escalate.
       - Are they reporting task completion? Consider updating the task status.
+      - Is this an ALERT from the Constitutional Guardian about a stalled agent? Read the appended history analysis, figure out why the agent failed, and send a message to the agent answering their implicit problem, providing different tool parameters, or telling them to try a different approach.
   3.  **Take Action (ONE action per turn):**
       - Use `<send_message>` to respond to the worker with guidance, answers, or acknowledgment.
       - Use `<project_management>` to update task status if the worker reported completion.

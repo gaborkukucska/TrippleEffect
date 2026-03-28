@@ -31,6 +31,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Runtime blacklist: (provider, model) pairs that returned "does not support tools".
+# Persists for the lifetime of the process to avoid repeated failures.
+_models_without_tool_support: Set[tuple] = set()
+
 # Define provider-level errors (connection, timeout, etc.)
 PROVIDER_LEVEL_ERRORS = (
     aiohttp.ClientConnectorError,
@@ -371,6 +375,17 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
     error_type_name = type(triggering_error_obj).__name__
     last_error_str = str(triggering_error_obj)
 
+    # --- Detect "does not support tools" errors and blacklist the model ---
+    if "does not support tools" in last_error_str.lower():
+        blacklist_key = (failed_provider, failed_model)
+        if blacklist_key not in _models_without_tool_support:
+            _models_without_tool_support.add(blacklist_key)
+            logger.warning(
+                f"Failover: Blacklisting model '{failed_model}' on provider '{failed_provider}' "
+                f"— it does not support native tool calling. Blacklist size: {len(_models_without_tool_support)}"
+            )
+    # --- END tool support detection ---
+
     logger.warning(f"Failover Handler (Attempt {failover_state['failover_attempt_count']}): Initiating for Agent '{agent_id}' (Original: {original_provider}/{original_model}) due to error: {error_type_name} - {last_error_str[:150]}")
     await manager.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Failover: Encountered '{error_type_name}'. Trying recovery..."})
 
@@ -449,6 +464,12 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
         if not provider_seems_healthy:
             logger.warning(f"Pass 1 - Health check failed for '{local_provider}'. Skipping.")
             failover_state["tried_local_providers"].add(local_provider)
+            continue
+
+        # Check tool support blacklist before trying
+        if (local_provider, original_model) in _models_without_tool_support:
+            logger.info(f"Pass 1 - Skipping '{original_model}' on '{local_provider}': blacklisted (no tool support).")
+            failover_state["tried_models_per_local_provider"][local_provider].add(original_model)
             continue
 
         # Try switching to the same model on the healthy alternative API
@@ -543,6 +564,11 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
             for sorted_model_info in sorted_local_models_to_try:
                 local_model_id_to_try = sorted_model_info["id"]
                 if local_model_id_to_try in tried_on_this_provider: continue
+                # Check tool support blacklist
+                if (local_provider, local_model_id_to_try) in _models_without_tool_support:
+                    logger.info(f"Failover: Skipping '{local_model_id_to_try}' on '{local_provider}': blacklisted (no tool support).")
+                    failover_state["tried_models_per_local_provider"][local_provider].add(local_model_id_to_try)
+                    continue
 
                 models_available_on_provider_tried = True
                 logger.info(f"Failover: Attempting switch to (comprehensively sorted) local model: {local_provider}/{local_model_id_to_try} "

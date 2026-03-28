@@ -1239,12 +1239,17 @@ class AgentCycleHandler:
                                         f"Duplicate count: {agent._duplicate_tool_call_count}. Skipping re-execution."
                                     )
                                     
-                                    # Use the cached result instead of re-executing
+                                    # Use a TRUNCATED cached result to save context tokens
+                                    # The agent already saw this result - they don't need the full thing again
+                                    MAX_CACHED_RESULT_LEN = 200
+                                    truncated_result = prev_result
+                                    if len(prev_result) > MAX_CACHED_RESULT_LEN:
+                                        truncated_result = prev_result[:MAX_CACHED_RESULT_LEN] + f"... [TRUNCATED - duplicate call, full result ({len(prev_result)} chars) was already returned to you previously]"
                                     history_item: MessageDict = {
                                         "role": "tool",
                                         "tool_call_id": tool_id or f"cached_id_{i}",
                                         "name": tool_name or f"unknown_tool_{i}",
-                                        "content": prev_result
+                                        "content": truncated_result
                                     }
                                     all_tool_results_for_history.append(history_item)
                                     any_tool_success = True

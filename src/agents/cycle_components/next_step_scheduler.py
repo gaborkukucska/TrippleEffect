@@ -156,6 +156,41 @@ class NextStepScheduler:
             # This logic ensures that if an agent in a persistent state completes a cycle
             # without error and without requesting a state change, it gets reactivated.
             elif (agent.agent_type, agent.state) in persistent_states and not context.state_change_requested_this_cycle:
+                # Add loop detection for all persistent states to prevent infinite stagnation
+                is_stuck_in_loop = getattr(agent, '_duplicate_tool_call_count', 0) >= 4
+                if not is_stuck_in_loop and self._detect_tool_execution_loops(agent):
+                    is_stuck_in_loop = True
+                    
+                if is_stuck_in_loop:
+                    logger.critical(f"NextStepScheduler: Agent '{agent_id}' is stuck in a loop in persistent state '{agent.state}'. FORCING intervention.")
+                    if agent.agent_type == AGENT_TYPE_WORKER and agent.state in [WORKER_STATE_WORK, WORKER_STATE_REPORT]:
+                        if hasattr(self._manager, 'workflow_manager'):
+                            try:
+                                target_state = WORKER_STATE_REPORT if agent.state == WORKER_STATE_WORK else WORKER_STATE_WAIT
+                                self._manager.workflow_manager.change_state(agent, target_state)
+                                setattr(agent, '_duplicate_tool_call_count', 0)
+                                override_msg = f"[EMERGENCY SYSTEM OVERRIDE]: You were stuck in an infinite loop repeating the exact same tool calls. The framework has automatically transitioned you to the '{target_state}' state. You MUST stop repeating your previous actions."
+                                agent.message_history.append({"role": "system", "content": override_msg})
+                                if self._manager and hasattr(self._manager, 'db_manager') and self._manager.current_session_db_id:
+                                    await self._manager.db_manager.log_interaction(session_id=self._manager.current_session_db_id, agent_id=agent.agent_id, role="system_emergency_override", content=override_msg)
+                                agent.set_status(AGENT_STATUS_IDLE)
+                                await self._schedule_new_cycle(agent, 0)
+                                self._log_end_of_schedule_next_step(agent, "Path B-Persistent-Loop-Override")
+                                return
+                            except Exception as e:
+                                logger.error(f"NextStepScheduler: Failed to force state change for looping worker: {e}")
+                    elif agent.agent_type == AGENT_TYPE_PM and agent.state in [PM_STATE_MANAGE, PM_STATE_WORK]:
+                        if hasattr(self._manager, 'workflow_manager'):
+                            try:
+                                # For PM, force a context refresh by clearing immediate history and asking for a summary
+                                setattr(agent, '_duplicate_tool_call_count', 0)
+                                override_msg = "[EMERGENCY SYSTEM OVERRIDE]: You are stuck in an infinite loop repeating the same actions. You MUST STOP. Take a step back, review the overall project status via 'project_management' list_tasks, and decide on a NEW course of action. Do NOT repeat your previous tool calls."
+                                agent.message_history.append({"role": "system", "content": override_msg})
+                                if self._manager and hasattr(self._manager, 'db_manager') and self._manager.current_session_db_id:
+                                    await self._manager.db_manager.log_interaction(session_id=self._manager.current_session_db_id, agent_id=agent.agent_id, role="system_emergency_override", content=override_msg)
+                            except Exception as e:
+                                logger.error(f"NextStepScheduler: Failed to apply intervention for looping PM: {e}")
+
                 logger.info(f"NextStepScheduler: Agent '{agent_id}' is in a persistent state ('{agent.state}'). Reactivating for continuous work.")
                 agent.set_status(AGENT_STATUS_IDLE)
                 await self._schedule_new_cycle(agent, 0)
@@ -187,13 +222,21 @@ class NextStepScheduler:
                     await self._schedule_new_cycle(agent, 0)
             elif agent.agent_type == AGENT_TYPE_PM and \
                  agent.state == PM_STATE_REPORT_CHECK and not context.state_change_requested_this_cycle:
-                logger.warning(f"NextStepScheduler: PM agent '{agent_id}' in pm_report_check forgot to request state change. Auto-reverting to pm_manage.")
-                if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear()
-                if agent.status != AGENT_STATUS_ERROR:
-                    if not (agent.status == AGENT_STATUS_AWAITING_USER_REVIEW_CG and getattr(agent, 'cg_awaiting_user_decision', False)):
-                        self._manager.workflow_manager.change_state(agent, PM_STATE_MANAGE)
+                if getattr(context, 'action_taken_this_cycle', False):
+                    # PM executed a tool (e.g., send_message, project_management). Allow it to stay in this state to read the result.
+                    logger.info(f"NextStepScheduler: PM agent '{agent_id}' in pm_report_check executed a tool. Reactivating to process result.")
+                    if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear()
+                    if agent.status != AGENT_STATUS_ERROR:
                         agent.set_status(AGENT_STATUS_IDLE)
-                        # Let the periodic timer wake it up to prevent busy-looping
+                        await self._schedule_new_cycle(agent, 0)
+                else:
+                    logger.warning(f"NextStepScheduler: PM agent '{agent_id}' in pm_report_check forgot to request state change. Auto-reverting to pm_manage.")
+                    if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear()
+                    if agent.status != AGENT_STATUS_ERROR:
+                        if not (agent.status == AGENT_STATUS_AWAITING_USER_REVIEW_CG and getattr(agent, 'cg_awaiting_user_decision', False)):
+                            self._manager.workflow_manager.change_state(agent, PM_STATE_MANAGE)
+                            agent.set_status(AGENT_STATUS_IDLE)
+                            # Let the periodic timer wake it up to prevent busy-looping
             else:
                 logger.info(f"NextStepScheduler: Agent '{agent_id}' ({context.current_model_key_for_tracking}) finished cycle cleanly, no specific reactivation needed by this scheduler.")
                 if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear()

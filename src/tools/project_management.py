@@ -91,9 +91,16 @@ class ProjectManagementTool(BaseTool):
             return {"status": "error", "message": "Tasklib library not installed."}
 
         action = kwargs.get("action")
+        
+        if action in ["send_status_update", "status_update", "message", "send_message"]:
+            return {
+                "status": "error",
+                "message": "Invalid action. The 'project_management' tool is ONLY for modifying the task database. If you are trying to talk to the Project Manager or report progress, please use the separate 'send_message' tool."
+            }
 
         # Check for common mistakes and provide helpful suggestions
         action_suggestions = {
+            "assign_task": "modify_task",
             "create_task": "add_task",
             "new_task": "add_task", 
             "add": "add_task",
@@ -112,7 +119,10 @@ class ProjectManagementTool(BaseTool):
             "finish_task": "complete_task",
             "done": "complete_task",
             "finish": "complete_task",
-            "mark_complete": "complete_task"
+            "mark_complete": "complete_task",
+            "mark_completed": "complete_task",
+            "complete": "complete_task",
+            "task_complete": "complete_task"
         }
         
         if not action:
@@ -381,7 +391,7 @@ class ProjectManagementTool(BaseTool):
                 task.save()
                 assignee_to_return = kwargs.get("assignee_agent_id") or task['assignee']
                 depends_list = [t['uuid'] for t in (task['depends'] if task['depends'] is not None else [])]
-                return {"status": "success", "message": f"Task '{task_id}' modified successfully.", "task_uuid": task['uuid'], "task_id": task['id'], "modified_fields": modified_fields, "description": task['description'], "assignee": assignee_to_return, "depends": depends_list}
+                return {"status": "success", "message": f"Task '{task_id}' modified successfully.", "task_uuid": task['uuid'], "task_id": task['id'], "modified_fields": modified_fields, "task_status": task['status'], "description": task['description'], "assignee": assignee_to_return, "depends": depends_list}
 
             elif action == "complete_task":
                 task_id = kwargs.get("task_id") or kwargs.get("task_uuid")

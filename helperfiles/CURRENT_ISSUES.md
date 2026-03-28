@@ -1,11 +1,85 @@
 # TrippleEffect - Current Issues
 
 **Last Updated:** 2026-03-26
-**Based on log:** `app_20260326_153524_1540238.log` and prior runs
+**Based on log:** `app_20260326_174455_1570101.log` and prior runs
 
 ---
 
 ## Recently Resolved Issues
+
+### -14. Project Manager Pre-mature Completion & Audit Phase
+- **Severity:** High (PM declared completion without formal review)
+- **Description:** Upon task exhaustion, PMs immediately messaged the Admin AI that the project was complete without verifying the generated output against instructions, leading to unverified deliverables and communication disconnects at the end of runs.
+- **Root Cause:** The `pm_manage` state abruptly transitioned to reporting completion.
+- **Fix:** (RESOLVED) Implemented a new `pm_audit` workflow state. PMs now automatically transition to audit phase upon believing the project is complete. They are instructed to review structural requirements, scan the codebase, and optionally run tests before compiling a final Audit Report and sending it to the Admin AI.
+- **Files:** `prompts.yaml`, `src/agents/constants.py`, `src/agents/workflow_manager.py`, `src/agents/core.py`
+
+### -13. Autoregressive Stalling & Empty Loops
+- **Severity:** High
+- **Description:** Worker agents and PMs would occasionally get stuck in loops generating empty responses or invalid commands. The Constitutional Guardian (CG) would passively block them, but the agents' managers were unaware of the freeze.
+- **Root Cause:** Disconnected escalation path. Managers had no framework visibility into a worker's systemic internal stall.
+- **Fix:** (RESOLVED) Built a proactive escalation mechanism into the CG (`AgentHealthMonitor`). When an agent crosses the stall threshold, the CG dynamically constructs a diagnostic report with history and errors, injecting it directly into the supervising agent's `message_inbox` via `interaction_handler`, prompting the supervisor to deploy Human-in-the-Loop style recovery via `send_message`.
+- **Files:** `src/agents/cycle_components/agent_health_monitor.py`, `prompts.yaml`
+
+### -12. Symmetrical Cross-Agent Message Queuing
+- **Severity:** High (caused cognitive interrupts and logic stalls)
+- **Description:** Agents were violently interrupted mid-thought by forced state transitions upon sending or receiving messages (e.g., workers forced into `worker_wait` upon sending, PM forced into `pm_report_check` upon receiving). This corrupted their context and resulted in loops.
+- **Root Cause:** Hardcoded state switches in `route_and_activate_agent_message` and `execute_single_tool`.
+- **Fix:** (RESOLVED) Implemented a strict, fully non-interruptive async queuing architecture. All messages go to the recipient's `message_inbox` unless they are already asleep. Sender's inboxes are automatically flushed into their active history concurrently with outbound dispatches.
+- **Files:** `src/agents/interaction_handler.py`
+
+### -11. Workspace Project & Session Path Nesting Bug
+- **Severity:** High (sandbox fragmentation)
+- **Description:** Agents were erroneously instructed to (and succeeded in) prepending `{session_name}` or `{project_name}` to folder paths, creating nested folder architectures instead of using the flat `shared_workspace` root.
+- **Root Cause:** `file_system.py` didn't scrub session prefixes, and the PM's system prompt lacked constraints preventing it from passing bad pathing rules to workers.
+- **Fix:** (RESOLVED) Hardened `FileSystemTool._resolve_and_validate_path()` to auto-strip `{session_name}` strings. Added an explicit `[WORKSPACE & FILE SYSTEM]` directive to `pm_standard_framework_instructions` forbidding nested paths.
+- **Files:** `src/tools/file_system.py`, `src/config/settings.py`
+
+### -10. Project Manager State Reversion Cutoff
+- **Severity:** High (PM ignored worker replies)
+- **Description:** If PM1 responded to a worker and executed the `send_message` tool successfully without manually appending a `<request_state>` tag, the `NextStepScheduler` forcefully reverted its state to `pm_manage`, causing it to drop its `pm_report_check` context.
+- **Root Cause:** Aggressive auto-reversion logic for PMs.
+- **Fix:** (RESOLVED) Updated `NextStepScheduler` to allow PMs to remain in their active interaction states (`pm_manage` or `pm_report_check`) on a successful tool call, properly scheduling a continuation cycle.
+- **Files:** `src/agents/cycle_components/next_step_scheduler.py`
+
+### -9. Task Object AttributeError on Modify
+- **Severity:** Moderate
+- **Description:** The PM triggered an `'Task' object has no attribute 'get'` error when calling `modify_task` to set a task status.
+- **Root Cause:** `tasklib.Task` uses dictionary element access `task['status']` rather than `.get()`. 
+- **Fix:** (RESOLVED) Switched to `task['status']` to safely look up task data.
+- **Files:** `src/tools/project_management.py`
+
+### -7. Failover Cascade Death from Models Lacking Tool Support
+
+- **Severity:** Critical (killed worker agent W1 entirely)
+- **Description:** When W1 failed on `ollama-local-192-168-0-22` (500 error), the failover handler switched to `ollama-local-192-168-0-24` with the same model (`qwen3.5:9b-q4_K_M`). That host returned 400: "does not support tools". Failover then tried `qwen3-coder:30b` on .22 — also "does not support tools". W1 produced 4 consecutive empty responses and was CG-BLOCKED.
+- **Root Cause:** The failover handler checked provider health and model availability but did NOT validate whether the target model supported native tool calling on the new host.
+- **Fix:** (RESOLVED) Added a module-level `_models_without_tool_support` runtime blacklist in `failover_handler.py`. On "does not support tools" errors, the `(provider, model)` pair is added to the blacklist. Both Pass 1 (preferred model on alternate APIs) and Pass 2 (alternative models) check the blacklist before attempting a switch.
+- **Files:** `src/agents/failover_handler.py`
+
+### -6.5. Duplicate Tool Call Cached Result Context Bloat
+
+- **Severity:** Moderate (wastes context tokens across 910+ duplicate detections)
+- **Description:** When the framework detected a cross-cycle duplicate tool call, it returned the full cached result to the agent's history each time, even though the agent had already received and processed this result previously. Over a 2h47m run, this contributed to unnecessary context window consumption.
+- **Root Cause:** The cached `prev_result` was injected into `all_tool_results_for_history` at full length on every duplicate detection.
+- **Fix:** (RESOLVED) Truncated cached duplicate results to 200 characters max, with a `[TRUNCATED - duplicate call]` suffix. Full results are still logged to DB for debugging.
+- **Files:** `src/agents/cycle_handler.py`
+
+### -6. `mark_completed` Action Hallucination
+
+- **Severity:** Moderate (causes tool execution failure)
+- **Description:** Worker W1 used `<action>mark_completed</action>` instead of the correct `<action>complete_task</action>` to finish tasks. The existing alias map had `mark_complete` → `complete_task` but not `mark_completed` (with trailing 'd').
+- **Root Cause:** LLM-generated action name variation not covered by the auto-correction map.
+- **Fix:** (RESOLVED) Added `mark_completed`, `complete`, and `task_complete` to the `action_suggestions` alias map in `project_management.py`.
+- **Files:** `src/tools/project_management.py`
+
+### -5.5. File Append Missing Filename Parameter
+
+- **Severity:** Low (clear error message, agent self-corrects)
+- **Description:** Worker W1 called `file_system` with `action=append` but omitted the required `filename` parameter twice (~20:16-20:18 UTC).
+- **Root Cause:** Native JSON tool calling model generated the call without the `filename` field.
+- **Status:** Already handled by existing validation at line 348 of `file_system.py`. The error message clearly states `'filename' parameter is required for 'append'`.
+- **Files:** `src/tools/file_system.py` (no change needed)
 
 ### -5. Constitutional Guardian Returns Empty Verdict
 
@@ -239,25 +313,29 @@
 
 ---
 
-## Summary of Latest Run (2026-03-11)
+## Summary of Latest Run (2026-03-26)
 
 | Metric | Value |
 |--------|-------|
-
-| ERRORs | 0 |
-| WARNINGs | 140 |
-| Cross-cycle duplicates detected | 2 |
-| Workers created | 4 (W1-Coder, W2-Full-Stack Dev, W3-UI/UX, W4-Tester) |
-| Tasks assigned | 1+ (W2 assigned and started producing code) |
-| Workers producing output | Yes (W2 wrote server setup files) |
-| PM state reached | `pm_activate_workers` → task assignment |
-| Duration | ~20 minutes |
+| Log file | `app_20260326_174455_1570101.log` (656,818 lines) |
+| ERRORs | 35 (mostly Ollama provider 500s and tool param errors) |
+| Tool Exec Failures | 8 |
+| CG Stuck-State Interventions | **0** (Phase M fix validated) |
+| CG Empty-Response Blocks | 1 (W1, legitimate after failover cascade) |
+| DUPLICATE BLOCKED messages | 910 (272 file_system, 236 project_management, 52 send_message) |
+| AUTO-ADVANCE messages | 295 |
+| Workers created | 3 (W1-Game_Developer, W2-Technical_Writer, W3-Game_Developer) |
+| Workspace files produced | 25 (14 source, 7 docs, 4 leaderboard system) |
+| PM state reached | Full lifecycle: startup → build_team → activate_workers → manage ↔ report_check (9 round-trips) |
+| Duration | ~2h 47min |
 
 ## What Worked Well
 
-- Cross-cycle duplicate detection activated correctly, preventing redundant tool executions
-- Worker creation pipeline: 4 workers created successfully with correct models
-- Duplicate agent prevention: framework blocked 2 duplicate persona attempts
-- Workers started producing tangible output (W2 created server files)
-- No ERRORs in the entire run (major improvement)
-- Constitutional Guardian reviews passed successfully
+- **Zero** false-positive stuck-state CG interventions (Phase M fix validated)
+- No empty CG verdicts (configurable token limit fix working)
+- PM completed full lifecycle with 9 manage↔report_check round-trips
+- All 3 workers followed healthy decompose→work→report cycles
+- Substantial output: 25 files including game scenes, managers, docs, and architecture files
+- Failover mechanism partially working: W1 successfully switched hosts on first attempt
+- Cross-cycle duplicate detection prevented redundant tool executions
+

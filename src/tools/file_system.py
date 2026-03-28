@@ -197,7 +197,7 @@ class FileSystemTool(BaseTool):
         default_scope = "shared" if project_name and session_name else "private"
         scope = kwargs.get("scope", default_scope).lower()
         _fo = self._first_of # Shorthand — preserves empty strings unlike `or`
-        filename = _fo(kwargs.get("filename"), kwargs.get("filepath")) # Used by read, write, find_replace, regex_replace
+        filename = _fo(kwargs.get("filename"), kwargs.get("filepath"), kwargs.get("file"), kwargs.get("path")) # Used by read, write, find_replace, regex_replace
         if isinstance(filename, str): filename = filename.strip()
         content = _fo(kwargs.get("content"), kwargs.get("text")) # Used by write, append, insert_lines
         relative_path = _fo(kwargs.get("path"), kwargs.get("filename"), kwargs.get("filepath")) # Used by list, mkdir, delete, copy, move
@@ -247,6 +247,8 @@ class FileSystemTool(BaseTool):
         
         # Check for common mistakes and provide helpful suggestions
         action_suggestions = {
+            "add_lines": "insert_lines",
+            "add_line": "insert_lines",
             "create_directory": "mkdir",
             "create_file": "write", 
             "create": "write",
@@ -731,6 +733,10 @@ Pushes changes to a remote repository.
                 if parts and len(base_path.parents) >= 2 and parts[0] == base_path.parent.parent.name:
                     parts = parts[1:] # Strip 'ProjectName/'
 
+                # See if they included the session name (which is the parent of the shared_workspace)
+                if parts and len(base_path.parents) >= 1 and parts[0] == base_path.parent.name:
+                    parts = parts[1:] # Strip 'SessionName/'
+
                 relative_file_path = str(Path(*parts)) if parts else "."
             
         try:
@@ -1185,7 +1191,7 @@ Pushes changes to a remote repository.
                         f"Could not find a matching block. "
                         f"Searched for block starting with: {repr(preview_first)}"
                         + (f" and ending with: {repr(preview_last)}" if preview_last else "") +
-                        ". Please read the file and verify the exact content before retrying."
+                        ". Please read the file and verify the exact content before retrying. Consider using the 'replace_lines' action instead, which is much more reliable if you know the exact line numbers."
                     )
                     return False, hint
 

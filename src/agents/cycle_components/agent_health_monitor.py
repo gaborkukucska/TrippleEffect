@@ -359,33 +359,69 @@ class ConstitutionalGuardianHealthMonitor:
                     logger.info(f"ConstitutionalGuardian: Skipping intervention for Admin AI '{agent_id}' - legitimate state transition detected")
                     return False, None, None
         
+        needs_intervention, description, recovery = False, None, None
+        
         # PRIORITY 0: Block tool_information loop immediately (most critical)
         if hasattr(record, 'tool_information_loop_detected') and record.tool_information_loop_detected:
             if record.tool_information_loop_count >= 2:  # Even just 2 is a critical loop
                 logger.error(f"ConstitutionalGuardian: BLOCKING '{agent_id}' - tool_information+list_tools loop detected ({record.tool_information_loop_count} calls)")
-                return await self._create_tool_information_loop_intervention(agent, record)
+                needs_intervention, description, recovery = await self._create_tool_information_loop_intervention(agent, record)
             
         # PRIORITY 1: Block empty responses immediately
-        if record.consecutive_empty_responses >= self.empty_response_threshold:
+        elif record.consecutive_empty_responses >= self.empty_response_threshold:
             logger.error(f"ConstitutionalGuardian: BLOCKING '{agent_id}' - {record.consecutive_empty_responses} consecutive empty responses")
-            return await self._create_empty_response_intervention(agent, record)
+            needs_intervention, description, recovery = await self._create_empty_response_intervention(agent, record)
             
         # PRIORITY 2: Block identical responses immediately  
-        if record.consecutive_identical_responses >= self.identical_response_threshold:
+        elif record.consecutive_identical_responses >= self.identical_response_threshold:
             logger.error(f"ConstitutionalGuardian: BLOCKING '{agent_id}' - {record.consecutive_identical_responses} consecutive identical responses")
-            return await self._create_identical_response_intervention(agent, record)
+            needs_intervention, description, recovery = await self._create_identical_response_intervention(agent, record)
             
         # PRIORITY 3: Handle minimal responses (thinking only)
-        if record.consecutive_minimal_responses >= self.minimal_response_threshold:
+        elif record.consecutive_minimal_responses >= self.minimal_response_threshold:
             logger.warning(f"ConstitutionalGuardian: Intervening for '{agent_id}' - {record.consecutive_minimal_responses} minimal responses")
-            return await self._create_minimal_response_intervention(agent, record)
+            needs_intervention, description, recovery = await self._create_minimal_response_intervention(agent, record)
             
         # PRIORITY 4: Handle stuck states
-        if record.is_stuck_in_state(self.stuck_state_threshold):
+        elif record.is_stuck_in_state(self.stuck_state_threshold):
             logger.warning(f"ConstitutionalGuardian: Intervening for '{agent_id}' - stuck in state '{agent.state}'")
-            return await self._create_stuck_state_intervention(agent, record)
+            needs_intervention, description, recovery = await self._create_stuck_state_intervention(agent, record)
                 
-        return False, None, None
+        if needs_intervention and recovery:
+            # Determine supervisor for notification
+            supervisor_id = None
+            if agent.agent_type == AGENT_TYPE_WORKER:
+                if hasattr(self._manager, 'state_manager'):
+                    team_id = self._manager.state_manager.get_agent_team(agent.agent_id)
+                    if team_id and team_id.startswith('team_'):
+                        supervisor_id = team_id.replace('team_', 'pm_')
+            elif agent.agent_type == AGENT_TYPE_PM:
+                # Fallback constants import
+                from src.agents.constants import BOOTSTRAP_AGENT_ID
+                supervisor_id = getattr(self._manager, 'admin_ai_id', BOOTSTRAP_AGENT_ID)
+                
+            if supervisor_id:
+                history_analysis = recovery.get("history_analysis", {})
+                tool_usage = "\n".join([f"- {u['tool']} (Attempt #{u['position']})" for u in history_analysis.get('recent_tool_usage', [])])
+                errors_str = "\n".join([f"- {e.get('error_snippet', '')}" for e in history_analysis.get('recent_errors', [])])
+                
+                supervisor_msg = (
+                    f"⚠️ **CONSTITUTIONAL GUARDIAN ALERT** ⚠️\n\n"
+                    f"Agent `{agent.agent_id}` (Type: `{agent.agent_type}`, State: `{agent.state}`) has stalled and was blocked from further autonomous execution loop.\n"
+                    f"**Reason:** {recovery.get('type', 'Unknown block')}\n"
+                    f"**Description:** {description}\n\n"
+                    f"**Recent Tools Used By Agent:**\n{tool_usage if tool_usage else 'None'}\n\n"
+                    f"**Recent Errors Generated By Agent:**\n{errors_str if errors_str else 'None'}\n\n"
+                    f"**ACTION REQUIRED:** Please review their recent history and the errors above. Provide specific guidance to the agent via `send_message`, clear their problematic context, or reassign their task."
+                )
+                
+                recovery.setdefault("actions", []).append({
+                    "action": "notify_supervisor",
+                    "supervisor_id": supervisor_id,
+                    "message_content": supervisor_msg
+                })
+
+        return needs_intervention, description, recovery
     
     async def _create_empty_response_intervention(self, agent: 'Agent', record: AgentHealthRecord) -> Tuple[bool, str, Dict]:
         """Create intervention for empty response loops."""
@@ -937,6 +973,21 @@ class ConstitutionalGuardianHealthMonitor:
                     "content": f"[Constitutional Guardian - Workflow Reminder]: {workflow_reminder}"
                 }
                 agent.message_history.append(reminder_msg)
+                
+        elif action_type == "notify_supervisor":
+            supervisor_id = action.get("supervisor_id")
+            if supervisor_id:
+                message_content = action.get("message_content", f"Agent '{agent.agent_id}' has stalled.")
+                logger.warning(f"ConstitutionalGuardian: Sending stall report for '{agent.agent_id}' to supervisor '{supervisor_id}'")
+                
+                if hasattr(self._manager, 'interaction_handler'):
+                    await self._manager.interaction_handler.route_and_activate_agent_message(
+                        sender_id=CONSTITUTIONAL_GUARDIAN_AGENT_ID,
+                        target_identifier=supervisor_id,
+                        message_content=message_content
+                    )
+                else:
+                    logger.error(f"ConstitutionalGuardian: Cannot notify supervisor '{supervisor_id}' - interaction_handler missing!")
                 
     def _get_workflow_reminder(self, agent: 'Agent', workflow_state: str) -> Optional[str]:
         """Get a workflow reminder message for the specific agent type and state."""

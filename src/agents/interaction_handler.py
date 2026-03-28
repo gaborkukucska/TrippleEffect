@@ -20,7 +20,7 @@ from src.agents.constants import (  # type: ignore[import]
     AGENT_TYPE_WORKER, AGENT_TYPE_PM, WORKER_STATE_WORK, BOOTSTRAP_AGENT_ID, AGENT_STATUS_ERROR,
     AGENT_STATUS_AWAITING_CG_REVIEW, AGENT_STATUS_AWAITING_USER_REVIEW_CG, # Added CG states
     PM_STATE_REPORT_CHECK, PM_STATE_STARTUP, PM_STATE_BUILD_TEAM_TASKS,
-    PM_STATE_ACTIVATE_WORKERS, PM_STATE_WORK
+    PM_STATE_ACTIVATE_WORKERS, PM_STATE_WORK, WORKER_STATE_WAIT
 )
 
 # Import helper for prompt update
@@ -303,45 +303,30 @@ class AgentInteractionHandler:
 
         formatted_message: MessageDict = { "role": "user", "content": f"[From @{sender_id} ({sender_agent.persona})]: {message_content}" }; # Added sender persona
         
-        # --- BLOCK MESSAGES TO PM IN HIGH-FOCUS STATES ---
-        HIGH_FOCUS_PM_STATES = [
-            PM_STATE_STARTUP,
-            PM_STATE_BUILD_TEAM_TASKS,
-            PM_STATE_ACTIVATE_WORKERS,
-            PM_STATE_WORK
-        ]
+        # --- NEW DELIVERY LOGIC (PHASE W) ---
+        from src.agents.constants import WORKER_STATE_WAIT, PM_STATE_STANDBY, ADMIN_STATE_STANDBY, ADMIN_STATE_CONVERSATION
+        safe_states = [WORKER_STATE_WAIT, PM_STATE_STANDBY, ADMIN_STATE_STANDBY, ADMIN_STATE_CONVERSATION]
         
-        if target_agent.agent_type == AGENT_TYPE_PM and target_agent.state in HIGH_FOCUS_PM_STATES:
-            logger.info(f"InteractionHandler: Target PM '{resolved_target_id}' is in high-focus state '{target_agent.state}'. Queuing message.")
+        if target_agent.state in safe_states:
+            # Deliver immediately and wake them up
+            target_agent.message_history.append(formatted_message)
+            logger.debug(f"InteractionHandler: Appended message from '{sender_id}' to history of '{resolved_target_id}' (State: {target_agent.state}).")
+        else:
+            # Queue it
             if not hasattr(target_agent, 'message_inbox'):
                 target_agent.message_inbox = []
             target_agent.message_inbox.append(formatted_message)
+            logger.info(f"InteractionHandler: Target '{resolved_target_id}' is in non-interruptible state '{target_agent.state}'. Queuing message in inbox.")
             
             # Send feedback to the sender
             feedback_message: MessageDict = {
                 "role": "tool", 
                 "tool_call_id": f"send_message_delayed_{target_identifier}", 
-                "content": f"[Manager Feedback]: Your message was queued because the PM is currently in a high-focus task. It will be delivered when the PM is available."
+                "content": f"[Manager Feedback]: Your message to '{target_identifier}' was queued because they are currently busy. It will be delivered when they are available or when they next respond."
             }
             sender_agent.message_history.append(feedback_message)
             return None
-        # --- END BLOCK MESSAGES TO PM ---
-        
-        target_agent.message_history.append(formatted_message); logger.debug(f"InteractionHandler: Appended message from '{sender_id}' to history of '{resolved_target_id}'.")
-
-        # --- AUTO-SWITCH PM TO REPORT CHECK WHEN WORKER MESSAGES ---
-        # When a worker sends a message to their PM, auto-switch the PM to pm_report_check
-        # so it gets a focused report-response prompt. PM keeps its memory and tools.
-        if (sender_agent.agent_type == AGENT_TYPE_WORKER and 
-            target_agent.agent_type == AGENT_TYPE_PM and
-            target_agent.state != PM_STATE_REPORT_CHECK):  # Don't re-switch if already in report_check
-            logger.info(f"InteractionHandler: Worker '{sender_id}' sent message to PM '{resolved_target_id}'. Auto-switching PM to pm_report_check (from '{target_agent.state}').")
-            target_agent._pre_report_check_state = target_agent.state
-            self._manager.workflow_manager.change_state(target_agent, PM_STATE_REPORT_CHECK)
-            # Force fresh system prompt regeneration on next cycle
-            if hasattr(target_agent, '_last_system_prompt_state'):
-                target_agent._last_system_prompt_state = None
-        # --- END AUTO-SWITCH ---
+        # --- END NEW DELIVERY LOGIC ---
 
         activation_task = None
         if target_agent.status == AGENT_STATUS_IDLE:
@@ -412,8 +397,16 @@ class AgentInteractionHandler:
                     target_identifier=str(target_id),
                     message_content=str(message_content)
                 )
-                # The tool result for the *sender* is a simple confirmation.
-                result_content = f"Message routing to agent '{target_id}' initiated by manager."
+                # --- NEW LOGIC: INJECT SENDER'S INBOX (PHASE W) ---
+                queued_msgs = getattr(agent, 'message_inbox', [])
+                if queued_msgs:
+                    agent.message_history.extend(queued_msgs)
+                    agent.message_inbox = []
+                    
+                    result_content = f"Message successfully routed to '{target_id}'.\n\n[SYSTEM NOTIFICATION]: You just received {len(queued_msgs)} queued incoming messages! They have been appended to your active message history so you can review them."
+                else:
+                    result_content = f"Message successfully routed to '{target_id}'."
+
                 raw_result = {"status": "success", "message": result_content}
 
             # Reset agent status after handling
