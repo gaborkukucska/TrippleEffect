@@ -81,6 +81,12 @@ async def websocket_endpoint(websocket: WebSocket):
         return # Don't proceed if we can't even send the first message
 
     try:
+        # Check if Admin AI should be proactively started
+        if len(active_connections) == 1 and agent_manager_instance:
+            logger.info("First client connected, proactively starting Admin AI...")
+            # Spook a startup message. The actual prompt is handled by manager/cycle_handler depending on state
+            asyncio.create_task(agent_manager_instance.handle_user_message("[System: User connected, begin proactive startup sequence]", client_id=client_host))
+
         while True:
             # Wait for a message from the client
             data = await websocket.receive_text()

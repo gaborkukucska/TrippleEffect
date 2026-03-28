@@ -30,7 +30,7 @@ LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
 timestamp = time.strftime("%Y%m%d_%H%M%S")
-LOG_FILE = LOG_DIR / f"app_{timestamp}.log"
+LOG_FILE = LOG_DIR / f"app_{timestamp}_{os.getpid()}.log"
 
 log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()

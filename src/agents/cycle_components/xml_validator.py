@@ -83,8 +83,6 @@ class XMLValidator:
         # Check for common patterns in the malformed XML
         if "not well-formed" in error.lower():
             # Look for common malformation patterns
-            if re.search(r'```[^`]*?<\w+>[^<]*<[^>]*>[^<]*</[^>]*>[^<]*</\w+>[^`]*?```', xml_content):
-                suggestions.append("Remove markdown code fences (```) around XML tool calls")
             
             if re.search(r'<\w+>[^<]*</', xml_content):
                 suggestions.append("Ensure all XML tags are properly opened with '<' and closed with '/>'")

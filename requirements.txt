@@ -20,3 +20,5 @@ aiosqlite # <<< --- ADDED: Async driver for SQLite ---
 netifaces # Added for local network discovery
 tasklib # Added for Project Management Tool
 python-nmap # Added for nmap-based network discovery
+GitPython>=3.1.43 # Added for Git integration in FileSystemTool
+diff-match-patch>=20230430 # Added for Aider-style Search/Replace in FileSystemTool

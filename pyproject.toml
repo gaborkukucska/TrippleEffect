@@ -1,0 +1,10 @@
+[tool.pyright]
+pythonPlatform = "Linux"
+pythonVersion = "3.11"
+extraPaths = ["."]
+venvPath = "."
+
+[tool.basedpyright]
+pythonPlatform = "Linux"
+pythonVersion = "3.11"
+extraPaths = ["."]

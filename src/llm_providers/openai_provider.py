@@ -7,6 +7,7 @@ import time
 from typing import List, Dict, Any, Optional, AsyncGenerator
 
 from .base import BaseLLMProvider, MessageDict, ToolDict, ToolResultDict
+from src.config.settings import settings
 from src.agents.constants import (
     MAX_RETRIES, RETRY_DELAY_SECONDS, RETRYABLE_STATUS_CODES, RETRYABLE_EXCEPTIONS
 )
@@ -73,7 +74,9 @@ class OpenAIProvider(BaseLLMProvider):
         **kwargs 
     ) -> AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]:
         logger.info(f"Starting stream_completion with model {model}. History length: {len(messages)}.")
-        if tools or tool_choice:
+        if tools and settings.NATIVE_TOOL_CALLING_ENABLED:
+            logger.info("OpenAIProvider: Native tool calling enabled. Attaching tools.")
+        elif tools or tool_choice:
             logger.warning(f"OpenAIProvider received tools/tool_choice arguments, but they will be ignored.")
 
         response_stream = None
@@ -88,6 +91,9 @@ class OpenAIProvider(BaseLLMProvider):
         }
         if max_tokens is not None:
             api_params["max_tokens"] = max_tokens
+        
+        if settings.NATIVE_TOOL_CALLING_ENABLED and tools:
+            api_params["tools"] = tools
         
         for k, v in kwargs.items():
             if k in OPENAI_COMPLETIONS_VALID_KWARGS:
@@ -121,6 +127,21 @@ class OpenAIProvider(BaseLLMProvider):
                     logger.error(f"Max retries ({MAX_RETRIES}) reached after retryable error.") 
                     yield {"type": "error", "content": f"[OpenAIProvider Error]: Max retries reached. Last error: {type(e).__name__}", "_exception_obj": e}
                     return
+            except (openai.AuthenticationError, openai.BadRequestError, openai.PermissionDeniedError, openai.NotFoundError) as e: 
+                 error_type_name = type(e).__name__
+                 status_code = getattr(e, 'status_code', 'N/A')
+                 error_body = getattr(e, 'body', 'N/A')
+                 logger.error(f"Non-retryable OpenAI API error: {error_type_name} (Status: {status_code}), Body: {error_body}")
+                 user_message = f"[OpenAIProvider Error]: {error_type_name}"
+                 try:
+                     body_dict = json.loads(error_body) if isinstance(error_body, str) else (error_body if isinstance(error_body, dict) else {}) 
+                     error_detail = body_dict.get('error', {}).get('message') or body_dict.get('message') 
+                     if error_detail:
+                         user_message += f" - {str(error_detail)[:100]}"
+                 except Exception: 
+                     pass
+                 yield {"type": "error", "content": user_message, "_exception_obj": e}
+                 return
             except openai.APIStatusError as e:
                 last_exception = e
                 logger.warning(f"API Status Error on attempt {attempt + 1}/{MAX_RETRIES + 1}: Status={e.status_code}, Body={e.body}")
@@ -138,21 +159,6 @@ class OpenAIProvider(BaseLLMProvider):
                     except Exception: pass 
                     yield {"type": "error", "content": user_message, "_exception_obj": e}
                     return
-            except (openai.AuthenticationError, openai.BadRequestError, openai.PermissionDeniedError, openai.NotFoundError) as e: 
-                 error_type_name = type(e).__name__
-                 status_code = getattr(e, 'status_code', 'N/A')
-                 error_body = getattr(e, 'body', 'N/A')
-                 logger.error(f"Non-retryable OpenAI API error: {error_type_name} (Status: {status_code}), Body: {error_body}")
-                 user_message = f"[OpenAIProvider Error]: {error_type_name}"
-                 try:
-                     body_dict = json.loads(error_body) if isinstance(error_body, str) else (error_body if isinstance(error_body, dict) else {}) 
-                     error_detail = body_dict.get('error', {}).get('message') or body_dict.get('message') 
-                     if error_detail:
-                         user_message += f" - {str(error_detail)[:100]}"
-                 except Exception: 
-                     pass
-                 yield {"type": "error", "content": user_message, "_exception_obj": e}
-                 return
             except Exception as e: 
                 last_exception = e; logger.exception(f"Unexpected Error during API call attempt {attempt + 1}: {type(e).__name__} - {e}")
                 if attempt < MAX_RETRIES:
@@ -172,6 +178,7 @@ class OpenAIProvider(BaseLLMProvider):
 
         try:
             finish_reason = None
+            tool_calls_accumulator = {}
             try:
                 async for chunk in response_stream:
                     raw_chunk_data_for_log = None
@@ -180,6 +187,15 @@ class OpenAIProvider(BaseLLMProvider):
                          if chunk.choices and chunk.choices[0].finish_reason:
                              finish_reason = chunk.choices[0].finish_reason
                          if not delta: continue
+                         
+                         if delta.tool_calls:
+                             for tc_chunk in delta.tool_calls:
+                                 tc_index = tc_chunk.index
+                                 if tc_index not in tool_calls_accumulator:
+                                     tool_calls_accumulator[tc_index] = {"id": tc_chunk.id, "type": "function", "function": {"name": tc_chunk.function.name or "", "arguments": ""}}
+                                 if tc_chunk.function.arguments:
+                                     tool_calls_accumulator[tc_index]["function"]["arguments"] += tc_chunk.function.arguments
+
                          if delta.content:
                              yield {"type": "response_chunk", "content": delta.content}
                     except Exception as chunk_proc_err:
@@ -188,9 +204,23 @@ class OpenAIProvider(BaseLLMProvider):
                          except Exception: pass
                          yield {"type": "error", "content": f"[OpenAIProvider Error]: Error processing stream chunk - {type(chunk_proc_err).__name__}", "_exception_obj": chunk_proc_err}
                          return 
+                
+                if tool_calls_accumulator:
+                    final_tool_calls = []
+                    for idx in sorted(tool_calls_accumulator.keys()):
+                        tc = tool_calls_accumulator[idx]
+                        try:
+                            tc["function"]["arguments"] = json.loads(tc["function"]["arguments"])
+                            final_tool_calls.append(tc)
+                        except json.JSONDecodeError:
+                            logger.error(f"Failed to parse tool call arguments: {tc['function']['arguments']}")
+                    if final_tool_calls:
+                        logger.info(f"OpenAIProvider yielding native_tool_calls: {final_tool_calls}")
+                        yield {"type": "native_tool_calls", "tool_calls": final_tool_calls}
+
             except openai.APIError as stream_api_err:
                 logger.error(f"OpenAI APIError occurred during stream processing: {stream_api_err}", exc_info=True)
-                try: logger.error(f"APIError details: Status={stream_api_err.status_code}, Body={stream_api_err.body}")
+                try: logger.error(f"APIError details: Status={getattr(stream_api_err, 'status_code', 'N/A')}, Body={getattr(stream_api_err, 'body', 'N/A')}")
                 except Exception: pass
                 yield {"type": "error", "content": f"[OpenAIProvider Error]: APIError during stream - {stream_api_err}", "_exception_obj": stream_api_err}
                 return 

@@ -2,7 +2,7 @@
 <!-- # IT IS CRITICAL THAT ALL AIs and LLMs FOLLOW THE DEVELOPMENT INSTRUCTIONS IN THE `helperfiles/DEVELOPMENT_RULES.md` FILE WHEN FURTHER DEVELOPING THIS FRAMEWORK!!! -->
 # TrippleEffect Multi-Agent Framework
 
-**Version:** 2.41 <!-- Updated Version -->
+**Version:** 2.43 <!-- Updated Version -->
 
 **TrippleEffect** is an asynchronous, collaborative multi-agent framework built with Python, FastAPI, and WebSockets. It features a central **Admin AI** that initiates projects and a dedicated **Project Manager** agent per session that handles detailed task creation/tracking and agent/team creation/coordination. This framework is predominantly developed by various LLMs guided by Gabby.
 
@@ -33,6 +33,7 @@ chmod +x setup.sh run.sh
 *   **Constitutional Guardian (CG) Agent:** A specialized agent (`constitutional_guardian_ai`) reviews final textual outputs of other agents against predefined governance principles (from `governance.yaml`). If a concern is raised, the original agent's output is paused, and a UI notification is generated, allowing for user intervention (approve, stop agent, or provide feedback for retry). This feature's backend logic is implemented; UI/API for full user interaction is pending.
 *   **Advanced Agent Health Monitoring:** Enhanced Constitutional Guardian system with comprehensive agent health monitoring capabilities:
     *   **Agent Health Monitor**: Tracks agent behavior patterns, detects infinite loops, empty responses, and problematic patterns
+    *   **Cross-Cycle Duplicate Detection**: Detects when PM agents repeat identical tool calls across consecutive cycles. Serves cached results, injects escalated directives, and auto-advances the workflow after persistent duplicates.
     *   **XML Validator**: Automatic detection and recovery of malformed XML tool calls
     *   **Context Summarizer**: Manages conversation context for optimal performance with smaller models
     *   **Next Step Scheduler**: Intelligent agent reactivation and workflow continuation logic
@@ -44,6 +45,7 @@ chmod +x setup.sh run.sh
     *   **Failover:** Automatic API key cycling and model/provider failover (Local -> Free -> Paid tiers) on persistent errors during generation. Model selection during failover also respects the new Size/Performance priority.
     *   **Performance Tracking:** Records success rate and latency per model, persisting data (`data/model_performance_metrics.json`).
 *   **Tool-Based Interaction:** Agents use tools via an **XML format**. The framework can now process multiple distinct tool calls found in a single agent response; these are executed sequentially, and all results are then fed back to the agent in the next turn.
+*   **Modular Tool Help System:** Tool documentation is segmented into action-specific help sections. Agents receive a concise summary by default and can request detailed help for specific actions via `sub_action`. When tool errors occur, the relevant action's documentation is automatically injected into the error message, enabling context-aware self-correction.
 *   **Context Management:** Standardized instructions are injected, agents are guided to use file operations for large outputs. Admin AI receives current time context.
 *   **Communication Layer Separation (UI):** The user interface visually separates direct User<->Admin AI interaction from internal Admin AI<->PM<->Worker communication and system events.
 *   **Persistence:** Session state (agents, teams, histories) can be saved/loaded (filesystem). Interactions and knowledge are logged to a database (`data/trippleeffect_memory.db`).
@@ -57,6 +59,7 @@ chmod +x setup.sh run.sh
 *   **Dynamic Agent/Team Creation:** Manage agents and teams on the fly using `ManageTeamTool`.
 *   **Advanced Agent Health System:** Comprehensive monitoring and recovery capabilities:
     *   **Loop Detection**: Automatically detects and resolves infinite loops, empty responses, and stuck patterns
+    *   **Cross-Cycle Duplicate Prevention**: Detects and intercepts repeated identical tool calls across agent cycles, serving cached results and auto-advancing stalled workflows
     *   **XML Recovery**: Intelligent parsing and recovery of malformed XML tool calls
     *   **Context Optimization**: Automatic context summarization for improved performance
     *   **Workflow Continuation**: Smart reactivation logic for multi-step agent workflows
@@ -76,7 +79,7 @@ chmod +x setup.sh run.sh
     *   **Conversation State:** Focuses on user interaction, KB search/save, monitoring PM updates, and identifying new tasks. Uses `<request_state state='planning'>` to signal task identification.
     *   **Planning State:** Focuses solely on creating a plan with a `<title>` tag. Framework handles project/PM creation upon plan submission.
 *   **XML Tooling:** Agents request tool use via XML format. Available tools:
-    *   `FileSystemTool`: Read, Write, List, Mkdir, Delete (File/Empty Dir), Find/Replace in private sandbox or shared workspace.
+    *   `FileSystemTool`: Read, Write, List, Mkdir, Delete, Find/Replace, Fuzzy Search/Replace (`search_replace_block`), and Git operations (`git_commit`, `git_status`, `git_diff`) in sandbox or shared workspaces.
     *   `GitHubTool`: List Repos, List Files (Recursive), Read File content using PAT.
     *   `ManageTeamTool`: Create/Delete Agents/Teams, Assign Agents, List Agents/Teams, Get Agent Details.
     *   `SendMessageTool`: Communicate between agents within a team or with Admin AI (using exact agent IDs).
@@ -84,7 +87,7 @@ chmod +x setup.sh run.sh
     *   `SystemHelpTool`: Get current time (UTC), Search application logs.
     *   `KnowledgeBaseTool`: Save/Search distilled knowledge in the database. Now includes smarter keyword generation for saved thoughts and a `search_agent_thoughts` action.
     *   `ProjectManagementTool`: Add, list, modify, and complete project tasks (uses `tasklib` backend per session). **Assigns tasks via tags (`+agent_id`)** due to CLI UDA issues. Used primarily by the Project Manager agent.
-    *   **On-Demand Tool Help:** Implemented `get_detailed_usage()` in tools and `get_tool_info` action in `SystemHelpTool` for dynamic help retrieval.
+    *   **Modular On-Demand Tool Help:** Implemented segmented `get_detailed_usage(sub_action=...)` in all major tools (`FileSystemTool`, `ProjectManagementTool`, `ManageTeamTool`). Agents can request action-specific help (e.g., just `read` or `add_task` docs) instead of the entire tool documentation. Error messages automatically include the relevant action's help context.
 *   **Sequential Tool Execution:** Supports sequential execution of multiple tool calls from a single agent response.
 *   **Constitutional Guardian (CG) System:**
     *   Dedicated CG agent (`constitutional_guardian_ai`) reviews agent outputs against `governance.yaml` principles.
@@ -186,9 +189,14 @@ chmod +x setup.sh run.sh
 
 ## Development Status
 
-*   **Current Version:** 2.40
-*   **Completed Phases:** 1-27. (Phase 27 focused on Advanced Agent Health Monitoring, Constitutional Guardian enhancements, and comprehensive loop detection and recovery systems).
-*   **Recent Enhancements (v2.30 - v2.40):** 
+*   **Current Version:** 2.42
+*   **Completed Phases:** 1-27, plus incremental improvements. (Phase 27 focused on Advanced Agent Health Monitoring, Constitutional Guardian enhancements, and comprehensive loop detection and recovery systems).
+*   **Recent Enhancements (v2.40 - v2.43):**
+    *   **FileSystemTool Upgrades (v2.43):** Integrated `GitPython` and `diff-match-patch` for robust LLM-friendly file edits (`search_replace_block`) and native Git repository awareness (`git_status`, `git_commit`, `git_diff`).
+    *   **Modular Tool Help System (v2.42):** Refactored `get_detailed_usage()` across `FileSystemTool`, `ProjectManagementTool`, and `ManageTeamTool` to support `sub_action` parameter. Agents now receive concise action summaries by default and can request detailed, action-specific documentation. Error messages automatically include contextual help for the failed action.
+    *   **Enhanced Error Handler:** `ToolErrorHandler` now accepts and formats `action_help` in error responses, enabling agents to self-correct with targeted documentation.
+    *   **New FileSystemTool Actions:** Added `append`, `insert_lines`, and `replace_lines` for granular file manipulation.
+*   **Previous Enhancements (v2.30 - v2.40):** 
     *   **Advanced Agent Health Monitoring System:** Comprehensive enhancement to the Constitutional Guardian system with intelligent agent health monitoring, loop detection, and recovery capabilities.
     *   **Cycle Components Architecture:** Modular agent cycle management system including:
         *   `AgentHealthMonitor`: Tracks behavior patterns, detects problematic loops, and implements recovery strategies
@@ -208,7 +216,7 @@ chmod +x setup.sh run.sh
     *   Governance Layer: Principles loaded from `governance.yaml`; global prompt injection removed in favor of CG-specific use.
     *   Comprehensive unit test coverage for new features and enhancements.
 *   **Current Phase (28 Target Completion):** Advanced Memory & Learning system development, proactive behavior implementation, and federated communication foundations.
-*   **Future Plans:** Proactive Behavior (Phase 28), Federated Communication (Phase 29+), New Admin tools, LiteLLM provider, advanced collaboration, resource limits, DB/Vector Stores, **Full transition to on-demand tool help**.
+*   **Future Plans:** Proactive Behavior (Phase 28), Federated Communication (Phase 29+), New Admin tools, LiteLLM provider, advanced collaboration, resource limits, DB/Vector Stores.
 
 See `helperfiles/PROJECT_PLAN.md` for detailed phase information.
 

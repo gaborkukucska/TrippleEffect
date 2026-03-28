@@ -33,18 +33,19 @@ class OllamaProvider(BaseLLMProvider):
     Creates a new ClientSession for each request to ensure clean state.
     """
 
-    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, **kwargs):
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, model_registry=None, **kwargs):
         self.base_url = (base_url or DEFAULT_OLLAMA_BASE_URL).rstrip('/')
         logger.info(f"OllamaProvider initialized. Using Base URL: {self.base_url}")
 
-        if api_key: logger.warning("OllamaProvider Warning: API key provided but not used.")
+        if api_key and api_key != 'ollama': logger.warning("OllamaProvider Warning: API key provided but not used.")
+        self._model_registry = model_registry  # Reference to ModelRegistry for per-model metadata lookup
         self._session_timeout_config = kwargs.pop('timeout', None) # Pop before logging ignored, as it's handled
         if kwargs: # Log any other unexpected kwargs passed to constructor
             logger.warning(f"OllamaProvider __init__: Ignoring unexpected kwargs: {kwargs}")
             
         self.streaming_mode = True 
         mode_str = "Streaming"
-        logger.info(f"OllamaProvider initialized with aiohttp. Effective Base URL: {self.base_url}. Mode: {mode_str}. Sessions created per-request.")
+        logger.info(f"OllamaProvider initialized with aiohttp. Effective Base URL: {self.base_url}. Mode: {mode_str}. Sessions created per-request. ModelRegistry: {'available' if model_registry else 'not provided'}.")
 
     async def _create_request_session(self) -> aiohttp.ClientSession:
         if isinstance(self._session_timeout_config, aiohttp.ClientTimeout):
@@ -133,19 +134,80 @@ class OllamaProvider(BaseLLMProvider):
         if max_tokens is not None:
             valid_options["num_predict"] = max_tokens 
             logger.debug(f"Setting Ollama num_predict (max_tokens) to: {max_tokens}")
-        if "num_ctx" not in valid_options and "num_ctx" not in kwargs: # Check original kwargs too
-            valid_options["num_ctx"] = 8192 # Default context size
-            logger.debug("Added default context size 'num_ctx: 8192' to Ollama options.")
-        if "stop" not in valid_options and "stop" not in kwargs: # Check original kwargs too
-            valid_options["stop"] = ["<|eot_id|>"] # Common stop token for newer models
-            logger.debug("Added default stop token '<|eot_id|>' to Ollama options.")
+        # --- Per-model metadata lookup from ModelRegistry ---
+        model_info = None
+        if self._model_registry and hasattr(self._model_registry, 'get_model_info'):
+            model_info = self._model_registry.get_model_info(model)
+            if model_info:
+                logger.debug(f"OllamaProvider: Found model metadata for '{model}': family={model_info.get('family')}, "
+                             f"num_ctx={model_info.get('model_num_ctx')}, stop_tokens={model_info.get('model_stop_tokens')}, "
+                             f"template_preview={repr(str(model_info.get('model_template', ''))[:60])}")
+            else:
+                logger.debug(f"OllamaProvider: No model metadata found in registry for '{model}'.")
+        
+        # --- Set num_ctx: use model's native value, then fallback to 8192 ---
+        if "num_ctx" not in valid_options and "num_ctx" not in kwargs:
+            if model_info and model_info.get('model_num_ctx'):
+                native_num_ctx = model_info['model_num_ctx']
+                capped_num_ctx = min(native_num_ctx, getattr(settings, 'OLLAMA_MAX_CTX_CAP', 32768))
+                valid_options["num_ctx"] = capped_num_ctx
+                logger.info(f"OllamaProvider: Using model-native num_ctx={native_num_ctx} (capped to {capped_num_ctx}) for '{model}'.")
+            else:
+                valid_options["num_ctx"] = getattr(settings, 'OLLAMA_MAX_CTX_CAP', 8192)  # Conservative fallback when no metadata available
+                logger.debug(f"OllamaProvider: No model-specific num_ctx found for '{model}', using default {valid_options['num_ctx']}.")
+        
+        # --- Set stop tokens: use model's native tokens, do NOT inject wrong defaults ---
+        if "stop" not in valid_options and "stop" not in kwargs:
+            if model_info and model_info.get('model_stop_tokens'):
+                native_stops = model_info['model_stop_tokens']
+                valid_options["stop"] = native_stops
+                logger.info(f"OllamaProvider: Using model-native stop tokens {native_stops} for '{model}'.")
+            else:
+                # Do NOT inject any stop token — let Ollama use the model's built-in template stop handling
+                logger.debug(f"OllamaProvider: No model-specific stop tokens found for '{model}'. "
+                             f"Relying on Ollama's built-in template stop handling (no stop token injected).")
+        
+        # --- Warn about raw templates ---
+        if model_info and model_info.get('model_template'):
+            stripped_template = model_info['model_template'].strip()
+            if stripped_template in ('{{ .Prompt }}', '{{ .Response }}', '{{ .System }}{{ .Prompt }}'):
+                logger.debug(f"OllamaProvider: Model '{model}' has a RAW template ('{stripped_template}'). "
+                               f"Multi-turn /api/chat conversations may not be formatted correctly. "
+                               f"Consider updating the model's Modelfile with a proper chat template.")
 
-        ignored_options = {k: v for k, v in raw_options.items() if k not in KNOWN_OLLAMA_OPTIONS and k != "stop"} # 'stop' handled above
+        ignored_options = {k: v for k, v in raw_options.items() if k not in KNOWN_OLLAMA_OPTIONS and k != "stop"}
         if ignored_options: logger.warning(f"OllamaProvider ignoring unknown options: {ignored_options}")
 
         messages_for_ollama_payload = []
+        first_system_seen = False
+        
+        # Models that need tool/system messages mapped to 'user' role due to their chat 
+        # templates or Ollama's stripping behavior when native tools are disabled.
+        models_needing_user_workaround = ["llama", "qwen", "mistral", "gemma", "phi", "deepseek"]
+        needs_user_workaround = any(m in model.lower() for m in models_needing_user_workaround)
+        
         for msg in messages:
             role = msg.get("role")
+            
+            if role == "system":
+                if first_system_seen:
+                    if needs_user_workaround:
+                        role = "user"
+                        logger.debug(
+                            f"OllamaProvider: Converting mid-conversation system message to 'user' role "
+                            f"for model '{model}'. Content preview: {str(msg.get('content', ''))[:80]}..."
+                        )
+                    else:
+                        logger.debug(f"OllamaProvider: Keeping mid-conversation system role for model '{model}'.")
+                else:
+                    first_system_seen = True
+            elif role == "tool":
+                if needs_user_workaround:
+                    role = "user"
+                    logger.debug(f"OllamaProvider: Converting 'tool' role message to 'user' role for model '{model}'.")
+                else:
+                    logger.debug(f"OllamaProvider: Keeping 'tool' role for model '{model}'.")
+
             content = msg.get("content")
             processed_content = "" 
             if content is not None:
@@ -158,19 +220,25 @@ class OllamaProvider(BaseLLMProvider):
                         logger.warning(f"Message content for role '{role}' was not a string ({type(content)}) and could not be JSON serialized. Converted to string.")
                 else:
                     processed_content = content
+            
+            # If this is a converted tool message, explicitly format it so the LLM knows what it is.
+            if msg.get("role") == "tool" and role == "user":
+                tool_name = msg.get("name", "unknown")
+                processed_content = f"--- Tool Response ({tool_name}) ---\n{processed_content}\n-----------------------"
+
             msg_to_send: Dict[str, Any] = {"role": role, "content": processed_content}
-            if role == "assistant" and msg.get("tool_calls"):
-                tc = msg.get("tool_calls")
-                if isinstance(tc, list) and all(isinstance(t, dict) for t in tc):
-                    msg_to_send["tool_calls"] = tc
-                else:
-                    logger.warning(f"tool_calls for assistant message is not in the expected format (list of dicts): {tc}")
-            if role == "tool":
-                if msg.get("tool_call_id"):
-                    msg_to_send["tool_call_id"] = msg.get("tool_call_id")
+            # We explicitly DO NOT send `tool_calls` because TrippleEffect relies on XML-in-content 
+            # and sending native tool_calls without the tools parameter confuses Ollama.
             messages_for_ollama_payload.append(msg_to_send)
 
         payload = { "model": model, "messages": messages_for_ollama_payload, "stream": self.streaming_mode, "options": valid_options }
+
+        use_streaming_mode = self.streaming_mode
+        if settings.NATIVE_TOOL_CALLING_ENABLED and tools:
+            payload["tools"] = tools
+            payload["stream"] = False  # Disable streaming for tool calls to ensure cleaner parsing
+            use_streaming_mode = False
+            logger.info("OllamaProvider: Native tool calling enabled. Attaching tools and forcing stream=False.")
         
         try:
             full_payload_json_str_for_debug = json.dumps(payload, indent=2)
@@ -308,7 +376,7 @@ class OllamaProvider(BaseLLMProvider):
             stream_error_occurred = False
             stream_error_obj = None
             try:
-                if self.streaming_mode:
+                if use_streaming_mode:
                     logger.debug("Starting streaming using response.content.iter_any()")
                     async for chunk in response.content.iter_any():
                         if not chunk: continue
@@ -391,9 +459,29 @@ class OllamaProvider(BaseLLMProvider):
                              stream_error_obj = ValueError(f"[Ollama Error]: {error_msg}")
                              yield {"type": "error", "content": f"[Ollama Error]: {error_msg}", "_exception_obj": stream_error_obj}
                          elif response_data.get("message") and isinstance(response_data["message"], dict):
-                             full_content = response_data["message"].get("content");
-                             if full_content: logger.info(f"Non-streaming len: {len(full_content)}"); yield {"type": "response_chunk", "content": full_content}
-                             else: logger.warning("Non-streaming message content empty.")
+                             msg = response_data["message"]
+                             tool_calls = msg.get("tool_calls")
+                             full_content = msg.get("content", "")
+                             
+                             if tool_calls:
+                                 logger.info(f"Ollama returned native tool_calls: {tool_calls}")
+                                 yield {"type": "native_tool_calls", "tool_calls": tool_calls}
+                             elif full_content:
+                                 # Fallback: check if content is a JSON string representing a tool call (Qwen2.5 behavior)
+                                 try:
+                                     parsed_content = json.loads(full_content)
+                                     if isinstance(parsed_content, dict) and "name" in parsed_content and "arguments" in parsed_content:
+                                         logger.info(f"Ollama (Qwen workaround) parsed raw JSON content as tool_call: {parsed_content}")
+                                         yield {"type": "native_tool_calls", "tool_calls": [{"function": parsed_content}]}
+                                     else:
+                                         logger.info(f"Non-streaming len: {len(full_content)}")
+                                         yield {"type": "response_chunk", "content": full_content}
+                                 except json.JSONDecodeError:
+                                     logger.info(f"Non-streaming len: {len(full_content)}")
+                                     yield {"type": "response_chunk", "content": full_content}
+                             else:
+                                 logger.warning("Non-streaming message content empty.")
+
                              if response_data.get("done", False): logger.debug("Non-streaming done=true.")
                              else: logger.warning("Non-streaming missing done=true.")
                          else:

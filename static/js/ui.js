@@ -435,5 +435,80 @@ export const displaySessionStatus = (message, isSuccess) => {
     }, 5000); // Hide after 5 seconds
 };
 
+/**
+ * Updates or creates a loading indicator for an active agent.
+ */
+export const updateAgentLoadingIndicator = (agentId, status, persona) => {
+    const isChatAgent = agentId === 'admin_ai';
+    const targetAreaId = isChatAgent ? 'conversation-area' : 'internal-comms-area';
+    const messageArea = DOM[targetAreaId === 'conversation-area' ? 'conversationArea' : 'internalCommsArea'];
+    
+    if (!messageArea) return;
+
+    const indicatorId = `loading-indicator-${agentId}`;
+    let indicatorElement = document.getElementById(indicatorId);
+
+    // Define states that indicate the agent is resting and shouldn't have a loading bubble
+    const restingStates = ['idle', 'worker_wait', 'pm_standby', 'admin_standby', 'deleted'];
+    const isActive = status && !restingStates.includes(status.toLowerCase());
+
+    if (isActive) {
+        if (!indicatorElement) {
+            indicatorElement = document.createElement('div');
+            indicatorElement.id = indicatorId;
+            indicatorElement.classList.add('message', 'status', 'loading-indicator');
+            
+            const contentSpan = document.createElement('span');
+            contentSpan.classList.add('message-content');
+            contentSpan.innerHTML = `<i>${escapeHTML(status)}</i>`;
+            
+            if (isChatAgent) {
+                indicatorElement.classList.add('agent_response');
+                indicatorElement.innerHTML = `<span class="agent-label">${escapeHTML(persona || 'System')}:</span>`;
+                contentSpan.style.opacity = '0.6';
+                indicatorElement.appendChild(contentSpan);
+            } else {
+                indicatorElement.classList.add(`agent-border-${agentId.split('_')[0] || agentId}`);
+                indicatorElement.innerHTML = `<div class="agent-label">${escapeHTML(persona || agentId)}:</div>`;
+                const contentWrapper = document.createElement('div');
+                contentWrapper.classList.add('message-content');
+                contentWrapper.style.opacity = '0.6';
+                contentWrapper.innerHTML = `<i>${escapeHTML(status)}</i>`;
+                indicatorElement.appendChild(contentWrapper);
+            }
+            
+            messageArea.appendChild(indicatorElement);
+            
+            // Scroll to bottom if already near bottom
+            const isScrolledNearBottom = messageArea.scrollHeight - messageArea.scrollTop - messageArea.clientHeight < 150;
+            if (isScrolledNearBottom) {
+                messageArea.scrollTop = messageArea.scrollHeight;
+            }
+        } else {
+            // Update text and move to bottom if it exists
+            const contentEl = isChatAgent ? indicatorElement.querySelector('.message-content') : indicatorElement.querySelectorAll('.message-content')[indicatorElement.querySelectorAll('.message-content').length - 1];
+            if (contentEl) {
+                contentEl.innerHTML = `<i>${escapeHTML(status)}</i>`;
+            }
+            // Move it to the very bottom
+            messageArea.appendChild(indicatorElement);
+        }
+    } else {
+        if (indicatorElement) {
+            indicatorElement.remove();
+        }
+    }
+};
+
+/**
+ * Specifically clears a loading indicator, e.g. when streaming starts.
+ */
+export const clearAgentLoadingIndicator = (agentId) => {
+    const indicatorId = `loading-indicator-${agentId}`;
+    const indicatorElement = document.getElementById(indicatorId);
+    if (indicatorElement) {
+        indicatorElement.remove();
+    }
+};
 
 console.log("Frontend UI module loaded.");

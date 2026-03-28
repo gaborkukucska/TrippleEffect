@@ -4,29 +4,32 @@ import json
 import logging
 import time
 import re
-from typing import TYPE_CHECKING, Dict, Any, Optional, List
+from typing import TYPE_CHECKING, Dict, Any, Optional, List, Tuple
 
-from src.llm_providers.base import ToolResultDict, MessageDict
-from src.agents.core import Agent
-from src.config.settings import settings
+from src.llm_providers.base import ToolResultDict, MessageDict  # type: ignore[import]
+from src.agents.core import Agent  # type: ignore[import]
+from src.config.settings import settings  # type: ignore[import]
 
-from src.agents.constants import (
+from src.agents.constants import (  # type: ignore[import]
     AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_PLANNING,
     AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_AWAITING_TOOL,
     AGENT_STATUS_AWAITING_CG_REVIEW, AGENT_STATUS_AWAITING_USER_REVIEW_CG, # Added for CG
     AGENT_STATUS_ERROR, AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER,
-    ADMIN_STATE_PLANNING, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STARTUP,
+    ADMIN_STATE_PLANNING, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STARTUP, ADMIN_STATE_WORK, ADMIN_STATE_STANDBY,
     PM_STATE_STARTUP, PM_STATE_MANAGE, PM_STATE_WORK, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_STANDBY,
-    WORKER_STATE_WAIT, REQUEST_STATE_TAG_PATTERN,
+    PM_STATE_REPORT_CHECK,
+    WORKER_STATE_WAIT, WORKER_STATE_WORK, WORKER_STATE_REPORT, WORKER_STATE_DECOMPOSE,
+    REQUEST_STATE_TAG_PATTERN,
     CONSTITUTIONAL_GUARDIAN_AGENT_ID, # Added for CG
     BOOTSTRAP_AGENT_ID
 )
 
 # Import for keyword extraction
-from src.utils.text_utils import extract_keywords_from_text
-from src.tools.knowledge_base import KnowledgeBaseTool # Assuming this is the correct tool name
+from src.utils.text_utils import extract_keywords_from_text  # type: ignore[import]
+from src.tools.knowledge_base import KnowledgeBaseTool  # type: ignore[import]
+from src.tools.error_handler import tool_error_handler, ErrorType  # type: ignore[import]
 
-from src.agents.cycle_components import (
+from src.agents.cycle_components import (  # type: ignore[import]
     CycleContext,
     PromptAssembler,
     LLMCaller, 
@@ -34,32 +37,34 @@ from src.agents.cycle_components import (
     NextStepScheduler,
     AgentHealthMonitor
 )
-from src.agents.cycle_components.xml_validator import XMLValidator
-from src.agents.cycle_components.context_summarizer import ContextSummarizer
+from src.agents.cycle_components.xml_validator import XMLValidator  # type: ignore[import]
+from src.agents.cycle_components.context_summarizer import ContextSummarizer  # type: ignore[import]
 
-from src.workflows.base import WorkflowResult 
+from src.workflows.base import WorkflowResult  # type: ignore[import]
 
 if TYPE_CHECKING:
-    from src.agents.manager import AgentManager
-    from src.agents.interaction_handler import AgentInteractionHandler
+    from src.agents.manager import AgentManager  # type: ignore[import]
+    from src.agents.interaction_handler import AgentInteractionHandler  # type: ignore[import]
 
 
+import logging
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 class AgentCycleHandler:
     def __init__(self, manager: 'AgentManager', interaction_handler: 'AgentInteractionHandler'):
-        self._manager = manager
-        self._interaction_handler = interaction_handler
+        self._manager: Any = manager
+        self._interaction_handler: Any = interaction_handler
         
-        self._prompt_assembler = PromptAssembler(self._manager)
-        self._outcome_determiner = CycleOutcomeDeterminer()
-        self._next_step_scheduler = NextStepScheduler(self._manager)
-        self._xml_validator = XMLValidator()
-        self._context_summarizer = ContextSummarizer(self._manager)
-        self._health_monitor = AgentHealthMonitor(self._manager)
+        self._prompt_assembler: Any = PromptAssembler(self._manager)
+        self._outcome_determiner: Any = CycleOutcomeDeterminer()
+        self._next_step_scheduler: Any = NextStepScheduler(self._manager)
+        self._xml_validator: Any = XMLValidator()
+        self._context_summarizer: Any = ContextSummarizer(self._manager)
+        self._health_monitor: Any = AgentHealthMonitor(self._manager)
         
-        self.request_state_pattern = REQUEST_STATE_TAG_PATTERN 
-        self._tool_execution_stats = {"total_calls": 0, "successful_calls": 0, "failed_calls": 0}
+        self.request_state_pattern: Any = REQUEST_STATE_TAG_PATTERN 
+        self._tool_execution_stats: Dict[str, int] = {"total_calls": 0, "successful_calls": 0, "failed_calls": 0}
         logger.info("AgentCycleHandler initialized with enhanced tool execution monitoring, XML validation, context summarization, and agent health monitoring.")
 
     def _report_tool_execution_stats(self):
@@ -217,7 +222,7 @@ class AgentCycleHandler:
                     {"role": "system", "content": formatted_cg_system_prompt},
                     {"role": "system", "content": f"---\nText for Constitutional Review:\n---\n{original_agent_final_text}"}
                 ]
-                max_tokens_for_verdict = 250
+                max_tokens_for_verdict = getattr(settings, 'CG_MAX_TOKENS', 4000)
 
                 try: # Inner try for LLM call and parsing (original try...except block content)
                     logger.info(f"Requesting CG verdict via stream_completion for text: '{original_agent_final_text[:100]}...'")
@@ -300,12 +305,16 @@ class AgentCycleHandler:
                                     verdict_to_return = OK_TAG
                                 else: # No implicit OK, and no other pattern matched
                                     verdict_to_return = generate_enhanced_error_msg(stripped_verdict, "malformed_inconclusive")
-                            else: # Empty stripped_verdict
-                                verdict_to_return = generate_enhanced_error_msg("", "empty_response")
+                            else: # Empty stripped_verdict — fail-open to prevent indefinite agent stalls
+                                logger.warning("CG returned empty verdict. Failing open (treating as <OK/>) to prevent agent stall.")
+                                verdict_to_return = OK_TAG
+                except Exception as eval_e:
+                    logger.error(f"Error during Constitutional Guardian evaluation: {eval_e}", exc_info=True)
+                    verdict_to_return = "<OK/>" # Fail-open in case of evaluation error
 
-                except Exception as e:
-                    logger.error(f"Error during Constitutional Guardian LLM call or verdict parsing: {e}", exc_info=True)
-                    verdict_to_return = "Constitutional Guardian encountered an error during verdict processing."
+        except Exception as outer_e:
+            logger.error(f"Critical error setting up Constitutional Guardian evaluation: {outer_e}", exc_info=True)
+            verdict_to_return = "<OK/>" # Fail-open in case of critical setup error
 
         finally: # Outer finally
             if cg_agent:
@@ -316,6 +325,12 @@ class AgentCycleHandler:
                 else:
                     logger.error("AgentManager instance not found or lacks push_agent_status_update, cannot revert CG status for UI.")
 
+        # Ensure verdict_to_return is ALWAYS assigned before returning
+        if verdict_to_return is None:
+            logger.error("verdict_to_return was None at the end of CG evaluation. Defaulting to fail-open (<OK/>).")
+            verdict_to_return = "<OK/>"
+
+        logger.info(f"Final CG evaluation verdict being returned: '{verdict_to_return[:50]}...'")
         return verdict_to_return
 
     def _generate_empty_response_guidance(self, agent: 'Agent') -> str:
@@ -329,7 +344,7 @@ class AgentCycleHandler:
                     last_tool_call = msg["tool_calls"][0]
                     break
 
-            if last_tool_call:
+            if last_tool_call and isinstance(last_tool_call, dict):
                 tool_name = last_tool_call.get("name")
                 guidance = (
                     f"Your last action was an attempt to use the '{tool_name}' tool. "
@@ -378,13 +393,139 @@ class AgentCycleHandler:
             "**Step 2: Analyze and Test.**\n"
             "After you receive the list, pick ONE tool from the list that you have not recently used and test one of its actions. "
             "Use the `get_info` action of the `tool_information` tool first if you are unsure how to use it.\n\n"
+            "**CRITICAL REMINDERS:**\n"
+            "1. Execute ONLY ONE tool call per response to avoid overwhelming yourself\n"
+            "2. DO NOT repeat the same tool with identical parameters\n"
+            "3. After testing a tool, provide a brief summary of what you learned\n"
+            "4. When you have completed testing, transition to conversation state with: <request_state state='conversation'/>\n\n"
             f"**For context, here is a summary of tools currently available to you:**\n{tool_list_str}"
         )
         return task_message
 
-    # Removed _request_cg_review method as its functionality is integrated into _get_cg_verdict and run_cycle
 
-    async def run_cycle(self, agent: Agent, retry_count: int = 0):
+    def _has_too_many_recent_system_messages(self, agent: Agent, threshold: int = 3, lookback: int = 5) -> bool:
+        """Check if too many recent system messages would flood the LLM context."""
+        if not agent.message_history:
+            return False
+        recent = agent.message_history[-lookback:]
+        system_count = sum(1 for m in recent if m.get("role") == "system")
+        return system_count >= threshold
+
+    def _deduplicate_pm_framework_messages(self, agent: Agent) -> None:
+        """
+        Remove old [Framework System Message] entries from PM agent history,
+        keeping only the most recent one. This prevents message accumulation
+        that confuses the LLM into re-executing already-completed actions
+        (e.g. creating duplicate agents for the same role).
+
+        Matches all framework message variants:
+        - [Framework System Message]
+        - [Framework System Message - DUPLICATE BLOCKED]
+        - [Framework System Message - AUTO-ADVANCE]
+
+        NOTE: Also catches role='user' messages starting with these prefixes,
+        because pm_kickoff_workflow injects the kickoff plan directive as a
+        'user' message starting with '[Framework System Message]'. Without this,
+        that message persists across cycles and appears duplicated alongside the
+        newer 'system' role framework messages added by cycle_handler.
+        """
+        if not agent.message_history:
+            return
+
+        # Use a broad prefix to catch all variants:
+        # "[Framework System Message]", "[Framework System Message - DUPLICATE BLOCKED]", etc.
+        # Also catch Constitutional Guardian messages to prevent them from accumulating
+        FRAMEWORK_MSG_PREFIXES = ["[Framework System Message", "[Constitutional Guardian"]
+        # Find indices of all framework and CG messages (both 'system' and 'user' roles)
+        framework_msg_indices: List[int] = []
+        for i, msg in enumerate(agent.message_history):
+            role = msg.get("role")
+            if role in ("system", "user"):  # Check both roles — kickoff directive uses 'user'
+                content = msg.get("content", "")
+                if any(content.startswith(prefix) for prefix in FRAMEWORK_MSG_PREFIXES):
+                    # DO NOT delete if it contains the Master Kickoff Plan or Tool Usage Info
+                    if "**MASTER KICKOFF PLAN SUMMARY**" in content or "**create_agent Tool Usage:**" in content:
+                        continue
+                    framework_msg_indices.append(i)
+
+        # Remove ALL previous framework messages, because a new,
+        # updated one will be injected immediately after this is called.
+        if len(framework_msg_indices) > 0:
+            indices_to_remove = set(framework_msg_indices)
+            original_len = len(agent.message_history)
+            agent.message_history = [
+                msg for i, msg in enumerate(agent.message_history)
+                if i not in indices_to_remove
+            ]
+            removed_count = original_len - len(agent.message_history)
+            logger.info(
+                f"CycleHandler: Deduplicated PM '{agent.agent_id}' history - "
+                f"removed {removed_count} old framework messages, "
+                f"history reduced from {original_len} to {len(agent.message_history)} messages."
+            )
+
+    def _detect_cross_cycle_duplicate_tool_call(self, agent: Agent, tool_name: str, tool_args: Dict[str, Any]) -> Optional[str]:
+        """
+        Detect if a tool call with the same name and arguments already succeeded
+        in a previous cycle (i.e., it exists as an assistant+tool pair in history).
+        
+        Returns the content of the previous successful tool result if a duplicate
+        is found, or None if this is a fresh call.
+        """
+        if not agent.message_history:
+            return None
+        
+        # Create signature for the current call
+        current_sig = (tool_name, json.dumps(tool_args, sort_keys=True))
+        
+        def _is_equivalent(sig1: Tuple[str, str], sig2: Tuple[str, str]) -> bool:
+            if sig1 == sig2:
+                return True
+            tname1, targs1_json = sig1
+            tname2, targs2_json = sig2
+            if tname1 != tname2:
+                return False
+            if tname1 == "manage_team":
+                try:
+                    args1 = json.loads(targs1_json)
+                    args2 = json.loads(targs2_json)
+                    if args1.get("action") == "create_agent" and args2.get("action") == "create_agent":
+                        p1 = args1.get("persona") or args1.get("role")
+                        p2 = args2.get("persona") or args2.get("role")
+                        if p1 and p2 and str(p1).strip().lower() == str(p2).strip().lower():
+                            return True
+                except Exception:
+                    pass
+            return False
+
+        # Scan history in reverse for assistant messages with matching tool calls
+        for i in range(len(agent.message_history) - 1, -1, -1):
+            msg = agent.message_history[i]
+            if msg.get("role") != "assistant":
+                continue
+            
+            for tc in msg.get("tool_calls", []):
+                prev_sig = (tc.get("name"), json.dumps(tc.get("arguments", {}), sort_keys=True))
+                if _is_equivalent(prev_sig, current_sig):
+                    # Found a matching call - now look for its successful tool result
+                    tc_id = tc.get("id")
+                    for j in range(i + 1, len(agent.message_history)):
+                        result_msg = agent.message_history[j]
+                        if (result_msg.get("role") == "tool" and
+                            result_msg.get("tool_call_id") == tc_id):
+                            result_content = result_msg.get("content", "")
+                            # Check if the result was successful
+                            try:
+                                result_data = json.loads(result_content)
+                                if isinstance(result_data, dict) and result_data.get("status") == "error":
+                                    continue  # Previous call failed, allow retry
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+                            return result_content  # Found a successful duplicate
+        
+        return None
+
+    async def run_cycle(self, agent: Agent, retry_count: int = 0): # pyright: ignore[reportGeneralTypeIssues]
         logger.critical(f"!!! CycleHandler: run_cycle TASK STARTED for Agent '{agent.agent_id}' (Retry: {retry_count}) !!!")
         
         # CRITICAL FIX: Check if agent is awaiting Constitutional Guardian review before proceeding
@@ -453,13 +594,18 @@ class AgentCycleHandler:
             # This set is more about the current provider selection than the entire cycle handler attempt.
             if hasattr(agent, '_failed_models_this_cycle'):
                 agent._failed_models_this_cycle.add(context.current_model_key_for_tracking)
-            else:
-                agent._failed_models_this_cycle = {context.current_model_key_for_tracking}
+            agent._failed_models_this_cycle = {context.current_model_key_for_tracking}
 
             agent_generator = None # Ensure generator is reset for each iteration of the while True loop
+            thought_content_for_history = None # <<<< MODIFICATION: Initialize var to hold thought
+            cycle_text_content = "" # <<<< FIX: Track text buffer before it gets cleared
 
             try: # This try block is for one pass of LLM call and its event processing
                 await self._prompt_assembler.prepare_llm_call_data(context) # Ensures history_for_call is fresh
+
+                # (Proactive start-of-cycle deduplication was removed from here because it
+                # prematurely erased the tool usage instructions and kickoff plan generated
+                # in the previous turn before the LLM could read them.)
                 
                 # Check if context summarization is needed for small local LLMs
                 try:
@@ -468,18 +614,45 @@ class AgentCycleHandler:
                     # Get max tokens from agent's LLM provider (default to 8000 if not available)
                     max_tokens = getattr(agent.llm_provider, 'max_tokens', 8000) if agent.llm_provider else 8000
                     
-                    if await self._context_summarizer.should_summarize_context(agent.agent_id, estimated_tokens, max_tokens):
+                    # Look up model's native num_ctx for dynamic threshold
+                    model_num_ctx = None
+                    if hasattr(self._manager, 'model_registry') and self._manager.model_registry:
+                        _model_info = self._manager.model_registry.get_model_info(agent.model)
+                        if _model_info:
+                            model_num_ctx = _model_info.get('model_num_ctx')
+                    
+                    if await self._context_summarizer.should_summarize_context(agent.agent_id, estimated_tokens, max_tokens, message_history=context.history_for_call, model_num_ctx=model_num_ctx):
                         logger.info(f"CycleHandler: Context summarization needed for agent '{agent.agent_id}' due to token limits")
                         try:
+                            # CRITICAL FIX: Preserve context anchors for Admin AI work state
+                            context_anchors = []
+                            if agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_WORK:
+                                # Preserve the original task description and recent meaningful interactions
+                                for msg in reversed(agent.message_history[-10:]):  # Look at last 10 messages
+                                    if msg.get("role") == "user" or (msg.get("role") == "system" and "current task" in msg.get("content", "").lower()):
+                                        context_anchors.append(msg)
+                                        if len(context_anchors) >= 3:  # Preserve up to 3 anchor messages
+                                            break
+                                context_anchors.reverse()  # Restore chronological order
+                                logger.info(f"CycleHandler: Preserved {len(context_anchors)} context anchors for Admin AI '{agent.agent_id}'")
+                            
                             success, summarized_context = await self._context_summarizer.summarize_agent_context(
                                 agent.agent_id, context.history_for_call
                             )
                             if success and summarized_context:
-                                context.history_for_call = summarized_context
-                                # CRITICAL FIX: Also update the agent's persistent message history
-                                # This prevents repeated summarization and maintains context continuity
-                                agent.message_history = summarized_context.copy()
-                                logger.info(f"CycleHandler: Context successfully summarized for agent '{agent.agent_id}', reduced to {len(summarized_context)} messages")
+                                summarized_context_list: List[Any] = list(summarized_context)
+                                # CRITICAL FIX: Insert context anchors into summarized context
+                                if context_anchors:
+                                    # Insert anchors at the appropriate position (before the last few messages)
+                                    insert_point = max(1, len(summarized_context_list) - 3)  # Keep system prompt at start
+                                    for i, anchor in enumerate(context_anchors):
+                                        summarized_context_list.insert(insert_point + i, anchor)
+                                    logger.info(f"CycleHandler: Inserted {len(context_anchors)} context anchors into summarized context")
+                                
+                                context.history_for_call = summarized_context_list
+                                # CRITICAL FIX: Also update the agent's persistent message history with anchors
+                                agent.message_history = list(summarized_context_list)
+                                logger.info(f"CycleHandler: Context successfully summarized for agent '{agent.agent_id}', reduced to {len(summarized_context_list)} messages")
                                 logger.critical(f"CycleHandler: PERSISTENT HISTORY UPDATED for agent '{agent.agent_id}' - new persistent length: {len(agent.message_history)}")
                                 
                                 # Notify UI about context summarization
@@ -487,7 +660,8 @@ class AgentCycleHandler:
                                     "type": "context_summarization",
                                     "agent_id": agent.agent_id,
                                     "original_message_count": len(agent.message_history),
-                                    "summarized_message_count": len(summarized_context),
+                                    "summarized_message_count": len(summarized_context_list),
+                                    "context_anchors_preserved": len(context_anchors),
                                     "estimated_token_reduction": "50-75%"
                                 })
                         except Exception as summarization_error:
@@ -503,6 +677,10 @@ class AgentCycleHandler:
 
                 llm_stream_ended_cleanly = True # Flag to see if the event loop finished or broke early
                 async for event in agent_generator:
+                    current_buffer = getattr(agent, 'text_buffer', '')
+                    if current_buffer:
+                        cycle_text_content = current_buffer
+                        
                     event_type = event.get("type")
                     logger.debug(f"CycleHandler '{agent.agent_id}': Received Event from Agent.process_message: Type='{event_type}', Keys={list(event.keys())}")
 
@@ -553,13 +731,28 @@ class AgentCycleHandler:
 
                         if workflow_result.tasks_to_schedule:
                             for task_agent, task_retry_count in workflow_result.tasks_to_schedule:
-                                if task_agent and isinstance(task_agent, Agent): await self._manager.schedule_cycle(task_agent, task_retry_count)
+                                if task_agent and isinstance(task_agent, Agent):
+                                    if task_agent.agent_id == agent.agent_id:
+                                        # CRITICAL FIX: Do NOT call schedule_cycle for the current agent inline.
+                                        # Doing so fires a concurrent asyncio task that starts a new LLM call
+                                        # while this cycle's finally block hasn't run yet, causing DOUBLE LLM calls.
+                                        # Instead, defer to next_step_scheduler by setting the reactivation flag.
+                                        logger.info(
+                                            f"CycleHandler '{agent.agent_id}': Workflow '{workflow_result.workflow_name}' "
+                                            f"requests re-scheduling of SELF. Deferring to NextStepScheduler "
+                                            f"(setting needs_reactivation_after_cycle=True) to prevent concurrent LLM calls."
+                                        )
+                                        context.needs_reactivation_after_cycle = True
+                                    else:
+                                        # For OTHER agents, scheduling inline is safe — they run independently.
+                                        await self._manager.schedule_cycle(task_agent, task_retry_count)
                                 else: logger.warning(f"CycleHandler '{agent.agent_id}': Workflow '{workflow_result.workflow_name}' invalid agent schedule request.")
                         if workflow_result.success:
                             context.cycle_completed_successfully = True
-                            # Default reactivation logic
-                            context.needs_reactivation_after_cycle = not (workflow_result.tasks_to_schedule and any(ts_agent.agent_id == agent.agent_id for ts_agent, _ in workflow_result.tasks_to_schedule)) and \
-                                                                bool(workflow_result.next_agent_state or workflow_result.tasks_to_schedule)
+                            # needs_reactivation_after_cycle may already be True from self-scheduling above.
+                            # Only override if it wasn't already set for self-rescheduling.
+                            if not context.needs_reactivation_after_cycle:
+                                context.needs_reactivation_after_cycle = bool(workflow_result.next_agent_state or workflow_result.tasks_to_schedule)
 
                             # Specific intervention for Admin AI after project_creation workflow
                             if agent.agent_id == BOOTSTRAP_AGENT_ID and workflow_result.workflow_name == "project_creation":
@@ -619,13 +812,41 @@ class AgentCycleHandler:
                         if context.current_db_session_id and raw_llm_response_with_error: 
                             await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id,agent_id=agent.agent_id,role="assistant",content=raw_llm_response_with_error)
                         
-                        # Check if we've already provided feedback for this specific error pattern to prevent loops
-                        error_signature = f"malformed_{malformed_tool_name}_{parsing_error_msg[:50]}"
+                        # CRITICAL FIX: Enhanced XML error feedback deduplication to prevent accumulation
+                        # Create broader error signatures to catch similar XML errors
+                        base_error_signature = f"xml_error_{malformed_tool_name}"
+                        detailed_error_signature = f"malformed_{malformed_tool_name}_{parsing_error_msg[:30]}"
+                        
                         if not hasattr(agent, '_recent_error_feedback'):
                             agent._recent_error_feedback = {}
-                            
-                        # Only provide feedback if we haven't seen this exact error recently
-                        if error_signature not in agent._recent_error_feedback or (time.time() - agent._recent_error_feedback[error_signature]) > 300:  # 5 minutes
+                        
+                        # CRITICAL: Check for any recent XML errors for this tool (much shorter timeframe)
+                        current_time = time.time()
+                        has_recent_error = False
+                        
+                        # Check if we've given feedback for this tool recently (last 30 seconds)
+                        for error_key, error_time in agent._recent_error_feedback.items():
+                            if (error_key.startswith(f"xml_error_{malformed_tool_name}") or 
+                                error_key.startswith(f"malformed_{malformed_tool_name}")) and \
+                               (current_time - error_time) < 30:  # Only 30 seconds
+                                has_recent_error = True
+                                break
+                        
+                        # CRITICAL: Also check if we have too many XML error messages in recent history
+                        xml_error_messages_in_recent_history: int = 0
+                        if hasattr(agent, 'message_history') and agent.message_history:
+                            for msg in agent.message_history[-5:]:  # Check last 5 messages
+                                if (msg.get('role') == 'system' and 
+                                    'XML Parsing Error' in msg.get('content', '')):
+                                    xml_error_messages_in_recent_history += 1
+                        
+                        # Only provide feedback if ALL conditions are met
+                        should_provide_feedback = (
+                            not has_recent_error and 
+                            xml_error_messages_in_recent_history < 2  # Max 2 XML error messages in recent history
+                        )
+                        
+                        if should_provide_feedback:
                             detailed_tool_usage = "Could not retrieve detailed usage for this tool."
                             if malformed_tool_name and malformed_tool_name in self._manager.tool_executor.tools:
                                 try: 
@@ -633,39 +854,91 @@ class AgentCycleHandler:
                                 except Exception as usage_exc: 
                                     logger.error(f"Failed to get detailed usage for tool {malformed_tool_name}: {usage_exc}")
                             
-                            # Generate more helpful feedback that addresses the specific XML issue
+                            # CRITICAL FIX: Removed enhanced feedback for markdown fences, as the parser already strips them.
                             if "list_tools" in parsing_error_msg:
                                 feedback_to_agent = (f"[Framework Feedback: Tool Usage Error]\n"
                                                    f"You attempted to use '{malformed_tool_name}' with tool_name='list_tools', but 'list_tools' is not a tool name - it's an action.\n"
                                                    f"Correct usage: <tool_information><action>list_tools</action></tool_information>\n"
                                                    f"This will list all available tools and their summaries.")
+                            elif malformed_tool_name == "unknown":
+                                feedback_to_agent = (f"[Framework Feedback: XML Parsing Error]\n"
+                                                   f"Your tool call was malformed: {parsing_error_msg}\n"
+                                                   f"Please check your syntax. You must specify a valid tool name from your system instructions.")
                             else:
                                 feedback_to_agent = (f"[Framework Feedback: XML Parsing Error]\n"
                                                    f"Your XML for '{malformed_tool_name}' was malformed: {parsing_error_msg}\n"
-                                                   f"Please check your XML syntax. Remove any markdown code fences (```) around XML.\n\n"
+                                                   f"Please check your XML syntax.\n\n"
                                                    f"Correct usage for '{malformed_tool_name}':\n{detailed_tool_usage}")
                             
                             agent.message_history.append({"role": "system", "content": feedback_to_agent})
-                            agent._recent_error_feedback[error_signature] = time.time()  # Record when we provided this feedback
+                            agent._recent_error_feedback[base_error_signature] = time.time()  # Record when we provided this feedback
                             
                             if context.current_db_session_id: 
                                 await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id,agent_id=agent.agent_id,role="system_error_feedback",content=feedback_to_agent)
                                 
-                            await self._manager.send_to_ui({"type": "system_error_feedback","agent_id": agent.agent_id,"tool_name": malformed_tool_name,"error_message": parsing_error_msg,"detailed_usage": detailed_tool_usage,"original_attempt": raw_llm_response_with_error})
+                            await self._manager.send_to_ui({"type": "system_error_feedback","agent_id": agent.agent_id,"tool_name": malformed_tool_name,"error_message": parsing_error_msg,"content": feedback_to_agent,"detailed_usage": detailed_tool_usage,"original_attempt": raw_llm_response_with_error})
                             
-                            logger.info(f"CycleHandler: Provided XML error feedback to '{agent.agent_id}' for error pattern: {error_signature}")
+                            logger.info(f"CycleHandler: Provided XML error feedback to '{agent.agent_id}' for error pattern: {base_error_signature}")
                         else:
-                            logger.info(f"CycleHandler: Skipped duplicate XML error feedback for '{agent.agent_id}' - error pattern seen recently: {error_signature}")
+                            # CRITICAL FIX: If we're skipping feedback due to accumulation, aggressively clean existing XML errors  
+                            logger.warning(f"CycleHandler: XML error feedback spam detected for '{agent.agent_id}' - triggering history cleanup")
+                            
+                            # Remove excessive XML error messages from history to prevent overwhelming the AI
+                            if hasattr(agent, 'message_history') and agent.message_history:
+                                original_length = len(agent.message_history)
+                                cleaned_history = []
+                                xml_error_count: int = 0
+                                
+                                for msg in agent.message_history:
+                                    # Count and filter XML error messages
+                                    if (msg.get('role') == 'system' and 
+                                        'XML Parsing Error' in msg.get('content', '')):
+                                        xml_error_count += 1
+                                        # Only keep the most recent XML error message
+                                        if xml_error_count <= 1:
+                                            cleaned_history.append(msg)
+                                        else:
+                                            logger.info(f"CycleHandler: Removing duplicate XML error message #{xml_error_count}")
+                                    else:
+                                        cleaned_history.append(msg)
+                                
+                                if len(cleaned_history) != original_length:
+                                    agent.message_history = cleaned_history
+                                    logger.critical(f"CycleHandler: CLEANED XML error spam - reduced history from {original_length} to {len(cleaned_history)} messages for agent '{agent.agent_id}'")
+                                    
+                                    # Force database update
+                                    if context.current_db_session_id:
+                                        try:
+                                            await self._manager.db_manager.log_interaction(
+                                                session_id=context.current_db_session_id,
+                                                agent_id=agent.agent_id,
+                                                role="system_cleanup",
+                                                content=f"XML error spam cleanup: Removed {original_length - len(cleaned_history)} duplicate error messages"
+                                            )
+                                        except Exception as db_err:
+                                            logger.error(f"CycleHandler: Failed to log cleanup to DB: {db_err}")
+                            
+                            logger.info(f"CycleHandler: Skipped duplicate XML error feedback for '{agent.agent_id}' - error pattern seen recently: {base_error_signature}")
                         
                         context.needs_reactivation_after_cycle = True; context.last_error_content = f"Malformed XML for tool '{malformed_tool_name}'"; context.cycle_completed_successfully = False
                         llm_stream_ended_cleanly = False; break
 
                     elif event_type == "agent_thought":
-                        context.action_taken_this_cycle = True; context.thought_produced_this_cycle = True
-                        # ... (existing thought processing, KB saving) ...
-                        thought_content = event.get("content") # Simplified for brevity here
-                        if thought_content and context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant_thought", content=thought_content)
-                        if thought_content: await self._manager.send_to_ui(event) # Save to KB logic omitted for diff brevity but would be here
+                        context.action_taken_this_cycle = True
+                        context.thought_produced_this_cycle = True
+                        thought_content = event.get("content")
+                        if thought_content:
+                            # <<<< MODIFICATION: Capture the thought for message history
+                            thought_content_for_history = f"<think>{thought_content}</think>"
+                            if context.current_db_session_id:
+                                await self._manager.db_manager.log_interaction(
+                                    session_id=context.current_db_session_id,
+                                    agent_id=agent.agent_id,
+                                    role="assistant_thought",
+                                    content=thought_content
+                                )
+                            await self._manager.send_to_ui(event)
+                            # Knowledge base saving logic could go here as well
 
                     elif event_type == "agent_raw_response":
                         # Forward raw agent responses to the UI for display in Internal Comms
@@ -675,9 +948,91 @@ class AgentCycleHandler:
                             logger.debug(f"CycleHandler '{agent.agent_id}': Forwarded agent_raw_response to UI")
 
                     elif event_type == "agent_state_change_requested":
-                        context.action_taken_this_cycle = True; context.state_change_requested_this_cycle = True; requested_state = event.get("requested_state")
-                        if self._manager.workflow_manager.change_state(agent, requested_state):
-                            context.needs_reactivation_after_cycle = True
+                        context.action_taken_this_cycle = True
+                        context.state_change_requested_this_cycle = True
+                        requested_state = event.get("requested_state")
+                        task_description = event.get("task_description")
+
+                        # Record the agent's action in its history so it knows it made the request
+                        agent.message_history.append({
+                            "role": "assistant",
+                            "content": f"<request_state state='{requested_state}'/>"
+                        })
+
+                        # <<< --- ROBUST FIX START --- >>>
+                        # If transitioning to work state with no task, find the last user message.
+                        if requested_state == ADMIN_STATE_WORK and (not task_description or task_description.isspace()):
+                            logger.warning(f"CycleHandler: Admin AI '{agent.agent_id}' state change to '{ADMIN_STATE_WORK}' has no task description. Searching history for last user message.")
+                            found_task = False
+                            for msg in reversed(agent.message_history):
+                                if msg.get("role") == "user":
+                                    task_description = msg.get("content")
+                                    logger.info(f"CycleHandler: Found last user message and set as task description: '{task_description[:100]}...'")
+                                    found_task = True
+                                    break
+                            if not found_task:
+                                logger.error(f"CycleHandler: Could not find a previous user message to use as task description for state change to '{ADMIN_STATE_WORK}'. The agent might loop.")
+                        # <<< --- ROBUST FIX END --- >>>
+                        # FIX: Prevent PM from going to standby while workers are still active.
+                        # If workers are in decompose/work/report/startup, the PM must stay in
+                        # pm_manage to monitor progress and assign follow-up tasks.
+                        if agent.agent_type == AGENT_TYPE_PM and requested_state in ('pm_standby', PM_STATE_STANDBY):
+                            team_id = self._manager.state_manager.get_agent_team(agent.agent_id)
+                            if team_id:
+                                team_agents = self._manager.state_manager.get_agents_in_team(team_id)
+                                worker_idle_states = {WORKER_STATE_WAIT, None}
+                                active_workers = [
+                                    a for a in team_agents
+                                    if a.agent_type == AGENT_TYPE_WORKER and a.state not in worker_idle_states
+                                ]
+                                if active_workers:
+                                    active_ids = [f"{a.agent_id}({a.state})" for a in active_workers]
+                                    logger.warning(
+                                        f"CycleHandler: PM '{agent.agent_id}' requested pm_standby but "
+                                        f"{len(active_workers)} workers are still active: {active_ids}. "
+                                        f"Redirecting to pm_manage."
+                                    )
+                                    requested_state = PM_STATE_MANAGE
+                                    standby_redirect_msg = (
+                                        f"[Framework System Message]: You requested standby, but "
+                                        f"{len(active_workers)} worker(s) are still active: "
+                                        f"{', '.join(active_ids)}. You have been redirected to pm_manage "
+                                        f"to continue monitoring their progress. Use list_tasks to check "
+                                        f"current status."
+                                    )
+                                    agent.message_history.append({"role": "system", "content": standby_redirect_msg})
+
+                        if self._manager.workflow_manager.change_state(agent, requested_state, task_description=task_description):
+                            # Reactivate unless transitioning to an idle state
+                            idle_states = [PM_STATE_STANDBY, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STANDBY, WORKER_STATE_WAIT]
+                            
+                            # Resolve alias just to be safe
+                            resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state)
+                            
+                            if resolved_requested in idle_states:
+                                context.needs_reactivation_after_cycle = False
+                                logger.info(f"CycleHandler: Agent '{agent.agent_id}' transitioned to idle state '{resolved_requested}'. Not reactivating.")
+                            else:
+                                context.needs_reactivation_after_cycle = True
+                            
+                            # CRITICAL FIX: For Admin AI work state, inject task reminder to prevent infinite loops
+                            if agent.agent_type == AGENT_TYPE_ADMIN and requested_state == ADMIN_STATE_WORK and task_description:
+                                task_reminder_message = (
+                                    f"[Framework Context]: You are now in work state. Your current task is: {task_description[:200]}{'...' if len(task_description) > 200 else ''}\n\n"
+                                    "Work systematically towards completing this specific task. Avoid repeating the same tool calls. "
+                                    "When you have made sufficient progress or completed the task, provide a comprehensive summary "
+                                    "and request state change back to 'conversation'."
+                                )
+                                agent.message_history.append({"role": "system", "content": task_reminder_message})
+                                logger.info(f"CycleHandler: Injected task reminder for Admin AI '{agent.agent_id}' work state transition")
+                                
+                                if context.current_db_session_id:
+                                    await self._manager.db_manager.log_interaction(
+                                        session_id=context.current_db_session_id,
+                                        agent_id=agent.agent_id,
+                                        role="system_task_context",
+                                        content=task_reminder_message
+                                    )
                             # --- START MODIFICATION: Inject directive after PM state change to pm_activate_workers ---
                             if agent.agent_type == AGENT_TYPE_PM and requested_state == PM_STATE_ACTIVATE_WORKERS:
                                 logger.info(f"CycleHandler: PM '{agent.agent_id}' successfully changed to '{PM_STATE_ACTIVATE_WORKERS}'. Injecting specific follow-up directive.")
@@ -698,44 +1053,395 @@ class AgentCycleHandler:
                                     )
                             # --- END MODIFICATION ---
                         else:
-                            # If change_state returned False (e.g., invalid state), still likely needs reactivation to retry or get error feedback.
-                            context.needs_reactivation_after_cycle = True
+                            # change_state returned False. Check if it's already in the requested state.
+                            resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state)
+                            if agent.state == resolved_requested:
+                                logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Treating as no-op to prevent reactivation loop.")
+                                # Always suppress reactivation for same-state requests.
+                                # Reactivating just feeds the same state-change message back, causing infinite loops.
+                                context.needs_reactivation_after_cycle = False
+                            else:
+                                # Truly invalid state transition. Let it reactivate to correct itself (with an error message).
+                                context.needs_reactivation_after_cycle = True
+                                invalid_msg = f"[Framework Error]: Invalid state requested: '{requested_state}'. Please check valid states for your role."
+                                agent.message_history.append({"role": "system", "content": invalid_msg})
 
                         if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="agent_state_change", content=f"State changed to: {requested_state}")
+                        
+                        # CRITICAL FIX: Append a user message so the next cycle has a clear trigger to start generating
+                        # Without this, the last message is the assistant's <request_state> tag, causing empty outputs
+                        agent.message_history.append({
+                            "role": "user",
+                            "content": f"[System State Change]: State changed to {requested_state}. Your instructions have been updated. Please proceed."
+                        })
+                        
                         await self._manager.send_to_ui(event)
                         llm_stream_ended_cleanly = False; break
 
                     elif event_type == "tool_requests":
-                        context.action_taken_this_cycle = True; tool_calls = event.get("calls", []); raw_assistant_response = event.get("raw_assistant_response")
-                        
+                        context.action_taken_this_cycle = True
+                        tool_calls = event.get("calls", [])
+                        raw_assistant_response = event.get("raw_assistant_response")
+                        content_for_history = event.get("content_for_history")
+
+                        # Variables to hold state change info until tools finish executing
+                        deferred_state_change = None
+                        deferred_task_desc = None
+
                         # CRITICAL FIX: Check if the raw response also contains a state change request
                         # This handles the case where agent produces both state change + tool calls in same response
                         if raw_assistant_response and hasattr(self, 'request_state_pattern'):
                             state_match = self.request_state_pattern.search(raw_assistant_response)
                             if state_match:
                                 requested_state = state_match.group(1)
+                                # Resolve alias to canonical state name
+                                requested_state = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state)
                                 if self._manager.workflow_manager.is_valid_state(agent.agent_type, requested_state):
                                     logger.info(f"CycleHandler: Processing embedded state change request '{requested_state}' from tool_requests response")
                                     context.state_change_requested_this_cycle = True
-                                    if self._manager.workflow_manager.change_state(agent, requested_state):
-                                        logger.info(f"CycleHandler: Successfully changed agent '{agent.agent_id}' state to '{requested_state}' during tool processing")
-                                    else:
-                                        logger.warning(f"CycleHandler: Failed to change agent '{agent.agent_id}' state to '{requested_state}' during tool processing")
-                        # ... (append assistant message to history, db log) ...
-                        if raw_assistant_response:
-                            assistant_message_for_history: MessageDict = {"role": "assistant", "content": raw_assistant_response}
-                            if tool_calls: assistant_message_for_history["tool_calls"] = tool_calls
-                            agent.message_history.append(assistant_message_for_history)
-                        if context.current_db_session_id and raw_assistant_response: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=raw_assistant_response, tool_calls=tool_calls)
+                                    context.needs_reactivation_after_cycle = True  # Ensure the agent wakes up in the new state
+
+                                    # <<< --- ROBUST FIX START --- >>>
+                                    # If this is a transition from startup that includes a tool call,
+                                    # inject a synthetic thought to bridge the context for the next cycle.
+                                    if agent.state == ADMIN_STATE_STARTUP and requested_state == ADMIN_STATE_WORK and tool_calls:
+                                        synthetic_thought = (
+                                            "<think>The user's request requires tool use. "
+                                            "I am transitioning to the 'work' state and executing the first tool call "
+                                            "to gather necessary information to complete the task.</think>"
+                                        )
+                                        logger.info(f"Injecting synthetic thought for startup->work transition for agent '{agent.agent_id}'.")
+                                        # Prepend this synthetic thought to any existing thought content
+                                        if thought_content_for_history:
+                                            thought_content_for_history = synthetic_thought + "\n" + (thought_content_for_history or "")
+                                        else:
+                                            thought_content_for_history = synthetic_thought
+                                    # <<< --- ROBUST FIX END --- >>>
+
+                                    task_description_for_state_change = None
+                                    if requested_state == ADMIN_STATE_WORK:
+                                        # Prioritize the task description from the event, if available
+                                        task_description_for_state_change = event.get("task_description")
+                                        
+                                        if not task_description_for_state_change:
+                                            # Find the last user message to use as the task description
+                                            for msg in reversed(agent.message_history):
+                                                if msg.get("role") == "user":
+                                                    task_description_for_state_change = msg.get("content")
+                                                    break
+                                        
+                                        if not task_description_for_state_change:
+                                            # If no user message, check for a message from another agent
+                                            for msg in reversed(agent.message_history):
+                                                if msg.get("role") == "user" and "[From @" in msg.get("content"):
+                                                    task_description_for_state_change = msg.get("content")
+                                                    break
+                                        
+                                        if not task_description_for_state_change:
+                                            logger.warning(f"CycleHandler: Could not find a previous user or agent message to use as task description for state change to '{requested_state}'.")
+
+                                    deferred_state_change = requested_state
+                                    deferred_task_desc = task_description_for_state_change
+
+                        # Construct and append the assistant message for history
+                        # Construct and append the assistant message for history
+                        # The `content_for_history` from the event now correctly contains only the conversational part of the response,
+                        # with tool call XML properly stripped by the logic in `agent.core`.
+                        # We will preserve this conversational text, as modern tool-calling models support it.
+                        # This fixes a bug where legitimate conversational text was being discarded.
+
+                        # <<<< MODIFICATION: Prepend thought to history content
+                        final_content_for_history: str = ""
+                        if thought_content_for_history:
+                            final_content_for_history += thought_content_for_history + "\n"
+                        if content_for_history:
+                            final_content_for_history += content_for_history
+
+                        # CRITICAL FIX: Changed `... or None` to `... or ""` to prevent null content,
+                        # which causes the agent to lose context and loop. An empty string is valid.
+                        assistant_message_for_history: MessageDict = {"role": "assistant", "content": final_content_for_history.strip() or ""}
+
+                        if tool_calls:
+                            assistant_message_for_history["tool_calls"] = tool_calls
+                        agent.message_history.append(assistant_message_for_history)
+
+                        # Log the interaction to the database.
+                        # The 'content' should be the conversational part, not the raw response which includes tool calls.
+                        if context.current_db_session_id:
+                            await self._manager.db_manager.log_interaction(
+                                session_id=context.current_db_session_id,
+                                agent_id=agent.agent_id,
+                                role="assistant",
+                                content=content_for_history, # Use the cleaned content for logging
+                                tool_calls=tool_calls
+                            )
                         
                         all_tool_results_for_history: List[MessageDict] = [] ; any_tool_success = False
-                        for i, call_data in enumerate(tool_calls):
+                        tool_results_text = ""  # NEW: Collect tool results as text to append to assistant message
+                        
+                        # FIX: Deduplicate identical tool calls to prevent duplicate operations
+                        seen_tool_signatures: set = set()
+                        deduplicated_tool_calls: list = []
+                        cross_cycle_duplicate_blocked: bool = False # Flag to prevent state interventions from overriding duplicate warnings
+                        for call_data in tool_calls:
+                            # Create a signature from tool name + serialized arguments
+                            sig = (call_data.get("name"), json.dumps(call_data.get("arguments", {}), sort_keys=True))
+                            if sig in seen_tool_signatures:
+                                logger.warning(
+                                    f"CycleHandler: Skipping duplicate tool call '{call_data.get('name')}' "
+                                    f"with identical arguments for agent '{agent.agent_id}'"
+                                )
+                                continue
+                            seen_tool_signatures.add(sig)
+                            deduplicated_tool_calls.append(call_data)
+                        
+                        if len(deduplicated_tool_calls) < len(tool_calls):
+                            logger.info(
+                                f"CycleHandler: Deduplicated {len(tool_calls) - len(deduplicated_tool_calls)} "
+                                f"identical tool calls for agent '{agent.agent_id}'"
+                            )
+                        
+                        for i, call_data in enumerate(deduplicated_tool_calls):
                             tool_name = call_data.get("name"); tool_id = call_data.get("id"); tool_args = call_data.get("arguments", {})
-                            result_dict = await self._interaction_handler.execute_single_tool(agent, tool_id, tool_name, tool_args, self._manager.current_project, self._manager.current_session)
+                            
+                            # --- CROSS-CYCLE DUPLICATE DETECTION ---
+                            # Check if this exact tool call already succeeded in a previous cycle.
+                            # If so, skip re-execution and inject a forceful directive to advance.
+                            is_eligible_pm = agent.agent_type == AGENT_TYPE_PM and agent.state in [PM_STATE_ACTIVATE_WORKERS, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_MANAGE]
+                            is_eligible_worker = agent.agent_type == AGENT_TYPE_WORKER
+                            
+                            # FIX: In pm_manage, list_tasks is a monitoring operation whose
+                            # results change over time as workers complete tasks.  Exempt it
+                            # from duplicate detection so the PM always gets fresh status.
+                            is_manage_monitoring_read = (
+                                agent.agent_type == AGENT_TYPE_PM
+                                and agent.state == PM_STATE_MANAGE
+                                and tool_name == "project_management"
+                                and tool_args.get("action") == "list_tasks"
+                            )
+                            if is_manage_monitoring_read:
+                                logger.debug(
+                                    f"CycleHandler: Allowing list_tasks for PM '{agent.agent_id}' in pm_manage "
+                                    f"(monitoring read - exempt from duplicate detection)."
+                                )
+                            
+                            if (is_eligible_pm or is_eligible_worker) and not is_manage_monitoring_read:
+                                prev_result = self._detect_cross_cycle_duplicate_tool_call(agent, tool_name, tool_args)
+                                if prev_result is not None:
+                                    # Track duplicate count for escalation
+                                    if not hasattr(agent, '_duplicate_tool_call_count'):
+                                        agent._duplicate_tool_call_count = 0
+                                    agent._duplicate_tool_call_count += 1
+                                    
+                                    logger.warning(
+                                        f"CycleHandler: CROSS-CYCLE DUPLICATE DETECTED for '{agent.agent_id}' - "
+                                        f"tool '{tool_name}' with same args already succeeded. "
+                                        f"Duplicate count: {agent._duplicate_tool_call_count}. Skipping re-execution."
+                                    )
+                                    
+                                    # Use a TRUNCATED cached result to save context tokens
+                                    # The agent already saw this result - they don't need the full thing again
+                                    MAX_CACHED_RESULT_LEN = 200
+                                    truncated_result = prev_result
+                                    if len(prev_result) > MAX_CACHED_RESULT_LEN:
+                                        truncated_result = prev_result[:MAX_CACHED_RESULT_LEN] + f"... [TRUNCATED - duplicate call, full result ({len(prev_result)} chars) was already returned to you previously]"
+                                    history_item: MessageDict = {
+                                        "role": "tool",
+                                        "tool_call_id": tool_id or f"cached_id_{i}",
+                                        "name": tool_name or f"unknown_tool_{i}",
+                                        "content": truncated_result
+                                    }
+                                    all_tool_results_for_history.append(history_item)
+                                    any_tool_success = True
+                                    
+                                    # Inject escalated directive based on duplicate count
+                                    if agent._duplicate_tool_call_count >= 3:
+                                        if agent.agent_type == AGENT_TYPE_PM and agent.state in [
+                                            PM_STATE_ACTIVATE_WORKERS, PM_STATE_BUILD_TEAM_TASKS
+                                        ]:
+                                            cross_cycle_duplicate_blocked = True
+                                            action_performed = tool_args.get("action", "")
+                                            
+                                            # Special fast-path: list_tasks → auto-execute list_agents
+                                            if action_performed == "list_tasks" and agent.state == PM_STATE_ACTIVATE_WORKERS:
+                                                logger.warning(
+                                                    f"CycleHandler: AUTO-ADVANCING PM '{agent.agent_id}' after "
+                                                    f"{agent._duplicate_tool_call_count} duplicate '{tool_name}' calls. "
+                                                    f"Executing list_agents automatically."
+                                                )
+                                                team_id = f"team_{agent.agent_config.get('config', {}).get('project_name_context', 'Unknown')}"
+                                                auto_result = await self._interaction_handler.execute_single_tool(
+                                                    agent, f"auto_list_agents_{i}", "manage_team",
+                                                    {"action": "list_agents", "team_id": team_id},
+                                                    self._manager.current_project, self._manager.current_session
+                                                )
+                                                if auto_result:
+                                                    auto_history: MessageDict = {
+                                                        "role": "tool",
+                                                        "tool_call_id": f"auto_list_agents_{i}",
+                                                        "name": "manage_team",
+                                                        "content": str(auto_result.get("content", "[Error]"))
+                                                    }
+                                                    all_tool_results_for_history.append(auto_history)
+                                                    escalation_msg: MessageDict = {
+                                                        "role": "system",
+                                                        "content": (
+                                                            "[Framework System Message - AUTO-ADVANCE]: You called list_tasks "
+                                                            f"{agent._duplicate_tool_call_count} times with identical arguments. "
+                                                            "The framework has automatically executed list_agents for you. "
+                                                            "The agent list result is shown above. "
+                                                            "Your MANDATORY next action is to assign the first unassigned task "
+                                                            "to a suitable worker agent using: "
+                                                            "<project_management><action>modify_task</action>"
+                                                            "<task_id>TASK_UUID</task_id>"
+                                                            "<assignee_agent_id>WORKER_ID</assignee_agent_id>"
+                                                            "<tags>+WORKER_ID,assigned</tags>"
+                                                            "</project_management>"
+                                                        )
+                                                    }
+                                                    self._deduplicate_pm_framework_messages(agent)
+                                                    all_tool_results_for_history.append(escalation_msg)
+                                                    # CRITICAL FIX: Do NOT reset to 0. Set to string threshold - 1 (which is 2)
+                                                    # so the next duplicate triggers the general FORCE-ADVANCE below.
+                                                    agent._duplicate_tool_call_count = 2 
+                                            else:
+                                                # GENERAL FORCE-ADVANCE: For any tool type, force PM to pm_manage
+                                                # FIX: If already in pm_manage, inject corrective directive instead of
+                                                # a no-op state change that resets the counter and loops forever.
+                                                if agent.state == PM_STATE_MANAGE:
+                                                    logger.warning(
+                                                        f"CycleHandler: PM '{agent.agent_id}' stuck in "
+                                                        f"'{PM_STATE_MANAGE}' after {agent._duplicate_tool_call_count} "
+                                                        f"duplicate '{tool_name}' calls. Injecting corrective directive."
+                                                    )
+                                                    escalation_msg: MessageDict = {
+                                                        "role": "system",
+                                                        "content": (
+                                                            f"[Framework System Message - STUCK LOOP DETECTED]: You have called "
+                                                            f"'{tool_name}' {agent._duplicate_tool_call_count} times with "
+                                                            f"identical arguments in the pm_manage state. The cached result is shown above. "
+                                                            f"STOP calling the same tool. You MUST now do ONE of the following:\n"
+                                                            f"1. If workers are busy: Send a status check message to a worker using <send_message>.\n"
+                                                            f"2. If tasks are completed: Review them and add a '+closed' tag using <project_management>.\n"
+                                                            f"3. If all tasks are done: Report completion to admin_ai using <send_message>.\n"
+                                                            f"4. If nothing needs action: Wait. The framework will reactivate you periodically."
+                                                        )
+                                                    }
+                                                    self._deduplicate_pm_framework_messages(agent)
+                                                    all_tool_results_for_history.append(escalation_msg)
+                                                    # Keep count at threshold-1 so next duplicate triggers again
+                                                    agent._duplicate_tool_call_count = 2
+                                                else:
+                                                    logger.warning(
+                                                        f"CycleHandler: FORCE-ADVANCING PM '{agent.agent_id}' to "
+                                                        f"'{PM_STATE_MANAGE}' after {agent._duplicate_tool_call_count} "
+                                                        f"duplicate '{tool_name}' calls in state '{agent.state}'."
+                                                    )
+                                                    self._manager.workflow_manager.change_state(agent, PM_STATE_MANAGE)
+                                                    escalation_msg: MessageDict = {
+                                                        "role": "system",
+                                                        "content": (
+                                                            f"[Framework System Message - FORCE ADVANCE]: You called "
+                                                            f"'{tool_name}' {agent._duplicate_tool_call_count} times with "
+                                                            f"identical arguments. The framework has force-advanced you to "
+                                                            f"the '{PM_STATE_MANAGE}' state. Review your task list and "
+                                                            f"proceed with the next logical step."
+                                                        )
+                                                    }
+                                                    self._deduplicate_pm_framework_messages(agent)
+                                                    all_tool_results_for_history.append(escalation_msg)
+                                                    agent._duplicate_tool_call_count = 0
+                                                context.needs_reactivation_after_cycle = True
+                                        elif agent.agent_type == AGENT_TYPE_WORKER:
+                                            # Escalation for workers
+                                            cross_cycle_duplicate_blocked = True
+                                            logger.warning(
+                                                f"CycleHandler: FORCE-ADVANCING worker '{agent.agent_id}' after "
+                                                f"{agent._duplicate_tool_call_count} duplicate '{tool_name}' calls."
+                                            )
+                                            escalation_msg: MessageDict = {
+                                                "role": "system",
+                                                "content": (
+                                                    f"[Framework System Message - AUTO-ADVANCE]: You have called the exact same "
+                                                    f"tool ('{tool_name}') with identical arguments {agent._duplicate_tool_call_count} times "
+                                                    "without making progress (the result is cached). "
+                                                    "Your MANDATORY NEXT ACTION is to stop repeating yourself and either execute a DIFFERENT tool, "
+                                                    "or request a state change if you are stuck or finished (<request_state state='worker_report'/>)."
+                                                )
+                                            }
+                                            if hasattr(self, '_deduplicate_pm_framework_messages'):
+                                                self._deduplicate_pm_framework_messages(agent)
+                                            all_tool_results_for_history.append(escalation_msg)
+                                            # Keep the count at 2 so the next failure triggers again
+                                            agent._duplicate_tool_call_count = 2
+                                    else:
+                                        cross_cycle_duplicate_blocked = True
+                                        # Inject an escalated directive - stronger than the normal one
+                                        escalation_msg: MessageDict = {
+                                            "role": "system",
+                                            "content": (
+                                                f"[Framework System Message - DUPLICATE BLOCKED]: You already called "
+                                                f"'{tool_name}' with these exact arguments and it succeeded. "
+                                                f"The result was returned from cache (shown above). "
+                                                f"DO NOT call '{tool_name}' again with the same arguments. "
+                                                f"You MUST proceed to the NEXT step in your workflow NOW."
+                                            )
+                                        }
+                                        if hasattr(self, '_deduplicate_pm_framework_messages'):
+                                            self._deduplicate_pm_framework_messages(agent)
+                                        all_tool_results_for_history.append(escalation_msg)
+                                    
+                                    # Log to DB
+                                    if context.current_db_session_id:
+                                        await self._manager.db_manager.log_interaction(
+                                            session_id=context.current_db_session_id,
+                                            agent_id=agent.agent_id,
+                                            role="tool",
+                                            content=prev_result,
+                                            tool_results=[{"call_id": tool_id, "name": tool_name, "content": prev_result}]
+                                        )
+                                    
+                                    continue  # Skip actual tool execution
+                                else:
+                                    # Not a duplicate - reset counter
+                                    if hasattr(agent, '_duplicate_tool_call_count'):
+                                        agent._duplicate_tool_call_count = 0
+                            # --- END CROSS-CYCLE DUPLICATE DETECTION ---
+                            
+                            # --- SEND_MESSAGE MULTI-TOOL CONSTRAINT ---
+                            # Workers in worker_work state should never use send_message - they must switch to worker_report first
+                            if agent.agent_type == AGENT_TYPE_WORKER and agent.state == WORKER_STATE_WORK and tool_name == "send_message":
+                                logger.warning(f"Agent {agent.agent_id} attempted to use send_message in worker_work state. Blocking - must use worker_report state.")
+                                error_msg = "ERROR: You cannot use 'send_message' in the WORK state. To report progress or ask questions, first switch to the report state: <request_state state='worker_report'/>. The report state is specifically designed for communicating with your PM."
+                                result_dict = {
+                                    "status": "error",
+                                    "message": error_msg,
+                                    "content": error_msg,
+                                    "call_id": tool_id or f"unknown_id_{i}",
+                                    "name": tool_name
+                                }
+                            elif any(t.get("name") != "send_message" for t in tool_calls) and tool_name == "send_message":
+                                logger.warning(f"Agent {agent.agent_id} attempted to use send_message alongside other tools. Blocking send_message.")
+                                error_msg = "ERROR: You cannot use the 'send_message' tool in the same response as other tools. You must use it on its own AFTER reviewing the feedback from your other tool calls."
+                                result_dict = {
+                                    "status": "error",
+                                    "message": error_msg,
+                                    "content": error_msg,
+                                    "call_id": tool_id or f"unknown_id_{i}",
+                                    "name": tool_name
+                                }
+                            else:
+                                result_dict = await self._interaction_handler.execute_single_tool(agent, tool_id, tool_name, tool_args, self._manager.current_project, self._manager.current_session)
+                            # --- END SEND_MESSAGE MULTI-TOOL CONSTRAINT ---
+                            
                             if result_dict:
                                 history_item: MessageDict = {"role": "tool", "tool_call_id": result_dict.get("call_id", tool_id or f"unknown_id_{i}"), "name": result_dict.get("name", tool_name or f"unknown_tool_{i}"), "content": str(result_dict.get("content", "[Tool Error: No content]"))}
                                 all_tool_results_for_history.append(history_item)
                                 result_content_str = str(result_dict.get("content", ""))
+                                
+                                # NEW: Append tool result to text format for assistant message
+                                tool_results_text += f"\n\n[Tool Result: {tool_name}]\n{result_content_str}"
+                                
                                 tool_was_successful = True # Assume success by default
                                 try:
                                     # Attempt to parse the content as JSON. This handles tools that
@@ -744,8 +1450,11 @@ class AgentCycleHandler:
                                     if isinstance(tool_result_data, dict) and tool_result_data.get("status") == "error":
                                         tool_was_successful = False
                                 except (json.JSONDecodeError, TypeError):
-                                    # If it's not valid JSON, fall back to the old string check for compatibility.
-                                    if "error" in result_content_str.lower():
+                                    # If it's not valid JSON, fall back to string checks for compatibility.
+                                    # Check for both "error" and "failed" — tool failures return
+                                    # "[Tool Execution Failed]" which doesn't contain "error".
+                                    result_lower = result_content_str.lower()
+                                    if "error" in result_lower or "[tool execution failed]" in result_lower:
                                         tool_was_successful = False
 
                                 if tool_was_successful:
@@ -753,24 +1462,31 @@ class AgentCycleHandler:
                                 # ... (db log tool result, UI send) ...
                                 if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="tool", content=result_content_str, tool_results=[result_dict])
                                 await self._manager.send_to_ui({**result_dict, "type": "tool_result", "agent_id": agent.agent_id, "tool_sequence": f"{i+1}_of_{len(tool_calls)}"})
-                            else: all_tool_results_for_history.append({"role": "tool", "tool_call_id": tool_id or f"unknown_call_{i}", "name": tool_name or f"unknown_tool_{i}", "content": "[Tool Error: No result object]"})
-                        # CRITICAL FIX: Add diagnostic logging for message history persistence  
-                        logger.critical(f"CycleHandler: BEFORE appending tool results - agent '{agent.agent_id}' message_history length: {len(agent.message_history)}, history_id: {id(agent.message_history)}")
-                        for i, res_hist_item in enumerate(all_tool_results_for_history): 
-                            agent.message_history.append(res_hist_item)
-                            logger.critical(f"CycleHandler: APPENDED tool result {i+1}/{len(all_tool_results_for_history)} to agent '{agent.agent_id}' - new length: {len(agent.message_history)}")
-                        logger.critical(f"CycleHandler: AFTER appending all tool results - agent '{agent.agent_id}' message_history length: {len(agent.message_history)}, history_id: {id(agent.message_history)}")
+                            else: 
+                                all_tool_results_for_history.append({"role": "tool", "tool_call_id": tool_id or f"unknown_call_{i}", "name": tool_name or f"unknown_tool_{i}", "content": "[Tool Error: No result object]"})
+                                tool_results_text += f"\n\n[Tool Result: {tool_name}]\n[Tool Error: No result object]"
                         
-                        # CRITICAL FIX: Set tool success flags IMMEDIATELY after tool execution
-                        # This must happen BEFORE any PM-specific intervention logic to ensure Admin AI gets reactivated
+                        # NOTE: Tool results are appended as separate 'tool' role messages by
+                        # NextStepScheduler.schedule_next_step (via context.all_tool_results).
+                        # Do NOT also inline them into the assistant message content, as that
+                        # creates duplicate data in the LLM context window.
+                        
+                        context.all_tool_results = all_tool_results_for_history
+                        
+                        # ROOT CAUSE FIX: Don't automatically set reactivation flag after tool execution
+                        # Let the NextStepScheduler decide if reactivation is needed based on agent state and tool results
                         context.executed_tool_successfully_this_cycle = any_tool_success
-                        context.needs_reactivation_after_cycle = True
-                        logger.critical(f"CycleHandler: CRITICAL - Tool success flags set for agent '{agent.agent_id}': executed_tool_successfully_this_cycle={any_tool_success}, needs_reactivation_after_cycle=True")
+                        # ROOT CAUSE FIX: Removed automatic reactivation - this was causing the infinite loop
+                        logger.critical(f"CycleHandler: Tool execution completed for agent '{agent.agent_id}': executed_tool_successfully_this_cycle={any_tool_success}, allowing natural processing")
+                        
+                        # ENHANCED: For Admin AI in work state, ensure proper reactivation even after tool execution
+                        if agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_WORK:
+                            logger.info(f"CycleHandler: Admin AI '{agent.agent_id}' in work state executed tools successfully - ensuring reactivation")
 
                         # --- START: PM Post-Tool State Transitions ---
                         # Track tool success/failure for PM loop detection
-                        if agent.agent_type == AGENT_TYPE_PM and tool_calls and len(tool_calls) == 1:
-                            called_tool_name = tool_calls[0].get("name")
+                        if agent.agent_type == AGENT_TYPE_PM and tool_calls and len(tool_calls) >= 1:
+                            called_tool_name = tool_calls[-1].get("name")  # Use last tool call
                             
                             # Check for persistent tool failures that could cause loops
                             if not any_tool_success:
@@ -800,8 +1516,8 @@ class AgentCycleHandler:
                                 # Reset failure counter on success
                                 agent._consecutive_tool_failures = 0
                         
-                        if agent.agent_type == AGENT_TYPE_PM and any_tool_success and tool_calls and len(tool_calls) == 1:
-                            called_tool_name = tool_calls[0].get("name")
+                        if agent.agent_type == AGENT_TYPE_PM and any_tool_success and tool_calls and len(tool_calls) >= 1:
+                            called_tool_name = tool_calls[-1].get("name")  # Use last tool call for directive matching
                             if agent.state == PM_STATE_ACTIVATE_WORKERS and called_tool_name == "send_message":
                                 # This is the final "report to admin" message. Transition to manage state.
                                 logger.info(f"CycleHandler: PM '{agent.agent_id}' sent completion message. Auto-transitioning to PM_STATE_MANAGE.")
@@ -810,22 +1526,63 @@ class AgentCycleHandler:
                                 context.needs_reactivation_after_cycle = True
 
 
+
+
+                        # --- START: WORKER Decompose State Interventions ---
+                        if agent.agent_type == AGENT_TYPE_WORKER and \
+                           agent.state == WORKER_STATE_DECOMPOSE and \
+                           any_tool_success and tool_calls and len(tool_calls) >= 1:
+
+                            called_tool_name = tool_calls[-1].get("name")
+                            called_tool_args = tool_calls[-1].get("arguments", {})
+
+                            if called_tool_name == "project_management" and called_tool_args.get("action") == "add_task":
+                                logger.info(f"CycleHandler: Worker '{agent.agent_id}' successfully added a sub-task. Injecting directive to transition.")
+                                directive_message_content = (
+                                    "[Framework System Message]: You have successfully added a sub-task. "
+                                    "If you have finished decomposing your assignment into sub-tasks, your MANDATORY NEXT ACTION is to output ONLY:\n"
+                                    "<request_state state='worker_work'/>\n"
+                                    "If you need to add more sub-tasks, continue using the project_management tool."
+                                )
+                                directive_msg: MessageDict = {"role": "system", "content": directive_message_content}
+                                all_tool_results_for_history.append(directive_msg)
+                                context.needs_reactivation_after_cycle = True
+                        # --- END WORKER Decompose State Interventions ---
+
                         # --- START: PM Build Team Tasks State Interventions ---
                         if agent.agent_type == AGENT_TYPE_PM and \
                            agent.state == PM_STATE_BUILD_TEAM_TASKS and \
-                           any_tool_success and \
-                           tool_calls and len(tool_calls) == 1: # Ensure only one tool was called
+                           tool_calls and len(tool_calls) >= 1:
 
-                            called_tool_name = tool_calls[0].get("name")
-                            called_tool_args = tool_calls[0].get("arguments", {})
+                            called_tool_name = tool_calls[-1].get("name")  # Use last tool call
+                            called_tool_args = tool_calls[-1].get("arguments", {})
                             directive_message_content = None
 
                             if called_tool_name == "manage_team" and called_tool_args.get("action") == "create_team":
-                                # This was the first action in the state (Team Creation)
+                                # Auto-execute tool_information to get create_agent schema
+                                # instead of asking the LLM (small models loop on create_team)
+                                try:
+                                    tool_info_result = await self._manager.tool_executor.execute_tool(
+                                        agent_id=agent.agent_id,
+                                        agent_sandbox_path=agent.sandbox_path,
+                                        tool_name="tool_information",
+                                        tool_args={"action": "get_info", "tool_name": "manage_team", "sub_action": "create_agent"},
+                                        project_name=self._manager.current_project,
+                                        session_name=self._manager.current_session,
+                                        manager=self._manager
+                                    )
+                                    tool_info_text = tool_info_result.get("message", "") if isinstance(tool_info_result, dict) else str(tool_info_result)
+                                    logger.info(f"CycleHandler: Auto-executed tool_information for PM '{agent.agent_id}' create_agent schema ({len(tool_info_text)} chars)")
+                                except Exception as e:
+                                    logger.error(f"CycleHandler: Failed to auto-execute tool_information for PM '{agent.agent_id}': {e}")
+                                    tool_info_text = ""
+
                                 directive_message_content = (
-                                    "[Framework System Message]: Team creation process initiated. "
-                                    "Your MANDATORY next action is to get specific instructions for creating an agent. "
-                                    "Output ONLY the following XML: <tool_information><action>get_info</action><tool_name>manage_team</tool_name><sub_action>create_agent</sub_action></tool_information>"
+                                    "[Framework System Message]: Team creation complete. Step 1 is DONE \u2014 do NOT call create_team again.\n\n"
+                                    "The framework has automatically retrieved the create_agent tool information for you (Step 2 complete).\n\n"
+                                    f"**create_agent Tool Usage:**\n{tool_info_text}\n\n"
+                                    "Your MANDATORY next action is Step 3: Create your first worker agent based on your kickoff plan using the "
+                                    "'<manage_team><action>create_agent</action>...' XML format shown above."
                                 )
                             elif called_tool_name == "tool_information" and \
                                  called_tool_args.get("action") == "get_info" and \
@@ -835,20 +1592,21 @@ class AgentCycleHandler:
                                 agent.successfully_created_agent_count_for_build = 0 # Reset counter before first create
                                 directive_message_content = (
                                     "[Framework System Message]: You have successfully retrieved the detailed information for the 'manage_team' tool with sub_action 'create_agent'. "
-                                    "Your MANDATORY next action is to proceed with Step 2 of your workflow: Create the First Worker Agent using the "
-                                    "'<manage_team><action>create_agent</action>...' XML format, referring to your initial kick-off tasks list."
+                                    "Your MANDATORY next action is to proceed with Step 2 of your workflow: Create your first worker agent based on your kickoff plan using the "
+                                    "'<manage_team><action>create_agent</action>...' XML format."
                                 )
                             elif called_tool_name == "manage_team" and called_tool_args.get("action") == "create_agent":
                                 # This was an agent creation action. This is the new, context-aware intervention logic.
-                                agent.successfully_created_agent_count_for_build += 1
+                                if any_tool_success:
+                                    agent.successfully_created_agent_count_for_build += 1
 
                                 # Get up-to-date team information
                                 team_id = self._manager.state_manager.get_agent_team(agent.agent_id)
                                 current_worker_agents = []
                                 if team_id:
-                                    # We get the Agent objects and filter for workers, then get their IDs
+                                    # We get the Agent objects and filter for workers, then get their IDs and Personas
                                     all_agents_in_team = self._manager.state_manager.get_agents_in_team(team_id)
-                                    current_worker_agents = [a.agent_id for a in all_agents_in_team if a.agent_type == AGENT_TYPE_WORKER]
+                                    current_worker_agents = [f"{a.agent_id} ({a.persona})" for a in all_agents_in_team if a.agent_type == AGENT_TYPE_WORKER]
 
                                 created_count = len(current_worker_agents) # Use the actual count from the state manager
                                 # *** FIX: Corrected variable name from kick_off_task_count_for_build to target_worker_agents_for_build ***
@@ -898,14 +1656,18 @@ class AgentCycleHandler:
                                         "[CURRENT TEAM STATUS]\n"
                                         f"{team_status_context}\n\n"
                                         "[CONCLUSION]\n"
-                                        "More worker agents are required.\n\n"
-                                        f"Your MANDATORY next action is to proceed with Step 3 of your workflow: Create the next worker agent (Worker #{next_agent_num}), referring to your initial kick-off tasks list."
+                                        "More worker agents are required by your kickoff plan or the limit hasn't been reached.\n\n"
+                                        f"Your MANDATORY next action is to create the next worker agent (Worker #{next_agent_num}).\n"
+                                        "Review your kickoff plan to decide which role to create next.\n"
+                                        "IMPORTANT: Do NOT create another agent with a role you have already created. Check the agent IDs above."
                                     )
 
                             if directive_message_content:
+                                # CRITICAL FIX: Deduplicate old framework messages before adding new one
+                                self._deduplicate_pm_framework_messages(agent)
                                 logger.info(f"CycleHandler: PM '{agent.agent_id}' in '{agent.state}', after tool '{called_tool_name}', injecting directive: {directive_message_content[:100]}...")
                                 directive_msg: MessageDict = {"role": "system", "content": directive_message_content}
-                                agent.message_history.append(directive_msg) # Append to live history
+                                all_tool_results_for_history.append(directive_msg) # Append to history after tool results
                                 if context.current_db_session_id:
                                     await self._manager.db_manager.log_interaction(
                                         session_id=context.current_db_session_id,
@@ -919,20 +1681,27 @@ class AgentCycleHandler:
                         elif agent.agent_type == AGENT_TYPE_PM and \
                              agent.state == PM_STATE_ACTIVATE_WORKERS and \
                              any_tool_success and \
-                             tool_calls and len(tool_calls) == 1:
+                             tool_calls and len(tool_calls) >= 1 and \
+                             not cross_cycle_duplicate_blocked:  # Match on last tool call and not blocked
 
-                            called_tool_name = tool_calls[0].get("name")
-                            called_tool_args = tool_calls[0].get("arguments", {})
+                            called_tool_name = tool_calls[-1].get("name")  # Use last tool call
+                            called_tool_args = tool_calls[-1].get("arguments", {})
                             directive_message_content = None
 
                             if called_tool_name == "project_management":
-                                last_tool_result_content = all_tool_results_for_history[0].get("content", "{}")
+                                last_tool_result_content = "{}"
+                                for item in reversed(all_tool_results_for_history):
+                                    if item.get("role") == "tool":
+                                        last_tool_result_content = item.get("content", "{}")
+                                        break
+                                
                                 try:
                                     tool_result_json = json.loads(last_tool_result_content)
                                     tool_status = tool_result_json.get("status")
                                 except json.JSONDecodeError:
-                                    tool_status = "error"
-                                    tool_result_json = {}
+                                    # Fallback to check if it's a string from a standard non-JSON tool
+                                    tool_status = "error" if "error" in last_tool_result_content.lower() else "success"
+                                    tool_result_json = {"status": tool_status, "message": last_tool_result_content}
 
                                 if tool_status == "error":
                                     error_message = tool_result_json.get("message", "An unspecified error occurred.")
@@ -947,13 +1716,16 @@ class AgentCycleHandler:
                                         tasks = tool_result_json.get("tasks", [])
                                         task_summary_lines = []
                                         agent.unassigned_tasks_summary = [] # Clear previous summary
+                                        agent._all_kickoff_task_uuids = set()  # Track all kickoff UUIDs for dependency checking
                                         for task in tasks:
+                                            if not isinstance(task, dict): continue
                                             uuid = task.get("uuid")
                                             desc = task.get("description", "No description").strip().replace('\n', ' ')
                                             truncated_desc = (desc[:75] + '...') if len(desc) > 75 else desc
                                             if uuid:
                                                 task_summary_lines.append(f"- {truncated_desc} (UUID: {uuid})")
-                                                agent.unassigned_tasks_summary.append({"uuid": uuid, "description": desc})
+                                                agent.unassigned_tasks_summary.append({"uuid": uuid, "description": desc, "depends": task.get("depends", [])})
+                                                agent._all_kickoff_task_uuids.add(uuid)
 
                                         summary_str = "\n".join(task_summary_lines) if task_summary_lines else "No unassigned tasks found."
                                         directive_message_content = (
@@ -962,10 +1734,24 @@ class AgentCycleHandler:
                                             "Your mandatory next action is to get the list of available agents using the `<manage_team><action>list_agents</action>...</manage_team>` tool."
                                         )
                                     elif action_performed == "modify_task":
-                                        assigned_task_uuid = called_tool_args.get("task_id")
+                                        # The tool result contains the definitive UUID of the task that was modified
+                                        assigned_task_uuid = tool_result_json.get("task_uuid")
+                                        
+                                        # Fallback to the requested task_id if task_uuid isn't in the response yet
+                                        if not assigned_task_uuid:
+                                            assigned_task_uuid = str(called_tool_args.get("task_id", "")).strip()
+
                                         if hasattr(agent, 'unassigned_tasks_summary') and isinstance(agent.unassigned_tasks_summary, list) and assigned_task_uuid:
-                                            # Remove the assigned task from our summary
-                                            agent.unassigned_tasks_summary = [t for t in agent.unassigned_tasks_summary if t.get("uuid") != assigned_task_uuid]
+                                            new_summary = []
+                                            for t in agent.unassigned_tasks_summary:
+                                                is_match = False
+                                                if t.get("uuid") == assigned_task_uuid: is_match = True
+                                                # Fallback fuzzy match just in case
+                                                elif t.get("description") and assigned_task_uuid.lower() in t.get("description").lower(): is_match = True
+                                                
+                                                if not is_match:
+                                                    new_summary.append(t)
+                                            agent.unassigned_tasks_summary = new_summary
 
                                         # Now, generate a new summary of remaining tasks
                                         remaining_tasks = getattr(agent, 'unassigned_tasks_summary', [])
@@ -979,17 +1765,45 @@ class AgentCycleHandler:
                                             )
                                         else:
                                             task_summary_lines = []
+                                            # Check which remaining tasks actually have NO unmet dependencies
+                                            assigned_uuids = set()
+                                            if hasattr(agent, 'unassigned_tasks_summary'):
+                                                # Collect UUIDs of tasks we've already assigned (not in remaining list)
+                                                all_kickoff = getattr(agent, '_all_kickoff_task_uuids', set())
+                                                remaining_uuids = {t.get("uuid") for t in remaining_tasks}
+                                                assigned_uuids = all_kickoff - remaining_uuids
+
+                                            actionable_count = 0
                                             for task_info in remaining_tasks:
                                                 desc = task_info.get("description", "No description")
                                                 uuid = task_info.get("uuid")
+                                                deps = task_info.get("depends", [])
                                                 truncated_desc = (desc[:75] + '...') if len(desc) > 75 else desc
-                                                task_summary_lines.append(f"- {truncated_desc} (UUID: {uuid})")
+                                                # A task is actionable if all its dependencies are in assigned_uuids (already assigned)
+                                                has_unmet_deps = any(dep not in assigned_uuids for dep in deps) if deps else False
+                                                dep_note = " [BLOCKED - has unmet dependencies]" if has_unmet_deps else ""
+                                                task_summary_lines.append(f"- {truncated_desc} (UUID: {uuid}){dep_note}")
+                                                if not has_unmet_deps:
+                                                    actionable_count += 1
+
                                             summary_str = "\n".join(task_summary_lines)
-                                            directive_message_content = (
-                                                f"[Framework System Message]: Task assignment processed successfully. Here are the remaining unassigned tasks:\n"
-                                                f"{summary_str}\n\n"
-                                                "Your mandatory next action is to assign the next task from this list to a suitable agent."
-                                            )
+
+                                            if actionable_count > 0:
+                                                directive_message_content = (
+                                                    f"[Framework System Message]: Task assignment processed successfully. Here are the remaining unassigned tasks:\n"
+                                                    f"{summary_str}\n\n"
+                                                    "Your mandatory next action is to assign the next ACTIONABLE (non-blocked) task from this list to a suitable agent."
+                                                )
+                                            else:
+                                                # All remaining tasks are blocked by dependencies
+                                                project_name = agent.agent_config.get("config", {}).get("project_name_context", "Unknown Project")
+                                                directive_message_content = (
+                                                    f"[Framework System Message]: Task assignment processed successfully. The remaining tasks all have unmet dependencies:\n"
+                                                    f"{summary_str}\n\n"
+                                                    "All actionable kick-off tasks have been assigned. Your MANDATORY next action is to report this to the Admin AI and transition to manage state. "
+                                                    f"Use the send_message tool to send the following message to '{BOOTSTRAP_AGENT_ID}':\n"
+                                                    f"'Project `{project_name}` initial actionable kick-off tasks assigned. Remaining tasks are dependency-blocked and will be assigned as prerequisites complete.'"
+                                                )
                             elif called_tool_name == "manage_team" and called_tool_args.get("action") == "list_agents":
                                 # This intervention is now more intelligent. It re-presents the simplified task list.
                                 task_summary_lines = []
@@ -1008,9 +1822,11 @@ class AgentCycleHandler:
                                 )
 
                             if directive_message_content:
+                                # CRITICAL FIX: Deduplicate old framework messages before adding new one
+                                self._deduplicate_pm_framework_messages(agent)
                                 logger.info(f"CycleHandler: PM '{agent.agent_id}' in '{agent.state}', after tool '{called_tool_name}', injecting directive: {directive_message_content[:100]}...")
                                 directive_msg: MessageDict = {"role": "system", "content": directive_message_content}
-                                agent.message_history.append(directive_msg)
+                                all_tool_results_for_history.append(directive_msg)
                                 if context.current_db_session_id:
                                     await self._manager.db_manager.log_interaction(
                                         session_id=context.current_db_session_id,
@@ -1051,7 +1867,7 @@ class AgentCycleHandler:
                             if directive_message_content:
                                 logger.info(f"CycleHandler: PM '{agent.agent_id}' in '{agent.state}', after tool '{called_tool_name}', injecting directive: {directive_message_content[:100]}...")
                                 directive_msg: MessageDict = {"role": "system", "content": directive_message_content}
-                                agent.message_history.append(directive_msg)
+                                all_tool_results_for_history.append(directive_msg)
                                 if context.current_db_session_id:
                                     await self._manager.db_manager.log_interaction(
                                         session_id=context.current_db_session_id,
@@ -1061,7 +1877,181 @@ class AgentCycleHandler:
                                     )
                         # --- END: PM Manage State Interventions ---
 
+                        # --- DEFERRED EMBEDDED STATE CHANGE ---
+                        # Execute the embedded state change AFTER all tools have finished executing.
+                        # This prevents the state change from altering the agent's state before 
+                        # tools that depend on the original state (like send_message in worker_report) can run.
+                        if deferred_state_change:
+                            if self._manager.workflow_manager.change_state(agent, deferred_state_change, task_description=deferred_task_desc):
+                                logger.info(f"CycleHandler: Successfully changed agent '{agent.agent_id}' state to '{deferred_state_change}' after tool processing")
+                                
+                                # CRITICAL FIX: Append a user message so the next cycle has a clear trigger to start generating
+                                # Without this, the last message is the assistant's <request_state> tag, causing empty outputs
+                                agent.message_history.append({
+                                    "role": "user",
+                                    "content": f"[System State Change]: State changed to {deferred_state_change}. Your instructions have been updated. Please proceed."
+                                })
+                            else:
+                                resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, deferred_state_change)
+                                if agent.state == resolved_requested:
+                                    logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Treating as no-op to prevent reactivation loop.")
+                                else:
+                                    logger.warning(f"CycleHandler: Failed to change agent '{agent.agent_id}' state to '{deferred_state_change}' after tool processing")
+                                    # Truly invalid state transition. Let it reactivate to correct itself (with an error message).
+                                    invalid_msg = f"[Framework Error]: Invalid state requested: '{deferred_state_change}'. Please check valid states for your role."
+                                    agent.message_history.append({"role": "system", "content": invalid_msg})
+                        # --- END DEFERRED EMBEDDED STATE CHANGE ---
+
                         llm_stream_ended_cleanly = False; break
+
+                    elif event_type in ["response_chunk", "status", "final_response", "invalid_state_request_output"]:
+                        if event_type == "final_response":
+                            context.action_taken_this_cycle = True
+                            final_content = event.get("content")
+                            original_event_data = event
+    
+                            # <<<< MODIFICATION: Prepend thought to final content if it exists
+                            if thought_content_for_history:
+                                final_content = f"{thought_content_for_history}\n{final_content}"
+                                original_event_data['content'] = final_content # Update event data for UI/logging
+    
+                            # --- START: Worker Auto-Save File Feature ---
+                            if agent.agent_type == AGENT_TYPE_WORKER and final_content and "<request_state state='worker_wait'/>" in final_content:
+                                logger.info(f"CycleHandler: Worker '{agent.agent_id}' produced final content. Checking for files to auto-save.")
+                                # Regex to find all markdown code blocks
+                                code_blocks = re.findall(r"```(?:\w+)?\n(.*?)\n```", final_content, re.DOTALL)
+                                saved_files_count: int = 0
+                                for block in code_blocks:
+                                    # Regex to find a filename comment, e.g., # file: path/to/file.js or <!-- file: index.html -->
+                                    match = re.search(r"^(?:#|//|<!--)\s*file:\s*([\w\-\./_]+)\s*(?:-->)?", block)
+                                    if match:
+                                        filepath = match.group(1).strip()
+                                        # The rest of the block is the content
+                                        file_content = block[match.end():].strip()
+                                        logger.info(f"CycleHandler: Found file '{filepath}' in worker output. Attempting to save.")
+                                        try:
+                                            # Use the ToolExecutor to write the file
+                                            # Note: This is an internal, framework-level call, so we use a specific agent_id for logging/auth if needed
+                                            tool_result = await self._interaction_handler.execute_single_tool(
+                                                agent=agent, # Pass the original agent for context
+                                                call_id="internal_auto_save",
+                                                tool_name="file_system",
+                                                tool_args={"action": "write_file", "filepath": filepath, "content": file_content},
+                                                project_name=self._manager.current_project,
+                                                session_name=self._manager.current_session
+                                            )
+                                            if tool_result and tool_result.get("status") == "success":
+                                                saved_files_count += 1
+                                                logger.info(f"CycleHandler: Successfully auto-saved file '{filepath}' for worker '{agent.agent_id}'.")
+                                                # Optional: Notify UI about the saved file
+                                                await self._manager.send_to_ui({
+                                                    "type": "system_notification",
+                                                    "agent_id": agent.agent_id,
+                                                    "content": f"Framework auto-saved file: {filepath}"
+                                                })
+                                            else:
+                                                logger.error(f"CycleHandler: Failed to auto-save file '{filepath}'. Reason: {tool_result.get('message') if tool_result else 'Unknown error'}")
+                                        except Exception as e:
+                                            logger.error(f"CycleHandler: Exception during auto-save of file '{filepath}': {e}", exc_info=True)
+                                if saved_files_count > 0:
+                                    logger.info(f"CycleHandler: Auto-save complete. Saved {saved_files_count} file(s) from worker '{agent.agent_id}' output.")
+                            # --- END: Worker Auto-Save File Feature ---
+    
+                            if final_content and agent.agent_id != CONSTITUTIONAL_GUARDIAN_AGENT_ID:
+                                # Skip CG review for tool-call-only responses (framework operations, not user-facing text)
+                                if re.match(r'^\s*(<tool_call>.*?</tool_call>\s*)+$', final_content, re.DOTALL):
+                                    logger.info(f"CycleHandler: Skipping CG review for tool-call-only response from '{agent.agent_id}'")
+                                    cg_verdict = "<OK/>"
+                                else:
+                                    cg_verdict = await self._get_cg_verdict(final_content)
+                                if cg_verdict == "<OK/>":
+                                    if context.current_db_session_id and (not agent.message_history or not agent.message_history[-1].get("tool_calls")): await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content)
+                                    await self._manager.send_to_ui(original_event_data)
+                                else: # CG Concern
+                                    agent.cg_original_text = final_content; agent.cg_concern_details = cg_verdict; agent.cg_original_event_data = original_event_data
+                                    agent.cg_awaiting_user_decision = True; agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG); agent.cg_review_start_time = time.time()
+                                    await self._manager.send_to_ui({"type": "cg_concern", "agent_id": agent.agent_id, "original_text": final_content, "concern_details": cg_verdict})
+                                    context.action_taken_this_cycle = True; context.needs_reactivation_after_cycle = False
+                                    llm_stream_ended_cleanly = False; break
+                            else: # No content or CG agent itself
+                                if context.current_db_session_id and final_content and (not agent.message_history or not agent.message_history[-1].get("tool_calls")): await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content)
+                                await self._manager.send_to_ui(original_event_data)
+                        elif event_type == "invalid_state_request_output":
+                            invalid_content = event.get("content", "")
+                            # CRITICAL FIX: Append the LLM's response to history so the next cycle
+                            # doesn't see identical input and produce identical output (loop breaker)
+                            agent.message_history.append({"role": "assistant", "content": invalid_content})
+                            
+                            # Try to resolve the alias and provide helpful feedback
+                            requested_state_match = re.search(r"state=['\"]([\w_]+)['\"]", invalid_content)
+                            resolved_hint = ""
+                            if requested_state_match and hasattr(self._manager, 'workflow_manager'):
+                                raw_state = requested_state_match.group(1)
+                                resolved = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, raw_state)
+                                if resolved != raw_state:
+                                    resolved_hint = f" Did you mean '{resolved}'? Try: <request_state state='{resolved}'/>"
+                            
+                            valid_states = self._manager.workflow_manager._valid_states.get(agent.agent_type, [])
+                            feedback_msg = (
+                                f"[Framework Feedback]: Your state request '{invalid_content}' used an unrecognized state name. "
+                                f"Valid states for your role are: {valid_states}.{resolved_hint} "
+                                f"Please use the exact state name from this list."
+                            )
+                            agent.message_history.append({"role": "system", "content": feedback_msg})
+                            
+                            context.action_taken_this_cycle = True; context.needs_reactivation_after_cycle = True
+                            if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="system_warning", content=f"Agent attempted invalid state change: {invalid_content}. Feedback provided.")
+                            await self._manager.send_to_ui(event)
+                        else: await self._manager.send_to_ui(event) # response_chunk, status
+    
+                    elif event_type == "pm_startup_missing_task_list_after_think":
+                        # ... (feedback prep, append to history, db log) ...
+                        feedback_content = ("Framework Feedback for PM Retry]\nYour previous output consisted only of a <think> block. In the PM_STATE_STARTUP, you must provide the <task_list> XML structure after your thoughts. Please ensure your entire response includes the XML task list as specified in your instructions.")
+                        agent.message_history.append({"role": "system", "content": feedback_content})
+                        if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="system_feedback", content=feedback_content)
+                        context.action_taken_this_cycle = True; context.cycle_completed_successfully = False; context.needs_reactivation_after_cycle = True
+                        context.last_error_content = "PM startup missing task list after think."
+                        await self._manager.send_to_ui({**event, "feedback_provided": True})
+                        llm_stream_ended_cleanly = False; break
+    
+                    elif event_type == "pm_completion_detection":
+                        # Enhanced completion detection - check if project is actually complete
+                        context.action_taken_this_cycle = True
+                        thinking_content = event.get("thinking_content", "")
+                        
+                        logger.info(f"CycleHandler: PM '{agent.agent_id}' showing completion thoughts. Triggering project status verification.")
+                        
+                        # Inject a directive to verify project completion
+                        completion_verification_directive = (
+                            "[Framework System Message]: You have expressed thoughts about project completion. "
+                            "Your MANDATORY next action is to verify the actual project status. "
+                            "Use `<project_management><action>list_tasks</action></project_management>` to check for any remaining tasks. "
+                            "If no unassigned tasks remain and all work is truly complete, report completion to the Admin AI using: "
+                            f"`<send_message><target_agent_id>{BOOTSTRAP_AGENT_ID}</target_agent_id><message_content>Project [PROJECT_NAME] is complete. All tasks have been finished successfully.</message_content></send_message>` "
+                            "followed by requesting standby state: `<request_state state='pm_standby'/>`"
+                        )
+                        
+                        agent.message_history.append({"role": "system", "content": completion_verification_directive})
+                        
+                        if context.current_db_session_id:
+                            await self._manager.db_manager.log_interaction(
+                                session_id=context.current_db_session_id,
+                                agent_id=agent.agent_id,
+                                role="system_completion_verification",
+                                content=completion_verification_directive
+                            )
+                        
+                        context.needs_reactivation_after_cycle = True
+                        context.cycle_completed_successfully = True
+                        
+                        await self._manager.send_to_ui({
+                            "type": "pm_completion_verification_triggered",
+                            "agent_id": agent.agent_id,
+                            "thinking_content": thinking_content
+                        })
+                        
+                        llm_stream_ended_cleanly = False; break
+                    else: logger.warning(f"CycleHandler: Unknown event type '{event_type}' from agent '{agent.agent_id}'.")
 
                 # This block handles cases where the LLM stream finished without any specific break-worthy event.
                 if llm_stream_ended_cleanly and not context.last_error_obj and not context.action_taken_this_cycle:
@@ -1080,9 +2070,9 @@ class AgentCycleHandler:
 
                         # Check if the agent's recent output was only thinking without action
                         recent_think_only = False
-                        if agent.text_buffer.strip():
+                        if cycle_text_content.strip():
                             # If there's content in text buffer, check if it's just thinking
-                            buffer_content = agent.text_buffer.strip()
+                            buffer_content = cycle_text_content.strip()
                             if '<think>' in buffer_content.lower() and not any(tool_name in buffer_content.lower() 
                                 for tool_name in ['<project_management>', '<manage_team>', '<send_message>']):
                                 recent_think_only = True
@@ -1147,127 +2137,10 @@ class AgentCycleHandler:
                                 context.action_taken_this_cycle = True
                                 context.cycle_completed_successfully = True
 
-                    elif event_type in ["response_chunk", "status", "final_response", "invalid_state_request_output"]:
-                        if event_type == "final_response":
-                            final_content = event.get("content"); original_event_data = event
-
-                            # --- START: Worker Auto-Save File Feature ---
-                            if agent.agent_type == AGENT_TYPE_WORKER and final_content and "<request_state state='worker_wait'/>" in final_content:
-                                logger.info(f"CycleHandler: Worker '{agent.agent_id}' produced final content. Checking for files to auto-save.")
-                                # Regex to find all markdown code blocks
-                                code_blocks = re.findall(r"```(?:\w+)?\n(.*?)\n```", final_content, re.DOTALL)
-                                saved_files_count = 0
-                                for block in code_blocks:
-                                    # Regex to find a filename comment, e.g., # file: path/to/file.js or <!-- file: index.html -->
-                                    match = re.search(r"^(?:#|//|<!--)\s*file:\s*([\w\-\./_]+)\s*(?:-->)?", block)
-                                    if match:
-                                        filepath = match.group(1).strip()
-                                        # The rest of the block is the content
-                                        file_content = block[match.end():].strip()
-                                        logger.info(f"CycleHandler: Found file '{filepath}' in worker output. Attempting to save.")
-                                        try:
-                                            # Use the ToolExecutor to write the file
-                                            # Note: This is an internal, framework-level call, so we use a specific agent_id for logging/auth if needed
-                                            tool_result = await self._interaction_handler.execute_single_tool(
-                                                agent=agent, # Pass the original agent for context
-                                                call_id="internal_auto_save",
-                                                tool_name="file_system",
-                                                tool_args={"action": "write_file", "filepath": filepath, "content": file_content},
-                                                project_name=self._manager.current_project,
-                                                session_name=self._manager.current_session
-                                            )
-                                            if tool_result and tool_result.get("status") == "success":
-                                                saved_files_count += 1
-                                                logger.info(f"CycleHandler: Successfully auto-saved file '{filepath}' for worker '{agent.agent_id}'.")
-                                                # Optional: Notify UI about the saved file
-                                                await self._manager.send_to_ui({
-                                                    "type": "system_notification",
-                                                    "agent_id": agent.agent_id,
-                                                    "content": f"Framework auto-saved file: {filepath}"
-                                                })
-                                            else:
-                                                logger.error(f"CycleHandler: Failed to auto-save file '{filepath}'. Reason: {tool_result.get('message') if tool_result else 'Unknown error'}")
-                                        except Exception as e:
-                                            logger.error(f"CycleHandler: Exception during auto-save of file '{filepath}': {e}", exc_info=True)
-                                if saved_files_count > 0:
-                                    logger.info(f"CycleHandler: Auto-save complete. Saved {saved_files_count} file(s) from worker '{agent.agent_id}' output.")
-                            # --- END: Worker Auto-Save File Feature ---
-
-                            if final_content and agent.agent_id != CONSTITUTIONAL_GUARDIAN_AGENT_ID:
-                                cg_verdict = await self._get_cg_verdict(final_content)
-                                if cg_verdict == "<OK/>":
-                                    if context.current_db_session_id and (not agent.message_history or not agent.message_history[-1].get("tool_calls")): await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content)
-                                    await self._manager.send_to_ui(original_event_data)
-                                else: # CG Concern
-                                    agent.cg_original_text = final_content; agent.cg_concern_details = cg_verdict; agent.cg_original_event_data = original_event_data
-                                    agent.cg_awaiting_user_decision = True; agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG); agent.cg_review_start_time = time.time()
-                                    await self._manager.send_to_ui({"type": "cg_concern", "agent_id": agent.agent_id, "original_text": final_content, "concern_details": cg_verdict})
-                                    context.action_taken_this_cycle = True; context.needs_reactivation_after_cycle = False
-                                    llm_stream_ended_cleanly = False; break
-                            else: # No content or CG agent itself
-                                if context.current_db_session_id and final_content and (not agent.message_history or not agent.message_history[-1].get("tool_calls")): await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content)
-                                await self._manager.send_to_ui(original_event_data)
-                        elif event_type == "invalid_state_request_output": # ... (db log, UI send) ...
-                            context.action_taken_this_cycle = True; context.needs_reactivation_after_cycle = True
-                            if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="system_warning", content=f"Agent attempted invalid state change: {event.get('content')}")
-                            await self._manager.send_to_ui(event)
-                        else: await self._manager.send_to_ui(event) # response_chunk, status
-
-                    elif event_type == "pm_startup_missing_task_list_after_think":
-                        # ... (feedback prep, append to history, db log) ...
-                        feedback_content = ("Framework Feedback for PM Retry]\nYour previous output consisted only of a <think> block. In the PM_STATE_STARTUP, you must provide the <task_list> XML structure after your thoughts. Please ensure your entire response includes the XML task list as specified in your instructions.")
-                        agent.message_history.append({"role": "system", "content": feedback_content})
-                        if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="system_feedback", content=feedback_content)
-                        context.action_taken_this_cycle = True; context.cycle_completed_successfully = False; context.needs_reactivation_after_cycle = True
-                        context.last_error_content = "PM startup missing task list after think."
-                        await self._manager.send_to_ui({**event, "feedback_provided": True})
-                        llm_stream_ended_cleanly = False; break
-
-                    elif event_type == "pm_completion_detection":
-                        # Enhanced completion detection - check if project is actually complete
-                        context.action_taken_this_cycle = True
-                        thinking_content = event.get("thinking_content", "")
-                        
-                        logger.info(f"CycleHandler: PM '{agent.agent_id}' showing completion thoughts. Triggering project status verification.")
-                        
-                        # Inject a directive to verify project completion
-                        completion_verification_directive = (
-                            "[Framework System Message]: You have expressed thoughts about project completion. "
-                            "Your MANDATORY next action is to verify the actual project status. "
-                            "Use `<project_management><action>list_tasks</action></project_management>` to check for any remaining tasks. "
-                            "If no unassigned tasks remain and all work is truly complete, report completion to the Admin AI using: "
-                            f"`<send_message><target_agent_id>{BOOTSTRAP_AGENT_ID}</target_agent_id><message_content>Project [PROJECT_NAME] is complete. All tasks have been finished successfully.</message_content></send_message>` "
-                            "followed by requesting standby state: `<request_state state='pm_standby'/>`"
-                        )
-                        
-                        agent.message_history.append({"role": "system", "content": completion_verification_directive})
-                        
-                        if context.current_db_session_id:
-                            await self._manager.db_manager.log_interaction(
-                                session_id=context.current_db_session_id,
-                                agent_id=agent.agent_id,
-                                role="system_completion_verification",
-                                content=completion_verification_directive
-                            )
-                        
-                        context.needs_reactivation_after_cycle = True
-                        context.cycle_completed_successfully = True
-                        
-                        await self._manager.send_to_ui({
-                            "type": "pm_completion_verification_triggered",
-                            "agent_id": agent.agent_id,
-                            "thinking_content": thinking_content
-                        })
-                        
-                        llm_stream_ended_cleanly = False; break
-                    else: logger.warning(f"CycleHandler: Unknown event type '{event_type}' from agent '{agent.agent_id}'.")
-
-                # This block handles cases where the LLM stream finished without any specific break-worthy event.
-                if llm_stream_ended_cleanly and not context.last_error_obj and not context.action_taken_this_cycle:
                     # Intervention logic for PM agent stuck after team creation
                     if agent.agent_type == AGENT_TYPE_PM and \
                        agent.state == PM_STATE_BUILD_TEAM_TASKS and \
-                       not agent.intervention_applied_for_build_team_tasks:
+                       not getattr(agent, 'intervention_applied_for_build_team_tasks', False):
 
                         team_created_successfully = False
                         created_team_id_for_message = "team_NameNotRetrieved" # Default
@@ -1319,12 +2192,12 @@ class AgentCycleHandler:
                             context.cycle_completed_successfully = True
 
                     # Original logic for processing final_content_from_buffer starts here
-                    if context.needs_reactivation_after_cycle and agent.intervention_applied_for_build_team_tasks and not agent.text_buffer.strip():
+                    if context.needs_reactivation_after_cycle and getattr(agent, 'intervention_applied_for_build_team_tasks', False) and not cycle_text_content.strip():
                         pass
                     else:
-                        final_content_from_buffer = agent.text_buffer.strip()
+                        final_content_from_buffer = cycle_text_content.strip()
                         if final_content_from_buffer:
-                            agent.text_buffer = ""; mock_event_data = {"type": "final_response", "content": final_content_from_buffer, "agent_id": agent.agent_id}
+                            cycle_text_content = ""; mock_event_data = {"type": "final_response", "content": final_content_from_buffer, "agent_id": agent.agent_id}
                             context.action_taken_this_cycle = True
                             if agent.agent_id != CONSTITUTIONAL_GUARDIAN_AGENT_ID:
                                 cg_verdict = await self._get_cg_verdict(final_content_from_buffer)
@@ -1332,6 +2205,13 @@ class AgentCycleHandler:
                                     if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content_from_buffer)
                                     await self._manager.send_to_ui(mock_event_data)
                                     context.cycle_completed_successfully = True
+                                    
+                                    # NEW: Auto-transition Admin AI from conversation to standby
+                                    if agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_CONVERSATION:
+                                        if not context.state_change_requested_this_cycle and not context.executed_tool_successfully_this_cycle:
+                                            logger.info(f"CycleHandler: Admin AI '{agent.agent_id}' in conversation state produced text response. Auto-transitioning to standby mode.")
+                                            self._manager.workflow_manager.change_state(agent, ADMIN_STATE_STANDBY)
+                                            context.needs_reactivation_after_cycle = False
                                 else:
                                     agent.cg_original_text = final_content_from_buffer; agent.cg_concern_details = cg_verdict; agent.cg_original_event_data = mock_event_data
                                     agent.cg_awaiting_user_decision = True; agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG)
@@ -1343,7 +2223,7 @@ class AgentCycleHandler:
                                 await self._manager.send_to_ui(mock_event_data)
                                 context.cycle_completed_successfully = True
                         else:
-                            logger.info(f"Agent '{agent.agent_id}' cycle resulted in no errors, no actions, and no text_buffer content. Cycle considered complete but no output.")
+                            logger.info(f"Agent '{agent.agent_id}' cycle resulted in no errors, no actions, and no text content. Cycle considered complete but no output.")
                             context.cycle_completed_successfully = True
 
                 # Determine if this iteration of LLM call was successful before recheck
@@ -1394,7 +2274,8 @@ class AgentCycleHandler:
         self._outcome_determiner.determine_cycle_outcome(context)
 
         # Record agent health metrics after cycle completion
-        final_output_content = getattr(agent, 'text_buffer', '') or ''
+        final_output_content = cycle_text_content or ''
+        logger.debug(f"CycleHandler: Recording agent cycle for '{agent.agent_id}' with content length: {len(final_output_content)}")
         self._health_monitor.record_agent_cycle(
             agent=agent,
             content=final_output_content,
@@ -1405,21 +2286,20 @@ class AgentCycleHandler:
 
         # Constitutional Guardian Health Intervention Check
         try:
+            logger.debug(f"CycleHandler: Analyzing agent health for '{agent.agent_id}'")
             needs_intervention, problem_desc, recovery_plan = await self._health_monitor.analyze_agent_health(agent)
             if needs_intervention and recovery_plan:
                 logger.error(f"CycleHandler: Constitutional Guardian intervening for agent '{agent.agent_id}': {problem_desc}")
                 success = await self._health_monitor.execute_recovery_plan(agent, recovery_plan)
                 if success:
-                    # After successful Constitutional Guardian intervention, schedule immediate reactivation
+                    # After successful Constitutional Guardian intervention, let NextStepScheduler handle reactivation
                     context.needs_reactivation_after_cycle = True
-                    logger.error(f"CycleHandler: Constitutional Guardian intervention successful for '{agent.agent_id}', agent will be reactivated")
-                    
-                    # If this was a critical violation (empty/identical responses), force immediate reactivation
-                    violation_types = ["empty_response_violation", "identical_response_violation"]
-                    if recovery_plan.get("type") in violation_types:
-                        # Override normal scheduling to ensure immediate reactivation
-                        await self._manager.schedule_cycle(agent, retry_count=0)
-                        logger.error(f"CycleHandler: CRITICAL VIOLATION - Immediately reactivating agent '{agent.agent_id}' after Constitutional Guardian intervention")
+                    logger.warning(f"CycleHandler: Constitutional Guardian intervention successful for '{agent.agent_id}', agent will be reactivated via NextStepScheduler")
+                    # CRITICAL FIX: Removed direct schedule_cycle() call here.
+                    # Previously, both needs_reactivation_after_cycle AND schedule_cycle() were set,
+                    # causing double-reactivation with no cooldown — a key contributor to the infinite loop.
+            else:
+                logger.debug(f"CycleHandler: No intervention needed for agent '{agent.agent_id}'")
         except Exception as health_error:
             logger.error(f"CycleHandler: Error during Constitutional Guardian health monitoring for '{agent.agent_id}': {health_error}", exc_info=True)
 

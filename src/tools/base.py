@@ -55,7 +55,7 @@ class BaseTool(ABC):
     # --- *** END MODIFIED SIGNATURE *** ---
 
     @abstractmethod
-    def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None) -> str:
+    def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None, sub_action: Optional[str] = None) -> str:
         """
         Returns a detailed string explaining how to use the tool, including actions,
         parameters, and examples. This is intended for on-demand requests by LLMs.
@@ -75,4 +75,49 @@ class BaseTool(ABC):
             "summary": self.summary or self.description, # Fallback to description if summary is None
             "parameters": [param.dict() for param in self.parameters],
             "auth_level": self.auth_level # Include auth_level in schema
+        }
+
+    def get_json_schema(self) -> Dict[str, Any]:
+        """
+        Returns a strict JSON Schema compliant dictionary for native tool calling
+        (compatible with OpenAI, Anthropic, and Ollama function calling).
+        """
+        properties = {}
+        required = []
+        for param in self.parameters:
+            # Map TrippleEffect param types to JSON Schema types
+            schema_type = param.type.lower()
+            if schema_type == "list":
+                schema_type = "array"
+            elif schema_type == "dict":
+                schema_type = "object"
+            elif schema_type == "int":
+                schema_type = "integer"
+            elif schema_type == "float":
+                schema_type = "number"
+            elif schema_type not in ["string", "integer", "number", "boolean", "object", "array", "null"]:
+                schema_type = "string" # Fallback
+
+            properties[param.name] = {
+                "type": schema_type,
+                "description": param.description
+            }
+            if schema_type == "array":
+                properties[param.name]["items"] = {"type": "string"} # Default list items to string
+
+            if param.required:
+                required.append(param.name)
+                
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                    "additionalProperties": False
+                }
+            }
         }

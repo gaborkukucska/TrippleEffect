@@ -26,8 +26,8 @@ from src.agents.constants import (
     AGENT_STATUS_AWAITING_TOOL, AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_ERROR,
     AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER,
     ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK,
-    PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE,
-    WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_WAIT,
+    PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_AUDIT,
+    WORKER_STATE_STARTUP, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK, WORKER_STATE_WAIT,
     DEFAULT_STATE
 )
 # --- END Import status and state constants ---
@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 # Tool Call Patterns (XML only)
 XML_TOOL_CALL_PATTERN = None
-MARKDOWN_FENCE_XML_PATTERN = r"```(?:[a-zA-Z]*\n)?\s*(<({tool_names})>[\s\S]*?</\2>)\s*\n?```"
+MARKDOWN_FENCE_XML_PATTERN = r"```(?:[a-zA-Z]*\n)?\s*(<({tool_names})(?:\s+[^>]*)?(?:>[\s\S]*?</\2>|/>))\s*\n?```"
 THINK_TAG_PATTERN = r"<think>([\s\S]*?)</think>"
 ROBUST_THINK_TAG_PATTERN = re.compile(r"<think>(.*?)(?:</think>|<(?=[^/]))", re.DOTALL | re.IGNORECASE)
 
@@ -63,16 +63,18 @@ class Agent:
         self._config_system_prompt: str = config.get("system_prompt", "") 
         self.temperature: float = float(config.get("temperature", settings.DEFAULT_TEMPERATURE))
         self.persona: str = config.get("persona", settings.DEFAULT_PERSONA)
+        self.role: str = config.get("role", "")
         self.agent_type: str = config.get("agent_type", "worker")
         self.agent_config: Dict[str, Any] = agent_config 
-        self.provider_kwargs = {k: v for k, v in config.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'agent_type', 'api_key', 'base_url', 'referer', 'max_tokens', 'project_name_context', 'initial_plan_description']}
+        self.provider_kwargs = {k: v for k, v in config.items() if k not in ['provider', 'model', 'system_prompt', 'temperature', 'persona', 'agent_type', 'api_key', 'base_url', 'referer', 'max_tokens', 'project_name_context', 'initial_plan_description', 'admin_memory_context', 'role', 'personality']}
         self.llm_provider: BaseLLMProvider = llm_provider
         self.manager: 'AgentManager' = manager
         self.status: str = AGENT_STATUS_IDLE
         self.state: Optional[str] = None
         self.current_tool_info: Optional[Dict[str, str]] = None
-        self.current_plan: Optional[str] = None 
+        self.current_plan: Optional[str] = None
         self.current_task_id: Optional[str] = None
+        self.current_task_description: Optional[str] = None # Holds the task for the current work state
         self.message_history: List[MessageDict] = []
         self._last_api_key_used: Optional[str] = None
         self._failed_models_this_cycle: set = set()
@@ -81,13 +83,16 @@ class Agent:
         self.needs_priority_recheck: bool = False
         self.intervention_applied_for_build_team_tasks: bool = False
         self.text_buffer: str = ""
-        self.sandbox_path: Path = BASE_DIR / "sandboxes" / f"agent_{self.agent_id}"
+        safe_agent_id = self.agent_id if self.agent_id.startswith(("agent_", "pm_", "admin_")) else f"agent_{self.agent_id}"
+        self.sandbox_path: Path = BASE_DIR / "sandboxes" / safe_agent_id
         self.raw_xml_tool_call_pattern = None
         self.markdown_xml_tool_call_pattern = None
         self.think_pattern = ROBUST_THINK_TAG_PATTERN
+        self._failover_state: Optional[Dict[str, Any]] = None
         self.initial_plan_description: Optional[str] = config.get("initial_plan_description")
         self.kick_off_task_count_for_build: Optional[int] = None # For PM to track how many workers to create
         self.successfully_created_agent_count_for_build: int = 0 # Counter for created workers in build phase
+        self.default_task_assigned: bool = False # Flag for one-time default task injection
         
         # Attributes for Constitutional Guardian interaction
         self.cg_original_text: Optional[str] = None
@@ -96,13 +101,36 @@ class Agent:
         self.cg_awaiting_user_decision: bool = False
         self.cg_review_start_time: Optional[float] = None
 
+        # Dynamic tracking attributes set by workflow_manager / cycle_handler
+        self._consecutive_empty_work_cycles: int = 0
+        self._work_cycle_count: int = 0
+        self._project_completed: bool = False
+        self._project_completion_time: Optional[float] = None
+        self._periodic_cycle_count: int = 0
+        self._periodic_cycle_window_start: float = 0.0
+        self._last_periodic_check_time: float = 0.0
+        self._manage_unproductive_cycles: int = 0
+        self._work_completion_history: List[Dict[str, Any]] = []
+        self._state_transition_history: List[Dict[str, Any]] = []
+        self._needs_initial_work_context: bool = False
+        self._injected_task_description: Optional[str] = None
+        self._last_system_prompt_state: Optional[Tuple[str, Optional[str]]] = None  # Tracks (agent_type, state) for prompt reuse
+        self._pre_report_check_state: Optional[str] = None # Tracks previous state before auto-switching to report check
+        self.message_inbox: List[MessageDict] = [] # Inbox for messages received while busy
+        self.unassigned_tasks_summary: List[Dict[str, Any]] = []
+
+        # PM kickoff workflow attributes
+        self.kick_off_roles: List[str] = []
+        self.kick_off_tasks: List[str] = []
+        self.target_worker_agents_for_build: int = 0
+
 
         if self.manager and self.manager.tool_executor and self.manager.tool_executor.tools:
             tool_names = list(self.manager.tool_executor.tools.keys())
             if tool_names:
                 safe_tool_names_lower = [re.escape(name.lower()) for name in tool_names]
                 tool_names_pattern_group_lower = '|'.join(safe_tool_names_lower)
-                raw_pattern_str = rf"<({tool_names_pattern_group_lower})>([\s\S]*?)</\1>"
+                raw_pattern_str = rf"<({tool_names_pattern_group_lower})(?:\s+[^>]*)?(?:>[\s\S]*?</\1>|/>)"
                 self.raw_xml_tool_call_pattern = re.compile(raw_pattern_str, re.IGNORECASE | re.DOTALL)
                 md_xml_pattern_str = MARKDOWN_FENCE_XML_PATTERN.format(tool_names=tool_names_pattern_group_lower)
                 self.markdown_xml_tool_call_pattern = re.compile(md_xml_pattern_str, re.IGNORECASE | re.DOTALL | re.MULTILINE)
@@ -120,8 +148,22 @@ class Agent:
         if self.manager: asyncio.create_task(self.manager.push_agent_status_update(self.agent_id))
 
     def set_state(self, new_state: str):
-        if self.state != new_state: logger.info(f"Agent {self.agent_id}: Workflow State changed from '{self.state}' to '{new_state}'"); self.state = new_state
-        else: logger.debug(f"Agent {self.agent_id}: set_state called with current state '{new_state}'. No change.")
+        if self.state != new_state: 
+            logger.info(f"Agent {self.agent_id}: Workflow State changed from '{self.state}' to '{new_state}'")
+            # Track state transitions for Admin AI work state loop detection
+            if not hasattr(self, '_state_transition_history'):
+                self._state_transition_history = []
+            self._state_transition_history.append({
+                'from_state': self.state,
+                'to_state': new_state,
+                'timestamp': time.time()
+            })
+            # Keep only last 10 transitions to avoid memory issues
+            if len(self._state_transition_history) > 10:
+                self._state_transition_history = self._state_transition_history[-10:]
+            self.state = new_state
+        else: 
+            logger.debug(f"Agent {self.agent_id}: set_state called with current state '{new_state}'. No change.")
 
     def ensure_sandbox_exists(self) -> bool:
         try: self.sandbox_path.mkdir(parents=True, exist_ok=True); return True
@@ -149,11 +191,53 @@ class Agent:
                 yield {"type": "error", "content": f"[Agent Error: Could not ensure sandbox {self.sandbox_path}]", "_exception_obj": OSError(f"Could not ensure sandbox {self.sandbox_path}")}; return
 
             max_tokens_override = None
+            # Determine max_tokens based on agent type and state from settings
+            if self.agent_type == AGENT_TYPE_PM:
+                if self.state == PM_STATE_STARTUP: max_tokens_override = settings.PM_STARTUP_STATE_MAX_TOKENS
+                elif self.state == PM_STATE_WORK: max_tokens_override = settings.PM_WORK_STATE_MAX_TOKENS
+                elif self.state == PM_STATE_MANAGE: max_tokens_override = settings.PM_MANAGE_STATE_MAX_TOKENS
+                elif self.state == PM_STATE_AUDIT: max_tokens_override = settings.PM_MANAGE_STATE_MAX_TOKENS
+            elif self.agent_type == AGENT_TYPE_WORKER:
+                if self.state == WORKER_STATE_STARTUP: max_tokens_override = settings.WORKER_STARTUP_STATE_MAX_TOKENS
+                elif self.state == WORKER_STATE_DECOMPOSE: max_tokens_override = settings.WORKER_DECOMPOSE_STATE_MAX_TOKENS
+                elif self.state == WORKER_STATE_WORK: max_tokens_override = settings.WORKER_WORK_STATE_MAX_TOKENS
+                elif self.state == WORKER_STATE_WAIT: max_tokens_override = settings.WORKER_WAIT_STATE_MAX_TOKENS
+            if max_tokens_override is not None:
+                logger.info(f"Agent {self.agent_id}: Applying max_tokens={max_tokens_override} for state '{self.state}'")
+
+            tool_schemas = None
+            if settings.NATIVE_TOOL_CALLING_ENABLED and self.manager and getattr(self.manager, 'tool_executor', None):
+                # Native tools should only be provided to states that expect interactive tool usage.
+                # States outputting structural XML (like startup, report_check) break if forced into tool-call mode.
+                if self.state in {ADMIN_STATE_WORK, ADMIN_STATE_CONVERSATION, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_AUDIT, WORKER_STATE_WORK, WORKER_STATE_DECOMPOSE}:
+                    tool_schemas = []
+                    for tool_name, tool in self.manager.tool_executor.tools.items():
+                        # Restrict WORKER_STATE_DECOMPOSE to only the project_management tool
+                        if self.agent_type == AGENT_TYPE_WORKER and self.state == WORKER_STATE_DECOMPOSE:
+                            if tool_name != 'project_management':
+                                continue
+                                
+                        # Apply standard auth checks for native tools
+                        tool_auth_level = getattr(tool, 'auth_level', 'worker')
+                        is_authorized = False
+                        if self.agent_type == AGENT_TYPE_ADMIN:
+                            is_authorized = True
+                        elif self.agent_type == AGENT_TYPE_PM:
+                            is_authorized = tool_auth_level in ['pm', 'worker']
+                        elif self.agent_type == AGENT_TYPE_WORKER:
+                            is_authorized = tool_auth_level == 'worker'
+                            
+                        if is_authorized:
+                            tool_schemas.append(tool.get_json_schema())
+                else:
+                    logger.debug(f"Agent {self.agent_id}: State '{self.state}' is structural and does not use tools. Native tools payload omitted.")
 
             provider_stream = self.llm_provider.stream_completion(
                 messages=history_to_use, model=self.model, temperature=self.temperature,
-                max_tokens=max_tokens_override, **self.provider_kwargs
+                max_tokens=max_tokens_override, tools=tool_schemas, **self.provider_kwargs
             )
+            
+            native_tool_calls_received = []
 
             async for event in provider_stream:
                 event_type = event.get("type")
@@ -161,6 +245,8 @@ class Agent:
                     content = event.get("content", "")
                     if content: self.text_buffer += content; complete_assistant_response += content; yielded_chunks = True
                     yield {"type": "response_chunk", "content": content, "agent_id": self.agent_id}
+                elif event_type == "native_tool_calls":
+                    native_tool_calls_received.extend(event.get("tool_calls", []))
                 elif event_type == "status": event["agent_id"] = self.agent_id; yield event
                 elif event_type == "error":
                     error_content = f"[{self.provider_name} Error] {event.get('content', 'Unknown provider error')}"
@@ -179,8 +265,9 @@ class Agent:
                 original_complete_response = complete_assistant_response # Retain the full original response for potential error reporting
 
                 # --- Check for Workflow Triggers First ---
+                workflow_result: Optional['WorkflowResult'] = None
                 if hasattr(self.manager, 'workflow_manager'):
-                    workflow_result: Optional['WorkflowResult'] = await self.manager.workflow_manager.process_agent_output_for_workflow(
+                    workflow_result = await self.manager.workflow_manager.process_agent_output_for_workflow(
                         self.manager, self, buffer_to_process
                     )
                     if workflow_result:
@@ -230,7 +317,7 @@ class Agent:
                     thinking_lower = think_content_extracted.lower()
                     completion_thoughts = any(re.search(pattern, thinking_lower) for pattern in completion_indicators)
                     
-                    if completion_thoughts and self.state in [PM_STATE_MANAGE, PM_STATE_WORK]:
+                    if completion_thoughts and self.state in [PM_STATE_MANAGE, PM_STATE_WORK, PM_STATE_AUDIT]:
                         logger.info(f"Agent {self.agent_id} (PM) showing completion thoughts. Checking project status.")
                         yield {"type": "pm_completion_detection", "agent_id": self.agent_id, "thinking_content": think_content_extracted}
                         # Allow processing to continue for normal tool calls or state changes
@@ -254,10 +341,25 @@ class Agent:
                     if state_match:
                         requested_state = state_match.group(1)
                         state_request_tag = state_match.group(0)
+                        # Resolve any alias to canonical name before validation and event propagation
+                        requested_state = self.manager.workflow_manager.resolve_state_alias(self.agent_type, requested_state)
                         is_valid_state_request = self.manager.workflow_manager.is_valid_state(self.agent_type, requested_state)
                         if is_valid_state_request:
                             logger.info(f"Agent {self.agent_id}: Detected valid state request tag for '{requested_state}': {state_request_tag}")
-                            state_change_to_yield = {"type": "agent_state_change_requested", "requested_state": requested_state, "agent_id": self.agent_id}
+                            
+                            task_description_for_work_state = None
+                            # If transitioning to 'work' state, capture the preceding text as the task.
+                            if requested_state == ADMIN_STATE_WORK:
+                                task_description_for_work_state = remaining_text_after_processing_tags.split(state_request_tag)[0].strip()
+                                logger.info(f"Agent {self.agent_id}: Extracted task description for work state: '{task_description_for_work_state[:100]}...'")
+
+                            state_change_to_yield = {
+                                "type": "agent_state_change_requested",
+                                "requested_state": requested_state,
+                                "agent_id": self.agent_id,
+                                "task_description": task_description_for_work_state
+                            }
+
                             if cleaned_for_state_regex == state_request_tag: # If the *entire cleaned output* was the state request
                                 yield state_change_to_yield
                                 return # State change is the only action
@@ -299,14 +401,34 @@ class Agent:
                         return
 
                 tool_requests_to_yield = []
+                valid_calls: List[Any] = []
+                parsing_errors: List[Any] = []
 
-                if self.manager.tool_executor and self.raw_xml_tool_call_pattern:
+                if native_tool_calls_received:
+                    logger.info(f"Agent {self.agent_id} received {len(native_tool_calls_received)} native tool calls. Bypassing XML parsing.")
+                    for call_data in native_tool_calls_received:
+                        func = call_data.get("function", {})
+                        tool_name = func.get("name")
+                        try:
+                            arguments = func.get("arguments", {})
+                            if isinstance(arguments, str):
+                                arguments = json.loads(arguments)
+                            call_id = call_data.get("id", f"native_call_{self.agent_id}_{int(time.time() * 1000)}_{os.urandom(2).hex()}")
+                            if tool_name in self.manager.tool_executor.tools:
+                                tool_requests_to_yield.append({"id": call_id, "name": tool_name, "arguments": arguments})
+                            else:
+                                logger.warning(f"Agent {self.agent_id}: Native Tool name '{tool_name}' not found in ToolExecutor.")
+                        except Exception as e:
+                            logger.error(f"Failed to parse native tool call arguments for {tool_name}: {e}")
+                            parsing_errors.append({"tool_name": tool_name, "error_message": f"Native JSON Args Error: {str(e)}", "xml_block": str(call_data)})
+
+                elif self.manager.tool_executor and self.raw_xml_tool_call_pattern:
                     parsed_tool_calls_info = find_and_parse_xml_tool_calls(
                         final_cleaned_response_for_tools_or_text, self.manager.tool_executor.tools,
                         self.raw_xml_tool_call_pattern, self.markdown_xml_tool_call_pattern, self.agent_id
                     )
-                    valid_calls = parsed_tool_calls_info["valid_calls"]
-                    parsing_errors = parsed_tool_calls_info["parsing_errors"]
+                    valid_calls = list(parsed_tool_calls_info["valid_calls"])
+                    parsing_errors = list(parsed_tool_calls_info["parsing_errors"])
 
                     if parsing_errors: # Check for parsing errors first
                         first_error = parsing_errors[0]
@@ -326,10 +448,27 @@ class Agent:
                          hasattr(self.manager.cycle_handler, '_detect_potential_tool_calls') and \
                          self.manager.cycle_handler._detect_potential_tool_calls(final_cleaned_response_for_tools_or_text):
                         logger.warning(f"Agent {self.agent_id}: Detected potential tool calls but parsing failed completely.")
+                        
+                        # Diagnose specific XML issues to give better feedback
+                        issues = []
+                        tool_names = list(self.manager.tool_executor.tools.keys()) if self.manager.tool_executor else []
+                        for tool in tool_names:
+                            open_tags = len(re.findall(rf"<{tool}\b[^>]*>", final_cleaned_response_for_tools_or_text, re.IGNORECASE))
+                            close_tags = len(re.findall(rf"</{tool}>", final_cleaned_response_for_tools_or_text, re.IGNORECASE))
+                            if open_tags > close_tags:
+                                issues.append(f"You opened <{tool}> {open_tags} time(s) but only closed it {close_tags} time(s). Every tool call MUST end with </{tool}>.")
+                            elif close_tags > open_tags:
+                                issues.append(f"You have {close_tags} </{tool}> closing tags but only {open_tags} opening <{tool}> tags.")
+                        
+                        if not issues:
+                            issues.append("Check for missing ending tags (like </action> or </content>), unescaped characters like '<' or '&' inside your parameters, or text appearing outside the XML blocks.")
+                            
+                        specific_error_msg = "Tool call detected but parsing failed. Please fix these issues:\n- " + "\n- ".join(issues)
+                        
                         yield {
                             "type": "malformed_tool_call",
                             "tool_name": "unknown", 
-                            "error_message": "Tool call detected but parsing failed. Please ensure proper XML format without markdown code fences.",
+                            "error_message": specific_error_msg,
                             "malformed_xml_block": final_cleaned_response_for_tools_or_text,
                             "raw_assistant_response": original_complete_response,
                             "agent_id": self.agent_id
@@ -352,9 +491,27 @@ class Agent:
 
                 if tool_requests_to_yield:
                     logger.debug(f"Agent {self.agent_id} preparing to yield {len(tool_requests_to_yield)} tool requests.")
-                    # Use original_complete_response for history if tool calls are made
-                    response_for_history = original_complete_response
-                    yield {"type": "tool_requests", "calls": tool_requests_to_yield, "raw_assistant_response": response_for_history, "agent_id": self.agent_id}
+
+                    # We no longer remove the tool call XML from the content so the LLM remembers its actions.
+                    # This prevents the LLM from being "blind" to the exact parameters it just generated.
+                    content_for_history = final_cleaned_response_for_tools_or_text
+                    # if valid_calls:
+                    #     # Sort spans in reverse order to avoid index shifting during removal
+                    #     sorted_spans = sorted([call[2] for call in valid_calls], reverse=True)
+                    #     
+                    #     for start, end in sorted_spans:
+                    #         # Remove the tool call XML from the content
+                    #         content_for_history = content_for_history[:start] + content_for_history[end:]
+
+                    content_for_history = content_for_history.strip()
+
+                    yield {
+                        "type": "tool_requests",
+                        "calls": tool_requests_to_yield,
+                        "raw_assistant_response": original_complete_response,
+                        "content_for_history": content_for_history, # Pass cleaned content
+                        "agent_id": self.agent_id
+                    }
                     # If there was also a state change request, yield it after the tools
                     if state_change_to_yield:
                         logger.debug(f"Agent {self.agent_id}: Also yielding state change after tool requests.")

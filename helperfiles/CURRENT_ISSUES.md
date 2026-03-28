@@ -1,0 +1,341 @@
+# TrippleEffect - Current Issues
+
+**Last Updated:** 2026-03-26
+**Based on log:** `app_20260326_174455_1570101.log` and prior runs
+
+---
+
+## Recently Resolved Issues
+
+### -14. Project Manager Pre-mature Completion & Audit Phase
+- **Severity:** High (PM declared completion without formal review)
+- **Description:** Upon task exhaustion, PMs immediately messaged the Admin AI that the project was complete without verifying the generated output against instructions, leading to unverified deliverables and communication disconnects at the end of runs.
+- **Root Cause:** The `pm_manage` state abruptly transitioned to reporting completion.
+- **Fix:** (RESOLVED) Implemented a new `pm_audit` workflow state. PMs now automatically transition to audit phase upon believing the project is complete. They are instructed to review structural requirements, scan the codebase, and optionally run tests before compiling a final Audit Report and sending it to the Admin AI.
+- **Files:** `prompts.yaml`, `src/agents/constants.py`, `src/agents/workflow_manager.py`, `src/agents/core.py`
+
+### -13. Autoregressive Stalling & Empty Loops
+- **Severity:** High
+- **Description:** Worker agents and PMs would occasionally get stuck in loops generating empty responses or invalid commands. The Constitutional Guardian (CG) would passively block them, but the agents' managers were unaware of the freeze.
+- **Root Cause:** Disconnected escalation path. Managers had no framework visibility into a worker's systemic internal stall.
+- **Fix:** (RESOLVED) Built a proactive escalation mechanism into the CG (`AgentHealthMonitor`). When an agent crosses the stall threshold, the CG dynamically constructs a diagnostic report with history and errors, injecting it directly into the supervising agent's `message_inbox` via `interaction_handler`, prompting the supervisor to deploy Human-in-the-Loop style recovery via `send_message`.
+- **Files:** `src/agents/cycle_components/agent_health_monitor.py`, `prompts.yaml`
+
+### -12. Symmetrical Cross-Agent Message Queuing
+- **Severity:** High (caused cognitive interrupts and logic stalls)
+- **Description:** Agents were violently interrupted mid-thought by forced state transitions upon sending or receiving messages (e.g., workers forced into `worker_wait` upon sending, PM forced into `pm_report_check` upon receiving). This corrupted their context and resulted in loops.
+- **Root Cause:** Hardcoded state switches in `route_and_activate_agent_message` and `execute_single_tool`.
+- **Fix:** (RESOLVED) Implemented a strict, fully non-interruptive async queuing architecture. All messages go to the recipient's `message_inbox` unless they are already asleep. Sender's inboxes are automatically flushed into their active history concurrently with outbound dispatches.
+- **Files:** `src/agents/interaction_handler.py`
+
+### -11. Workspace Project & Session Path Nesting Bug
+- **Severity:** High (sandbox fragmentation)
+- **Description:** Agents were erroneously instructed to (and succeeded in) prepending `{session_name}` or `{project_name}` to folder paths, creating nested folder architectures instead of using the flat `shared_workspace` root.
+- **Root Cause:** `file_system.py` didn't scrub session prefixes, and the PM's system prompt lacked constraints preventing it from passing bad pathing rules to workers.
+- **Fix:** (RESOLVED) Hardened `FileSystemTool._resolve_and_validate_path()` to auto-strip `{session_name}` strings. Added an explicit `[WORKSPACE & FILE SYSTEM]` directive to `pm_standard_framework_instructions` forbidding nested paths.
+- **Files:** `src/tools/file_system.py`, `src/config/settings.py`
+
+### -10. Project Manager State Reversion Cutoff
+- **Severity:** High (PM ignored worker replies)
+- **Description:** If PM1 responded to a worker and executed the `send_message` tool successfully without manually appending a `<request_state>` tag, the `NextStepScheduler` forcefully reverted its state to `pm_manage`, causing it to drop its `pm_report_check` context.
+- **Root Cause:** Aggressive auto-reversion logic for PMs.
+- **Fix:** (RESOLVED) Updated `NextStepScheduler` to allow PMs to remain in their active interaction states (`pm_manage` or `pm_report_check`) on a successful tool call, properly scheduling a continuation cycle.
+- **Files:** `src/agents/cycle_components/next_step_scheduler.py`
+
+### -9. Task Object AttributeError on Modify
+- **Severity:** Moderate
+- **Description:** The PM triggered an `'Task' object has no attribute 'get'` error when calling `modify_task` to set a task status.
+- **Root Cause:** `tasklib.Task` uses dictionary element access `task['status']` rather than `.get()`. 
+- **Fix:** (RESOLVED) Switched to `task['status']` to safely look up task data.
+- **Files:** `src/tools/project_management.py`
+
+### -7. Failover Cascade Death from Models Lacking Tool Support
+
+- **Severity:** Critical (killed worker agent W1 entirely)
+- **Description:** When W1 failed on `ollama-local-192-168-0-22` (500 error), the failover handler switched to `ollama-local-192-168-0-24` with the same model (`qwen3.5:9b-q4_K_M`). That host returned 400: "does not support tools". Failover then tried `qwen3-coder:30b` on .22 — also "does not support tools". W1 produced 4 consecutive empty responses and was CG-BLOCKED.
+- **Root Cause:** The failover handler checked provider health and model availability but did NOT validate whether the target model supported native tool calling on the new host.
+- **Fix:** (RESOLVED) Added a module-level `_models_without_tool_support` runtime blacklist in `failover_handler.py`. On "does not support tools" errors, the `(provider, model)` pair is added to the blacklist. Both Pass 1 (preferred model on alternate APIs) and Pass 2 (alternative models) check the blacklist before attempting a switch.
+- **Files:** `src/agents/failover_handler.py`
+
+### -6.5. Duplicate Tool Call Cached Result Context Bloat
+
+- **Severity:** Moderate (wastes context tokens across 910+ duplicate detections)
+- **Description:** When the framework detected a cross-cycle duplicate tool call, it returned the full cached result to the agent's history each time, even though the agent had already received and processed this result previously. Over a 2h47m run, this contributed to unnecessary context window consumption.
+- **Root Cause:** The cached `prev_result` was injected into `all_tool_results_for_history` at full length on every duplicate detection.
+- **Fix:** (RESOLVED) Truncated cached duplicate results to 200 characters max, with a `[TRUNCATED - duplicate call]` suffix. Full results are still logged to DB for debugging.
+- **Files:** `src/agents/cycle_handler.py`
+
+### -6. `mark_completed` Action Hallucination
+
+- **Severity:** Moderate (causes tool execution failure)
+- **Description:** Worker W1 used `<action>mark_completed</action>` instead of the correct `<action>complete_task</action>` to finish tasks. The existing alias map had `mark_complete` → `complete_task` but not `mark_completed` (with trailing 'd').
+- **Root Cause:** LLM-generated action name variation not covered by the auto-correction map.
+- **Fix:** (RESOLVED) Added `mark_completed`, `complete`, and `task_complete` to the `action_suggestions` alias map in `project_management.py`.
+- **Files:** `src/tools/project_management.py`
+
+### -5.5. File Append Missing Filename Parameter
+
+- **Severity:** Low (clear error message, agent self-corrects)
+- **Description:** Worker W1 called `file_system` with `action=append` but omitted the required `filename` parameter twice (~20:16-20:18 UTC).
+- **Root Cause:** Native JSON tool calling model generated the call without the `filename` field.
+- **Status:** Already handled by existing validation at line 348 of `file_system.py`. The error message clearly states `'filename' parameter is required for 'append'`.
+- **Files:** `src/tools/file_system.py` (no change needed)
+
+### -5. Constitutional Guardian Returns Empty Verdict
+
+- **Severity:** High (previously classified Low — actual impact was severe)
+- **Description:** The CG frequently returned empty verdicts, causing it to fail open and bypass governance checks entirely. In the latest log, this occurred on nearly every CG call.
+- **Root Cause:** The `max_tokens_for_verdict` was hardcoded to `250` in `cycle_handler.py`. Models using `<think>` blocks (e.g., Qwen3 reasoning variants) exhausted the 250-token limit on internal reasoning before outputting the final `<OK/>` or `<CONCERN>` verdict, resulting in empty `content` fields.
+- **Fix:** (RESOLVED) Replaced the hardcoded limit with a configurable `CG_MAX_TOKENS` setting (default `4000`), sourced from `settings.py` via `getattr(settings, 'CG_MAX_TOKENS', 4000)`.
+- **Files:** `src/agents/cycle_handler.py`, `src/config/settings.py`
+
+### -4.5. False-Positive Stuck-State CG Interventions
+
+- **Severity:** High (caused repeated unnecessary CG interventions for productive agents)
+- **Description:** The Constitutional Guardian's `AgentHealthMonitor` falsely flagged workers (W1, W2, W3) in `worker_work` and the PM (PM1) in `pm_manage` as "stuck" even while they were actively executing tools (web searches, file writes, task management). W1/W3 hit 17 cycles, W2 hit 12 cycles, PM1 hit 19→22+ cycles, all triggering repeated CG interventions that polluted agent history with system messages.
+- **Root Cause:** `cycle_count_in_current_state` in `AgentHealthRecord.record_response()` only reset when the agent's state *changed*. It did not reset when the agent took meaningful action (successful tool calls). This meant agents legitimately staying in their working state (doing real productive work) accumulated cycles and hit the `stuck_state_threshold` (default: 6).
+- **Fix:** (RESOLVED) Added an `elif has_action` branch in `record_response()` that resets `cycle_count_in_current_state = 1` whenever the agent successfully executes tools, so productive agents are not falsely flagged. Truly stuck agents (no tool calls, no meaningful output) are still caught.
+- **Files:** `src/agents/cycle_components/agent_health_monitor.py`
+
+### -4. Ollama Tool Response XML Hallucinations (Stall)
+
+- **Severity:** High
+- **Description:** Workers (specifically Qwen 3.5 via Ollama) got stuck in an infinite loop outputting `<tool_response name='web_search'>` text instead of invoking tools.
+- **Root Cause:** The `OllamaProvider` was wrapping tool execution results in `<tool_response>` XML tags. Seeing these XML formatting tags in its message history tricked the autoregressive Qwen model into continuously generating the exact same tags itself.
+- **Fix:** (RESOLVED) Updated `src/llm_providers/ollama_provider.py` to strip the XML `<tool_response>` wrapper and replace it with a plain-text Markdown equivalent (`--- Tool Response (name) ---`).
+- **Files:** `src/llm_providers/ollama_provider.py`
+
+### -3. Workspace Path Project Nesting Bug
+
+- **Severity:** High
+- **Description:** Worker agents incorrectly resolved the `ProjectName` internally as a sub-directory component of the `WorkspacePath`, nesting their projects incorrectly.
+- **Root Cause:** The `file_system` tool was exclusively stripping the internal project name from the *beginning* of tool paths rather than safely mapping paths to the global workspace root boundary constraint.
+- **Fix:** (RESOLVED) Hardened `FileSystemTool._resolve_path()` to treat the `WorkspacePath` as the absolute isolated root regardless of whether the LLM path includes the project name prefix alias. Added validation to prevent sandbox escape.
+- **Files:** `src/tools/file_system.py`
+
+### -2.5. PM/Worker Context Bloat on `list_tasks`
+
+- **Severity:** Moderate
+- **Description:** `list_tasks` output was enormous, returning full schema objects and threatening token limits. Workers lacked a way to easily filter out tasks unassigned to them.
+- **Root Cause:** Raw Taskwarrior models being JSON dumped into the agent history.
+- **Fix:** (RESOLVED) Severely trimmed returned fields to `uuid`, `description`, `status`, `assignee`, and `depends`. Added an `assignee_filter` parameter. If a Worker calls `list_tasks` without a filter, the system automatically forces it to filter by their agent ID. Additionally, `list_tasks` now defaults to `.pending()` when no `status_filter` is provided, automatically excluding completed/deleted tasks to further reduce token consumption.
+- **Files:** `src/tools/project_management.py`
+
+### -2. Worker Inactivity (Empty `worker_work` responses)
+
+- **Severity:** High
+- **Description:** Workers were transitioning to `worker_work` but producing empty responses (0 tokens) leading to endless idle states.
+- **Root Cause:** Two interconnected bugs: 1) Initializing a brand new worker agent missed appending the `[Framework Directive]` task assignment prompt if the worker had no prior history. 2) When utilizing `<request_state>`, the framework updated the state but failed to inject a `user` message confirming the transition, meaning the LLM received a context ending with an `assistant` tag.
+- **Fix:** (RESOLVED) Aligned indentation in `activate_worker_with_task_details` to reliably append the activation message. Added a `[System State Change]` user injection in `cycle_handler.py` to prompt the LLM to resume activity within its newly generated system prompt context.
+- **Files:** `src/agents/manager.py`, `src/agents/cycle_handler.py`
+
+### -1. PM Interrupting Worker Decomposition (Decompose Loop)
+
+- **Severity:** High
+- **Description:** Workers would get stuck in the `worker_decompose` state, constantly having their context wiped and replaced with new task assignments from the PM before they could finish breaking down their first task.
+- **Root Cause:** The `WORKER_STATE_DECOMPOSE` state was missing from the "busy states" check in `manager.py`. The PM eagerly assigned multiple tasks sequentially, forcibly reactivating the worker and destroying its short-term memory each time.
+- **Fix:** (RESOLVED) Added `WORKER_STATE_DECOMPOSE` to the list of busy states in `activate_worker_with_task_details`. Incoming tasks are now properly routed to the worker's `message_inbox` until decomposition is complete.
+- **Files:** `src/agents/manager.py`
+
+### 0. `insert_lines` Crashes with `'str' - 'int'` TypeError
+
+- **Severity:** High (causes tool execution failure and blocks worker progress)
+- **Description:** The `insert_lines` action in `FileSystemTool` crashed with `unsupported operand type(s) for -: 'str' and 'int'` inside `_insert_lines_in_file`. This occurred 3 times in `startup_1774068944`, blocking Worker W1 from editing `package.json`.
+- **Root Cause:** Three compounding issues:
+  1. The `position` kwarg (e.g., `<position>after</position>`) was included in the `_fo()` alias chain for `insert_line`, causing non-numeric strings like `"after"` to leak through as the line number value.
+  2. The internal `_insert_lines_in_file` method trusted its caller to pass an `int` and had no defensive conversion.
+  3. LLMs sometimes used `<action>insert_line</action>` (singular) which was not recognized as an alias.
+- **Fix:** (RESOLVED)
+  1. Removed `kwargs.get("position")` from the `insert_line` alias chain — `position` is now treated as a semantic hint ("before"/"after") only.
+  2. Added defensive `int()` conversion inside `_insert_lines_in_file` with a graceful error return.
+  3. Added `insert_line` → `insert_lines` and `replace_line` → `replace_lines` to the action alias map.
+  4. Properly routed the `position` kwarg as `position_hint` for search-based insertion.
+- **Files:** `src/tools/file_system.py`
+
+### 0.5. `search_replace_block` Skips Exact Matches
+
+- **Severity:** High
+- **Description:** The `search_replace_block` tool was consistently failing to find matches even when the provided block was exactly present in the file.
+- **Root Cause:** A critical indentation error in `src/tools/file_system.py`. The "Tier 1: Exact substring match" logic was indented 4 spaces too far, placing it inside an `if search_block is None:` block that immediately returned `False`. Thus, exact matches were completely unreachable dead code, forcing the tool to fall back to fuzzy/first-last matching which often failed or corrupted blocks.
+- **Fix:** (RESOLVED) Dedented the Tier 1 exact match block by 4 spaces so it correctly executes when `search_block` is provided, restoring reliable exact replace functionality.
+- **Files:** `src/tools/file_system.py`
+
+### 1. `send_message` Tool Isolation Violations
+
+- **Severity:** High
+- **Description:** Workers and PM frequently misused the `send_message` tool by including it in the same response as file system or task management tools, causing parser errors and xml validation failures.
+- **Root Cause:** Prompt instructions were insufficient to force single-tool use for messages when agents felt they needed to report progress immediately after saving a file.
+- **Fix:** (RESOLVED) Implemented structural state isolation. Added a new `WORKER_STATE_REPORT` state for workers to explicitly report progress, removing `send_message` from the `work` state completely. Added `PM_STATE_REPORT_CHECK` to give the PM a focused context for responding to worker messages without getting distracted by overarching management tasks. Integrated an auto-switch mechanism in `interaction_handler.py`.
+- **Files:** `src/agents/constants.py`, `src/agents/workflow_manager.py`, `src/agents/cycle_handler.py`, `src/agents/interaction_handler.py`, `prompts.json`
+
+### 2. PM Context Disrupted in High-Focus States
+
+- **Severity:** High
+- **Description:** Workers occasionally send progress reports or questions while the PM is actively building the project plan, assembling the team, or assigning kick-off tasks. This sudden context shift confuses the PM and disrupts the core setup workflow.
+- **Root Cause:** The `interaction_handler` delivered messages directly into the PM's immediate history regardless of the PM's current phase of work, injecting irrelevant information.
+- **Fix:** (RESOLVED) Implemented message queuing. `src/agents/core.py`'s `Agent` class has been given a `message_inbox`. `interaction_handler.py` intercepts messages arriving while the PM is in `pm_startup`, `pm_build_team_tasks`, `pm_activate_workers`, or `pm_work` and delays them. `workflow_manager.py` checks the inbox when the PM transitions back into a safe state (`pm_manage`, `pm_standby`) and injects the queued messages.
+- **Files:** `src/agents/core.py`, `src/agents/interaction_handler.py`, `src/agents/workflow_manager.py`
+
+### 2.5. Worker Agent Preemptive Activation During Report Phase
+
+- **Severity:** High
+- **Description:** When a worker is in the `WORKER_STATE_REPORT` state (e.g. creating a progress report to send to the PM), if the PM happens to assign them a new task, the framework automatically forces their state to `WORKER_STATE_WORK`. This causes the worker to suddenly change behavior mid-cycle and produce a normal work response (e.g. attempting to do work instead of finishing the report).
+- **Root Cause:** `activate_worker_with_task_details` in `manager.py` unconditionally changed the worker's state and injected the new task directive into its active history, disrupting the internal report context.
+- **Fix:** (RESOLVED) Implemented an activation block in `activate_worker_with_task_details` if the worker is in `WORKER_STATE_REPORT`. The activation framework directive is instead pushed to the `message_inbox`. `workflow_manager.py` was then updated to flush worker's inbox when transitioning into `WORKER_STATE_WAIT` or `WORKER_STATE_WORK`. Lastly, the wait/startup prompts in `prompts.json` were modified to explicitly tell workers to request `worker_work` state when reading these directives.
+- **Files:** `src/agents/manager.py`, `src/agents/workflow_manager.py`, `prompts.json`
+
+### 3. Worker Drops Out of Reporting State Early
+
+- **Severity:** High
+- **Description:** When a worker outputs `<request_state state='worker_report'/>` alongside other tool calls (like task modification or file writing) and the tools resolve or fail, the cycle terminates instead of restarting the worker in the new `worker_report` state.
+- **Root Cause:** In `cycle_handler.py`, an embedded state change correctly triggered the transition but forgot to set the `needs_reactivation_after_cycle` flag. Furthermore, `worker_report` was not added to the `persistent_states` list in `next_step_scheduler.py`.
+- **Fix:** (RESOLVED) Assigned `context.needs_reactivation_after_cycle = True` when parsing embedded state changes, and added `WORKER_STATE_REPORT` to the `persistent_states` tuple in the scheduler.
+- **Files:** `src/agents/cycle_components/next_step_scheduler.py`, `src/agents/cycle_handler.py`
+
+### 4. PM Repeats Task Assignments in `activate_workers`
+
+- **Severity:** High
+- **Description:** The PM loops and re-assigns the first task continuously after all tasks have technically been assigned to workers.
+- **Root Cause:** When the PM used `modify_task` to assign a task, it sometimes used the task's text description or short integer ID instead of the full UUID. While TaskWarrior accepts this, the `unassigned_tasks_summary` logic in `cycle_handler.py` performed a strict string comparison against the framework's stored UUIDs. When the match failed, the assigned task was never removed from the "remaining tasks" summary. The PM saw the first task persisting in its list of unassigned tasks and attempted to reassign it recursively.
+- **Fix:** (RESOLVED) Updated `cycle_handler.py` to parse the definitive `task_uuid` returned within the `modify_task` tool execution result. This guarantees that the correct UUID is used to drop the task from the internal tracker, regardless of whether the LLM queried it via ID, description, or UUID.
+- **Files:** `src/agents/cycle_handler.py`
+
+### 5. PM Stalls in `list_tasks` Loop
+
+- **Severity:** High
+- **Description:** The PM repeatedly calls `list_tasks` without taking further action.
+- **Root Cause:** The `pm_manage_prompt` continuously instructed the PM to return to step 1 (`list_tasks`) after every action, causing small models to loop helplessly.
+- **Fix:** (RESOLVED) Updated `pm_manage_prompt` to skip `list_tasks` if a recent list is already in history, forcing the PM to transition to Step 2 (Analyze and Decide) automatically and unblocking the loop. Added explicit `DO NOT REPEAT` instructions for `DUPLICATE BLOCKED` feedback.
+- **File:** `prompts.json`
+
+### 3. Taskwarrior Placeholder Dependency Crash
+
+- **Severity:** Moderate
+- **Description:** `project_management` tool fails with an error when the LLM attempts to use placeholder IDs like `T1_1` for dependencies instead of valid Taskwarrior integers/UUIDs. This errors out and blocks task creation entirely.
+- **Fix:** (RESOLVED) Updated the `add_task` action in `project_management.py` to filter out invalid dependency formats with a warning instead of returning an error, allowing task creation to proceed.
+- **File:** `src/tools/project_management.py`
+
+### 7.5. Comma-Separated Dependencies Silently Dropped
+
+- **Severity:** High
+- **Description:** When the LLM sent `depends: "task_1,task_2,task_3"` (comma-separated alias IDs), `project_management.py` treated the entire string as a single value, failed validation, and silently dropped all dependencies.
+- **Fix:** (RESOLVED) Refactored dependency parsing to split comma-separated values and resolve each item independently through the alias/UUID/ID system.
+- **File:** `src/tools/project_management.py`
+
+### 7.6. Worker Self-Activation Directive Flooding
+
+- **Severity:** High
+- **Description:** When a worker created sub-tasks assigned to itself via `add_task`, `interaction_handler.py` triggered `activate_worker_with_task_details()` for each one. Since the worker was busy, 5+ directives were deferred and injected at once, confusing the model.
+- **Fix:** (RESOLVED) Added a self-activation guard: if `assignee_id == agent.agent_id`, skip activation. Cross-agent activation (PM → worker) is unaffected.
+- **File:** `src/agents/interaction_handler.py`
+
+### 7.7. Infinite "Already In State" Reactivation Loop
+
+- **Severity:** Critical
+- **Description:** When a worker requested a state it was already in (e.g., `worker_work` → `worker_work`), `cycle_handler.py` forced reactivation for non-idle states, feeding back the same state-change message and creating an infinite loop.
+- **Fix:** (RESOLVED) Same-state requests are now always treated as no-op (no reactivation), preventing the loop.
+- **File:** `src/agents/cycle_handler.py`
+
+---
+
+## Critical Issues
+
+### 1. DUPLICATE BLOCKED Messages Accumulate in PM History
+
+- **Severity:** Critical (causes context window bloat and eventual stall)
+- **Description:** The cross-cycle duplicate detection correctly intercepts repeated identical tool calls and injects `[Framework System Message - DUPLICATE BLOCKED]` directives. However, because it `continue`s past tool execution, the state-specific block (where `_deduplicate_pm_framework_messages` is normally called) is skipped. As a result, duplicate warnings accumulated infinitely within the PM's context.
+- **Result:** 124 DUPLICATE BLOCKED messages accumulated in the PM's history during the run, bloating the context window.
+- **Fix:** (RESOLVED) Updated `_deduplicate_pm_framework_messages()` timing. Called it explicitly before appending escalation messages in the `_detect_cross_cycle_duplicate_tool_call` handler within `run_cycle`.
+- **File:** `src/agents/cycle_handler.py`
+
+### 2. PM Repeats `list_tasks` Despite DUPLICATE BLOCKED Directive
+
+- **Severity:** High
+- **Description:** Even after receiving a `[Framework System Message - DUPLICATE BLOCKED]` directive telling it to proceed to the next workflow step, the local LLM (qwen3:14b) ignores it and calls `list_tasks` again. The framework correctly detects the duplicate (2 detections logged), but the LLM does not follow the escalated directive.
+- **Root Cause:** The `PromptAssembler` was regenerating the full state prompt (including the `Step 1A: <project_management><action>list_tasks</action>` template) and overwriting the start of the history on *every* cycle. The LLM latched onto this template rather than following the new directive.
+- **Fix:** (RESOLVED) Implemented "Option C". Modified `PromptAssembler.prepare_llm_call_data()` to only inject the full state prompt once when entering a state. If the history already begins with the state's prompt, it is preserved, preventing the Step 1A template from re-appearing after it has successfully completed.
+- **File:** `src/agents/cycle_components/prompt_assembler.py`
+
+---
+
+## Moderate Issues
+
+### 3. PM Creates Near-Duplicate Worker Agents
+
+- **Severity:** Moderate (mitigated by framework's duplicate prevention)
+- **Description:** During the "Build Team" phase, PM1 (qwen3:14b) successfully created "W1" (Coder). On the next turn, despite being prompted to review the kickoff plan and not create duplicates, the LLM hallucinates a similar `create_agent` call. Since local LLMs sometimes vary their JSON output arguments (e.g., `system_prompt` wording differs), exact string matching failed to detect the cross-cycle duplicate.
+- **Result:** The LLM bypasses duplicate interception, the tool executes and throws a native domain error: "An agent with the role/persona 'Technical Writer' already exists in your team."
+- **Fix:** (RESOLVED) Augmented `_detect_cross_cycle_duplicate_tool_call` to perform a semantic equivalence check for `manage_team` -> `create_agent`, triggering a block if the target persona/role exactly matches an immediately preceding cycle call.
+- **File:** `src/agents/cycle_handler.py`
+
+### 3.5. System Messages Parsed as Tool Results Leading to "Tool Error"
+
+- **Severity:** High (causes model confusion and incorrect state transitions)
+- **Description:** In the `PM_STATE_ACTIVATE_WORKERS` state interventions, the framework fetches the last tool result from `all_tool_results_for_history[-1]`. If the preceding logic intercepted a duplicate tool call, it appends a `[Framework System Message - DUPLICATE BLOCKED]` to the end. The state intervention sees this system message, fails `json.loads` because it's not a JSON dict, and fallbacks to setting the tool status to "error", returning a false `[Framework Feedback: Tool Error]`.
+- **Fix:** (RESOLVED) Updated the parser to iterate backwards through `all_tool_results_for_history` and only fetch the first item where `role == "tool"`.
+- **File:** `src/agents/cycle_handler.py`
+
+### 4. PM Produces Malformed XML (`<tool_call>` JSON format)
+
+- **Severity:** Moderate (single occurrence, recovered by framework)
+- **Description:** PM1 produced a `<tool_call>` block with JSON inside instead of the expected XML format. The framework detected it as malformed and provided feedback.
+- **Log entry:** Line 9360: `Agent PM1: <tool_call> JSON missing 'name' field.`
+- **Root Cause:** LLM confusion between XML tool format and JSON tool_call format (common with qwen3:14b model).
+- **Mitigation:** The framework already handles this via error feedback. Consider adding a recovery parser that can extract tool name/args from JSON-formatted tool_call blocks.
+- **File:** `src/agents/agent_tool_parser.py`
+
+### 5. `tags` Parameter Type Mismatch (str vs list)
+
+- **Severity:** Moderate (tool handles gracefully but logs warning)
+- **Description:** The PM sends `tags` as a string `"+W2,assigned"` but the tool expects a list. 3 occurrences in the log.
+- **Log entry:** `Tool 'project_management' parameter 'tags' expects a list, but received str.`
+- **Root Cause:** XML parsing produces strings, not lists. The PM follows the workflow prompt which uses `<tags>+W2,assigned</tags>` (a string).
+- **Fix:** Either update the tool schema to accept strings, or add automatic string-to-list parsing in the executor for list-type parameters.
+- **File:** `src/tools/executor.py` and `src/tools/project_management.py`
+
+---
+
+## Low / Informational Issues
+
+### 7. Duplicate `create_team` Calls
+
+- **Severity:** Low (harmlessly rejected by framework)
+- **Description:** 5 occurrences of "Team already exists" warning. The PM attempts to create the team multiple times because the framework message history includes the `create_team` instruction even after the team is created.
+- **Fix:** The framework already handles this gracefully. Could improve by removing the `create_team` instruction from the prompt after the team is created.
+- **File:** `src/agents/workflow_manager.py` (build_team_tasks state prompt)
+
+### 8. Ollama Model RAW Template Warnings
+
+- **Severity:** Info
+- **Description:** Multiple Ollama models (embedding models, qwen3.5 variants, etc.) have RAW templates which may not work correctly for multi-turn conversations.
+- **Fix:** Only relevant if these models are selected for agent use. The framework correctly avoids them for agents.
+- **File:** `src/config/model_registry.py`
+
+---
+
+## Summary of Latest Run (2026-03-26)
+
+| Metric | Value |
+|--------|-------|
+| Log file | `app_20260326_174455_1570101.log` (656,818 lines) |
+| ERRORs | 35 (mostly Ollama provider 500s and tool param errors) |
+| Tool Exec Failures | 8 |
+| CG Stuck-State Interventions | **0** (Phase M fix validated) |
+| CG Empty-Response Blocks | 1 (W1, legitimate after failover cascade) |
+| DUPLICATE BLOCKED messages | 910 (272 file_system, 236 project_management, 52 send_message) |
+| AUTO-ADVANCE messages | 295 |
+| Workers created | 3 (W1-Game_Developer, W2-Technical_Writer, W3-Game_Developer) |
+| Workspace files produced | 25 (14 source, 7 docs, 4 leaderboard system) |
+| PM state reached | Full lifecycle: startup → build_team → activate_workers → manage ↔ report_check (9 round-trips) |
+| Duration | ~2h 47min |
+
+## What Worked Well
+
+- **Zero** false-positive stuck-state CG interventions (Phase M fix validated)
+- No empty CG verdicts (configurable token limit fix working)
+- PM completed full lifecycle with 9 manage↔report_check round-trips
+- All 3 workers followed healthy decompose→work→report cycles
+- Substantial output: 25 files including game scenes, managers, docs, and architecture files
+- Failover mechanism partially working: W1 successfully switched hosts on first attempt
+- Cross-cycle duplicate detection prevented redundant tool executions
+

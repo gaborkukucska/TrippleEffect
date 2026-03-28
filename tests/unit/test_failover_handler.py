@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from src.agents.manager import AgentManager
 from unittest.mock import MagicMock, patch, AsyncMock
 
 from src.agents.failover_handler import _select_alternate_models, handle_agent_model_failover
@@ -12,7 +13,9 @@ class TestSelectAlternateModels(unittest.TestCase):
 
     def setUp(self):
         self.manager_mock = MagicMock()
-        self.manager_mock.performance_tracker = AsyncMock()
+        self.manager_mock.performance_tracker = MagicMock()
+        self.manager_mock.performance_tracker.get_all_metrics = MagicMock(return_value={})
+        self.manager_mock.performance_tracker.get_metrics = MagicMock(return_value={})
         # Mock settings object directly on the manager, as _select_alternate_models accesses it via manager.settings
         # However, the code also imports settings directly: from src.config.settings import settings
         # So, we need to patch 'src.agents.failover_handler.settings' for module-level access.
@@ -73,9 +76,9 @@ class TestSelectAlternateModels(unittest.TestCase):
         )
         
         self.assertEqual(len(selected_alternates), 1)
-        self.assertIn(self.model1_free["id"], selected_alternates)
-        self.assertNotIn(self.model2_paid["id"], selected_alternates)
-        self.assertNotIn(self.model3_free["id"], selected_alternates)
+        self.assertIn(self.model1_free_large["id"], selected_alternates)
+        self.assertNotIn(self.model2_paid_medium["id"], selected_alternates)
+        self.assertNotIn(self.model3_free_small["id"], selected_alternates)
 
     @patch('src.agents.failover_handler.model_registry')
     @patch('src.agents.failover_handler.settings')
@@ -85,9 +88,9 @@ class TestSelectAlternateModels(unittest.TestCase):
         
         mock_model_registry_module.get_available_models_dict.return_value = {
             "openrouter": [
-                self.model1_free, 
-                self.model2_paid, 
-                self.model3_free, 
+                self.model1_free_large, 
+                self.model2_paid_medium, 
+                self.model3_free_small, 
                 {"id": self.original_model_id}
             ]
         }
@@ -106,22 +109,22 @@ class TestSelectAlternateModels(unittest.TestCase):
             )
         
         self.assertEqual(len(selected_alternates), 2)
-        self.assertIn(self.model1_free["id"], selected_alternates)
-        self.assertIn(self.model3_free["id"], selected_alternates)
-        self.assertNotIn(self.model2_paid["id"], selected_alternates)
+        self.assertIn(self.model1_free_large["id"], selected_alternates)
+        self.assertIn(self.model3_free_small["id"], selected_alternates)
+        self.assertNotIn(self.model2_paid_medium["id"], selected_alternates)
         self.assertNotIn(self.original_model_id, selected_alternates)
 
     @patch('src.agents.failover_handler.model_registry')
     @patch('src.agents.failover_handler.settings')
     def test_no_suitable_models(self, mock_settings_module, mock_model_registry_module):
         mock_settings_module.MODEL_TIER = "PAID_ONLY_TIER"
-        self.manager_mock.performance_tracker.get_ranked_models = AsyncMock(return_value=[self.model1_free["id"]])
+        self.manager_mock.performance_tracker.get_ranked_models = AsyncMock(return_value=[self.model1_free_large["id"]])
         
         mock_model_registry_module.get_available_models_dict.return_value = {
-            "openrouter": [self.model1_free, {"id": self.original_model_id}]
+            "openrouter": [self.model1_free_large, {"id": self.original_model_id}]
         }
         
-        tried_models_on_key = {self.model1_free["id"]}
+        tried_models_on_key = {self.model1_free_large["id"]}
         
         selected_alternates = asyncio.run(
             _select_alternate_models(
@@ -141,7 +144,7 @@ class TestSelectAlternateModels(unittest.TestCase):
         self.manager_mock.performance_tracker.get_ranked_models = AsyncMock(side_effect=Exception("Performance Tracker Error"))
         
         mock_model_registry_module.get_available_models_dict.return_value = {
-            "openrouter": [self.model1_free, self.model2_paid, {"id": self.original_model_id}]
+            "openrouter": [self.model1_free_large, self.model2_paid_medium, {"id": self.original_model_id}]
         }
         
         tried_models_on_key = set()
@@ -157,20 +160,27 @@ class TestSelectAlternateModels(unittest.TestCase):
             )
         
         self.assertEqual(len(selected_alternates), 1)
-        self.assertTrue(selected_alternates[0] == self.model1_free["id"] or selected_alternates[0] == self.model2_paid["id"])
+        self.assertTrue(selected_alternates[0] == self.model1_free_large["id"] or selected_alternates[0] == self.model2_paid_medium["id"])
 
 
-class TestHandleAgentModelFailoverInitialModelSelection(unittest.TestCase):
+class TestHandleAgentModelFailoverInitialModelSelection(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.manager_mock = MagicMock(spec=AgentManager) # Use spec for AgentManager
-        self.manager_mock.performance_tracker = AsyncMock()
+        self.manager_mock.performance_tracker = MagicMock()
+        self.manager_mock.performance_tracker.get_all_metrics = MagicMock(return_value={})
+        self.manager_mock.performance_tracker.get_metrics = MagicMock(return_value={})
         
         # Mock settings object that will be accessed by the SUT (handle_agent_model_failover)
         # This settings object is imported directly in failover_handler.py
-        self.settings_patch = patch('src.agents.failover_handler.settings', spec=Settings)
+        self.settings_patch = patch('src.agents.failover_handler.settings')
         self.mock_settings_module = self.settings_patch.start() # Start patch and get the mock
+        self.mock_settings_module.MAX_FAILOVER_ATTEMPTS = 5
 
         self.manager_mock.model_registry = MagicMock()
+        self.registry_patch = patch('src.agents.failover_handler.model_registry', self.manager_mock.model_registry)
+        self.registry_patch.start()
+        self.addCleanup(self.registry_patch.stop)
+        
         self.manager_mock.key_manager = AsyncMock()
         self.manager_mock.send_to_ui = AsyncMock()
         self.manager_mock.state_manager = MagicMock()
@@ -181,7 +191,20 @@ class TestHandleAgentModelFailoverInitialModelSelection(unittest.TestCase):
         self.agent_mock.provider_name = "openrouter" 
         self.agent_mock.model = "openrouter/original_model:free"
         self.agent_mock.llm_provider = MagicMock()
-        self.agent_mock._failover_state = {} 
+        self.agent_mock._failover_state = {
+            "original_provider": self.agent_mock.provider_name,
+            "original_model": self.agent_mock.model,
+            "last_error_obj": None,
+            "tried_local_providers": set(),
+            "tried_models_per_local_provider": {},
+            "tried_external_providers": set(),
+            "tried_keys_per_external_provider": {},
+            "tried_models_per_external_key": {},
+            "failover_attempt_count": 0,
+            "current_external_provider": None,
+            "tried_keys_on_current_external": set(),
+            "tried_models_on_current_external_key": set()
+        } 
         self.agent_mock.agent_config = {"config": {}} 
         self.manager_mock.agents[self.agent_mock.agent_id] = self.agent_mock # Add agent to manager's dict
 
@@ -236,7 +259,20 @@ class TestHandleAgentModelFailoverInitialModelSelection(unittest.TestCase):
         self.agent_mock.provider_name = "someother_provider/failed_model"
         self.agent_mock.model = "someother_provider/failed_model"
         
-        self.agent_mock._failover_state = {} # Reset state for each test
+        self.agent_mock._failover_state = {
+            "original_provider": self.agent_mock.provider_name,
+            "original_model": self.agent_mock.model,
+            "last_error_obj": None,
+            "tried_local_providers": set(),
+            "tried_models_per_local_provider": {},
+            "tried_external_providers": set(),
+            "tried_keys_per_external_provider": {},
+            "tried_models_per_external_key": {},
+            "failover_attempt_count": 0,
+            "current_external_provider": None,
+            "tried_keys_on_current_external": set(),
+            "tried_models_on_current_external_key": set()
+        } # Reset state for each test
 
         error_obj = ValueError("Simulated model error")
         await handle_agent_model_failover(self.manager_mock, self.agent_mock.agent_id, error_obj)
@@ -287,7 +323,20 @@ class TestHandleAgentModelFailoverInitialModelSelection(unittest.TestCase):
         # Performance metrics don't matter if sort is forced to be empty or models are all tried
         self.manager_mock.performance_tracker.get_metrics = MagicMock(return_value={"score": 0.5})
 
-        self.agent_mock._failover_state = {} # Reset state
+        self.agent_mock._failover_state = {
+            "original_provider": self.agent_mock.provider_name,
+            "original_model": self.agent_mock.model,
+            "last_error_obj": None,
+            "tried_local_providers": set(),
+            "tried_models_per_local_provider": {},
+            "tried_external_providers": set(),
+            "tried_keys_per_external_provider": {},
+            "tried_models_per_external_key": {},
+            "failover_attempt_count": 0,
+            "current_external_provider": None,
+            "tried_keys_on_current_external": set(),
+            "tried_models_on_current_external_key": set()
+        } # Reset state
         # Mark all potential candidates from comprehensive sort as already tried for this key
         self.agent_mock._failover_state["tried_models_on_current_external_key"] = {
             self.model_r1_free_large["id"], 
@@ -336,7 +385,20 @@ class TestHandleAgentModelFailoverInitialModelSelection(unittest.TestCase):
             return {"score": 0.0}
         self.manager_mock.performance_tracker.get_metrics = MagicMock(side_effect=get_metrics_side_effect)
         
-        self.agent_mock._failover_state = {} # Reset state
+        self.agent_mock._failover_state = {
+            "original_provider": self.agent_mock.provider_name,
+            "original_model": self.agent_mock.model,
+            "last_error_obj": None,
+            "tried_local_providers": set(),
+            "tried_models_per_local_provider": {},
+            "tried_external_providers": set(),
+            "tried_keys_per_external_provider": {},
+            "tried_models_per_external_key": {},
+            "failover_attempt_count": 0,
+            "current_external_provider": None,
+            "tried_keys_on_current_external": set(),
+            "tried_models_on_current_external_key": set()
+        } # Reset state
 
         error_obj = ValueError("Simulated model error")
         await handle_agent_model_failover(self.manager_mock, self.agent_mock.agent_id, error_obj)
@@ -362,14 +424,32 @@ class TestHandleAgentModelFailoverInitialModelSelection(unittest.TestCase):
         self.agent_mock.provider_name = "openrouter/failed_model"
         self.agent_mock.model = "openrouter/failed_model"
         
-        # All models in registry will be marked as "tried"
+        # Provide all models in registry, but mark the first two as tried
         self.manager_mock.model_registry.get_available_models_dict.return_value = {
-            "ollama-local-test": [self.local_model_l_large, self.local_model_m_medium_perf],
+            "ollama-local-test": [
+                self.local_model_l_large, 
+                self.local_model_m_medium_perf,
+                self.local_model_m_medium_alpha,
+                self.local_model_s_small
+            ],
             "openrouter": []
         }
-        self.manager_mock.performance_tracker.get_metrics = MagicMock(return_value={"score": 0.5}) # Perf doesn't matter if all tried
+        self.manager_mock.performance_tracker.get_metrics = MagicMock(return_value={"score": 0.5}) # Perf doesn't matter if all same
         
-        self.agent_mock._failover_state = {} # Reset state
+        self.agent_mock._failover_state = {
+            "original_provider": self.agent_mock.provider_name,
+            "original_model": self.agent_mock.model,
+            "last_error_obj": None,
+            "tried_local_providers": set(),
+            "tried_models_per_local_provider": {},
+            "tried_external_providers": set(),
+            "tried_keys_per_external_provider": {},
+            "tried_models_per_external_key": {},
+            "failover_attempt_count": 0,
+            "current_external_provider": None,
+            "tried_keys_on_current_external": set(),
+            "tried_models_on_current_external_key": set()
+        } # Reset state
         self.agent_mock._failover_state["tried_models_per_local_provider"] = {
             "ollama-local-test": {self.local_model_l_large["id"], self.local_model_m_medium_perf["id"]}
         }
@@ -392,12 +472,12 @@ class TestHandleAgentModelFailoverInitialModelSelection(unittest.TestCase):
             call_args = call_args_tuple[0] # Positional arguments
             if call_args[2] == "ollama-local-test": # provider_name
                 # We are looking for the first model TRIED in the fallback logic
-                if call_args[3] != self.local_model_r2["id"]: # Ensure it's not the one from performance that was skipped
+                if call_args[3] != self.local_model_m_medium_perf["id"]: # Ensure it's not the one from performance that was skipped
                     first_local_attempt_args = call_args
                     break
         
         self.assertIsNotNone(first_local_attempt_args, "No fallback call to _try_switch_agent for 'ollama-local-test' found.")
-        self.assertEqual(first_local_attempt_args[3], self.local_model_alpha_reg1["id"])
+        self.assertEqual(first_local_attempt_args[3], self.local_model_m_medium_alpha["id"])
 
 
 if __name__ == '__main__':

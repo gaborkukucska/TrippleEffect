@@ -1,4 +1,6 @@
 import unittest
+import src.agents.workflow_manager as wm
+from src.agents.constants import AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER
 from unittest.mock import MagicMock, patch
 
 # Import the class to be tested
@@ -23,6 +25,9 @@ class TestAgentWorkflowManagerGovernancePrompt(unittest.TestCase):
         # agent_type will be set per test
         self.mock_agent.persona = "Test Persona GP"
         self.mock_agent.state = "test_state" # A generic state for prompt lookup
+        self.mock_agent.agent_config = {"config": {}}
+        self.mock_agent.provider_name = "test_provider"
+        self.mock_agent.model = "test_model"
         # Mock _config_system_prompt for Admin AI personality instructions
         self.mock_agent._config_system_prompt = "Admin personality instructions."
 
@@ -31,12 +36,10 @@ class TestAgentWorkflowManagerGovernancePrompt(unittest.TestCase):
         self.mock_manager = MagicMock(spec=AgentManager)
         
         # Mock manager.settings and its GOVERNANCE_PRINCIPLES attribute
-        self.mock_manager.settings = MagicMock(spec=Settings)
-        self.mock_manager.settings.GOVERNANCE_PRINCIPLES = [] # Default to empty
-        
-        # AgentWorkflowManager uses manager.settings.PROMPTS for prompt templates
-        # Provide minimal prompt templates needed by get_system_prompt
-        self.mock_manager.settings.PROMPTS = {
+        self.mock_manager.settings = MagicMock()
+        # AgentWorkflowManager uses settings.PROMPTS for prompt templates natively
+        wm.settings.GOVERNANCE_PRINCIPLES = [] # Default to empty
+        wm.settings.PROMPTS = {
             "admin_standard_framework_instructions": "Admin Standard Instructions {agent_id} {team_id} {project_name} {session_name} {current_time_utc} {address_book} {available_workflow_trigger}",
             "pm_standard_framework_instructions": "PM Standard Instructions {agent_id} {team_id} {project_name} {session_name} {current_time_utc} {address_book} {available_workflow_trigger}",
             "worker_standard_framework_instructions": "Worker Standard Instructions {agent_id} {team_id} {project_name} {session_name} {current_time_utc} {address_book} {available_workflow_trigger}",
@@ -57,11 +60,12 @@ class TestAgentWorkflowManagerGovernancePrompt(unittest.TestCase):
         self.mock_manager.state_manager.get_agent_team.return_value = "test_team_gp"
         self.mock_manager.current_project = "TestProjectGP"
         self.mock_manager.current_session = "TestSessionGP"
-        self.mock_manager.agents = {"test_agent_gp": self.mock_agent} # Manager needs to know about the agent
+        self.mock_manager.agents = {"test_agent_gp": self.mock_agent}
+        self.mock_manager.bootstrap_agents = [] # Manager needs to know about the agent
 
     def test_scenario_1_multiple_applicable_principles(self):
         self.mock_agent.agent_type = "pm"
-        self.mock_manager.settings.GOVERNANCE_PRINCIPLES = [
+        wm.settings.GOVERNANCE_PRINCIPLES = [
             {"id": "GP001", "name": "Privacy", "text": "User privacy is key.", "applies_to": ["all_agents"], "enabled": True},
             {"id": "GP002", "name": "PM Specific", "text": "PMs must manage tasks.", "applies_to": ["pm"], "enabled": True},
             {"id": "GP003", "name": "Worker Only", "text": "Workers do work.", "applies_to": ["worker"], "enabled": True},
@@ -81,7 +85,7 @@ class TestAgentWorkflowManagerGovernancePrompt(unittest.TestCase):
 
     def test_scenario_2_no_applicable_principles_for_agent_type(self):
         self.mock_agent.agent_type = "worker"
-        self.mock_manager.settings.GOVERNANCE_PRINCIPLES = [
+        wm.settings.GOVERNANCE_PRINCIPLES = [
             {"id": "GP001", "name": "Admin Only", "text": "Admin rule.", "applies_to": ["admin"], "enabled": True},
             {"id": "GP002", "name": "PM Only", "text": "PM rule.", "applies_to": ["pm"], "enabled": True},
         ]
@@ -90,7 +94,7 @@ class TestAgentWorkflowManagerGovernancePrompt(unittest.TestCase):
 
     def test_scenario_3_principle_applicable_via_all_agents(self):
         self.mock_agent.agent_type = "worker"
-        self.mock_manager.settings.GOVERNANCE_PRINCIPLES = [
+        wm.settings.GOVERNANCE_PRINCIPLES = [
             {"id": "GP001", "name": "Universal Rule", "text": "Applies to everyone.", "applies_to": ["all_agents"], "enabled": True},
         ]
         prompt = self.awm.get_system_prompt(self.mock_agent, self.mock_manager)
@@ -99,7 +103,7 @@ class TestAgentWorkflowManagerGovernancePrompt(unittest.TestCase):
 
     def test_scenario_4_no_enabled_principles(self):
         self.mock_agent.agent_type = "pm"
-        self.mock_manager.settings.GOVERNANCE_PRINCIPLES = [
+        wm.settings.GOVERNANCE_PRINCIPLES = [
             {"id": "GP001", "name": "Privacy - Disabled", "text": "User privacy is key.", "applies_to": ["all_agents"], "enabled": False},
             {"id": "GP002", "name": "PM Specific - Disabled", "text": "PMs must manage tasks.", "applies_to": ["pm"], "enabled": False},
         ]
@@ -108,13 +112,13 @@ class TestAgentWorkflowManagerGovernancePrompt(unittest.TestCase):
 
     def test_scenario_5_empty_governance_principles_list(self):
         self.mock_agent.agent_type = "admin"
-        self.mock_manager.settings.GOVERNANCE_PRINCIPLES = [] # Empty list
+        wm.settings.GOVERNANCE_PRINCIPLES = [] # Empty list
         prompt = self.awm.get_system_prompt(self.mock_agent, self.mock_manager)
         self.assertNotIn("--- Governance Principles ---", prompt)
 
     def test_governance_principles_injection_order(self):
         self.mock_agent.agent_type = "admin"
-        self.mock_manager.settings.GOVERNANCE_PRINCIPLES = [
+        wm.settings.GOVERNANCE_PRINCIPLES = [
             {"id": "GP001", "name": "Universal Rule", "text": "Applies to everyone.", "applies_to": ["all_agents"], "enabled": True},
         ]
         
@@ -144,7 +148,7 @@ class TestAgentWorkflowManagerGovernancePrompt(unittest.TestCase):
             # The standard instructions template ends with "... {available_workflow_trigger}"
             # The governance block is appended directly after this formatted standard instruction.
             
-            end_of_std_instr_placeholder = self.mock_manager.settings.PROMPTS["admin_standard_framework_instructions"].split("{available_workflow_trigger}")[0]
+            end_of_std_instr_placeholder = wm.settings.PROMPTS["admin_standard_framework_instructions"].split("{available_workflow_trigger}")[0]
             # We need to find where the actual content of standard instructions ends, before governance is appended.
             # The standard instructions are formatted, then governance is appended to that.
             # Then this combined block is used to format the state-specific prompt.

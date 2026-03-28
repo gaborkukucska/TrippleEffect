@@ -29,12 +29,16 @@ PM_STATE_PLAN_DECOMPOSITION = "pm_plan_decomposition" # NEW: For decomposing Adm
 PM_STATE_BUILD_TEAM_TASKS = "pm_build_team_tasks"     # NEW: For creating tasks, team, agents
 PM_STATE_ACTIVATE_WORKERS = "pm_activate_workers"   # NEW: For assigning tasks and activating workers
 PM_STATE_MANAGE = "pm_manage" # State for PM monitoring/management tasks (ongoing)
+PM_STATE_REPORT_CHECK = "pm_report_check" # State for PM reviewing/responding to incoming worker messages
+PM_STATE_AUDIT = "pm_audit" # NEW: State for PM verifying finished project before submitting to admin
 PM_STATE_STANDBY = "pm_standby" # State for PM waiting for Admin/user input or when project is complete
 PM_STATE_WORK = "pm_work" # Generic work state for PM if needed outside structured phases (can be reviewed later)
 
 # --- WORKER Agent Workflow State Constants ---
 WORKER_STATE_STARTUP = "worker_startup" # Startup state for Worker
+WORKER_STATE_DECOMPOSE = "worker_decompose" # State for Worker breaking tasks into sub-tasks
 WORKER_STATE_WORK = "worker_work" # State for active tool use/task execution for Worker
+WORKER_STATE_REPORT = "worker_report" # State for worker reporting progress/questions to PM
 WORKER_STATE_WAIT = "worker_wait" # State for worker waiting
 
 # --- Agent Operational Status Constants (Distinct from agent states!) ---

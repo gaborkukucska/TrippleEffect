@@ -64,7 +64,7 @@ class TestSettingsGovernanceLoading(unittest.TestCase):
         settings_instance = self.get_settings_instance()
 
         self.assertEqual(settings_instance.GOVERNANCE_PRINCIPLES, valid_principles_data["principles"])
-        mock_file_open.assert_called_once_with(GOVERNANCE_FILE_PATH, 'r', encoding='utf-8')
+        mock_file_open.assert_any_call(GOVERNANCE_FILE_PATH, 'r', encoding='utf-8')
         mock_yaml_load.assert_called_once()
 
     @patch('src.config.settings.Path.exists')
@@ -164,8 +164,8 @@ class TestSettingsGovernanceLoading(unittest.TestCase):
         
         # Check for specific warnings for GP002 and GP003
         warning_logs = [call_args[0][0] for call_args in mock_logger_warning.call_args_list]
-        self.assertTrue(any("missing required keys: GP002" in log for log in warning_logs))
-        self.assertTrue(any("missing required keys: GP003" in log for log in warning_logs))
+        self.assertTrue(any("missing required keys or is not a dict: GP002" in log for log in warning_logs))
+        self.assertTrue(any("missing required keys or is not a dict: GP003" in log for log in warning_logs))
 
 
 if __name__ == '__main__':

@@ -1,0 +1,12 @@
+{
+    "include": [
+        "src"
+    ],
+    "extraPaths": [
+        "."
+    ],
+    "pythonVersion": "3.11",
+    "pythonPlatform": "Linux",
+    "reportMissingImports": "none",
+    "reportMissingModuleSource": "none"
+}
