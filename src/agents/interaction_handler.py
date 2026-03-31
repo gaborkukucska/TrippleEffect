@@ -241,7 +241,7 @@ class AgentInteractionHandler:
         sender_id: str,
         target_identifier: str,
         message_content: str
-        ) -> Optional[asyncio.Task]:
+        ) -> Tuple[Dict[str, str], Optional[asyncio.Task]]:
         """
         Routes a message from sender to target agent.
         Attempts to resolve target by exact ID first, then by unique persona match.
@@ -249,7 +249,7 @@ class AgentInteractionHandler:
         Appends message to target history and schedules target agent cycle if idle.
         """
         sender_agent = self._manager.agents.get(sender_id)
-        if not sender_agent: logger.error(f"InteractionHandler SendMsg route error: Sender '{sender_id}' not found."); return None
+        if not sender_agent: logger.error(f"InteractionHandler SendMsg route error: Sender '{sender_id}' not found."); return {"status": "error", "message": f"Sender '{sender_id}' not found."}, None
 
         target_agent: Optional[Agent] = None; resolved_target_id: Optional[str] = None; error_msg: Optional[str] = None
 
@@ -270,11 +270,12 @@ class AgentInteractionHandler:
             else: error_msg = f"Failed to send message: Target agent ID or persona '{target_identifier}' not found."; logger.error(f"InteractionHandler SendMsg route error from '{sender_id}': {error_msg}")
 
         if error_msg:
-            feedback_message: MessageDict = { "role": "tool", "tool_call_id": f"send_message_failed_{target_identifier}", "content": f"[Manager Feedback for SendMessage]: {error_msg}" }
-            sender_agent.message_history.append(feedback_message); logger.debug(f"InteractionHandler: Appended '{error_msg.split(':')[0]}' feedback to sender '{sender_id}' history."); return None
+            logger.debug(f"InteractionHandler: Returning error feedback to sender '{sender_id}'.")
+            return {"status": "error", "message": f"[Manager Feedback for SendMessage]: {error_msg}"}, None
 
         if not target_agent or not resolved_target_id:
-             logger.error(f"Internal error: Target agent or ID is None after resolution for target '{target_identifier}'."); feedback_message: MessageDict = { "role": "tool", "tool_call_id": f"send_message_failed_{target_identifier}", "content": f"[Manager Feedback for SendMessage]: Internal error resolving target agent."}; sender_agent.message_history.append(feedback_message); return None
+             logger.error(f"Internal error: Target agent or ID is None after resolution for target '{target_identifier}'.")
+             return {"status": "error", "message": "[Manager Feedback for SendMessage]: Internal error resolving target agent."}, None
 
         assert target_agent is not None  # type narrowing for checker
         assert resolved_target_id is not None  # type narrowing for checker
@@ -296,21 +297,27 @@ class AgentInteractionHandler:
         if not allowed:
             error_msg = f"Message blocked: Sender '{sender_id}' (Team: {sender_team or 'N/A'}, Project: {sender_project}) cannot send to Target '{resolved_target_id}' (Persona: {target_agent.persona}, Team: {target_team or 'N/A'}, Project: {target_project}). Communication requires same team, same project, or Admin AI."
             logger.warning(f"InteractionHandler: {error_msg}")
-            feedback_message: MessageDict = {"role": "tool", "tool_call_id": f"send_message_failed_{target_identifier}", "content": f"[Manager Feedback for SendMessage]: {error_msg}"}
-            sender_agent.message_history.append(feedback_message)
-            logger.debug(f"InteractionHandler: Appended 'communication blocked' feedback to sender '{sender_id}' history.")
-            return None
+            return {"status": "error", "message": f"[Manager Feedback for SendMessage]: {error_msg}"}, None
 
         formatted_message: MessageDict = { "role": "user", "content": f"[From @{sender_id} ({sender_agent.persona})]: {message_content}" }; # Added sender persona
         
         # --- NEW DELIVERY LOGIC (PHASE W) ---
-        from src.agents.constants import WORKER_STATE_WAIT, PM_STATE_STANDBY, ADMIN_STATE_STANDBY, ADMIN_STATE_CONVERSATION
+        from src.agents.constants import WORKER_STATE_WAIT, PM_STATE_STANDBY, PM_STATE_REPORT_CHECK, ADMIN_STATE_STANDBY, ADMIN_STATE_CONVERSATION
         safe_states = [WORKER_STATE_WAIT, PM_STATE_STANDBY, ADMIN_STATE_STANDBY, ADMIN_STATE_CONVERSATION]
+        
+        # --- FIX: PM Interception for guarantees worker report acknowledgment ---
+        if target_agent.agent_type == AGENT_TYPE_PM and target_agent.status == AGENT_STATUS_IDLE and target_agent.state != PM_STATE_REPORT_CHECK:
+            logger.info(f"InteractionHandler: Intercepting message for idle PM '{resolved_target_id}'. Forcing transition to REPORT_CHECK to acknowledge.")
+            self._manager.workflow_manager.change_state(target_agent, PM_STATE_REPORT_CHECK)
+            # Ensure it is considered a safe state for delivery now
+            if PM_STATE_REPORT_CHECK not in safe_states:
+                safe_states.append(PM_STATE_REPORT_CHECK)
         
         if target_agent.state in safe_states:
             # Deliver immediately and wake them up
             target_agent.message_history.append(formatted_message)
             logger.debug(f"InteractionHandler: Appended message from '{sender_id}' to history of '{resolved_target_id}' (State: {target_agent.state}).")
+            delivery_status = {"status": "delivered", "message": f"Message successfully routed to '{resolved_target_id}'."}
         else:
             # Queue it
             if not hasattr(target_agent, 'message_inbox'):
@@ -318,14 +325,10 @@ class AgentInteractionHandler:
             target_agent.message_inbox.append(formatted_message)
             logger.info(f"InteractionHandler: Target '{resolved_target_id}' is in non-interruptible state '{target_agent.state}'. Queuing message in inbox.")
             
-            # Send feedback to the sender
-            feedback_message: MessageDict = {
-                "role": "tool", 
-                "tool_call_id": f"send_message_delayed_{target_identifier}", 
-                "content": f"[Manager Feedback]: Your message to '{target_identifier}' was queued because they are currently busy. It will be delivered when they are available or when they next respond."
+            delivery_status = {
+                "status": "queued",
+                "message": f"Your message to '{resolved_target_id}' was queued because they are currently busy processing. It will be delivered when they are available or when they next respond."
             }
-            sender_agent.message_history.append(feedback_message)
-            return None
         # --- END NEW DELIVERY LOGIC ---
 
         activation_task = None
@@ -357,7 +360,7 @@ class AgentInteractionHandler:
                     "agent_id": resolved_target_id,
                     "content": f"Message received from @{sender_id} ({sender_agent.persona}). Agent paused, message queued."
                 })
-        return activation_task
+        return delivery_status, activation_task
 
 
     async def execute_single_tool(
@@ -392,7 +395,7 @@ class AgentInteractionHandler:
                 result_content = "[ToolExec Error: `target_agent_id` and `message_content` are required for send_message.]"
                 raw_result = {"status": "error", "message": result_content}
             else:
-                await self.route_and_activate_agent_message(
+                route_status, activation_task = await self.route_and_activate_agent_message(
                     sender_id=agent.agent_id,
                     target_identifier=str(target_id),
                     message_content=str(message_content)
@@ -403,11 +406,11 @@ class AgentInteractionHandler:
                     agent.message_history.extend(queued_msgs)
                     agent.message_inbox = []
                     
-                    result_content = f"Message successfully routed to '{target_id}'.\n\n[SYSTEM NOTIFICATION]: You just received {len(queued_msgs)} queued incoming messages! They have been appended to your active message history so you can review them."
+                    result_content = f"{route_status['message']}\n\n[SYSTEM NOTIFICATION]: You just received {len(queued_msgs)} queued incoming messages! They have been appended to your active message history so you can review them."
                 else:
-                    result_content = f"Message successfully routed to '{target_id}'."
+                    result_content = route_status["message"]
 
-                raw_result = {"status": "success", "message": result_content}
+                raw_result = route_status
 
             # Reset agent status after handling
             if agent.status == AGENT_STATUS_EXECUTING_TOOL:

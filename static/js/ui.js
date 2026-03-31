@@ -1,6 +1,7 @@
 // START OF FILE static/js/ui.js
 
 let currentStreamingMessageElements = {}; // Added module-level variable
+let teamToggleStates = {}; // Track open/close state for teams
 
 import { escapeHTML, getCurrentTimestamp } from './utils.js';
 import * as config from './config.js';
@@ -261,23 +262,8 @@ export const updateAgentStatusUI = () => {
             return;
         }
 
-        // Sort admin_ai first, then alphabetically
-        agentIds.sort((a, b) => {
-            if (a === 'admin_ai') return -1;
-            if (b === 'admin_ai') return 1;
-            return a.localeCompare(b);
-        });
-
-        agentIds.forEach(agentId => {
-            const agent = agentStatusData[agentId];
-            // Skip rendering if status somehow became 'deleted' in cache (shouldn't happen with new state logic, but safe)
-            if (!agent || agent.status === 'deleted') {
-                 console.debug(`UI: Skipping deleted/missing agent ${agentId} during render.`);
-                 return;
-            }
-
+        const createAgentStatusItem = (agentId, agent) => {
             const statusItem = document.createElement('div');
-            // Use 'idle' as default if status is missing, replace spaces for class name
             const statusValue = (agent.status || 'idle').replace(/ /g, '_');
             const statusClass = `status-${statusValue}`;
             statusItem.classList.add('agent-status-item', statusClass);
@@ -285,19 +271,137 @@ export const updateAgentStatusUI = () => {
 
             const persona = agent.persona || agentId;
             const modelDisplay = agent.model ? `(${escapeHTML(agent.model)})` : '(Model N/A)';
-            const teamInfo = agent.team ? `<span class="agent-team">[${escapeHTML(agent.team)}]</span>` : '';
+            // Removed teamInfo rendering here
+            const stateDisplay = agent.state ? ` <span style="background-color: var(--bg-color-secondary); padding: 1px 6px; border-radius: 12px; font-size: 0.75em; border: 1px solid var(--border-color); margin-left: 5px; color: var(--text-color-secondary);">⚙️ ${escapeHTML(agent.state)}</span>` : '';
 
             const agentInfoSpan = document.createElement('span');
-            // Display relevant info: Persona, Model, Team
-            agentInfoSpan.innerHTML = `<strong>${escapeHTML(persona)}</strong> <span class="agent-model">${modelDisplay}</span> ${teamInfo}`;
+            agentInfoSpan.className = 'agent-info-span'; // Add class for easy targeting later
+            agentInfoSpan.innerHTML = `<strong>${escapeHTML(persona)}</strong> <span class="agent-model">${modelDisplay}</span>${stateDisplay}`;
 
             const statusBadgeSpan = document.createElement('span');
             statusBadgeSpan.classList.add('agent-status');
-            statusBadgeSpan.textContent = agent.status || 'idle'; // Default to idle if missing
+            statusBadgeSpan.textContent = agent.status || 'idle';
 
             statusItem.appendChild(agentInfoSpan);
             statusItem.appendChild(statusBadgeSpan);
-            DOM.agentStatusContent.appendChild(statusItem);
+            
+            if (agent.estimated_tokens !== undefined && agent.max_tokens) {
+                const ratio = Math.min(100, Math.round((agent.estimated_tokens / agent.max_tokens) * 100));
+                let colorVar = 'var(--accent-color-green)';
+                if (ratio >= 90) colorVar = 'var(--accent-color-red)';
+                else if (ratio >= 75) colorVar = 'var(--accent-color-yellow)';
+                
+                const progressDiv = document.createElement('div');
+                progressDiv.style.marginTop = '6px';
+                progressDiv.style.width = '100%';
+                progressDiv.style.height = '4px';
+                progressDiv.style.backgroundColor = 'var(--bg-color-primary)';
+                progressDiv.style.borderRadius = '2px';
+                progressDiv.style.overflow = 'hidden';
+                progressDiv.title = `Token Usage: ${agent.estimated_tokens} / ${agent.max_tokens} (${ratio}%)`;
+                
+                const progressBar = document.createElement('div');
+                progressBar.style.height = '100%';
+                progressBar.style.backgroundColor = colorVar;
+                progressBar.style.width = `${ratio}%`;
+                progressBar.style.transition = 'width 0.3s ease';
+                
+                progressDiv.appendChild(progressBar);
+                statusItem.appendChild(progressDiv);
+            }
+            return statusItem;
+        };
+
+        const standaloneAgents = [];
+        const teams = {}; // teamName -> { pms: [], workers: [] }
+
+        agentIds.forEach(agentId => {
+            const agent = agentStatusData[agentId];
+            if (!agent || agent.status === 'deleted') return;
+            
+            if (agent.team) {
+                if (!teams[agent.team]) teams[agent.team] = { pms: [], workers: [] };
+                if (agentId.toLowerCase().includes('pm') || (agent.persona && agent.persona.toLowerCase().includes('manager'))) {
+                     teams[agent.team].pms.push(agentId);
+                } else {
+                     teams[agent.team].workers.push(agentId);
+                }
+            } else {
+                standaloneAgents.push(agentId);
+            }
+        });
+
+        // Render standalone agents
+        standaloneAgents.sort((a, b) => {
+            if (a === 'admin_ai') return -1;
+            if (b === 'admin_ai') return 1;
+            return a.localeCompare(b);
+        }).forEach(id => {
+             DOM.agentStatusContent.appendChild(createAgentStatusItem(id, agentStatusData[id]));
+        });
+
+        // Render teams
+        Object.keys(teams).sort().forEach(teamName => {
+             const team = teams[teamName];
+             const teamContainer = document.createElement('div');
+             teamContainer.className = 'team-container';
+             teamContainer.style.marginBottom = '10px';
+             
+             // If there's a PM, use it as the header
+             if (team.pms.length > 0) {
+                 team.pms.forEach(pmId => {
+                      const pmItem = createAgentStatusItem(pmId, agentStatusData[pmId]);
+                      pmItem.style.marginBottom = '0'; // Tighter grouping
+                      
+                      if (team.workers.length > 0) {
+                          const isTeamOpen = teamToggleStates[teamName] === true;
+                          
+                          const toggleBtn = document.createElement('button');
+                          toggleBtn.textContent = isTeamOpen ? '🔼 Hide Team' : '🔽 Show Team';
+                          toggleBtn.style.marginLeft = '10px';
+                          toggleBtn.style.fontSize = '0.75em';
+                          toggleBtn.style.padding = '2px 6px';
+                          toggleBtn.style.cursor = 'pointer';
+                          toggleBtn.style.borderRadius = '4px';
+                          toggleBtn.style.border = '1px solid var(--border-color)';
+                          toggleBtn.style.background = 'var(--bg-color-secondary)';
+                          toggleBtn.style.color = 'var(--text-color)';
+                          
+                          const workersDiv = document.createElement('div');
+                          workersDiv.style.display = isTeamOpen ? 'block' : 'none';
+                          workersDiv.style.marginLeft = '15px';
+                          workersDiv.style.marginTop = '5px';
+                          workersDiv.style.borderLeft = '2px solid var(--border-color)';
+                          workersDiv.style.paddingLeft = '10px';
+
+                          toggleBtn.onclick = (e) => {
+                               e.stopPropagation();
+                               const willOpen = workersDiv.style.display === 'none';
+                               workersDiv.style.display = willOpen ? 'block' : 'none';
+                               toggleBtn.textContent = willOpen ? '🔼 Hide Team' : '🔽 Show Team';
+                               teamToggleStates[teamName] = willOpen;
+                          };
+                          
+                          pmItem.querySelector('.agent-info-span').appendChild(toggleBtn);
+                          
+                          team.workers.sort().forEach(wId => {
+                               workersDiv.appendChild(createAgentStatusItem(wId, agentStatusData[wId]));
+                          });
+                          
+                          teamContainer.appendChild(pmItem);
+                          teamContainer.appendChild(workersDiv);
+                      } else {
+                          teamContainer.appendChild(pmItem);
+                      }
+                 });
+             } else {
+                 // No PM found, just render workers
+                 team.workers.sort().forEach(wId => {
+                      teamContainer.appendChild(createAgentStatusItem(wId, agentStatusData[wId]));
+                 });
+             }
+             
+             DOM.agentStatusContent.appendChild(teamContainer);
         });
         // console.debug("UI: Agent status list updated from cache."); // Less verbose
     } catch (error) {

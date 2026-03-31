@@ -5,7 +5,7 @@
  * Should be called only after DOMContentLoaded.
  */
 
-export let messageInput, sendButton, conversationArea, internalCommsArea, agentStatusContent, viewPanels, navButtons, fileInput, attachFileButton, fileInfoArea, projectSelect, sessionSelect, loadSessionButton, saveProjectNameInput, saveSessionNameInput, saveSessionButton, sessionStatusMessage, configContent, refreshConfigButton, addAgentButton, agentModal, agentForm, modalTitle, editAgentIdInput;
+export let messageInput, sendButton, conversationArea, internalCommsArea, agentStatusContent, agentStatusContainer, chatAgentsDivider, viewPanels, navButtons, fileInput, attachFileButton, fileInfoArea, projectSelect, sessionSelect, loadSessionButton, saveProjectNameInput, saveSessionNameInput, saveSessionButton, sessionStatusMessage, configContent, refreshConfigButton, addAgentButton, agentModal, agentForm, modalTitle, editAgentIdInput, shutdownServerButton;
 
 export const assignElements = () => {
     console.log("DOM Assign: Starting element assignment..."); // Log start
@@ -15,6 +15,8 @@ export const assignElements = () => {
     sendButton = document.getElementById('send-button');
     conversationArea = document.getElementById('conversation-area');
     agentStatusContent = document.getElementById('agent-status-content');
+    agentStatusContainer = document.querySelector('.agent-status-container');
+    chatAgentsDivider = document.getElementById('chat-agents-divider');
     fileInput = document.getElementById('file-input');
     attachFileButton = document.getElementById('attach-file-button');
     fileInfoArea = document.getElementById('file-info-area');
@@ -27,6 +29,7 @@ export const assignElements = () => {
     saveProjectNameInput = document.getElementById('save-project-name');
     saveSessionNameInput = document.getElementById('save-session-name');
     saveSessionButton = document.getElementById('save-session-button');
+    shutdownServerButton = document.getElementById('shutdown-server-button');
     sessionStatusMessage = document.getElementById('session-status-message');
     configContent = document.getElementById('config-content');
     refreshConfigButton = document.getElementById('refresh-config-button');

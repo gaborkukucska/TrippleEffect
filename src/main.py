@@ -211,6 +211,37 @@ except Exception as e:
 
 # Configuration for running the app with uvicorn directly
 if __name__ == "__main__":
+    import sys
+    
+    # Initialize Terminal Listener for Ctrl+Q if running interactively
+    if sys.stdin.isatty():
+        import threading, termios, tty
+        
+        def _listen_for_ctrl_q():
+            try:
+                fd = sys.stdin.fileno()
+                old_settings = termios.tcgetattr(fd)
+                try:
+                    tty.setcbreak(fd)
+                    while True:
+                        ch = sys.stdin.read(1)
+                        if ch == '\x11': # Ctrl+Q
+                            print("\r\n[Ctrl+Q detected] Initiating graceful shutdown...", flush=True)
+                            os.kill(os.getpid(), signal.SIGINT)
+                            break
+                        elif ch == '\x03': # Ctrl+C
+                            print("\r\n[Ctrl+C detected] Initiating graceful shutdown...", flush=True)
+                            os.kill(os.getpid(), signal.SIGINT)
+                            break
+                finally:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            except Exception as e:
+                logger.warning(f"Failed to start STDIN listener: {e}")
+                
+        listener_th = threading.Thread(target=_listen_for_ctrl_q, daemon=True)
+        listener_th.start()
+        logger.info("Started Ctrl+Q terminal listener thread.")
+
     # Use the log_level_str defined earlier (after initial load_dotenv)
     # Ensure it's lowercase for uvicorn
     uvicorn_log_level = log_level_str.lower()

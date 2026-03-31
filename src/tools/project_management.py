@@ -31,10 +31,11 @@ class ProjectManagementTool(BaseTool):
         ToolParameter(name="title", type="str", required=False, description="Short task title (used as description if description is omitted)."),
         ToolParameter(name="description", type="str", required=False, description="Task description."),
         ToolParameter(name="task_id", type="str", required=False, description="Task attribute. For add_task: assign a custom alias (e.g., 'task_1'). For other actions: use UUID, ID, or your custom alias."),
-        ToolParameter(name="status", type="str", required=False, description="New status for the task."),
+        ToolParameter(name="task_progress", type="str", required=False, description="Granular task progress state (e.g., todo, in_progress, waiting, stuck, finished)."),
         ToolParameter(name="priority", type="str", required=False, description="Task priority."),
         ToolParameter(name="project_filter", type="str", required=False, description="Filter tasks by project."),
         ToolParameter(name="assignee_filter", type="str", required=False, description="Filter tasks by assignee."),
+        ToolParameter(name="task_progress_filter", type="str", required=False, description="Filter tasks by granuler progress state."),
         ToolParameter(name="tags", type="list", required=False, description="List of tags."),
         ToolParameter(name="depends", type="str", required=False, description="Dependency task UUID."),
         ToolParameter(name="assignee_agent_id", type="str", required=False, description="Agent ID for assignment."),
@@ -54,6 +55,14 @@ class ProjectManagementTool(BaseTool):
             if not taskrc_path.exists():
                 with open(taskrc_path, 'w') as f:
                     f.write("uda.assignee.type=string\nuda.assignee.label=Assignee\n")
+                    f.write("uda.task_progress.type=string\nuda.task_progress.label=Task Progress\n")
+            else:
+                # Patch existing taskrc
+                with open(taskrc_path, 'r') as f:
+                    content = f.read()
+                if "uda.task_progress.type" not in content:
+                    with open(taskrc_path, 'a') as f:
+                        f.write("\nuda.task_progress.type=string\nuda.task_progress.label=Task Progress\n")
             return TaskWarrior(data_location=str(data_path), taskrc_location=str(taskrc_path))
         except Exception as e:
              logger.error(f"Failed to initialize TaskWarrior at {data_path}: {e}", exc_info=True)
@@ -79,6 +88,34 @@ class ProjectManagementTool(BaseTool):
         except Exception as e:
             logger.error(f"Failed to save aliases: {e}")
 
+    def _map_task_progress(self, raw_progress: Optional[str]) -> tuple[str, str]:
+        """
+        Maps a varied text description to a standard 'task_progress' UDA value
+        and calculates the underlying strict TaskWarrior 'status'.
+        Returns: (standard_progress, tw_status)
+        """
+        if not raw_progress:
+            return "todo", "pending"
+            
+        progress_norm = str(raw_progress).strip().lower()
+        
+        # Standard progress mapping rules to give LLMs flexibility
+        if progress_norm in ["todo", "not_started", "open", "new", "pending"]:
+            return "todo", "pending"
+        elif progress_norm in ["in_progress", "active", "working", "started", "progressing"]:
+            return "in_progress", "pending"
+        elif progress_norm in ["waiting", "blocked", "paused", "on_hold"]:
+            return "waiting", "waiting"
+        elif progress_norm in ["stuck", "failed", "error", "issue"]:
+            return "stuck", "pending"  # Still pending structurally, just stuck temporally
+        elif progress_norm in ["finished", "done", "completed", "complete", "closed"]:
+            return "finished", "completed"
+        elif progress_norm in ["deleted", "cancelled", "canceled", "dropped"]:
+            return "deleted", "deleted"
+            
+        # Fallback if unknown but provided
+        return progress_norm, "pending"
+
     async def execute(
         self,
         agent_id: str,
@@ -102,6 +139,7 @@ class ProjectManagementTool(BaseTool):
         action_suggestions = {
             "assign_task": "modify_task",
             "create_task": "add_task",
+            "decompose_task": "add_task",
             "new_task": "add_task", 
             "add": "add_task",
             "create": "add_task",
@@ -177,6 +215,13 @@ class ProjectManagementTool(BaseTool):
                     return {"status": "error", "message": "Missing 'title' or 'description' for 'add_task'."}
 
                 task = Task(tw, description=main_desc)
+                
+                # Apply unified task_progress mapping (alias handling for 'status' fallback)
+                raw_prog = kwargs.get("task_progress") or kwargs.get("status")
+                t_prog, t_status = self._map_task_progress(raw_prog)
+                task['task_progress'] = t_prog
+                task['status'] = t_status
+                
                 if kwargs.get("priority"):
                     prio = str(kwargs["priority"]).upper()
                     if prio in ['HIGH', 'H']: prio = 'H'
@@ -195,9 +240,19 @@ class ProjectManagementTool(BaseTool):
                 if kwargs.get("tags"):
                     tags_arg = kwargs["tags"]
                     if isinstance(tags_arg, str):
-                        task['tags'] = set([tag.strip() for tag in tags_arg.split(',') if tag.strip()])
+                        raw_tags = [tag.strip() for tag in tags_arg.split(',') if tag.strip()]
+                    elif isinstance(tags_arg, list):
+                        raw_tags = [str(t).strip() for t in tags_arg if t]
                     else:
-                        task['tags'] = set(tags_arg)
+                        raw_tags = [str(tags_arg).strip()]
+                    # Sanitize: strip +/- prefixes, quotes, brackets that corrupt TaskWarrior JSON
+                    sanitized = []
+                    for t in raw_tags:
+                        t = t.strip().lstrip('+-').strip()
+                        t = t.strip('"\'\'').strip('[]').strip()
+                        if t:
+                            sanitized.append(t)
+                    task['tags'] = set(sanitized)
                     
                 if kwargs.get("depends"): 
                     dep_val_raw = str(kwargs["depends"]).strip()
@@ -241,25 +296,61 @@ class ProjectManagementTool(BaseTool):
             elif action == "list_tasks":
                 tasks_query = tw.tasks.all()
                 if kwargs.get("project_filter"): tasks_query = tasks_query.filter(project=kwargs["project_filter"])
-                if kwargs.get("status_filter"): 
+                
+                # Allow new task_progress_filter or legacy status_filter
+                if "task_progress_filter" in kwargs:
+                    tasks_query = tasks_query.filter(task_progress=kwargs["task_progress_filter"])
+                elif "status_filter" in kwargs: 
                     tasks_query = tasks_query.filter(status=kwargs["status_filter"])
                 else:
                     # Default: filter out completed tasks to save tokens
                     tasks_query = tasks_query.pending()
                 if "assignee_filter" in kwargs: 
-                    tasks_query = tasks_query.filter(assignee=kwargs["assignee_filter"])
+                    a_filter = str(kwargs["assignee_filter"]).strip()
+                    if a_filter.lower() not in ["none", "null", "unassigned"]:
+                        tasks_query = tasks_query.filter(assignee=a_filter)
                 elif agent_id and agent_id.startswith("W"):
                     # Auto-filter for the specific worker if no filter is provided
                     tasks_query = tasks_query.filter(assignee=agent_id)
+                
+                # Gracefully handle corrupted TaskWarrior data (e.g. malformed tags causing Invalid JSON)
+                try:
+                    tasks = tasks_query.all()
+                except Exception as tw_err:
+                    err_str = str(tw_err)
+                    if "Invalid JSON" in err_str or "JSONDecodeError" in err_str:
+                        logger.error(f"ProjectManagementTool: TaskWarrior data corruption detected: {err_str[:200]}")
+                        # Fallback: try fetching without filters to identify scope
+                        try:
+                            raw_count = len(tw.tasks.all())
+                        except Exception:
+                            raw_count = "unknown"
+                        return {
+                            "status": "error",
+                            "message": f"TaskWarrior data contains corrupted entries (likely malformed tags). Total tasks in DB: {raw_count}. Consider modifying the corrupted task's tags to fix this.",
+                            "error_type": "data_corruption"
+                        }
+                    raise  # re-raise non-JSON errors
+                
+                # Apply special unassigned assignee_filter post-query
+                if "assignee_filter" in kwargs and str(kwargs["assignee_filter"]).strip().lower() in ["none", "null", "unassigned"]:
+                    tasks = [t for t in tasks if t['assignee'] is None or str(t['assignee']).strip() == ""]
 
-                tasks = tasks_query.all()
                 if "tags_filter" in kwargs:
                     try:
-                        filter_tags = set(tag.strip() for tag in kwargs["tags_filter"].split(","))
-                        mode = kwargs.get("tags_filter_mode", "include")
+                        filter_tags = set(tag.strip().lower() for tag in kwargs["tags_filter"].split(","))
+                        mode = str(kwargs.get("tags_filter_mode", "include")).lower().strip()
                         filtered_tasks = []
                         for task in tasks:
-                            task_tags = set(task['tags'] if task['tags'] is not None else [])
+                            task_tags = set(str(tag).lower() for tag in (task['tags'] if task['tags'] is not None else []))
+                            
+                            # Magic tags based on assignee status to accommodate LLM behavior
+                            is_assigned = task['assignee'] is not None and str(task['assignee']).strip() != ""
+                            if is_assigned:
+                                task_tags.add("assigned")
+                            else:
+                                task_tags.add("unassigned")
+                                
                             if mode == "include" and filter_tags.issubset(task_tags):
                                 filtered_tasks.append(task)
                             elif mode == "any" and filter_tags.intersection(task_tags):
@@ -270,17 +361,29 @@ class ProjectManagementTool(BaseTool):
                     except Exception as e:
                         logger.warning(f"Error filtering tasks by tags: {e}")
                 
-                # Create a truly minimal output format
-                minimal_task_list = [
-                    {
+                # Create a truly minimal output format replacing low-fi status with descriptive task_progress
+                minimal_task_list = []
+                for task in tasks:
+                    try:
+                        t_prog = task['task_progress']
+                    except KeyError:
+                        t_prog = None
+                        
+                    if not t_prog:
+                        # Fallback for old tasks that lacked the UDA
+                        try:
+                            t_status = task['status']
+                        except KeyError:
+                            t_status = None
+                        t_prog = "finished" if t_status == "completed" else "todo"
+                        
+                    minimal_task_list.append({
                         "uuid": task['uuid'], 
                         "description": task['description'], 
-                        "status": task['status'], 
+                        "task_progress": t_prog, 
                         "assignee": task['assignee'] if task['assignee'] is not None else None,
                         "depends": [t['uuid'] for t in (task['depends'] if task['depends'] is not None else [])]
-                    } 
-                    for task in tasks
-                ]
+                    })
                 return {"status": "success", "message": f"Found {len(minimal_task_list)} task(s).", "tasks": minimal_task_list}
 
             elif action == "modify_task":
@@ -298,7 +401,7 @@ class ProjectManagementTool(BaseTool):
                 if "field" in kwargs and "value" in kwargs:
                     field = str(kwargs["field"]).lower().strip()
                     value = kwargs["value"]
-                    if field in ["status", "description", "priority", "tags", "depends"]:
+                    if field in ["status", "task_progress", "description", "priority", "tags", "depends"]:
                         kwargs[field] = value
                     elif field in ["assignee", "assignee_agent_id"]:
                         kwargs["assignee_agent_id"] = value
@@ -319,33 +422,18 @@ class ProjectManagementTool(BaseTool):
                 except Exception:
                     return {"status": "error", "message": f"Task '{task_id}' not found. Verify ID or exact Name."}
 
-                # Validate status if provided
-                if "status" in kwargs:
-                    status = kwargs["status"]
-                    valid_statuses = ["pending", "completed", "deleted", "waiting", "recurring"]
-                    if status not in valid_statuses:
-                        # Map common alternative statuses to valid ones
-                        status_mapping = {
-                            "assigned": "pending",
-                            "open": "pending", 
-                            "in_progress": "pending",
-                            "active": "pending",
-                            "not_started": "pending",
-                            "todo": "pending",
-                            "done": "completed",
-                            "finished": "completed",
-                            "closed": "completed"
-                        }
-                        if status in status_mapping:
-                            status = status_mapping[status]
-                            logger.info(f"TaskWarrior: Mapped invalid status '{kwargs['status']}' to valid status '{status}'")
-                        else:
-                            return {"status": "error", "message": f"Invalid status '{status}'. Valid statuses are: {', '.join(valid_statuses)}. Note: 'assigned' should be mapped to 'pending'."}
-                    kwargs["status"] = status
+                # Validate task_progress or legacy status if provided
+                if "task_progress" in kwargs or "status" in kwargs:
+                    raw_prog = kwargs.get("task_progress") or kwargs.get("status")
+                    t_prog, t_status = self._map_task_progress(raw_prog)
+                    task["task_progress"] = t_prog
+                    task["status"] = t_status
+                    modified_fields = ["task_progress", "status"]
+                else:
+                    modified_fields = []
 
-                modified_fields = []
-                if "description" in kwargs: task['description'] = kwargs["description"]; modified_fields.append("description")
-                if "status" in kwargs: task['status'] = kwargs["status"]; modified_fields.append("status")
+                if "description" in kwargs: 
+                    task['description'] = kwargs["description"]; modified_fields.append("description")
                 if "priority" in kwargs: 
                     prio = str(kwargs["priority"]).upper()
                     if prio in ['HIGH', 'H']: prio = 'H'
@@ -357,13 +445,23 @@ class ProjectManagementTool(BaseTool):
                 if "tags" in kwargs: 
                     tags_arg = kwargs["tags"]
                     if isinstance(tags_arg, str):
-                        task['tags'] = set([tag.strip() for tag in tags_arg.split(',') if tag.strip()])
+                        raw_tags = [tag.strip() for tag in tags_arg.split(',') if tag.strip()]
+                    elif isinstance(tags_arg, list):
+                        raw_tags = [str(t).strip() for t in tags_arg if t]
                     else:
-                        task['tags'] = set(tags_arg)
+                        raw_tags = [str(tags_arg).strip()]
+                    sanitized = []
+                    for t in raw_tags:
+                        t = t.strip().lstrip('+-').strip()
+                        t = t.strip('"\'\'').strip('[]').strip()
+                        if t:
+                            sanitized.append(t)
+                    task['tags'] = set(sanitized)
                     modified_fields.append("tags")
                 
-                if kwargs.get("assignee_agent_id"): 
-                    new_assignee = kwargs["assignee_agent_id"]
+                assignee_arg = kwargs.get("assignee_agent_id") or kwargs.get("assignee")
+                if assignee_arg: 
+                    new_assignee = assignee_arg
                     if task['assignee'] == new_assignee:
                         # Silently accept redundant assignment to prevent LLM retry loops
                         pass
@@ -391,7 +489,7 @@ class ProjectManagementTool(BaseTool):
                 task.save()
                 assignee_to_return = kwargs.get("assignee_agent_id") or task['assignee']
                 depends_list = [t['uuid'] for t in (task['depends'] if task['depends'] is not None else [])]
-                return {"status": "success", "message": f"Task '{task_id}' modified successfully.", "task_uuid": task['uuid'], "task_id": task['id'], "modified_fields": modified_fields, "task_status": task['status'], "description": task['description'], "assignee": assignee_to_return, "depends": depends_list}
+                return {"status": "success", "message": f"Task '{task_id}' modified successfully.", "task_uuid": task['uuid'], "task_id": task['id'], "modified_fields": modified_fields, "task_progress": task['task_progress'], "description": task['description'], "assignee": assignee_to_return, "depends": depends_list}
 
             elif action == "complete_task":
                 task_id = kwargs.get("task_id") or kwargs.get("task_uuid")
@@ -422,13 +520,15 @@ class ProjectManagementTool(BaseTool):
                     return {"status": "error", "message": f"Task '{task_id}' not found. Verify ID or exact Name."}
 
                 try:
-                    task.done()
+                    task.done() # This triggers Taskwarrior to set status=completed
+                    task['task_progress'] = "finished"
+                    task.save()
                 except Exception as e:
                     if "completed" in str(e).lower() or "Cannot complete a completed task" in str(e):
-                        return {"status": "success", "message": f"Task '{task_id}' is already completed.", "task_uuid": task['uuid'], "task_id": task['id']}
+                        return {"status": "success", "message": f"Task '{task_id}' is already completed ('finished').", "task_uuid": task['uuid'], "task_id": task['id']}
                     raise e
                     
-                return {"status": "success", "message": f"Task '{task_id}' marked as completed.", "task_uuid": task['uuid'], "task_id": task['id']}
+                return {"status": "success", "message": f"Task '{task_id}' marked as finished.", "task_uuid": task['uuid'], "task_id": task['id']}
 
             else:
                 return {"status": "error", "message": f"Unknown action: '{action}'."}
@@ -455,6 +555,7 @@ When assigning a task to an agent, you MUST use BOTH the `assignee_agent_id` par
 Creates a new task.
 *   `<description>` (string, required): A clear and concise description of the task.
 *   `<project_filter>` (string, optional): The project name to associate the task with. Defaults to current project.
+*   `<task_progress>` (string, optional): Initial progress state. Valid options: 'todo', 'in_progress', 'waiting', 'stuck', 'failed', 'finished'. Defaults to 'todo'.
 *   `<priority>` (string, optional): Task priority (e.g., 'H', 'M', 'L').
 *   `<tags>` (string, optional): Comma-separated list of tags to add (e.g., `+bug,+urgent`).
 *   `<assignee_agent_id>` (string, optional): The ID of the agent to assign this task to.
@@ -465,6 +566,7 @@ Creates a new task.
       <action>add_task</action>
       <description>Implement user authentication API endpoint</description>
       <project_filter>{project_name_placeholder}</project_filter>
+      <task_progress>todo</task_progress>
       <priority>H</priority>
       <tags>+backend,+api</tags>
     </project_management>
@@ -473,18 +575,18 @@ Creates a new task.
         elif sub_action == "list_tasks":
             return common_header + f"""
 **Action: list_tasks**
-Lists existing tasks.
+Lists existing tasks. Note that we use a granular 'task_progress' system to track exact task states.
 *   `<project_filter>` (string, optional): Filter tasks by a specific project name.
-*   `<status_filter>` (string, optional): Filter by status (e.g., 'pending', 'completed').
-*   `<assignee_filter>` (string, optional): Filter by assigned agent ID.
-*   `<tags_filter>` (string, optional): Filter by a comma-separated list of tags.
+*   `<task_progress_filter>` (string, optional): Filter by exact progress (e.g., 'todo', 'in_progress', 'stuck', 'finished').
+*   `<assignee_filter>` (string, optional): Filter by assigned agent ID. To find unassigned tasks awaiting delegation, set this exact value to 'unassigned'.
+*   `<tags_filter>` (string, optional): Filter by a comma-separated list of tags. You can also use the magic tags 'assigned' or 'unassigned' here in combination with exclude/include modes.
 *   Example:
     ```xml
     <project_management>
       <action>list_tasks</action>
       <project_filter>{project_name_placeholder}</project_filter>
-      <assignee_filter>{project_name_placeholder}_worker_1</assignee_filter>
-      <status_filter>pending</status_filter>
+      <assignee_filter>unassigned</assignee_filter>
+      <task_progress_filter>todo</task_progress_filter>
     </project_management>
     ```
 """
@@ -494,7 +596,7 @@ Lists existing tasks.
 Modifies an existing task.
 *   `<task_id>` (string, required): The UUID or integer ID of the task to modify.
 *   `<description>` (string, optional): New description for the task.
-*   `<status>` (string, optional): New status (e.g., 'completed', 'deleted').
+*   `<task_progress>` (string, optional): Update task progress. Use detailed states: 'todo', 'in_progress', 'waiting', 'stuck', 'failed', 'finished'. (Calling this automatically updates underlying system status).
 *   `<priority>` (string, optional): New priority.
 *   `<tags>` (string, optional): New comma-separated list of tags. Use `+tag` to add and `-tag` to remove.
 *   `<assignee_agent_id>` (string, optional): Reassign the task to a new agent. **REMEMBER to also update the tag.**
@@ -504,16 +606,16 @@ Modifies an existing task.
     <project_management>
       <action>modify_task</action>
       <task_id>123e4567-e89b-12d3-a456-426614174000</task_id>
+      <task_progress>in_progress</task_progress>
       <assignee_agent_id>{project_name_placeholder}_worker_1</assignee_agent_id>
       <tags>+{project_name_placeholder}_worker_1,assigned</tags>
-      <depends>2</depends>
     </project_management>
     ```
 """
         elif sub_action == "complete_task":
             return common_header + """
 **Action: complete_task**
-Marks a task as completed. Shortcut for `modify_task` with `status='completed'`.
+Marks a task as completely finished. Shortcut for `modify_task` with `task_progress='finished'`.
 *   `<task_id>` (string, required): The UUID or integer ID of the task to complete.
 *   Example:
     ```xml

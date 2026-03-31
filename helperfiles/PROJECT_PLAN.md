@@ -147,6 +147,8 @@
 * [X] **Enhanced `ToolErrorHandler`:** Added `action_help` parameter to `generate_enhanced_error_response()` and `format_error_for_agent()` for richer error context.
 * [X] **New FileSystemTool Actions:** Added `append`, `insert_lines`, and `replace_lines` actions for granular file manipulation.
 * [X] **Type Safety Improvements:** Resolved all Pyright type errors across `executor.py`, `file_system.py`, `manage_team.py`, and `project_management.py`.
+* [X] **Granular Task Progress & System Watchdog:** Replaced rigid Taskwarrior statuses with a custom `task_progress` tracking methodology (`in_progress`, `stuck`, `failed`, `waiting`) for enriched LLM visibility, and promoted the isolated PM monitor into a Universal Framework Watchdog.
+* [X] **Admin AI Orchestration Upgrade:** Transitioned the Admin AI from a passive message relay to the active "Ultimate Orchestrator" capable of dynamically dropping into an investigatory `work` state to run system tools without interrupting active agents.
 
 **Future Goals:**
 

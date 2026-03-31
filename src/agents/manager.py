@@ -20,7 +20,8 @@ logging.info("manager.py: Imported database_manager.")
 logging.info("manager.py: Importing constants...")
 from src.agents.constants import (
     AGENT_STATUS_IDLE, AGENT_STATUS_ERROR, BOOTSTRAP_AGENT_ID, ADMIN_STATE_CONVERSATION,
-    AGENT_TYPE_PM, AGENT_TYPE_WORKER, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_STARTUP, WORKER_STATE_WORK, # Added WORKER_STATE_WORK
+    AGENT_TYPE_PM, AGENT_TYPE_WORKER, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_STARTUP,
+    PM_STATE_STANDBY, WORKER_STATE_WORK, WORKER_STATE_WAIT,
     AGENT_STATUS_AWAITING_USER_REVIEW_CG # Added for CG concern resolution
 )
 logging.info("manager.py: Imported constants.")
@@ -263,8 +264,8 @@ class AgentManager:
             return
 
         # Check for project approval command specifically for Admin AI
-        # This regex will capture the PM agent ID from messages like "approve project pm_ProjectName_timestamp"
-        approval_match = re.match(r"^approve project (pm_[a-zA-Z0-9_.-]+)$", message.strip())
+        # This regex will capture the PM agent ID from messages like "approve project PM1"
+        approval_match = re.match(r"(?i)^approve project ([a-zA-Z0-9_.-]+)$", message.strip())
 
         if admin_agent.agent_id == BOOTSTRAP_AGENT_ID and approval_match:
             pm_agent_id_from_message = approval_match.group(1)
@@ -280,29 +281,33 @@ class AgentManager:
             # This interception is mainly to prevent AdminAI from misinterpreting the user's echo of this command.
 
             if pm_agent_to_check:
-                logger.info(f"Manager: Intercepted potential project approval message for PM '{pm_agent_id_from_message}' directed at Admin AI ('{message.strip()}'). PM activation should be handled by the dedicated HTTP POST to /api/projects/approve/{pm_agent_id_from_message}. Admin AI will not be directly scheduled with this message to prevent misinterpretation.")
+                logger.info(f"Manager: Intercepted project approval message for PM '{pm_agent_id_from_message}'. "
+                            f"PM activation is handled by the HTTP /approve endpoint. "
+                            f"Admin AI will NOT be scheduled with this raw message.")
 
-                # Ensure AdminAI is in a sensible state if it was busy
-                if admin_agent.status != AGENT_STATUS_IDLE:
-                    # Admin was busy, queue the message (it will be logged by default path later if not returned)
-                    # but log that we are aware it's an approval.
-                    logger.warning(f"Admin AI status is '{admin_agent.status}'. Approval message for '{pm_agent_id_from_message}' will be added to queue but Admin AI cycle not forced by this interception logic.")
-                    # Fall through to default queuing logic, but the context of interception is logged.
-                elif admin_agent.state != ADMIN_STATE_CONVERSATION:
-                    logger.warning(f"Admin AI was in state '{admin_agent.state}' when approval message for '{pm_agent_id_from_message}' was intercepted. Forcing to conversation state. Message will be processed if Admin AI becomes idle.")
-                    self.workflow_manager.change_state(admin_agent, ADMIN_STATE_CONVERSATION)
-                     # Message will be processed by default logic if admin becomes idle
-                else:
-                    # Admin is IDLE and in CONVERSATION.
-                    # This message is likely the user confirming via chat after UI approval.
-                    # We will let it pass to AdminAI, but the prompt for admin_conversation_prompt
-                    # (Step 3 of the plan) should make AdminAI handle it gracefully.
-                    # The critical part is that the PM is activated by the HTTP route, not by AdminAI misinterpreting this.
-                    # For now, we'll let it pass through to the standard logic below,
-                    # relying on prompt changes to make AdminAI respond correctly.
-                    # The key is that the PM's activation is decoupled from AdminAI processing this.
-                    logger.info(f"Admin AI is IDLE and in CONVERSATION. Approval message for PM '{pm_agent_id_from_message}' will be passed to AdminAI. Its prompt should guide it to acknowledge correctly.")
-                    pass # Let it fall through to the default handling
+                # Record the approval exchange in Admin AI's history without triggering an LLM call.
+                # This prevents the LLM from seeing the raw "approve project" command and
+                # generating redundant acknowledgments on every subsequent cycle.
+                admin_agent.message_history.append({"role": "user", "content": message})
+                synthetic_ack = f"Project approved. PM {pm_agent_id_from_message} will proceed."
+                admin_agent.message_history.append({"role": "assistant", "content": synthetic_ack})
+
+                # Send the acknowledgment directly to the UI so the user sees it immediately
+                await self.send_to_ui({
+                    "type": "agent_raw_response",
+                    "agent_id": admin_agent.agent_id,
+                    "content": synthetic_ack
+                })
+                await self.send_to_ui({
+                    "type": "final_response",
+                    "agent_id": admin_agent.agent_id,
+                    "content": synthetic_ack
+                })
+                logger.info(f"Manager: Synthetic approval acknowledgment sent to UI for PM '{pm_agent_id_from_message}'. No LLM cycle scheduled.")
+                return  # <<< CRITICAL: Return early to prevent fall-through to default handling
+            else:
+                logger.warning(f"Manager: Approval message referenced PM '{pm_agent_id_from_message}' but no such agent exists. Passing to Admin AI for normal handling.")
+                # Fall through to default handling below
 
         # Default message handling for Admin AI
         if admin_agent.status == AGENT_STATUS_IDLE:
@@ -388,10 +393,10 @@ class AgentManager:
 
     async def _periodic_pm_manage_check(self):
         interval = settings.PM_MANAGE_CHECK_INTERVAL_SECONDS
-        logger.info(f"Starting periodic PM manage check loop (Interval: {interval}s)...")
+        logger.info(f"Starting periodic agent watchdog check loop (Interval: {interval}s)...")
         while True:
             await asyncio.sleep(interval)
-            logger.debug("Running periodic PM manage check...")
+            logger.debug("Running periodic agent watchdog / PM manage check...")
             try:
                 agents_snapshot = list(self.agents.values()) 
                 for agent in agents_snapshot:
@@ -440,11 +445,101 @@ class AgentManager:
                             logger.info(f"PM '{agent.agent_id}' project appears complete. Skipping periodic scheduling.")
                             continue
                             
+                        # --- MODIFIED: Relax PM if no workers are waiting ---
+                        has_waiting_workers = False
+                        team_id = self.state_manager.get_agent_team(agent.agent_id)
+                        if team_id:
+                            for team_member in self.state_manager.get_agents_in_team(team_id):
+                                if getattr(team_member, 'agent_type', '') == AGENT_TYPE_WORKER and getattr(team_member, 'state', '') == WORKER_STATE_WAIT:
+                                    has_waiting_workers = True
+                                    break
+                                    
+                        has_inbox = hasattr(agent, 'message_inbox') and len(agent.message_inbox) > 0
+                        
+                        if not has_waiting_workers and not has_inbox:
+                            logger.debug(f"PM '{agent.agent_id}' is relaxing in MANAGE because no workers are waiting and no messages are queued.")
+                            continue
+
                         agent._periodic_cycle_count += 1
                         agent._last_periodic_check_time = current_time
                         
-                        logger.info(f"PM '{agent.agent_id}' idle in MANAGE state. Scheduling cycle by timer. (Count: {agent._periodic_cycle_count})")
-                        await self.schedule_cycle(agent, 0) 
+                        logger.info(f"PM '{agent.agent_id}' idle in MANAGE state (Workers waiting: {has_waiting_workers}, Inbox: {has_inbox}). Scheduling cycle by timer. (Count: {agent._periodic_cycle_count})")
+                        await self.schedule_cycle(agent, 0)
+                    
+                    # --- FIX: Wake PM from pm_standby if workers are waiting or inbox has messages ---
+                    elif (agent.agent_type == AGENT_TYPE_PM and
+                          agent.status == AGENT_STATUS_IDLE and
+                          agent.state == PM_STATE_STANDBY and
+                          not getattr(agent, '_awaiting_project_approval', False)):
+                        
+                        has_inbox = hasattr(agent, 'message_inbox') and len(agent.message_inbox) > 0
+                        
+                        # Check if workers in the team are in worker_wait (finished their task, need new assignment)
+                        has_waiting_workers = False
+                        waiting_workers = []
+                        team_id = self.state_manager.get_agent_team(agent.agent_id)
+                        if team_id:
+                            team_agents = self.state_manager.get_agents_in_team(team_id)
+                            waiting_workers = [
+                                a for a in team_agents
+                                if a.agent_type == AGENT_TYPE_WORKER and a.state == WORKER_STATE_WAIT
+                            ]
+                            has_waiting_workers = len(waiting_workers) > 0
+                        
+                        if has_inbox or has_waiting_workers:
+                            reason = []
+                            if has_inbox:
+                                reason.append(f"{len(agent.message_inbox)} inbox message(s)")
+                            if has_waiting_workers:
+                                reason.append(f"{len(waiting_workers)} worker(s) in worker_wait")
+                            reason_str = " and ".join(reason)
+                            
+                            logger.warning(
+                                f"PM '{agent.agent_id}' is in pm_standby but has {reason_str}. "
+                                f"Waking PM back to pm_manage to prevent deadlock."
+                            )
+                            
+                            # Transition PM back to pm_manage
+                            wake_msg_parts = [
+                                f"[Framework System Message]: You were in standby, but {reason_str} require your attention.",
+                                "You have been reactivated to pm_manage. Review worker reports and assign new tasks as needed."
+                            ]
+                            
+                            if has_waiting_workers:
+                                waiting_agent_ids = [w.agent_id for w in waiting_workers]
+                                ids_str = ", ".join(waiting_agent_ids)
+                                filter_example = f"<project_management><action>list_tasks</action><assignee_filter>{waiting_agent_ids[0]}</assignee_filter></project_management>"
+                                wake_msg_parts.append(f"\\nCRITICAL INSTRUCTION: Since worker(s) {ids_str} are waiting, you MUST use `list_tasks` filtered to their specific ID to see what work they have completed. Example: {filter_example}")
+                                
+                            wake_msg = " ".join(wake_msg_parts)
+                            
+                            agent.message_history.append({"role": "system", "content": wake_msg})
+                            self.workflow_manager.change_state(agent, PM_STATE_MANAGE)
+                            await self.schedule_cycle(agent, 0)
+                            
+                    # --- ADDED: Catch-all for STUCK agents that illegally dropped to IDLE ---
+                    elif (agent.status == AGENT_STATUS_IDLE and
+                          not getattr(agent, '_awaiting_project_approval', False)):
+                        
+                        import src.agents.constants as consts
+                        
+                        # States where it is INTENDED to be IDLE without a task
+                        expected_idle_states = [
+                            consts.WORKER_STATE_WAIT, consts.WORKER_STATE_STARTUP,
+                            consts.PM_STATE_STANDBY, consts.PM_STATE_STARTUP, consts.PM_STATE_MANAGE,
+                            consts.ADMIN_STATE_STANDBY, consts.ADMIN_STATE_STARTUP,
+                            consts.ADMIN_STATE_CONVERSATION, consts.ADMIN_STATE_WORK_DELEGATED
+                        ]
+                        
+                        if agent.state not in expected_idle_states:
+                            logger.warning(
+                                f"Watchdog: Agent '{agent.agent_id}' is IDLE in an active state '{agent.state}'. "
+                                f"This indicates a stall, crash, or dropped event. Rescheduling..."
+                            )
+                            # Gently nudge the agent to wake it up
+                            agent.message_history.append({"role": "system", "content": "[Framework Watchdog]: You were detected as IDLE while in an active working state. Resuming cycle..."})
+                            await self.schedule_cycle(agent, 0)
+                        
             except Exception as e: logger.error(f"Error during periodic PM manage check: {e}", exc_info=True)
 
     async def start_pm_manage_timer(self):
@@ -762,31 +857,34 @@ class AgentManager:
             # Get the current project name from the agent's config
             project_name = agent.agent_config.get("config", {}).get("project_name_context", "Unknown Project")
             
-            # Call the project_management tool to list tasks
-            result_dict = await self.interaction_handler.execute_single_tool(
-                agent=agent,
-                call_id="internal_completion_check",
+            # Call the project_management tool indirectly without agent state changes
+            raw_result = await self.tool_executor.execute_tool(
+                agent_id=agent.agent_id,
+                agent_sandbox_path=agent.sandbox_path,
                 tool_name="project_management", 
                 tool_args={"action": "list_tasks"},
                 project_name=self.current_project,
-                session_name=self.current_session
+                session_name=self.current_session,
+                manager=self
             )
             
-            if not result_dict or result_dict.get("status") != "success":
+            if not raw_result or (isinstance(raw_result, dict) and raw_result.get("status") != "success"):
                 logger.debug(f"PM completion check: Failed to get task list for agent '{agent.agent_id}'")
                 return False
                 
             # Parse the result content
             import json
-            result_content = result_dict.get("content", "{}")
-            if isinstance(result_content, str):
+            if isinstance(raw_result, str):
                 try:
-                    task_data = json.loads(result_content)
+                    task_data = json.loads(raw_result)
                 except json.JSONDecodeError:
                     logger.debug(f"PM completion check: Failed to parse task data for agent '{agent.agent_id}'")
                     return False
+            elif isinstance(raw_result, dict):
+                # execute_tool typically returns the dictionary structure directly for project_management
+                task_data = raw_result
             else:
-                task_data = result_content
+                return False
                 
             tasks = task_data.get("tasks", [])
             

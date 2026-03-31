@@ -86,6 +86,11 @@ const setupEventListeners = () => {
          DOM.saveSessionButton.addEventListener('click', handlers.handleSaveSession);
      } else { console.warn("Main: Save session button not found during listener setup."); }
 
+     if (DOM.shutdownServerButton) {
+          console.log("Main: Attaching listener to Shutdown Server button...");
+         DOM.shutdownServerButton.addEventListener('click', handlers.handleShutdownServer);
+     } else { console.warn("Main: Shutdown server button not found during listener setup."); }
+
 
      // --- Global Accessibility for Inline Handlers (If Required) ---
      // Expose necessary UI functions globally if they MUST be called from inline HTML onclick
@@ -174,6 +179,59 @@ const initializeApp = () => {
     } else {
         console.error("Main: conversationArea not found, cannot attach message button click listener.");
     }
+
+    // --- Draggable Divider between Chat and Agent Status ---
+    if (DOM.chatAgentsDivider && DOM.agentStatusContainer) {
+        console.log("Main: Initializing draggable divider for Chat/Agents split.");
+        const divider = DOM.chatAgentsDivider;
+        const agentPanel = DOM.agentStatusContainer;
+        const chatLayout = divider.parentElement; // .chat-view-layout
+
+        let isDragging = false;
+        let startY = 0;
+        let startHeight = 0;
+
+        const onPointerDown = (e) => {
+            isDragging = true;
+            startY = e.clientY;
+            startHeight = agentPanel.getBoundingClientRect().height;
+            divider.setPointerCapture(e.pointerId);
+            document.body.style.userSelect = 'none'; // Prevent text selection while dragging
+            document.body.style.cursor = 'ns-resize';
+        };
+
+        const onPointerMove = (e) => {
+            if (!isDragging) return;
+            // Dragging up increases agent panel height, dragging down decreases it
+            const dy = startY - e.clientY;
+            const parentHeight = chatLayout.getBoundingClientRect().height;
+            const minHeight = 80;
+            const maxHeight = parentHeight * 0.7;
+            const newHeight = Math.min(maxHeight, Math.max(minHeight, startHeight + dy));
+            agentPanel.style.height = `${newHeight}px`;
+        };
+
+        const onPointerUp = (e) => {
+            if (!isDragging) return;
+            isDragging = false;
+            divider.releasePointerCapture(e.pointerId);
+            document.body.style.userSelect = '';
+            document.body.style.cursor = '';
+        };
+
+        divider.addEventListener('pointerdown', onPointerDown);
+        divider.addEventListener('pointermove', onPointerMove);
+        divider.addEventListener('pointerup', onPointerUp);
+        // Also cancel on pointer leaving the window
+        divider.addEventListener('lostpointercapture', () => {
+            isDragging = false;
+            document.body.style.userSelect = '';
+            document.body.style.cursor = '';
+        });
+    } else {
+        console.warn("Main: Chat/Agents divider or agent status container not found, skipping divider setup.");
+    }
+    // --- END Draggable Divider ---
 
     console.log("Main: Application initialization sequence complete."); // Log 6: End Init
 };

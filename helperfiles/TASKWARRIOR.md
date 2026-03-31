@@ -25,9 +25,9 @@ The `ProjectManagementTool` handles interactions with Taskwarrior via `tasklib`.
 
 4.  **Modifying/Completing Tasks:**
     *   Tasks are fetched using `tw.tasks.get(uuid=...)` or `tw.tasks.get(id=...)`.
-    *   Modifications are applied directly to the `Task` object attributes (e.g., `task['status'] = 'completed'`, `task['priority'] = 'M'`).
+    *   The framework utilizes a custom UDA `task_progress` (e.g., `todo`, `in_progress`, `waiting`, `stuck`, `failed`, `finished`) for granular tracking. This is mapped internally to valid Taskwarrior `status` defaults ('pending', 'completed', 'deleted') to preserve tasklib compatibility while offering enriched LLM visibility. Agents exclusively interface with `task_progress`.
     *   Changes are saved using `task.save()`.
-    *   Completion uses `task.done()`.
+    *   Completion uses `task.done()` internally when `task_progress` hits `finished`.
 
 ## Key Considerations
 

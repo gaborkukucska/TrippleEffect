@@ -17,7 +17,8 @@ DEFAULT_NUM_PARAMETERS = 0       # For models without parameter data, treat as s
 
 def sort_models_by_size_performance_id(
     model_infos: List[Dict[str, Any]], # Expects list of ModelInfo-like dicts
-    performance_metrics: Optional[Dict[str, Dict[str, Any]]] = None # provider -> model_id -> metrics
+    performance_metrics: Optional[Dict[str, Dict[str, Any]]] = None, # provider -> model_id -> metrics
+    target_num_parameters: Optional[int] = None # Optional target size to prioritize similarity
 ) -> List[Dict[str, Any]]:
     """
     Sorts a list of model information objects/dictionaries based on:
@@ -31,6 +32,8 @@ def sort_models_by_size_performance_id(
                      "num_parameters" (int) and "provider" (str).
         performance_metrics: A dictionary structured as {provider_name: {model_id: {"score": float, ...}}}.
                              If None, performance sorting is skipped (effectively all scores are equal).
+        target_num_parameters: If provided, models are sorted by how close their parameter count is to 
+                               this target (absolute difference, ascending), before performance.
 
     Returns:
         A new list of model information dictionaries, sorted according to the criteria.
@@ -80,15 +83,23 @@ def sort_models_by_size_performance_id(
         enriched_models.append(enriched_model)
 
     # Sort the models
-    # Primary: num_parameters (descending) - None/0 treated as smallest.
-    # Secondary: performance_score (descending) - DEFAULT_PERFORMANCE_SCORE treated as lowest.
-    # Tertiary: model ID (alphabetical ascending).
+    # If target_num_parameters is provided: Primary is absolute size difference (ascending), Secondary is performance (descending).
+    # Else: Primary is num_parameters (descending), Secondary is performance (descending).
+    # Tertiary is model ID (alphabetical ascending).
     def sort_key(model: Dict[str, Any]):
-        return (
-            -model["num_parameters_sortable"], # Negative for descending
-            -model["performance_score"],       # Negative for descending
-            model["id"]                        # Ascending
-        )
+        if target_num_parameters is not None:
+            size_diff = abs(model["num_parameters_sortable"] - target_num_parameters)
+            return (
+                size_diff,                   # Ascending: closer to target is better
+                -model["performance_score"], # Negative for descending
+                model["id"]                  # Ascending
+            )
+        else:
+            return (
+                -model["num_parameters_sortable"], # Negative for descending
+                -model["performance_score"],       # Negative for descending
+                model["id"]                        # Ascending
+            )
 
     sorted_models = sorted(enriched_models, key=sort_key)
     

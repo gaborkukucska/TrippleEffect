@@ -930,6 +930,26 @@ export const handleSaveSession = async () => {
 };
 
 
+export const handleShutdownServer = async () => {
+    if (!confirm("Are you sure you want to gracefully power down the framework?")) {
+        return;
+    }
+    console.log("Handler: Shutdown server requested.");
+    
+    ui.displaySessionStatus("Powering down framework... please wait.", true);
+    
+    try {
+        const result = await api.makeApiCall('/api/shutdown', 'POST');
+        console.log("Handler: Shutdown request sent.", result);
+        ui.displaySessionStatus(result.message || "Shutdown initiated successfully. You can close this window securely.", true);
+        ui.displayMessage("Framework is powering down.", 'system_event', 'internal-comms-area', 'system');
+        if (DOM.shutdownServerButton) DOM.shutdownServerButton.disabled = true;
+    } catch (error) {
+        console.error("Handler: Error shutting down:", error);
+        ui.displaySessionStatus(`Error shutting down: ${error.responseBody?.detail || error.message || 'Unknown error'}`, false);
+    }
+};
+
 console.log("Frontend handlers module loaded.");
 
 // --- Add Event Listener (in main.js or here if appropriate) ---

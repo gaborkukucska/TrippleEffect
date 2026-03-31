@@ -973,34 +973,8 @@ class AgentCycleHandler:
                             if not found_task:
                                 logger.error(f"CycleHandler: Could not find a previous user message to use as task description for state change to '{ADMIN_STATE_WORK}'. The agent might loop.")
                         # <<< --- ROBUST FIX END --- >>>
-                        # FIX: Prevent PM from going to standby while workers are still active.
-                        # If workers are in decompose/work/report/startup, the PM must stay in
-                        # pm_manage to monitor progress and assign follow-up tasks.
-                        if agent.agent_type == AGENT_TYPE_PM and requested_state in ('pm_standby', PM_STATE_STANDBY):
-                            team_id = self._manager.state_manager.get_agent_team(agent.agent_id)
-                            if team_id:
-                                team_agents = self._manager.state_manager.get_agents_in_team(team_id)
-                                worker_idle_states = {WORKER_STATE_WAIT, None}
-                                active_workers = [
-                                    a for a in team_agents
-                                    if a.agent_type == AGENT_TYPE_WORKER and a.state not in worker_idle_states
-                                ]
-                                if active_workers:
-                                    active_ids = [f"{a.agent_id}({a.state})" for a in active_workers]
-                                    logger.warning(
-                                        f"CycleHandler: PM '{agent.agent_id}' requested pm_standby but "
-                                        f"{len(active_workers)} workers are still active: {active_ids}. "
-                                        f"Redirecting to pm_manage."
-                                    )
-                                    requested_state = PM_STATE_MANAGE
-                                    standby_redirect_msg = (
-                                        f"[Framework System Message]: You requested standby, but "
-                                        f"{len(active_workers)} worker(s) are still active: "
-                                        f"{', '.join(active_ids)}. You have been redirected to pm_manage "
-                                        f"to continue monitoring their progress. Use list_tasks to check "
-                                        f"current status."
-                                    )
-                                    agent.message_history.append({"role": "system", "content": standby_redirect_msg})
+                        # Removing the interception logic that prevented PM from going to standby.
+                        # The PM MUST be allowed to go to standby while workers are active to avoid busy-waiting loops.
 
                         if self._manager.workflow_manager.change_state(agent, requested_state, task_description=task_description):
                             # Reactivate unless transitioning to an idle state
@@ -2092,8 +2066,8 @@ class AgentCycleHandler:
                             agent._manage_unproductive_cycles += 1
 
                             if agent._manage_unproductive_cycles >= 3:
-                                # After 3 unproductive cycles, transition to a standby state
-                                logger.warning(f"CycleHandler: PM agent '{agent.agent_id}' had {agent._manage_unproductive_cycles} unproductive MANAGE cycles. Transitioning to standby state.")
+                                # After 3 unproductive cycles, force transition to standby directly
+                                logger.warning(f"CycleHandler: PM agent '{agent.agent_id}' had {agent._manage_unproductive_cycles} unproductive MANAGE cycles. Force-transitioning to standby state.")
                                 
                                 standby_message_content = (
                                     "[Framework Intervention]: You have completed multiple management cycles without taking concrete action. "
@@ -2116,12 +2090,12 @@ class AgentCycleHandler:
                                 context.action_taken_this_cycle = True
                                 context.cycle_completed_successfully = True
                             else:
-                                # Provide specific directive to take action
+                                # Instead of forcing list_tasks, instruct PM to go to standby
+                                # This prevents unnecessary token-consuming task listing
                                 directive_message_content = (
                                     f"[Framework Intervention]: This is your {agent._manage_unproductive_cycles} consecutive management cycle without concrete action. "
-                                    "Your MANDATORY next action is to perform Step 1 of your workflow: "
-                                    "Use `<project_management><action>list_tasks</action></project_management>` to assess the current project status. "
-                                    "Do NOT just think - you must execute this tool call."
+                                    "All workers appear to be busy. You should transition to standby and wait for worker reports. "
+                                    "Output ONLY: <request_state state='pm_standby'/>"
                                 )
                                 agent.message_history.append({"role": "system", "content": directive_message_content})
                                 
@@ -2295,6 +2269,17 @@ class AgentCycleHandler:
                     # After successful Constitutional Guardian intervention, let NextStepScheduler handle reactivation
                     context.needs_reactivation_after_cycle = True
                     logger.warning(f"CycleHandler: Constitutional Guardian intervention successful for '{agent.agent_id}', agent will be reactivated via NextStepScheduler")
+                    
+                    # Ensure agent's task state completely resets to force re-planning on stalling / empty response loops
+                    recovery_type = recovery_plan.get("type", "")
+                    if recovery_type in ["minimal_response_pattern", "stuck_in_state", "tool_information_loop_violation", "empty_response_violation"]:
+                        logger.warning(f"CycleHandler: Forcing task state reset and recheck for '{agent.agent_id}' to break cycle loop.")
+                        agent.needs_priority_recheck = True
+                        if hasattr(agent, "current_task_id"):
+                            agent.current_task_id = None
+                        if hasattr(agent, "active_task_id"):
+                            agent.active_task_id = None
+
                     # CRITICAL FIX: Removed direct schedule_cycle() call here.
                     # Previously, both needs_reactivation_after_cycle AND schedule_cycle() were set,
                     # causing double-reactivation with no cooldown — a key contributor to the infinite loop.

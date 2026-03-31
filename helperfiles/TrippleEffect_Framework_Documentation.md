@@ -129,7 +129,7 @@ As the central orchestrator, the `AgentManager` is more than just a container fo
     - `handle_user_message()`: The ingress point for all user interactions, responsible for queuing messages for the Admin AI.
     - `create_agent_instance()` / `delete_agent_instance()`: Methods that abstract the agent creation/deletion logic (defined in `agent_lifecycle.py`), including database record creation.
     - `save_session()` / `load_session()`: Coordinates with the `SessionManager` to persist and retrieve the entire framework state.
-    - `_periodic_pm_manage_check()`: An internal `asyncio` task that periodically checks for Project Manager agents in the `manage` state that need to be activated, forming the basis of the PM's autonomous project oversight.
+    - `_universal_framework_watchdog()`: An internal `asyncio` task (formerly `_periodic_pm_manage_check`) that periodically monitors all agents across the system, acting as a central pacemaker for autonomous oversight and triggering proactive status checks without user intervention.
 
 ### 4.2. `Agent` (`src/agents/core.py`)
 
@@ -214,8 +214,10 @@ The framework's operations are governed by a strict state machine and a well-def
 An agent's behavior, system prompt, and expected output are determined by the combination of its `agent_type` and its current `state`. The `WorkflowManager` enforces valid transitions between these states.
 
 -   **Admin Agent (`admin_ai`) States**:
-    -   `conversation`: The default state for interacting with the user, monitoring project updates, and identifying new high-level tasks.
+    -   `conversation`: The default state for interacting with the user. The Admin AI acts as the "Ultimate Orchestrator" and will seamlessly transition to the `work` state to run autonomous backend audits if queried about project progress.
     -   `planning`: A focused state where the agent's sole objective is to produce a detailed, structured plan in response to a user request. The output is expected to be wrapped in `<plan>` tags.
+    -   `work`: The Proactive Orchestration & Investigation hub. The Admin AI employs `manage_team` and `project_management` tools autonomously to gather metrics across the framework and verify progress without interrupting active agents.
+    -   `delegated`: A dormant oversight state where the Admin AI waits for the PM to declare a project finished. It performs periodic proactive sweeps (invoked by the framework watchdog) to ensure the PM hasn't stalled.
 
 -   **Project Manager (PM) Agent States**:
     -   `startup`: The initial state for a new PM. Its goal is to take the initial plan from the Admin AI and break it down into a list of specific, actionable tasks for worker agents, outputting them in a `<task_list>` XML block.

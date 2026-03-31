@@ -416,6 +416,21 @@ class Agent:
                             call_id = call_data.get("id", f"native_call_{self.agent_id}_{int(time.time() * 1000)}_{os.urandom(2).hex()}")
                             if tool_name in self.manager.tool_executor.tools:
                                 tool_requests_to_yield.append({"id": call_id, "name": tool_name, "arguments": arguments})
+                            elif tool_name == "request_state":
+                                requested_state = arguments.get("state")
+                                if requested_state:
+                                    logger.info(f"Agent {self.agent_id}: Detected native tool call for state change to '{requested_state}'.")
+                                    requested_state = self.manager.workflow_manager.resolve_state_alias(self.agent_type, requested_state)
+                                    if self.manager.workflow_manager.is_valid_state(self.agent_type, requested_state):
+                                        state_change_to_yield = {
+                                            "type": "agent_state_change_requested",
+                                            "requested_state": requested_state,
+                                            "agent_id": self.agent_id,
+                                            "task_description": arguments.get("task_description")
+                                        }
+                                    else:
+                                        logger.warning(f"Agent {self.agent_id}: Invalid native state request '{requested_state}'.")
+                                        parsing_errors.append({"tool_name": tool_name, "error_message": f"Invalid state requested: {requested_state}", "xml_block": str(call_data)})
                             else:
                                 logger.warning(f"Agent {self.agent_id}: Native Tool name '{tool_name}' not found in ToolExecutor.")
                         except Exception as e:
@@ -545,10 +560,32 @@ class Agent:
             logger.info(f"Agent {self.agent_id}: Finished processing cycle attempt. Status before CycleHandler: {self.status}")
 
     def get_state(self) -> Dict[str, Any]:
+        estimated_tokens = 0
+        max_tokens = 8192 # default Fallback
+        
+        # Estimate context sequence tokens
+        if self.manager:
+            from src.agents.cycle_components.context_summarizer import get_context_summarizer
+            summarizer = get_context_summarizer(self.manager)
+            estimated_tokens = summarizer.estimate_token_count(self.message_history)
+            
+            # Extract actual numerical maximum from provider's model details
+            try:
+                registry = getattr(self.manager, 'model_registry', None)
+                if registry and hasattr(registry, 'get_model_info'):
+                    model_info = registry.get_model_info(self.model)
+                    if model_info:
+                        num_ctx = model_info.get("model_num_ctx")
+                        if num_ctx:
+                            max_tokens = num_ctx
+            except Exception:
+                pass
+                
         state_info = {
             "agent_id": self.agent_id, "persona": self.persona, "status": self.status, "state": self.state,
             "agent_type": self.agent_type, "provider": self.provider_name, "model": self.model,
             "temperature": self.temperature, "message_history_length": len(self.message_history),
+            "estimated_tokens": estimated_tokens, "max_tokens": max_tokens,
             "sandbox_path": str(self.sandbox_path),
             "xml_tool_parsing_enabled": (self.raw_xml_tool_call_pattern is not None)
         }

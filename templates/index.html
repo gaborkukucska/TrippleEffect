@@ -38,6 +38,11 @@
                           </div>
                           <div id="file-info-area" class="file-info-area" style="display: none;"></div>
                      </div>
+                     
+                     <div id="chat-agents-divider" class="horizontal-divider">
+                         <div class="divider-handle"></div>
+                     </div>
+
                      <div class="agent-status-container">
                           <h2>Active Agents</h2>
                           <div id="agent-status-content">
@@ -103,6 +108,12 @@
                     <label for="save-session-name">Session Name (Optional):</label>
                     <input type="text" id="save-session-name" name="save_session_name" placeholder="Leave blank for timestamp name">
                     <button id="save-session-button">Save Current Session</button>
+                </div> <!-- IMPORTANT: restore closing div for previous section -->
+
+                <div class="session-section text-center mt-4" style="text-align: center; margin-top: 1.5rem;">
+                    <h3>System Controls</h3>
+                    <button id="shutdown-server-button" class="btn btn-danger w-100 font-weight-bold" style="background-color: #dc3545; color: white; border: none; padding: 10px; border-radius: 5px; cursor: pointer; display: block; width: 100%;">Shutdown Framework</button>
+                    <p class="text-muted mt-2" style="font-size: 0.8em; margin-top: 5px; color: #6c757d;">Gracefully closes db connections, cleans up instances, and shuts down.</p>
                 </div>
 
                 <div id="session-status-message" class="session-status">

@@ -393,8 +393,13 @@ class ConstitutionalGuardianHealthMonitor:
             if agent.agent_type == AGENT_TYPE_WORKER:
                 if hasattr(self._manager, 'state_manager'):
                     team_id = self._manager.state_manager.get_agent_team(agent.agent_id)
-                    if team_id and team_id.startswith('team_'):
-                        supervisor_id = team_id.replace('team_', 'pm_')
+                    if team_id:
+                        team_agents = self._manager.state_manager.get_agents_in_team(team_id)
+                        # The supervisor is the PM on the same team
+                        for ta in team_agents:
+                            if getattr(ta, "agent_type", None) == AGENT_TYPE_PM:
+                                supervisor_id = getattr(ta, "agent_id", None)
+                                break
             elif agent.agent_type == AGENT_TYPE_PM:
                 # Fallback constants import
                 from src.agents.constants import BOOTSTRAP_AGENT_ID

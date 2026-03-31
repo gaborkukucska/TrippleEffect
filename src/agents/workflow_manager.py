@@ -76,7 +76,11 @@ class AgentWorkflowManager:
         # instead of the full internal name 'admin_conversation', causing invalid state rejections.
         self._state_aliases: Dict[Tuple[str, str], str] = {
             (AGENT_TYPE_ADMIN, "conversation"): ADMIN_STATE_CONVERSATION,
+            (AGENT_TYPE_ADMIN, "admin_conversation"): ADMIN_STATE_CONVERSATION,
+            (AGENT_TYPE_ADMIN, "admin_standby"): ADMIN_STATE_STANDBY,
             (AGENT_TYPE_ADMIN, "standby"): ADMIN_STATE_STANDBY,
+            (AGENT_TYPE_ADMIN, "admin_work"): ADMIN_STATE_WORK,
+            (AGENT_TYPE_ADMIN, "work"): ADMIN_STATE_WORK,
             (AGENT_TYPE_PM, "startup"): PM_STATE_STARTUP,
             (AGENT_TYPE_PM, "plan_decomposition"): PM_STATE_PLAN_DECOMPOSITION,
             (AGENT_TYPE_PM, "build_team_tasks"): PM_STATE_BUILD_TEAM_TASKS,

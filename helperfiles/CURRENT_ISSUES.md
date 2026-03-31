@@ -7,6 +7,20 @@
 
 ## Recently Resolved Issues
 
+### -16. Admin AI Passive Oversight Limitation
+- **Severity:** High (Admin AI functioned merely as a message relay)
+- **Description:** When users asked for project updates, the Admin AI passively messaged the Project Manager. Furthermore, it was explicitly banned from using management tools while a project was delegated, preventing it from detecting stalled projects or verifying success.
+- **Root Cause:** System prompts restricted native tool usage and assumed the PM was the sole source of truth.
+- **Fix:** (RESOLVED) Upgraded the Admin AI to the "Ultimate Orchestrator." Fully rewrote the `admin_work` state into an autonomous auditing hub where it uses `list_tasks` and `list_agents` to verify progress. Given proactive sweeping capabilities in the delegated state.
+- **Files:** `prompts.yaml`, `src/config/settings.py`
+
+### -15. Coarse Task Status & Watchdog Isolation
+- **Severity:** High (PMs lacked visibility into granular task blockers)
+- **Description:** Taskwarrior's native `status` (pending/completed) was insufficient for LLMs to understand *why* a task was pending (e.g., `stuck`, `failed`, `in_progress`). Additionally, the framework's periodic check was isolated to just PMs.
+- **Root Cause:** Strict adherence to Taskwarrior defaults and localized watchdogs.
+- **Fix:** (RESOLVED) Integrated a custom `task_progress` tracking system (`todo`, `in_progress`, `waiting`, `stuck`, `failed`, `finished`). Agents now only interface with `task_progress`. Promoted the PM check to a `_universal_framework_watchdog` checking all agents.
+- **Files:** `src/tools/project_management.py`, `src/agents/manager.py`, `prompts.yaml`
+
 ### -14. Project Manager Pre-mature Completion & Audit Phase
 - **Severity:** High (PM declared completion without formal review)
 - **Description:** Upon task exhaustion, PMs immediately messaged the Admin AI that the project was complete without verifying the generated output against instructions, leading to unverified deliverables and communication disconnects at the end of runs.

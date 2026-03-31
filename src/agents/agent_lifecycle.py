@@ -87,6 +87,11 @@ async def _select_best_available_model( # Added current_rr_indices_override to s
           The last two elements are None if selection was not API-first RR for a local provider.
     """
     logger.info("Attempting model selection: API-first Round-Robin strategy...")
+    
+    # --- Move import here to avoid circular dependency ---
+    from src.agents.failover_handler import _models_without_tool_support
+    # --- End Import ---
+
     local_provider_type_preference = ["ollama", "litellm"]
 
     for base_provider_type in local_provider_type_preference:
@@ -129,6 +134,24 @@ async def _select_best_available_model( # Added current_rr_indices_override to s
                 logger.debug(f"API-first RR: No models listed for instance '{chosen_specific_instance}'. Skipping.")
                 continue
 
+            valid_models_on_instance = []
+            bad_strings = ["ocr", "embed", "vision", "llava"]
+            for m_info in models_on_this_instance_infos:
+                m_id = str(m_info.get("id", "")).lower()
+                if not m_id: continue
+                # Check tool support blacklist (we only compare model_id strings effectively against what failover tracks)
+                if (chosen_specific_instance, m_id) in _models_without_tool_support:
+                    logger.debug(f"API-first RR: Skipping '{m_id}' on '{chosen_specific_instance}': known to lack tool support.")
+                    continue
+                # Heuristic check
+                if any(bs in m_id for bs in bad_strings):
+                    logger.debug(f"API-first RR: Skipping '{m_id}' heuristically (name suggests lacking general tool capabilities).")
+                    continue
+                valid_models_on_instance.append(m_info)
+
+            models_on_this_instance_infos = valid_models_on_instance
+
+
             def get_sort_key(model_dict):
                 num_params = model_dict.get("num_parameters_sortable", model_dict.get("num_parameters", 0))
                 if not isinstance(num_params, (int, float)):
@@ -168,11 +191,23 @@ async def _select_best_available_model( # Added current_rr_indices_override to s
         return None, None, None, None
 
     flattened_model_infos: List[Dict[str, Any]] = []
+    bad_strings = ["ocr", "embed", "vision", "llava"]
     for specific_provider_name_comp, models_list_comp in all_models_from_registry.items():
         for model_data_comp in models_list_comp:
+            m_id = str(model_data_comp.get("id", "")).lower()
+            if not m_id: continue
+            
+            if (specific_provider_name_comp, m_id) in _models_without_tool_support:
+                logger.debug(f"Comprehensive: Skipping '{m_id}' on '{specific_provider_name_comp}': known to lack tool support.")
+                continue
+            if any(bs in m_id for bs in bad_strings):
+                logger.debug(f"Comprehensive: Skipping '{m_id}' heuristically (name suggests lacking general tool capabilities).")
+                continue
+
             model_info_copy_comp = dict(model_data_comp)
             model_info_copy_comp["provider"] = specific_provider_name_comp
             flattened_model_infos.append(model_info_copy_comp)
+
             
     if not flattened_model_infos:
         logger.warning("Comprehensive Fallback: No models found after flattening registry data.")

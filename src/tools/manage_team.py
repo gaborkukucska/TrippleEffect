@@ -126,8 +126,19 @@ class ManageTeamTool(BaseTool):
         logger.info(f"'{agent_id}' requested ManageTeamTool action '{action}' with params: {params}")
 
         if not action or action not in VALID_ACTIONS:
-            error_msg = f"Error: Invalid or missing 'action'. Must be one of: {', '.join(VALID_ACTIONS)}."
-            logger.error(error_msg)
+            error_msg = (
+                f"Error: Invalid or missing 'action'. You must specify a valid action inside the XML block.\n"
+                f"Make sure you are using the correct XML format. For example:\n"
+                f"<manage_team>\n"
+                f"  <action>create_agent</action>\n"
+                f"  <role>Engineer</role>\n"
+                f"  <persona>A senior engineer</persona>\n"
+                f"  <system_prompt>You are...</system_prompt>\n"
+                f"</manage_team>\n\n"
+                f"Valid actions are: {', '.join(VALID_ACTIONS)}.\n"
+                f"Do NOT just send empty tags or thoughts without a valid tool call!"
+            )
+            logger.error(f"'{agent_id}' requested ManageTeamTool but action '{action}' is missing or invalid.")
             return {"status": "error", "action_requested": action, "message": error_msg, "result_data": None}
 
         error_message = None

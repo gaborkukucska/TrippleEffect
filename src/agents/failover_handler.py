@@ -10,6 +10,7 @@ import random # For selecting alternates if no performance data
 # --- NEW: Import status and error constants ---
 from src.agents.constants import (
     AGENT_STATUS_IDLE, AGENT_STATUS_ERROR,
+    AGENT_TYPE_PM, AGENT_TYPE_WORKER,
     KEY_RELATED_ERRORS, KEY_RELATED_STATUS_CODES, # Import error constants
     RETRYABLE_EXCEPTIONS # Add this import
 )
@@ -82,6 +83,7 @@ async def _check_provider_health(base_url: str, timeout: int = 3) -> bool:
 # --- Helper Function to Select Alternate Models ---
 async def _select_alternate_models(
     manager: 'AgentManager',
+    agent: Agent,
     provider: str,
     original_model: str,
     tried_models_on_key: Set[str],
@@ -104,6 +106,16 @@ async def _select_alternate_models(
         if model_id in tried_models_on_key:
             logger.debug(f"Skipping '{model_id}' for alternates: already in tried_models_on_key.")
             continue
+        if (provider, model_id) in _models_without_tool_support:
+            logger.debug(f"Skipping '{model_id}' for alternates: known to lack tool support.")
+            continue
+            
+        # Heuristic check: filter out models that are obviously vision/ocr/embedding models if tools are needed
+        if agent.agent_type in [AGENT_TYPE_PM, AGENT_TYPE_WORKER]:
+            bad_strings = ["ocr", "embed", "vision", "llava"]
+            if any(bs in model_id.lower() for bs in bad_strings):
+                logger.debug(f"Skipping '{model_id}' heuristically: name suggests it lacks general tool capabilities.")
+                continue
 
         # Tier check
         tier_compatible = True
@@ -153,9 +165,18 @@ async def _select_alternate_models(
 
     logger.debug(f"Candidate models for provider '{provider}' before sorting: {[m['id'] for m in candidate_model_infos]}")
     
+    # Extract target_num_parameters from the originally configured preferred model
+    target_num_parameters = None
+    preferred_model_id = agent.agent_config.get('config', {}).get('model', original_model)
+    preferred_model_info = model_registry.get_model_info(preferred_model_id)
+    if preferred_model_info and "num_parameters" in preferred_model_info:
+        target_num_parameters = preferred_model_info["num_parameters"]
+        logger.debug(f"Failover sorting will target preferred model '{preferred_model_id}' size: {target_num_parameters} params.")
+    
     sorted_model_infos = sort_models_by_size_performance_id(
         candidate_model_infos,
-        performance_metrics=provider_specific_metrics_for_sorter
+        performance_metrics=provider_specific_metrics_for_sorter,
+        target_num_parameters=target_num_parameters
     )
     
     logger.debug(f"Sorted models for provider '{provider}': {[m['id'] for m in sorted_model_infos]}")
@@ -755,7 +776,7 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
 
             # Try alternate models with this key if initial failed or wasn't available
             alternate_models = await _select_alternate_models(
-                manager, external_provider, original_model, failover_state["tried_models_on_current_external_key"]
+                manager, agent, external_provider, original_model, failover_state["tried_models_on_current_external_key"]
             )
             logger.info(f"Attempting {len(alternate_models)} alternate models with current key.")
             for alt_model in alternate_models:

@@ -126,9 +126,8 @@ body {
 }
 #chat-view .agent-status-container {
     flex-shrink: 0; /* Prevent status area shrinking */
-    height: 180px; /* Fixed height */
-    max-height: 30%; /* Max height relative to parent */
-    margin-top: 10px;
+    height: 180px; /* Fixed height initially, resettable by drag */
+    margin-top: 0; /* Adjust margin because divider provides space */
     border: 1px solid var(--border-color);
     border-radius: 4px;
     background-color: var(--bg-color-secondary);
@@ -136,6 +135,30 @@ body {
     flex-direction: column;
     overflow: hidden; /* Let child handle scroll */
 }
+
+/* Custom resizer divider */
+#chat-agents-divider {
+    height: 10px;
+    margin: 4px 0;
+    cursor: ns-resize;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    border-radius: 5px;
+    background-color: transparent;
+    transition: background-color 0.2s;
+    flex-shrink: 0;
+}
+#chat-agents-divider:hover, #chat-agents-divider:active {
+    background-color: var(--border-color);
+}
+.divider-handle {
+    width: 40px;
+    height: 4px;
+    background-color: var(--text-color-muted);
+    border-radius: 2px;
+}
+
 #chat-view .agent-status-container h2 {
     margin: 0;
     padding: 8px 10px;

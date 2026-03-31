@@ -361,3 +361,21 @@ async def approve_project_start(
         logger.error(f"Unexpected error approving project for PM '{pm_agent_id}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Unexpected error approving project: {e}")
 # --- END NEW ---
+# --- NEW: Graceful Shutdown Endpoint ---
+import signal
+
+@router.post("/api/shutdown", response_model=GeneralResponse)
+async def shutdown_framework():
+    """ Triggers a graceful shutdown of the TrippleEffect framework. """
+    logger.info("Shutdown requested via API endpoint.")
+    
+    # Run the kill signal asynchronously to allow the response to return
+    async def _send_signal():
+        await asyncio.sleep(1) # tiny delay to let the response complete
+        logger.info("Sending SIGINT to self to trigger graceful shutdown...")
+        os.kill(os.getpid(), signal.SIGINT)
+
+    asyncio.create_task(_send_signal())
+    
+    return GeneralResponse(success=True, message="Graceful shutdown initiated. The framework will exit shortly.")
+# --- END NEW ---

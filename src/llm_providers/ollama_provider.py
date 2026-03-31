@@ -3,6 +3,7 @@ import aiohttp
 import json
 import asyncio
 import logging
+import random
 from typing import List, Dict, Any, Optional, AsyncGenerator
 
 from .base import BaseLLMProvider, MessageDict, ToolDict, ToolResultDict
@@ -229,6 +230,19 @@ class OllamaProvider(BaseLLMProvider):
             msg_to_send: Dict[str, Any] = {"role": role, "content": processed_content}
             # We explicitly DO NOT send `tool_calls` because TrippleEffect relies on XML-in-content 
             # and sending native tool_calls without the tools parameter confuses Ollama.
+            # However, if native tool calling is enabled and tools are passed, we MUST include them.
+            if settings.NATIVE_TOOL_CALLING_ENABLED and tools and msg.get("tool_calls"):
+                ollama_tool_calls = []
+                for tc in msg.get("tool_calls", []):
+                    ollama_tc = {
+                        "function": {
+                            "name": tc.get("name"),
+                            "arguments": tc.get("arguments", {})
+                        }
+                    }
+                    ollama_tool_calls.append(ollama_tc)
+                msg_to_send["tool_calls"] = ollama_tool_calls
+                
             messages_for_ollama_payload.append(msg_to_send)
 
         payload = { "model": model, "messages": messages_for_ollama_payload, "stream": self.streaming_mode, "options": valid_options }
@@ -292,8 +306,9 @@ class OllamaProvider(BaseLLMProvider):
                         logger.error(f"Problematic payload structure (details may be limited by error): {payload}")
                         last_exception = ser_err
                         if attempt < MAX_RETRIES:
-                            logger.info(f"Serialization error, but retrying attempt {attempt + 2} if applicable...")
-                            await asyncio.sleep(RETRY_DELAY_SECONDS)
+                            backoff_delay = RETRY_DELAY_SECONDS * (2 ** attempt) + random.uniform(0, 1)
+                            logger.info(f"Serialization error, but retrying attempt {attempt + 2} in {backoff_delay:.2f}s...")
+                            await asyncio.sleep(backoff_delay)
                             continue 
                         else:
                             logger.error(f"Max retries reached after serialization error.")
@@ -314,9 +329,10 @@ class OllamaProvider(BaseLLMProvider):
                             last_exception = aiohttp.ClientResponseError(req_info, response.history, status=response_status, message=f"Status {response_status}", headers=response.headers)
                             logger.warning(f"Ollama API Error attempt {attempt + 1}: Status {response_status}, Resp: {response_text[:200]}...")
                             if attempt < MAX_RETRIES:
-                                logger.info(f"Status {response_status} retryable. Wait {RETRY_DELAY_SECONDS}s...")
+                                backoff_delay = RETRY_DELAY_SECONDS * (2 ** attempt) + random.uniform(0, 1)
+                                logger.info(f"Status {response_status} retryable. Wait {backoff_delay:.2f}s...")
                                 if response and not response.closed: response.release() 
-                                await asyncio.sleep(RETRY_DELAY_SECONDS)
+                                await asyncio.sleep(backoff_delay)
                                 continue
                             else:
                                 logger.error(f"Max retries ({MAX_RETRIES}) after status {response_status}.")
@@ -337,11 +353,12 @@ class OllamaProvider(BaseLLMProvider):
                     last_exception = e
                     logger.warning(f"Retryable aiohttp error attempt {attempt + 1}/{MAX_RETRIES + 1}: {type(e).__name__} - {e}")
                     if attempt < MAX_RETRIES:
-                        logger.info(f"Waiting {RETRY_DELAY_SECONDS}s...")
+                        backoff_delay = RETRY_DELAY_SECONDS * (2 ** attempt) + random.uniform(0, 1)
+                        logger.info(f"Waiting {backoff_delay:.2f}s...")
                         if response and not response.closed: response.release()
                         if session and not session.closed: await session.close() 
                         session = await self._create_request_session() 
-                        await asyncio.sleep(RETRY_DELAY_SECONDS)
+                        await asyncio.sleep(backoff_delay)
                         continue
                     else:
                         logger.error(f"Max retries ({MAX_RETRIES}) reached after {type(e).__name__}.")
@@ -352,11 +369,12 @@ class OllamaProvider(BaseLLMProvider):
                     last_exception = e
                     logger.exception(f"Unexpected Error during API call attempt {attempt + 1}: {type(e).__name__} - {e}")
                     if attempt < MAX_RETRIES:
-                         logger.info(f"Waiting {RETRY_DELAY_SECONDS}s...")
+                         backoff_delay = RETRY_DELAY_SECONDS * (2 ** attempt) + random.uniform(0, 1)
+                         logger.info(f"Waiting {backoff_delay:.2f}s...")
                          if response and not response.closed: response.release()
                          if session and not session.closed: await session.close()
                          session = await self._create_request_session()
-                         await asyncio.sleep(RETRY_DELAY_SECONDS)
+                         await asyncio.sleep(backoff_delay)
                          continue
                     else:
                          logger.error(f"Max retries ({MAX_RETRIES}) after unexpected error.")
