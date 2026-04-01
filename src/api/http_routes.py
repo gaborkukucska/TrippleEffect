@@ -108,14 +108,16 @@ async def get_index_page(request: Request):
         if not template_path.is_file():
              logger.error(f"Template file index.html not found at {template_path}")
              # Return a simple HTML error page if template is missing
-             error_html = "<html><body><h1>Internal Server Error</h1><p>Could not load the main application page. Template file missing.</p></body></html>"
+             error_html = f"<html><body><h1>Template Missing</h1><p>Could not load the main application page. Expected template at:</p><pre>{template_path}</pre></body></html>"
              return HTMLResponse(content=error_html, status_code=500)
         # Pass the request object to the template context
-        return templates.TemplateResponse("index.html", {"request": request})
+        return templates.TemplateResponse(request=request, name="index.html", context={"request": request})
     except Exception as e:
         # Catch potential errors during template rendering
-        logger.error(f"Error rendering template index.html: {e}", exc_info=True)
-        error_html = "<html><body><h1>Internal Server Error</h1><p>An unexpected error occurred while loading the page.</p></body></html>"
+        import traceback
+        trace = traceback.format_exc()
+        logger.error(f"Error rendering template index.html: {e}\n{trace}")
+        error_html = f"<html><body><h1>Internal Server Error</h1><p>An unexpected error occurred while loading the page:</p><pre>{trace}</pre></body></html>"
         return HTMLResponse(content=error_html, status_code=500)
 
 # --- Agent Config CRUD API Endpoints (using ConfigManager, no AgentManager needed) ---
