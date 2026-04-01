@@ -2,10 +2,22 @@
 import asyncio
 import socket
 import ipaddress
-import netifaces
 import logging
 from typing import List, Dict, Any, Optional, Set, Tuple
-import nmap # Import python-nmap
+
+try:
+    import netifaces
+    NETIFACES_AVAILABLE = True
+except ImportError:
+    netifaces = None  # type: ignore[assignment]
+    NETIFACES_AVAILABLE = False
+
+try:
+    import nmap  # Import python-nmap
+    NMAP_AVAILABLE = True
+except ImportError:
+    nmap = None  # type: ignore[assignment]
+    NMAP_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +48,9 @@ async def _check_port(ip: str, port: int, timeout: float) -> Optional[str]:
 
 def _get_local_network_cidr() -> Optional[str]:
     """Gets the CIDR notation for the primary local IPv4 network using netifaces."""
+    if not NETIFACES_AVAILABLE:
+        logger.warning("The 'netifaces' library is not installed. Local network CIDR detection is disabled. Install it with: pip install netifaces")
+        return None
     logger.debug("Attempting to determine local network CIDR using netifaces...")
     try:
         for interface in netifaces.interfaces():
@@ -66,6 +81,12 @@ def _get_local_network_cidr() -> Optional[str]:
         return None
 
 async def scan_for_local_apis(ports: List[int], timeout: float) -> List[str]:
+    if not NMAP_AVAILABLE:
+        logger.warning("The 'python-nmap' library is not installed. Local network API scanning is disabled. Install it with: pip install python-nmap")
+        return []
+    if not NETIFACES_AVAILABLE:
+        logger.warning("The 'netifaces' library is not installed. Cannot determine local network for nmap scan. Install it with: pip install netifaces")
+        return []
     logger.warning("Initiating nmap scan for local APIs. This can be slow or unreliable on large, restricted, or public networks. If issues occur, consider disabling LOCAL_API_SCAN_ENABLED in your config and relying on direct localhost checks or manually specified provider URLs.")
     """
     Scans the automatically detected local network using nmap to find devices

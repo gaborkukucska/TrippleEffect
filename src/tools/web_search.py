@@ -175,7 +175,7 @@ class WebSearchTool(BaseTool):
                     response.raise_for_status()
                     html_content = await response.text()
 
-            soup = BeautifulSoup(html_content, 'lxml')
+            soup = BeautifulSoup(html_content, 'html.parser')
             result_divs = soup.select(RESULT_SELECTOR)
 
             results = []

@@ -8,7 +8,12 @@ VENV_DIR=".venv"
 
 # --- OS Detection ---
 OS_TYPE="unknown"
-if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+IS_TERMUX=false
+# Termux sets $PREFIX to /data/data/com.termux/files/usr
+if [ -n "$PREFIX" ] && [ -d "$PREFIX/bin" ] && command -v termux-info &> /dev/null 2>&1; then
+    OS_TYPE="termux"
+    IS_TERMUX=true
+elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
     OS_TYPE="linux"
 elif [[ "$OSTYPE" == "darwin"* ]]; then
     OS_TYPE="macos"
@@ -82,7 +87,9 @@ then
     INSTALL_TASKWARRIOR=false
     INSTALL_CMD=""
 
-    if [ "$OS_TYPE" == "linux" ]; then
+    if [ "$OS_TYPE" == "termux" ]; then
+        INSTALL_CMD="pkg install task"
+    elif [ "$OS_TYPE" == "linux" ]; then
         if command -v apt-get &> /dev/null; then
             INSTALL_CMD="sudo apt-get update && sudo apt-get install -y taskwarrior"
         elif command -v dnf &> /dev/null; then
@@ -147,7 +154,9 @@ if ! command -v nmap &> /dev/null
 then
     echo "nmap not found. Attempting to install it automatically for local API discovery..."
     INSTALL_CMD=""
-    if [ "$OS_TYPE" == "linux" ]; then
+    if [ "$OS_TYPE" == "termux" ]; then
+        INSTALL_CMD="pkg install nmap"
+    elif [ "$OS_TYPE" == "linux" ]; then
         if command -v apt-get &> /dev/null; then
             INSTALL_CMD="sudo apt-get update && sudo apt-get install -y nmap"
         elif command -v dnf &> /dev/null; then

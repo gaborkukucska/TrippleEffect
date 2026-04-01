@@ -104,7 +104,9 @@ Ready to dive in? Here's how to get your agents up and running quickly:
 * Python 3.9+
 * Node.js and npm (only if using the optional Ollama proxy)
 * Access to LLM APIs (OpenAI, OpenRouter) and/or a running local **Ollama** instance.
-* Nmap to enable automatic local API provider discovery.
+* Nmap to enable automatic local API provider discovery (optional).
+
+> **📱 Termux/Android Note:** The setup script automatically detects Termux and uses `pkg` instead of `apt-get`/`sudo`. Some optional features (local network API scanning via `netifaces`/`nmap`) may require additional packages: `pkg install libffi openssl clang`. The framework runs fully without these optional packages — network scanning simply falls back gracefully.
 
 ### Setup Steps
 

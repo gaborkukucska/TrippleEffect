@@ -8,16 +8,16 @@ openai>=1.10.0 # Ensure you have a recent version
 PyYAML
 # httpx # Remove if not needed elsewhere
 aiohttp
-# duckduckgo-search # Replaced with Tavily
+# duckduckgo-search # Removed: Replaced with SearXNG + DDG scraping
 # PyGithub
-lxml
-pynacl
+# lxml # Removed: replaced by stdlib html.parser in web_search.py (avoids C compilation on Termux)
+# pynacl # Removed: was never imported or used by any framework code
 beautifulsoup4
-tavily-python # Added for WebSearchTool API fallback
+# tavily-python # Removed: was never imported — WebSearchTool uses SearXNG + DDG scraping
 SQLAlchemy>=2.0 # Added for Database Memory
-aiosqlite # <<< --- ADDED: Async driver for SQLite ---
+aiosqlite # Async driver for SQLite
 # alembic # Skipping for now for Termux compatibility
-netifaces # Added for local network discovery
+netifaces # Optional: for local network API discovery (graceful fallback if missing)
 tasklib # Added for Project Management Tool
 python-nmap # Added for nmap-based network discovery
 GitPython>=3.1.43 # Added for Git integration in FileSystemTool
