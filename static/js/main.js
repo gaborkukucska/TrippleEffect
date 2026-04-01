@@ -181,10 +181,10 @@ const initializeApp = () => {
     }
 
     // --- Draggable Divider between Chat and Agent Status ---
-    if (DOM.chatAgentsDivider && DOM.agentStatusContainer) {
+    if (DOM.chatAgentsDivider && DOM.statusPanelsContainer) {
         console.log("Main: Initializing draggable divider for Chat/Agents split.");
         const divider = DOM.chatAgentsDivider;
-        const agentPanel = DOM.agentStatusContainer;
+        const statusPanel = DOM.statusPanelsContainer;
         const chatLayout = divider.parentElement; // .chat-view-layout
 
         let isDragging = false;
@@ -194,7 +194,7 @@ const initializeApp = () => {
         const onPointerDown = (e) => {
             isDragging = true;
             startY = e.clientY;
-            startHeight = agentPanel.getBoundingClientRect().height;
+            startHeight = statusPanel.getBoundingClientRect().height;
             divider.setPointerCapture(e.pointerId);
             document.body.style.userSelect = 'none'; // Prevent text selection while dragging
             document.body.style.cursor = 'ns-resize';
@@ -202,13 +202,13 @@ const initializeApp = () => {
 
         const onPointerMove = (e) => {
             if (!isDragging) return;
-            // Dragging up increases agent panel height, dragging down decreases it
+            // Dragging up increases status panel height, dragging down decreases it
             const dy = startY - e.clientY;
             const parentHeight = chatLayout.getBoundingClientRect().height;
             const minHeight = 80;
             const maxHeight = parentHeight * 0.7;
             const newHeight = Math.min(maxHeight, Math.max(minHeight, startHeight + dy));
-            agentPanel.style.height = `${newHeight}px`;
+            statusPanel.style.height = `${newHeight}px`;
         };
 
         const onPointerUp = (e) => {

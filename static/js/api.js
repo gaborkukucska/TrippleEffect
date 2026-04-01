@@ -98,5 +98,16 @@ export const approveProject = async (pmAgentId) => {
     return makeApiCall(endpoint, 'POST');
 };
 
+/**
+ * Fetches the tasks for a specific project and session.
+ * @param {string} projectName The name of the project.
+ * @param {string} sessionName The name of the session.
+ * @returns {Promise<object>} The JSON response containing the tasks.
+ */
+export const fetchProjectTasks = async (projectName, sessionName) => {
+    console.log(`API: Fetching tasks for project: ${projectName}, session: ${sessionName}`);
+    const endpoint = `/api/projects/${encodeURIComponent(projectName)}/sessions/${encodeURIComponent(sessionName)}/tasks`;
+    return makeApiCall(endpoint, 'GET');
+};
 
 console.log("Frontend API module loaded.");

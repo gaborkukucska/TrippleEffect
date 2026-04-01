@@ -615,4 +615,126 @@ export const clearAgentLoadingIndicator = (agentId) => {
     }
 };
 
+/**
+ * Renders the fetched tasks into the project-tasks-content container.
+ * @param {Array} tasksData The list of task objects.
+ */
+export const renderProjectTasks = (tasksData) => {
+    if (!DOM.projectTasksContent) return;
+
+    if (!tasksData || !Array.isArray(tasksData) || tasksData.length === 0) {
+        DOM.projectTasksContent.innerHTML = '<span class="status-placeholder">No active project tasks.</span>';
+        return;
+    }
+
+    // Preserve open state of existing groups before unmounting
+    const openStates = {};
+    const existingDetails = DOM.projectTasksContent.querySelectorAll('details.task-group');
+    existingDetails.forEach(detail => {
+        if (detail.id) {
+            openStates[detail.id] = detail.open;
+        }
+    });
+
+    DOM.projectTasksContent.innerHTML = '';
+
+    // Group tasks by category
+    const activeTasks = [];    // assigned AND actively being worked on
+    const assignedTasks = [];  // assigned but not yet started (todo)
+    const unassignedTasks = [];
+    const completedTasks = [];
+
+    const activeProgressValues = ['in_progress', 'doing', 'working', 'started', 'waiting', 'blocked', 'stuck'];
+
+    tasksData.forEach(task => {
+        const prog = (task.task_progress || 'todo').toLowerCase();
+        if (prog === 'finished' || prog === 'done' || prog === 'completed') {
+            completedTasks.push(task);
+        } else if (!task.assignee) {
+            unassignedTasks.push(task);
+        } else if (activeProgressValues.includes(prog)) {
+            activeTasks.push(task);
+        } else {
+            // Assigned but still 'todo' or other non-active state
+            assignedTasks.push(task);
+        }
+    });
+
+    const createGroup = (id, title, tasks, defaultOpen = true) => {
+        if (tasks.length === 0) return null;
+        const details = document.createElement('details');
+        details.id = id;
+        
+        // Restore previous open state if it exists, otherwise use default
+        if (openStates.hasOwnProperty(id)) {
+            details.open = openStates[id];
+        } else if (defaultOpen) {
+            details.open = true;
+        }
+        
+        details.className = 'task-group';
+        
+        const summary = document.createElement('summary');
+        summary.textContent = `${title} (${tasks.length})`;
+        details.appendChild(summary);
+
+        const listDiv = document.createElement('div');
+        listDiv.className = 'task-list';
+
+        tasks.forEach(task => {
+            const item = document.createElement('div');
+            item.className = `task-item prog-${task.task_progress || 'todo'}`;
+            
+            const desc = document.createElement('div');
+            desc.className = 'task-desc';
+            desc.textContent = task.description || 'No description';
+            desc.title = task.description || '';
+            
+            const meta = document.createElement('div');
+            meta.className = 'task-meta';
+            
+            const prog = document.createElement('span');
+            prog.className = 'task-prog';
+            // Shorten commonly long progress strings
+            let progText = (task.task_progress || 'todo').replace(/_/g, ' ');
+            if (progText === 'in progress') progText = 'doing';
+            prog.textContent = progText;
+            
+            meta.appendChild(prog);
+            
+            if (task.assignee) {
+                const assignee = document.createElement('span');
+                assignee.className = 'task-assignee';
+                // Try to shorten to something like "worker_1" instead of the full prefix
+                let shortAssignee = task.assignee;
+                if (shortAssignee.includes('_worker_')) {
+                    shortAssignee = shortAssignee.split('_worker_')[1];
+                    shortAssignee = `worker_${shortAssignee}`;
+                }
+                assignee.textContent = `@${shortAssignee}`;
+                meta.appendChild(assignee);
+            }
+            
+            item.appendChild(desc);
+            item.appendChild(meta);
+            listDiv.appendChild(item);
+        });
+        
+        details.appendChild(listDiv);
+        return details;
+    };
+
+    const activeGroup = createGroup('task-group-active', '🔥 Active', activeTasks, true);
+    if (activeGroup) DOM.projectTasksContent.appendChild(activeGroup);
+    
+    const assignedGroup = createGroup('task-group-assigned', '📋 Assigned', assignedTasks, false);
+    if (assignedGroup) DOM.projectTasksContent.appendChild(assignedGroup);
+    
+    const unassignedGroup = createGroup('task-group-unassigned', '📭 Unassigned', unassignedTasks, false);
+    if (unassignedGroup) DOM.projectTasksContent.appendChild(unassignedGroup);
+    
+    const completedGroup = createGroup('task-group-completed', '✅ Completed', completedTasks, false);
+    if (completedGroup) DOM.projectTasksContent.appendChild(completedGroup);
+};
+
 console.log("Frontend UI module loaded.");

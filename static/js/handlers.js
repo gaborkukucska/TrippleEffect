@@ -9,7 +9,10 @@ import {
     setAttachedFile,
     updateKnownAgentStatus, // Import directly
     setFullKnownAgentStatuses, // Import directly
-    removeKnownAgentStatus // Import directly
+    removeKnownAgentStatus, // Import directly
+    setCurrentProjectAndSession, // Import directly
+    getCurrentProject, // Import directly
+    getCurrentSession // Import directly
 } from './state.js';
 // --- END MODIFIED ---
 import * as DOM from './domElements.js';
@@ -54,6 +57,24 @@ export const handleWebSocketMessage = (data) => {
              } else {
                   console.warn("Handler: Received full_status without valid agents object:", data);
              }
+             if (data.current_project && data.current_session) {
+                 setCurrentProjectAndSession(data.current_project, data.current_session);
+                 api.fetchProjectTasks(data.current_project, data.current_session)
+                     .then(response => ui.renderProjectTasks(response.tasks || []))
+                     .catch(err => console.error("Error fetching tasks on full status:", err));
+             }
+        } else if (messageType === 'project_tasks_updated') {
+            console.log("Handler: Handling project_tasks_updated event.", data);
+            const projName = data.project_name || getCurrentProject();
+            const sessName = data.session_name || getCurrentSession();
+            if (projName && sessName) {
+                setCurrentProjectAndSession(projName, sessName);
+                api.fetchProjectTasks(projName, sessName)
+                    .then(response => ui.renderProjectTasks(response.tasks || []))
+                    .catch(err => console.error("Error refreshing tasks:", err));
+            } else {
+                console.warn("Received project_tasks_updated but project/session context is unknown.");
+            }
         } else if (messageType === 'agent_deleted') {
              console.log(`Handler: Handling agent_deleted event for ${agentId}`);
              removeKnownAgentStatus(agentId);
@@ -77,7 +98,7 @@ export const handleWebSocketMessage = (data) => {
              console.log(`Handler: Handling agent_moved_team event for ${agentId}`);
              updateKnownAgentStatus(agentId, { team: data.new_team_id });
              triggerStatusRedraw = true;
-        } else if (messageType === 'session_loaded') {
+        } else if (messageType === 'system_event' && data.event === 'session_loaded') {
             console.log("Handler: Handling session_loaded event.");
             if (DOM.conversationArea) {
                 DOM.conversationArea.innerHTML = ''; // Clear chat
@@ -89,7 +110,7 @@ export const handleWebSocketMessage = (data) => {
                 loadingMsg.innerHTML = '<span class="agent-label">System:</span><span class="message-content" style="opacity:0.6"><i>System Loading...</i></span>';
                 DOM.conversationArea.appendChild(loadingMsg);
             }
-            ws.sendMessage(JSON.stringify({ type: 'get_full_status' }));
+            ws.sendMessage(JSON.stringify({ type: 'request_full_agent_status' }));
             triggerStatusRedraw = true;
         }
 
@@ -133,6 +154,7 @@ export const handleWebSocketMessage = (data) => {
             // --- State-only updates ---
             case 'agent_status_update':
             case 'full_status':
+            case 'project_tasks_updated':
                 shouldDisplay = false;
                 break;
 
@@ -141,10 +163,10 @@ export const handleWebSocketMessage = (data) => {
             case 'agent_added':
             case 'team_created':
             case 'team_deleted':
-            case 'session_saved':
-            case 'session_loaded':
+            case 'system_event':
             case 'agent_moved_team':
             case 'project_approved': // NEW: Handle approval confirmation
+                 const eventType = (messageType === 'system_event') ? data.event : messageType;
                  const eventMap = {
                     'agent_added': `Agent Added: ${data.agent_id} (${data.config?.persona || 'N/A'}) to team ${data.team || 'N/A'}`,
                     'agent_deleted': `Agent Deleted: ${data.agent_id}`,
@@ -155,10 +177,9 @@ export const handleWebSocketMessage = (data) => {
                     'agent_moved_team': `Agent Moved: ${data.agent_id} to team ${data.new_team_id || 'None'} from ${data.old_team_id || 'N/A'}`,
                     'project_approved': `Project Approved: ${data.message || `Project for PM ${data.pm_agent_id} started.`}` // NEW
                  };
-                 displayContent = escapeHTML(eventMap[messageType] || data.message || `Event: ${messageType}`);
+                 displayContent = escapeHTML(eventMap[eventType] || data.message || `Event: ${eventType}`);
                  displayAgentId = 'system';
                  displayType = 'system_event';
-                 targetAreaId = 'internal-comms-area';
                  targetAreaId = 'internal-comms-area';
                  break;
 

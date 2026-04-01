@@ -12,6 +12,8 @@ let reconnectDelay = null; // Will be initialized by websocket module
 
 // --- NEW: State for known agent statuses ---
 let knownAgentStatuses = {}; // Stores the last known status for all agents { agentId: statusObject }
+let currentProject = null;
+let currentSession = null;
 // --- End NEW ---
 
 // --- Getters ---
@@ -21,6 +23,8 @@ export const getCurrentView = () => currentView;
 export const getAttachedFile = () => attachedFile;
 export const getReconnectDelay = () => reconnectDelay;
 export const getKnownAgentStatuses = () => knownAgentStatuses; // Getter for the agent status cache
+export const getCurrentProject = () => currentProject;
+export const getCurrentSession = () => currentSession;
 
 // --- Setters ---
 export const setWebSocket = (newWebsocket) => {
@@ -52,6 +56,14 @@ export const setAttachedFile = (fileData) => {
 export const setReconnectDelay = (delay) => {
     console.log(`State: Reconnect delay set to ${delay}ms`);
     reconnectDelay = delay;
+};
+
+export const setCurrentProjectAndSession = (project, session) => {
+    if (currentProject !== project || currentSession !== session) {
+        console.log(`State: Context updated to Project: ${project}, Session: ${session}`);
+        currentProject = project;
+        currentSession = session;
+    }
 };
 
 // --- NEW: Agent Status Cache Updaters ---

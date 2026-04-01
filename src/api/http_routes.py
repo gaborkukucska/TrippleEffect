@@ -250,6 +250,30 @@ async def list_sessions(project_name: str):
         logger.error(f"Error listing sessions in {project_dir}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to list sessions for project '{project_name}': {e}")
 
+@router.get("/api/projects/{project_name}/sessions/{session_name}/tasks")
+async def get_project_tasks(project_name: str, session_name: str):
+    """ Fetches the tasks for the specific project and session. """
+    try:
+        from src.tools.project_management import ProjectManagementTool
+        tool = ProjectManagementTool(project_name, session_name)
+        result = await tool.execute(
+            agent_id="system",
+            agent_sandbox_path=Path("."),
+            action="list_tasks",
+            project_name=project_name,
+            session_name=session_name,
+            status_filter="all"
+        )
+        if result.get("status") == "success":
+            return JSONResponse(content={"tasks": result.get("tasks", [])})
+        else:
+            raise HTTPException(status_code=500, detail=result.get("message", "Unknown error fetching tasks"))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing tasks for {project_name}/{session_name}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to list tasks: {e}")
+
 @router.post("/api/projects/{project_name}/sessions", response_model=GeneralResponse, status_code=http_status.HTTP_201_CREATED)
 async def save_current_session(
     project_name: str,

@@ -3,6 +3,9 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, TYPE_CHECKING # Import TYPE_CHECKING
 import re
+import json
+import asyncio
+from src.api.websocket_manager import broadcast
 
 # Import tasklib safely
 try:
@@ -282,6 +285,7 @@ class ProjectManagementTool(BaseTool):
 
                 try:
                     task.save()
+                    asyncio.create_task(broadcast(json.dumps({"type": "project_tasks_updated", "project_name": project_name, "session_name": session_name})))
                 except Exception as e:
                     return {"status": "error", "message": f"Failed to save task: {e}"}
 
@@ -300,11 +304,24 @@ class ProjectManagementTool(BaseTool):
                 # Allow new task_progress_filter or legacy status_filter
                 if "task_progress_filter" in kwargs:
                     tasks_query = tasks_query.filter(task_progress=kwargs["task_progress_filter"])
-                elif "status_filter" in kwargs: 
-                    tasks_query = tasks_query.filter(status=kwargs["status_filter"])
+                elif "status_filter" in kwargs:
+                    if kwargs["status_filter"] != "all":
+                        tasks_query = tasks_query.filter(status=kwargs["status_filter"])
+                    # else: "all" means no status filtering at all
                 else:
                     # Default: filter out completed tasks to save tokens
                     tasks_query = tasks_query.pending()
+                
+                has_filters = any([
+                    kwargs.get("task_progress_filter"),
+                    kwargs.get("status_filter"),
+                    kwargs.get("assignee_filter"),
+                    kwargs.get("tags_filter")
+                ])
+                if not has_filters and agent_id and not agent_id.startswith("W"):
+                    # PM must always specify filtering. List yet unassigned tasks by default when no filter is provided.
+                    kwargs["assignee_filter"] = "unassigned"
+
                 if "assignee_filter" in kwargs: 
                     a_filter = str(kwargs["assignee_filter"]).strip()
                     if a_filter.lower() not in ["none", "null", "unassigned"]:
@@ -487,6 +504,7 @@ class ProjectManagementTool(BaseTool):
                     return {"status": "error", "message": "No valid fields provided for modification. Valid fields are: status, description, priority, tags, depends, assignee_agent_id."}
 
                 task.save()
+                asyncio.create_task(broadcast(json.dumps({"type": "project_tasks_updated", "project_name": project_name, "session_name": session_name})))
                 assignee_to_return = kwargs.get("assignee_agent_id") or task['assignee']
                 depends_list = [t['uuid'] for t in (task['depends'] if task['depends'] is not None else [])]
                 return {"status": "success", "message": f"Task '{task_id}' modified successfully.", "task_uuid": task['uuid'], "task_id": task['id'], "modified_fields": modified_fields, "task_progress": task['task_progress'], "description": task['description'], "assignee": assignee_to_return, "depends": depends_list}
@@ -523,6 +541,7 @@ class ProjectManagementTool(BaseTool):
                     task.done() # This triggers Taskwarrior to set status=completed
                     task['task_progress'] = "finished"
                     task.save()
+                    asyncio.create_task(broadcast(json.dumps({"type": "project_tasks_updated", "project_name": project_name, "session_name": session_name})))
                 except Exception as e:
                     if "completed" in str(e).lower() or "Cannot complete a completed task" in str(e):
                         return {"status": "success", "message": f"Task '{task_id}' is already completed ('finished').", "task_uuid": task['uuid'], "task_id": task['id']}

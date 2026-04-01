@@ -139,6 +139,35 @@ class PromptAssembler:
         # For non-work states or non-admin agents, provide basic status
         return "[Framework Internal Status: System operational. Continue your work as needed.]"
 
+    async def _generate_workspace_tree_report(self) -> Optional[str]:
+        if not self._manager.current_project or not self._manager.current_session:
+            return None
+            
+        import os
+        import re
+        
+        safe_project_name = re.sub(r'[^\w\-. ]', '_', self._manager.current_project)
+        workspace_path = settings.PROJECTS_BASE_DIR / safe_project_name / self._manager.current_session / "shared_workspace"
+        
+        if not workspace_path.exists():
+            return None
+            
+        # Build tree string
+        tree_lines = []
+        for root, dirs, files in os.walk(workspace_path):
+            level = str(root).replace(str(workspace_path), '').count(os.sep)
+            indent = '  ' * level
+            if level > 0:
+                tree_lines.append(f"{indent}|-- {os.path.basename(root)}/")
+            for f in files:
+                tree_lines.append(f"{indent}  |-- {f}")
+                
+        if not tree_lines:
+            return None
+            
+        tree_str = "\n".join(tree_lines)
+        return f"[SHARED WORKSPACE TREE (Current State)]\n{tree_str}\n(Note: This tree shows all files currently existing in the shared_workspace. Read them to avoid duplicating work.)"
+
 
     async def prepare_llm_call_data(self, context: 'CycleContext') -> None:
         """
@@ -216,6 +245,18 @@ class PromptAssembler:
                 else:
                     history_for_call.append(health_msg) # Append if only system prompt was there
                 logger.debug(f"Injected system health report for Admin AI '{agent.agent_id}'.")
+
+        # 3.5 Inject Workspace Tree (PM and Worker only)
+        if hasattr(agent, 'agent_type') and agent.agent_type in ['pm', 'worker']:
+            workspace_tree_report = await self._generate_workspace_tree_report()
+            if workspace_tree_report:
+                tree_msg: MessageDict = {"role": "system", "content": workspace_tree_report}
+                # Insert after the main system prompt but before other history
+                if len(history_for_call) > 1:
+                    history_for_call.insert(1, tree_msg)
+                else:
+                    history_for_call.append(tree_msg)
+                logger.debug(f"Injected shared_workspace tree report for {agent.agent_type} '{agent.agent_id}'.")
         
         context.history_for_call = history_for_call
 

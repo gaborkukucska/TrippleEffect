@@ -179,7 +179,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         all_agent_statuses = agent_manager_instance.get_agent_status()
                         await websocket.send_text(json.dumps({
                             "type": "full_status",
-                            "agents": all_agent_statuses
+                            "agents": all_agent_statuses,
+                            "current_project": agent_manager_instance.current_project,
+                            "current_session": agent_manager_instance.current_session
                         }))
                         logger.info(f"Sent full_status update to {client_host} with {len(all_agent_statuses)} agents.")
                     else:

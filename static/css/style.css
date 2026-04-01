@@ -124,16 +124,25 @@ body {
 #chat-view .input-container {
     flex-shrink: 0; /* Prevent input area shrinking */
 }
-#chat-view .agent-status-container {
+#chat-view .status-panels-container {
     flex-shrink: 0; /* Prevent status area shrinking */
     height: 180px; /* Fixed height initially, resettable by drag */
     margin-top: 0; /* Adjust margin because divider provides space */
+    display: flex;
+    gap: 10px;
+    overflow: hidden;
+    min-height: 80px;
+}
+#chat-view .agent-status-container,
+#chat-view .project-tasks-container {
+    flex: 1;
     border: 1px solid var(--border-color);
     border-radius: 4px;
     background-color: var(--bg-color-secondary);
     display: flex;
     flex-direction: column;
     overflow: hidden; /* Let child handle scroll */
+    min-width: 0; /* Crucial for text ellipsis in children */
 }
 
 /* Custom resizer divider */
@@ -159,7 +168,8 @@ body {
     border-radius: 2px;
 }
 
-#chat-view .agent-status-container h2 {
+#chat-view .agent-status-container h2,
+#chat-view .project-tasks-container h2 {
     margin: 0;
     padding: 8px 10px;
     font-size: 1em;
@@ -168,8 +178,9 @@ body {
     border-bottom: 1px solid var(--border-color);
     flex-shrink: 0;
 }
-#chat-view #agent-status-content {
-    overflow-y: auto; /* Scroll agent list if needed */
+#chat-view #agent-status-content,
+#chat-view #project-tasks-content {
+    overflow-y: auto; /* Scroll list if needed */
     flex-grow: 1;
     padding: 8px;
 }
@@ -646,6 +657,39 @@ body {
     padding: 10px;
     text-align: center;
 }
+
+/* --- Project Tasks Styling --- */
+.task-group details { margin-bottom: 5px; }
+.task-group summary {
+    font-size: 0.9em; font-weight: bold; color: var(--text-color-secondary);
+    cursor: pointer; padding: 4px; background-color: var(--bg-color-tertiary);
+    border-radius: 4px; user-select: none;
+}
+.task-group summary:hover { filter: brightness(1.2); }
+.task-list { margin-top: 5px; padding-left: 8px; }
+.task-item {
+    font-size: 0.85em; display: flex; justify-content: space-between; align-items: center;
+    padding: 4px 6px; margin-bottom: 4px; background-color: var(--bg-color-tertiary);
+    border-radius: 4px; border-left: 3px solid transparent;
+}
+.task-item .task-desc {
+    flex-grow: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-right: 8px; min-width: 0;
+}
+.task-item .task-meta {
+    flex-shrink: 0; display: flex; gap: 5px; align-items: center;
+}
+.task-item .task-assignee { color: var(--text-color-muted); font-style: italic; font-size: 0.9em; }
+.task-item .task-prog { font-weight: bold; padding: 1px 4px; border-radius: 3px; color: white; font-size: 0.9em; }
+.task-item.prog-todo { border-left-color: var(--text-color-muted); }
+.task-item.prog-todo .task-prog { background-color: var(--text-color-muted); color: var(--bg-color-primary); }
+.task-item.prog-in_progress { border-left-color: var(--accent-color-1); }
+.task-item.prog-in_progress .task-prog { background-color: var(--accent-color-1); }
+.task-item.prog-waiting { border-left-color: var(--accent-color-orange); }
+.task-item.prog-waiting .task-prog { background-color: var(--accent-color-orange); }
+.task-item.prog-stuck { border-left-color: var(--accent-color-red); }
+.task-item.prog-stuck .task-prog { background-color: var(--accent-color-red); }
+.task-item.prog-finished { border-left-color: var(--accent-color-green); }
+.task-item.prog-finished .task-prog { background-color: var(--accent-color-green); }
 
 /* --- Modal Styling --- */
 .modal {
