@@ -490,9 +490,9 @@ class AgentCycleHandler:
                     args1 = json.loads(targs1_json)
                     args2 = json.loads(targs2_json)
                     if args1.get("action") == "create_agent" and args2.get("action") == "create_agent":
-                        p1 = args1.get("persona") or args1.get("role")
-                        p2 = args2.get("persona") or args2.get("role")
-                        if p1 and p2 and str(p1).strip().lower() == str(p2).strip().lower():
+                        r1 = args1.get("role")
+                        r2 = args2.get("role")
+                        if r1 and r2 and str(r1).strip().lower() == str(r2).strip().lower():
                             return True
                 except Exception:
                     pass

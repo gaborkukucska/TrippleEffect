@@ -148,21 +148,27 @@ class AgentInteractionHandler:
         # Strict framework role validation removed per user request to allow LLM autonomy.
         agent_id_requested = params.get("agent_id")
         
-        # Check for duplicate persona in the team before creating
-        persona_requested = params.get("persona") or params.get("role")
-        if persona_requested:
+        # Check for duplicate role in the team before creating
+        role_requested = params.get("role")
+        if role_requested:
             creator_team_id = self._manager.state_manager.get_agent_team(calling_agent_id)
             if not creator_team_id:
                 creator_team_id = params.get("team_id")
             
+            # If still no team_id, fallback to all agents in the current manager
+            agents_to_check = []
             if creator_team_id:
-                all_agents_in_team = self._manager.state_manager.get_agents_in_team(creator_team_id)
-                for existing_agent in all_agents_in_team:
-                    if getattr(existing_agent, 'agent_type', '') == AGENT_TYPE_WORKER:
-                        existing_persona = getattr(existing_agent, 'persona', '')
-                        if existing_persona and existing_persona.lower().strip() == persona_requested.lower().strip():
-                            logger.warning(f"InteractionHandler: Prevented duplicate agent creation. Persona '{persona_requested}' already exists in team '{creator_team_id}'.")
-                            return False, f"Agent creation failed: An agent with the role/persona '{persona_requested}' already exists in your team. Do not create duplicate roles.", None
+                agents_to_check = self._manager.state_manager.get_agents_in_team(creator_team_id)
+            else:
+                agents_to_check = list(self._manager.agents.values())
+                
+            for existing_agent in agents_to_check:
+                if getattr(existing_agent, 'agent_type', '') == AGENT_TYPE_WORKER:
+                    existing_config = getattr(existing_agent, 'agent_config', {}).get('config', {})
+                    existing_role = existing_config.get('role', '')
+                    if existing_role and existing_role.lower().strip() == role_requested.lower().strip():
+                        logger.warning(f"InteractionHandler: Prevented duplicate agent creation. Role '{role_requested}' already exists.")
+                        return False, f"Agent creation failed: An agent with the role '{role_requested}' already exists in your team. Do not create duplicate roles. Use 'list_agents' to see your current team.", None
 
         # Determine if we should auto-assign a worker name
         if not agent_id_requested or not re.match(r'^W\d+$', agent_id_requested, re.IGNORECASE):

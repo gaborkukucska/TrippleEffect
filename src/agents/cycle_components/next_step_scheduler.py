@@ -10,7 +10,7 @@ from src.agents.constants import (
     AGENT_STATUS_AWAITING_USER_REVIEW_CG, # Added for CG logic
     AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER,
     ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK, ADMIN_STATE_STANDBY,
-    PM_STATE_STARTUP, PM_STATE_MANAGE, PM_STATE_WORK,
+    PM_STATE_STARTUP, PM_STATE_MANAGE, PM_STATE_WORK, PM_STATE_AUDIT, PM_STATE_STANDBY,
     # Add new PM states for checks
     PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_REPORT_CHECK,
     WORKER_STATE_WAIT, WORKER_STATE_WORK, WORKER_STATE_REPORT, WORKER_STATE_DECOMPOSE
@@ -120,6 +120,7 @@ class NextStepScheduler:
             # be reactivated by default unless they explicitly change state.
             persistent_states = {
                 (AGENT_TYPE_PM, PM_STATE_MANAGE),
+                (AGENT_TYPE_PM, PM_STATE_AUDIT),
                 (AGENT_TYPE_WORKER, WORKER_STATE_WORK),
                 (AGENT_TYPE_WORKER, WORKER_STATE_REPORT),
                 (AGENT_TYPE_ADMIN, ADMIN_STATE_WORK),
@@ -179,7 +180,7 @@ class NextStepScheduler:
                                 return
                             except Exception as e:
                                 logger.error(f"NextStepScheduler: Failed to force state change for looping worker: {e}")
-                    elif agent.agent_type == AGENT_TYPE_PM and agent.state in [PM_STATE_MANAGE, PM_STATE_WORK]:
+                    elif agent.agent_type == AGENT_TYPE_PM and agent.state in [PM_STATE_MANAGE, PM_STATE_WORK, PM_STATE_AUDIT]:
                         if hasattr(self._manager, 'workflow_manager'):
                             try:
                                 # For PM, force a context refresh by clearing immediate history and asking for a summary

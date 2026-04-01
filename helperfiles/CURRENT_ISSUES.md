@@ -15,6 +15,21 @@
 - **Fix:** (RESOLVED) Hard-capped the tree generation to `MAX_DEPTH = 4` and `MAX_FILES = 200`. Added an `EXCLUDE_DIRS` blacklist (`node_modules`, `.git`, `.venv`) to instantly prune traversal.
 - **Files:** `src/agents/cycle_components/prompt_assembler.py`
 
+### +4. PM Audit State Stalling
+
+- **Severity:** High (PM completely stalled out of work loops)
+- **Description:** When the PM agent transitioned into the `pm_audit` state, the `NextStepScheduler` failed to recognize it as a continuous persistent state. After executing a tool, it dropped the PM into `IDLE` status on `Path E - Default End`, waiting indefinitely.
+- **Root Cause:** `PM_STATE_AUDIT` was missing from `persistent_states` in `NextStepScheduler`.
+- **Fix:** (RESOLVED) Appended `PM_STATE_AUDIT` to persistent handling rules so the PM is constantly reactivated during its audit phase.
+- **Files:** `src/agents/cycle_components/next_step_scheduler.py`
+
+### +3. PM Hallucinating Aliases resolving to Duplicate Agent Bypasses
+
+- **Severity:** High (wasted LLM generation, duplicate worker bloat)
+- **Description:** Because the PM occasionally omitted the `team_id` when calling `manage_team(action="create_agent")`, the previous fix using `state_manager.get_agents_in_team(creator_team_id)` returned `None`, entirely bypassing the validation filter and permitting identical redundant worker agent roles to be created.
+- **Fix:** (RESOLVED) Patched `_handle_create_agent` to default its redundancy verification array to `list(self._manager.agents.values())` globally if local `creator_team_id` is unattainable.
+- **Files:** `src/agents/interaction_handler.py`, `src/agents/cycle_handler.py`
+
 ### +1. PM Token Bloat on Unfiltered `list_tasks`
 
 - **Severity:** High (wasted context on delegated tasks)
@@ -23,6 +38,7 @@
 - **Files:** `src/tools/project_management.py`
 
 ### -16. Admin AI Passive Oversight Limitation
+
 - **Severity:** High (Admin AI functioned merely as a message relay)
 - **Description:** When users asked for project updates, the Admin AI passively messaged the Project Manager. Furthermore, it was explicitly banned from using management tools while a project was delegated, preventing it from detecting stalled projects or verifying success.
 - **Root Cause:** System prompts restricted native tool usage and assumed the PM was the sole source of truth.
@@ -30,6 +46,7 @@
 - **Files:** `prompts.yaml`, `src/config/settings.py`
 
 ### -15. Coarse Task Status & Watchdog Isolation
+
 - **Severity:** High (PMs lacked visibility into granular task blockers)
 - **Description:** Taskwarrior's native `status` (pending/completed) was insufficient for LLMs to understand *why* a task was pending (e.g., `stuck`, `failed`, `in_progress`). Additionally, the framework's periodic check was isolated to just PMs.
 - **Root Cause:** Strict adherence to Taskwarrior defaults and localized watchdogs.
@@ -37,6 +54,7 @@
 - **Files:** `src/tools/project_management.py`, `src/agents/manager.py`, `prompts.yaml`
 
 ### -14. Project Manager Pre-mature Completion & Audit Phase
+
 - **Severity:** High (PM declared completion without formal review)
 - **Description:** Upon task exhaustion, PMs immediately messaged the Admin AI that the project was complete without verifying the generated output against instructions, leading to unverified deliverables and communication disconnects at the end of runs.
 - **Root Cause:** The `pm_manage` state abruptly transitioned to reporting completion.
@@ -44,6 +62,7 @@
 - **Files:** `prompts.yaml`, `src/agents/constants.py`, `src/agents/workflow_manager.py`, `src/agents/core.py`
 
 ### -13. Autoregressive Stalling & Empty Loops
+
 - **Severity:** High
 - **Description:** Worker agents and PMs would occasionally get stuck in loops generating empty responses or invalid commands. The Constitutional Guardian (CG) would passively block them, but the agents' managers were unaware of the freeze.
 - **Root Cause:** Disconnected escalation path. Managers had no framework visibility into a worker's systemic internal stall.
@@ -51,6 +70,7 @@
 - **Files:** `src/agents/cycle_components/agent_health_monitor.py`, `prompts.yaml`
 
 ### -12. Symmetrical Cross-Agent Message Queuing
+
 - **Severity:** High (caused cognitive interrupts and logic stalls)
 - **Description:** Agents were violently interrupted mid-thought by forced state transitions upon sending or receiving messages (e.g., workers forced into `worker_wait` upon sending, PM forced into `pm_report_check` upon receiving). This corrupted their context and resulted in loops.
 - **Root Cause:** Hardcoded state switches in `route_and_activate_agent_message` and `execute_single_tool`.
@@ -58,6 +78,7 @@
 - **Files:** `src/agents/interaction_handler.py`
 
 ### -11. Workspace Project & Session Path Nesting Bug
+
 - **Severity:** High (sandbox fragmentation)
 - **Description:** Agents were erroneously instructed to (and succeeded in) prepending `{session_name}` or `{project_name}` to folder paths, creating nested folder architectures instead of using the flat `shared_workspace` root.
 - **Root Cause:** `file_system.py` didn't scrub session prefixes, and the PM's system prompt lacked constraints preventing it from passing bad pathing rules to workers.
@@ -65,6 +86,7 @@
 - **Files:** `src/tools/file_system.py`, `src/config/settings.py`
 
 ### -10. Project Manager State Reversion Cutoff
+
 - **Severity:** High (PM ignored worker replies)
 - **Description:** If PM1 responded to a worker and executed the `send_message` tool successfully without manually appending a `<request_state>` tag, the `NextStepScheduler` forcefully reverted its state to `pm_manage`, causing it to drop its `pm_report_check` context.
 - **Root Cause:** Aggressive auto-reversion logic for PMs.
@@ -72,9 +94,10 @@
 - **Files:** `src/agents/cycle_components/next_step_scheduler.py`
 
 ### -9. Task Object AttributeError on Modify
+
 - **Severity:** Moderate
 - **Description:** The PM triggered an `'Task' object has no attribute 'get'` error when calling `modify_task` to set a task status.
-- **Root Cause:** `tasklib.Task` uses dictionary element access `task['status']` rather than `.get()`. 
+- **Root Cause:** `tasklib.Task` uses dictionary element access `task['status']` rather than `.get()`.
 - **Fix:** (RESOLVED) Switched to `task['status']` to safely look up task data.
 - **Files:** `src/tools/project_management.py`
 
@@ -345,7 +368,7 @@
 ## Summary of Latest Run (2026-03-26)
 
 | Metric | Value |
-|--------|-------|
+| -------- | ------- |
 | Log file | `app_20260326_174455_1570101.log` (656,818 lines) |
 | ERRORs | 35 (mostly Ollama provider 500s and tool param errors) |
 | Tool Exec Failures | 8 |
@@ -367,4 +390,3 @@
 - Substantial output: 25 files including game scenes, managers, docs, and architecture files
 - Failover mechanism partially working: W1 successfully switched hosts on first attempt
 - Cross-cycle duplicate detection prevented redundant tool executions
-
