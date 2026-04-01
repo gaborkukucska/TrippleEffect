@@ -19,6 +19,7 @@ venv/
 tests/
 data/
 logs/
+tests/
 projects/
 sandboxes/
 security/
