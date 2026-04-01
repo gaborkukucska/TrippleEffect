@@ -1,237 +1,95 @@
-<!-- # START OF FILE README.md -->
 <!-- # IT IS CRITICAL THAT ALL AIs and LLMs FOLLOW THE DEVELOPMENT INSTRUCTIONS IN THE `helperfiles/DEVELOPMENT_RULES.md` FILE WHEN FURTHER DEVELOPING THIS FRAMEWORK!!! -->
-# TrippleEffect Multi-Agent Framework
+# 🚀 TrippleEffect Multi-Agent Framework
 
-**Version:** 2.43 <!-- Updated Version -->
+**Version:** 2.43 
 
-**TrippleEffect** is an asynchronous, collaborative multi-agent framework built with Python, FastAPI, and WebSockets. It features a central **Admin AI** that initiates projects and a dedicated **Project Manager** agent per session that handles detailed task creation/tracking and agent/team creation/coordination. This framework is predominantly developed by various LLMs guided by Gabby.
+Welcome to **TrippleEffect**, an asynchronous, highly collaborative multi-agent framework designed to bring the liberating potential of AI to everyone—even on modest hardware! 📱✨
 
-## Quick Start (using scripts)
+My original aim for TrippleEffect was ambitious yet simple: **to create an agentic framework that enables small to medium-sized local LLMs to run efficiently.** We believe the true revolution of LLMs happens when anyone, even someone with just an old Android phone, can run a functioning agentic system 24/7 to help them with any digital task! 🌍💪 
 
-For a faster setup, you can use the provided shell scripts but make sure they are executable:
-```bash
-chmod +x setup.sh run.sh
-```
+By carefully managing context lengths, employing smart token-saving techniques, and utilizing advanced local provider auto-discovery, TrippleEffect makes this localized AI dream a reality.
 
-1.  **Run Setup:** `./setup.sh` (This usually creates the environment, installs dependencies, and copies `.env.example`).
-2.  **Configure:** Edit the created `.env` file with your API keys (OpenAI, OpenRouter, GitHub PAT, Tavily).
-3.  **Run:** `./run.sh` (This typically activates the environment and starts the application using `python -m src.main`).
-4.  **Access UI:** Open your browser to `http://localhost:8000`.
+---
 
-*(See the detailed "Setup and Running" section below for manual steps and configuration options.)*
+### 🧩 Why "Tripple Effect"?
+The framework was originally named for its powerful **three-layered architecture**:
+1. 👑 **Admin AI**: The Ultimate Orchestrator that interacts with you and initiates projects.
+2. 👔 **Project Managers (PMs)**: Dedicated agents that take your plans, break them down, and build specialized teams.
+3. 👷 **Worker Agents**: The specialized builders, coders, and researchers executing the sub-tasks.
 
-## Core Concepts
+But we didn't stop at three! We've since added a crucial **fourth layer**:
+4. 🛡️ **Constitutional Guardian (CG)**: A specialized oversight agent ensuring all actions and outputs align with your predefined governance principles.
 
-*   **Stateful Admin AI:** The central agent (`admin_ai`) operates using a state machine (`conversation`, `planning`, etc.). In the `conversation` state, it interacts with the user and monitors ongoing projects via their PMs. When an actionable request is identified, it transitions to the `planning` state.
-*   **Framework-Driven Project Initiation:** When Admin AI submits a plan (including a `<title>`) in the `planning` state, the framework automatically:
-    *   Creates a project task in Taskwarrior using the title and plan.
-    *   Creates a dedicated Project Manager agent (`pm_{project_title}_{session_id}`).
-    *   Assigns the new PM to the initial project task.
-    *   Notifies Admin AI and transitions it back to the `conversation` state.
-*   **Project Manager Agent:** Automatically created per project/session by the framework, this agent uses the `ProjectManagementTool` (backed by `tasklib`) to decompose the initial plan, create a team, specialised worker agents, create/assign sub-tasks to worker agents, monitor progress via `send_message` tool, and report status/completion back to Admin AI.
-*   **Dynamic Worker Agent Management:** The Project Manager agent (or Admin AI, depending on workflow evolution) uses `ManageTeamTool` to create worker agents as needed for specific sub-tasks.
-*   **Constitutional Guardian (CG) Agent:** A specialized agent (`constitutional_guardian_ai`) reviews final textual outputs of other agents against predefined governance principles (from `governance.yaml`). If a concern is raised, the original agent's output is paused, and a UI notification is generated, allowing for user intervention (approve, stop agent, or provide feedback for retry). This feature's backend logic is implemented; UI/API for full user interaction is pending.
-*   **Advanced Agent Health Monitoring:** Enhanced Constitutional Guardian system with comprehensive agent health monitoring capabilities:
-    *   **Agent Health Monitor**: Tracks agent behavior patterns, detects infinite loops, empty responses, and problematic patterns
-    *   **Cross-Cycle Duplicate Detection**: Detects when PM agents repeat identical tool calls across consecutive cycles. Serves cached results, injects escalated directives, and auto-advances the workflow after persistent duplicates.
-    *   **XML Validator**: Automatic detection and recovery of malformed XML tool calls
-    *   **Context Summarizer**: Manages conversation context for optimal performance with smaller models
-    *   **Next Step Scheduler**: Intelligent agent reactivation and workflow continuation logic
-    *   **Cycle Components Architecture**: Modular, extensible system for agent cycle management
-*   **Intelligent Model Handling:**
-    *   **Discovery:** Automatically finds reachable LLM providers (Ollama, OpenRouter, OpenAI) and available models at startup.
-    *   **Filtering:** Filters discovered models based on the `MODEL_TIER` setting (`.env`).
-    *   **Auto-Selection:** Automatically selects the best model for Admin AI (at startup) and dynamic agents (at creation if not specified). Selection priority is Tier -> Model Size (parameter count, larger preferred) -> Performance Score -> ID. `num_parameters` are discovered for providers like OpenRouter and Ollama where available.
-    *   **Failover:** Automatic API key cycling and model/provider failover (Local -> Free -> Paid tiers) on persistent errors during generation. Model selection during failover also respects the new Size/Performance priority.
-    *   **Performance Tracking:** Records success rate and latency per model, persisting data (`data/model_performance_metrics.json`).
-*   **Tool-Based Interaction:** Agents use tools via an **XML format**. The framework can now process multiple distinct tool calls found in a single agent response; these are executed sequentially, and all results are then fed back to the agent in the next turn.
-*   **Modular Tool Help System:** Tool documentation is segmented into action-specific help sections. Agents receive a concise summary by default and can request detailed help for specific actions via `sub_action`. When tool errors occur, the relevant action's documentation is automatically injected into the error message, enabling context-aware self-correction.
-*   **Context Management:** Standardized instructions are injected, agents are guided to use file operations for large outputs. Admin AI receives current time context.
-*   **Communication Layer Separation (UI):** The user interface visually separates direct User<->Admin AI interaction from internal Admin AI<->PM<->Worker communication and system events.
-*   **Persistence:** Session state (agents, teams, histories) can be saved/loaded (filesystem). Interactions and knowledge are logged to a database (`data/trippleeffect_memory.db`).
-*   **KnowledgeBaseTool Enhancements:** Agent thoughts are saved with automatically generated keywords. A new `search_agent_thoughts` action allows targeted retrieval of past agent reasoning.
-*   **Governance Layer:** System principles defined in `governance.yaml` are now primarily used by the Constitutional Guardian (CG) agent for its review process. Global injection of these principles into all agent prompts has been removed.
+---
 
-## Features
+## ⚡ Quick Start (Setup and Running)
 
-*   **Asynchronous Backend:** Built with FastAPI and `asyncio`.
-*   **WebSocket Communication:** Real-time updates via WebSockets.
-*   **Dynamic Agent/Team Creation:** Manage agents and teams on the fly using `ManageTeamTool`.
-*   **Advanced Agent Health System:** Comprehensive monitoring and recovery capabilities:
-    *   **Loop Detection**: Automatically detects and resolves infinite loops, empty responses, and stuck patterns
-    *   **Cross-Cycle Duplicate Prevention**: Detects and intercepts repeated identical tool calls across agent cycles, serving cached results and auto-advancing stalled workflows
-    *   **XML Recovery**: Intelligent parsing and recovery of malformed XML tool calls
-    *   **Context Optimization**: Automatic context summarization for improved performance
-    *   **Workflow Continuation**: Smart reactivation logic for multi-step agent workflows
-    *   **Health Analytics**: Detailed agent behavior analysis and intervention strategies
-*   **Configurable Model Selection:**
-    *   Dynamic discovery of providers/models (Ollama, OpenRouter, OpenAI).
-    *   Filtering based on `MODEL_TIER` (.env: `FREE` or `ALL`).
-    *   Automatic model selection for Admin AI and dynamic agents, now prioritizing: Tier -> Model Size (parameter count, larger preferred) -> Performance Score -> ID. `num_parameters` are discovered for some providers (e.g., OpenRouter, Ollama).
-*   **Robust Error Handling:**
-    *   Automatic retries for transient LLM API errors.
-    *   Multi-key support and key cycling for providers (`PROVIDER_API_KEY_N` in `.env`).
-    *   Automatic failover to different models/providers based on tiers (Local -> Free -> Paid).
-    *   Key quarantining on persistent auth/rate limit errors.
-    *   Advanced XML validation and recovery mechanisms.
-*   **Performance Tracking:** Monitors success rate and latency per model, saved to `data/model_performance_metrics.json`.
-*   **State-Driven Admin AI Workflow:** Admin AI operates based on its current state (`conversation`, `planning`).
-    *   **Conversation State:** Focuses on user interaction, KB search/save, monitoring PM updates, and identifying new tasks. Uses `<request_state state='planning'>` to signal task identification.
-    *   **Planning State:** Focuses solely on creating a plan with a `<title>` tag. Framework handles project/PM creation upon plan submission.
-*   **XML Tooling:** Agents request tool use via XML format. Available tools:
-    *   `FileSystemTool`: Read, Write, List, Mkdir, Delete, Find/Replace, Fuzzy Search/Replace (`search_replace_block`), and Git operations (`git_commit`, `git_status`, `git_diff`) in sandbox or shared workspaces.
-    *   `GitHubTool`: List Repos, List Files (Recursive), Read File content using PAT.
-    *   `ManageTeamTool`: Create/Delete Agents/Teams, Assign Agents, List Agents/Teams, Get Agent Details.
-    *   `SendMessageTool`: Communicate between agents within a team or with Admin AI (using exact agent IDs).
-    *   `WebSearchTool`: Search the web (uses Tavily API if configured, falls back to DDG scraping).
-    *   `SystemHelpTool`: Get current time (UTC), Search application logs.
-    *   `KnowledgeBaseTool`: Save/Search distilled knowledge in the database. Now includes smarter keyword generation for saved thoughts and a `search_agent_thoughts` action.
-    *   `ProjectManagementTool`: Add, list, modify, and complete project tasks (uses `tasklib` backend per session). **Assigns tasks via tags (`+agent_id`)** due to CLI UDA issues. Used primarily by the Project Manager agent.
-    *   **Modular On-Demand Tool Help:** Implemented segmented `get_detailed_usage(sub_action=...)` in all major tools (`FileSystemTool`, `ProjectManagementTool`, `ManageTeamTool`). Agents can request action-specific help (e.g., just `read` or `add_task` docs) instead of the entire tool documentation. Error messages automatically include the relevant action's help context.
-*   **Sequential Tool Execution:** Supports sequential execution of multiple tool calls from a single agent response.
-*   **Constitutional Guardian (CG) System:**
-    *   Dedicated CG agent (`constitutional_guardian_ai`) reviews agent outputs against `governance.yaml` principles.
-    *   Uses a specific `cg_system_prompt`.
-    *   `AgentCycleHandler` intercepts final responses for CG review via a direct LLM call.
-    *   Original agents are paused (status `AGENT_STATUS_AWAITING_USER_REVIEW_CG`) if a concern is raised by CG.
-    *   Backend methods in `AgentManager` (`resolve_cg_concern_approve`, `stop`, `retry`) are implemented to handle user decisions on concerns.
-    *   Enhanced with comprehensive agent health monitoring and recovery capabilities.
-*   **Session Persistence:** Save and load agent states, histories, team structures, and **project task data** (filesystem, including `tasklib` data with assignee tags).
-*   **Database Backend (SQLite):**
-    *   Logs user, agent, tool, and system interactions.
-    *   Stores long-term knowledge summaries and agent thoughts via `KnowledgeBaseTool`.
-*   **Governance Review via CG Agent:** System principles from `governance.yaml` are reviewed by the dedicated Constitutional Guardian (CG) agent, replacing the previous global prompt injection method.
-*   **Refined Web UI:**
-    *   Separated view for User <-> Admin AI chat (`Chat` view).
-    *   Dedicated view for internal Admin AI <-> Agent communication, tool usage, and system status updates (`Internal Comms` view).
-    *   Improved message chunk grouping for concurrent streams.
-    *   Increased message history limit in Internal Comms view.
-    *   Session management interface.
-    *   Static configuration viewer.
-*   **Sandboxing:** Agents operate within dedicated sandbox directories or a shared session workspace.
-*   **Context Optimization:** Agents guided to use files for large outputs. Admin AI prompts are now state-specific. Advanced context summarization for improved performance.
-*   **Admin AI Time Context:** Current UTC time is injected into Admin AI prompts.
-*   **Local Provider Integration:** Automatic network discovery (`LOCAL_API_DISCOVERY_SUBNETS="auto"`).
+Ready to dive in? Here's how to get your agents up and running quickly:
 
-## Technology Stack
+### Prerequisites:
+*   **Termux app** if used on Android mobile devices! 📱
+*   Python 3.9+
+*   Node.js and npm (only if using the optional Ollama proxy)
+*   Access to LLM APIs (OpenAI, OpenRouter) and/or a running local **Ollama** instance.
+*   Nmap to enable automatic local API provider discovery.
 
-*   **Backend:** Python 3.9+, FastAPI, Uvicorn
-*   **Asynchronous Operations:** `asyncio`
-*   **WebSockets:** `websockets` library integrated with FastAPI
-*   **Database:** `SQLAlchemy` (Core, Asyncio), `aiosqlite` (for SQLite driver)
-*   **Task Management:** `tasklib` (Python Taskwarrior library)
-*   **LLM Interaction:** `openai` library, `aiohttp`
-*   **Frontend:** HTML5, CSS3, Vanilla JavaScript
-    *   **Configuration:** YAML (`PyYAML`), `.env` (`python-dotenv`), JSON (`prompts.json`), `governance.yaml` (`PyYAML`)
-*   **Tooling APIs:** `tavily-python`
-*   **Parsing:** `BeautifulSoup4` (HTML), `re`, `html` (XML)
-    *   **Model Discovery & Management:** Custom `ModelRegistry` class (now includes model parameter size discovery).
-*   **Performance Tracking:** Custom `ModelPerformanceTracker` class (JSON)
-    *   **Persistence:** JSON (session state - filesystem), SQLite (interactions, knowledge, thoughts), Taskwarrior files (project tasks via `tasklib`)
-*   **Data Handling/Validation:** Pydantic (via FastAPI)
-    *   **Local Auto Discovery:** Nmap
-*   **Logging:** Standard library `logging`
-
-## Setup and Running (Detailed)
-
-1.  **Prerequisites:**
-    *   Termux app if used on Android mobile devices.
-    *   Python 3.9+
-    *   Node.js and npm (only if using the optional Ollama proxy)
-    *   Access to LLM APIs (OpenAI, OpenRouter) and/or a running local Ollama instance.
-    *   Nmap to enable automatic local API provider discovery.
- 
-2.  **Clone the repository:**
+### Setup Steps:
+1.  **Clone the repository:**
     ```bash
     git clone https://github.com/gaborkukucska/TrippleEffect.git
     cd TrippleEffect
     ```
 
-3.  **Set up Python Environment:**
-
-    On Linux/MacOS
+2.  **Run Setup Script:** 
+    *(This creates the environment, installs dependencies, and copies `.env.example`)*
     ```bash
-    python -m venv .venv
-    source .venv/bin/activate
-    pip install -r requirements.txt
-    ```
-    
-    on Windows
-    ```bash
-    .venv\Scripts\activate
-    pip install -r requirements.txt
+    chmod +x setup.sh run.sh
+    ./setup.sh
     ```
 
-4.  **Configure Environment:**
-    *   Copy `.env.example` to `.env`.
-    *   Edit `.env` and add your API keys (OpenAI, OpenRouter, GitHub PAT, Tavily API Key).
-    *   Set `MODEL_TIER` (`LOCAL`, `FREE` or `ALL`).
-    *   **Note:** While local LLMs (via Ollama & LiteLLM) are supported, smaller models may currently exhibit reliability issues with long and complex instructions or tool use especially if hosted weak hardware. For more consistent results, using a robust external provider like OpenRouter (configured in `.env`) might yield better results at this stage.
+3.  **Configure:** 
+    Edit the created `.env` file with your API keys (OpenAI, OpenRouter, GitHub PAT, local Ollama endpoints, etc.). Set `MODEL_TIER` to `LOCAL`, `FREE`, or `ALL`.
 
-5.  **Configure Bootstrap Agents (Optional):**
-    *   Edit `config.yaml` to define the behavior and conversation style of the Admin AI.
-    *   Add any bootstrap agents beyond the default Admin AI & PM Agent.
-    *   You can optionally specify a provider/model for Admin AI & PM Agent here, otherwise it will be auto-selected.
-
-6.  **Run the Application:**
-    # Option 1: Use the run script (could be error some at times).
+4.  **Run:** 
+    *(This activates the environment and starts the application using FastAPI)*
     ```bash
-    chmod +x run.sh
     ./run.sh
     ```
-    # Option 2: (Recommended) Run directly using Python
-    ```bash
-    python -m src.main
-    ```
-    *(Alternatively, for development with auto-reload, use `uvicorn src.main:app --reload --port 8000`, but be aware reload might interfere with agent state.)*
 
-7.  **Access the UI:** Open your web browser to `http://localhost:8000`.
+5.  **Access UI:** 
+    Open your browser to `http://localhost:8000` 🎉
 
-## Development Status
+---
 
-*   **Current Version:** 2.42
-*   **Completed Phases:** 1-27, plus incremental improvements. (Phase 27 focused on Advanced Agent Health Monitoring, Constitutional Guardian enhancements, and comprehensive loop detection and recovery systems).
-*   **Recent Enhancements (v2.40 - v2.43):**
-    *   **FileSystemTool Upgrades (v2.43):** Integrated `GitPython` and `diff-match-patch` for robust LLM-friendly file edits (`search_replace_block`) and native Git repository awareness (`git_status`, `git_commit`, `git_diff`).
-    *   **Modular Tool Help System (v2.42):** Refactored `get_detailed_usage()` across `FileSystemTool`, `ProjectManagementTool`, and `ManageTeamTool` to support `sub_action` parameter. Agents now receive concise action summaries by default and can request detailed, action-specific documentation. Error messages automatically include contextual help for the failed action.
-    *   **Enhanced Error Handler:** `ToolErrorHandler` now accepts and formats `action_help` in error responses, enabling agents to self-correct with targeted documentation.
-    *   **New FileSystemTool Actions:** Added `append`, `insert_lines`, and `replace_lines` for granular file manipulation.
-*   **Previous Enhancements (v2.30 - v2.40):** 
-    *   **Advanced Agent Health Monitoring System:** Comprehensive enhancement to the Constitutional Guardian system with intelligent agent health monitoring, loop detection, and recovery capabilities.
-    *   **Cycle Components Architecture:** Modular agent cycle management system including:
-        *   `AgentHealthMonitor`: Tracks behavior patterns, detects problematic loops, and implements recovery strategies
-        *   `XMLValidator`: Automatic XML validation and malformed content recovery
-        *   `ContextSummarizer`: Intelligent context management for optimal performance
-        *   `NextStepScheduler`: Smart agent reactivation and workflow continuation
-        *   `PromptAssembler`: Dynamic prompt construction and optimization
-        *   `OutcomeDeterminer`: Cycle outcome analysis and decision making
-    *   **Enhanced Loop Detection:** Multi-layered protection against infinite loops, empty responses, and stuck patterns
-    *   **XML Recovery System:** Intelligent parsing and automatic recovery of malformed XML tool calls
-    *   **Context Optimization:** Advanced context summarization for improved performance with smaller models
-    *   **Workflow Continuation:** Smart multi-step workflow support with proper agent reactivation
-    *   **Constitutional Guardian Backend:** Implemented core logic for CG agent review, including new agent statuses and user decision handling methods
-    *   Refined model selection logic (Tier, Size, Performance).
-    *   Enabled sequential execution of multiple tools per agent turn.
-    *   Improved thought saving (smarter keywords) and retrieval (`search_agent_thoughts` action).
-    *   Governance Layer: Principles loaded from `governance.yaml`; global prompt injection removed in favor of CG-specific use.
-    *   Comprehensive unit test coverage for new features and enhancements.
-*   **Current Phase (28 Target Completion):** Advanced Memory & Learning system development, proactive behavior implementation, and federated communication foundations.
-*   **Future Plans:** Proactive Behavior (Phase 28), Federated Communication (Phase 29+), New Admin tools, LiteLLM provider, advanced collaboration, resource limits, DB/Vector Stores.
+## 📚 Documentation
 
-See `helperfiles/PROJECT_PLAN.md` for detailed phase information.
+To keep this README clean and exciting, we've moved all the heavy lifting and detailed technical documentation into the `docs/` and `helperfiles/` folders. Check them out here:
 
-## Contributing
+- 📖 **[Framework & Architecture](docs/FRAMEWORK.md)** - Deep dive into how the AgentManager and Lifecycle works. Includes recent optimizations like safe workspace context bounded mappings.
+- 💡 **[Core Concepts](docs/CORE_CONCEPTS.md)** - Learn about our state machines, intelligent model handling, and more.
+- ✨ **[Features Breakdown](docs/FEATURES.md)** - Explore our robust error handling, sandboxing, and Agent Health Monitoring.
+- 🛠️ **[Technology Stack](docs/TECH_STACK.md)** - The nuts and bolts (Python, FastAPI, WebSockets, Taskwarrior, SQLite).
+- 🧠 **[Tool Making Guide](docs/TOOL_MAKING.md)** - How to build custom tools for your agents.
+- 📋 **[Project Plan & Roadmap](helperfiles/PROJECT_PLAN.md)** - See our development phases and future goals.
+- 📜 **[Development Rules](helperfiles/DEVELOPMENT_RULES.md)** - Essential guidelines for contributing.
 
-Contributions are welcome! Please follow standard fork-and-pull-request procedures. Adhere to the development rules outlined in `helperfiles/DEVELOPMENT_RULES.md`.
+---
 
-## License
+## 🚀 Development Status
 
-This project is licensed under the MIT License - see the `LICENSE` file for details.
+*   **Current Version:** 2.43
+*   **Recent Highlights:** We recently deployed Advanced Agent Health Monitoring, robust Infinite Loop interception mechanisms, intelligent duplicate tool-call prevention across PM cycles, and bounded filesystem context mappings (to keep those context lengths short and snappy for local runners!)
+*   **Current Phase:** Target Phase 28 features Advanced Memory & Learning systems, proactive behaviors, and federated communication foundations.
 
-## Acknowledgements
+## 🤝 Contributing & License
+Contributions are absolutely welcome! Please follow standard fork-and-pull-request procedures and adhere strictly to our `helperfiles/DEVELOPMENT_RULES.md`. 
+This project is licensed under the **MIT License**.
 
-*   Inspired by AutoGen, CrewAI, and other multi-agent frameworks.
-*   Uses the powerful libraries FastAPI, Pydantic, SQLAlchemy, and the OpenAI Python client.
-*   Built with various LLMs like Google Gemini 2.5 Pro, Meta Llama 4, DeepSeek R1 and others.
-*   Special THANKS to Openrouter, Huggigface, and Google AI Studio
+## 🎉 Acknowledgements
+* Inspired by AutoGen, CrewAI, and other brilliant multi-agent frameworks.
+* Built with various amazing LLMs like Google Gemini, Meta Llama, DeepSeek, and more!
+* Special THANKS to OpenRouter, HuggingFace, Google AI Studio, and the incredible open-source local AI hardware running community! 
+
+---
+*Built with ❤️ and various LLMs guided by Gabby.*
 <!-- # IT IS CRITICAL THAT ALL AIs and LLMs FOLLOW THE DEVELOPMENT INSTRUCTIONS IN THE DEVELOPMENT_RULES.md FILE WHEN FURTER DEVELOPING THIS FRAMEWORK!!! -->

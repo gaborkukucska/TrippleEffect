@@ -7,6 +7,21 @@
 
 ## Recently Resolved Issues
 
+### +2. Shared Workspace Tree Context Explosion
+
+- **Severity:** Critical (75MB logs, 15-second cycles)
+- **Description:** When an agent initialized a Node.js project, the `[SHARED WORKSPACE TREE]` recursively mapped every sub-folder in `node_modules`. This bloated the LLM system prompt string with 30,000+ files, destroying context limits and grinding local models to a halt.
+- **Root Cause:** `PromptAssembler` used `os.walk` without pruning deep dependency paths or limiting total files.
+- **Fix:** (RESOLVED) Hard-capped the tree generation to `MAX_DEPTH = 4` and `MAX_FILES = 200`. Added an `EXCLUDE_DIRS` blacklist (`node_modules`, `.git`, `.venv`) to instantly prune traversal.
+- **Files:** `src/agents/cycle_components/prompt_assembler.py`
+
+### +1. PM Token Bloat on Unfiltered `list_tasks`
+
+- **Severity:** High (wasted context on delegated tasks)
+- **Description:** The PM often requested `list_tasks` without any filters, forcing the framework to dump the entire project's task matrix into the prompt, eating up thousands of tokens for tasks already being worked on.
+- **Fix:** (RESOLVED) Injected an overriding `assignee_filter="unassigned"` directly into `ProjectManagementTool.execute`. If the PM attempts a global search, it receives a targeted list of only unassigned tasks, forcing better efficiency.
+- **Files:** `src/tools/project_management.py`
+
 ### -16. Admin AI Passive Oversight Limitation
 - **Severity:** High (Admin AI functioned merely as a message relay)
 - **Description:** When users asked for project updates, the Admin AI passively messaged the Project Manager. Furthermore, it was explicitly banned from using management tools while a project was delegated, preventing it from detecting stalled projects or verifying success.
