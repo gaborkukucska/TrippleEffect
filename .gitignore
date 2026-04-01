@@ -16,8 +16,6 @@ __pycache__/
 venv/
 
 # other
-.task
-.task/
 tests/
 data/
 logs/
@@ -25,4 +23,4 @@ tests/
 projects/
 sandboxes/
 security/
-.task/
+.task/+
