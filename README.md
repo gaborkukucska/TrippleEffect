@@ -3,24 +3,94 @@
 
 **Version:** 2.43
 
-Welcome to **TrippleEffect**, an asynchronous, highly collaborative multi-agent framework designed to bring the liberating potential of AI to everyone—even on modest hardware! 📱✨
-
-My original aim for TrippleEffect was ambitious yet simple: **to create an agentic framework that enables small to medium-sized local LLMs to run efficiently.** We believe the true revolution of LLMs happens when anyone, even someone with just an old Android phone, can run a functioning agentic system 24/7 to help them with any digital task! 🌍💪
-
-By carefully managing context lengths, employing smart token-saving techniques, and utilizing advanced local provider auto-discovery, TrippleEffect makes this localized AI dream a reality.
+> **⚠️ EXPERIMENTAL SOFTWARE — R&D USE ONLY**
+>
+> TrippleEffect is an **experimental research framework** under active development.
+> It grants AI agents access to tools that can read, write, and execute on your system.
+>
+> 🔒 **Always install and run TrippleEffect inside an isolated virtual machine or container.**
+> Do not run it on a machine with sensitive data or production workloads.
+> You have been warned! 🧪
 
 ---
 
-## 🧩 Why "Tripple Effect"?
+Welcome to **TrippleEffect** — an asynchronous, multi-agent framework designed to bring the liberating potential of AI to **everyone**, even on modest hardware! 📱✨
 
-The framework was originally named for its powerful **three-layered architecture**:
+My original aim was ambitious yet simple: **create an agentic framework that enables small to medium-sized local LLMs to run efficiently** — even when their context windows are tiny and your GPU memory is tight. I believe the true revolution of LLMs happens when anyone, even someone with just an old Android phone, can run a functioning agentic system **24/7** to help them with any digital task! 🌍💪
 
-1. 👑 **Admin AI**: The Ultimate Orchestrator that interacts with you and initiates projects.
-2. 👔 **Project Managers (PMs)**: Dedicated agents that take your plans, break them down, and build specialized teams.
-3. 👷 **Worker Agents**: The specialized builders, coders, and researchers executing the sub-tasks.
+---
 
-But we didn't stop at three! We've since added a crucial **fourth layer**:
-4. 🛡️ **Constitutional Guardian (CG)**: A specialized oversight agent ensuring all actions and outputs align with your predefined governance principles.
+## 🧩 How It Works — The Secret Sauce
+
+### 🏗️ Four Layers of Intelligence
+
+TrippleEffect orchestrates AI agents through a layered hierarchy — each layer has a clear purpose, and the framework manages all communication between them:
+
+```text
+  ┌─────────────────────────────────────────────────┐
+  │                  🧑 YOU (Human)                  │
+  │          Chat naturally, approve plans           │
+  └──────────────────────┬──────────────────────────┘
+                         │
+                         ▼
+  ┌─────────────────────────────────────────────────┐
+  │            👑 ADMIN AI (Orchestrator)            │
+  │   Understands your goals · Creates projects     │
+  │   Audits progress · Reports back to you         │
+  └──────────────────────┬──────────────────────────┘
+                         │ delegates
+                         ▼
+  ┌─────────────────────────────────────────────────┐
+  │          👔 PROJECT MANAGER (PM Agent)           │
+  │   Decomposes plans · Builds teams · Assigns     │
+  │   tasks · Monitors workers · Runs audits        │
+  └───────┬──────────┬──────────┬───────────────────┘
+          │          │          │ activates
+          ▼          ▼          ▼
+  ┌──────────┐ ┌──────────┐ ┌──────────┐
+  │ 👷 W1    │ │ 👷 W2    │ │ 👷 W3    │  ...
+  │ Coder    │ │ Designer │ │ Researcher│
+  │ writes   │ │ builds   │ │ explores │
+  │ code     │ │ UI       │ │ the web  │
+  └──────────┘ └──────────┘ └──────────┘
+                         +
+  ┌─────────────────────────────────────────────────┐
+  │      🛡️ CONSTITUTIONAL GUARDIAN (Oversight)      │
+  │   Reviews every output · Enforces governance    │
+  │   Flags violations · Escalates to you           │
+  └─────────────────────────────────────────────────┘
+```
+
+### 🧠 Context Management — Doing More with Less
+
+The **#1 challenge** with local LLMs is limited context. TrippleEffect tackles this head-on:
+
+| Strategy | What It Does |
+| --- | --- |
+| 🔄 **State Machine Workflows** | Each agent follows a strict state graph (`startup` → `work` → `report` → `wait`). The framework injects *only* the prompts relevant to the current state, keeping context lean. |
+| 🌳 **Bounded Workspace Trees** | Agents see a pruned file tree of the shared workspace (max depth 4, max 200 files, `node_modules` excluded) — just enough awareness without the bloat. |
+| 📋 **Filtered Task Views** | When the PM lists tasks, the framework auto-filters to show only *unassigned* work — no dumping hundreds of already-delegated items into the prompt. |
+| 🗜️ **Auto Context Summarization** | When an agent's history grows too long, an LLM summarizes older messages while preserving critical anchors (tool results, state transitions). |
+| 📬 **Message Inboxing** | Messages between agents are queued and delivered only when the recipient enters a safe state — no context pollution mid-thought. |
+
+### 🔁 Assisted Workflows — The Framework Does the Heavy Lifting
+
+Agents don't just chat — the framework actively manages their lifecycle:
+
+* 🔄 **Auto-Reactivation** — Agents in persistent states (`pm_manage`, `pm_audit`, `worker_work`) are automatically re-scheduled after each cycle. No waiting, no stalling.
+* 🔁 **Duplicate Detection** — If an agent repeats the same tool call, the framework serves cached results and injects corrective guidance. After 3+ repeats, it force-advances the workflow.
+* 🛡️ **Loop Interception** — The `NextStepScheduler` monitors for autoregressive loops and can inject emergency overrides or force state transitions.
+* 🏥 **Health Monitoring** — The `AgentHealthMonitor` tracks cycle patterns. If an agent stalls, the Constitutional Guardian writes a diagnostic report and delivers it to the agent's supervisor.
+* 🔀 **Automatic Failover** — If a model or provider fails, the framework tries alternate local APIs, then alternate models, then external providers — all transparently.
+* 🧰 **Smart Error Recovery** — When a tool call fails, the error message includes the tool's own documentation so the agent can self-correct.
+
+### 🔑 Key Design Principles
+
+> 💡 **"Run anywhere, run always"** — Optimized for 4-bit quantized models on consumer GPUs
+>
+> 💡 **"Framework handles orchestration, LLMs handle thinking"** — Agents yield events; the framework decides what happens next
+>
+> 💡 **"No wasted tokens"** — Every system message, every tool result, every context injection is bounded and filtered
 
 ---
 
