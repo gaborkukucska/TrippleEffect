@@ -88,7 +88,7 @@ then
     INSTALL_CMD=""
 
     if [ "$OS_TYPE" == "termux" ]; then
-        INSTALL_CMD="pkg install task"
+        INSTALL_CMD="pkg install -y taskwarrior tzdata"
     elif [ "$OS_TYPE" == "linux" ]; then
         if command -v apt-get &> /dev/null; then
             INSTALL_CMD="sudo apt-get update && sudo apt-get install -y taskwarrior"
@@ -155,7 +155,7 @@ then
     echo "nmap not found. Attempting to install it automatically for local API discovery..."
     INSTALL_CMD=""
     if [ "$OS_TYPE" == "termux" ]; then
-        INSTALL_CMD="pkg install nmap"
+        INSTALL_CMD="pkg install -y nmap"
     elif [ "$OS_TYPE" == "linux" ]; then
         if command -v apt-get &> /dev/null; then
             INSTALL_CMD="sudo apt-get update && sudo apt-get install -y nmap"

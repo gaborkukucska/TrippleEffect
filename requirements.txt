@@ -22,3 +22,4 @@ tasklib # Added for Project Management Tool
 python-nmap # Added for nmap-based network discovery
 GitPython>=3.1.43 # Added for Git integration in FileSystemTool
 diff-match-patch>=20230430 # Added for Aider-style Search/Replace in FileSystemTool
+tzdata # Fallback timezone data for environments like Termux missing system zoneinfo
