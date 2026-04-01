@@ -152,21 +152,46 @@ class PromptAssembler:
         if not workspace_path.exists():
             return None
             
+        EXCLUDE_DIRS = {'.git', 'node_modules', '__pycache__', '.venv', 'venv', 'env', 'dist', 'build', '.idea', '.vscode'}
+        MAX_FILES = 200
+        MAX_DEPTH = 4
+        
         # Build tree string
         tree_lines = []
+        file_count = 0
+        
         for root, dirs, files in os.walk(workspace_path):
+            # Prune excluded directories from traversal
+            dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+            
             level = str(root).replace(str(workspace_path), '').count(os.sep)
+            
+            # Prune directories based on max depth
+            if level > MAX_DEPTH:
+                continue
+                
             indent = '  ' * level
             if level > 0:
                 tree_lines.append(f"{indent}|-- {os.path.basename(root)}/")
+                
             for f in files:
+                if file_count >= MAX_FILES:
+                    break
                 tree_lines.append(f"{indent}  |-- {f}")
+                file_count += 1
+                
+            if file_count >= MAX_FILES:
+                tree_lines.append(f"{indent}  |-- ... (Truncated: Maximum {MAX_FILES} files returned)")
+                break
                 
         if not tree_lines:
             return None
             
         tree_str = "\n".join(tree_lines)
-        return f"[SHARED WORKSPACE TREE (Current State)]\n{tree_str}\n(Note: This tree shows all files currently existing in the shared_workspace. Read them to avoid duplicating work.)"
+        return (f"[SHARED WORKSPACE TREE (Current State)]\n{tree_str}\n"
+                f"(Note: This tree shows core files currently existing in the shared_workspace. "
+                f"Read them to avoid duplicating work. Deep dependency directories like node_modules "
+                f"and .git are hidden for brevity.)")
 
 
     async def prepare_llm_call_data(self, context: 'CycleContext') -> None:
