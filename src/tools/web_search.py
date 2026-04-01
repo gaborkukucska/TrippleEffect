@@ -117,7 +117,16 @@ class WebSearchTool(BaseTool):
                 }
 
             logger.info(f"Agent {agent_id} retrieved {len(results)} search results from {source}")
-            return {"status": "success", "source": source, "results": results, "message": f"Found {len(results)} search results"}
+            
+            # Format results for the LLM agent context
+            formatted_text = f"Found {len(results)} search results from {source}:\n\n"
+            for i, res in enumerate(results, 1):
+                formatted_text += f"--- Result {i} ---\n"
+                formatted_text += f"Title: {res.get('title', 'N/A')}\n"
+                formatted_text += f"URL: {res.get('url', 'N/A')}\n"
+                formatted_text += f"Snippet: {res.get('snippet', 'N/A')}\n\n"
+                
+            return {"status": "success", "source": source, "results": results, "message": formatted_text.strip()}
             
         except Exception as e:
             logger.error(f"Web search execution error for agent {agent_id}: {e}", exc_info=True)
