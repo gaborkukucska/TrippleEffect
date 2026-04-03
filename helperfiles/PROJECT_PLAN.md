@@ -430,4 +430,22 @@ This entirely breaks the LLM's autoregressive death spiral by physically moving 
 **Files:** `src/agents/cycle_components/agent_health_monitor.py`, `src/agents/constants.py`, `src/agents/workflow_manager.py`, `src/agents/core.py`, `prompts.yaml`
 
 ---
+
+#### Phase Q: Orchestration Stability & Context Management (April 2026)
+
+**Problem 1 (send_message Multi-Tool Loops):** When agents used `send_message` alongside other tools, the rigorous multi-tool constraint blocked the message and returned an error, causing PMs and workers to repeatedly re-try the same multi-tool combo and stall.
+**Fix 1:** Modified `send_message` constraints to allow combinations with `request_state` (meaning an agent can send a report and transition in one turn). For invalid combos, the framework executes the other tools and returns an instructive error for the message tool. A circuit breaker was added to auto-execute `send_message` after 3 consecutive failures to break persistent loops.
+
+**Problem 2 (Message Context Bloat & Inbox Stagnation):** Agents had no mechanism to acknowledge messages. Consequently, messages stayed in their history indefinitely, polluting the context window and making new instructions hard to parse.
+**Fix 2:** Implemented a full Message Read/Acknowledgement System. Messages routed via `interaction_handler` are now tagged with a unique `message_id`. A new tool (`mark_message_read`) lets agents explicitly acknowledge receipt, which updates `agent.read_message_ids`. The `PromptAssembler` filters acknowledged messages from the LLM context, saving tokens while preserving the history array. Furthermore, the worker report state prompt was upgraded to verify whether the agent missed any unread messages before reporting to the PM.
+
+**Problem 3 (Failover Model Blind Spots):** The failover mechanism did not check if candidate fallback models supported native tool execution (e.g. models using Ollama's `{{ .Prompt }}` raw template). This led to cascading failures where the framework switched to incapable models, producing empty responses and causing CG interventions.
+**Fix 3:** Integrated a RAW template blacklist check into `_select_alternate_models()`.
+
+**Problem 4 (Endless CG Worker Corrections):** The Constitutional Guardian blocked stalled or looping workers indefinitely without notifying the PM, leading to silent project stalls. PMs assumed workers were actively progressing.
+**Fix 4:** Enforced an upper limit (3 interventions per 10 minutes) on CG blocks. Exceeding the limit forcefully halts the worker (moves to `worker_wait` state) and escalates a `[CRITICAL ESCALATION]` directly to the PM's message inbox.
+
+**Files:** `src/tools/mark_message_read.py`, `src/agents/core.py`, `src/agents/interaction_handler.py`, `src/agents/cycle_handler.py`, `src/agents/cycle_components/prompt_assembler.py`, `src/agents/cycle_components/agent_health_monitor.py`, `src/agents/failover_handler.py`
+
+---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

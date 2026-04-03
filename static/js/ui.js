@@ -7,6 +7,7 @@ import { escapeHTML, getCurrentTimestamp } from './utils.js';
 import * as config from './config.js';
 import * as DOM from './domElements.js'; // Import all exported elements
 import * as state from './state.js'; // Import state getter/setters
+import { scheduleSaveMessages } from './chatPersistence.js'; // Persist chat across refreshes
 
 /**
  * Displays a message in the specified message area (conversation or internal comms).
@@ -207,6 +208,9 @@ export const displayMessage = (text, type, targetAreaId, agentId = null, agentPe
             // console.debug(`User scrolled up in #${targetAreaId}, not auto-scrolling.`);
         }
 
+        // Persist messages to sessionStorage (debounced)
+        scheduleSaveMessages();
+
 
     } catch (error) {
         console.error(`UI Error in displayMessage (Target: ${targetAreaId}, Type: ${type}):`, error);
@@ -321,7 +325,7 @@ export const updateAgentStatusUI = () => {
             
             if (agent.team) {
                 if (!teams[agent.team]) teams[agent.team] = { pms: [], workers: [] };
-                if (agentId.toLowerCase().includes('pm') || (agent.persona && agent.persona.toLowerCase().includes('manager'))) {
+                if (agent.agent_type === 'pm') {
                      teams[agent.team].pms.push(agentId);
                 } else {
                      teams[agent.team].workers.push(agentId);

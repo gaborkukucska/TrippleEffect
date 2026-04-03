@@ -118,6 +118,8 @@ class Agent:
         self._pre_report_check_state: Optional[str] = None # Tracks previous state before auto-switching to report check
         self.message_inbox: List[MessageDict] = [] # Inbox for messages received while busy
         self.unassigned_tasks_summary: List[Dict[str, Any]] = []
+        self.read_message_ids: set = set() # Track read messages
+        self.active_task_id: Optional[str] = None # Currently active task UUID for UI tracking
 
         # PM kickoff workflow attributes
         self.kick_off_roles: List[str] = []
@@ -348,6 +350,7 @@ class Agent:
                             logger.info(f"Agent {self.agent_id}: Detected valid state request tag for '{requested_state}': {state_request_tag}")
                             
                             task_description_for_work_state = None
+                            task_id_from_tag = state_match.group(2) if state_match.lastindex and state_match.lastindex >= 2 else None
                             # If transitioning to 'work' state, capture the preceding text as the task.
                             if requested_state == ADMIN_STATE_WORK:
                                 task_description_for_work_state = remaining_text_after_processing_tags.split(state_request_tag)[0].strip()
@@ -357,7 +360,8 @@ class Agent:
                                 "type": "agent_state_change_requested",
                                 "requested_state": requested_state,
                                 "agent_id": self.agent_id,
-                                "task_description": task_description_for_work_state
+                                "task_description": task_description_for_work_state,
+                                "task_id": task_id_from_tag
                             }
 
                             if cleaned_for_state_regex == state_request_tag: # If the *entire cleaned output* was the state request

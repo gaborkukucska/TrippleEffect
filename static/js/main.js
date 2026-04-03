@@ -10,6 +10,7 @@ import * as ws from './websocket.js'; // Import WebSocket connection logic
 import * as handlers from './handlers.js'; // Import all handlers
 // --- API Import (Modified) ---
 import { approveProject } from './api.js'; // Import specific function
+import { restoreMessages } from './chatPersistence.js'; // Restore chat on refresh
 
 /**
  * Sets up primary event listeners after DOM elements are assigned.
@@ -165,6 +166,7 @@ const initializeApp = () => {
     console.log("Main: Event listener setup function executed."); // Log 5: After Setup
 
     ui.switchView('chat-view'); // Set the initial view using the UI module
+    restoreMessages(); // Restore chat and internal comms from sessionStorage
     ws.connectWebSocket(); // Start WebSocket connection using the WS module
 
 

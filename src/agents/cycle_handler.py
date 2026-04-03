@@ -67,6 +67,39 @@ class AgentCycleHandler:
         self._tool_execution_stats: Dict[str, int] = {"total_calls": 0, "successful_calls": 0, "failed_calls": 0}
         logger.info("AgentCycleHandler initialized with enhanced tool execution monitoring, XML validation, context summarization, and agent health monitoring.")
 
+    def _handle_worker_task_tracking(self, agent: 'Agent', requested_state: str, task_id: Optional[str] = None) -> None:
+        """
+        When a worker transitions to worker_work with a task_id, automatically:
+        1. Set agent.active_task_id so the UI can display it.
+        2. Update the Taskwarrior database to mark the task as 'in_progress'.
+        """
+        if not task_id or agent.agent_type != AGENT_TYPE_WORKER:
+            return
+        resolved = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state)
+        if resolved != WORKER_STATE_WORK:
+            return
+
+        agent.active_task_id = task_id
+        logger.info(f"CycleHandler: Worker '{agent.agent_id}' set active_task_id='{task_id}' for work state transition.")
+
+        # Auto-update Taskwarrior progress to in_progress
+        try:
+            if self._manager.current_project and self._manager.current_session:
+                from src.tools.project_management import ProjectManagementTool, TASKLIB_AVAILABLE
+                if TASKLIB_AVAILABLE:
+                    pm_tool = ProjectManagementTool()
+                    tw = pm_tool._get_taskwarrior_instance(self._manager.current_project, self._manager.current_session)
+                    if tw:
+                        try:
+                            task = tw.tasks.get(uuid=task_id)
+                            task['task_progress'] = 'in_progress'
+                            task.save()
+                            logger.info(f"CycleHandler: Auto-updated task '{task_id}' to 'in_progress' for worker '{agent.agent_id}'.")
+                        except Exception as tw_err:
+                            logger.warning(f"CycleHandler: Failed to auto-update task '{task_id}': {tw_err}")
+        except Exception as e:
+            logger.warning(f"CycleHandler: Error auto-updating task '{task_id}' to in_progress: {e}")
+
     def _report_tool_execution_stats(self):
         """Report current tool execution statistics"""
         if self._tool_execution_stats["total_calls"] > 0:
@@ -952,6 +985,11 @@ class AgentCycleHandler:
                         context.state_change_requested_this_cycle = True
                         requested_state = event.get("requested_state")
                         task_description = event.get("task_description")
+                        event_task_id = event.get("task_id")
+
+                        # Auto-track worker task when transitioning to work state
+                        if event_task_id:
+                            self._handle_worker_task_tracking(agent, requested_state, event_task_id)
 
                         # Record the agent's action in its history so it knows it made the request
                         agent.message_history.append({
@@ -1061,6 +1099,7 @@ class AgentCycleHandler:
                         # Variables to hold state change info until tools finish executing
                         deferred_state_change = None
                         deferred_task_desc = None
+                        deferred_task_id = None  # task_id from <request_state> tag
 
                         # CRITICAL FIX: Check if the raw response also contains a state change request
                         # This handles the case where agent produces both state change + tool calls in same response
@@ -1068,6 +1107,7 @@ class AgentCycleHandler:
                             state_match = self.request_state_pattern.search(raw_assistant_response)
                             if state_match:
                                 requested_state = state_match.group(1)
+                                embedded_task_id = state_match.group(2) if state_match.lastindex and state_match.lastindex >= 2 else None
                                 # Resolve alias to canonical state name
                                 requested_state = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state)
                                 if self._manager.workflow_manager.is_valid_state(agent.agent_type, requested_state):
@@ -1116,6 +1156,7 @@ class AgentCycleHandler:
 
                                     deferred_state_change = requested_state
                                     deferred_task_desc = task_description_for_state_change
+                                    deferred_task_id = embedded_task_id  # Pass task_id through for deferred handling
 
                         # Construct and append the assistant message for history
                         # Construct and append the assistant message for history
@@ -1395,16 +1436,48 @@ class AgentCycleHandler:
                                     "name": tool_name
                                 }
                             elif any(t.get("name") != "send_message" for t in tool_calls) and tool_name == "send_message":
-                                logger.warning(f"Agent {agent.agent_id} attempted to use send_message alongside other tools. Blocking send_message.")
-                                error_msg = "ERROR: You cannot use the 'send_message' tool in the same response as other tools. You must use it on its own AFTER reviewing the feedback from your other tool calls."
-                                result_dict = {
-                                    "status": "error",
-                                    "message": error_msg,
-                                    "content": error_msg,
-                                    "call_id": tool_id or f"unknown_id_{i}",
-                                    "name": tool_name
-                                }
+                                # Check if the ONLY other activity is a state change (deferred_state_change).
+                                # If send_message is paired with a state change and NO other tool calls, allow both.
+                                non_send_message_tools = [t for t in deduplicated_tool_calls if t.get("name") != "send_message"]
+                                has_only_state_change_companion = (len(non_send_message_tools) == 0 and deferred_state_change is not None)
+                                
+                                if has_only_state_change_companion:
+                                    # State change + send_message is allowed — execute send_message normally
+                                    logger.info(f"Agent {agent.agent_id}: send_message paired with state change '{deferred_state_change}' — allowing both.")
+                                    result_dict = await self._interaction_handler.execute_single_tool(agent, tool_id, tool_name, tool_args, self._manager.current_project, self._manager.current_session)
+                                else:
+                                    # send_message paired with actual tools — block send_message, other tools execute normally
+                                    other_tool_names = [t.get("name") for t in non_send_message_tools]
+                                    logger.warning(f"Agent {agent.agent_id} attempted to use send_message alongside {other_tool_names}. Blocking send_message only.")
+                                    
+                                    # Track consecutive occurrences for circuit breaker
+                                    if not hasattr(agent, '_send_msg_multi_tool_error_count'):
+                                        agent._send_msg_multi_tool_error_count = 0
+                                    agent._send_msg_multi_tool_error_count += 1
+                                    
+                                    # Circuit breaker: after 3 consecutive multi-tool errors, auto-execute the send_message
+                                    if agent._send_msg_multi_tool_error_count >= 3:
+                                        logger.warning(f"Agent {agent.agent_id}: send_message multi-tool circuit breaker triggered "
+                                                      f"({agent._send_msg_multi_tool_error_count} consecutive). Auto-executing send_message.")
+                                        result_dict = await self._interaction_handler.execute_single_tool(agent, tool_id, tool_name, tool_args, self._manager.current_project, self._manager.current_session)
+                                        agent._send_msg_multi_tool_error_count = 0  # Reset after auto-execute
+                                    else:
+                                        error_msg = (
+                                            f"ERROR: Your other tool call(s) ({', '.join(other_tool_names)}) were executed successfully. "
+                                            f"However, 'send_message' was NOT sent because it must be used on its own. "
+                                            f"In your NEXT response, send ONLY the send_message call — do NOT repeat your other tool calls."
+                                        )
+                                        result_dict = {
+                                            "status": "error",
+                                            "message": error_msg,
+                                            "content": error_msg,
+                                            "call_id": tool_id or f"unknown_id_{i}",
+                                            "name": tool_name
+                                        }
                             else:
+                                # Reset circuit breaker on normal execution
+                                if hasattr(agent, '_send_msg_multi_tool_error_count'):
+                                    agent._send_msg_multi_tool_error_count = 0
                                 result_dict = await self._interaction_handler.execute_single_tool(agent, tool_id, tool_name, tool_args, self._manager.current_project, self._manager.current_session)
                             # --- END SEND_MESSAGE MULTI-TOOL CONSTRAINT ---
                             
@@ -1433,6 +1506,11 @@ class AgentCycleHandler:
 
                                 if tool_was_successful:
                                     any_tool_success = True
+                                    if tool_name == "mark_message_read":
+                                        msg_id = tool_args.get("message_id")
+                                        if msg_id:
+                                            agent.read_message_ids.add(msg_id)
+                                            logger.info(f"CycleHandler: Marked message {msg_id} as read for agent {agent.agent_id}")
                                 # ... (db log tool result, UI send) ...
                                 if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="tool", content=result_content_str, tool_results=[result_dict])
                                 await self._manager.send_to_ui({**result_dict, "type": "tool_result", "agent_id": agent.agent_id, "tool_sequence": f"{i+1}_of_{len(tool_calls)}"})
@@ -1856,6 +1934,9 @@ class AgentCycleHandler:
                         # This prevents the state change from altering the agent's state before 
                         # tools that depend on the original state (like send_message in worker_report) can run.
                         if deferred_state_change:
+                            # Auto-track worker task when transitioning to work state
+                            if deferred_task_id:
+                                self._handle_worker_task_tracking(agent, deferred_state_change, deferred_task_id)
                             if self._manager.workflow_manager.change_state(agent, deferred_state_change, task_description=deferred_task_desc):
                                 logger.info(f"CycleHandler: Successfully changed agent '{agent.agent_id}' state to '{deferred_state_change}' after tool processing")
                                 

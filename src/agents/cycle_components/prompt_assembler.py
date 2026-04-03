@@ -4,7 +4,7 @@ import json
 from typing import TYPE_CHECKING, List, Optional
 
 from src.llm_providers.base import MessageDict
-from src.agents.constants import BOOTSTRAP_AGENT_ID
+from src.agents.constants import BOOTSTRAP_AGENT_ID, AGENT_TYPE_WORKER, AGENT_TYPE_PM, WORKER_STATE_REPORT, WORKER_STATE_WORK, WORKER_STATE_WAIT
 from src.config.settings import settings
 
 if TYPE_CHECKING:
@@ -193,6 +193,52 @@ class PromptAssembler:
                 f"Read them to avoid duplicating work. Deep dependency directories like node_modules "
                 f"and .git are hidden for brevity.)")
 
+    def _generate_worker_tasks_report(self, agent: 'Agent') -> Optional[str]:
+        """
+        Generates a concise report of tasks assigned to this worker agent.
+        This ensures the worker always knows its task UUIDs for state transitions.
+        """
+        if not self._manager.current_project or not self._manager.current_session:
+            return None
+
+        try:
+            from src.tools.project_management import ProjectManagementTool, TASKLIB_AVAILABLE
+            if not TASKLIB_AVAILABLE:
+                return None
+
+            pm_tool = ProjectManagementTool()
+            tw = pm_tool._get_taskwarrior_instance(self._manager.current_project, self._manager.current_session)
+            if not tw:
+                return None
+
+            # Query tasks assigned to this specific worker
+            tasks = tw.tasks.filter(assignee=agent.agent_id, status='pending')
+            task_list = list(tasks)
+
+            if not task_list:
+                return None
+
+            # Format the report
+            lines = [f"[YOUR ASSIGNED TASKS - {len(task_list)} task(s)]"]
+            active_task_id = getattr(agent, 'active_task_id', None)
+            for task in task_list:
+                uuid = task['uuid']
+                desc = task['description'] or 'No description'
+                progress = task.get('task_progress') or 'todo'
+                truncated_desc = (desc[:80] + '...') if len(desc) > 80 else desc
+                active_marker = " ◄ ACTIVE" if active_task_id and str(uuid) == str(active_task_id) else ""
+                lines.append(f"  - [{progress}] {truncated_desc} (task_id: {uuid}){active_marker}")
+
+            lines.append("")
+            lines.append("[IMPORTANT] When transitioning to work state, you MUST specify the task_id:")
+            lines.append("  <request_state state='worker_work' task_id='PASTE_UUID_HERE'/>")
+
+            return "\n".join(lines)
+
+        except Exception as e:
+            logger.warning(f"PromptAssembler: Failed to generate worker tasks report for '{agent.agent_id}': {e}")
+            return None
+
 
     async def prepare_llm_call_data(self, context: 'CycleContext') -> None:
         """
@@ -240,6 +286,16 @@ class PromptAssembler:
             if needs_new_context:
                 agent._needs_initial_work_context = False
 
+        # 1.5 Filter read messages from history
+        if getattr(agent, 'read_message_ids', None):
+            filtered_history = []
+            for msg in agent.message_history:
+                if msg.get("message_id") and msg.get("message_id") in agent.read_message_ids:
+                    logger.debug(f"PromptAssembler '{agent.agent_id}': Filtering out read message {msg.get('message_id')}")
+                    continue
+                filtered_history.append(msg)
+            agent.message_history = filtered_history
+
         # 2. Prepare History for LLM Call
         history_for_call = agent.message_history.copy() # Start with agent's current history
         logger.debug(f"PromptAssembler '{agent.agent_id}': Raw agent.message_history (len {len(agent.message_history)}) before modifications: {json.dumps(agent.message_history, indent=2)}")
@@ -282,7 +338,55 @@ class PromptAssembler:
                 else:
                     history_for_call.append(tree_msg)
                 logger.debug(f"Injected shared_workspace tree report for {agent.agent_type} '{agent.agent_id}'.")
-        
+
+        # 3.55 Inject Worker Assigned Tasks Report (Worker only)
+        if hasattr(agent, 'agent_type') and agent.agent_type == AGENT_TYPE_WORKER:
+            worker_tasks_report = self._generate_worker_tasks_report(agent)
+            if worker_tasks_report:
+                tasks_msg: MessageDict = {"role": "system", "content": worker_tasks_report}
+                # Insert after system prompt (and workspace tree if present)
+                insert_pos = min(2, len(history_for_call))
+                history_for_call.insert(insert_pos, tasks_msg)
+                logger.debug(f"Injected assigned tasks report for worker '{agent.agent_id}'.")
+
+        # 3.6 Inject Message Read/Ack instructions (Workers and PMs)
+        if hasattr(agent, 'agent_type') and agent.agent_type in [AGENT_TYPE_WORKER, AGENT_TYPE_PM]:
+            # Count unread messages in history
+            unread_messages = []
+            for msg in history_for_call:
+                msg_id = msg.get("message_id")
+                if msg_id and msg_id not in getattr(agent, 'read_message_ids', set()):
+                    unread_messages.append(msg_id)
+
+            if unread_messages:
+                read_instruction = (
+                    f"[MESSAGE ACKNOWLEDGEMENT SYSTEM]\n"
+                    f"You have {len(unread_messages)} unread message(s). After reading and understanding each message, "
+                    f"acknowledge it by calling: <mark_message_read><message_id>MSG_ID</message_id></mark_message_read>\n"
+                    f"Unread message IDs: {', '.join(unread_messages[:5])}\n"
+                    f"This will filter the message from your future context to save space. "
+                    f"Do NOT mark a message as read until you have fully understood and acted on it."
+                )
+                read_msg: MessageDict = {"role": "system", "content": read_instruction}
+                # Insert after system prompt position
+                insert_pos = min(2, len(history_for_call))
+                history_for_call.insert(insert_pos, read_msg)
+                logger.debug(f"Injected mark_message_read instructions for {agent.agent_type} '{agent.agent_id}' with {len(unread_messages)} unread messages.")
+
+            # 3.7 Report-state safety check: remind worker of unread messages before reporting
+            if agent.agent_type == AGENT_TYPE_WORKER and agent.state == WORKER_STATE_REPORT and unread_messages:
+                safety_msg = (
+                    f"[REPORT SAFETY CHECK - IMPORTANT]\n"
+                    f"Before sending your report, verify you have addressed ALL unread messages.\n"
+                    f"You have {len(unread_messages)} unread message(s) that may contain instructions you haven't acted on yet.\n"
+                    f"Unread IDs: {', '.join(unread_messages[:5])}\n"
+                    f"Compare these against your completed sub-tasks to ensure nothing was missed.\n"
+                    f"If you find a missed instruction, switch back to worker_work to address it before reporting."
+                )
+                safety_system_msg: MessageDict = {"role": "system", "content": safety_msg}
+                history_for_call.append(safety_system_msg)
+                logger.info(f"Injected report safety check for worker '{agent.agent_id}' with {len(unread_messages)} unread messages.")
+
         context.history_for_call = history_for_call
 
         # 4. Log the history being sent to the LLM

@@ -36,6 +36,23 @@ logger = logging.getLogger(__name__)
 # Persists for the lifetime of the process to avoid repeated failures.
 _models_without_tool_support: Set[tuple] = set()
 
+# RAW template patterns that indicate the model has no proper chat template 
+# and therefore likely cannot support tool calling
+_RAW_TEMPLATE_PATTERNS = frozenset({
+    '{{ .Prompt }}',
+    '{{ .Response }}',
+    '{{ .System }}{{ .Prompt }}',
+})
+
+def _is_model_raw_template(model_id: str) -> bool:
+    """Check if a model has a RAW template in the registry, indicating no tool support."""
+    model_info = model_registry.get_model_info(model_id)
+    if model_info:
+        template = model_info.get("model_template")
+        if template and template.strip() in _RAW_TEMPLATE_PATTERNS:
+            return True
+    return False
+
 # Define provider-level errors (connection, timeout, etc.)
 PROVIDER_LEVEL_ERRORS = (
     aiohttp.ClientConnectorError,
@@ -108,6 +125,11 @@ async def _select_alternate_models(
             continue
         if (provider, model_id) in _models_without_tool_support:
             logger.debug(f"Skipping '{model_id}' for alternates: known to lack tool support.")
+            continue
+        # Pre-filter models with RAW templates (they can't do tool calling)
+        if _is_model_raw_template(model_id):
+            logger.info(f"Skipping '{model_id}' for alternates: has RAW template (no tool support). Blacklisting.")
+            _models_without_tool_support.add((provider, model_id))
             continue
             
         # Heuristic check: filter out models that are obviously vision/ocr/embedding models if tools are needed
@@ -588,6 +610,12 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
                 # Check tool support blacklist
                 if (local_provider, local_model_id_to_try) in _models_without_tool_support:
                     logger.info(f"Failover: Skipping '{local_model_id_to_try}' on '{local_provider}': blacklisted (no tool support).")
+                    failover_state["tried_models_per_local_provider"][local_provider].add(local_model_id_to_try)
+                    continue
+                # Pre-filter models with RAW templates (they can't do tool calling)
+                if _is_model_raw_template(local_model_id_to_try):
+                    logger.info(f"Failover: Skipping '{local_model_id_to_try}' on '{local_provider}': has RAW template (no tool support). Blacklisting.")
+                    _models_without_tool_support.add((local_provider, local_model_id_to_try))
                     failover_state["tried_models_per_local_provider"][local_provider].add(local_model_id_to_try)
                     continue
 

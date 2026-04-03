@@ -1,11 +1,70 @@
 # TrippleEffect - Current Issues
 
-**Last Updated:** 2026-03-26
-**Based on log:** `app_20260326_174455_1570101.log` and prior runs
+**Last Updated:** 2026-04-03
+**Based on log:** `app_20260326_174455_1570101.log` and prior runs + stability session 2026-04-03
 
 ---
 
 ## Recently Resolved Issues
+
+### +8. Message Read/Acknowledgement System (BUG-2)
+
+- **Severity:** High (stale context accumulation, missed instructions)
+- **Description:** Agents had no way to acknowledge received messages, leading to stale messages persisting in the context window across cycles. Workers could also miss critical PM instructions buried in old history.
+- **Root Cause:** No message lifecycle tracking — once delivered, messages stayed in history indefinitely.
+- **Fix:** (RESOLVED) Implemented a complete message read/ack pipeline:
+  1. `mark_message_read` tool created for explicit agent acknowledgement.
+  2. Unique `message_id` injected into every routed message via `interaction_handler.py`.
+  3. `Agent.read_message_ids` set tracks acknowledged messages in `core.py`.
+  4. `cycle_handler.py` updates the set when `mark_message_read` tool succeeds.
+  5. `prompt_assembler.py` filters read messages from history before LLM call.
+  6. `prompt_assembler.py` injects ack instructions for agents with unread messages.
+  7. Report-state safety check warns workers of unread messages before they report to PM.
+- **Files:** `src/tools/mark_message_read.py` (NEW), `src/agents/core.py`, `src/agents/interaction_handler.py`, `src/agents/cycle_handler.py`, `src/agents/cycle_components/prompt_assembler.py`
+
+### +7. CG Intervention Upper Limit & PM Escalation (BUG-4)
+
+- **Severity:** High (workers looping indefinitely under CG corrections)
+- **Description:** Constitutional Guardian interventions lacked actionable feedback for workers and didn't notify supervisors. Workers could loop forever under CG corrections without the PM being aware.
+- **Root Cause:** CG guidance was generic, and no escalation path existed for repeated interventions.
+- **Fix:** (RESOLVED)
+  1. Upper limit: After 3 CG interventions in 10 minutes, workers are forced to `worker_wait`.
+  2. PM escalation: PM receives a `🚨 CRITICAL ESCALATION` message via `interaction_handler`.
+  3. Worker-specific empty response guidance now includes concrete tool examples and XML state transitions.
+  4. UI notification broadcast for `forced_wait_state` events.
+- **Files:** `src/agents/cycle_components/agent_health_monitor.py`
+
+### +6. Stuck Worker State Progression Guidance (BUG-5)
+
+- **Severity:** Moderate (workers stuck in `worker_work` received vague guidance)
+- **Description:** Workers stuck in `worker_work` received generic guidance without concrete state transition instructions, causing them to remain stuck.
+- **Fix:** (RESOLVED) Added explicit `<request_state state='worker_report'/>` and `<request_state state='worker_wait'/>` XML examples to CG state progression guidance, giving workers three clear options: report to PM, wait, or take concrete action with a tool.
+- **Files:** `src/agents/cycle_components/agent_health_monitor.py`
+
+### +5. PM send_message Multi-Tool Loop (BUG-1)
+
+- **Severity:** High (infinite retry loop)
+- **Description:** When the PM used `send_message` alongside other tools, the framework blocked the message entirely, causing infinite retry loops. The PM would re-attempt the same multi-tool combination indefinitely.
+- **Root Cause:** The multi-tool constraint treated all `send_message` combos equally without considering that `send_message` + state change is a valid and common pattern (e.g., reporting then transitioning).
+- **Fix:** (RESOLVED)
+  1. `send_message` + `request_state` combos are now permitted (both execute).
+  2. Other multi-tool combos: non-message tools execute, `send_message` returns an instructive error.
+  3. Circuit breaker: After 3 consecutive multi-tool errors, the framework auto-executes `send_message`.
+- **Files:** `src/agents/cycle_handler.py`
+
+### +4. Failover Model Pre-Filtering for Tool Support (BUG-3)
+
+- **Severity:** Moderate (failover selected models that couldn't handle tools)
+- **Description:** Failover selected models with RAW templates (`{{ .Prompt }}`) that lack tool-calling support, causing cascading failures when agents needed tools.
+- **Fix:** (RESOLVED) Added blacklist check for models whose Ollama templates contain `{{ .Prompt }}` (RAW indicator). These are excluded from failover candidate lists before selection.
+- **Files:** `src/agents/failover_handler.py`
+
+### +3. Invalid Action Alias `update_project_status` (BUG-6)
+
+- **Severity:** Low (tool execution failure, agent self-corrects)
+- **Description:** LLMs generated `update_project_status` instead of the valid `modify_task` action, causing tool execution failure.
+- **Fix:** (RESOLVED) Added `"update_project_status": "modify_task"` to the alias mapping dictionary in `project_management.py`.
+- **Files:** `src/tools/project_management.py`
 
 ### +2. Shared Workspace Tree Context Explosion
 

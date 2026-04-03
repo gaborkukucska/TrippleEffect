@@ -4,6 +4,7 @@ from typing import List, Dict, Optional, Any
 import json
 import asyncio # Import asyncio for create_task
 import logging # Added logging
+import uuid # Added for instance identification
 
 # Import AgentManager for type hinting (optional but good practice)
 # Use a forward reference string if AgentManager imports this module to avoid circular imports
@@ -18,6 +19,9 @@ router = APIRouter()
 
 # In-memory storage for active WebSocket connections
 active_connections: List[WebSocket] = []
+
+# Generate a unique backend instance ID for each server restart
+backend_instance_id = str(uuid.uuid4())
 
 # Module-level variable to hold the AgentManager instance
 # This will be set by the main application startup logic
@@ -74,7 +78,11 @@ async def websocket_endpoint(websocket: WebSocket):
 
     # Send initial connection confirmation
     try:
-        await websocket.send_text(json.dumps({"type": "status", "message": "Connected to TrippleEffect backend!"}))
+        await websocket.send_text(json.dumps({
+            "type": "status", 
+            "message": "Connected to TrippleEffect backend!",
+            "backend_instance_id": backend_instance_id
+            }))
     except Exception as e:
         logger.error(f"Error sending initial status to {client_host}: {e}") # Changed print to logger
         active_connections.remove(websocket) # Remove if initial send fails

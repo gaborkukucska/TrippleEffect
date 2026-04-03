@@ -305,8 +305,14 @@ class AgentInteractionHandler:
             logger.warning(f"InteractionHandler: {error_msg}")
             return {"status": "error", "message": f"[Manager Feedback for SendMessage]: {error_msg}"}, None
 
-        formatted_message: MessageDict = { "role": "user", "content": f"[From @{sender_id} ({sender_agent.persona})]: {message_content}" }; # Added sender persona
-        
+        import time
+        message_id = f"msg_{int(time.time() * 1000)}_{sender_id}"
+        formatted_message: MessageDict = { 
+            "role": "user", 
+            "content": f"[MESSAGE_ID: {message_id}] [From @{sender_id} ({sender_agent.persona})]: {message_content}"
+        }
+        # Attach the ID as metadata to the message dict for programmatic access
+        formatted_message["message_id"] = message_id
         # --- NEW DELIVERY LOGIC (PHASE W) ---
         from src.agents.constants import WORKER_STATE_WAIT, PM_STATE_STANDBY, PM_STATE_REPORT_CHECK, ADMIN_STATE_STANDBY, ADMIN_STATE_CONVERSATION
         safe_states = [WORKER_STATE_WAIT, PM_STATE_STANDBY, ADMIN_STATE_STANDBY, ADMIN_STATE_CONVERSATION]

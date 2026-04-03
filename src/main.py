@@ -158,7 +158,12 @@ async def lifespan(app: FastAPI):
     # 1. Cleanup Agent Manager (saves metrics, quarantine, ends DB session)
     if app.state.agent_manager:
         try:
-            await app.state.agent_manager.cleanup_providers()
+            manager = app.state.agent_manager
+            if manager.current_project and manager.current_session:
+                logger.info(f"Saving active session before shutdown: {manager.current_project}/{manager.current_session}")
+                await manager.save_session(manager.current_project, manager.current_session)
+                
+            await manager.cleanup_providers()
             logger.info("Lifespan: Agent Manager cleanup finished (providers, metrics, quarantine, DB session ended).")
         except Exception as e:
             logger.error(f"Lifespan: Error during AgentManager cleanup: {e}", exc_info=True)

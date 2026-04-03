@@ -5,6 +5,7 @@ import asyncio
 import time
 from typing import Dict, List, Optional, TYPE_CHECKING, Tuple, Any
 import re
+import json
 import importlib
 import inspect
 from pathlib import Path
@@ -24,6 +25,7 @@ from src.config.settings import settings, BASE_DIR
 from src.workflows.base import BaseWorkflow, WorkflowResult
 from src.workflows.project_creation_workflow import ProjectCreationWorkflow
 from src.workflows.pm_kickoff_workflow import PMKickoffWorkflow
+from src.api.websocket_manager import broadcast
 
 
 if TYPE_CHECKING:
@@ -289,6 +291,27 @@ class AgentWorkflowManager:
                                             subtasks = tw.tasks.filter(depends=main_task)
                                             if len(subtasks) == 0:
                                                 valid_transition = False
+                                            else:
+                                                # New auto-completion of the decomposed "kick-off" / parent task
+                                                try:
+                                                    main_task['task_progress'] = "decomposed"
+                                                    main_task.save()
+                                                    asyncio.create_task(broadcast(json.dumps({"type": "project_tasks_updated", "project_name": agent_proj, "session_name": agent_session})))
+                                                    logger.info(f"WorkflowManager: Auto-marked decomposed parent task '{main_task.get('uuid')}' as decomposed for agent '{agent.agent_id}'.")
+                                                    
+                                                    # Provide feedback to the worker that this happened automatically
+                                                    auto_complete_msg = (
+                                                        f"[Framework Note] Since you successfully created sub-tasks for task '{agent.current_task_id}', "
+                                                        f"the system has automatically marked the original parent task as 'decomposed'. "
+                                                        f"You can now focus on executing the newly created sub-tasks."
+                                                    )
+                                                    if not hasattr(agent, 'message_history'):
+                                                        agent.message_history = []
+                                                    agent.message_history.append({"role": "system", "content": auto_complete_msg})
+                                                except Exception as e:
+                                                    # Ignore if already completed to avoid crashing
+                                                    if "completed" not in str(e).lower() and "Cannot complete a completed task" not in str(e):
+                                                        logger.error(f"WorkflowManager: Failed to auto-complete decomposed task '{main_task.get('uuid')}': {e}")
                                         else:
                                             logger.warning(f"WorkflowManager: Could not retrieve task '{task_id_str}' for validation. Proceeding without sub-task validation.")
                                     except Exception as e:

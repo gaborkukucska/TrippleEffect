@@ -111,6 +111,8 @@ class ProjectManagementTool(BaseTool):
             return "waiting", "waiting"
         elif progress_norm in ["stuck", "failed", "error", "issue"]:
             return "stuck", "pending"  # Still pending structurally, just stuck temporally
+        elif progress_norm in ["decomposed", "broken_down", "split"]:
+            return "decomposed", "pending"
         elif progress_norm in ["finished", "done", "completed", "complete", "closed"]:
             return "finished", "completed"
         elif progress_norm in ["deleted", "cancelled", "canceled", "dropped"]:
@@ -150,6 +152,7 @@ class ProjectManagementTool(BaseTool):
             "show": "list_tasks",
             "show_tasks": "list_tasks",
             "get_tasks": "list_tasks",
+            "update_project_status": "modify_task",
             "update_task_status": "modify_task",
             "update_status": "modify_task",
             "update_task": "modify_task",
@@ -467,13 +470,26 @@ class ProjectManagementTool(BaseTool):
                         raw_tags = [str(t).strip() for t in tags_arg if t]
                     else:
                         raw_tags = [str(tags_arg).strip()]
-                    sanitized = []
+                    current_tags = task['tags'] if task['tags'] else set()
+                    if isinstance(current_tags, list):
+                        current_tags = set(current_tags)
+                    elif isinstance(current_tags, set):
+                        current_tags = current_tags.copy()
+                        
                     for t in raw_tags:
-                        t = t.strip().lstrip('+-').strip()
-                        t = t.strip('"\'\'').strip('[]').strip()
-                        if t:
-                            sanitized.append(t)
-                    task['tags'] = set(sanitized)
+                        t = t.strip()
+                        is_remove = t.startswith('-')
+                        t_clean = t.lstrip('+-').strip()
+                        t_clean = t_clean.strip('"\'\'').strip('[]').strip()
+                        if not t_clean:
+                            continue
+                            
+                        if is_remove:
+                            if t_clean in current_tags:
+                                current_tags.remove(t_clean)
+                        else:
+                            current_tags.add(t_clean)
+                    task['tags'] = set(current_tags)
                     modified_fields.append("tags")
                 
                 assignee_arg = kwargs.get("assignee_agent_id") or kwargs.get("assignee")
@@ -482,7 +498,7 @@ class ProjectManagementTool(BaseTool):
                     if task['assignee'] == new_assignee:
                         # Silently accept redundant assignment to prevent LLM retry loops
                         pass
-                    elif task['status'] == 'pending' and task['assignee'] and task['assignee'] != agent_id and not agent_id.startswith("admin"):
+                    elif task['status'] == 'pending' and task['assignee'] and task['assignee'] != agent_id and not agent_id.startswith("admin") and not agent_id.startswith("PM"):
                         return {"status": "error", "message": f"Task '{task_id}' is already 'pending' and actively assigned to '{task['assignee']}'. Reassigning active tasks owned by others is blocked to prevent disruption. Only the assignee can hand it off, or its status must first be changed to 'waiting'."}
                     else:
                         task['assignee'] = new_assignee

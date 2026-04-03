@@ -15,7 +15,7 @@ from src.agents.constants import (
     AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER,
     ADMIN_STATE_CONVERSATION, ADMIN_STATE_WORK, ADMIN_STATE_PLANNING,
     PM_STATE_MANAGE, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS,
-    WORKER_STATE_WORK, CONSTITUTIONAL_GUARDIAN_AGENT_ID
+    WORKER_STATE_WORK, WORKER_STATE_WAIT, CONSTITUTIONAL_GUARDIAN_AGENT_ID
 )
 
 # Import for automatic contaminated history cleanup
@@ -795,7 +795,14 @@ class ConstitutionalGuardianHealthMonitor:
                            "2) A completion summary with <request_state state='admin_conversation'>")
             else:
                 base_msg += (" As Admin AI, provide a meaningful text response to the user about your current status.")
-                
+        elif agent.agent_type == AGENT_TYPE_WORKER:
+            base_msg += (
+                " As a Worker, you MUST execute a tool. Example: use <project_management><action>list_tasks</action></project_management> "
+                "or <file_system><action>list</action><path>.</path></file_system>. "
+                "If you are stuck, report to PM: <request_state state='worker_report'/> "
+                "or wait: <request_state state='worker_wait'/>"
+            )
+            
         return base_msg
     
     def _generate_identical_response_guidance(self, agent: 'Agent', history_analysis: Dict) -> str:
@@ -834,6 +841,33 @@ class ConstitutionalGuardianHealthMonitor:
     def _generate_state_progression_guidance(self, agent: 'Agent', history_analysis: Dict) -> str:
         """Generate guidance for agents stuck in the same state."""
         
+        # Worker-specific guidance with explicit state transition instructions
+        if agent.agent_type == AGENT_TYPE_WORKER and agent.state == WORKER_STATE_WORK:
+            return (
+                f"[Constitutional Guardian - STATE PROGRESSION REQUIRED]: You have been stuck in state "
+                f"'{agent.state}' for {history_analysis.get('focus', 'many')} cycles without making progress.\n\n"
+                f"YOUR TASK APPEARS COMPLETE OR BLOCKED. You MUST take ONE of these actions NOW:\n\n"
+                f"**Option 1 — Report your progress to your PM:**\n"
+                f"First switch to report state, then send a message:\n"
+                f"  <request_state state='worker_report'/>\n\n"
+                f"**Option 2 — If your work is saved but you need to wait:**\n"
+                f"  <request_state state='worker_wait'/>\n\n"
+                f"**Option 3 — If you still have work to do:**\n"
+                f"Use a tool RIGHT NOW (e.g., <file_system><action>write</action>...) to make concrete progress.\n\n"
+                f"DO NOT produce another empty or thinking-only response. The framework will escalate if you do not act."
+            )
+        
+        # PM-specific guidance
+        if agent.agent_type == AGENT_TYPE_PM and agent.state == PM_STATE_MANAGE:
+            return (
+                f"[Constitutional Guardian - STATE PROGRESSION REQUIRED]: You have been stuck in state "
+                f"'{agent.state}' without making progress. Review your workers' status and take action:\n"
+                f"1. List tasks to check progress: <project_management><action>list_tasks</action></project_management>\n"
+                f"2. If all workers are busy, go to standby: <request_state state='pm_standby'/>\n"
+                f"3. If a worker needs help, send them guidance via <send_message>."
+            )
+        
+        # Generic fallback
         return (f"[Constitutional Guardian - STATE PROGRESSION REQUIRED]: You have been stuck in state "
                f"'{agent.state}' without making progress. Review your workflow requirements for this state "
                f"and either complete the required actions or request an appropriate state change.")
@@ -852,6 +886,9 @@ class ConstitutionalGuardianHealthMonitor:
     async def execute_recovery_plan(self, agent: 'Agent', recovery_plan: Dict) -> bool:
         """Execute the Constitutional Guardian's recovery plan for a troubled agent."""
         
+        # Upper limit on CG interventions per agent
+        MAX_CG_INTERVENTIONS_BEFORE_WAIT = 3
+        
         try:
             intervention_type = recovery_plan.get("type", "unknown")
             logger.error(f"ConstitutionalGuardian: Executing CRITICAL intervention for agent '{agent.agent_id}' - {intervention_type}")
@@ -865,6 +902,83 @@ class ConstitutionalGuardianHealthMonitor:
                     "severity": recovery_plan.get("severity", "medium"),
                     "reason": recovery_plan.get("description", "Unknown reason")
                 })
+                
+                # --- UPPER LIMIT CHECK ---
+                # Count recent interventions (within last 10 minutes) for this agent
+                recent_cutoff = time.time() - 600  # 10 minutes
+                recent_interventions = [
+                    h for h in record.intervention_history 
+                    if h.get("timestamp", 0) > recent_cutoff
+                ]
+                
+                if len(recent_interventions) >= MAX_CG_INTERVENTIONS_BEFORE_WAIT and agent.agent_type == AGENT_TYPE_WORKER:
+                    logger.error(
+                        f"ConstitutionalGuardian: Agent '{agent.agent_id}' hit upper limit "
+                        f"({len(recent_interventions)} interventions in 10 min). "
+                        f"Forcing worker_wait state and notifying PM."
+                    )
+                    
+                    # Force the agent to worker_wait state
+                    agent.set_state(WORKER_STATE_WAIT)
+                    agent.set_status(AGENT_STATUS_IDLE)
+                    agent.message_history.append({
+                        "role": "system",
+                        "content": (
+                            "[Constitutional Guardian - EMERGENCY OVERRIDE]: You have been placed in "
+                            "'worker_wait' state because you have been unable to make progress after "
+                            f"{len(recent_interventions)} intervention attempts. Your PM has been notified "
+                            "and will provide guidance. Please wait for instructions."
+                        )
+                    })
+                    
+                    # Find and notify the PM
+                    supervisor_id = None
+                    if hasattr(self._manager, 'state_manager'):
+                        team_id = self._manager.state_manager.get_agent_team(agent.agent_id)
+                        if team_id:
+                            team_agents = self._manager.state_manager.get_agents_in_team(team_id)
+                            for ta in team_agents:
+                                if getattr(ta, "agent_type", None) == AGENT_TYPE_PM:
+                                    supervisor_id = getattr(ta, "agent_id", None)
+                                    break
+                    
+                    if supervisor_id and hasattr(self._manager, 'interaction_handler'):
+                        wait_notify_msg = (
+                            f"🚨 **CONSTITUTIONAL GUARDIAN - CRITICAL ESCALATION** 🚨\n\n"
+                            f"Agent `{agent.agent_id}` has been placed in **worker_wait** state after "
+                            f"{len(recent_interventions)} failed intervention attempts in the last 10 minutes.\n\n"
+                            f"**Last intervention type:** {intervention_type}\n"
+                            f"**Agent's current state:** {agent.state}\n\n"
+                            f"**ACTION REQUIRED:** This agent is stuck and needs your direct intervention.\n"
+                            f"Options:\n"
+                            f"1. Send specific guidance to help the agent proceed\n"
+                            f"2. Reassign the task to another worker\n"
+                            f"3. Break the task into smaller sub-tasks\n"
+                        )
+                        await self._manager.interaction_handler.route_and_activate_agent_message(
+                            sender_id=CONSTITUTIONAL_GUARDIAN_AGENT_ID,
+                            target_identifier=supervisor_id,
+                            message_content=wait_notify_msg
+                        )
+                    
+                    # Reset counters after forced wait
+                    record.consecutive_empty_responses = 0
+                    record.consecutive_minimal_responses = 0
+                    record.consecutive_identical_responses = 0
+                    record.problematic_patterns.clear()
+                    
+                    # Notify UI
+                    await self._manager.send_to_ui({
+                        "type": "constitutional_guardian_intervention",
+                        "agent_id": agent.agent_id,
+                        "intervention_type": "forced_wait_state",
+                        "severity": "critical",
+                        "description": f"Agent placed in worker_wait after {len(recent_interventions)} failed interventions",
+                        "timestamp": time.time()
+                    })
+                    
+                    return True  # Intervention handled via escalation
+                # --- END UPPER LIMIT CHECK ---
                 
                 # Reset problematic counters
                 record.consecutive_empty_responses = 0

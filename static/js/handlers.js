@@ -19,6 +19,7 @@ import * as DOM from './domElements.js';
 import * as session from './session.js'; // Import session functions
 import * as configView from './configView.js'; // Import config view functions
 import { escapeHTML } from './utils.js';
+import { clearStoredMessages } from './chatPersistence.js'; // Clear stored messages on session load
 
 /**
  * Central handler for WebSocket messages. Determines where to display messages
@@ -102,6 +103,7 @@ export const handleWebSocketMessage = (data) => {
             console.log("Handler: Handling session_loaded event.");
             if (DOM.conversationArea) {
                 DOM.conversationArea.innerHTML = ''; // Clear chat
+                clearStoredMessages(); // Clear persisted messages for new session
                 
                 // Show System Loading message
                 const loadingMsg = document.createElement('div');
@@ -329,6 +331,23 @@ export const handleWebSocketMessage = (data) => {
 
             // --- Other Internal Comms ---
             case 'status':
+                if (data.backend_instance_id) {
+                    const storedId = sessionStorage.getItem('te_backend_instance_id');
+                    if (storedId && storedId !== data.backend_instance_id) {
+                        console.log("Handler: Backend restart detected! Clearing frontend caches.");
+                        clearStoredMessages();
+                        if (DOM.conversationArea) {
+                            DOM.conversationArea.innerHTML = '';
+                        }
+                        if (DOM.internalCommsArea) {
+                            // Don't clear completely, just clear old messages out of it
+                            // Or completely clear it, connecting message got removed anyway
+                            DOM.internalCommsArea.innerHTML = '';
+                        }
+                    }
+                    sessionStorage.setItem('te_backend_instance_id', data.backend_instance_id);
+                }
+                // Fallthrough to the other generic logging
             case 'system_event': // Catchall if not handled above
             case 'log':
                 displayContent = escapeHTML(data.content || data.message || `Event: ${messageType}`);
