@@ -57,7 +57,7 @@ class ManageTeamTool(BaseTool):
             required=True, # Action is always required
         ),
         ToolParameter(
-            name="agent_id",
+            name="target_agent_id",
             type="string",
             description="Agent ID. Required for: delete_agent, add_agent_to_team, remove_agent_from_team, get_agent_details, set_agent_state.",
             required=False, # Not universally required
@@ -159,24 +159,24 @@ class ManageTeamTool(BaseTool):
             if not params.get("persona"): missing.append("'persona'")
             if missing: error_message = f"Error: Missing required parameter(s) for 'create_agent': {', '.join(missing)}."
         elif action == "delete_agent":
-            if not params.get("agent_id"): error_message = "Error: Missing required 'agent_id' parameter for 'delete_agent'."
+            if not params.get("target_agent_id"): error_message = "Error: Missing required 'target_agent_id' parameter for 'delete_agent'."
         elif action == "create_team":
             if not params.get("team_id"): error_message = "Error: Missing required 'team_id' parameter for 'create_team'."
         elif action == "delete_team":
             if not params.get("team_id"): error_message = "Error: Missing required 'team_id' parameter for 'delete_team'."
         elif action == "add_agent_to_team":
-            if not params.get("agent_id"): missing.append("'agent_id'")
+            if not params.get("target_agent_id"): missing.append("'target_agent_id'")
             if not params.get("team_id"): missing.append("'team_id'")
             if missing: error_message = f"Error: Missing required parameter(s) for 'add_agent_to_team': {', '.join(missing)}."
         elif action == "remove_agent_from_team":
-            if not params.get("agent_id"): missing.append("'agent_id'")
+            if not params.get("target_agent_id"): missing.append("'target_agent_id'")
             if not params.get("team_id"): missing.append("'team_id'")
             if missing: error_message = f"Error: Missing required parameter(s) for 'remove_agent_from_team': {', '.join(missing)}."
         elif action == "get_agent_details":
-             if not params.get("agent_id"): error_message = "Error: Missing required 'agent_id' parameter for 'get_agent_details'."
+             if not params.get("target_agent_id"): error_message = "Error: Missing required 'target_agent_id' parameter for 'get_agent_details'."
         elif action == "set_agent_state":
-            target_agent_id_for_state_change = params.get("agent_id")
-            if not target_agent_id_for_state_change: missing.append("'agent_id'")
+            target_agent_id_for_state_change = params.get("target_agent_id")
+            if not target_agent_id_for_state_change: missing.append("'target_agent_id'")
             if not params.get("new_state"): missing.append("'new_state'")
             if missing: error_message = f"Error: Missing required parameter(s) for 'set_agent_state': {', '.join(missing)}."
             # --- NEW: Restrict changing Admin AI's state ---
@@ -246,8 +246,8 @@ Creates a new worker agent for your team.
             return common_header + f"""
 **Sub-Action: delete_agent**
 Deletes an existing agent. Cannot delete bootstrap agents like Admin AI.
-*   `<agent_id>` (string, required): The exact ID of the agent to be deleted.
-*   Example: `<manage_team><action>delete_agent</action><agent_id>{worker_agent_id_placeholder}</agent_id></manage_team>`
+*   `<target_agent_id>` (string, required): The exact ID of the agent to be deleted.
+*   Example: `<manage_team><action>delete_agent</action><target_agent_id>{worker_agent_id_placeholder}</target_agent_id></manage_team>`
 """
         elif sub_action == "create_team":
             return common_header + f"""
@@ -267,17 +267,17 @@ Deletes an existing team. Agents in the team will become team-less but will not 
             return common_header + f"""
 **Sub-Action: add_agent_to_team**
 Adds an existing agent to a team.
-*   `<agent_id>` (string, required): The ID of the agent to add.
+*   `<target_agent_id>` (string, required): The ID of the agent to add.
 *   `<team_id>` (string, required): The ID of the team to add the agent to.
-*   Example: `<manage_team><action>add_agent_to_team</action><agent_id>{worker_agent_id_placeholder}</agent_id><team_id>{team_id_placeholder}</team_id></manage_team>`
+*   Example: `<manage_team><action>add_agent_to_team</action><target_agent_id>{worker_agent_id_placeholder}</target_agent_id><team_id>{team_id_placeholder}</team_id></manage_team>`
 """
         elif sub_action == "remove_agent_from_team":
             return common_header + f"""
 **Sub-Action: remove_agent_from_team**
 Removes an agent from a team. The agent will not be deleted.
-*   `<agent_id>` (string, required): The ID of the agent to remove.
+*   `<target_agent_id>` (string, required): The ID of the agent to remove.
 *   `<team_id>` (string, required): The ID of the team to remove the agent from.
-*   Example: `<manage_team><action>remove_agent_from_team</action><agent_id>{worker_agent_id_placeholder}</agent_id><team_id>{team_id_placeholder}</team_id></manage_team>`
+*   Example: `<manage_team><action>remove_agent_from_team</action><target_agent_id>{worker_agent_id_placeholder}</target_agent_id><team_id>{team_id_placeholder}</team_id></manage_team>`
 """
         elif sub_action == "list_agents":
             return common_header + f"""
@@ -297,14 +297,14 @@ Lists all currently defined teams.
             return common_header + f"""
 **Sub-Action: get_agent_details**
 Retrieves detailed information about a specific agent.
-*   `<agent_id>` (string, required): The ID of the agent whose details are requested.
-*   Example: `<manage_team><action>get_agent_details</action><agent_id>{pm_agent_id_placeholder}</agent_id></manage_team>`
+*   `<target_agent_id>` (string, required): The ID of the agent whose details are requested.
+*   Example: `<manage_team><action>get_agent_details</action><target_agent_id>{pm_agent_id_placeholder}</target_agent_id></manage_team>`
 """
         elif sub_action == "set_agent_state":
             return common_header + f"""
 **Sub-Action: set_agent_state**
 Changes a non-Admin AI agent's workflow state. If the agent is IDLE, this will also trigger its activation.
-*   `<agent_id>` (string, required): The ID of the agent whose state is to be changed. **CRITICAL: This cannot be '{BOOTSTRAP_AGENT_ID}' (Admin AI).**
+*   `<target_agent_id>` (string, required): The ID of the agent whose state is to be changed. **CRITICAL: This cannot be '{BOOTSTRAP_AGENT_ID}' (Admin AI).**
 *   `<new_state>` (string, required): The target state for the agent.
     *   Valid states for Project Manager (PM) type agents: {', '.join(valid_pm_states)}
     *   Valid states for Worker type agents: {', '.join(valid_worker_states)}
@@ -312,7 +312,7 @@ Changes a non-Admin AI agent's workflow state. If the agent is IDLE, this will a
     ```xml
     <manage_team>
       <action>set_agent_state</action>
-      <agent_id>{worker_agent_id_placeholder}</agent_id>
+      <target_agent_id>{worker_agent_id_placeholder}</target_agent_id>
       <new_state>work</new_state>
     </manage_team>
     ```

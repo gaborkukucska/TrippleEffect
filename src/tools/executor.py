@@ -553,6 +553,9 @@ class ToolExecutor:
                 if "message_content" not in tool_args:
                     alias = tool_args.get("content") or tool_args.get("message") or tool_args.get("text")
                     if alias: tool_args["message_content"] = alias
+            elif tool_name == ManageTeamTool.name:
+                if 'agent_id' in tool_args and 'target_agent_id' not in tool_args:
+                    tool_args['target_agent_id'] = tool_args['agent_id']
                     
             schema = tool.get_schema()
             validated_args = tool_args.copy()

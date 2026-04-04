@@ -254,8 +254,8 @@ class ProjectManagementTool(BaseTool):
                     # Sanitize: strip +/- prefixes, quotes, brackets that corrupt TaskWarrior JSON
                     sanitized = []
                     for t in raw_tags:
-                        t = t.strip().lstrip('+-').strip()
-                        t = t.strip('"\'\'').strip('[]').strip()
+                        t = t.lstrip('+-').strip()
+                        t = t.replace('"', '').replace("'", "").replace("[", "").replace("]", "").strip()
                         if t:
                             sanitized.append(t)
                     task['tags'] = set(sanitized)
@@ -480,7 +480,7 @@ class ProjectManagementTool(BaseTool):
                         t = t.strip()
                         is_remove = t.startswith('-')
                         t_clean = t.lstrip('+-').strip()
-                        t_clean = t_clean.strip('"\'\'').strip('[]').strip()
+                        t_clean = t_clean.replace('"', '').replace("'", "").replace("[", "").replace("]", "").strip()
                         if not t_clean:
                             continue
                             
