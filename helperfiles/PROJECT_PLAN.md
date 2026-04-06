@@ -149,6 +149,7 @@
 * [X] **Type Safety Improvements:** Resolved all Pyright type errors across `executor.py`, `file_system.py`, `manage_team.py`, and `project_management.py`.
 * [X] **Granular Task Progress & System Watchdog:** Replaced rigid Taskwarrior statuses with a custom `task_progress` tracking methodology (`in_progress`, `stuck`, `failed`, `waiting`) for enriched LLM visibility, and promoted the isolated PM monitor into a Universal Framework Watchdog.
 * [X] **Admin AI Orchestration Upgrade:** Transitioned the Admin AI from a passive message relay to the active "Ultimate Orchestrator" capable of dynamically dropping into an investigatory `work` state to run system tools without interrupting active agents.
+* [X] **Knowledge Base Migration (v2.44):** Deprecated `whiteboard.md` inter-agent communication in favor of the `knowledge_base` tool. Updated PM and Worker system prompts in `prompts.yaml` and `settings.py`. Extended `KnowledgeBaseTool` with segmented `get_detailed_usage(sub_action=...)` help and action aliases. Replaced dynamic prompt injection variables in `workflow_manager.py` (`whiteboard_read_example` → `kb_search_example`). Removed auto-generation of `whiteboard.md` from `manager.py`.
 
 **Future Goals:**
 
@@ -365,7 +366,7 @@ Five separate loop detection/intervention systems operate simultaneously (`Agent
 **Problem 1 (Unassigned Sub-Tasks Created by Workers):** When workers (like W1) decomposed their assigned tasks into sub-tasks using the `project_management.py` tool (`add_task`), they often failed to provide the `assignee_agent_id` parameter. This caused the tasks to remain unassigned, confusing the worker when it transitioned to work state.
 **Fix 1:** Added auto-assignment logic in `project_management.py` so that if the calling agent is a worker and no `assignee_agent_id` is explicitly passed in the tool arguments, the generated task is automatically assigned to the caller.
 
-**Problem 2 (Worker Cross-Cycle Duplicate Tool Loop):** Workers exhibiting confusion (e.g. looking for work but finding none) would repeatedly execute the `file_system` read action on `whiteboard.md` infinitely. While the cross-cycle duplicate tool call mechanism intercepted these duplicate calls, it was artificially restricted to only PM agents, allowing the workers to loop forever undetected.
+**Problem 2 (Worker Cross-Cycle Duplicate Tool Loop):** Workers exhibiting confusion (e.g. looking for work but finding none) would repeatedly execute the `file_system` read action on the same file infinitely. While the cross-cycle duplicate tool call mechanism intercepted these duplicate calls, it was artificially restricted to only PM agents, allowing the workers to loop forever undetected.
 **Fix 2:** Expanded the duplicate tool call detection scope (`_detect_cross_cycle_duplicate_tool_call`) in `cycle_handler.py` to include `AGENT_TYPE_WORKER`. Additionally, implemented a new escalation block specifically for workers: when `_duplicate_tool_call_count >= 3`, the framework injects a strong `[Framework System Message - AUTO-ADVANCE]` forcing the worker to stop repeating the exact identical tool call and to transition to a new tool or the `worker_report` state.
 
 **Problem 3 (Project Filter Hallucination):** The LLM occasionally made typos when providing the `project_filter` argument to `list_tasks` (e.g., spelling "Snake_Game" as "Sake_Game"). Because `project_management.py` trusted the LLM-provided string to filter the list query, it incorrectly returned `0 task(s)` to the PM.
@@ -446,6 +447,24 @@ This entirely breaks the LLM's autoregressive death spiral by physically moving 
 **Fix 4:** Enforced an upper limit (3 interventions per 10 minutes) on CG blocks. Exceeding the limit forcefully halts the worker (moves to `worker_wait` state) and escalates a `[CRITICAL ESCALATION]` directly to the PM's message inbox.
 
 **Files:** `src/tools/mark_message_read.py`, `src/agents/core.py`, `src/agents/interaction_handler.py`, `src/agents/cycle_handler.py`, `src/agents/cycle_components/prompt_assembler.py`, `src/agents/cycle_components/agent_health_monitor.py`, `src/agents/failover_handler.py`
+
+---
+
+#### Phase R: Knowledge Base Migration & Inter-Agent Communication Overhaul (April 2026)
+
+**Problem 1 (Whiteboard Context Bloat):** The global `whiteboard.md` file used for inter-agent communication scaled linearly — every progress update, architectural note, and milestone entry expanded the file. Workers reading it consumed thousands of tokens on stale, irrelevant entries, directly blowing context windows on smaller local models.
+**Fix 1:** Deprecated `whiteboard.md` entirely. System prompts in `prompts.yaml` and `settings.py` now direct agents to use `knowledge_base` tool with `search_knowledge` (keyword-based retrieval) and `save_knowledge` (tagged entries with importance scores). Workers search for relevant context on demand rather than reading a monolithic file.
+
+**Problem 2 (Knowledge Base Tool Token Overhead):** The `KnowledgeBaseTool` returned its full 40+ line help text on every system prompt injection, wasting tokens for agents that didn't need KB instructions that cycle.
+**Fix 2:** Implemented segmented `get_detailed_usage(sub_action=...)` routing in `knowledge_base.py`, matching the pattern established by `FileSystemTool` and `ProjectManagementTool`. Default calls return a concise summary; action-specific help is injected only on demand or on error.
+
+**Problem 3 (Action Alias Gaps):** LLMs frequently used natural-language action names like `search`, `save`, `store`, `query` instead of the exact `search_knowledge` / `save_knowledge` action strings, causing tool execution failures.
+**Fix 3:** Added comprehensive alias routing in `knowledge_base.py`'s `execute()` method, gracefully mapping common intent variations to correct actions.
+
+**Problem 4 (Dynamic Prompt Variable Mismatch):** `workflow_manager.py` injected `{whiteboard_read_example}` into worker work prompts, which would fail with a `KeyError` after the whiteboard prompts were removed.
+**Fix 4:** Replaced the `whiteboard_read_example` variable with `kb_search_example` throughout `workflow_manager.py`, injecting proper `<knowledge_base><action>search_knowledge</action>` XML templates for XML-mode agents and plain-text descriptions for native-tool agents.
+
+**Files:** `prompts.yaml`, `src/config/settings.py`, `src/tools/knowledge_base.py`, `src/agents/workflow_manager.py`, `src/agents/manager.py`
 
 ---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

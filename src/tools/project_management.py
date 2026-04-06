@@ -169,7 +169,15 @@ class ProjectManagementTool(BaseTool):
             "mark_complete": "complete_task",
             "mark_completed": "complete_task",
             "complete": "complete_task",
-            "task_complete": "complete_task"
+            "task_complete": "complete_task",
+            "get_task": "list_tasks",
+            "get": "list_tasks",
+            "task_list": "list_tasks",
+            "list_sub_tasks": "list_tasks",
+            "list_subtask": "list_tasks",
+            "view_tasks": "list_tasks",
+            "start_task": "modify_task",
+            "begin_task": "modify_task",
         }
         
         if not action:

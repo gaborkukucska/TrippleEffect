@@ -1,13 +1,35 @@
 # TrippleEffect - Current Issues
 
-**Last Updated:** 2026-04-06
-**Based on log:** `app_20260405_200302_346757.log` (SnakeyDoodle test run)
+**Last Updated:** 2026-04-07
+**Based on log:** `app_20260406_184558_865072.log` (SnakeyDoodle test run #2, ~6 hours)
 
 ---
 
-## Active Critical Issues 
+## Active Issues
 
-*(No active critical framework blockers - recent SnakeyDoodle issues successfully resolved!)*
+### ~~+20. Missing `get_task` / `start_task` / `task_list` / `list_sub_tasks` Action Aliases~~ (RESOLVED)
+
+- **Severity:** Low (P3)
+- **Description:** Workers hallucinate action names like `get_task`, `start_task`, `task_list`, and `list_sub_tasks` for the `project_management` tool. These fail with `Invalid action` errors. Additionally, `list_sub_tasks` and `task_list` are sent as **tool names** (not action parameters), bypassing the alias system entirely.
+- **Root Cause:** The `action_suggestions` map in `project_management.py` doesn't cover these variants. The tool-name-level hallucination (`list_sub_tasks` as a tool) needs to be intercepted at the `ToolExecutor` level.
+- **Fix:** (RESOLVED) Added `get_task`, `get`, `task_list`, `list_sub_tasks`, `list_subtask`, `view_tasks`, `start_task`, and `begin_task` to the `action_suggestions` alias map in `project_management.py`. Tool-name-level hallucinations remain a separate, lower-priority concern.
+- **Files:** `src/tools/project_management.py`
+
+### +19. Workers Omitting `task_id` in State Transitions
+
+- **Severity:** Medium (P2)
+- **Description:** Workers repeatedly attempt `<request_state state='worker_work'/>` without the mandatory `task_id` parameter, causing 5+ rejection cycles before the LLM finally includes it. The framework error messages are correct and list available task UUIDs, but smaller models take multiple cycles to parse them.
+- **Root Cause:** LLM autoregressive momentum on the 9b model.
+- **Suggested Fix:** After 2 consecutive `task_id` omission rejections, auto-infer the task_id (oldest `in_progress` or `todo` task assigned to the worker) and apply it, logging a warning.
+- **Files:** `src/agents/cycle_handler.py` or `src/agents/workflow_manager.py`
+
+### +18. `command_executor` Return Code Opacity
+
+- **Severity:** Low (P3)
+- **Description:** 12 `command_executor` calls failed with return codes 1 or 2. The error message says `Command execution completed with return code 1.` but omits `stdout`/`stderr` output, making it impossible for agents to diagnose failures.
+- **Root Cause:** The tool returns only the return code without the actual error output on failure.
+- **Suggested Fix:** Ensure `command_executor` always includes at least the last 500 characters of `stderr` in the error response.
+- **Files:** `src/tools/command_executor.py`
 
 ---
 
