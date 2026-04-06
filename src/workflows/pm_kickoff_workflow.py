@@ -118,6 +118,23 @@ class PMKickoffWorkflow(BaseWorkflow):
                 next_agent_status=AGENT_STATUS_IDLE
             )
 
+        # --- Mark Initial Project Task as Decomposed ---
+        try:
+            from src.tools.project_management import ProjectManagementTool, TASKLIB_AVAILABLE
+            if TASKLIB_AVAILABLE and project_context and manager.current_session:
+                pm_tool = ProjectManagementTool()
+                tw = pm_tool._get_taskwarrior_instance(project_context, manager.current_session)
+                if tw:
+                    # Find any pending tasks tagged with 'project_kickoff'
+                    initial_tasks = tw.tasks.pending().filter('+project_kickoff', project=project_context)
+                    for task in initial_tasks:
+                        task['task_progress'] = 'decomposed'
+                        task.save()
+                        logger.info(f"PMKickoffWorkflow: Marked initial project task '{task['uuid']}' as decomposed.")
+        except Exception as e:
+            logger.warning(f"PMKickoffWorkflow: Failed to mark initial project task as decomposed: {e}")
+
+        # --- Create Kickoff Sub-tasks ---
         for i, task_info in enumerate(task_info_list):
             task_desc = task_info["description"]
             task_tool_args = {
@@ -179,8 +196,7 @@ class PMKickoffWorkflow(BaseWorkflow):
                 list_tasks_args = {
                     "action": "list_tasks",
                     "project_filter": project_context,
-                    "tags": ["project_kickoff", "auto_created_by_framework"],
-                    "assignee_agent_id": agent.agent_id
+                    "tags_filter": "project_kickoff,auto_created_by_framework"
                 }
                 logger.debug(f"PMKickoffWorkflow: Listing tasks with args: {list_tasks_args}")
                 list_result = await manager.tool_executor.execute_tool(
@@ -198,18 +214,17 @@ class PMKickoffWorkflow(BaseWorkflow):
                     logger.debug(f"PMKickoffWorkflow: Found {len(tasks)} candidate tasks for initial project plan task.")
                     found_matching_tasks = []
                     for task_item in tasks:
-                        # Check description prefix and ensure it's not already completed
-                        if task_item.get("description", "").startswith("PROJECT KICK-OFF:") and task_item.get("status") != "completed":
+                        if task_item.get("status") != "completed":
                             found_matching_tasks.append(task_item)
 
                     if len(found_matching_tasks) > 1:
-                        logger.warning(f"PMKickoffWorkflow: Multiple ({len(found_matching_tasks)}) non-completed 'PROJECT KICK-OFF:' tasks found for PM '{agent.agent_id}' in project '{project_context}'. Will attempt to complete the first one found: {found_matching_tasks[0].get('uuid')}")
+                        logger.warning(f"PMKickoffWorkflow: Multiple ({len(found_matching_tasks)}) non-completed initial tasks found for PM '{agent.agent_id}' in project '{project_context}'. Will attempt to complete the first one found: {found_matching_tasks[0].get('uuid')}")
 
                     if found_matching_tasks:
                         initial_project_task_uuid_to_complete = found_matching_tasks[0].get("uuid")
                         logger.info(f"PMKickoffWorkflow: Identified initial project plan task to complete. UUID: {initial_project_task_uuid_to_complete}, Description: '{found_matching_tasks[0].get('description', '')[:50]}...'")
                     else:
-                        logger.warning(f"PMKickoffWorkflow: No suitable non-completed 'PROJECT KICK-OFF:' task found for PM '{agent.agent_id}' in project '{project_context}'. It might have been completed manually or does not exist.")
+                        logger.warning(f"PMKickoffWorkflow: No suitable non-completed initial task found for PM '{agent.agent_id}' in project '{project_context}'. It might have been completed manually or does not exist.")
                 else:
                     error_msg = list_result.get("message", "Unknown error") if isinstance(list_result, dict) else str(list_result)
                     logger.error(f"PMKickoffWorkflow: Failed to list tasks to find initial project plan task: {error_msg}")

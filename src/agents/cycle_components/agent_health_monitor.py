@@ -1031,11 +1031,25 @@ class ConstitutionalGuardianHealthMonitor:
             agent.message_history.append(guidance_msg)
             
         elif action_type == "clear_problematic_context":
-            # Keep only the last N messages to clear confusing context
+            # Keep only the last N messages to clear confusing context, AND explicitly strip out old interventions
             keep_count = action.get("keep_last_n_messages", 5)
-            if len(agent.message_history) > keep_count:
+            
+            if len(agent.message_history) > 1:
+                # Always preserve the system prompt
                 system_msg = agent.message_history[0] if agent.message_history and agent.message_history[0].get("role") == "system" else None
-                recent_msgs = agent.message_history[-keep_count:]
+                
+                # Filter history to remove old Framework and Guardian interventions which bloat context
+                filtered_history = []
+                for msg in agent.message_history[1:]:
+                    if msg.get("role") == "system":
+                        content = msg.get("content", "")
+                        if "[Framework" in content or "[Constitutional Guardian" in content or "[EMERGENCY" in content:
+                            continue # Skip old interventions
+                    filtered_history.append(msg)
+                
+                # Now take only the last keep_count messages from the filtered history
+                recent_msgs = filtered_history[-keep_count:] if keep_count > 0 else []
+                
                 agent.message_history.clear()
                 if system_msg:
                     agent.message_history.append(system_msg)
@@ -1044,9 +1058,9 @@ class ConstitutionalGuardianHealthMonitor:
                 # Add explanation message
                 agent.message_history.append({
                     "role": "system",
-                    "content": f"[Constitutional Guardian]: Context cleared due to problematic patterns. Kept last {keep_count} messages."
+                    "content": f"[Constitutional Guardian]: Problematic context and old warnings cleared. Kept last {len(recent_msgs)} filtered messages."
                 })
-                logger.info(f"ConstitutionalGuardian: Cleared problematic context for '{agent.agent_id}', kept last {keep_count} messages")
+                logger.info(f"ConstitutionalGuardian: Cleared problematic context for '{agent.agent_id}', purged old interventions, kept {len(recent_msgs)} messages.")
                 
         elif action_type == "reset_status":
             new_status = action.get("new_status", AGENT_STATUS_IDLE)

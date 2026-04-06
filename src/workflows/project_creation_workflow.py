@@ -190,7 +190,8 @@ class ProjectCreationWorkflow(BaseWorkflow):
                 tool_name="project_management",
                 tool_args=tool_args,
                 project_name=project_title, # Use the extracted project_title for this tool call
-                session_name=manager.current_session
+                session_name=manager.current_session,
+                manager=manager 
             )
 
             if isinstance(task_result, dict) and task_result.get("status") == "success":

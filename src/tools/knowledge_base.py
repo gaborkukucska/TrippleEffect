@@ -14,17 +14,17 @@ class KnowledgeBaseTool(BaseTool):
     """
     Tool for interacting with the long-term knowledge base stored in the database.
     Allows saving distilled information and searching for relevant past knowledge.
-    Intended primarily for the Admin AI.
+    Intended to be the primary method of sharing architectural decisions, APIs, and findings between PMs and workers.
     """
     name: str = "knowledge_base" # Changed name for clarity
     auth_level: str = "worker" # Accessible by all
-    summary: Optional[str] = "Saves or searches long-term knowledge (learnings, procedures)."
+    summary: Optional[str] = "Saves or searches long-term knowledge (architecture, notes, learnings)."
     description: str = (
-        "Interacts with the long-term knowledge base. Actions: "
-        "'save_knowledge' (saves a summary of learned information with keywords), "
-        "'search_knowledge' (searches for relevant knowledge using keywords), "
-        "'search_agent_thoughts' (searches for past thoughts of a specific agent). "
-        "Use this to persist important conclusions or retrieve relevant context from past sessions/interactions, including specific agent thoughts."
+        "Interacts with the long-term central project knowledge base. Actions: "
+        "'save_knowledge' (saves architecture, APIs, or learnings with keywords), "
+        "'search_knowledge' (searches for project knowledge using keywords), "
+        "'search_agent_thoughts' (searches past thoughts). "
+        "All agents MUST use this tool to share information, APIs, architectures, and updates with the rest of the team instead of using a whiteboard."
     )
     parameters: List[ToolParameter] = [
         ToolParameter(
@@ -236,42 +236,52 @@ class KnowledgeBaseTool(BaseTool):
 
     def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None, sub_action: Optional[str] = None) -> str:
         """Returns detailed usage instructions for the KnowledgeBaseTool."""
-        usage = """**Tool Name:** knowledge_base
+        
+        base_usage = """**Tool Name:** knowledge_base
 
-**Description:** Interacts with the long-term knowledge base for saving and searching information across sessions.
+**Description:** Interacts with the long-term knowledge base for saving and searching information across sessions and agents.
 
 **CRITICAL - Valid Actions Only:** The following actions are the ONLY valid actions. Do NOT use variations like 'search' or 'save':
 - save_knowledge, search_knowledge, search_agent_thoughts
 
-**Actions & Parameters:**
-
-1. **save_knowledge:** Saves a summary of learned information with keywords.
-   * `<summary>` (string, required): A concise summary of the information or learning to be saved.
-   * `<keywords>` (string, required): Comma-separated keywords relevant to the knowledge being saved.
-   * `<importance>` (float, optional): Numerical score (0.1 to 1.0) indicating importance. Defaults to 0.5.
-   * Example: `<knowledge_base><action>save_knowledge</action><summary>File system tool requires 'read' and 'write' actions, not 'read_file'</summary><keywords>file_system,tool_usage,common_mistakes</keywords><importance>0.8</importance></knowledge_base>`
-
-2. **search_knowledge:** Searches for relevant knowledge using keywords.
-   * `<query_keywords>` (string, required): Comma-separated keywords to search for in the knowledge base.
-   * `<min_importance>` (float, optional): Minimum importance score for results.
-   * `<max_results>` (integer, optional): Maximum number of results to return. Defaults to 5.
-   * Example: `<knowledge_base><action>search_knowledge</action><query_keywords>file_system,tool_usage</query_keywords><max_results>3</max_results></knowledge_base>`
-
-3. **search_agent_thoughts:** Searches for past thoughts of a specific agent.
-   * `<agent_identifier>` (string, required): The ID or unique identifier of the agent whose thoughts are being searched.
-   * `<additional_keywords>` (string, optional): Additional comma-separated keywords to narrow the search.
-   * `<max_results>` (integer, optional): Maximum number of results to return. Defaults to 5.
-   * Example: `<knowledge_base><action>search_agent_thoughts</action><agent_identifier>admin_ai</agent_identifier><additional_keywords>tool_errors</additional_keywords></knowledge_base>`
-
 **COMMON MISTAKES TO AVOID:**
 * ❌ DON'T use 'search' - use 'search_knowledge' instead
 * ❌ DON'T use 'save' - use 'save_knowledge' instead  
-* ❌ DON'T use 'find' - use 'search_knowledge' instead
 * ❌ DON'T use 'lookup' - use 'search_knowledge' instead
 
 **Important Notes:**
-* This tool persists information across sessions, making it valuable for learning from past mistakes.
-* Use meaningful keywords to make future searches more effective.
-* The Admin AI should use this to save insights about tool usage patterns and common errors.
+* This is the primary method for PMs and Workers to share project architecture, API specs, and learnings.
+* Use meaningful keywords (e.g., `architecture, api, auth, frontend`) to make future searches effective.
 """
-        return usage.strip()
+        if not sub_action:
+            return base_usage.strip() + "\n\n(Ask for 'knowledge_base' with a specific action like 'search_knowledge' to see its parameters)"
+
+        if sub_action == "save_knowledge" or sub_action in ["save", "store"]:
+            return base_usage + """
+**Action: save_knowledge**
+Saves architecture decisions, API specs, or learnings with keywords for the team.
+   * `<summary>` (string, required): A concise summary of the information or learning.
+   * `<keywords>` (string, required): Comma-separated tags (e.g., `api, architecture`).
+   * `<importance>` (float, optional): Score (0.1 to 1.0). Defaults to 0.5.
+   * Example: `<knowledge_base><action>save_knowledge</action><summary>The backend exposes /api/v1/users for auth</summary><keywords>api,auth,backend</keywords></knowledge_base>`
+"""
+        elif sub_action == "search_knowledge" or sub_action in ["search", "find", "query"]:
+            return base_usage + """
+**Action: search_knowledge**
+Searches for project knowledge and architectures using keywords.
+   * `<query_keywords>` (string, required): Comma-separated keywords to search for.
+   * `<min_importance>` (float, optional): Minimum importance score for results.
+   * `<max_results>` (integer, optional): Maximum results. Defaults to 5.
+   * Example: `<knowledge_base><action>search_knowledge</action><query_keywords>architecture,api</query_keywords></knowledge_base>`
+"""
+        elif sub_action == "search_agent_thoughts":
+            return base_usage + """
+**Action: search_agent_thoughts**
+Searches for past thoughts of a specific agent.
+   * `<agent_identifier>` (string, required): The ID of the agent whose thoughts are being searched.
+   * `<additional_keywords>` (string, optional): Additional keywords to narrow the search.
+   * `<max_results>` (integer, optional): Maximum results. Defaults to 5.
+   * Example: `<knowledge_base><action>search_agent_thoughts</action><agent_identifier>admin_ai</agent_identifier></knowledge_base>`
+"""
+        
+        return base_usage.strip()

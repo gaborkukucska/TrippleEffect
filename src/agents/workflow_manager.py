@@ -295,9 +295,21 @@ class AgentWorkflowManager:
                                                 # New auto-completion of the decomposed "kick-off" / parent task
                                                 try:
                                                     main_task['task_progress'] = "decomposed"
+                                                    
+                                                    # Reassign task back to the PM to remove it from worker's active queue
+                                                    pm_id = None
+                                                    for pm_candidate in agent.manager.agents.values():
+                                                        if pm_candidate.agent_type == AGENT_TYPE_PM:
+                                                            pm_candidate_project_name = self._get_agent_project_name(pm_candidate, agent.manager)
+                                                            if pm_candidate_project_name == agent_proj and pm_candidate.agent_id not in agent.manager.bootstrap_agents:
+                                                                pm_id = pm_candidate.agent_id
+                                                                break
+                                                    if pm_id:
+                                                        main_task['assignee'] = pm_id
+                                                        
                                                     main_task.save()
                                                     asyncio.create_task(broadcast(json.dumps({"type": "project_tasks_updated", "project_name": agent_proj, "session_name": agent_session})))
-                                                    logger.info(f"WorkflowManager: Auto-marked decomposed parent task '{main_task.get('uuid')}' as decomposed for agent '{agent.agent_id}'.")
+                                                    logger.info(f"WorkflowManager: Auto-marked decomposed parent task '{main_task['uuid']}' as decomposed for agent '{agent.agent_id}'.")
                                                     
                                                     # Provide feedback to the worker that this happened automatically
                                                     auto_complete_msg = (
@@ -311,7 +323,7 @@ class AgentWorkflowManager:
                                                 except Exception as e:
                                                     # Ignore if already completed to avoid crashing
                                                     if "completed" not in str(e).lower() and "Cannot complete a completed task" not in str(e):
-                                                        logger.error(f"WorkflowManager: Failed to auto-complete decomposed task '{main_task.get('uuid')}': {e}")
+                                                        logger.error(f"WorkflowManager: Failed to auto-complete decomposed task '{getattr(main_task, 'uuid', task_id_str)}': {e}")
                                         else:
                                             logger.warning(f"WorkflowManager: Could not retrieve task '{task_id_str}' for validation. Proceeding without sub-task validation.")
                                     except Exception as e:
@@ -779,9 +791,9 @@ class AgentWorkflowManager:
         tool_examples = native_tool_examples if use_native_instructions else xml_tool_examples
         report_examples = native_report_examples if use_native_instructions else xml_report_examples
 
-        xml_whiteboard_read = "`<file_system><action>read</action><filepath>whiteboard.md</filepath></file_system>`"
-        json_whiteboard_read = "using the `file_system` tool (read action)"
-        whiteboard_read_example = json_whiteboard_read if use_native_instructions else xml_whiteboard_read
+        xml_kb_search = "`<knowledge_base><action>search_knowledge</action><query_keywords>architecture,api</query_keywords></knowledge_base>`"
+        json_kb_search = "using the `knowledge_base` tool (search_knowledge action)"
+        kb_search_example = json_kb_search if use_native_instructions else xml_kb_search
 
         xml_workspace_list = "`<file_system><action>list</action></file_system>`"
         json_workspace_list = "using the `file_system` tool (list action)"
@@ -898,9 +910,7 @@ class AgentWorkflowManager:
                 logger.warning(f"Agent {agent.agent_id} ({agent.agent_type}) in state {agent.state} has no task description. Using generic placeholder.")
 
         personality_text = agent._config_system_prompt.strip() if hasattr(agent, '_config_system_prompt') and agent._config_system_prompt else ""
-        if agent.agent_type == AGENT_TYPE_ADMIN and "admin_memory_context" in agent.agent_config.get("config", {}):
-            memory_context = agent.agent_config["config"]["admin_memory_context"]
-            personality_text += f"\n\n{memory_context}"
+
 
         state_formatting_context = {
             "agent_id": agent.agent_id, "persona": agent.persona,
@@ -915,7 +925,7 @@ class AgentWorkflowManager:
             "tool_instructions": tool_instructions,
             "tool_examples": tool_examples,
             "report_examples": report_examples,
-            "whiteboard_read_example": whiteboard_read_example,
+            "kb_search_example": kb_search_example,
             "workspace_list_example": workspace_list_example
         }
         try:

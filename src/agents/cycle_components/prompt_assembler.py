@@ -224,7 +224,10 @@ class PromptAssembler:
             for task in task_list:
                 uuid = task['uuid']
                 desc = task['description'] or 'No description'
-                progress = task.get('task_progress') or 'todo'
+                try:
+                    progress = task['task_progress'] or 'todo'
+                except (KeyError, AttributeError):
+                    progress = 'todo'
                 truncated_desc = (desc[:80] + '...') if len(desc) > 80 else desc
                 active_marker = " ◄ ACTIVE" if active_task_id and str(uuid) == str(active_task_id) else ""
                 lines.append(f"  - [{progress}] {truncated_desc} (task_id: {uuid}){active_marker}")

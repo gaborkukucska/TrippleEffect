@@ -193,6 +193,24 @@ class NextStepScheduler:
                                 logger.error(f"NextStepScheduler: Failed to apply intervention for looping PM: {e}")
 
                 logger.info(f"NextStepScheduler: Agent '{agent_id}' is in a persistent state ('{agent.state}'). Reactivating for continuous work.")
+                
+                # ENFORCEMENT: PM_AUDIT state cycle limits
+                if getattr(agent, 'agent_type', '') == AGENT_TYPE_PM and getattr(agent, 'state', '') == PM_STATE_AUDIT:
+                    current_count = getattr(agent, '_pm_audit_cycle_count', 0)
+                    setattr(agent, '_pm_audit_cycle_count', current_count + 1)
+                    
+                    if getattr(agent, '_pm_audit_cycle_count') > 5:
+                        if hasattr(self._manager, 'workflow_manager'):
+                            logger.critical(f"NextStepScheduler: PM '{agent_id}' has been in 'pm_audit' for {getattr(agent, '_pm_audit_cycle_count')} cycles. Forcing transition to pm_standby to prevent infinite loop.")
+                            self._manager.workflow_manager.change_state(agent, PM_STATE_STANDBY)
+                            setattr(agent, '_pm_audit_cycle_count', 0)
+                            
+                            override_msg = "[System Enforcement]: You failed to complete the audit within the maximum allowed steps. The system has automatically transitioned you to standby state to prevent compute waste."
+                            agent.message_history.append({"role": "system", "content": override_msg})
+                            
+                            self._log_end_of_schedule_next_step(agent, "Path B-PMAudit-Limit-Override")
+                            return
+                
                 agent.set_status(AGENT_STATUS_IDLE)
                 await self._schedule_new_cycle(agent, 0)
             # ROOT CAUSE FIX: Removed aggressive reactivation logic that was causing infinite loops

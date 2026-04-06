@@ -1,11 +1,83 @@
 # TrippleEffect - Current Issues
 
-**Last Updated:** 2026-04-03
-**Based on log:** `app_20260326_174455_1570101.log` and prior runs + stability session 2026-04-03
+**Last Updated:** 2026-04-06
+**Based on log:** `app_20260405_200302_346757.log` (SnakeyDoodle test run)
+
+---
+
+## Active Critical Issues 
+
+*(No active critical framework blockers - recent SnakeyDoodle issues successfully resolved!)*
 
 ---
 
 ## Recently Resolved Issues
+
+### +16. Whiteboard Context Bloating (Deprecation)
+
+- **Severity:** High (P1)
+- **Description:** Global `whiteboard.md` system scaled improperly, causing extreme context bloat as simple progress entries accumulated into thousands of lines.
+- **Root Cause:** Flat-file global context scaling.
+- **Fix:** (RESOLVED) Deprecated `whiteboard.md` entirely in favor of vectorizing project context into the scalable SQLite `knowledge_base` tool using the `search_knowledge` tool alias routing. Prompt structures mapped over dynamically.
+- **Files:** `prompts.yaml`, `src/config/settings.py`, `src/tools/knowledge_base.py`, `src/agents/workflow_manager.py`, `src/agents/manager.py`
+
+### +15. Empty Response / Watchdog Context Accumulation Loop 
+
+- **Severity:** Critical (P0)
+- **Description:** Small local LLMs regularly generate empty responses when confused or overwhelmed. Every empty response triggered a `[Framework Watchdog]` intervention injected into history.
+- **Root Cause:** No hard-clearing or summarization bounds existed for watchdog warnings.
+- **Fix:** (RESOLVED) Implemented strict pruning in `AgentHealthMonitor._execute_recovery_action`. The system now completely strips old `[Framework Watchdog]` blocks and trims other warnings when thresholds are hit to prevent the "wall of warnings" loop.
+- **Files:** `src/agents/cycle_components/agent_health_monitor.py`
+
+### +14. PM Audit State (pm_audit) Stalling
+
+- **Severity:** Critical (P0)
+- **Description:** The PM transitioned to `pm_audit` three times, spending 4.5 hours in total spinning in Watchdog-reschedule loops.
+- **Root Cause:** The `pm_audit` system prompt lacked a concrete, actionable loop mechanism (no step-by-step checklist).
+- **Fix:** (RESOLVED) Restructured the `pm_audit` prompt into a strict 3-step concrete flow. Added a hard cycle limit (5 cycles) to `next_step_scheduler.py` before forcing a transition to `pm_standby`.
+- **Files:** `src/config/settings.py`, `src/agents/cycle_components/next_step_scheduler.py`
+
+### +13. PM Standby ↔ Manage Micro-Oscillation
+
+- **Severity:** High (P1)
+- **Description:** The PM wasted massive compute toggling between `pm_standby` and `pm_manage` continuously when workers were active.
+- **Root Cause:** Naive timer-based waking rules lacking exponential backoff.
+- **Fix:** (RESOLVED) Re-written PM sleep/standby logic in `manager.py`. The PM now uses an exponentially decaying backoff curve based on state triggers and remains asleep unless hard events occur.
+- **Files:** `src/agents/manager.py`
+
+### +12. `send_message` Blocked in WORK State
+
+- **Severity:** High (P1)
+- **Description:** Workers attempted to use `send_message` while in `worker_work` state. The framework blocked this causing errors and confusion loops.
+- **Fix:** (RESOLVED) Removed the strict worker_work tool blocking rule from `cycle_handler.py`, enabling native communication via `send_message` at all worker stages.
+- **Files:** `src/agents/cycle_handler.py`
+
+### +11. Cross-Cycle Tool Duplicate Loop Recovery Failure
+
+- **Severity:** High (P1)
+- **Description:** Agents attempting duplicate read tool calls were given generic blocks, causing them to "forget" context and repeatedly stall trying to fetch it.
+- **Fix:** (RESOLVED) Implemented dynamic string preservation in `cycle_handler.py`. By extending the maximum string truncation limit to 4,000 characters for read-only tools, agents get their missing context re-injected gracefully without stalling out.
+- **Files:** `src/agents/cycle_handler.py`
+
+### +10. PM Initial Task Assignment Loop & Filter Parsing
+
+- **Severity:** High (PM mistakenly tried to re-assign or work on the root system task)
+- **Description:** After a project was kicked off and successfully decomposed by the PM, the PM's task list still showed the initial root system task (`PROJECT KICK-OFF: ...`). This caused the PM to get confused and hallucinate work loops.
+- **Root Cause:**
+  1. `PMKickoffWorkflow` used `tags` instead of `tags_filter` during the `list_tasks` phase of its cleanup routine, causing the query to return all tasks instead of specifically the root task. This caused the cleanup routine to quietly fail, leaving the task in the `pending` state permanently.
+  2. The PM's subsequent `list_tasks` attempt failed to automatically exclude the pending initial task due to formatting anomalies.
+- **Fix:** (RESOLVED)
+  1. Refactored the kickoff script to rigorously target `"tags_filter": "project_kickoff,auto_created_by_framework"` so the initial task is correctly retrieved and marked `.done()`.
+  2. Enhanced `project_management.py` with a tolerant fallback that automatically maps python list `tags: [...]` arguments provided by the LLM into well-formatted `tags_filter` strings upon query execution.
+- **Files:** `src/workflows/pm_kickoff_workflow.py`, `src/tools/project_management.py`
+
+### +9. UI Task Visibility Synchronization
+
+- **Severity:** Moderate (UI data stale without hard refresh)
+- **Description:** While workers correctly transitioned their assigned Taskwarrior backend tasks to `doing` through state logic when entering `worker_work`, the frontend UI's "Active Tasks" column was not notified of this progress change, remaining empty.
+- **Root Cause:** The `CycleHandler`'s gatekeeping verification routine for task transitions correctly performed database writes but lacked an event-hook to push an update back to the React UI context.
+- **Fix:** (RESOLVED) `_handle_worker_task_tracking` specifically fires `await broadcast(json.dumps({"type": "project_tasks_updated"...}))` natively whenever a worker task's progress shifts into the `doing` phase in real-time. Native tools and Cycle handlers now strictly strip and respect the `task_id` argument to enforce tracking. Additionally, generalized `.get()` attribute fetches across `tasklib` querysets were mapped over to safer array/dictionary index calls.
+- **Files:** `src/agents/cycle_handler.py`, `src/agents/core.py`, `src/agents/cycle_components/prompt_assembler.py`, `src/agents/workflow_manager.py`
 
 ### +8. Message Read/Acknowledgement System (BUG-2)
 

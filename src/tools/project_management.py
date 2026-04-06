@@ -105,6 +105,8 @@ class ProjectManagementTool(BaseTool):
         # Standard progress mapping rules to give LLMs flexibility
         if progress_norm in ["todo", "not_started", "open", "new", "pending"]:
             return "todo", "pending"
+        elif progress_norm in ["doing"]:
+            return "doing", "pending"
         elif progress_norm in ["in_progress", "active", "working", "started", "progressing"]:
             return "in_progress", "pending"
         elif progress_norm in ["waiting", "blocked", "paused", "on_hold"]:
@@ -152,6 +154,7 @@ class ProjectManagementTool(BaseTool):
             "show": "list_tasks",
             "show_tasks": "list_tasks",
             "get_tasks": "list_tasks",
+            "list_subtasks": "list_tasks",
             "update_project_status": "modify_task",
             "update_task_status": "modify_task",
             "update_status": "modify_task",
@@ -286,6 +289,40 @@ class ProjectManagementTool(BaseTool):
                         task['depends'] = resolved_deps
                         logger.info(f"ProjectManagementTool: Set {len(resolved_deps)} dependencies for task.")
 
+                # --- AUTO-LINK DEPENDENCY FOR DECOMPOSE STATE ---
+                manager = kwargs.get("manager")
+                if manager:
+                    agent = manager.agents.get(agent_id)
+                    if agent and agent.agent_type == "worker" and agent.state == "worker_decompose" and getattr(agent, 'current_task_id', None):
+                        try:
+                            parent_task_id = str(agent.current_task_id).strip()
+                            parent_is_uuid = bool(re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', parent_task_id, re.IGNORECASE))
+                            parent_task = tw.tasks.get(uuid=parent_task_id) if parent_is_uuid else tw.tasks.get(id=int(parent_task_id))
+                            
+                            if 'depends' not in task or task['depends'] is None:
+                                task['depends'] = set()
+                            
+                            task['depends'].add(parent_task)
+                            
+                            # --- MODIFICATION: Make parent task decomposed and reassign to PM ---
+                            parent_task['task_progress'] = 'decomposed'
+                            
+                            pm_agent_id = next(
+                                (a_id for a_id, a in manager.agents.items()
+                                 if a.agent_type == "pm" and 
+                                 a.agent_config.get("config", {}).get("project_name_context") == project_name), 
+                                None
+                            )
+                            if pm_agent_id:
+                                parent_task['assignee'] = pm_agent_id
+                            
+                            parent_task.save()
+                            
+                            logger.info(f"ProjectManagementTool: Auto-linked new sub-task to parent task '{parent_task_id}'. Parent task marked as 'decomposed' and assigned to '{pm_agent_id}'.")
+                        except Exception as e:
+                            logger.warning(f"ProjectManagementTool: Failed to auto-link parent task '{agent.current_task_id}': {e}")
+                # ------------------------------------------------
+
                 try:
                     task.save()
                     asyncio.create_task(broadcast(json.dumps({"type": "project_tasks_updated", "project_name": project_name, "session_name": session_name})))
@@ -352,9 +389,16 @@ class ProjectManagementTool(BaseTool):
                         }
                     raise  # re-raise non-JSON errors
                 
-                # Apply special unassigned assignee_filter post-query
                 if "assignee_filter" in kwargs and str(kwargs["assignee_filter"]).strip().lower() in ["none", "null", "unassigned"]:
                     tasks = [t for t in tasks if t['assignee'] is None or str(t['assignee']).strip() == ""]
+
+                # Fallback: if 'tags' is passed but not 'tags_filter', use 'tags' as filter to be tolerant of LLM errors
+                if "tags_filter" not in kwargs and kwargs.get("tags"):
+                    tags_arg = kwargs.get("tags")
+                    if isinstance(tags_arg, list):
+                        kwargs["tags_filter"] = ",".join(str(t) for t in tags_arg)
+                    elif isinstance(tags_arg, str):
+                        kwargs["tags_filter"] = tags_arg
 
                 if "tags_filter" in kwargs:
                     try:
@@ -425,6 +469,26 @@ class ProjectManagementTool(BaseTool):
                         kwargs[field] = value
                     elif field in ["assignee", "assignee_agent_id"]:
                         kwargs["assignee_agent_id"] = value
+
+                # Auto-extract from hallucinated 'fields' dict or string
+                fields_arg = kwargs.get("fields")
+                if fields_arg and isinstance(fields_arg, dict):
+                    for fk, fv in fields_arg.items():
+                        fk_lower = str(fk).lower().strip()
+                        if fk_lower and fv and (fk_lower not in kwargs or kwargs.get(fk_lower) in (None, '')):
+                            kwargs[fk_lower] = fv
+                    logger.info(f"ProjectManagementTool: Auto-extracted fields from 'fields' dict: {list(fields_arg.keys())}")
+                elif fields_arg and isinstance(fields_arg, str) and fields_arg.strip():
+                    # Try to parse "task_progress=finished" or "status:done" style
+                    for sep in ['=', ':']:
+                        if sep in fields_arg:
+                            parts = fields_arg.split(sep, 1)
+                            if len(parts) == 2:
+                                fk, fv = parts[0].strip().lower(), parts[1].strip()
+                                if fk and fv and (fk not in kwargs or kwargs.get(fk) in (None, '')):
+                                    kwargs[fk] = fv
+                                    logger.info(f"ProjectManagementTool: Auto-extracted field '{fk}'='{fv}' from 'fields' string")
+                                break
 
                 try:
                     if '-' in t_id_str and len(t_id_str) > 10:
@@ -517,7 +581,13 @@ class ProjectManagementTool(BaseTool):
                         return {"status": "error", "message": f"Dependency task '{kwargs['depends']}' not found. Integer IDs shift when tasks are completed. Use UUID or custom alias instead. Detail: {e}"}
 
                 if not modified_fields:
-                    return {"status": "error", "message": "No valid fields provided for modification. Valid fields are: status, description, priority, tags, depends, assignee_agent_id."}
+                    return {"status": "error", "message": (
+                        "No valid fields provided for modification. "
+                        "You must provide at least one of these as a DIRECT parameter (not inside a 'fields' wrapper): "
+                        "task_progress, status, description, priority, tags, depends, assignee_agent_id. "
+                        "CORRECT example: <project_management><action>modify_task</action>"
+                        "<task_id>UUID</task_id><task_progress>finished</task_progress></project_management>"
+                    )}
 
                 task.save()
                 asyncio.create_task(broadcast(json.dumps({"type": "project_tasks_updated", "project_name": project_name, "session_name": session_name})))

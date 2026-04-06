@@ -329,7 +329,16 @@ class AgentInteractionHandler:
             # Deliver immediately and wake them up
             target_agent.message_history.append(formatted_message)
             logger.debug(f"InteractionHandler: Appended message from '{sender_id}' to history of '{resolved_target_id}' (State: {target_agent.state}).")
-            delivery_status = {"status": "delivered", "message": f"Message successfully routed to '{resolved_target_id}'."}
+            content_preview = message_content[:80] + ('...' if len(message_content) > 80 else '')
+            delivery_status = {
+                "status": "delivered",
+                "message": (
+                    f"Message successfully delivered to '{resolved_target_id}'. "
+                    f"Content sent: \"{content_preview}\". "
+                    f"Do NOT re-send this same message. The recipient has received it. "
+                    f"Wait for their response or move on to your next management action."
+                )
+            }
         else:
             # Queue it
             if not hasattr(target_agent, 'message_inbox'):
@@ -337,9 +346,15 @@ class AgentInteractionHandler:
             target_agent.message_inbox.append(formatted_message)
             logger.info(f"InteractionHandler: Target '{resolved_target_id}' is in non-interruptible state '{target_agent.state}'. Queuing message in inbox.")
             
+            content_preview = message_content[:80] + ('...' if len(message_content) > 80 else '')
             delivery_status = {
                 "status": "queued",
-                "message": f"Your message to '{resolved_target_id}' was queued because they are currently busy processing. It will be delivered when they are available or when they next respond."
+                "message": (
+                    f"Your message to '{resolved_target_id}' was queued (they are currently busy). "
+                    f"Content queued: \"{content_preview}\". "
+                    f"It will be delivered when they are available. "
+                    f"Do NOT re-send this message. Move on to your next management action."
+                )
             }
         # --- END NEW DELIVERY LOGIC ---
 

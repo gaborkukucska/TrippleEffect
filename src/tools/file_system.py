@@ -197,13 +197,19 @@ class FileSystemTool(BaseTool):
         default_scope = "shared" if project_name and session_name else "private"
         scope = kwargs.get("scope", default_scope).lower()
         _fo = self._first_of # Shorthand — preserves empty strings unlike `or`
-        filename = _fo(kwargs.get("filename"), kwargs.get("filepath"), kwargs.get("file"), kwargs.get("path")) # Used by read, write, find_replace, regex_replace
+        filename = _fo(kwargs.get("filename"), kwargs.get("filepath"), kwargs.get("file"), kwargs.get("path"), kwargs.get("file_path"), kwargs.get("file_name"), kwargs.get("target_file"), kwargs.get("name")) # Used by read, write, find_replace, regex_replace
         if isinstance(filename, str): filename = filename.strip()
-        content = _fo(kwargs.get("content"), kwargs.get("text")) # Used by write, append, insert_lines
-        relative_path = _fo(kwargs.get("path"), kwargs.get("filename"), kwargs.get("filepath")) # Used by list, mkdir, delete, copy, move
+        content = _fo(kwargs.get("content"), kwargs.get("text"), kwargs.get("data"), kwargs.get("body"), kwargs.get("code"), kwargs.get("string"), kwargs.get("content_str")) # Used by write, append, insert_lines
+        relative_path = _fo(kwargs.get("path"), kwargs.get("filename"), kwargs.get("filepath"), kwargs.get("dir"), kwargs.get("directory"), kwargs.get("folder"), kwargs.get("target_dir")) # Used by list, mkdir, delete, copy, move
         if isinstance(relative_path, str): relative_path = relative_path.strip()
         destination_path = kwargs.get("destination_path") # Used by copy, move
         if isinstance(destination_path, str): destination_path = destination_path.strip()
+        
+        # --- BLOCK BRACE EXPANSION HALLUCINATIONS UNIVERSALLY ---
+        for param_name, param_val in [("filename", filename), ("path", relative_path), ("destination_path", destination_path)]:
+            if isinstance(param_val, str) and "{" in param_val and "}" in param_val:
+                return {"status": "error", "message": f"Brace expansion (e.g. {{a,b}}) is NOT supported. Please provide exactly one valid path per tool call. Do not use {{ or }} in the '{param_name}': {param_val}"}
+
         find_text = _fo(kwargs.get("find_text"), kwargs.get("search"), kwargs.get("find"), kwargs.get("search_string"), kwargs.get("search_text"), kwargs.get("search_term")) # Used by find_replace
         replace_text = _fo(kwargs.get("replace_text"), kwargs.get("replace"), kwargs.get("replacement"), kwargs.get("replacement_text"), kwargs.get("replace_string"), kwargs.get("replace_term")) # Used by find_replace, regex_replace
         regex_pattern = kwargs.get("regex_pattern") # Used by regex_replace
@@ -768,7 +774,23 @@ Pushes changes to a remote repository.
         """Reads content from a file within the specified base path."""
         validated_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
         if not validated_path: return {"status": "error", "message": f"Invalid or disallowed file path '{filename}' in {scope_description}."}
-        if not validated_path.is_file(): return {"status": "error", "message": f"File not found or is not a regular file at '{filename}' in {scope_description}."}
+        if not validated_path.is_file():
+            # Help the agent by listing what files DO exist in the parent dir
+            parent = validated_path.parent
+            existing_files = []
+            if parent.is_dir():
+                try:
+                    existing_files = sorted([f.name for f in parent.iterdir() if f.is_file()][:20])
+                except Exception:
+                    pass
+            hint = ""
+            if existing_files:
+                hint = f" Available files in '{parent.name}/': {', '.join(existing_files)}"
+            elif parent.is_dir():
+                hint = f" The directory '{parent.name}/' exists but contains no files."
+            else:
+                hint = f" The directory '{parent.name}/' does not exist. Use 'list' action first to discover the workspace structure."
+            return {"status": "error", "message": f"File not found: '{filename}' in {scope_description}.{hint}"}
         try:
             content = await asyncio.to_thread(validated_path.read_text, encoding='utf-8')
             if start_line is not None or end_line is not None:
@@ -854,7 +876,16 @@ Pushes changes to a remote repository.
         """Finds and replaces all occurrences of text in a file within the specified scope."""
         validated_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
         if not validated_path: return {"status": "error", "message": f"Invalid or disallowed file path '{filename}' in {scope_description}."}
-        if not validated_path.is_file(): return {"status": "error", "message": f"File not found or is not a regular file at '{filename}' in {scope_description}."}
+        if not validated_path.is_file():
+            parent = validated_path.parent
+            existing_files = []
+            if parent.is_dir():
+                try:
+                    existing_files = sorted([f.name for f in parent.iterdir() if f.is_file()][:20])
+                except Exception:
+                    pass
+            hint = f" Available files in '{parent.name}/': {', '.join(existing_files)}" if existing_files else ""
+            return {"status": "error", "message": f"File not found: '{filename}' in {scope_description}.{hint}"}
 
         try:
             def find_replace_sync():
@@ -878,6 +909,9 @@ Pushes changes to a remote repository.
     # --- NEW: _create_directory method ---
     async def _create_directory(self, base_path: Path, relative_dir: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
          """Creates a directory within the specified base path."""
+         if "{" in relative_dir and "}" in relative_dir:
+             return {"status": "error", "message": f"Brace expansion (e.g. {{a,b}}) is NOT supported. Please provide exactly one valid directory path per tool call. Do not use {{ or }} in the path '{relative_dir}'."}
+             
          validated_path = await self._resolve_and_validate_path(base_path, relative_dir, agent_id, scope_description)
          if not validated_path: return {"status": "error", "message": f"Invalid or disallowed directory path '{relative_dir}' in {scope_description}."}
          if validated_path.exists():
@@ -924,7 +958,16 @@ Pushes changes to a remote repository.
     async def _regex_replace_in_file(self, base_path: Path, filename: str, regex_pattern: str, replace_text: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
         validated_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
         if not validated_path: return {"status": "error", "message": f"Invalid or disallowed file path '{filename}' in {scope_description}."}
-        if not validated_path.is_file(): return {"status": "error", "message": f"File not found or is not a regular file at '{filename}' in {scope_description}."}
+        if not validated_path.is_file():
+            parent = validated_path.parent
+            existing_files = []
+            if parent.is_dir():
+                try:
+                    existing_files = sorted([f.name for f in parent.iterdir() if f.is_file()][:20])
+                except Exception:
+                    pass
+            hint = f" Available files in '{parent.name}/': {', '.join(existing_files)}" if existing_files else ""
+            return {"status": "error", "message": f"File not found: '{filename}' in {scope_description}.{hint}"}
         try:
             def regex_replace_sync():
                 original_content = validated_path.read_text(encoding='utf-8')

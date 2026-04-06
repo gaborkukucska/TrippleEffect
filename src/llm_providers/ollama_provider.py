@@ -13,6 +13,17 @@ from src.agents.constants import (
 
 logger = logging.getLogger(__name__)
 
+# --- Concurrency Limiter ---
+_ollama_semaphores = {}
+
+def get_ollama_semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    if loop not in _ollama_semaphores:
+        limit = getattr(settings, 'OLLAMA_CONCURRENCY_LIMIT', 2)
+        _ollama_semaphores[loop] = asyncio.Semaphore(limit)
+    return _ollama_semaphores[loop]
+# ---------------------------
+
 RETRYABLE_AIOHTTP_EXCEPTIONS = (
     aiohttp.ClientConnectionError,
     aiohttp.ClientPayloadError,
@@ -285,6 +296,11 @@ class OllamaProvider(BaseLLMProvider):
         last_exception = None
         response: Optional[aiohttp.ClientResponse] = None
 
+        semaphore = get_ollama_semaphore()
+        logger.debug(f"OllamaProvider '{model}': Waiting for semaphore (limit {semaphore._value})...")
+        await semaphore.acquire()
+        logger.debug(f"OllamaProvider '{model}': Semaphore acquired!")
+
         try: 
             for attempt in range(MAX_RETRIES + 1):
                 last_exception = None
@@ -325,6 +341,19 @@ class OllamaProvider(BaseLLMProvider):
                     if response_status >= 400:
                         response_text = await self._read_response_safe(response)
                         logger.debug(f"Ollama API error status {response_status}. Body: {response_text[:500]}...")
+
+                        # --- NATIVE TOOL FALLBACK START ---
+                        is_xml_crash = response_status == 500 and "XML syntax error" in response_text
+                        is_unsupported_tools = response_status == 400 and "does not support tools" in response_text
+                        
+                        if (is_xml_crash or is_unsupported_tools) and "tools" in payload:
+                            logger.warning(f"Ollama native tool execution failed ({response_status}): '{response_text[:100]}'. Stripping tools from payload and falling back to RAW mode!")
+                            del payload["tools"]
+                            payload["stream"] = self.streaming_mode
+                            if response and not response.closed: response.release()
+                            continue
+                        # --- NATIVE TOOL FALLBACK END ---
+
                         if response_status in RETRYABLE_STATUS_CODES or response_status >= 500:
                             last_exception = aiohttp.ClientResponseError(req_info, response.history, status=response_status, message=f"Status {response_status}", headers=response.headers)
                             logger.warning(f"Ollama API Error attempt {attempt + 1}: Status {response_status}, Resp: {response_text[:200]}...")
@@ -470,7 +499,42 @@ class OllamaProvider(BaseLLMProvider):
                     response_data_text = ""
                     try:
                          response_data_text = await response.text()
-                         response_data = json.loads(response_data_text)
+                         try:
+                             response_data = json.loads(response_data_text)
+                         except json.JSONDecodeError:
+                             logger.warning(f"Failed strict non-streaming JSON decode. Attempting NDJSON fallback. Raw preview: {response_data_text[:200]}")
+                             lines = response_data_text.strip().split("\n")
+                             accumulated_tool_calls = []
+                             accumulated_content = ""
+                             is_done = False
+                             has_error = None
+                             for line in lines:
+                                 if not line.strip(): continue
+                                 try:
+                                     chunk_data = json.loads(line)
+                                     if chunk_data.get("error"):
+                                         has_error = chunk_data["error"]
+                                     msg = chunk_data.get("message", {})
+                                     if msg.get("tool_calls"):
+                                         accumulated_tool_calls.extend(msg["tool_calls"])
+                                     if msg.get("content"):
+                                         accumulated_content += msg["content"]
+                                     if chunk_data.get("done"):
+                                         is_done = True
+                                 except json.JSONDecodeError:
+                                     logger.error(f"Failed to decode NDJSON fallback line: {line[:100]}...")
+                             
+                             response_data = {
+                                 "message": {
+                                     "role": "assistant",
+                                     "content": accumulated_content
+                                 },
+                                 "done": is_done
+                             }
+                             if accumulated_tool_calls:
+                                 response_data["message"]["tool_calls"] = accumulated_tool_calls
+                             if has_error:
+                                 response_data["error"] = has_error
                          if response_data.get("error"):
                              error_msg = response_data["error"]
                              logger.error(f"Ollama non-streaming error: {error_msg}")
@@ -541,6 +605,8 @@ class OllamaProvider(BaseLLMProvider):
             else:
                 logger.warning(f"OllamaProvider: stream_completion finished for model {model}, but error encountered during stream.")
         finally:
+            semaphore.release()
+            logger.debug(f"OllamaProvider '{model}': Semaphore released!")
             if session and not session.closed:
                 await session.close()
                 logger.debug("OllamaProvider: Closed per-request aiohttp ClientSession.")

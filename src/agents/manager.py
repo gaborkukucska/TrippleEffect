@@ -475,7 +475,6 @@ class AgentManager:
                         has_inbox = hasattr(agent, 'message_inbox') and len(agent.message_inbox) > 0
                         
                         # Check if workers in the team are in worker_wait (finished their task, need new assignment)
-                        has_waiting_workers = False
                         waiting_workers = []
                         team_id = self.state_manager.get_agent_team(agent.agent_id)
                         if team_id:
@@ -484,9 +483,32 @@ class AgentManager:
                                 a for a in team_agents
                                 if a.agent_type == AGENT_TYPE_WORKER and a.state == WORKER_STATE_WAIT
                             ]
-                            has_waiting_workers = len(waiting_workers) > 0
                         
-                        if has_inbox or has_waiting_workers:
+                        has_waiting_workers = len(waiting_workers) > 0
+                        
+                        # Implement Backoff to prevent PM Standby oscillation:
+                        # PMs can only be woken by waiting workers if enough time has passed (to prevent 1-second loops).
+                        # Inbox messages bypass this backoff since they represent explicit new events.
+                        current_time = time.time()
+                        last_wake = getattr(agent, '_last_standby_wake_time', 0)
+                        
+                        if has_inbox:
+                            # Immediate wake
+                            should_wake = True
+                            logger.info(f"PM '{agent.agent_id}' has INBOX MESSAGES. Waking immediately.")
+                        elif has_waiting_workers:
+                            # Wake only if 60 seconds have passed since last standby wake
+                            time_since_wake = current_time - last_wake
+                            if time_since_wake > 60:
+                                should_wake = True
+                                logger.info(f"PM '{agent.agent_id}' has waiting workers and backoff ({time_since_wake:.1f}s > 60s) cleared. Waking.")
+                            else:
+                                should_wake = False
+                        else:
+                            should_wake = False
+                        
+                        if should_wake:
+                            agent._last_standby_wake_time = current_time
                             reason = []
                             if has_inbox:
                                 reason.append(f"{len(agent.message_inbox)} inbox message(s)")
@@ -774,12 +796,6 @@ class AgentManager:
                 safe_project_name = re.sub(r'[^\w\-. ]', '_', self.current_project)
                 workspace_path = settings.PROJECTS_BASE_DIR / safe_project_name / self.current_session / "shared_workspace"
                 workspace_path.mkdir(parents=True, exist_ok=True)
-                
-                # Auto-create whiteboard.md if it doesn't exist yet
-                whiteboard_path = workspace_path / "whiteboard.md"
-                if not whiteboard_path.exists():
-                    whiteboard_path.write_text(f"# {self.current_project} - Shared Whiteboard\n\nUse this file to share progress, designs, and notes with your teammates.\n\n")
-                    logger.info(f"AgentManager: Auto-created whiteboard.md for project '{self.current_project}'.")
                 
                 file_list = []
                 for item in sorted(workspace_path.rglob("*")):

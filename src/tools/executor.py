@@ -616,7 +616,7 @@ class ToolExecutor:
                 **kwargs_for_tool 
             }
 
-            if tool_name == "system_help" or tool_name == "tool_information":
+            if tool_name == "system_help" or tool_name == "tool_information" or tool_name == "project_management":
                 if manager: execute_args["manager"] = manager
                 else:
                     error_msg = f"Error: Internal configuration error - manager instance missing for '{tool_name}' tool."
@@ -714,12 +714,31 @@ class ToolExecutor:
             else:
                 # Handle structured (dict) vs. simple (str) tool results for all other tools
                 if isinstance(result, dict) and 'status' in result:
-                    # This is a structured response from a tool like FileSystemTool
+                    # This is a structured response from a tool like FileSystemTool or CommandExecutor
                     if result['status'] == 'success':
-                        # Prefer 'message' for user-facing confirmation, fallback to 'content'
-                        result_str = result.get('message', result.get('content', 'Tool execution was successful.'))
-                        if not isinstance(result_str, str):
-                            result_str = json.dumps(result_str, indent=2)
+                        display_result = result.copy()
+                        display_result.pop('status', None)
+                        msg = display_result.pop('message', None)
+                        
+                        parts = []
+                        if msg:
+                            parts.append(msg)
+                            
+                        # If there is just one extra string field like 'content', just dump it cleanly
+                        if len(display_result) == 1 and 'content' in display_result and isinstance(display_result['content'], str):
+                            parts.append(display_result['content'])
+                        else:
+                            # Append extra returned fields so the model doesn't miss stdout, stderr, lists, etc.
+                            for k, v in display_result.items():
+                                # Prevent escaping large text blocks
+                                if isinstance(v, str) and ('\n' in v or len(v) > 50):
+                                    parts.append(f"--- {k.upper()} ---\n{v}")
+                                else:
+                                    parts.append(f"[{k}]: {json.dumps(v) if isinstance(v, (dict, list)) else v}")
+                                    
+                        result_str = "\n".join(parts).strip()
+                        if not result_str:
+                            result_str = "Tool execution was successful."
                     else: # status == 'error'
                         result_str = f"Error from tool '{tool_name}': {result.get('message', 'An unspecified error occurred.')}"
                     logger.info(f"Executor: Tool '{tool_name}' successful. Structured result: {result_str[:150]}...")

@@ -71,18 +71,21 @@ class AgentCycleHandler:
         """
         When a worker transitions to worker_work with a task_id, automatically:
         1. Set agent.active_task_id so the UI can display it.
-        2. Update the Taskwarrior database to mark the task as 'in_progress'.
+        2. Update the Taskwarrior database to mark the task as 'doing'.
         """
-        if not task_id or agent.agent_type != AGENT_TYPE_WORKER:
+        if agent.agent_type != AGENT_TYPE_WORKER:
             return
         resolved = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state)
         if resolved != WORKER_STATE_WORK:
             return
 
+        if not task_id:
+            raise ValueError(f"You MUST specify a 'task_id' parameter when transitioning to '{WORKER_STATE_WORK}' state. If using native tools, pass it as a parameter in your call. If using XML, add the attribute: <request_state state='worker_work' task_id='YOUR_SUB_TASK_ID'/>.")
+
         agent.active_task_id = task_id
         logger.info(f"CycleHandler: Worker '{agent.agent_id}' set active_task_id='{task_id}' for work state transition.")
 
-        # Auto-update Taskwarrior progress to in_progress
+        # Auto-update Taskwarrior progress to doing
         try:
             if self._manager.current_project and self._manager.current_session:
                 from src.tools.project_management import ProjectManagementTool, TASKLIB_AVAILABLE
@@ -91,12 +94,59 @@ class AgentCycleHandler:
                     tw = pm_tool._get_taskwarrior_instance(self._manager.current_project, self._manager.current_session)
                     if tw:
                         try:
-                            task = tw.tasks.get(uuid=task_id)
-                            task['task_progress'] = 'in_progress'
-                            task.save()
-                            logger.info(f"CycleHandler: Auto-updated task '{task_id}' to 'in_progress' for worker '{agent.agent_id}'.")
+                            # Resolve aliases (workers use short IDs like "15", not UUIDs)
+                            aliases = pm_tool._load_aliases(self._manager.current_project, self._manager.current_session)
+                            resolved_id = str(task_id).strip()
+                            if resolved_id in aliases:
+                                resolved_id = aliases[resolved_id]
+                            
+                            # Look up task by UUID or numeric ID
+                            if '-' in resolved_id and len(resolved_id) > 10:
+                                task = tw.tasks.get(uuid=resolved_id)
+                            elif resolved_id.isdigit():
+                                task = tw.tasks.get(id=int(resolved_id))
+                            else:
+                                task = None
+                            
+                            if task:
+                                # CRITICAL FIX: Prevent worker from selecting a task that is already decomposed
+                                # tasklib Task uses bracket access, not .get()
+                                try:
+                                    current_progress = task['task_progress']
+                                except (KeyError, AttributeError):
+                                    current_progress = None
+                                    
+                                if current_progress == 'decomposed':
+                                    raise ValueError(f"Task '{task_id}' has already been marked as 'decomposed'. You MUST select one of the new sub-tasks you created, NOT the parent task.")
+                                    
+                                task['task_progress'] = 'doing'
+                                task.save()
+                                logger.info(f"CycleHandler: Auto-updated task '{task_id}' (resolved: '{resolved_id}') to 'doing' for worker '{agent.agent_id}'.")
+                                # Auto-trigger UI refresh for tasks
+                                try:
+                                    import asyncio
+                                    import json
+                                    from src.api.websocket_manager import broadcast
+                                    try:
+                                        asyncio.get_running_loop().create_task(
+                                            broadcast(json.dumps({
+                                                "type": "project_tasks_updated",
+                                                "project_name": self._manager.current_project,
+                                                "session_name": self._manager.current_session
+                                            }))
+                                        )
+                                    except RuntimeError:
+                                        pass # Not in an event loop, should rarely happen here
+                                except Exception as e:
+                                    logger.warning(f"CycleHandler: Failed to trigger UI task refresh: {e}")
+                            else:
+                                logger.warning(f"CycleHandler: Could not find task '{task_id}' (resolved: '{resolved_id}') in Taskwarrior for auto-update.")
+                        except ValueError:
+                            raise # Re-raise our validation error
                         except Exception as tw_err:
                             logger.warning(f"CycleHandler: Failed to auto-update task '{task_id}': {tw_err}")
+        except ValueError:
+            raise # Re-raise validation error
         except Exception as e:
             logger.warning(f"CycleHandler: Error auto-updating task '{task_id}' to in_progress: {e}")
 
@@ -741,26 +791,7 @@ class AgentCycleHandler:
                         if workflow_result.next_agent_status: agent.set_status(workflow_result.next_agent_status)
                         if workflow_result.ui_message_data: await self._manager.send_to_ui(workflow_result.ui_message_data)
 
-                        # START of inserted code block
-                        if agent.agent_id == BOOTSTRAP_AGENT_ID and workflow_result.ui_message_data and workflow_result.ui_message_data.get('type') == 'project_pending_approval':
-                            project_title = workflow_result.ui_message_data.get('project_title')
-                            if project_title:
-                                system_message_content = f"[Framework Notification: Project '{project_title}' has been created and is now awaiting user approval. You should inform the user about this status and wait for their approval. Do not re-plan this item.]"
-                                framework_notification_message: MessageDict = {"role": "system", "content": system_message_content}
-                                agent.message_history.append(framework_notification_message)
-                                logger.info(f"CycleHandler '{agent.agent_id}': Injected project pending approval notification into history for project '{project_title}'.")
-                                if context.current_db_session_id: # Log this important injection to DB as well
-                                    try:
-                                        await self._manager.db_manager.log_interaction(
-                                            session_id=context.current_db_session_id,
-                                            agent_id=agent.agent_id,
-                                            role="system_framework_notification", # A new role to distinguish this
-                                            content=system_message_content
-                                        )
-                                        logger.debug(f"CycleHandler '{agent.agent_id}': Logged framework notification to DB.")
-                                    except Exception as db_log_err:
-                                        logger.error(f"CycleHandler '{agent.agent_id}': Failed to log framework notification to DB: {db_log_err}", exc_info=True)
-                        # END of inserted code block
+                        # (Framework Notification for Admin AI was removed to prevent redundant greetings)
 
                         if workflow_result.tasks_to_schedule:
                             for task_agent, task_retry_count in workflow_result.tasks_to_schedule:
@@ -975,7 +1006,42 @@ class AgentCycleHandler:
 
                     elif event_type == "agent_raw_response":
                         # Forward raw agent responses to the UI for display in Internal Comms
-                        raw_content = event.get("content")
+                        raw_content = event.get("content", "")
+                        
+                        # --- START ADMIN VERIFICATION HARD GATE ---
+                        if agent.agent_id == BOOTSTRAP_AGENT_ID and raw_content:
+                            lower_content = raw_content.lower()
+                            if ("complete" in lower_content or "finished" in lower_content or "done" in lower_content) and "project" in lower_content:
+                                is_actually_complete = True
+                                pending_count = 0
+                                try:
+                                    if self._manager.current_project and self._manager.current_session:
+                                        from src.tools.project_management import ProjectManagementTool, TASKLIB_AVAILABLE
+                                        if TASKLIB_AVAILABLE:
+                                            pm_tool = ProjectManagementTool()
+                                            tw = pm_tool._get_taskwarrior_instance(self._manager.current_project, self._manager.current_session)
+                                            if tw:
+                                                active_tasks = tw.tasks.filter(status='pending')
+                                                pending_count = len(active_tasks)
+                                                if pending_count > 0:
+                                                    is_actually_complete = False
+                                except Exception as e:
+                                    logger.warning(f"CycleHandler: Failed to verify task completion for Admin AI hard gate: {e}")
+                                
+                                if not is_actually_complete:
+                                    logger.warning(f"CycleHandler: HARD GATE ACTIVATED. Admin AI attempted to report completion while {pending_count} tasks are pending.")
+                                    # Inject a framework message and rewrite the UI payload
+                                    system_message = (
+                                        "[Framework System Message - HARD GATE BLOCK]: Your response was BLOCKED from reaching the user. "
+                                        f"You claimed the project was complete, but the backend database shows {pending_count} PENDING tasks. "
+                                        "You MUST transition to 'admin_work' and use <project_management><action>list_tasks</action></project_management> to verify the actual task status, "
+                                        "or ping the PM for an explanation. Do not falsely report completion."
+                                    )
+                                    agent.message_history.append({"role": "system", "content": system_message})
+                                    raw_content = f"[Framework Blocked false completion claim from Admin! {pending_count} tasks are still pending. Forcing Admin audit...]"
+                                    event["content"] = raw_content
+                        # --- END ADMIN VERIFICATION HARD GATE ---
+
                         if raw_content:
                             await self._manager.send_to_ui(event)
                             logger.debug(f"CycleHandler '{agent.agent_id}': Forwarded agent_raw_response to UI")
@@ -988,8 +1054,14 @@ class AgentCycleHandler:
                         event_task_id = event.get("task_id")
 
                         # Auto-track worker task when transitioning to work state
-                        if event_task_id:
+                        try:
                             self._handle_worker_task_tracking(agent, requested_state, event_task_id)
+                        except ValueError as ve:
+                            logger.warning(f"CycleHandler: State transition blocked for '{agent.agent_id}': {ve}")
+                            err_msg = f"[Framework Error]: State transition rejected: {ve}"
+                            agent.message_history.append({"role": "system", "content": err_msg})
+                            context.needs_reactivation_after_cycle = True
+                            continue # Stop processing this event; do NOT apply state change
 
                         # Record the agent's action in its history so it knows it made the request
                         agent.message_history.append({
@@ -1256,10 +1328,17 @@ class AgentCycleHandler:
                                     
                                     # Use a TRUNCATED cached result to save context tokens
                                     # The agent already saw this result - they don't need the full thing again
-                                    MAX_CACHED_RESULT_LEN = 200
+                                    # However, we must provide enough data for read-only tools so they don't loop endlessly trying to re-fetch forgotten context.
+                                    is_read_tool = False
+                                    if tool_name == "file_system" and isinstance(tool_args, dict) and tool_args.get("action") in ["read", "read_file", "list", "list_directory"]:
+                                        is_read_tool = True
+                                    elif tool_name in ["knowledge_base", "web_search", "github_tool", "tool_information"]:
+                                        is_read_tool = True
+                                        
+                                    MAX_CACHED_RESULT_LEN = 4000 if is_read_tool else 200
                                     truncated_result = prev_result
                                     if len(prev_result) > MAX_CACHED_RESULT_LEN:
-                                        truncated_result = prev_result[:MAX_CACHED_RESULT_LEN] + f"... [TRUNCATED - duplicate call, full result ({len(prev_result)} chars) was already returned to you previously]"
+                                        truncated_result = prev_result[:MAX_CACHED_RESULT_LEN] + f"\n... [TRUNCATED - duplicate call, full result ({len(prev_result)} chars) was already returned to you previously]"
                                     history_item: MessageDict = {
                                         "role": "tool",
                                         "tool_call_id": tool_id or f"cached_id_{i}",
@@ -1424,18 +1503,7 @@ class AgentCycleHandler:
                             # --- END CROSS-CYCLE DUPLICATE DETECTION ---
                             
                             # --- SEND_MESSAGE MULTI-TOOL CONSTRAINT ---
-                            # Workers in worker_work state should never use send_message - they must switch to worker_report first
-                            if agent.agent_type == AGENT_TYPE_WORKER and agent.state == WORKER_STATE_WORK and tool_name == "send_message":
-                                logger.warning(f"Agent {agent.agent_id} attempted to use send_message in worker_work state. Blocking - must use worker_report state.")
-                                error_msg = "ERROR: You cannot use 'send_message' in the WORK state. To report progress or ask questions, first switch to the report state: <request_state state='worker_report'/>. The report state is specifically designed for communicating with your PM."
-                                result_dict = {
-                                    "status": "error",
-                                    "message": error_msg,
-                                    "content": error_msg,
-                                    "call_id": tool_id or f"unknown_id_{i}",
-                                    "name": tool_name
-                                }
-                            elif any(t.get("name") != "send_message" for t in tool_calls) and tool_name == "send_message":
+                            if any(t.get("name") != "send_message" for t in tool_calls) and tool_name == "send_message":
                                 # Check if the ONLY other activity is a state change (deferred_state_change).
                                 # If send_message is paired with a state change and NO other tool calls, allow both.
                                 non_send_message_tools = [t for t in deduplicated_tool_calls if t.get("name") != "send_message"]
@@ -1591,10 +1659,11 @@ class AgentCycleHandler:
                             if called_tool_name == "project_management" and called_tool_args.get("action") == "add_task":
                                 logger.info(f"CycleHandler: Worker '{agent.agent_id}' successfully added a sub-task. Injecting directive to transition.")
                                 directive_message_content = (
-                                    "[Framework System Message]: You have successfully added a sub-task. "
+                                    "[Framework System Message]: You have successfully added a sub-task.\n"
+                                    "If you need to add more sub-tasks, continue using the project_management tool.\n"
                                     "If you have finished decomposing your assignment into sub-tasks, your MANDATORY NEXT ACTION is to output ONLY:\n"
-                                    "<request_state state='worker_work'/>\n"
-                                    "If you need to add more sub-tasks, continue using the project_management tool."
+                                    "<request_state state='worker_work' task_id='[ID OF ONE OF YOUR NEW SUB-TASKS]'/>\n"
+                                    "Note: You CANNOT use your originally assigned task ID. You must choose a sub-task you just created."
                                 )
                                 directive_msg: MessageDict = {"role": "system", "content": directive_message_content}
                                 all_tool_results_for_history.append(directive_msg)
@@ -1934,27 +2003,34 @@ class AgentCycleHandler:
                         # This prevents the state change from altering the agent's state before 
                         # tools that depend on the original state (like send_message in worker_report) can run.
                         if deferred_state_change:
-                            # Auto-track worker task when transitioning to work state
-                            if deferred_task_id:
+                            try:
+                                # Auto-track worker task when transitioning to work state
                                 self._handle_worker_task_tracking(agent, deferred_state_change, deferred_task_id)
-                            if self._manager.workflow_manager.change_state(agent, deferred_state_change, task_description=deferred_task_desc):
-                                logger.info(f"CycleHandler: Successfully changed agent '{agent.agent_id}' state to '{deferred_state_change}' after tool processing")
                                 
-                                # CRITICAL FIX: Append a user message so the next cycle has a clear trigger to start generating
-                                # Without this, the last message is the assistant's <request_state> tag, causing empty outputs
-                                agent.message_history.append({
-                                    "role": "user",
-                                    "content": f"[System State Change]: State changed to {deferred_state_change}. Your instructions have been updated. Please proceed."
-                                })
-                            else:
-                                resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, deferred_state_change)
-                                if agent.state == resolved_requested:
-                                    logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Treating as no-op to prevent reactivation loop.")
+                                if self._manager.workflow_manager.change_state(agent, deferred_state_change, task_description=deferred_task_desc):
+                                    logger.info(f"CycleHandler: Successfully changed agent '{agent.agent_id}' state to '{deferred_state_change}' after tool processing")
+                                    
+                                    # CRITICAL FIX: Append a user message so the next cycle has a clear trigger to start generating
+                                    # Without this, the last message is the assistant's <request_state> tag, causing empty outputs
+                                    agent.message_history.append({
+                                        "role": "user",
+                                        "content": f"[System State Change]: State changed to {deferred_state_change}. Your instructions have been updated. Please proceed."
+                                    })
                                 else:
-                                    logger.warning(f"CycleHandler: Failed to change agent '{agent.agent_id}' state to '{deferred_state_change}' after tool processing")
-                                    # Truly invalid state transition. Let it reactivate to correct itself (with an error message).
-                                    invalid_msg = f"[Framework Error]: Invalid state requested: '{deferred_state_change}'. Please check valid states for your role."
-                                    agent.message_history.append({"role": "system", "content": invalid_msg})
+                                    resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, deferred_state_change)
+                                    if agent.state == resolved_requested:
+                                        logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Treating as no-op to prevent reactivation loop.")
+                                    else:
+                                        logger.warning(f"CycleHandler: Failed to change agent '{agent.agent_id}' state to '{deferred_state_change}' after tool processing")
+                                        # Truly invalid state transition. Let it reactivate to correct itself (with an error message).
+                                        invalid_msg = f"[Framework Error]: Invalid state requested: '{deferred_state_change}'. Please check valid states for your role."
+                                        agent.message_history.append({"role": "system", "content": invalid_msg})
+                            except ValueError as ve:
+                                # Catch validation errors from task tracking (e.g. trying to select a decomposed task)
+                                logger.warning(f"CycleHandler: State transition blocked for '{agent.agent_id}': {ve}")
+                                err_msg = f"[Framework Error]: State transition rejected: {ve}"
+                                agent.message_history.append({"role": "system", "content": err_msg})
+                                context.needs_reactivation_after_cycle = True
                         # --- END DEFERRED EMBEDDED STATE CHANGE ---
 
                         llm_stream_ended_cleanly = False; break

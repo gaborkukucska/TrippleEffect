@@ -231,6 +231,33 @@ class Agent:
                             
                         if is_authorized:
                             tool_schemas.append(tool.get_json_schema())
+                            
+                    # Inject request_state as a pseudo-tool so LLM knows its schema
+                    tool_schemas.append({
+                        "type": "function",
+                        "function": {
+                            "name": "request_state",
+                            "description": "Request a state transition for the agent.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "state": {
+                                        "type": "string",
+                                        "description": "The destination state to transition to (e.g., worker_work, worker_report, worker_wait)."
+                                    },
+                                    "task_id": {
+                                        "type": "string",
+                                        "description": "REQUIRED when transitioning to 'worker_work' state. The UUID of the sub-task you are choosing to work on."
+                                    },
+                                    "task_description": {
+                                        "type": "string",
+                                        "description": "Optional description of the task."
+                                    }
+                                },
+                                "required": ["state"]
+                            }
+                        }
+                    })
                 else:
                     logger.debug(f"Agent {self.agent_id}: State '{self.state}' is structural and does not use tools. Native tools payload omitted.")
 
@@ -430,7 +457,8 @@ class Agent:
                                             "type": "agent_state_change_requested",
                                             "requested_state": requested_state,
                                             "agent_id": self.agent_id,
-                                            "task_description": arguments.get("task_description")
+                                            "task_description": arguments.get("task_description"),
+                                            "task_id": arguments.get("task_id")
                                         }
                                     else:
                                         logger.warning(f"Agent {self.agent_id}: Invalid native state request '{requested_state}'.")
