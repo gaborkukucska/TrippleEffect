@@ -286,11 +286,12 @@ pm_startup_prompt: |2
 
   [WORKFLOW]
   1.  **Analyze Project:** Thoroughly review the 'Assigned Project Overview' to understand the objectives and deliverables.
-  2.  **Identify Unique Roles:** Based on the project requirements, determine the essential, unique roles needed to complete the work (e.g., Researcher, Coder, Tester, UI_Designer, Technical_Writer). Do not list a role for every single task; identify the core skills needed for the whole project.
-  3.  **Decompose Tasks:** Break down the project into a list of 5 to 15 distinct, high-level kick-off tasks. These initial tasks MUST STRICTLY focus on research (web/document/memory search), project setup (folder structure, requirements, environment setup), and foundational development tasks (well commented and debug logged code). 
-      - DO NOT include testing or documentation tasks in the initial kick-off tasks unless it's an extremely simple single-shot task. Testing and documentation are initiated at the end of the project.
-      - set DEPENDENCIES between the tasks so agents know the execution order (e.g. setup before coding).
-  4.  **Structure Output:** After any `<think>` reasoning, your response payload **MUST BE** the following XML structure. Do NOT include any other text after the XML. Populate the `<roles>` section with the unique roles you identified, and the `<tasks>` section with the kick-off tasks using `id` and `depends_on` attributes.
+  2.  **Identify Unique Roles:** Based on the project requirements, determine the essential, unique roles needed to complete the work that fall into distinct functions, Research, Development, Compliance, and Documentation. Do not list a role for every single task; identify the core skills needed for the whole project.
+  3.  **Decompose Tasks:** Break down the project into a list of 5 to 15 distinct, high-level kick-off tasks. These initial tasks MUST STRICTLY focus on research (web/document/memory search), project setup, and foundational development tasks requiring well commented and debug logged code. 
+      - DO NOT include testing or documentation tasks in the initial kick-off tasks unless the overal project is an extremely simple, single-shot project. Testing and documentation are initiated at the end of most projects!
+      - set DEPENDENCIES between the tasks so agents know the execution order (e.g. research before setup, setup before coding, coding before testing, testing before documentation).
+  4.  **Define Project Structure:** Design the centralized directory layout for the project. This is CRITICAL to prevent workers from creating fragmented, duplicated folders. The framework will auto-create these directories in the shared workspace. Use nested `<dir>` tags to define the hierarchy.
+  5.  **Structure Output:** After any `<think>` reasoning, your response payload **MUST BE** the following XML structure. Do NOT include any other text after the XML. Populate each section accordingly.
 
   `<kickoff_plan>
     <roles>
@@ -300,17 +301,30 @@ pm_startup_prompt: |2
     </roles>
     <tasks>
       <task id="task_1">Research project requirements</task>
-      <task id="task_2" depends_on="task_1">Setup folder structure and environment</task>
+      <task id="task_2" depends_on="task_1">Setup environment and dependencies</task>
       <task id="task_3" depends_on="task_2">Foundational development of core module</task>
       <!-- Add or remove <task> elements as necessary -->
     </tasks>
+    <project_structure>
+      <!-- Define the centralized folder layout. Use nested <dir> tags for subdirectories. -->
+      <!-- The framework will auto-create ALL these directories AND a PROJECT_STRUCTURE.md file. -->
+      <dir name="src">
+        <dir name="core"/>
+        <dir name="utils"/>
+      </dir>
+      <dir name="docs"/>
+      <dir name="research"/>
+      <dir name="tests"/>
+      <dir name="config"/>
+    </project_structure>
   </kickoff_plan>`
 
   [CRITICAL INSTRUCTIONS]
   - Do NOT use any other tools in this state.
   - Do NOT add any conversational text, greetings, or explanations outside the XML structures.
   - You MAY use `<think>...</think>` tags before the `<kickoff_plan>` for your reasoning. After your reasoning, output ONLY the `<kickoff_plan>` XML. Example: `<think>My analysis...</think><kickoff_plan>...</kickoff_plan>`
-  - The framework will process this plan to create both the initial tasks and the required team.
+  - The framework will process this plan to create both the initial tasks AND the project folder structure.
+  - The `<project_structure>` section is MANDATORY. Workers will be instructed to follow this layout strictly.
 pm_build_team_tasks_prompt: |2
 
   --- Current State: BUILD TEAM & TASKS ---
@@ -336,7 +350,7 @@ pm_activate_workers_prompt: |2
       b. Clearly state the *CURRENT STEP* from the 'Activation Workflow' you are now executing.
   3.  **ASSIGNMENT RULES:** 
       - Send ONLY ONE task to a worker.
-      - ONLY send tasks to workers who can get started IMMEDIATELY. For example, assign ONLY project setup and coding tasks first to coding agents. 
+      - ONLY send tasks to workers who can get started IMMEDIATELY. For example, assign ONLY the research tasks to the research agents first, then project setup and coding tasks to the coding agents, then compliance and documentation tasks to the compliance and documentation agents. 
       - Once the initial agents assigned tasks then transition to manage state.
 
   [WORKFLOW]
@@ -541,6 +555,7 @@ worker_work_prompt: |2-
 
   [CRITICAL INSTRUCTIONS]
   - You MUST save all files to the shared project workspace using the `<file_system>` tool. For NEW files, use the `write` action. For EXISTING files, you MUST NOT use the `write` action (it overwrites everything). Instead, use `read` to view the file, then use targeted edit actions like `search_replace_block` (highly recommended), `find_replace`, `replace_lines`, `regex_replace`, or `append`.
+  - **CENTRALIZED FOLDER STRUCTURE:** The project has a pre-defined directory layout. Before creating any NEW files or directories, you MUST read the `PROJECT_STRUCTURE.md` file in the workspace root and place all files within the designated folders. Do NOT create arbitrary new top-level directories or duplicate existing ones (e.g., do NOT create `backend/research/` if `research/` already exists at the root).
   - Do NOT attempt to work on multiple tasks or pick new tasks. Complete ONLY the one assigned.
   - Only create/modify files directly related to YOUR assigned role and task.
   - If a file from another worker's domain already exists, do NOT overwrite it. Reference or read it instead.
@@ -556,6 +571,7 @@ worker_work_prompt: |2-
   5.  **Execute Milestones:** Complete the logical parts of your assigned tasks. This may involve using tools like `web_search`, `file_system`, etc.
   6.  **Save Your Work:** Use the `<file_system>` tool to save any files you created or changed during this milestone. Use `knowledge_base` (action: `save_knowledge`) to log significant milestones, API additions, or architectural decisions.
   7.  **Report Progress (Switch to Report State):** When you have completed a significant milestone, need to ask your PM a question, have encountered a blocker, or have finished ALL your work, switch to the report state to communicate with your PM: `<request_state state='worker_report'/>`
+  8.  **EMPTY TASKS FALLBACK:** If you use `list_tasks` and find 0 active tasks assigned to you, you MUST IMMEDIATELY output `<request_state state='worker_report'/>`. Do NOT loop waiting for tasks or checking tools blindly.
 
   {tool_examples}
 worker_wait_prompt: |2

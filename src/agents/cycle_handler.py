@@ -80,7 +80,7 @@ class AgentCycleHandler:
             return
 
         if not task_id:
-            raise ValueError(f"You MUST specify a 'task_id' parameter when transitioning to '{WORKER_STATE_WORK}' state. If using native tools, pass it as a parameter in your call. If using XML, add the attribute: <request_state state='worker_work' task_id='YOUR_SUB_TASK_ID'/>.")
+            raise ValueError(f"You MUST specify a 'task_id' parameter when transitioning to '{WORKER_STATE_WORK}' state.\nIf you do not know your task_id:\n1. Check previous tool responses if you just created the task.\n2. Otherwise, use the project_management tool with action='list_tasks' to find the correct ID.\nThen retry with the attribute: <request_state state='worker_work' task_id='THE_ID'/>.")
 
         agent.active_task_id = task_id
         logger.info(f"CycleHandler: Worker '{agent.agent_id}' set active_task_id='{task_id}' for work state transition.")

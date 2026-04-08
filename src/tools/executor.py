@@ -740,7 +740,17 @@ class ToolExecutor:
                         if not result_str:
                             result_str = "Tool execution was successful."
                     else: # status == 'error'
-                        result_str = f"Error from tool '{tool_name}': {result.get('message', 'An unspecified error occurred.')}"
+                        err_parts = [f"Error from tool '{tool_name}': {result.get('message', 'An unspecified error occurred.')}"]
+                        
+                        # Append extra returned fields so the model doesn't miss diagnostic info like stdout/stderr
+                        for k, v in result.items():
+                            if k not in ['status', 'message']:
+                                if isinstance(v, str) and ('\n' in v or len(v) > 50):
+                                    err_parts.append(f"--- {k.upper()} ---\n{v}")
+                                else:
+                                    err_parts.append(f"[{k}]: {json.dumps(v) if isinstance(v, (dict, list)) else v}")
+                        
+                        result_str = "\n".join(err_parts).strip()
                     logger.info(f"Executor: Tool '{tool_name}' successful. Structured result: {result_str[:150]}...")
                     return result_str
                 elif isinstance(result, str):
