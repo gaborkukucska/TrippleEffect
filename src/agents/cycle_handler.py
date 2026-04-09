@@ -1450,23 +1450,26 @@ class AgentCycleHandler:
                                             # Escalation for workers
                                             cross_cycle_duplicate_blocked = True
                                             logger.warning(
-                                                f"CycleHandler: FORCE-ADVANCING worker '{agent.agent_id}' after "
+                                                f"CycleHandler: HARD-ADVANCING worker '{agent.agent_id}' after "
                                                 f"{agent._duplicate_tool_call_count} duplicate '{tool_name}' calls."
                                             )
+                                            # ACTUALLY change the state to worker_report!
+                                            agent.set_state("worker_report")
                                             escalation_msg: MessageDict = {
                                                 "role": "system",
                                                 "content": (
-                                                    f"[Framework System Message - AUTO-ADVANCE]: You have called the exact same "
+                                                    f"[Constitutional Guardian - HARD ADVANCE]: You have called the exact same "
                                                     f"tool ('{tool_name}') with identical arguments {agent._duplicate_tool_call_count} times "
-                                                    "without making progress (the result is cached). "
-                                                    "Your MANDATORY NEXT ACTION is to stop repeating yourself and either execute a DIFFERENT tool, "
-                                                    "or request a state change if you are stuck or finished (<request_state state='worker_report'/>)."
+                                                    "without making progress (the result was returned exactly as cached). "
+                                                    "Because you were stuck in a loop, your task state has been forcibly changed to 'worker_report'. "
+                                                    "Please analyze what happened, outline your blockers, and report to the PM."
                                                 )
                                             }
                                             if hasattr(self, '_deduplicate_pm_framework_messages'):
                                                 self._deduplicate_pm_framework_messages(agent)
                                             all_tool_results_for_history.append(escalation_msg)
-                                            # Keep the count at 2 so the next failure triggers again
+                                            
+                                            # DO NOT reset to 0, wait for them to process the message.
                                             agent._duplicate_tool_call_count = 2
                                     else:
                                         cross_cycle_duplicate_blocked = True
@@ -2405,45 +2408,56 @@ class AgentCycleHandler:
         self._outcome_determiner.determine_cycle_outcome(context)
 
         # Record agent health metrics after cycle completion
-        final_output_content = cycle_text_content or ''
-        logger.debug(f"CycleHandler: Recording agent cycle for '{agent.agent_id}' with content length: {len(final_output_content)}")
-        self._health_monitor.record_agent_cycle(
-            agent=agent,
-            content=final_output_content,
-            has_action=context.action_taken_this_cycle,
-            has_thought=context.thought_produced_this_cycle,
-            took_meaningful_action=context.executed_tool_successfully_this_cycle or context.state_change_requested_this_cycle
-        )
-
-        # Constitutional Guardian Health Intervention Check
-        try:
-            logger.debug(f"CycleHandler: Analyzing agent health for '{agent.agent_id}'")
-            needs_intervention, problem_desc, recovery_plan = await self._health_monitor.analyze_agent_health(agent)
-            if needs_intervention and recovery_plan:
-                logger.error(f"CycleHandler: Constitutional Guardian intervening for agent '{agent.agent_id}': {problem_desc}")
-                success = await self._health_monitor.execute_recovery_plan(agent, recovery_plan)
-                if success:
-                    # After successful Constitutional Guardian intervention, let NextStepScheduler handle reactivation
-                    context.needs_reactivation_after_cycle = True
-                    logger.warning(f"CycleHandler: Constitutional Guardian intervention successful for '{agent.agent_id}', agent will be reactivated via NextStepScheduler")
-                    
-                    # Ensure agent's task state completely resets to force re-planning on stalling / empty response loops
-                    recovery_type = recovery_plan.get("type", "")
-                    if recovery_type in ["minimal_response_pattern", "stuck_in_state", "tool_information_loop_violation", "empty_response_violation"]:
-                        logger.warning(f"CycleHandler: Forcing task state reset and recheck for '{agent.agent_id}' to break cycle loop.")
-                        agent.needs_priority_recheck = True
-                        if hasattr(agent, "current_task_id"):
-                            agent.current_task_id = None
-                        if hasattr(agent, "active_task_id"):
-                            agent.active_task_id = None
-
-                    # CRITICAL FIX: Removed direct schedule_cycle() call here.
-                    # Previously, both needs_reactivation_after_cycle AND schedule_cycle() were set,
-                    # causing double-reactivation with no cooldown — a key contributor to the infinite loop.
-            else:
-                logger.debug(f"CycleHandler: No intervention needed for agent '{agent.agent_id}'")
-        except Exception as health_error:
-            logger.error(f"CycleHandler: Error during Constitutional Guardian health monitoring for '{agent.agent_id}': {health_error}", exc_info=True)
+        if not context.is_provider_level_error:
+            final_output_content = cycle_text_content or ''
+            logger.debug(f"CycleHandler: Recording agent cycle for '{agent.agent_id}' with content length: {len(final_output_content)}")
+            self._health_monitor.record_agent_cycle(
+                agent=agent,
+                content=final_output_content,
+                has_action=context.action_taken_this_cycle,
+                has_thought=context.thought_produced_this_cycle,
+                took_meaningful_action=context.executed_tool_successfully_this_cycle or context.state_change_requested_this_cycle
+            )
+    
+            # Constitutional Guardian Health Intervention Check
+            try:
+                logger.debug(f"CycleHandler: Analyzing agent health for '{agent.agent_id}'")
+                needs_intervention, problem_desc, recovery_plan = await self._health_monitor.analyze_agent_health(agent)
+                if needs_intervention and recovery_plan:
+                    logger.error(f"CycleHandler: Constitutional Guardian intervening for agent '{agent.agent_id}': {problem_desc}")
+                    success = await self._health_monitor.execute_recovery_plan(agent, recovery_plan)
+                    if success:
+                        # After successful Constitutional Guardian intervention, let NextStepScheduler handle reactivation
+                        context.needs_reactivation_after_cycle = True
+                        logger.warning(f"CycleHandler: Constitutional Guardian intervention successful for '{agent.agent_id}', agent will be reactivated via NextStepScheduler")
+                        
+                        # Ensure agent's task state completely resets to force re-planning on stalling / empty response loops
+                        recovery_type = recovery_plan.get("type", "")
+                        if recovery_type in ["minimal_response_pattern", "stuck_in_state", "tool_information_loop_violation", "empty_response_violation"]:
+                            has_task_record = (hasattr(agent, 'metadata') and 
+                                           isinstance(agent.metadata, dict) and 
+                                           'task_id' in agent.metadata)
+                            
+                            logger.warning(f"CycleHandler: Constitutional Guardian Intervention Reset - Changing '{agent.agent_id}' state to {'worker_report' if has_task_record else 'worker_wait'}")
+                            
+                            agent.needs_priority_recheck = True
+                            if has_task_record:
+                                agent.set_state("worker_report")
+                            else:
+                                agent.set_state("worker_wait")
+                                
+                            if hasattr(agent, "current_task_id"):
+                                agent.current_task_id = None
+                            if hasattr(agent, "active_task_id"):
+                                agent.active_task_id = None
+    
+                        # CRITICAL FIX: Removed direct schedule_cycle() call here.
+                else:
+                    logger.debug(f"CycleHandler: No intervention needed for agent '{agent.agent_id}'")
+            except Exception as health_error:
+                logger.error(f"CycleHandler: Error during Constitutional Guardian health monitoring for '{agent.agent_id}': {health_error}", exc_info=True)
+        else:
+            logger.debug(f"CycleHandler: Skipping health monitoring for agent '{agent.agent_id}' due to provider-level error.")
 
         if not context.is_provider_level_error:
             success_for_metrics = context.cycle_completed_successfully and not context.is_key_related_error

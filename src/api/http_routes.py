@@ -359,6 +359,22 @@ async def approve_project_start(
         if pm_project_name and pm_session_name:
             logger.info(f"Setting AgentManager context to Project: '{pm_project_name}', Session: '{pm_session_name}' for PM '{pm_agent_id}' activation.")
             await manager.set_project_session_context(pm_project_name, pm_session_name, loading=False)
+            
+            # --- NEW: Save Initial Project Plan to shared_workspace ---
+            initial_plan_description = agent_to_start.agent_config.get("config", {}).get("initial_plan_description")
+            if initial_plan_description:
+                try:
+                    import re
+                    safe_project_name = re.sub(r'[^\w\-. ]', '_', pm_project_name)
+                    workspace_path = settings.PROJECTS_BASE_DIR / safe_project_name / pm_session_name / "shared_workspace"
+                    workspace_path.mkdir(parents=True, exist_ok=True)
+                    plan_file_path = workspace_path / "PROJECT_PLAN.md"
+                    with open(plan_file_path, "w") as f:
+                        f.write(f"# Project Plan: {pm_project_name}\n\n{initial_plan_description}")
+                    logger.info(f"Successfully saved original project plan to {plan_file_path}")
+                except Exception as e:
+                    logger.error(f"Failed to save initial project plan to shared_workspace: {e}", exc_info=True)
+            # --- END NEW ---
         else:
             logger.warning(f"PM Agent '{pm_agent_id}' missing 'project_name_context' or 'session_name' in config. AgentManager context not explicitly set for this PM activation. Using manager's current context: {manager.current_project}/{manager.current_session}")
 

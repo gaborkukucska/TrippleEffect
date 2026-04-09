@@ -507,12 +507,28 @@ class ProjectManagementTool(BaseTool):
                         matching = tw.tasks.filter(description=t_id_str)
                         if len(matching) != 1:
                             matching = tw.tasks.filter(description=t_id_str.replace('_', ' '))
+                        
                         if len(matching) == 1:
                             task = matching[0]
                         else:
-                            raise ValueError("Task not found by description")
-                except Exception:
-                    return {"status": "error", "message": f"Task '{task_id}' not found. Verify ID or exact Name."}
+                            # Fuzzy matching fallback
+                            search_str = t_id_str.lower().replace('_', ' ')
+                            all_tasks_to_search = tw.tasks.pending() if action != "complete_task" else tw.tasks.all()
+                            fuzzy_matches = []
+                            for t in all_tasks_to_search:
+                                desc = (t['description'] or '').lower()
+                                if search_str in desc:
+                                    fuzzy_matches.append(t)
+                            
+                            if len(fuzzy_matches) == 1:
+                                task = fuzzy_matches[0]
+                                logger.info(f"ProjectManagementTool: Fuzzy matched '{t_id_str}' to UUID '{task['uuid']}'")
+                            elif len(fuzzy_matches) > 1:
+                                raise ValueError(f"Ambiguous task id/name '{t_id_str}' matched {len(fuzzy_matches)} tasks.")
+                            else:
+                                raise ValueError("Task not found by description or ID.")
+                except Exception as e:
+                    return {"status": "error", "message": f"Task '{task_id}' not found. Detail: {e}"}
 
                 # Validate task_progress or legacy status if provided
                 if "task_progress" in kwargs or "status" in kwargs:
@@ -624,12 +640,28 @@ class ProjectManagementTool(BaseTool):
                         matching = tw.tasks.filter(description=t_id_str)
                         if len(matching) != 1:
                             matching = tw.tasks.filter(description=t_id_str.replace('_', ' '))
+                        
                         if len(matching) == 1:
                             task = matching[0]
                         else:
-                            raise ValueError("Task not found by description")
-                except Exception:
-                    return {"status": "error", "message": f"Task '{task_id}' not found. Verify ID or exact Name."}
+                            # Fuzzy matching fallback
+                            search_str = t_id_str.lower().replace('_', ' ')
+                            all_tasks_to_search = tw.tasks.pending() if action != "complete_task" else tw.tasks.all()
+                            fuzzy_matches = []
+                            for t in all_tasks_to_search:
+                                desc = (t['description'] or '').lower()
+                                if search_str in desc:
+                                    fuzzy_matches.append(t)
+                            
+                            if len(fuzzy_matches) == 1:
+                                task = fuzzy_matches[0]
+                                logger.info(f"ProjectManagementTool: Fuzzy matched '{t_id_str}' to UUID '{task['uuid']}'")
+                            elif len(fuzzy_matches) > 1:
+                                raise ValueError(f"Ambiguous task id/name '{t_id_str}' matched {len(fuzzy_matches)} tasks.")
+                            else:
+                                raise ValueError("Task not found by description or ID.")
+                except Exception as e:
+                    return {"status": "error", "message": f"Task '{task_id}' not found. Detail: {e}"}
 
                 try:
                     task.done() # This triggers Taskwarrior to set status=completed

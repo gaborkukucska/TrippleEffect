@@ -815,10 +815,21 @@ Pushes changes to a remote repository.
         
         # Prevent overwriting existing files to force surgical edits
         if validated_path.exists():
+            # Check if the content is exactly identical, in which case just return success to avoid looping the agent
+            try:
+                if validated_path.read_text(encoding='utf-8') == content:
+                    logger.info(f"Agent {agent_id} attempted to rewrite existing file '{filename}' with identical content. Marking as success.")
+                    return {
+                        "status": "success",
+                        "message": f"File '{filename}' already exists and contains the exact same content. No changes were made, but your action is considered successful."
+                    }
+            except Exception:
+                pass
+            
             logger.warning(f"Agent {agent_id} attempted to overwrite existing file '{filename}'. Write rejected to strongly encourage find/replace targeted edits.")
             return {
                 "status": "error", 
-                "message": f"File '{filename}' already exists. Overwriting entire existing files using 'write' is disabled to save tokens and prevent accidental losses. Please use 'read' to view the file and then use 'find_replace', 'regex_replace', 'insert_lines', or 'append' to modify specific sections. If you must recreate the file from scratch, use 'delete' first."
+                "message": f"File '{filename}' already exists. Overwriting entire existing files using 'write' is disabled to save tokens and prevent accidental code loss. You MUST NOT call 'write' on this file again. Instead, please use 'read' (if you don't have the context) and then use targeted editing actions like 'search_replace_block', 'replace_lines', 'insert_lines', 'append', or 'find_replace' to modify it. If you absolutely need to recreate the file from scratch, you must call 'delete' first."
             }
             
         try:
@@ -1391,6 +1402,12 @@ Pushes changes to a remote repository.
     async def _git_init(self, base_path: Path, relative_path: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
         val_path = await self._resolve_and_validate_path(base_path, relative_path, agent_id, scope_description)
         if not val_path: return {"status": "error", "message": f"Invalid path '{relative_path}'."}
+        
+        # Prevent repeated git inits from consuming cycles (idempotency override)
+        if (val_path / ".git").exists():
+            logger.info(f"Agent {agent_id} attempted git init but repo already exists.")
+            return {"status": "success", "message": f"Git repository is already initialized in {val_path}/.git/"}
+            
         try:
             def git_init_sync():
                 repo = git.Repo.init(val_path)

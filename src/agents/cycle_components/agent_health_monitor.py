@@ -904,11 +904,11 @@ class ConstitutionalGuardianHealthMonitor:
                 })
                 
                 # --- UPPER LIMIT CHECK ---
-                # Count recent interventions (within last 10 minutes) for this agent
-                recent_cutoff = time.time() - 600  # 10 minutes
+                # Count recent interventions since the agent last took a meaningful action
+                # This explicitly handles slow local LLMs where 3 cycles might take hours.
                 recent_interventions = [
                     h for h in record.intervention_history 
-                    if h.get("timestamp", 0) > recent_cutoff
+                    if h.get("timestamp", 0) > record.last_meaningful_action_time
                 ]
                 
                 if len(recent_interventions) >= MAX_CG_INTERVENTIONS_BEFORE_WAIT and agent.agent_type == AGENT_TYPE_WORKER:

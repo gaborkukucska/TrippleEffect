@@ -378,6 +378,18 @@ class PromptAssembler:
 
             # 3.7 Report-state safety check: remind worker of unread messages before reporting
             if agent.agent_type == AGENT_TYPE_WORKER and agent.state == WORKER_STATE_REPORT and unread_messages:
+                agent._report_safety_check_count = getattr(agent, '_report_safety_check_count', 0) + 1
+                if agent._report_safety_check_count > 3:
+                    if not getattr(agent, 'read_message_ids', None):
+                        agent.read_message_ids = set()
+                    agent.read_message_ids.update(unread_messages)
+                    logger.warning(f"Auto-marking {len(unread_messages)} messages as read for '{agent.agent_id}' after 3 failed safety check cycles to break loop.")
+                    unread_messages = []
+                    agent._report_safety_check_count = 0
+            else:
+                agent._report_safety_check_count = 0
+                
+            if agent.agent_type == AGENT_TYPE_WORKER and agent.state == WORKER_STATE_REPORT and unread_messages:
                 safety_msg = (
                     f"[REPORT SAFETY CHECK - IMPORTANT]\n"
                     f"Before sending your report, verify you have addressed ALL unread messages.\n"

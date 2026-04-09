@@ -562,6 +562,29 @@ class AgentManager:
                             agent.message_history.append({"role": "system", "content": "[Framework Watchdog]: You were detected as IDLE while in an active working state. Resuming cycle..."})
                             await self.schedule_cycle(agent, 0)
                         
+                        elif agent.state == consts.WORKER_STATE_WAIT and self.current_project and self.current_session:
+                            # Workers in WAIT might have pending tasks assigned to them but got pushed here by the CG
+                            # Watchdog will verify if they truly have no pending tasks.
+                            try:
+                                from src.tools.project_management import ProjectManagementTool
+                                pm_tool = ProjectManagementTool()
+                                tw_instance = pm_tool._get_taskwarrior_instance(self.current_project, self.current_session)
+                                if tw_instance:
+                                    pending_tasks = tw_instance.tasks.pending().filter(assignee=agent.agent_id)
+                                    if len(pending_tasks) > 0:
+                                        target_task = pending_tasks[0]
+                                        logger.warning(
+                                            f"Watchdog: Worker '{agent.agent_id}' is in 'worker_wait' but has {len(pending_tasks)} pending tasks! "
+                                            f"Auto-activating for task '{target_task['uuid']}'."
+                                        )
+                                        await self.activate_worker_with_task_details(
+                                            worker_agent_id=agent.agent_id,
+                                            task_id_from_tool=target_task['uuid'],
+                                            task_description_from_tool=target_task['description']
+                                        )
+                            except Exception as e:
+                                logger.error(f"Watchdog: Error checking pending tasks for waiting worker '{agent.agent_id}': {e}", exc_info=True)
+                        
             except Exception as e: logger.error(f"Error during periodic PM manage check: {e}", exc_info=True)
 
     async def start_pm_manage_timer(self):
