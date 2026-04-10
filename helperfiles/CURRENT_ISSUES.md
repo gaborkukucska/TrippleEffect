@@ -543,3 +543,38 @@
 - Substantial output: 25 files including game scenes, managers, docs, and architecture files
 - Failover mechanism partially working: W1 successfully switched hosts on first attempt
 - Cross-cycle duplicate detection prevented redundant tool executions
+
+### +26. Worker Deadlock in `worker_wait` State
+- **Severity:** High (P1)
+- **Description:** Workers forced into `worker_wait` by the Constitutional Guardian while holding active tasks were ignored by the PM (who assigns tasks to task-less workers), creating a permanent deadlock.
+- **Root Cause:** PM logic relies on task-assignment rather than active pinging.
+- **Fix:** (RESOLVED) Implemented an Auto-Recovery Watchdog in `manager.py`. It actively scans `worker_wait` agents. If they hold a `pending` TaskWarrior task, it automatically invokes `activate_worker_with_task_details()` to revive them.
+- **Files:** `src/agents/manager.py`
+
+### +27. Local LLM Stream Timeout Deadlock
+- **Severity:** Critical (P0)
+- **Description:** Small local LLMs occasionally stall without emitting stream chunks or closing the connection. Because `DEFAULT_READ_TIMEOUT` was 20 minutes (1200s), stalled requests held the exact `limit=1` semaphore open, stalling all agents for 20 minutes before timing out.
+- **Root Cause:** `DEFAULT_READ_TIMEOUT` inside `ollama_provider.py` was too high for a fast-paced agent loop.
+- **Fix:** (RESOLVED) Reduced `DEFAULT_READ_TIMEOUT` to 120s and `DEFAULT_TOTAL_TIMEOUT` to 600s, enabling the system to rapidly raise stream errors, drop bad cycles, and autorecover.
+- **Files:** `src/llm_providers/ollama_provider.py`
+
+### +28. Report Messages Blocked via UI
+- **Severity:** Medium (P2)
+- **Description:** Workers continually failed to mark report messages as read during the "Report Safety Check," causing endless looping.
+- **Root Cause:** `mark_messages_read` occasionally fails due to payload quirks.
+- **Fix:** (RESOLVED) Implemented a 3-strike loop breaker inside `prompt_assembler.py`. After 3 consecutive fails, the safety check automatically forces `unread_system_count = 0` to let the worker proceed.
+- **Files:** `src/agents/cycle_components/prompt_assembler.py`
+
+### +29. Task UUID Strictness in Re-Assignment
+- **Severity:** Low (P3)
+- **Description:** The PM occasionally failed to modify/complete tasks because it forgot the exact UUID and hallucinated a short name.
+- **Root Cause:** Strict filter checking in `project_management.py`.
+- **Fix:** (RESOLVED) Added a fuzzy-matching fallback array lookup. If UUIDs fail, the tool tries to resolve via a case-insensitive substring match of the task description/title.
+- **Files:** `src/tools/project_management.py`
+
+### +30. Redundant Framework Command Cycles
+- **Severity:** Low (P3)
+- **Description:** Agents were repeatedly issuing `npm install` and `git init` during decomposition phases, wasting extremely expensive LLM cycles.
+- **Root Cause:** Command tools executed blindly without checking target conditions.
+- **Fix:** (RESOLVED) Added idempotency caching. `command_executor` instantly mimics success if `node_modules` exists on an `npm install`, and `file_system` skips git init if `.git` is detected.
+- **Files:** `src/tools/command_executor.py`, `src/tools/file_system.py`

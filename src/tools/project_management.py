@@ -312,21 +312,23 @@ class ProjectManagementTool(BaseTool):
                             
                             task['depends'].add(parent_task)
                             
-                            # --- MODIFICATION: Make parent task decomposed and reassign to PM ---
-                            parent_task['task_progress'] = 'decomposed'
+                            # --- FIX: Mark parent task as COMPLETED after decomposition ---
+                            # The parent task is now broken into sub-tasks. Mark it as completed
+                            # so the PM doesn't see it as active work. The PM should focus on
+                            # the resulting sub-tasks instead.
+                            parent_task['task_progress'] = 'completed'
+                            parent_task['tags'] = list(set(list(parent_task.get('tags', [])) + ['decomposed']))
                             
-                            pm_agent_id = next(
-                                (a_id for a_id, a in manager.agents.items()
-                                 if a.agent_type == "pm" and 
-                                 a.agent_config.get("config", {}).get("project_name_context") == project_name), 
-                                None
-                            )
-                            if pm_agent_id:
-                                parent_task['assignee'] = pm_agent_id
+                            # Complete the parent task in Taskwarrior
+                            try:
+                                parent_task.done()
+                                logger.info(f"ProjectManagementTool: Parent task '{parent_task_id}' marked as COMPLETED (decomposed into sub-tasks).")
+                            except Exception as done_err:
+                                # Fallback: just save with completed progress if .done() fails
+                                parent_task.save()
+                                logger.warning(f"ProjectManagementTool: Could not call .done() on parent task '{parent_task_id}': {done_err}. Saved with 'completed' progress instead.")
                             
-                            parent_task.save()
-                            
-                            logger.info(f"ProjectManagementTool: Auto-linked new sub-task to parent task '{parent_task_id}'. Parent task marked as 'decomposed' and assigned to '{pm_agent_id}'.")
+                            logger.info(f"ProjectManagementTool: Auto-linked new sub-task to parent task '{parent_task_id}'. Parent task completed after decomposition.")
                         except Exception as e:
                             logger.warning(f"ProjectManagementTool: Failed to auto-link parent task '{agent.current_task_id}': {e}")
                 # ------------------------------------------------

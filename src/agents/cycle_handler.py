@@ -1406,40 +1406,37 @@ class AgentCycleHandler:
                                                     logger.warning(
                                                         f"CycleHandler: PM '{agent.agent_id}' stuck in "
                                                         f"'{PM_STATE_MANAGE}' after {agent._duplicate_tool_call_count} "
-                                                        f"duplicate '{tool_name}' calls. Injecting corrective directive."
+                                                        f"duplicate '{tool_name}' calls. Forcing transition to '{PM_STATE_STANDBY}'."
                                                     )
+                                                    self._manager.workflow_manager.change_state(agent, PM_STATE_STANDBY)
                                                     escalation_msg: MessageDict = {
                                                         "role": "system",
                                                         "content": (
                                                             f"[Framework System Message - STUCK LOOP DETECTED]: You have called "
                                                             f"'{tool_name}' {agent._duplicate_tool_call_count} times with "
-                                                            f"identical arguments in the pm_manage state. The cached result is shown above. "
-                                                            f"STOP calling the same tool. You MUST now do ONE of the following:\n"
-                                                            f"1. If workers are busy: Send a status check message to a worker using <send_message>.\n"
-                                                            f"2. If tasks are completed: Review them and add a '+closed' tag using <project_management>.\n"
-                                                            f"3. If all tasks are done: Report completion to admin_ai using <send_message>.\n"
-                                                            f"4. If nothing needs action: Wait. The framework will reactivate you periodically."
+                                                            f"identical arguments in the pm_manage state. "
+                                                            f"To prevent infinite loops, you have been forcibly transitioned to 'pm_standby'. "
+                                                            f"You will remain in standby until workers complete tasks or report back."
                                                         )
                                                     }
                                                     self._deduplicate_pm_framework_messages(agent)
                                                     all_tool_results_for_history.append(escalation_msg)
-                                                    # Keep count at threshold-1 so next duplicate triggers again
-                                                    agent._duplicate_tool_call_count = 2
+                                                    agent._duplicate_tool_call_count = 0
                                                 else:
                                                     logger.warning(
                                                         f"CycleHandler: FORCE-ADVANCING PM '{agent.agent_id}' to "
-                                                        f"'{PM_STATE_MANAGE}' after {agent._duplicate_tool_call_count} "
+                                                        f"'{PM_STATE_STANDBY}' after {agent._duplicate_tool_call_count} "
                                                         f"duplicate '{tool_name}' calls in state '{agent.state}'."
                                                     )
-                                                    self._manager.workflow_manager.change_state(agent, PM_STATE_MANAGE)
+                                                    self._manager.workflow_manager.change_state(agent, PM_STATE_STANDBY)
                                                     escalation_msg: MessageDict = {
                                                         "role": "system",
                                                         "content": (
                                                             f"[Framework System Message - FORCE ADVANCE]: You called "
                                                             f"'{tool_name}' {agent._duplicate_tool_call_count} times with "
                                                             f"identical arguments. The framework has force-advanced you to "
-                                                            f"the '{PM_STATE_MANAGE}' state. Review your task list and "
-                                                            f"proceed with the next logical step."
+                                                            f"the '{PM_STATE_STANDBY}' state to prevent compute waste. "
+                                                            f"You will be periodically reactivated when the framework checks on worker progress."
                                                         )
                                                     }
                                                     self._deduplicate_pm_framework_messages(agent)
@@ -1577,6 +1574,7 @@ class AgentCycleHandler:
 
                                 if tool_was_successful:
                                     any_tool_success = True
+                                    setattr(agent, '_empty_response_retry_count', 0)  # Reset empty response counter on success
                                     if tool_name == "mark_message_read":
                                         msg_id = tool_args.get("message_id")
                                         if msg_id:
@@ -2357,8 +2355,34 @@ class AgentCycleHandler:
                                 await self._manager.send_to_ui(mock_event_data)
                                 context.cycle_completed_successfully = True
                         else:
-                            logger.info(f"Agent '{agent.agent_id}' cycle resulted in no errors, no actions, and no text content. Cycle considered complete but no output.")
-                            context.cycle_completed_successfully = True
+                            # --- EMPTY RESPONSE NUDGE-AND-RETRY ---
+                            # Instead of silently accepting, inject a nudge and immediately retry
+                            empty_retry_count = getattr(agent, '_empty_response_retry_count', 0)
+                            max_empty_retries = 2
+                            
+                            if empty_retry_count < max_empty_retries:
+                                empty_retry_count += 1
+                                setattr(agent, '_empty_response_retry_count', empty_retry_count)
+                                
+                                nudge_msg = (
+                                    f"[Framework Nudge]: Your last response was empty (attempt {empty_retry_count}/{max_empty_retries}). "
+                                    f"You MUST produce output. Review your current state ('{agent.state}') and "
+                                    f"take a concrete action: use a tool, provide analysis, or request a state transition."
+                                )
+                                agent.message_history.append({"role": "system", "content": nudge_msg})
+                                logger.warning(
+                                    f"CycleHandler: Agent '{agent.agent_id}' produced empty response. "
+                                    f"Injecting nudge and scheduling immediate retry ({empty_retry_count}/{max_empty_retries})."
+                                )
+                                
+                                context.needs_reactivation_after_cycle = True
+                                context.action_taken_this_cycle = True
+                                context.cycle_completed_successfully = True
+                            else:
+                                # Max retries exhausted - accept the empty response and reset
+                                setattr(agent, '_empty_response_retry_count', 0)
+                                logger.info(f"Agent '{agent.agent_id}' cycle resulted in no errors, no actions, and no text content after {max_empty_retries} nudge retries. Cycle considered complete but no output.")
+                                context.cycle_completed_successfully = True
 
                 # Determine if this iteration of LLM call was successful before recheck
                 if not context.last_error_obj and context.action_taken_this_cycle:

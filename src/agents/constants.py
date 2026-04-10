@@ -83,7 +83,7 @@ KEY_RELATED_STATUS_CODES = [401, 403, 429] # Unauthorized, Forbidden, Too Many R
 
 # Regex for Admin AI state change requests in responses
 # Modified regex to accept both self-closing (/>) and non-self-closing (>) tags
-REQUEST_STATE_TAG_PATTERN = re.compile(r"<request_state\s+state=['\"]([\w_]+)['\"](?:\s+task_id=['\"]([^'\"]+)['\"])?\s*/?>") # Allow underscore in state names, optional task_id
+REQUEST_STATE_TAG_PATTERN = re.compile(r"<request_state\s+state=['\"]([\w_]+)['\"](?:[^>]*?task_id=['\"]([^'\"]+)['\"])?[^>]*>") # Allow underscore in state names, optional task_id and extra arbitrary attributes
 
 # --- Ollama Specific Constants ---
 

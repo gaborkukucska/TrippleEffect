@@ -327,6 +327,42 @@ class FileSystemTool(BaseTool):
         if action == "list" and relative_path is None:
              relative_path = "."
 
+        # Extract agent_type from manager if available
+        agent_type = "worker"
+        manager = kwargs.get("manager")
+        if manager and hasattr(manager, "agents") and agent_id in manager.agents:
+            agent_type = getattr(manager.agents[agent_id], "agent_type", "worker")
+
+        # --- WORKSPACE BLOAT PROTECTION ---
+        if action in ["write", "mkdir", "copy", "move"] and "shared workspace" in scope_description and agent_type != "pm":
+            target_file_param = filename if action == "write" else (destination_path if action in ["copy", "move"] else relative_path)
+            if target_file_param:
+                validated_target = await self._resolve_and_validate_path(base_path, target_file_param, agent_id, scope_description)
+                if validated_target:
+                    project_structure_file = base_path / "PROJECT_STRUCTURE.md"
+                    if project_structure_file.exists():
+                        try:
+                            rel_target_path = validated_target.relative_to(base_path)
+                            if len(rel_target_path.parts) > 1:
+                                target_top_dir = rel_target_path.parts[0].lower()
+                                if not target_top_dir.startswith("."):
+                                    structure_content = await asyncio.to_thread(project_structure_file.read_text, encoding="utf-8")
+                                    allowed_top_dirs = set()
+                                    in_block = False
+                                    for line in structure_content.splitlines():
+                                        if line.startswith("```"):
+                                            in_block = not in_block
+                                            continue
+                                        if in_block and line.startswith("  ") and not line.startswith("    "):
+                                            clean_dir = line.strip().rstrip("/")
+                                            allowed_top_dirs.add(clean_dir.lower())
+                                    
+                                    if allowed_top_dirs and target_top_dir not in allowed_top_dirs:
+                                        logger.warning(f"Agent {agent_id} attempted to create unauthorized root folder '{target_top_dir}' in shared workspace.")
+                                        return {"status": "error", "message": f"Workspace Bloat Protection: You are attempting to place a file or directory inside a new root directory '{rel_target_path.parts[0]}/' which is NOT defined in PROJECT_STRUCTURE.md. Expected root directories are: {', '.join(allowed_top_dirs)}. Please strictly adhere to the defined layout."}
+                        except Exception as e:
+                            logger.error(f"Error checking Workspace Bloat Protection for agent {agent_id}: {e}", exc_info=True)
+
         # Execute action
         result: Optional[Dict[str, Any]] = None
         try:

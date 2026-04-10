@@ -56,9 +56,39 @@ class NextStepScheduler:
             failover_successful = await self._manager.handle_agent_model_failover(agent_id, context.last_error_obj or Exception("Unknown error triggering failover"))
             if failover_successful:
                 logger.info(f"NextStepScheduler: Failover successful for agent '{agent_id}'. Agent config updated. Re-scheduling cycle.")
+                setattr(agent, '_failover_exhaustion_retry_count', 0)  # Reset on success
                 await self._schedule_new_cycle(agent, 0) # Reset retry count for new config
             else:
-                logger.error(f"NextStepScheduler: Failover handler exhausted options for agent '{agent_id}'. Agent remains in ERROR state.")
+                # --- INFINITE DELAYED AUTO-RETRY on failover exhaustion ---
+                retry_count = getattr(agent, '_failover_exhaustion_retry_count', 0)
+                retry_count += 1
+                setattr(agent, '_failover_exhaustion_retry_count', retry_count)
+                
+                # Infinite retries with exponential backoff capped at 300 seconds (5 mins)
+                base_cooldown = 15
+                cooldown_seconds = min(300, base_cooldown * (2 ** (retry_count - 1)))
+                
+                logger.warning(
+                    f"NextStepScheduler: Failover exhausted for agent '{agent_id}'. "
+                    f"Scheduling auto-retry {retry_count} after {cooldown_seconds}s cooldown."
+                )
+                await self._manager.send_to_ui({
+                    "type": "status", "agent_id": agent_id,
+                    "content": f"All providers down. Auto-retry {retry_count} in {cooldown_seconds}s..."
+                })
+                
+                # Reset the failover state so it can try all providers again
+                if hasattr(agent, '_failover_state'):
+                    del agent._failover_state
+                if hasattr(agent, '_failed_models_this_cycle'):
+                    agent._failed_models_this_cycle.clear()
+                
+                # Wait cooldown then retry
+                await asyncio.sleep(cooldown_seconds)
+                
+                # Restore agent to IDLE and reschedule
+                agent.set_status(AGENT_STATUS_IDLE)
+                await self._schedule_new_cycle(agent, 0)
             self._log_end_of_schedule_next_step(agent, "Path A - Failover Triggered")
             return
 
@@ -208,6 +238,8 @@ class NextStepScheduler:
                             override_msg = "[System Enforcement]: You failed to complete the audit within the maximum allowed steps. The system has automatically transitioned you to standby state to prevent compute waste."
                             agent.message_history.append({"role": "system", "content": override_msg})
                             
+                            agent.set_status(AGENT_STATUS_IDLE)
+                            await self._schedule_new_cycle(agent, 0)
                             self._log_end_of_schedule_next_step(agent, "Path B-PMAudit-Limit-Override")
                             return
                 
@@ -241,6 +273,25 @@ class NextStepScheduler:
                     await self._schedule_new_cycle(agent, 0)
             elif agent.agent_type == AGENT_TYPE_PM and \
                  agent.state == PM_STATE_REPORT_CHECK and not context.state_change_requested_this_cycle:
+                
+                # ENFORCEMENT: pm_report_check cycle cap
+                current_count = getattr(agent, '_pm_report_check_cycle_count', 0)
+                setattr(agent, '_pm_report_check_cycle_count', current_count + 1)
+                
+                if getattr(agent, '_pm_report_check_cycle_count') > 5:
+                    logger.critical(f"NextStepScheduler: PM '{agent_id}' has been in 'pm_report_check' for {getattr(agent, '_pm_report_check_cycle_count')} cycles. Forcing transition to pm_manage to prevent infinite loop.")
+                    if hasattr(self._manager, 'workflow_manager'):
+                        self._manager.workflow_manager.change_state(agent, PM_STATE_MANAGE)
+                        setattr(agent, '_pm_report_check_cycle_count', 0)
+                        
+                        override_msg = "[System Enforcement]: You failed to complete the report check within the maximum allowed steps. The system has automatically transitioned you to manage state to prevent compute waste."
+                        agent.message_history.append({"role": "system", "content": override_msg})
+                        
+                        agent.set_status(AGENT_STATUS_IDLE)
+                        await self._schedule_new_cycle(agent, 0)
+                        self._log_end_of_schedule_next_step(agent, "Path B-PMReportCheck-Limit-Override")
+                        return
+
                 if getattr(context, 'action_taken_this_cycle', False):
                     # PM executed a tool (e.g., send_message, project_management). Allow it to stay in this state to read the result.
                     logger.info(f"NextStepScheduler: PM agent '{agent_id}' in pm_report_check executed a tool. Reactivating to process result.")

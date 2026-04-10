@@ -367,6 +367,11 @@ class ConstitutionalGuardianHealthMonitor:
                 logger.error(f"ConstitutionalGuardian: BLOCKING '{agent_id}' - tool_information+list_tools loop detected ({record.tool_information_loop_count} calls)")
                 needs_intervention, description, recovery = await self._create_tool_information_loop_intervention(agent, record)
             
+        # PRIORITY 0.5: Block tool execution loop immediately
+        elif hasattr(record, 'tool_execution_loop_detected') and record.tool_execution_loop_detected:
+            logger.error(f"ConstitutionalGuardian: BLOCKING '{agent_id}' - tool execution loop detected ({record.tool_execution_loop_count} errors)")
+            needs_intervention, description, recovery = await self._create_tool_execution_loop_intervention(agent, record)
+            
         # PRIORITY 1: Block empty responses immediately
         elif record.consecutive_empty_responses >= self.empty_response_threshold:
             logger.error(f"ConstitutionalGuardian: BLOCKING '{agent_id}' - {record.consecutive_empty_responses} consecutive empty responses")
@@ -565,6 +570,37 @@ class ConstitutionalGuardianHealthMonitor:
                 "action": "suggest_work_completion",
                 "completion_message": self._generate_work_completion_message(agent, history_analysis)
             })
+        
+        return True, description, recovery
+
+    async def _create_tool_execution_loop_intervention(self, agent: 'Agent', record: AgentHealthRecord) -> Tuple[bool, str, Dict]:
+        """Create intervention for repeated tool execution errors."""
+        
+        history_analysis = await self._analyze_agent_history(agent, "tool_execution_loop")
+        
+        description = (f"Constitutional Guardian BLOCKED agent '{agent.agent_id}' - "
+                      f"Repeated ToolExec Error sequence detected ({record.tool_execution_loop_count} consecutive identical errors). "
+                      f"Agent is failing to correct a malformed tool call.")
+        
+        recovery = {
+            "type": "tool_execution_loop_violation",
+            "severity": "critical",
+            "history_analysis": history_analysis,
+            "actions": [
+                {
+                    "action": "inject_guidance",
+                    "message": self._generate_tool_execution_loop_guidance(agent, history_analysis)
+                },
+                {
+                    "action": "clear_problematic_context",
+                    "keep_last_n_messages": 3
+                },
+                {
+                    "action": "reset_status", 
+                    "new_status": AGENT_STATUS_IDLE
+                }
+            ]
+        }
         
         return True, description, recovery
     
@@ -805,6 +841,24 @@ class ConstitutionalGuardianHealthMonitor:
             
         return base_msg
     
+    def _generate_tool_execution_loop_guidance(self, agent: 'Agent', history_analysis: Dict[str, Any]) -> str:
+        """Generate specific guidance for tool execution loops."""
+        errors_str = ""
+        if history_analysis.get("recent_errors"):
+            recent_err = history_analysis["recent_errors"][-1]
+            errors_str = f"Your last error was: {recent_err.get('error_snippet', 'Unknown')}"
+        
+        return (
+            f" [Constitutional Guardian - CRITICAL VIOLATION]: You have been completely blocked due to repeated `[ToolExec Error]` failures. "
+            f"You are continuously calling a tool with malformed arguments or an invalid schema, which is wasting execution cycles.\n\n"
+            f"{errors_str}\n\n"
+            f"MANDATORY DIRECTIVE:\n"
+            f"1. DO NOT execute this same tool call again without changes.\n"
+            f"2. Read the tool's parameter requirements carefully by using `tool_information`.\n"
+            f"3. Do NOT invent parameter names. XML tags must exactly match the schema.\n"
+            f"4. If you cannot fix the formatting, change your strategy or request a state change."
+        )
+
     def _generate_identical_response_guidance(self, agent: 'Agent', history_analysis: Dict) -> str:
         """Generate guidance for agents producing identical responses."""
         

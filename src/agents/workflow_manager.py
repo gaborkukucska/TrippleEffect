@@ -223,6 +223,10 @@ class AgentWorkflowManager:
                             agent._periodic_cycle_count = 0
                         if hasattr(agent, '_manage_unproductive_cycles'):
                             agent._manage_unproductive_cycles = 0
+                        if hasattr(agent, '_pm_report_check_cycle_count'):
+                            agent._pm_report_check_cycle_count = 0
+                        if hasattr(agent, '_pm_audit_cycle_count'):
+                            agent._pm_audit_cycle_count = 0
                             
                         # Clear any completion-related flags
                         if hasattr(agent, '_manage_cycle_cooldown_until'):
