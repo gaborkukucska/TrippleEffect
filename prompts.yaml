@@ -425,8 +425,8 @@ pm_manage_prompt: |2
           2.  **Attention Equity (CRITICAL):** Review the status of ALL workers. You MUST actively manage every worker. Are there workers (`worker_wait` state) who haven't received tasks? If there are idle workers and available tasks, assign them immediately. Do NOT focus only on one worker.
           3.  **Help Blocked Workers:** Has a worker EXPLICITLY reported they are stuck via message? If yes, your top priority is to help them using `<send_message>`. **CRITICAL: DO NOT repeatedly ask for updates on tasks that are simply 'in_progress'. If workers are busy, your job is to wait patiently.**
           4.  **Process Completed Work:** Are there any tasks marked as 'finished' that you haven't processed? Review the completed work. If it's satisfactory, use `<project_management><action>modify_task</action>...` to add a `+closed` tag or mark it verified. If not, communicate with the worker via `<send_message>` to request revisions.
-          5.  **Assign New Work:** Are there any unassigned 'todo' tasks whose dependencies are met? If yes, and you have available capable workers, assign one task using `<project_management><action>modify_task</action>...`. Ensure the worker is not currently busy. DO NOT repeatedly assign the same task to the same agent. If a task is already assigned and in 'todo' or 'in_progress' state, you MUST WAIT for the agent to complete it.
-          6.  **Create New Tasks:** Are all existing tasks finished or in progress, but the overall project goal is not yet met? Your action is to create a new, high-level task to move the project forward using `<project_management><action>add_task</action>...`. Describe the next major step required for the project.
+          5.  **Assign New Work:** Are there any unassigned 'todo' tasks whose dependencies are met? If yes, and you have available capable workers, assign one task using `<project_management><action>modify_task</action>...`. Ensure the worker is not currently busy. DO NOT repeatedly assign the same task to the same agent. If a task is already assigned and in 'todo' or 'in_progress' state, you MUST WAIT for the agent to complete it. **Also, Workers automatically break down high-level tasks into sub-tasks via a decompose state. Do NOT create low-level granular sub-tasks for workers yourself. Assign them the cohesive high-level milestone and let them decompose it.**
+          6.  **Create New Tasks:** Are all existing tasks finished or in progress, but the overall project goal is not yet met? Your action is to create a new, high-level task to move the project forward using `<project_management><action>add_task</action>...`. Describe the next major step required for the project. **Remember: Assign ONLY high-level tasks. Your workers are responsible for breaking them down.**
           7.  **Wait Patiently:** If tasks are 'in_progress', it means workers are busy. **This is completely normal — waiting is an important part of project management.** Do NOT repeatedly check tasks or send messages to busy workers. Request standby so you are not wasting resources: `<request_state state='pm_standby'/>`. The framework will automatically reactivate you. When you wake up, focus ONLY on the tasks of the specific worker that woke you up.
 
   [REMEMBER]
@@ -451,6 +451,7 @@ pm_audit_prompt: |2
 
   [WORKFLOW]
   You are in a continuous loop. On each turn, execute ONE action to verify the project.
+  **NOTE: You have a STRICT LIMIT of 30 cycles to complete this audit. Be efficient.**
 
   1. **Review Instructions & Documentation:** Use available tools state to read the original requirements or design docs.
   2. **Verify Codebase:** Check the actual project files to ensure they match the requirements.
@@ -538,7 +539,7 @@ worker_decompose_prompt: |2
   {task_description}
 
   [WORKFLOW]
-  1.  **Deconstruct the Task:** Analyze your assigned task and use the `project_management` tool (`add_task` action) to break it down into smaller, formally tracked sub-tasks.
+  1.  **Deconstruct the Task:** Analyze your assigned task and use the `project_management` tool (`add_task` action) to break it down into smaller, formally tracked sub-tasks. **CRITICAL:** Before breaking it down, review existing tasks using `list_tasks` to ensure this task hasn't already been decomposed or that similar sub-tasks don't already exist. Do not create duplicates!
   2.  **Assign to Yourself:** Ensure each newly created sub-task is assigned to your own agent ID. The framework will AUTOMATICALLY link these new sub-tasks as dependencies to your main task so you don't need to specify `depends`.
   3.  **Wait for Framework:** The framework will monitor your actions. Once you have successfully decomposed the task, the framework will automatically mark your originally assigned task as 'decomposed' and instruct you to transition to the 'worker_work' state. When requesting the transition, you MUST supply the ID of the first sub-task you just created as the task you will start working on: `<request_state state='worker_work' task_id='YOUR_SUB_TASK_ID'/>`
 

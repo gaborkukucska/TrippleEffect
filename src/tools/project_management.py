@@ -163,6 +163,9 @@ class ProjectManagementTool(BaseTool):
             "change_task": "modify_task",
             "update": "modify_task",
             "edit": "modify_task",
+            "update_progress": "modify_task",
+            "set_progress": "modify_task",
+            "progress_update": "modify_task",
             "finish_task": "complete_task",
             "done": "complete_task",
             "finish": "complete_task",
@@ -231,6 +234,32 @@ class ProjectManagementTool(BaseTool):
                 if not main_desc:
                     return {"status": "error", "message": "Missing 'title' or 'description' for 'add_task'."}
 
+                import difflib
+                existing_tasks = tw.tasks.pending()
+                if kwargs.get("project_filter"):
+                    existing_tasks = existing_tasks.filter(project=kwargs["project_filter"])
+                    
+                target_desc_lower = main_desc.lower()
+                for t in existing_tasks:
+                    existing_desc = (t['description'] or "").lower() if 'description' in t else ""
+                    if len(target_desc_lower) < 5 or len(existing_desc) < 5:
+                        continue
+                    
+                    similarity = difflib.SequenceMatcher(None, target_desc_lower, existing_desc).ratio()
+                    if similarity > 0.8 or target_desc_lower in existing_desc or existing_desc in target_desc_lower:
+                        logger.warning(f"ProjectManagementTool: Prevented duplicate task creation: '{main_desc}' is very similar ({similarity:.2f}) to existing task UUID {t['uuid']}")
+                        depends_list = [dep['uuid'] for dep in t['depends']] if 'depends' in t and t['depends'] else []
+                        return {
+                            "status": "success",
+                            "message": f"Task skipped to prevent duplication. An existing task ('{t['description'] if 'description' in t else ''}') is >80% similar.",
+                            "task_uuid": t['uuid'],
+                            "task_id": t['id'] if 'id' in t else 0,
+                            "description": t['description'] if 'description' in t else '',
+                            "assignee": t['assignee'] if 'assignee' in t and t['assignee'] else 'None',
+                            "depends": depends_list,
+                            "is_duplicate": True
+                        }
+
                 task = Task(tw, description=main_desc)
                 
                 # Apply unified task_progress mapping (alias handling for 'status' fallback)
@@ -292,7 +321,12 @@ class ProjectManagementTool(BaseTool):
                             except Exception as e:
                                 logger.warning(f"ProjectManagementTool: Dependency task '{dep_item}' not found: {e}. Skipping this dependency.")
                         else:
-                            logger.warning(f"ProjectManagementTool: Skipping invalid dependency format: '{dep_item}' (from raw: '{dep_val_raw}').")
+                            logger.warning(f"ProjectManagementTool: Invalid dependency format: '{dep_item}' (from raw: '{dep_val_raw}').")
+                            return {
+                                "status": "error",
+                                "message": f"Invalid dependency format: '{dep_item}'. Dependencies must be valid UUIDs, integer IDs, or recognized task aliases (e.g. 'T1').",
+                                "error_type": "invalid_dependency_format"
+                            }
                     if resolved_deps:
                         task['depends'] = resolved_deps
                         logger.info(f"ProjectManagementTool: Set {len(resolved_deps)} dependencies for task.")
@@ -361,6 +395,15 @@ class ProjectManagementTool(BaseTool):
                 else:
                     # Default: filter out completed tasks to save tokens
                     tasks_query = tasks_query.pending()
+                
+                completed_count = 0
+                try:
+                    all_tasks_query = tw.tasks.all()
+                    if kwargs.get("project_filter"): 
+                        all_tasks_query = all_tasks_query.filter(project=kwargs["project_filter"])
+                    completed_count = len(all_tasks_query.completed())
+                except Exception as e:
+                    logger.debug(f"Could not fetch completed tasks count: {e}")
                 
                 has_filters = any([
                     kwargs.get("task_progress_filter"),
@@ -458,7 +501,7 @@ class ProjectManagementTool(BaseTool):
                         "assignee": task['assignee'] if task['assignee'] is not None else None,
                         "depends": [t['uuid'] for t in (task['depends'] if task['depends'] is not None else [])]
                     })
-                return {"status": "success", "message": f"Found {len(minimal_task_list)} task(s).", "tasks": minimal_task_list}
+                return {"status": "success", "message": f"Found {len(minimal_task_list)} task(s). ({completed_count} completed tasks are hidden by default).", "tasks": minimal_task_list}
 
             elif action == "modify_task":
                 task_id = kwargs.get("task_id") or kwargs.get("task_uuid")
@@ -530,7 +573,12 @@ class ProjectManagementTool(BaseTool):
                             else:
                                 raise ValueError("Task not found by description or ID.")
                 except Exception as e:
-                    return {"status": "error", "message": f"Task '{task_id}' not found. Detail: {e}"}
+                    # Provide an actionable error message suggesting they list the tasks
+                    return {
+                        "status": "error", 
+                        "message": f"Task '{task_id}' not found. Note that integer IDs shift as tasks are completed, and UUIDs must be exact. Detail: {e}",
+                        "suggestion": "IMPORTANT: You should run <project_management><action>list_tasks</action></project_management> to get the current list of tasks and their valid IDs/UUIDs."
+                    }
 
                 # Validate task_progress or legacy status if provided
                 if "task_progress" in kwargs or "status" in kwargs:
@@ -663,7 +711,12 @@ class ProjectManagementTool(BaseTool):
                             else:
                                 raise ValueError("Task not found by description or ID.")
                 except Exception as e:
-                    return {"status": "error", "message": f"Task '{task_id}' not found. Detail: {e}"}
+                    # Provide an actionable error message suggesting they list the tasks
+                    return {
+                        "status": "error", 
+                        "message": f"Task '{task_id}' not found. Note that integer IDs shift as tasks are completed, and UUIDs must be exact. Detail: {e}",
+                        "suggestion": "IMPORTANT: You should run <project_management><action>list_tasks</action></project_management> to get the current list of tasks and their valid IDs/UUIDs."
+                    }
 
                 try:
                     task.done() # This triggers Taskwarrior to set status=completed

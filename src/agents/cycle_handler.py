@@ -1064,9 +1064,17 @@ class AgentCycleHandler:
                             continue # Stop processing this event; do NOT apply state change
 
                         # Record the agent's action in its history so it knows it made the request
+                        history_content = f"<request_state state='{requested_state}'"
+                        if event_task_id:
+                            history_content += f" task_id='{event_task_id}'"
+                        if task_description:
+                            # optional if needed, usually not logged but good to keep it exact
+                            history_content += f" task_description='{task_description}'"
+                        history_content += "/>"
+                        
                         agent.message_history.append({
                             "role": "assistant",
-                            "content": f"<request_state state='{requested_state}'/>"
+                            "content": history_content
                         })
 
                         # <<< --- ROBUST FIX START --- >>>
@@ -1086,7 +1094,8 @@ class AgentCycleHandler:
                         # Removing the interception logic that prevented PM from going to standby.
                         # The PM MUST be allowed to go to standby while workers are active to avoid busy-waiting loops.
 
-                        if self._manager.workflow_manager.change_state(agent, requested_state, task_description=task_description):
+                        state_change_success = self._manager.workflow_manager.change_state(agent, requested_state, task_description=task_description)
+                        if state_change_success:
                             # Reactivate unless transitioning to an idle state
                             idle_states = [PM_STATE_STANDBY, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STANDBY, WORKER_STATE_WAIT]
                             
@@ -1140,24 +1149,27 @@ class AgentCycleHandler:
                             # change_state returned False. Check if it's already in the requested state.
                             resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state)
                             if agent.state == resolved_requested:
-                                logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Treating as no-op to prevent reactivation loop.")
-                                # Always suppress reactivation for same-state requests.
-                                # Reactivating just feeds the same state-change message back, causing infinite loops.
-                                context.needs_reactivation_after_cycle = False
+                                logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Reactivating with reminder.")
+                                context.needs_reactivation_after_cycle = True
+                                agent.message_history.append({
+                                    "role": "system",
+                                    "content": f"[Framework Directive]: You requested to change to '{requested_state}', but you are already in this state. Please proceed with executing tools to fulfill your current goal."
+                                })
                             else:
                                 # Truly invalid state transition. Let it reactivate to correct itself (with an error message).
                                 context.needs_reactivation_after_cycle = True
                                 invalid_msg = f"[Framework Error]: Invalid state requested: '{requested_state}'. Please check valid states for your role."
                                 agent.message_history.append({"role": "system", "content": invalid_msg})
 
-                        if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="agent_state_change", content=f"State changed to: {requested_state}")
-                        
-                        # CRITICAL FIX: Append a user message so the next cycle has a clear trigger to start generating
-                        # Without this, the last message is the assistant's <request_state> tag, causing empty outputs
-                        agent.message_history.append({
-                            "role": "user",
-                            "content": f"[System State Change]: State changed to {requested_state}. Your instructions have been updated. Please proceed."
-                        })
+                        if state_change_success:
+                            if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="agent_state_change", content=f"State changed to: {requested_state}")
+                            
+                            # CRITICAL FIX: Append a user message so the next cycle has a clear trigger to start generating
+                            # Without this, the last message is the assistant's <request_state> tag, causing empty outputs
+                            agent.message_history.append({
+                                "role": "user",
+                                "content": f"[System State Change]: State changed to {requested_state}. Your instructions have been updated. Please proceed."
+                            })
                         
                         await self._manager.send_to_ui(event)
                         llm_stream_ended_cleanly = False; break
@@ -1243,6 +1255,15 @@ class AgentCycleHandler:
                             final_content_for_history += thought_content_for_history + "\n"
                         if content_for_history:
                             final_content_for_history += content_for_history
+
+                        if deferred_state_change:
+                            history_state_tag = f"\n<request_state state='{deferred_state_change}'"
+                            if deferred_task_id:
+                                history_state_tag += f" task_id='{deferred_task_id}'"
+                            if deferred_task_desc:
+                                history_state_tag += f" task_description='{deferred_task_desc}'"
+                            history_state_tag += "/>"
+                            final_content_for_history += history_state_tag
 
                         # CRITICAL FIX: Changed `... or None` to `... or ""` to prevent null content,
                         # which causes the agent to lose context and loop. An empty string is valid.
@@ -1399,14 +1420,14 @@ class AgentCycleHandler:
                                                     # so the next duplicate triggers the general FORCE-ADVANCE below.
                                                     agent._duplicate_tool_call_count = 2 
                                             else:
-                                                # GENERAL FORCE-ADVANCE: For any tool type, force PM to pm_manage
+                                                # GENERAL FORCE-ADVANCE: For any tool type, force PM to pm_standby
                                                 # FIX: If already in pm_manage, inject corrective directive instead of
                                                 # a no-op state change that resets the counter and loops forever.
                                                 if agent.state == PM_STATE_MANAGE:
                                                     logger.warning(
                                                         f"CycleHandler: PM '{agent.agent_id}' stuck in "
                                                         f"'{PM_STATE_MANAGE}' after {agent._duplicate_tool_call_count} "
-                                                        f"duplicate '{tool_name}' calls. Forcing transition to '{PM_STATE_STANDBY}'."
+                                                        f"duplicate '{tool_name}' calls. Injecting STUCK message and forcing to STANDBY."
                                                     )
                                                     self._manager.workflow_manager.change_state(agent, PM_STATE_STANDBY)
                                                     escalation_msg: MessageDict = {
@@ -1444,13 +1465,13 @@ class AgentCycleHandler:
                                                     agent._duplicate_tool_call_count = 0
                                                 context.needs_reactivation_after_cycle = True
                                         elif agent.agent_type == AGENT_TYPE_WORKER:
-                                            # Escalation for workers
+                                            # Escalation for workers - force to worker_report after 3 duplicates
                                             cross_cycle_duplicate_blocked = True
                                             logger.warning(
                                                 f"CycleHandler: HARD-ADVANCING worker '{agent.agent_id}' after "
                                                 f"{agent._duplicate_tool_call_count} duplicate '{tool_name}' calls."
                                             )
-                                            # ACTUALLY change the state to worker_report!
+                                            # ACTUALLY change the state to worker_report
                                             agent.set_state("worker_report")
                                             escalation_msg: MessageDict = {
                                                 "role": "system",
@@ -1466,8 +1487,8 @@ class AgentCycleHandler:
                                                 self._deduplicate_pm_framework_messages(agent)
                                             all_tool_results_for_history.append(escalation_msg)
                                             
-                                            # DO NOT reset to 0, wait for them to process the message.
-                                            agent._duplicate_tool_call_count = 2
+                                            # Reset to 0 since we forced a state change and want them to report cleanly
+                                            agent._duplicate_tool_call_count = 0
                                     else:
                                         cross_cycle_duplicate_blocked = True
                                         # Inject an escalated directive - stronger than the normal one
@@ -1503,10 +1524,10 @@ class AgentCycleHandler:
                             # --- END CROSS-CYCLE DUPLICATE DETECTION ---
                             
                             # --- SEND_MESSAGE MULTI-TOOL CONSTRAINT ---
-                            if any(t.get("name") != "send_message" for t in tool_calls) and tool_name == "send_message":
+                            if any(t.get("name") not in ("send_message", "mark_message_read") for t in tool_calls) and tool_name == "send_message":
                                 # Check if the ONLY other activity is a state change (deferred_state_change).
                                 # If send_message is paired with a state change and NO other tool calls, allow both.
-                                non_send_message_tools = [t for t in deduplicated_tool_calls if t.get("name") != "send_message"]
+                                non_send_message_tools = [t for t in deduplicated_tool_calls if t.get("name") not in ("send_message", "mark_message_read")]
                                 has_only_state_change_companion = (len(non_send_message_tools) == 0 and deferred_state_change is not None)
                                 
                                 if has_only_state_change_companion:
@@ -2020,7 +2041,12 @@ class AgentCycleHandler:
                                 else:
                                     resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, deferred_state_change)
                                     if agent.state == resolved_requested:
-                                        logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Treating as no-op to prevent reactivation loop.")
+                                        logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Reactivating with reminder.")
+                                        context.needs_reactivation_after_cycle = True
+                                        agent.message_history.append({
+                                            "role": "system",
+                                            "content": f"[Framework Directive]: You requested to change to '{deferred_state_change}', but you are already in this state. Please proceed with executing tools to fulfill your current goal."
+                                        })
                                     else:
                                         logger.warning(f"CycleHandler: Failed to change agent '{agent.agent_id}' state to '{deferred_state_change}' after tool processing")
                                         # Truly invalid state transition. Let it reactivate to correct itself (with an error message).
@@ -2211,6 +2237,11 @@ class AgentCycleHandler:
                         else:
                             # If no text buffer but also no action taken, this indicates a problematic cycle
                             recent_think_only = True
+                            
+                        # Reset cooldown tracking if agent was productive
+                        if not recent_think_only:
+                            agent._framework_forced_standby_count = 0
+                            agent._manage_unproductive_cycles = 0
 
                         if recent_think_only:
                             logger.info(f"CycleHandler: PM agent '{agent.agent_id}' in MANAGE state produced only thinking without action. Applying enhanced intervention.")
@@ -2224,8 +2255,15 @@ class AgentCycleHandler:
                             agent._manage_unproductive_cycles += 1
 
                             if agent._manage_unproductive_cycles >= 3:
+                                # Track framework-forced standbys for progressive cooldown
+                                if not hasattr(agent, '_framework_forced_standby_count'):
+                                    agent._framework_forced_standby_count = 0
+                                agent._framework_forced_standby_count += 1
+                                
+                                cooldown_seconds = min(30 * (2 ** (agent._framework_forced_standby_count - 1)), 300)
+
                                 # After 3 unproductive cycles, force transition to standby directly
-                                logger.warning(f"CycleHandler: PM agent '{agent.agent_id}' had {agent._manage_unproductive_cycles} unproductive MANAGE cycles. Force-transitioning to standby state.")
+                                logger.warning(f"CycleHandler: PM agent '{agent.agent_id}' had {agent._manage_unproductive_cycles} unproductive MANAGE cycles. Force-transitioning to standby state (Cooldown: {cooldown_seconds}s).")
                                 
                                 standby_message_content = (
                                     "[Framework Intervention]: You have completed multiple management cycles without taking concrete action. "
@@ -2233,6 +2271,11 @@ class AgentCycleHandler:
                                     "Output ONLY the following XML: <request_state state='pm_standby'/>"
                                 )
                                 agent.message_history.append({"role": "system", "content": standby_message_content})
+                                
+                                # Set state immediately to ensure it takes effect if LLM fails
+                                agent.set_state(PM_STATE_STANDBY)
+                                # Explicitly update the cooldown timer
+                                agent._last_standby_wake_time = time.time() + cooldown_seconds - 60 # Set to trigger when cooldown expires (-60 compensates for baseline delay in manager)
                                 
                                 if context.current_db_session_id:
                                     await self._manager.db_manager.log_interaction(
@@ -2458,22 +2501,51 @@ class AgentCycleHandler:
                         # Ensure agent's task state completely resets to force re-planning on stalling / empty response loops
                         recovery_type = recovery_plan.get("type", "")
                         if recovery_type in ["minimal_response_pattern", "stuck_in_state", "tool_information_loop_violation", "empty_response_violation"]:
-                            has_task_record = (hasattr(agent, 'metadata') and 
-                                           isinstance(agent.metadata, dict) and 
-                                           'task_id' in agent.metadata)
-                            
-                            logger.warning(f"CycleHandler: Constitutional Guardian Intervention Reset - Changing '{agent.agent_id}' state to {'worker_report' if has_task_record else 'worker_wait'}")
-                            
-                            agent.needs_priority_recheck = True
-                            if has_task_record:
-                                agent.set_state("worker_report")
-                            else:
-                                agent.set_state("worker_wait")
+                            # CRITICAL FIX: Agent-type-aware state recovery.
+                            # Previously, all agents were blindly reset to worker_wait/worker_report,
+                            # which caused PM agents to fall into the DEFAULT state and become non-functional.
+                            if agent.agent_type == AGENT_TYPE_PM:
+                                # PM agents should NEVER be set to worker states.
+                                # Reset to pm_manage (safe default) so PM can reassess project status.
+                                target_state = PM_STATE_MANAGE
+                                logger.warning(
+                                    f"CycleHandler: Constitutional Guardian Intervention Reset - "
+                                    f"PM agent '{agent.agent_id}' resetting to '{target_state}' "
+                                    f"(recovery_type: {recovery_type})"
+                                )
+                                agent.needs_priority_recheck = True
+                                agent.set_state(target_state)
                                 
-                            if hasattr(agent, "current_task_id"):
-                                agent.current_task_id = None
-                            if hasattr(agent, "active_task_id"):
-                                agent.active_task_id = None
+                            elif agent.agent_type == AGENT_TYPE_ADMIN:
+                                # Admin agents should reset to admin_standby
+                                target_state = ADMIN_STATE_STANDBY
+                                logger.warning(
+                                    f"CycleHandler: Constitutional Guardian Intervention Reset - "
+                                    f"Admin agent '{agent.agent_id}' resetting to '{target_state}' "
+                                    f"(recovery_type: {recovery_type})"
+                                )
+                                agent.needs_priority_recheck = True
+                                agent.set_state(target_state)
+                                
+                            else:
+                                # Worker agents — original logic
+                                has_task_record = (hasattr(agent, 'metadata') and 
+                                               isinstance(agent.metadata, dict) and 
+                                               'task_id' in agent.metadata)
+                                
+                                target_state = "worker_report" if has_task_record else "worker_wait"
+                                logger.warning(
+                                    f"CycleHandler: Constitutional Guardian Intervention Reset - "
+                                    f"Changing worker '{agent.agent_id}' state to '{target_state}'"
+                                )
+                                
+                                agent.needs_priority_recheck = True
+                                agent.set_state(target_state)
+                                    
+                                if hasattr(agent, "current_task_id"):
+                                    agent.current_task_id = None
+                                if hasattr(agent, "active_task_id"):
+                                    agent.active_task_id = None
     
                         # CRITICAL FIX: Removed direct schedule_cycle() call here.
                 else:

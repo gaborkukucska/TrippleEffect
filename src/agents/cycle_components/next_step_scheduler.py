@@ -229,7 +229,7 @@ class NextStepScheduler:
                     current_count = getattr(agent, '_pm_audit_cycle_count', 0)
                     setattr(agent, '_pm_audit_cycle_count', current_count + 1)
                     
-                    if getattr(agent, '_pm_audit_cycle_count') > 5:
+                    if getattr(agent, '_pm_audit_cycle_count') > 30:
                         if hasattr(self._manager, 'workflow_manager'):
                             logger.critical(f"NextStepScheduler: PM '{agent_id}' has been in 'pm_audit' for {getattr(agent, '_pm_audit_cycle_count')} cycles. Forcing transition to pm_standby to prevent infinite loop.")
                             self._manager.workflow_manager.change_state(agent, PM_STATE_STANDBY)

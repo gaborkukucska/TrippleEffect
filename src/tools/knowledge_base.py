@@ -224,7 +224,7 @@ class KnowledgeBaseTool(BaseTool):
                 if not found_items:
                     return {"status": "success", "message": f"No thoughts found for agent '{agent_identifier}' matching keywords.", "thoughts": []}
                 
-                thoughts_data = [{"id": item.id, "timestamp": item.timestamp.strftime('%Y-%m-%d %H:%M:%S') if item.timestamp else 'N/A', "keywords": item.keywords, "thought": item.summary} for item in found_items]
+                thoughts_data = [{"id": item.id, "timestamp": item.created_at.strftime('%Y-%m-%d %H:%M:%S') if item.created_at else 'N/A', "keywords": item.keywords, "thought": item.summary} for item in found_items]
                 message = f"Found {len(found_items)} thought(s) for agent '{agent_identifier}'."
                 return {"status": "success", "message": message, "thoughts": thoughts_data}
 
