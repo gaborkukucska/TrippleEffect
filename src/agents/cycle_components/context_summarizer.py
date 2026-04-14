@@ -191,17 +191,19 @@ Please provide your summary as plain text (no XML tags needed for this summariza
             # Temporarily set CG history and get summary
             original_history = cg_agent.message_history
             cg_agent.message_history = temp_history
+            from contextlib import aclosing
             
             # Use the CG's LLM provider directly for summarization
             summary_chunks = []
-            async for response_chunk in cg_agent.llm_provider.stream_completion(
+            async with aclosing(cg_agent.llm_provider.stream_completion(
                 model=cg_agent.model,
                 messages=temp_history,
                 temperature=0.3,  # Lower temperature for more focused summaries
                 max_tokens=800    # Limit summary length
-            ):
-                if isinstance(response_chunk, dict) and response_chunk.get("type") == "response_chunk" and response_chunk.get("content"):
-                    summary_chunks.append(response_chunk["content"])
+            )) as stream:
+                async for response_chunk in stream:
+                    if isinstance(response_chunk, dict) and response_chunk.get("type") == "response_chunk" and response_chunk.get("content"):
+                        summary_chunks.append(response_chunk["content"])
             
             # Restore original CG history
             cg_agent.message_history = original_history

@@ -75,28 +75,28 @@ class LLMCaller:
             logger.debug(f"LLMCaller: Agent '{agent.agent_id}' in state '{agent.state}' applying max_tokens limit of {max_tokens_override}.")
 
 
+        from contextlib import aclosing
+
         # --- LLM Call ---
-        provider_stream = None
         try:
-            provider_stream = agent.llm_provider.stream_completion(
+            async with aclosing(agent.llm_provider.stream_completion(
                 messages=context.history_for_call,
                 model=agent.model, # Use the model currently set on the agent
                 temperature=agent.temperature,
                 max_tokens=max_tokens_override, # Pass the determined max_tokens
                 **agent.provider_kwargs # Pass other stored provider-specific kwargs
-            )
-
-            async for event in provider_stream:
-                # Augment event with agent_id if not present
-                if "agent_id" not in event:
-                    event["agent_id"] = agent.agent_id
-                
-                # Store error details in context if an error event is received
-                if event.get("type") == "error":
-                    context.last_error_obj = event.get('_exception_obj', ValueError(event.get('content', 'Unknown LLM Error')))
-                    context.last_error_content = event.get("content", f"[LLMCaller Error]: Unknown error from {agent.provider_name}")
-                    # Further error type determination (retryable, key-related) will happen in OutcomeDeterminer
-                yield event
+            )) as provider_stream:
+                async for event in provider_stream:
+                    # Augment event with agent_id if not present
+                    if "agent_id" not in event:
+                        event["agent_id"] = agent.agent_id
+                    
+                    # Store error details in context if an error event is received
+                    if event.get("type") == "error":
+                        context.last_error_obj = event.get('_exception_obj', ValueError(event.get('content', 'Unknown LLM Error')))
+                        context.last_error_content = event.get("content", f"[LLMCaller Error]: Unknown error from {agent.provider_name}")
+                        # Further error type determination (retryable, key-related) will happen in OutcomeDeterminer
+                    yield event
 
         except Exception as e:
             # This catches errors if the stream_completion call itself fails before iterating

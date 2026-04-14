@@ -170,9 +170,19 @@ class CommandExecutionTool(BaseTool):
                 
             status = "success" if returncode == 0 else "error"
             
+            # Format content specifically for the LLM context
+            content_parts = [f"Command Execution {'Succeeded' if returncode == 0 else 'Failed'} (Exit Code: {returncode})"]
+            if stdout_str.strip():
+                content_parts.append(f"--- STDOUT ---\n{stdout_str.strip()}")
+            if stderr_str.strip():
+                content_parts.append(f"--- STDERR ---\n{stderr_str.strip()}")
+            if returncode != 0 and not stderr_str.strip() and not stdout_str.strip():
+                content_parts.append("--- Output ---\nNo output provided by command.")
+                
             return {
                 "status": status,
                 "message": result_message,
+                "content": "\n\n".join(content_parts),
                 "return_code": returncode,
                 "stdout": stdout_str,
                 "stderr": stderr_str

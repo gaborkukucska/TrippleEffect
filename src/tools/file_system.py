@@ -782,9 +782,12 @@ Pushes changes to a remote repository.
                 relative_file_path = str(Path(*parts)) if parts else "."
             
         try:
+            # Strip leading slashes to tolerate absolute-looking paths within the scope
+            relative_file_path = relative_file_path.lstrip('/') or '.'
+
             # Handle potential path normalization issues
-            # Disallow paths starting with '/' or containing '..'
-            if relative_file_path.startswith('/') or '..' in Path(relative_file_path).parts:
+            # Disallow paths containing '..'
+            if '..' in Path(relative_file_path).parts:
                  logger.warning(f"Agent {agent_id} provided potentially unsafe path '{relative_file_path}' for {scope_description}.")
                  return None
 

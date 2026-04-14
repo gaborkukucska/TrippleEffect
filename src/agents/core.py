@@ -261,28 +261,30 @@ class Agent:
                 else:
                     logger.debug(f"Agent {self.agent_id}: State '{self.state}' is structural and does not use tools. Native tools payload omitted.")
 
-            provider_stream = self.llm_provider.stream_completion(
+            from contextlib import aclosing
+            
+            async with aclosing(self.llm_provider.stream_completion(
                 messages=history_to_use, model=self.model, temperature=self.temperature,
                 max_tokens=max_tokens_override, tools=tool_schemas, **self.provider_kwargs
-            )
-            
-            native_tool_calls_received = []
-
-            async for event in provider_stream:
-                event_type = event.get("type")
-                if event_type == "response_chunk":
-                    content = event.get("content", "")
-                    if content: self.text_buffer += content; complete_assistant_response += content; yielded_chunks = True
-                    yield {"type": "response_chunk", "content": content, "agent_id": self.agent_id}
-                elif event_type == "native_tool_calls":
-                    native_tool_calls_received.extend(event.get("tool_calls", []))
-                elif event_type == "status": event["agent_id"] = self.agent_id; yield event
-                elif event_type == "error":
-                    error_content = f"[{self.provider_name} Error] {event.get('content', 'Unknown provider error')}"
-                    last_error_obj = event.get('_exception_obj', ValueError(error_content))
-                    logger.error(f"Agent {self.agent_id}: Received error event from provider: {error_content}")
-                    event["agent_id"] = self.agent_id; event["content"] = error_content; event["_exception_obj"] = last_error_obj; stream_had_error = True; yield event; break
-                else: logger.warning(f"Agent {self.agent_id}: Received unknown event type '{event_type}' from provider.")
+            )) as provider_stream:
+                
+                native_tool_calls_received = []
+    
+                async for event in provider_stream:
+                    event_type = event.get("type")
+                    if event_type == "response_chunk":
+                        content = event.get("content", "")
+                        if content: self.text_buffer += content; complete_assistant_response += content; yielded_chunks = True
+                        yield {"type": "response_chunk", "content": content, "agent_id": self.agent_id}
+                    elif event_type == "native_tool_calls":
+                        native_tool_calls_received.extend(event.get("tool_calls", []))
+                    elif event_type == "status": event["agent_id"] = self.agent_id; yield event
+                    elif event_type == "error":
+                        error_content = f"[{self.provider_name} Error] {event.get('content', 'Unknown provider error')}"
+                        last_error_obj = event.get('_exception_obj', ValueError(error_content))
+                        logger.error(f"Agent {self.agent_id}: Received error event from provider: {error_content}")
+                        event["agent_id"] = self.agent_id; event["content"] = error_content; event["_exception_obj"] = last_error_obj; stream_had_error = True; yield event; break
+                    else: logger.warning(f"Agent {self.agent_id}: Received unknown event type '{event_type}' from provider.")
             logger.debug(f"Agent {self.agent_id}: Provider stream finished. Stream error: {stream_had_error}. Processing buffer.")
 
             if not stream_had_error:

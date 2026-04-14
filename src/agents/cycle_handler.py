@@ -308,19 +308,21 @@ class AgentCycleHandler:
                 max_tokens_for_verdict = getattr(settings, 'CG_MAX_TOKENS', 4000)
 
                 try: # Inner try for LLM call and parsing (original try...except block content)
+                    from contextlib import aclosing
+                    
                     logger.info(f"Requesting CG verdict via stream_completion for text: '{original_agent_final_text[:100]}...'")
-                    provider_stream = cg_agent.llm_provider.stream_completion(
+                    async with aclosing(cg_agent.llm_provider.stream_completion(
                         messages=cg_history, model=cg_agent.model,
                         temperature=cg_agent.temperature, max_tokens=max_tokens_for_verdict
-                    )
-                    full_verdict_text = ""
-                    async for event in provider_stream:
-                        if event.get("type") == "response_chunk":
-                            full_verdict_text += event.get("content", "")
-                        elif event.get("type") == "error":
-                            logger.error(f"Error during CG LLM stream: {event.get('content')}", exc_info=event.get('_exception_obj'))
-                            full_verdict_text = "<OK/>" # Fail-open
-                            break
+                    )) as stream:
+                        full_verdict_text = ""
+                        async for event in stream:
+                            if event.get("type") == "response_chunk":
+                                full_verdict_text += event.get("content", "")
+                            elif event.get("type") == "error":
+                                logger.error(f"Error during CG LLM stream: {event.get('content')}", exc_info=event.get('_exception_obj'))
+                                full_verdict_text = "<OK/>" # Fail-open
+                                break
                     stripped_verdict = full_verdict_text.strip()
                     logger.info(f"CG Verdict received (raw full text from stream): '{stripped_verdict}'")
 
@@ -604,6 +606,17 @@ class AgentCycleHandler:
                                     continue  # Previous call failed, allow retry
                             except (json.JSONDecodeError, TypeError):
                                 pass
+                            
+                            # Also check for plain text error markers often used by native framework tools
+                            if isinstance(result_content, str):
+                                if (
+                                    "[Tool Execution Failed]" in result_content or 
+                                    "[Framework Error]" in result_content or 
+                                    "[Error]" in result_content or
+                                    result_content.strip() == ""
+                                ):
+                                    continue # Previous call essentially failed, allow retry
+                            
                             return result_content  # Found a successful duplicate
         
         return None
@@ -1149,12 +1162,27 @@ class AgentCycleHandler:
                             # change_state returned False. Check if it's already in the requested state.
                             resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state)
                             if agent.state == resolved_requested:
-                                logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Reactivating with reminder.")
-                                context.needs_reactivation_after_cycle = True
-                                agent.message_history.append({
-                                    "role": "system",
-                                    "content": f"[Framework Directive]: You requested to change to '{requested_state}', but you are already in this state. Please proceed with executing tools to fulfill your current goal."
-                                })
+                                # Agent is already in the requested state.
+                                # Determine if this is a terminal/idle state where re-requesting is expected behavior.
+                                TERMINAL_IDLE_STATES = {"worker_wait", "pm_standby", "admin_standby"}
+                                if resolved_requested in TERMINAL_IDLE_STATES:
+                                    # Agent is correctly waiting — do NOT reactivate or inject a confusing directive.
+                                    # This prevents infinite loops where the agent keeps requesting its own state.
+                                    logger.info(
+                                        f"CycleHandler: Agent '{agent.agent_id}' re-requested idle state "
+                                        f"'{resolved_requested}'. This is correct behavior — agent will remain idle "
+                                        f"until the framework reactivates it."
+                                    )
+                                    context.needs_reactivation_after_cycle = False
+                                    # Don't append any message — the agent should just go to sleep
+                                else:
+                                    # Non-terminal state (e.g. worker_work, pm_manage) — reactivate with reminder
+                                    logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Reactivating with reminder.")
+                                    context.needs_reactivation_after_cycle = True
+                                    agent.message_history.append({
+                                        "role": "system",
+                                        "content": f"[Framework Directive]: You requested to change to '{requested_state}', but you are already in this state. Please proceed with executing tools to fulfill your current goal."
+                                    })
                             else:
                                 # Truly invalid state transition. Let it reactivate to correct itself (with an error message).
                                 context.needs_reactivation_after_cycle = True
@@ -1309,6 +1337,22 @@ class AgentCycleHandler:
                                 f"identical tool calls for agent '{agent.agent_id}'"
                             )
                         
+                        # --- PRE-PROCESS SEND_MESSAGE MULTI-TOOL CIRCUIT BREAKER ---
+                        has_send = any(t.get("name") == "send_message" for t in deduplicated_tool_calls)
+                        other_tools = [t for t in deduplicated_tool_calls if t.get("name") not in ("send_message", "mark_message_read")]
+                        
+                        if has_send and len(other_tools) > 0 and not (len(other_tools) == 0 and deferred_state_change is not None):
+                            if not hasattr(agent, '_send_msg_multi_tool_error_count'): agent._send_msg_multi_tool_error_count = 0
+                            agent._send_msg_multi_tool_error_count += 1
+                            
+                            if agent._send_msg_multi_tool_error_count >= 3:
+                                logger.warning(f"Agent {agent.agent_id}: send_message multi-tool circuit breaker triggered. Forcing send_message ONLY.")
+                                deduplicated_tool_calls = [t for t in deduplicated_tool_calls if t.get("name") in ("send_message", "mark_message_read")]
+                                agent._send_msg_multi_tool_error_count = 0
+                        elif has_send:
+                            if hasattr(agent, '_send_msg_multi_tool_error_count'): agent._send_msg_multi_tool_error_count = 0
+                        # --- END PRE-PROCESS ---
+
                         for i, call_data in enumerate(deduplicated_tool_calls):
                             tool_name = call_data.get("name"); tool_id = call_data.get("id"); tool_args = call_data.get("arguments", {})
                             
@@ -1318,18 +1362,21 @@ class AgentCycleHandler:
                             is_eligible_pm = agent.agent_type == AGENT_TYPE_PM and agent.state in [PM_STATE_ACTIVATE_WORKERS, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_MANAGE]
                             is_eligible_worker = agent.agent_type == AGENT_TYPE_WORKER
                             
-                            # FIX: In pm_manage, list_tasks is a monitoring operation whose
-                            # results change over time as workers complete tasks.  Exempt it
+                            # FIX: In pm_manage, list_tasks and list_agents are monitoring operations whose
+                            # results change over time as workers act. Exempt them
                             # from duplicate detection so the PM always gets fresh status.
                             is_manage_monitoring_read = (
                                 agent.agent_type == AGENT_TYPE_PM
                                 and agent.state == PM_STATE_MANAGE
-                                and tool_name == "project_management"
-                                and tool_args.get("action") == "list_tasks"
+                                and (
+                                    (tool_name == "project_management" and tool_args.get("action") == "list_tasks")
+                                    or
+                                    (tool_name == "manage_team" and tool_args.get("action") == "list_agents")
+                                )
                             )
                             if is_manage_monitoring_read:
                                 logger.debug(
-                                    f"CycleHandler: Allowing list_tasks for PM '{agent.agent_id}' in pm_manage "
+                                    f"CycleHandler: Allowing {tool_args.get('action')} for PM '{agent.agent_id}' in pm_manage "
                                     f"(monitoring read - exempt from duplicate detection)."
                                 )
                             
@@ -1524,49 +1571,29 @@ class AgentCycleHandler:
                             # --- END CROSS-CYCLE DUPLICATE DETECTION ---
                             
                             # --- SEND_MESSAGE MULTI-TOOL CONSTRAINT ---
-                            if any(t.get("name") not in ("send_message", "mark_message_read") for t in tool_calls) and tool_name == "send_message":
-                                # Check if the ONLY other activity is a state change (deferred_state_change).
-                                # If send_message is paired with a state change and NO other tool calls, allow both.
+                            if any(t.get("name") not in ("send_message", "mark_message_read") for t in deduplicated_tool_calls) and tool_name == "send_message":
                                 non_send_message_tools = [t for t in deduplicated_tool_calls if t.get("name") not in ("send_message", "mark_message_read")]
                                 has_only_state_change_companion = (len(non_send_message_tools) == 0 and deferred_state_change is not None)
                                 
                                 if has_only_state_change_companion:
-                                    # State change + send_message is allowed — execute send_message normally
                                     logger.info(f"Agent {agent.agent_id}: send_message paired with state change '{deferred_state_change}' — allowing both.")
                                     result_dict = await self._interaction_handler.execute_single_tool(agent, tool_id, tool_name, tool_args, self._manager.current_project, self._manager.current_session)
                                 else:
-                                    # send_message paired with actual tools — block send_message, other tools execute normally
                                     other_tool_names = [t.get("name") for t in non_send_message_tools]
                                     logger.warning(f"Agent {agent.agent_id} attempted to use send_message alongside {other_tool_names}. Blocking send_message only.")
-                                    
-                                    # Track consecutive occurrences for circuit breaker
-                                    if not hasattr(agent, '_send_msg_multi_tool_error_count'):
-                                        agent._send_msg_multi_tool_error_count = 0
-                                    agent._send_msg_multi_tool_error_count += 1
-                                    
-                                    # Circuit breaker: after 3 consecutive multi-tool errors, auto-execute the send_message
-                                    if agent._send_msg_multi_tool_error_count >= 3:
-                                        logger.warning(f"Agent {agent.agent_id}: send_message multi-tool circuit breaker triggered "
-                                                      f"({agent._send_msg_multi_tool_error_count} consecutive). Auto-executing send_message.")
-                                        result_dict = await self._interaction_handler.execute_single_tool(agent, tool_id, tool_name, tool_args, self._manager.current_project, self._manager.current_session)
-                                        agent._send_msg_multi_tool_error_count = 0  # Reset after auto-execute
-                                    else:
-                                        error_msg = (
-                                            f"ERROR: Your other tool call(s) ({', '.join(other_tool_names)}) were executed successfully. "
-                                            f"However, 'send_message' was NOT sent because it must be used on its own. "
-                                            f"In your NEXT response, send ONLY the send_message call — do NOT repeat your other tool calls."
-                                        )
-                                        result_dict = {
-                                            "status": "error",
-                                            "message": error_msg,
-                                            "content": error_msg,
-                                            "call_id": tool_id or f"unknown_id_{i}",
-                                            "name": tool_name
-                                        }
+                                    error_msg = (
+                                        f"ERROR: Your other tool call(s) ({', '.join(other_tool_names)}) were executed successfully. "
+                                        f"However, 'send_message' was NOT sent because it must be used on its own. "
+                                        f"In your NEXT response, send ONLY the send_message call — do NOT repeat your other tool calls."
+                                    )
+                                    result_dict = {
+                                        "status": "error",
+                                        "message": error_msg,
+                                        "content": error_msg,
+                                        "call_id": tool_id or f"unknown_id_{i}",
+                                        "name": tool_name
+                                    }
                             else:
-                                # Reset circuit breaker on normal execution
-                                if hasattr(agent, '_send_msg_multi_tool_error_count'):
-                                    agent._send_msg_multi_tool_error_count = 0
                                 result_dict = await self._interaction_handler.execute_single_tool(agent, tool_id, tool_name, tool_args, self._manager.current_project, self._manager.current_session)
                             # --- END SEND_MESSAGE MULTI-TOOL CONSTRAINT ---
                             
@@ -1863,12 +1890,17 @@ class AgentCycleHandler:
                                         for task in tasks:
                                             if not isinstance(task, dict): continue
                                             uuid = task.get("uuid")
+                                            if uuid:
+                                                agent._all_kickoff_task_uuids.add(uuid)
+                                            assignee = task.get("assignee", "")
+                                            # We only want truly unassigned tasks in unassigned_tasks_summary
+                                            if assignee is not None and str(assignee).strip() != "": continue
+                                            
                                             desc = task.get("description", "No description").strip().replace('\n', ' ')
                                             truncated_desc = (desc[:75] + '...') if len(desc) > 75 else desc
                                             if uuid:
                                                 task_summary_lines.append(f"- {truncated_desc} (UUID: {uuid})")
                                                 agent.unassigned_tasks_summary.append({"uuid": uuid, "description": desc, "depends": task.get("depends", [])})
-                                                agent._all_kickoff_task_uuids.add(uuid)
 
                                         summary_str = "\n".join(task_summary_lines) if task_summary_lines else "No unassigned tasks found."
                                         directive_message_content = (
@@ -1888,9 +1920,9 @@ class AgentCycleHandler:
                                             new_summary = []
                                             for t in agent.unassigned_tasks_summary:
                                                 is_match = False
-                                                if t.get("uuid") == assigned_task_uuid: is_match = True
+                                                if str(t.get("uuid")) == str(assigned_task_uuid): is_match = True
                                                 # Fallback fuzzy match just in case
-                                                elif t.get("description") and assigned_task_uuid.lower() in t.get("description").lower(): is_match = True
+                                                elif t.get("description") and str(assigned_task_uuid).lower() in t.get("description").lower(): is_match = True
                                                 
                                                 if not is_match:
                                                     new_summary.append(t)

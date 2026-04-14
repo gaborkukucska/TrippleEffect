@@ -141,6 +141,12 @@ class ProjectManagementTool(BaseTool):
                 "status": "error",
                 "message": "Invalid action. The 'project_management' tool is ONLY for modifying the task database. If you are trying to talk to the Project Manager or report progress, please use the separate 'send_message' tool."
             }
+            
+        if action in ["switch_state", "change_state", "request_state"]:
+            return {
+                "status": "error",
+                "message": "ERROR: You cannot change your state using the project_management tool. You must use the standalone XML tag <request_state state='...'/> instead."
+            }
 
         # Check for common mistakes and provide helpful suggestions
         action_suggestions = {
@@ -220,6 +226,13 @@ class ProjectManagementTool(BaseTool):
             aliases = self._load_aliases(project_name, session_name)
             
             if action == "add_task":
+                # Auto-map hallucinated parameter names common with LLMs
+                if "task_title" in kwargs and not kwargs.get("title"): kwargs["title"] = kwargs.get("task_title")
+                if "task_description" in kwargs and not kwargs.get("description"): kwargs["description"] = kwargs.get("task_description")
+                if "task_priority" in kwargs and not kwargs.get("priority"): kwargs["priority"] = kwargs.get("task_priority")
+                if "task_assignee" in kwargs and not kwargs.get("assignee_agent_id"): kwargs["assignee_agent_id"] = kwargs.get("task_assignee")
+                if "task_depends" in kwargs and not kwargs.get("depends"): kwargs["depends"] = kwargs.get("task_depends")
+
                 title = kwargs.get("title")
                 description = kwargs.get("description")
                 
@@ -545,7 +558,17 @@ class ProjectManagementTool(BaseTool):
 
                 try:
                     if '-' in t_id_str and len(t_id_str) > 10:
-                        task = tw.tasks.get(uuid=t_id_str)
+                        try:
+                            task = tw.tasks.get(uuid=t_id_str)
+                        except Exception as get_err:
+                            if "exist" in str(get_err) and len(t_id_str) < 36:
+                                matches = [t for t in tw.tasks.all() if t['uuid'].startswith(t_id_str)]
+                                if len(matches) == 1:
+                                    task = matches[0]
+                                else:
+                                    raise get_err
+                            else:
+                                raise get_err
                     elif t_id_str.isdigit():
                         task = tw.tasks.get(id=int(t_id_str))
                     else:
@@ -683,7 +706,17 @@ class ProjectManagementTool(BaseTool):
 
                 try:
                     if '-' in t_id_str and len(t_id_str) > 10:
-                        task = tw.tasks.get(uuid=t_id_str)
+                        try:
+                            task = tw.tasks.get(uuid=t_id_str)
+                        except Exception as get_err:
+                            if "exist" in str(get_err) and len(t_id_str) < 36:
+                                matches = [t for t in tw.tasks.all() if t['uuid'].startswith(t_id_str)]
+                                if len(matches) == 1:
+                                    task = matches[0]
+                                else:
+                                    raise get_err
+                            else:
+                                raise get_err
                     elif t_id_str.isdigit():
                         task = tw.tasks.get(id=int(t_id_str))
                     else:

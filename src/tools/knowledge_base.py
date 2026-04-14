@@ -165,7 +165,7 @@ class KnowledgeBaseTool(BaseTool):
                     return {"status": "error", "message": "Failed to save knowledge item to database."}
 
             elif action == "search_knowledge":
-                query_keywords_str = kwargs.get("query_keywords")
+                query_keywords_str = kwargs.get("query_keywords") or kwargs.get("keywords") or kwargs.get("query")
                 if not query_keywords_str:
                     return {"status": "error", "message": "'query_keywords' parameter is required for 'search_knowledge'."}
 
