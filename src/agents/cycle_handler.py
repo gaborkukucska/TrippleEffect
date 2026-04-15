@@ -2494,8 +2494,8 @@ class AgentCycleHandler:
             finally:
                 if agent_generator: # Ensure generator from this iteration is closed if it was opened
                     try:
-                        if agent_generator.ag_running: await agent_generator.aclose()
-                        elif not agent_generator.ag_running and agent_generator.ag_frame is not None : await agent_generator.aclose() # Already closed or never started properly
+                        logger.info(f"CycleHandler '{agent.agent_id}': Closing agent_generator in finally block (ag_running={getattr(agent_generator, 'ag_running', 'N/A')}, ag_frame={'set' if getattr(agent_generator, 'ag_frame', None) else 'None'}).")
+                        await agent_generator.aclose()
                     except Exception as close_err: logger.warning(f"Error closing agent generator for '{agent.agent_id}' in inner finally: {close_err}", exc_info=True)
         
         # --- This is the original finally block of run_cycle ---
