@@ -14,6 +14,18 @@
 
 ---
 
+<p align="center">
+  <img src="docs/Screenshot_000.png" alt="TrippleEffect Framework Hero" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/Screenshot_001.png" width="32%">
+  <img src="docs/Screenshot_002.png" width="32%">
+  <img src="docs/Screenshot_003.png" width="32%">
+</p>
+
+---
+
 Welcome to **TrippleEffect** — an asynchronous, multi-agent framework designed to bring the liberating potential of AI to **everyone**, even on modest hardware! 📱✨
 
 My original aim was ambitious yet simple: **create an agentic framework that enables small to medium-sized local LLMs to run efficiently** — even when their context windows are tiny and your GPU memory is tight. I believe the true revolution of LLMs happens when anyone, even someone with just an old Android phone, can run a functioning agentic system **24/7** to help them with any digital task! 🌍💪
