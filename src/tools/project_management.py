@@ -408,8 +408,15 @@ class ProjectManagementTool(BaseTool):
                 return {"status": "error", "message": f"Failed to save task: {e}"}
 
             user_task_id = kwargs.get("task_id")
-            simulated_uuid = task.get('uuid', '00000000-0000-0000-0000-000000000000_dryrun')
-            simulated_id = task.get('id', 0)
+            try:
+                simulated_uuid = task['uuid'] if 'uuid' in task and task['uuid'] is not None else '00000000-0000-0000-0000-000000000000_dryrun'
+            except KeyError:
+                simulated_uuid = '00000000-0000-0000-0000-000000000000_dryrun'
+                
+            try:
+                simulated_id = task['id'] if 'id' in task and task['id'] is not None else 0
+            except KeyError:
+                simulated_id = 0
             
             if user_task_id and isinstance(user_task_id, str) and not is_dry_run:
                 aliases[user_task_id] = task['uuid']

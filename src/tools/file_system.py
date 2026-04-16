@@ -365,6 +365,9 @@ class FileSystemTool(BaseTool):
                                             clean_dir = line.strip().rstrip("/")
                                             allowed_top_dirs.add(clean_dir.lower())
                                     
+                                    # Whitelist standard web development directories
+                                    allowed_top_dirs.update(["public", "src", "assets", "components", "pages", "styles", "utils", "tests", "dist", "build"])
+
                                     if allowed_top_dirs and target_top_dir not in allowed_top_dirs:
                                         logger.warning(f"Agent {agent_id} attempted to create unauthorized root folder '{target_top_dir}' in shared workspace.")
                                         return {"status": "error", "message": f"Workspace Bloat Protection: You are attempting to place a file or directory inside a new root directory '{rel_target_path.parts[0]}/' which is NOT defined in PROJECT_STRUCTURE.md. Expected root directories are: {', '.join(allowed_top_dirs)}. Please strictly adhere to the defined layout."}
@@ -837,6 +840,17 @@ Pushes changes to a remote repository.
                 hint = f" The directory '{parent.name}/' exists but contains no files."
             else:
                 hint = f" The directory '{parent.name}/' does not exist. Use 'list' action first to discover the workspace structure."
+            
+            # --- File-Not-Found Loop Escalation ---
+            if not hasattr(self, '_failed_reads'): self._failed_reads = {}
+            if agent_id not in self._failed_reads: self._failed_reads[agent_id] = {}
+            fail_count = self._failed_reads[agent_id].get(filename, 0) + 1
+            self._failed_reads[agent_id][filename] = fail_count
+            
+            if fail_count >= 3:
+                hint += f"\n\n[Framework Intervention]: You have failed to read '{filename}' {fail_count} times. STOP trying to read this specific file. Run the 'list' action on the root directory or relevant parent directory to understand the actual file structure. The file you are looking for likely has a different name or path."
+            # ----------------------------------------
+            
             return {"status": "error", "message": f"File not found: '{filename}' in {scope_description}.{hint}"}
         try:
             content = await asyncio.to_thread(validated_path.read_text, encoding='utf-8')
@@ -847,9 +861,24 @@ Pushes changes to a remote repository.
                 if start_idx >= len(lines) or start_idx > end_idx:
                     return {"status": "error", "message": f"Invalid start_line/end_line range for file with {len(lines)} lines."}
                 content = "".join(lines[start_idx:end_idx])
+            
+            # Reset fail count on success
+            if hasattr(self, '_failed_reads') and agent_id in self._failed_reads and filename in self._failed_reads[agent_id]:
+                self._failed_reads[agent_id][filename] = 0
+                
             logger.info(f"Agent {agent_id} successfully read file: '{filename}' from {scope_description}")
             return {"status": "success", "content": content}
-        except FileNotFoundError: logger.warning(f"Agent {agent_id} file read error (FileNotFound): File not found at '{filename}' in {scope_description}."); return {"status": "error", "message": f"File not found at '{filename}' in {scope_description}."}
+        except FileNotFoundError: 
+            # --- File-Not-Found Loop Escalation ---
+            if not hasattr(self, '_failed_reads'): self._failed_reads = {}
+            if agent_id not in self._failed_reads: self._failed_reads[agent_id] = {}
+            fail_count = self._failed_reads[agent_id].get(filename, 0) + 1
+            self._failed_reads[agent_id][filename] = fail_count
+            hint = ""
+            if fail_count >= 3:
+                hint = f"\n\n[Framework Intervention]: You have failed to read '{filename}' {fail_count} times. STOP trying to read this specific file. Run the 'list' action on the root directory or relevant parent directory to understand the actual file structure."
+            # ----------------------------------------
+            logger.warning(f"Agent {agent_id} file read error (FileNotFound): File not found at '{filename}' in {scope_description}."); return {"status": "error", "message": f"File not found at '{filename}' in {scope_description}.{hint}"}
         except PermissionError: logger.error(f"Agent {agent_id} file read error: Permission denied for '{filename}' in {scope_description}."); return {"status": "error", "message": f"Permission denied when reading file '{filename}'."}
         except Exception as e: logger.error(f"Agent {agent_id} error reading file '{filename}' in {scope_description}: {e}", exc_info=True); return {"status": "error", "message": f"Error reading file '{filename}': {type(e).__name__} - {e}"}
 

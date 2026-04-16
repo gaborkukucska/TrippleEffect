@@ -624,6 +624,24 @@ class AgentCycleHandler:
     async def run_cycle(self, agent: Agent, retry_count: int = 0): # pyright: ignore[reportGeneralTypeIssues]
         logger.critical(f"!!! CycleHandler: run_cycle TASK STARTED for Agent '{agent.agent_id}' (Retry: {retry_count}) !!!")
         
+        # --- NEW: Watchdog for Agent Stalls (cycles without state transitions) ---
+        if not hasattr(agent, '_cycles_without_transition'):
+            agent._cycles_without_transition = 0
+            agent._last_state_for_watchdog = agent.state
+
+        if agent.state == agent._last_state_for_watchdog:
+            agent._cycles_without_transition += 1
+        else:
+            agent._cycles_without_transition = 0
+            agent._last_state_for_watchdog = agent.state
+
+        if agent._cycles_without_transition >= 10:
+            logger.warning(f"Watchdog: Agent '{agent.agent_id}' has been running for {agent._cycles_without_transition} cycles without changing from state '{agent.state}'. Flagging for intervention.")
+            if agent._cycles_without_transition % 5 == 0:  # Inject every 5 cycles after hitting 10
+                intervention_msg = f"[Framework Watchdog Intervention]: You have been in the '{agent.state}' state for {agent._cycles_without_transition} cycles without transitioning. If you are stuck or have completed your work, please forcefully transition your state using <request_state state='worker_wait' /> or the appropriate state for your role."
+                agent.message_history.append({"role": "system", "content": intervention_msg})
+        # -------------------------------------------------------------------------
+        
         # CRITICAL FIX: Check if agent is awaiting Constitutional Guardian review before proceeding
         if agent.status == AGENT_STATUS_AWAITING_USER_REVIEW_CG:
             logger.warning(f"CycleHandler: Agent '{agent.agent_id}' is awaiting Constitutional Guardian user review. Skipping cycle execution.")

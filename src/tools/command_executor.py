@@ -168,7 +168,7 @@ class CommandExecutionTool(BaseTool):
             if truncated_stdout or truncated_stderr:
                 result_message += " (Output was truncated due to length limits)."
                 
-            status = "success" if returncode == 0 else "error"
+            status = "success" # Always return success so the executor doesn't drop the context!
             
             # Format content specifically for the LLM context
             content_parts = [f"Command Execution {'Succeeded' if returncode == 0 else 'Failed'} (Exit Code: {returncode})"]

@@ -158,7 +158,7 @@ class CodeEditorTool(BaseTool):
             return {"status": "error", "message": f"Unhandled error during edit: {str(e)}"}
             
     def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None, sub_action: Optional[str] = None) -> str:
-        usage = \"\"\"
+        usage = """
         **Tool Name:** code_editor
 
         **Description:** Safely applies multiple targeted substring replacements in a single operation. This avoids having to call `file_system` multiple times for different blocks.
@@ -189,5 +189,5 @@ class CodeEditorTool(BaseTool):
         Important Notes:
         - The `search` block must exactly match existing content (including whitespace/indentation) exactly ONCE.
         - If a search string appears multiple times or zero times, the entire tool call is atomically rejected and no changes are written.
-        \"\"\"
+        """
         return usage.strip()
