@@ -430,6 +430,32 @@ class ToolExecutor:
         execution_id = f"{agent_id}_{tool_name}_{hash(str(tool_args))}_{int(time.time())}"[-12:]
         logger.info(f"[TOOL_EXEC_START] ID:{execution_id} | Tool:'{tool_name}' | Agent:'{agent_id}' | Args:{tool_args}")
         
+        # --- Handle Hallucinated Tool Names (Fuzzy Matching) ---
+        tool_name_mapping = {
+            "read_file": ("file_system", {"action": "read"}),
+            "write_file": ("file_system", {"action": "write"}),
+            "edit_file": ("code_editor", {}),
+            "create_task": ("project_management", {"action": "add_task"}),
+            "update_task": ("project_management", {"action": "modify_task"}),
+            "finish_task": ("project_management", {"action": "complete_task"}),
+            "message": ("send_message", {}),
+            "search": ("web_search", {}),
+            "execute_command": ("command_executor", {}),
+            "run_command": ("command_executor", {}),
+            "terminal": ("command_executor", {})
+        }
+        
+        fuzzy_warning = ""
+        if tool_name not in self.tools and tool_name in tool_name_mapping:
+            correct_name, extra_args = tool_name_mapping[tool_name]
+            fuzzy_warning = f"[System Warning: '<{tool_name}>' is an invalid tool schema. Auto-mapped to '<{correct_name}>'. Please use the correct schema next time.]\n\n"
+            logger.info(f"Auto-mapped hallucinated tool '{tool_name}' to '{correct_name}' for agent '{agent_id}'")
+            tool_name = correct_name
+            for k,v in extra_args.items():
+                if k not in tool_args:
+                    tool_args[k] = v
+        # -----------------------------------------------------
+
         # Emit WebSocket event for tool execution start
         try:
             await broadcast(json.dumps({
@@ -522,42 +548,37 @@ class ToolExecutor:
         
         logger.info(f"Executor: Executing tool '{tool_name}' for agent '{agent_id}' (Type: {agent_type_for_auth}, Auth Level: {tool_auth_level}) with args: {tool_args} (Project: {project_name}, Session: {session_name})")
         try:
-            # --- Handle parameter aliases and action corrections before validation ---
+            schema = tool.get_schema()
+            
+            # --- Dynamic Parameter Semantic Aliases ---
+            if schema.get('parameters'):
+                for param_info in schema['parameters']:
+                    param_name = param_info['name']
+                    aliases = param_info.get('aliases', [])
+                    
+                    if param_name not in tool_args:
+                        for alias in aliases:
+                            if alias in tool_args:
+                                logger.info(f"Executor: Auto-mapped alias '{alias}' to parameter '{param_name}' for tool '{tool_name}'.")
+                                tool_args[param_name] = tool_args.pop(alias)
+                                break
+                                
+            # --- Handle tool-specific action corrections ---
             if tool_name == 'file_system':
-                # Handle parameter aliases
-                if 'filepath' in tool_args and 'filename' not in tool_args:
-                    logger.debug(f"Found 'filepath' alias for 'file_system' tool. Mapping to 'filename'.")
-                    tool_args['filename'] = tool_args['filepath']
-                
-                # Handle common action name mistakes with automatic correction
                 action = tool_args.get('action')
                 action_corrections = {
-                    'create_directory': 'mkdir',
-                    'create_file': 'write',
-                    'create': 'write',
-                    'make_directory': 'mkdir',
-                    'make_dir': 'mkdir',
-                    'new_file': 'write',
-                    'save_file': 'write',
-                    'save': 'write'
+                    'create_directory': 'mkdir', 'create_file': 'write', 'create': 'write',
+                    'make_directory': 'mkdir', 'make_dir': 'mkdir', 'new_file': 'write',
+                    'save_file': 'write', 'save': 'write'
                 }
-                
                 if action in action_corrections:
                     corrected_action = action_corrections[action]
                     logger.info(f"Auto-correcting file_system action '{action}' to '{corrected_action}' for agent {agent_id}")
                     tool_args['action'] = corrected_action
-            elif tool_name == 'send_message':
-                if "target_agent_id" not in tool_args:
-                    alias = tool_args.get("target") or tool_args.get("agent") or tool_args.get("recipient") or tool_args.get("to")
-                    if alias: tool_args["target_agent_id"] = alias
-                if "message_content" not in tool_args:
-                    alias = tool_args.get("content") or tool_args.get("message") or tool_args.get("text")
-                    if alias: tool_args["message_content"] = alias
-            elif tool_name == ManageTeamTool.name:
+            elif tool_name == getattr(ManageTeamTool, 'name', 'manage_team'):
                 if 'agent_id' in tool_args and 'target_agent_id' not in tool_args:
                     tool_args['target_agent_id'] = tool_args['agent_id']
                     
-            schema = tool.get_schema()
             validated_args = tool_args.copy()
             missing_required = []
             if schema.get('parameters'):
@@ -704,12 +725,14 @@ class ToolExecutor:
             except Exception as e:
                 logger.warning(f"Failed to broadcast tool_execution_complete event: {e}")
             
-            if tool_name == ManageTeamTool.name or tool_name == ProjectManagementTool.name:
+            if tool_name == getattr(ManageTeamTool, 'name', 'manage_team') or tool_name == getattr(ProjectManagementTool, 'name', 'project_management'):
                 if not isinstance(result, dict):
                     logger.error(f"{tool_name} execution returned unexpected type: {type(result)}. Expected dict.")
                     action_taken = tool_args.get("action", "unknown_action")
                     return {"status": "error", "action": action_taken, "message": f"Internal Error: {tool_name} returned unexpected type {type(result)}."}
                 logger.info(f"Executor: Tool '{tool_name}' execution returned result: {json.dumps(result, default=str)[:200]}...")
+                if fuzzy_warning and "message" in result:
+                    result["message"] = fuzzy_warning + result["message"]
                 return result
             else:
                 # Handle structured (dict) vs. simple (str) tool results for all other tools
@@ -752,9 +775,13 @@ class ToolExecutor:
                         
                         result_str = "\n".join(err_parts).strip()
                     logger.info(f"Executor: Tool '{tool_name}' successful. Structured result: {result_str[:150]}...")
+                    if fuzzy_warning:
+                        result_str = fuzzy_warning + result_str
                     return result_str
                 elif isinstance(result, str):
                     # This is a simple string response from a tool like SendMessageTool
+                    if fuzzy_warning:
+                        result = fuzzy_warning + result
                     logger.info(f"Executor: Tool '{tool_name}' successful. Simple result: {result[:150]}...")
                     return result
                 else:
@@ -763,6 +790,8 @@ class ToolExecutor:
                         result_str = json.dumps(result, indent=2)
                     except TypeError:
                         result_str = str(result)
+                    if fuzzy_warning:
+                        result_str = fuzzy_warning + result_str
                     logger.info(f"Executor: Tool '{tool_name}' execution successful. Result (stringified, first 100 chars): {result_str[:100]}...")
                     return result_str
 

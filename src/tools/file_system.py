@@ -50,18 +50,21 @@ class FileSystemTool(BaseTool):
             type="string", 
             description="Relative path to the file within the scope. Required for 'read', 'write', 'find_replace', 'regex_replace'. Can also use 'filepath'.",
             required=False, # Dynamically required
+            aliases=["filepath", "file", "file_path", "file_name", "target_file", "name"]
         ),
         ToolParameter(
             name="content",
             type="string",
             description="Text content to write. Required for 'write'.",
             required=False, # Dynamically required
+            aliases=["text", "data", "body", "code", "string", "content_str"]
         ),
          ToolParameter(
             name="path",
             type="string",
             description="Relative path to a directory or file. Required for 'list', 'mkdir', 'delete', 'copy' (as source), 'move' (as source). For 'list', defaults to '.' (scope root).",
             required=False, # Dynamically required by action
+            aliases=["dir", "directory", "folder", "target_dir"]
         ),
         ToolParameter(
             name="destination_path",
@@ -74,12 +77,14 @@ class FileSystemTool(BaseTool):
             type="string",
             description="The exact text string to find within the file. Required for 'find_replace'.",
             required=False, # Dynamically required
+            aliases=["search", "find", "search_string", "search_text", "search_term"]
         ),
         ToolParameter(
             name="replace_text",
             type="string",
             description="The text to replace matches with. Required for 'find_replace', 'regex_replace'.",
             required=False, # Dynamically required
+            aliases=["replace", "replacement", "replacement_text", "replace_string", "replace_term"]
         ),
         ToolParameter(
             name="regex_pattern",
@@ -104,12 +109,14 @@ class FileSystemTool(BaseTool):
             type="integer",
             description="Line number (1-indexed) where content should be inserted for 'insert_lines'. Alternatively, use '<search>' to find a text anchor and insert relative to it.",
             required=False,
+            aliases=["line_number", "line", "at_line"]
         ),
         ToolParameter(
             name="replace_start_line",
             type="integer",
             description="Starting line number (1-indexed, inclusive) for 'replace_lines'. Also accepts 'start_line'.",
             required=False,
+            aliases=["start_line_number", "from_line"]
         ),
         ToolParameter(
             name="replace_end_line",
@@ -122,6 +129,7 @@ class FileSystemTool(BaseTool):
             type="string",
             description="The exact (or slightly fuzzy) block of text to find. Required for 'search_replace_block'.",
             required=False,
+            aliases=["search_string", "find"]
         ),
         ToolParameter(
             name="replace_block",

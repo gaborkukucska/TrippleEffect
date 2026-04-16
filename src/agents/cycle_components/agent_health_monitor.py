@@ -1476,6 +1476,65 @@ class ConstitutionalGuardianHealthMonitor:
             logger.error(f"ConstitutionalGuardian: Error during forced contaminated cleanup: {e}", exc_info=True)
             return cleanup_stats
 
+    async def evaluate_duplicate_tool_call(self, agent: 'Agent', tool_name: str, tool_args: Dict[str, Any], duplicate_count: int) -> Tuple[str, str]:
+        """
+        Evaluate a duplicate tool call to determine if it's an infinite loop or a deliberate repeated action.
+        Returns (Verdict, FeedbackMessage).
+        Verdict can be 'ALLOW', 'BLOCK_AND_GUIDE', or 'ESCALATE'.
+        """
+        logger.info(f"ConstitutionalGuardian: Evaluating duplicate tool '{tool_name}' for agent '{agent.agent_id}' (count: {duplicate_count})")
+        
+        # Fast-fail for highly excessive loops without LLM overhead
+        if duplicate_count > 6:
+            return "ESCALATE", "Tool execution loop exceeded maximum safety limit."
+            
+        history_analysis = await self._analyze_agent_history(agent, "duplicate_tool")
+        
+        cg_agent = self._manager.agents.get(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
+        if not cg_agent or not cg_agent.llm_provider:
+             return "BLOCK_AND_GUIDE", f"You already called '{tool_name}' with these exact arguments and it succeeded. CRITICAL INSTRUCTION: You MUST use <request_state> to move to the next phase."
+             
+        eval_prompt = (
+            f"You are the Constitutional Guardian. Agent '{agent.agent_id}' in state '{agent.state}' "
+            f"has just attempted to run the tool '{tool_name}' with arguments {json.dumps(tool_args)}.\n"
+            f"This is an EXACT DUPLICATE of their last successful tool call. They have repeated this {duplicate_count} times.\n"
+            f"Recent history context length: {history_analysis['history_length']} messages.\n"
+            f"Is this agent stuck in an infinite loop, or is it logically executing a necessary repeated action?\n"
+            f"Reply with exactly one word on the first line: 'ALLOW', 'BLOCK_AND_GUIDE', or 'ESCALATE'.\n"
+            f"If BLOCK_AND_GUIDE, provide a brief, direct instruction on the second line telling the agent exactly what to do next to break the loop (e.g. request a state change or test another tool)."
+        )
+        
+        try:
+            from contextlib import aclosing
+            full_verdict_text = ""
+            async with aclosing(cg_agent.llm_provider.stream_completion(
+                messages=[{"role": "system", "content": eval_prompt}], 
+                model=cg_agent.model,
+                temperature=0.1, max_tokens=150
+            )) as stream:
+                async for event in stream:
+                    if event.get("type") == "response_chunk":
+                        full_verdict_text += event.get("content", "")
+                        
+            lines = [line for line in full_verdict_text.strip().split('\\n') if line.strip()]
+            if not lines:
+                lines = full_verdict_text.strip().split('\n')
+                
+            verdict = lines[0].strip().upper() if lines else "BLOCK_AND_GUIDE"
+            
+            # Clean up verdict if it includes extra markdown
+            if "ALLOW" in verdict: verdict = "ALLOW"
+            elif "ESCALATE" in verdict: verdict = "ESCALATE"
+            else: verdict = "BLOCK_AND_GUIDE"
+            
+            feedback = lines[1].strip() if len(lines) > 1 else f"You already called '{tool_name}' with these exact arguments and it succeeded. CRITICAL INSTRUCTION: You MUST use <request_state> to move to the next phase."
+            
+            return verdict, feedback
+            
+        except Exception as e:
+            logger.error(f"ConstitutionalGuardian: Error during evaluate_duplicate_tool_call: {e}")
+            return "BLOCK_AND_GUIDE", f"You already called '{tool_name}' with these exact arguments and it succeeded. CRITICAL INSTRUCTION: You MUST use <request_state> to move to the next phase."
+
 # Keep the original AgentHealthMonitor class for backward compatibility
 # but delegate to the new ConstitutionalGuardianHealthMonitor
 class AgentHealthMonitor(ConstitutionalGuardianHealthMonitor):

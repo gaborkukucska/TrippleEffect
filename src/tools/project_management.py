@@ -42,6 +42,7 @@ class ProjectManagementTool(BaseTool):
         ToolParameter(name="tags", type="list", required=False, description="List of tags."),
         ToolParameter(name="depends", type="str", required=False, description="Dependency task UUID."),
         ToolParameter(name="assignee_agent_id", type="str", required=False, description="Agent ID for assignment."),
+        ToolParameter(name="dry_run", type="boolean", required=False, description="If true, simulates the action without saving to the database. Useful to verify complex state changes."),
     ]
 
     def __init__(self, project_name: Optional[str] = None, session_name: Optional[str] = None):
@@ -397,18 +398,34 @@ class ProjectManagementTool(BaseTool):
             # ------------------------------------------------
 
             try:
-                task.save()
-                asyncio.create_task(broadcast(json.dumps({"type": "project_tasks_updated", "project_name": project_name, "session_name": session_name})))
+                is_dry_run = str(kwargs.get("dry_run")).lower() == "true"
+                if not is_dry_run:
+                    task.save()
+                    asyncio.create_task(broadcast(json.dumps({"type": "project_tasks_updated", "project_name": project_name, "session_name": session_name})))
+                else:
+                    logger.info("ProjectManagementTool: 'add_task' dry_run succeeded. Database not modified.")
             except Exception as e:
                 return {"status": "error", "message": f"Failed to save task: {e}"}
 
             user_task_id = kwargs.get("task_id")
-            if user_task_id and isinstance(user_task_id, str):
+            simulated_uuid = task.get('uuid', '00000000-0000-0000-0000-000000000000_dryrun')
+            simulated_id = task.get('id', 0)
+            
+            if user_task_id and isinstance(user_task_id, str) and not is_dry_run:
                 aliases[user_task_id] = task['uuid']
                 self._save_aliases(project_name, session_name, aliases)
                 
             depends_list = [t['uuid'] for t in (task['depends'] if task['depends'] is not None else [])]
-            return {"status": "success", "message": "Task added successfully.", "task_uuid": task['uuid'], "task_id": task['id'], "description": task['description'], "assignee": kwargs.get("assignee_agent_id"), "depends": depends_list}
+            return {
+                "status": "success", 
+                "message": f"Task added successfully{'. (DRY RUN)' if is_dry_run else '.'}", 
+                "task_uuid": simulated_uuid if is_dry_run else task['uuid'], 
+                "task_id": simulated_id if is_dry_run else task['id'], 
+                "description": task['description'], 
+                "assignee": kwargs.get("assignee_agent_id"), 
+                "depends": depends_list,
+                "dry_run": is_dry_run
+            }
 
     async def _execute_list_tasks(self, tw, agent_id, kwargs):
             tasks_query = tw.tasks.all()
@@ -702,11 +719,27 @@ class ProjectManagementTool(BaseTool):
                     "<task_id>UUID</task_id><task_progress>finished</task_progress></project_management>"
                 )}
 
-            task.save()
-            asyncio.create_task(broadcast(json.dumps({"type": "project_tasks_updated", "project_name": project_name, "session_name": session_name})))
+            is_dry_run = str(kwargs.get("dry_run")).lower() == "true"
+            if not is_dry_run:
+                task.save()
+                asyncio.create_task(broadcast(json.dumps({"type": "project_tasks_updated", "project_name": project_name, "session_name": session_name})))
+            else:
+                logger.info("ProjectManagementTool: 'modify_task' dry_run succeeded. Database not modified.")
+                
             assignee_to_return = kwargs.get("assignee_agent_id") or task['assignee']
             depends_list = [t['uuid'] for t in (task['depends'] if task['depends'] is not None else [])]
-            return {"status": "success", "message": f"Task '{task_id}' modified successfully.", "task_uuid": task['uuid'], "task_id": task['id'], "modified_fields": modified_fields, "task_progress": task['task_progress'], "description": task['description'], "assignee": assignee_to_return, "depends": depends_list}
+            return {
+                "status": "success", 
+                "message": f"Task '{task_id}' modified successfully{'. (DRY RUN - No changes saved)' if is_dry_run else '.'}", 
+                "task_uuid": task['uuid'], 
+                "task_id": task['id'], 
+                "modified_fields": modified_fields, 
+                "task_progress": task['task_progress'], 
+                "description": task['description'], 
+                "assignee": assignee_to_return, 
+                "depends": depends_list,
+                "dry_run": is_dry_run
+            }
 
     async def _execute_complete_task(self, tw, aliases, project_name, session_name, kwargs):
             task_id = kwargs.get("task_id") or kwargs.get("task_uuid")
@@ -768,16 +801,26 @@ class ProjectManagementTool(BaseTool):
                 }
 
             try:
-                task.done() # This triggers Taskwarrior to set status=completed
-                task['task_progress'] = "finished"
-                task.save()
-                asyncio.create_task(broadcast(json.dumps({"type": "project_tasks_updated", "project_name": project_name, "session_name": session_name})))
+                is_dry_run = str(kwargs.get("dry_run")).lower() == "true"
+                if not is_dry_run:
+                    task.done() # This triggers Taskwarrior to set status=completed
+                    task['task_progress'] = "finished"
+                    task.save()
+                    asyncio.create_task(broadcast(json.dumps({"type": "project_tasks_updated", "project_name": project_name, "session_name": session_name})))
+                else:
+                    logger.info("ProjectManagementTool: 'complete_task' dry_run succeeded. Database not modified.")
             except Exception as e:
                 if "completed" in str(e).lower() or "Cannot complete a completed task" in str(e):
                     return {"status": "success", "message": f"Task '{task_id}' is already completed ('finished').", "task_uuid": task['uuid'], "task_id": task['id']}
                 raise e
                 
-            return {"status": "success", "message": f"Task '{task_id}' marked as finished.", "task_uuid": task['uuid'], "task_id": task['id']}
+            return {
+                "status": "success", 
+                "message": f"Task '{task_id}' marked as finished{'. (DRY RUN)' if is_dry_run else '.'}", 
+                "task_uuid": task['uuid'], 
+                "task_id": task['id'],
+                "dry_run": str(kwargs.get("dry_run")).lower() == "true"
+            }
 
 
     def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None, sub_action: Optional[str] = None) -> str:

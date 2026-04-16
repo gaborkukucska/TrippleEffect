@@ -25,12 +25,14 @@ class SendMessageTool(BaseTool):
             type="string",
             description="The unique ID of the agent teammate you want to send the message to (e.g., 'coder', 'analyst'). Must be a valid agent ID.",
             required=True,
+            aliases=["target", "agent", "recipient", "to"]
         ),
         ToolParameter(
             name="message_content",
             type="string",
             description="The content of the message you want to send to your teammate.",
             required=True,
+            aliases=["content", "message", "text"]
         ),
     ]
 

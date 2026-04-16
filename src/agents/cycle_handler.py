@@ -1537,33 +1537,53 @@ class AgentCycleHandler:
                                             # Reset to 0 since we forced a state change and want them to report cleanly
                                             agent._duplicate_tool_call_count = 0
                                     else:
-                                        cross_cycle_duplicate_blocked = True
-                                        # Inject an escalated directive - stronger than the normal one
-                                        escalation_msg: MessageDict = {
-                                            "role": "system",
-                                            "content": (
-                                                f"[Framework System Message - DUPLICATE BLOCKED]: You already called "
-                                                f"'{tool_name}' with these exact arguments and it succeeded. "
-                                                f"The result was returned from cache (shown above). "
-                                                f"DO NOT call '{tool_name}' again with the same arguments. "
-                                                f"You MUST proceed to the NEXT step in your workflow NOW."
-                                            )
-                                        }
-                                        if hasattr(self, '_deduplicate_pm_framework_messages'):
-                                            self._deduplicate_pm_framework_messages(agent)
-                                        all_tool_results_for_history.append(escalation_msg)
-                                    
-                                    # Log to DB
-                                    if context.current_db_session_id:
-                                        await self._manager.db_manager.log_interaction(
-                                            session_id=context.current_db_session_id,
-                                            agent_id=agent.agent_id,
-                                            role="tool",
-                                            content=prev_result,
-                                            tool_results=[{"call_id": tool_id, "name": tool_name, "content": prev_result}]
-                                        )
-                                    
-                                    continue  # Skip actual tool execution
+                                        # Use CG to evaluate duplicate block
+                                        verdict = "BLOCK_AND_GUIDE"
+                                        feedback = f"You already called '{tool_name}' with these exact arguments and it succeeded. You MUST use <request_state> to move to the next step."
+                                        
+                                        if hasattr(self._health_monitor, 'evaluate_duplicate_tool_call'):
+                                            try:
+                                                verdict, feedback = await self._health_monitor.evaluate_duplicate_tool_call(
+                                                    agent, tool_name, tool_args, getattr(agent, '_duplicate_tool_call_count', 1)
+                                                )
+                                            except Exception as e:
+                                                logger.error(f"CycleHandler: Error evaluating duplicate tool call: {e}")
+                                                
+                                        if verdict == "ALLOW":
+                                            # We allow the duplicate tool execution to proceed
+                                            logger.info(f"Agent {agent.agent_id} allowed to run duplicate tool '{tool_name}' by CG.")
+                                            cross_cycle_duplicate_blocked = False
+                                            if hasattr(agent, '_duplicate_tool_call_count'):
+                                                agent._duplicate_tool_call_count = 0
+                                            
+                                            # We DON'T want to continue/skip next steps - let it execute normally
+                                            pass
+                                        else:
+                                            cross_cycle_duplicate_blocked = True
+                                            if verdict == "ESCALATE":
+                                                agent.set_state("worker_report" if agent.agent_type == "worker" else agent.state)
+                                                feedback = f"CRITICAL LOOP ESCALATION: {feedback} Your state has been automatically adjusted to help break the loop."
+                                                
+                                            escalation_msg: MessageDict = {
+                                                "role": "system",
+                                                "content": f"[Framework System Message - DUPLICATE CAUGHT]: {feedback}"
+                                            }
+                                            
+                                            if hasattr(self, '_deduplicate_pm_framework_messages'):
+                                                self._deduplicate_pm_framework_messages(agent)
+                                            all_tool_results_for_history.append(escalation_msg)
+                                            
+                                            # Log to DB
+                                            if context.current_db_session_id:
+                                                await self._manager.db_manager.log_interaction(
+                                                    session_id=context.current_db_session_id,
+                                                    agent_id=agent.agent_id,
+                                                    role="tool",
+                                                    content=str(prev_result),
+                                                    tool_results=[{"call_id": tool_id, "name": tool_name, "content": str(prev_result)}]
+                                                )
+                                            
+                                            continue  # Skip actual tool execution
                                 else:
                                     # Not a duplicate - reset counter
                                     if hasattr(agent, '_duplicate_tool_call_count'):
@@ -1583,8 +1603,9 @@ class AgentCycleHandler:
                                     logger.warning(f"Agent {agent.agent_id} attempted to use send_message alongside {other_tool_names}. Blocking send_message only.")
                                     error_msg = (
                                         f"ERROR: Your other tool call(s) ({', '.join(other_tool_names)}) were executed successfully. "
-                                        f"However, 'send_message' was NOT sent because it must be used on its own. "
-                                        f"In your NEXT response, send ONLY the send_message call — do NOT repeat your other tool calls."
+                                        f"CRITICAL INSTRUCTION: You attempted to use send_message alongside other active tool calls. "
+                                        f"You may ONLY run send_message alongside a state transition request <request_state...>. "
+                                        f"Please wait until all other tasks are complete, then send your message alongside your state transition."
                                     )
                                     result_dict = {
                                         "status": "error",
@@ -2477,7 +2498,13 @@ class AgentCycleHandler:
                         )
                     # context flags are reset at the start of the while True loop.
                     # History will be re-prepared by prepare_llm_call_data.
-                    if agent_generator: await agent_generator.aclose(); agent_generator = None # Close current generator
+                    if agent_generator:
+                        try:
+                            import asyncio
+                            await asyncio.wait_for(agent_generator.aclose(), timeout=1.0)
+                        except Exception:
+                            pass
+                        agent_generator = None # Close current generator
                     continue # Restart the outer `while True` loop to re-run agent.process_message
 
                 # If no recheck, then this iteration of the LLM call is done. Break from while True.
@@ -2495,7 +2522,8 @@ class AgentCycleHandler:
                 if agent_generator: # Ensure generator from this iteration is closed if it was opened
                     try:
                         logger.info(f"CycleHandler '{agent.agent_id}': Closing agent_generator in finally block (ag_running={getattr(agent_generator, 'ag_running', 'N/A')}, ag_frame={'set' if getattr(agent_generator, 'ag_frame', None) else 'None'}).")
-                        await agent_generator.aclose()
+                        import asyncio
+                        await asyncio.wait_for(agent_generator.aclose(), timeout=2.0)
                     except Exception as close_err: logger.warning(f"Error closing agent generator for '{agent.agent_id}' in inner finally: {close_err}", exc_info=True)
         
         # --- This is the original finally block of run_cycle ---

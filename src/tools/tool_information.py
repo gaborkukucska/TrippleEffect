@@ -25,20 +25,26 @@ class ToolInformationTool(BaseTool):
     auth_level: str = "worker" # Accessible by all agent types
     description: str = (
         "Retrieves information about tools accessible to the calling agent. "
-        "Actions: 'list_tools' (provides names and summaries), 'get_info' (provides detailed usage)."
+        "Actions: 'list_tools' (provides names and summaries), 'list_categories' (shows tool groups), 'get_info' (provides detailed usage)."
     )
     summary: Optional[str] = "Lists accessible tools or gets detailed usage for a specific tool." # Add summary
     parameters: List[ToolParameter] = [
         ToolParameter(
             name="action",
             type="string",
-            description="The operation to perform: 'list_tools' or 'get_info'.",
+            description="The operation to perform: 'list_tools', 'list_categories', or 'get_info'.",
             required=True,
         ),
         ToolParameter(
             name="tool_name",
             type="string",
             description="For 'get_info': The name of the specific tool, or 'all' for detailed usage of all accessible tools. Not used by 'list_tools'.",
+            required=False,
+        ),
+        ToolParameter(
+            name="category",
+            type="string",
+            description="For 'list_tools' or 'get_info': Filters tools by a category (e.g., 'FileSystem', 'Communication').",
             required=False,
         ),
         ToolParameter( # New parameter
@@ -60,7 +66,7 @@ class ToolInformationTool(BaseTool):
         tool_name_req = kwargs.get("tool_name", "all")
         sub_action_req = kwargs.get("sub_action")
 
-        valid_actions = ["list_tools", "get_info"]
+        valid_actions = ["list_tools", "list_categories", "get_info"]
         
         # Check for common mistakes and provide helpful suggestions
         action_suggestions = {
@@ -89,20 +95,53 @@ class ToolInformationTool(BaseTool):
         calling_agent = manager.agents.get(agent_id)
         agent_type = getattr(calling_agent, 'agent_type', AGENT_TYPE_WORKER)
 
+        CATEGORY_MAP = {
+            "project_management": "Project",
+            "manage_team": "Team",
+            "send_message": "Communication",
+            "mark_message_read": "Communication",
+            "file_system": "FileSystem",
+            "code_editor": "FileSystem",
+            "command_executor": "System",
+            "knowledge_base": "System",
+            "tool_information": "System",
+            "system_help": "System",
+            "web_search": "Web",
+            "github_tool": "Web"
+        }
+
         try:
-            if action == "list_tools":
+            if action == "list_categories":
+                categories = {}
+                for name, tool in manager.tool_executor.tools.items():
+                    if self._is_authorized(agent_type, tool.auth_level):
+                        cat = CATEGORY_MAP.get(name, "General")
+                        if cat not in categories: categories[cat] = []
+                        categories[cat].append(name)
+                
+                resp = ["--- Tool Categories ---"]
+                for cat, tools in categories.items():
+                    resp.append(f"• **{cat}**: {', '.join(tools)}")
+                resp.append("\nUse <tool_information><action>list_tools</action><category>CATEGORY_NAME</category></tool_information> to filter.")
+                return {"status": "success", "message": "\n".join(resp)}
+
+            elif action == "list_tools":
+                category_filter = kwargs.get("category")
                 tools_list = []
                 for name, tool in sorted(manager.tool_executor.tools.items()):
                     if self._is_authorized(agent_type, tool.auth_level):
+                        cat = CATEGORY_MAP.get(name, "General")
+                        if category_filter and cat.lower() != category_filter.lower():
+                             continue
                         summary = getattr(tool, 'summary', tool.description)
-                        tools_list.append({"name": name, "summary": summary.strip()})
+                        tools_list.append({"name": name, "summary": summary.strip(), "category": cat})
 
-                # Create a detailed message with actual tool names and descriptions
                 tools_details = []
-                tools_details.append(f"Available tools for agent type '{agent_type}' ({len(tools_list)} total):\n")
+                filter_msg = f" in category '{category_filter}'" if category_filter else ""
+                tools_details.append(f"Available tools for agent type '{agent_type}'{filter_msg} ({len(tools_list)} total):\n")
                 
                 for tool_info in tools_list:
-                    tools_details.append(f"• **{tool_info['name']}**: {tool_info['summary']}")
+                    tools_details.append(f"• **{tool_info['name']}** [{tool_info['category']}]: {tool_info['summary']}")
                 
                 tools_details.append(f"\nTo get detailed usage for any tool, use: <tool_information><action>get_info</action><tool_name>TOOL_NAME</tool_name></tool_information>")
                 tools_details.append(f"For per-action help on complex tools, add: <sub_action>ACTION_NAME</sub_action>")
@@ -122,6 +161,8 @@ class ToolInformationTool(BaseTool):
         return tool_auth_level == AGENT_TYPE_WORKER
 
     def _get_info(self, agent_id: str, agent_type: str, tool_name_req: str, sub_action_req: Optional[str], manager: 'AgentManager') -> Dict[str, Any]:
+        CATEGORY_MAP = {"project_management": "Project", "manage_team": "Team", "send_message": "Communication", "file_system": "FileSystem", "code_editor": "FileSystem", "command_executor": "System", "knowledge_base": "System", "tool_information": "System", "system_help": "System", "web_search": "Web", "github_tool": "Web"}
+        
         if tool_name_req.lower() == 'all':
             usage_info = []
             for name, tool in sorted(manager.tool_executor.tools.items()):

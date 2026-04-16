@@ -11,6 +11,7 @@ class ToolParameter(BaseModel):
     type: str = Field(..., description="The expected type of the parameter (e.g., 'string', 'integer', 'boolean').")
     description: str = Field(..., description="A description of what the parameter represents.")
     required: bool = Field(default=True, description="Whether the parameter is required.")
+    aliases: List[str] = Field(default_factory=list, description="A list of semantic aliases for this parameter allowing auto-mapping.")
 
 # Abstract Base Class for Tools
 class BaseTool(ABC):
