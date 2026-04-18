@@ -35,6 +35,36 @@
 
 ## Recently Resolved Issues
 
+### +23. Missing Context in Worker Report/Wait States
+- **Severity:** High (P1)
+- **Description:** Workers lost task context when in `worker_report` and `worker_wait` states due to prompt injection logic omitting task descriptions, leading to amnesia loops.
+- **Fix:** (RESOLVED) Relaxed context injection controls in `workflow_manager.py` to ensure `worker_report` and `worker_wait` states consistently receive `_injected_task_description`.
+- **Files:** `src/agents/workflow_manager.py`
+
+### +22. PM send_message Constraint Blocking
+- **Severity:** Critical (P0)
+- **Description:** PM agents attempting to update tasks and immediately notify workers in the same turn triggered a multi-tool block, preventing workers from waking up.
+- **Fix:** (RESOLVED) Exempted Project Managers (`pm`) from the multi-tool isolation constraint in `cycle_handler.py`. PMs can now seamlessly pair tool actions with `send_message`.
+- **Files:** `src/agents/cycle_handler.py`
+
+### +21. Task Tag Auto-Assignment Disconnect
+- **Severity:** Medium (P2)
+- **Description:** When agents assigned a task, they often failed to explicitly set mapping tags (e.g. `assigned` or `+agent_id`), rendering the tasks invisible to specific worker queues.
+- **Fix:** (RESOLVED) Updated `project_management.py` mapping logic. When `assignee_agent_id` parameter is specified, the tool now unilaterally adds the `assigned` tag and worker's ID to the TaskWarrior record behind-the-scenes.
+- **Files:** `src/tools/project_management.py`
+
+### +20b. Cross-Agent Situational Blindness
+- **Severity:** High (P1)
+- **Description:** Agents execute strictly partitioned actions without a shared awareness of other current worker statuses, causing task duplication or timeline confusion.
+- **Fix:** (RESOLVED) Integrated dynamic Team Work In Progress (WIP) updates. `_build_team_wip_updates()` constructs real-time worker state/activity context, automatically injected directly into all active interaction prompts via `prompts.yaml` and `settings.py`.
+- **Files:** `prompts.yaml`, `src/config/settings.py`, `src/agents/workflow_manager.py`
+
+### +20a. Tool Execution MISSING_PARAMETER Raw Errors
+- **Severity:** Medium (P2)
+- **Description:** Missing tool parameters caused raw python exceptions, making it hard for agents to self-correct.
+- **Fix:** (RESOLVED) Integrated the `ErrorType.MISSING_PARAMETER` into the global `tool_error_handler` inside `executor.py` to automatically supply an LLM-friendly context recovery message for parameter corrections.
+- **Files:** `src/tools/executor.py`
+
 ### +16. Whiteboard Context Bloating (Deprecation)
 
 - **Severity:** High (P1)

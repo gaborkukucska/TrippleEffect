@@ -16,6 +16,7 @@
     *   **Context Summarizer**: Manages conversation context for optimal performance with smaller models
     *   **Next Step Scheduler**: Intelligent agent reactivation and workflow continuation logic
     *   **Cycle Components Architecture**: Modular, extensible system for agent cycle management
+*   **Team Work In Progress (WIP) Injection:** The framework automatically constructs and injects a real-time summary of team activities (WIP tasks, agent states, recent actions) into the standard formatting context for all agents. This serves as a "heartbeat" to improve cross-agent alignment and minimize duplicated efforts or blind spots.
 *   **Intelligent Model Handling:**
     *   **Discovery:** Automatically finds reachable LLM providers (Ollama, OpenRouter, OpenAI) and available models at startup.
     *   **Filtering:** Filters discovered models based on the `MODEL_TIER` setting (`.env`).

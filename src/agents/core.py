@@ -83,6 +83,8 @@ class Agent:
         self.needs_priority_recheck: bool = False
         self.intervention_applied_for_build_team_tasks: bool = False
         self.text_buffer: str = ""
+        self._pm_report_check_cycle_count: int = 0
+        self._pm_audit_cycle_count: int = 0
         safe_agent_id = self.agent_id if self.agent_id.startswith(("agent_", "pm_", "admin_")) else f"agent_{self.agent_id}"
         self.sandbox_path: Path = BASE_DIR / "sandboxes" / safe_agent_id
         self.raw_xml_tool_call_pattern = None

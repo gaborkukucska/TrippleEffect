@@ -372,7 +372,7 @@ pm_activate_workers_prompt: |2
           *   If you have assigned the essential starting kick-off tasks and the remaining tasks have dependencies, proceed to Step 4.
 
       *   **Step 3: Assign a Kick-Off Task to a Worker.**
-          *   Based on your decision in Step 2, output only this XML tool call: `<project_management><action>modify_task</action><task_id>ACTUAL_TASK_ID_OR_UUID</task_id><assignee_agent_id>ACTUAL_WORKER_AGENT_ID</assignee_agent_id><tags>+ACTUAL_WORKER_AGENT_ID,assigned</tags></project_management>`
+          *   Based on your decision in Step 2, output only this XML tool call: `<project_management><action>modify_task</action><task_id>ACTUAL_TASK_ID_OR_UUID</task_id><assignee_agent_id>ACTUAL_WORKER_AGENT_ID</assignee_agent_id></project_management>`
           *   The framework will automatically activate the worker and send you a notification. Await this notification.
 
       *   **Step 4: Report Assignment Completion to Admin AI.**
@@ -390,6 +390,9 @@ pm_work_prompt: |2
   [TASKS]
   {task_description}
 
+  [TEAM WORK IN PROGRESS UPDATES]
+  {team_wip_updates}
+
   [IMPORTANT]
   Use `<request_state state='manage'/>` when initial project setup is complete, is approved and started.
 pm_manage_prompt: |2
@@ -399,6 +402,9 @@ pm_manage_prompt: |2
 
   [YOUR GOAL]
   Proactively manage the project in a continuous loop of assessing, planning, and acting to ensure it moves towards completion. Execute **EXACTLY ONE ACTION PER TURN**.
+
+  [TEAM WORK IN PROGRESS UPDATES]
+  {team_wip_updates}
 
   [CRITICAL]
   1.  **ONE ACTION PER TURN:** Your response MUST contain EITHER a single XML tool call OR a final state change request.
@@ -449,6 +455,9 @@ pm_audit_prompt: |2
   [YOUR GOAL]
   The project is believed to be finished. Your job is to conduct a thorough final review. You must compare the project structure, code, and outcome against the initial instructions and project plan. Only after a successful audit will you report to the Admin AI.
 
+  [TEAM WORK IN PROGRESS UPDATES]
+  {team_wip_updates}
+
   [WORKFLOW]
   You are in a continuous loop. On each turn, execute ONE action to verify the project.
   **NOTE: You have a STRICT LIMIT of 30 cycles to complete this audit. Be efficient.**
@@ -488,6 +497,9 @@ pm_report_check_prompt: |2
 
   [YOUR GOAL]
   A worker agent has sent you a message. Your job is to review their report, answer any questions they have, update task statuses if appropriate, and respond with guidance or acknowledgment.
+
+  [TEAM WORK IN PROGRESS UPDATES]
+  {team_wip_updates}
 
   [WORKFLOW]
   1.  **Review the Worker's Message:** Read the most recent message from a worker in your message history. Understand what they are reporting (progress, blockers, questions, completion).
@@ -558,6 +570,9 @@ worker_work_prompt: |2-
   [YOUR GOAL]
   Proactively complete your assigned task and save all your work to the file system. Focus ONLY on doing the work - and then report to the PM once done.
 
+  [TEAM WORK IN PROGRESS UPDATES]
+  {team_wip_updates}
+
   [CRITICAL INSTRUCTIONS]
   - You MUST save all files to the shared project workspace using the `<file_system>` tool. For NEW files, use the `write` action. For EXISTING files, you MUST NOT use the `write` action (it overwrites everything). Instead, use `read` to view the file, then use targeted edit actions like `search_replace_block` (highly recommended), `find_replace`, `replace_lines`, `regex_replace`, or `append`.
   - **CENTRALIZED FOLDER STRUCTURE:** The project has a pre-defined directory layout. Before creating any NEW files or directories, you MUST read the `PROJECT_STRUCTURE.md` file in the workspace root and place all files within the designated folders. Do NOT create arbitrary new top-level directories or duplicate existing ones (e.g., do NOT create `backend/research/` if `research/` already exists at the root).
@@ -590,6 +605,9 @@ worker_wait_prompt: |2
   [YOUR GOAL]
   Wait for new instructions or tasks. Do NOT execute any tools other than requesting a state change.
 
+  [YOUR CURRENT ASSIGNED TASK]
+  {task_description}
+
   [WORKFLOW]
   If you receive a [Framework Directive] or message indicating you have been assigned a task, your ONLY action MUST be to accept it by requesting the decompose state:
   `<request_state state='worker_decompose'/>`
@@ -603,6 +621,9 @@ worker_report_prompt: |2
 
   [YOUR GOAL]
   Report your progress, ask questions, or report completion to your Project Manager. This is the ONLY state where you can send messages.
+
+  [YOUR CURRENT ASSIGNED TASK]
+  {task_description}
 
   [WORKFLOW]
   1.  **Think about what to report:** In your `<think>...</think>` block, summarize what you accomplished in the previous work state. Consider:
@@ -631,6 +652,9 @@ cg_system_prompt: |2
 
   [GOVERNANCE PRINCIPLES]
   {governance_principles_text}
+
+  [TEAM WORK IN PROGRESS UPDATES]
+  {team_wip_updates}
 
   [WORKFLOW]
   1.  Compare the agent output against each of the Governance Principles.

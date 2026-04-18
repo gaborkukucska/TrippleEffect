@@ -321,7 +321,6 @@ class ProjectManagementTool(BaseTool):
                     raw_tags = [str(t).strip() for t in tags_arg if t]
                 else:
                     raw_tags = [str(tags_arg).strip()]
-                # Sanitize: strip +/- prefixes, quotes, brackets that corrupt TaskWarrior JSON
                 sanitized = []
                 for t in raw_tags:
                     t = t.lstrip('+-').strip()
@@ -329,6 +328,12 @@ class ProjectManagementTool(BaseTool):
                     if t:
                         sanitized.append(t)
                 task['tags'] = set(sanitized)
+                
+            if 'assignee' in task and task['assignee']:
+                current_tags = task['tags'] if 'tags' in task and task['tags'] else set()
+                current_tags.add("assigned")
+                current_tags.add(task['assignee'])
+                task['tags'] = current_tags
                 
             if kwargs.get("depends"): 
                 dep_val_raw = str(kwargs["depends"]).strip()
@@ -381,7 +386,8 @@ class ProjectManagementTool(BaseTool):
                         # so the PM doesn't see it as active work. The PM should focus on
                         # the resulting sub-tasks instead.
                         parent_task['task_progress'] = 'completed'
-                        parent_task['tags'] = list(set(list(parent_task.get('tags', [])) + ['decomposed']))
+                        existing_tags = list(parent_task['tags']) if 'tags' in parent_task and parent_task['tags'] else []
+                        parent_task['tags'] = list(set(existing_tags + ['decomposed']))
                         
                         # Complete the parent task in Taskwarrior
                         try:
@@ -704,6 +710,18 @@ class ProjectManagementTool(BaseTool):
                 else:
                     task['assignee'] = new_assignee
                     modified_fields.append("assignee")
+                    
+                    current_tags = task['tags'] if task['tags'] else set()
+                    if isinstance(current_tags, list):
+                        current_tags = set(current_tags)
+                    elif isinstance(current_tags, set):
+                        current_tags = current_tags.copy()
+                        
+                    current_tags.add("assigned")
+                    current_tags.add(new_assignee)
+                    task['tags'] = set(current_tags)
+                    if "tags" not in modified_fields:
+                        modified_fields.append("tags")
             if "depends" in kwargs:
                 try:
                     dep_id = str(kwargs["depends"]).strip()

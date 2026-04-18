@@ -626,6 +626,67 @@ class AgentWorkflowManager:
             titles.append(first_line)
         return titles
 
+    def _build_team_wip_updates(self, current_agent: 'Agent', manager: 'AgentManager') -> str:
+        """Builds a summary of work in progress for all team members."""
+        updates = []
+        project_name = self._get_agent_project_name(current_agent, manager)
+        team_id = manager.state_manager.get_agent_team(current_agent.agent_id)
+
+        relevant_agents = []
+        if hasattr(manager, 'agents'):
+            for ag in manager.agents.values():
+                if ag.agent_type == 'admin': continue # Skip Admin
+                ag_proj = self._get_agent_project_name(ag, manager)
+                ag_team = manager.state_manager.get_agent_team(ag.agent_id)
+                if ag_proj == project_name or ag_team == team_id:
+                    relevant_agents.append(ag)
+
+        if not relevant_agents:
+            return "No other team members are currently active."
+
+        for ag in relevant_agents:
+            # Task info
+            tasks = "None"
+            if ag.agent_type == "pm":
+                tasks = "Managing Project State"
+            else:
+                task_titles = self._get_agent_task_titles(ag, manager)
+                if task_titles:
+                    tasks = ", ".join(task_titles)
+
+            # Last action
+            last_action_desc = "Idling or awaiting tasks."
+            if hasattr(ag, 'state') and ag.state:
+                last_action_desc = f"Currently in '{ag.state}' state."
+                
+            # Try to grab last thought
+            last_thought = ""
+            if hasattr(ag, 'message_history'):
+                for msg in reversed(ag.message_history):
+                    if msg.get("role") == "assistant":
+                        content = msg.get("content", "")
+                        if "<think>" in content:
+                            import re
+                            match = re.search(r"<think>\s*(.*?)\s*</think>", content, re.DOTALL)
+                            if match:
+                                thought = match.group(1).strip()
+                                # truncate thought
+                                if len(thought) > 100: thought = thought[:97] + "..."
+                                last_thought = thought
+                        if last_thought: break
+
+            if last_thought:
+                last_action_desc += f" Last thought: '{last_thought}'"
+            
+            # Format
+            ag_str = f"{ag.agent_id} - {ag.persona}\nWorking on: {tasks}\nLast action(s): {last_action_desc}\n"
+            updates.append(ag_str)
+
+        if not updates:
+            return "No updates available."
+        
+        return "\n".join(updates)
+
     def _build_address_book(self, agent: 'Agent', manager: 'AgentManager') -> str:
         content_lines = []
         agent_type = agent.agent_type
@@ -812,7 +873,8 @@ class AgentWorkflowManager:
             "available_workflow_trigger": available_workflow_trigger_info,
             "pm_provider": "N/A", # Default if not PM or not found
             "pm_model": "N/A",    # Default if not PM or not found
-            "tool_instructions": tool_instructions
+            "tool_instructions": tool_instructions,
+            "team_wip_updates": self._build_team_wip_updates(agent, manager)
         }
 
         if agent.agent_type == AGENT_TYPE_PM:
@@ -876,7 +938,7 @@ class AgentWorkflowManager:
             task_desc_for_prompt = getattr(agent, 'initial_plan_description', None)
 
         # Use injected task description for newly activated workers, overriding other values
-        if agent.agent_type == AGENT_TYPE_WORKER and agent.state in (WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK):
+        if agent.agent_type == AGENT_TYPE_WORKER:
             if hasattr(agent, '_injected_task_description') and agent._injected_task_description is not None:
                 task_desc_for_prompt = agent._injected_task_description
 

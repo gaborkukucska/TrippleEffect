@@ -10,6 +10,7 @@
     *   **Context Optimization**: Automatic context summarization for improved performance
     *   **Workflow Continuation**: Smart reactivation logic for multi-step agent workflows
     *   **Health Analytics**: Detailed agent behavior analysis and intervention strategies
+    *   **Team Work In Progress (WIP) Injection**: Dynamic injection of real-time team status updates into active agent prompts to ensure cross-agent situational awareness and minimize duplicated efforts.
 *   **Configurable Model Selection:**
     *   Dynamic discovery of providers/models (Ollama, OpenRouter, OpenAI).
     *   Filtering based on `MODEL_TIER` (.env: `FREE` or `ALL`).

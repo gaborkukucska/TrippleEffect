@@ -589,12 +589,17 @@ class ToolExecutor:
                         missing_required.append(param_name)
 
             if missing_required:
-                error_msg = f"Error: Tool '{tool_name}' execution failed. Missing required parameters: {', '.join(missing_required)}. Please check the tool's documentation for required parameters."
-                logger.error(error_msg)
-                if tool_name == ManageTeamTool.name:
-                    return {"status": "error", "action": tool_args.get("action"), "message": error_msg}
+                agent_context_dict = {"agent_id": agent_id, "agent_type": getattr(self, '_agent_type_cache', "unknown")}
+                error_msg = f"Missing required parameters: {', '.join(missing_required)}"
+                # Use enhanced error response 
+                enhanced_error = self._generate_enhanced_error_response(
+                    ErrorType.MISSING_PARAMETER, tool_name, tool_args, agent_id, agent_context_dict
+                )
+                logger.error(f"[TOOL_EXEC_ERROR] ID:{execution_id} | {error_msg}")
+                if tool_name == getattr(ManageTeamTool, 'name', 'manage_team'):
+                    return {"status": "error", "action": tool_args.get("action"), "message": enhanced_error}
                 else:
-                    return error_msg
+                    return enhanced_error
 
             for param_name, param_value in tool_args.items(): 
                 param_info = next((p for p in schema['parameters'] if p['name'] == param_name), None)

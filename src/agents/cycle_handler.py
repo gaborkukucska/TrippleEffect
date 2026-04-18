@@ -261,7 +261,7 @@ class AgentCycleHandler:
             
         return False
 
-    async def _get_cg_verdict(self, original_agent_final_text: str) -> Optional[str]:
+    async def _get_cg_verdict(self, agent, original_agent_final_text: str) -> Optional[str]:
         if not original_agent_final_text or original_agent_final_text.isspace():
             logger.warning("CG review requested for empty or whitespace-only text. Skipping LLM call and returning <OK/>.")
             return "<OK/>"
@@ -300,7 +300,10 @@ class AgentCycleHandler:
                 verdict_to_return = "<OK/>"
             
             if verdict_to_return is None: # Only proceed if no error above from missing prompt template
-                formatted_cg_system_prompt = cg_prompt_template.format(governance_principles_text=governance_text)
+                formatted_cg_system_prompt = cg_prompt_template.format(
+                    governance_principles_text=governance_text,
+                    team_wip_updates=self._manager.workflow_manager._build_team_wip_updates(agent, self._manager)
+                )
                 cg_history: List[MessageDict] = [
                     {"role": "system", "content": formatted_cg_system_prompt},
                     {"role": "system", "content": f"---\nText for Constitutional Review:\n---\n{original_agent_final_text}"}
@@ -908,9 +911,11 @@ class AgentCycleHandler:
                             await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id,agent_id=agent.agent_id,role="assistant",content=raw_llm_response_with_error)
                         
                         # CRITICAL FIX: Enhanced XML error feedback deduplication to prevent accumulation
+                        # CRITICAL FIX: Enhanced XML error feedback deduplication to prevent accumulation
                         # Create broader error signatures to catch similar XML errors
+                        safe_parsing_msg = parsing_error_msg or ""
                         base_error_signature = f"xml_error_{malformed_tool_name}"
-                        detailed_error_signature = f"malformed_{malformed_tool_name}_{parsing_error_msg[:30]}"
+                        detailed_error_signature = f"malformed_{malformed_tool_name}_{safe_parsing_msg[:30]}"
                         
                         if not hasattr(agent, '_recent_error_feedback'):
                             agent._recent_error_feedback = {}
@@ -1115,8 +1120,8 @@ class AgentCycleHandler:
                             found_task = False
                             for msg in reversed(agent.message_history):
                                 if msg.get("role") == "user":
-                                    task_description = msg.get("content")
-                                    logger.info(f"CycleHandler: Found last user message and set as task description: '{task_description[:100]}...'")
+                                    task_description = msg.get("content") or ""
+                                    logger.info(f"CycleHandler: Found last user message and set as task description: '{str(task_description)[:100]}...'")
                                     found_task = True
                                     break
                             if not found_task:
@@ -1371,6 +1376,7 @@ class AgentCycleHandler:
                             if hasattr(agent, '_send_msg_multi_tool_error_count'): agent._send_msg_multi_tool_error_count = 0
                         # --- END PRE-PROCESS ---
 
+                        send_message_blocked_by_multi_tool = False
                         for i, call_data in enumerate(deduplicated_tool_calls):
                             tool_name = call_data.get("name"); tool_id = call_data.get("id"); tool_args = call_data.get("arguments", {})
                             
@@ -1609,7 +1615,7 @@ class AgentCycleHandler:
                             # --- END CROSS-CYCLE DUPLICATE DETECTION ---
                             
                             # --- SEND_MESSAGE MULTI-TOOL CONSTRAINT ---
-                            if any(t.get("name") not in ("send_message", "mark_message_read") for t in deduplicated_tool_calls) and tool_name == "send_message":
+                            if agent.agent_type != "pm" and any(t.get("name") not in ("send_message", "mark_message_read") for t in deduplicated_tool_calls) and tool_name == "send_message":
                                 non_send_message_tools = [t for t in deduplicated_tool_calls if t.get("name") not in ("send_message", "mark_message_read")]
                                 has_only_state_change_companion = (len(non_send_message_tools) == 0 and deferred_state_change is not None)
                                 
@@ -1619,6 +1625,7 @@ class AgentCycleHandler:
                                 else:
                                     other_tool_names = [t.get("name") for t in non_send_message_tools]
                                     logger.warning(f"Agent {agent.agent_id} attempted to use send_message alongside {other_tool_names}. Blocking send_message only.")
+                                    send_message_blocked_by_multi_tool = True
                                     error_msg = (
                                         f"ERROR: Your other tool call(s) ({', '.join(other_tool_names)}) were executed successfully. "
                                         f"CRITICAL INSTRUCTION: You attempted to use send_message alongside other active tool calls. "
@@ -2096,39 +2103,44 @@ class AgentCycleHandler:
                         # This prevents the state change from altering the agent's state before 
                         # tools that depend on the original state (like send_message in worker_report) can run.
                         if deferred_state_change:
-                            try:
-                                # Auto-track worker task when transitioning to work state
-                                self._handle_worker_task_tracking(agent, deferred_state_change, deferred_task_id)
-                                
-                                if self._manager.workflow_manager.change_state(agent, deferred_state_change, task_description=deferred_task_desc):
-                                    logger.info(f"CycleHandler: Successfully changed agent '{agent.agent_id}' state to '{deferred_state_change}' after tool processing")
+                            if send_message_blocked_by_multi_tool:
+                                logger.warning(f"Blocking deferred_state_change '{deferred_state_change}' for '{agent.agent_id}' because send_message was blocked.")
+                                invalid_msg = f"[Framework Error]: Your state transition to '{deferred_state_change}' was BLOCKED because your <send_message> call failed (you cannot use send_message alongside other active tools). Please review the feedback from your other tools, then repeat your send_message and request_state alone."
+                                agent.message_history.append({"role": "system", "content": invalid_msg})
+                            else:
+                                try:
+                                    # Auto-track worker task when transitioning to work state
+                                    self._handle_worker_task_tracking(agent, deferred_state_change, deferred_task_id)
                                     
-                                    # CRITICAL FIX: Append a user message so the next cycle has a clear trigger to start generating
-                                    # Without this, the last message is the assistant's <request_state> tag, causing empty outputs
-                                    agent.message_history.append({
-                                        "role": "user",
-                                        "content": f"[System State Change]: State changed to {deferred_state_change}. Your instructions have been updated. Please proceed."
-                                    })
-                                else:
-                                    resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, deferred_state_change)
-                                    if agent.state == resolved_requested:
-                                        logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Reactivating with reminder.")
-                                        context.needs_reactivation_after_cycle = True
+                                    if self._manager.workflow_manager.change_state(agent, deferred_state_change, task_description=deferred_task_desc):
+                                        logger.info(f"CycleHandler: Successfully changed agent '{agent.agent_id}' state to '{deferred_state_change}' after tool processing")
+                                        
+                                        # CRITICAL FIX: Append a user message so the next cycle has a clear trigger to start generating
+                                        # Without this, the last message is the assistant's <request_state> tag, causing empty outputs
                                         agent.message_history.append({
-                                            "role": "system",
-                                            "content": f"[Framework Directive]: You requested to change to '{deferred_state_change}', but you are already in this state. Please proceed with executing tools to fulfill your current goal."
+                                            "role": "user",
+                                            "content": f"[System State Change]: State changed to {deferred_state_change}. Your instructions have been updated. Please proceed."
                                         })
                                     else:
-                                        logger.warning(f"CycleHandler: Failed to change agent '{agent.agent_id}' state to '{deferred_state_change}' after tool processing")
-                                        # Truly invalid state transition. Let it reactivate to correct itself (with an error message).
-                                        invalid_msg = f"[Framework Error]: Invalid state requested: '{deferred_state_change}'. Please check valid states for your role."
-                                        agent.message_history.append({"role": "system", "content": invalid_msg})
-                            except ValueError as ve:
-                                # Catch validation errors from task tracking (e.g. trying to select a decomposed task)
-                                logger.warning(f"CycleHandler: State transition blocked for '{agent.agent_id}': {ve}")
-                                err_msg = f"[Framework Error]: State transition rejected: {ve}"
-                                agent.message_history.append({"role": "system", "content": err_msg})
-                                context.needs_reactivation_after_cycle = True
+                                        resolved_requested = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, deferred_state_change)
+                                        if agent.state == resolved_requested:
+                                            logger.info(f"CycleHandler: Agent '{agent.agent_id}' is already in state '{resolved_requested}'. Reactivating with reminder.")
+                                            context.needs_reactivation_after_cycle = True
+                                            agent.message_history.append({
+                                                "role": "system",
+                                                "content": f"[Framework Directive]: You requested to change to '{deferred_state_change}', but you are already in this state. Please proceed with executing tools to fulfill your current goal."
+                                            })
+                                        else:
+                                            logger.warning(f"CycleHandler: Failed to change agent '{agent.agent_id}' state to '{deferred_state_change}' after tool processing")
+                                            # Truly invalid state transition. Let it reactivate to correct itself (with an error message).
+                                            invalid_msg = f"[Framework Error]: Invalid state requested: '{deferred_state_change}'. Please check valid states for your role."
+                                            agent.message_history.append({"role": "system", "content": invalid_msg})
+                                except ValueError as ve:
+                                    # Catch validation errors from task tracking (e.g. trying to select a decomposed task)
+                                    logger.warning(f"CycleHandler: State transition blocked for '{agent.agent_id}': {ve}")
+                                    err_msg = f"[Framework Error]: State transition rejected: {ve}"
+                                    agent.message_history.append({"role": "system", "content": err_msg})
+                                    context.needs_reactivation_after_cycle = True
                         # --- END DEFERRED EMBEDDED STATE CHANGE ---
 
                         llm_stream_ended_cleanly = False; break
@@ -2192,7 +2204,7 @@ class AgentCycleHandler:
                                     logger.info(f"CycleHandler: Skipping CG review for tool-call-only response from '{agent.agent_id}'")
                                     cg_verdict = "<OK/>"
                                 else:
-                                    cg_verdict = await self._get_cg_verdict(final_content)
+                                    cg_verdict = await self._get_cg_verdict(agent, final_content)
                                 if cg_verdict == "<OK/>":
                                     if context.current_db_session_id and (not agent.message_history or not agent.message_history[-1].get("tool_calls")): await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content)
                                     await self._manager.send_to_ui(original_event_data)
@@ -2446,7 +2458,7 @@ class AgentCycleHandler:
                             cycle_text_content = ""; mock_event_data = {"type": "final_response", "content": final_content_from_buffer, "agent_id": agent.agent_id}
                             context.action_taken_this_cycle = True
                             if agent.agent_id != CONSTITUTIONAL_GUARDIAN_AGENT_ID:
-                                cg_verdict = await self._get_cg_verdict(final_content_from_buffer)
+                                cg_verdict = await self._get_cg_verdict(agent, final_content_from_buffer)
                                 if cg_verdict == "<OK/>":
                                     if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content_from_buffer)
                                     await self._manager.send_to_ui(mock_event_data)
