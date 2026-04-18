@@ -2452,6 +2452,9 @@ class AgentCycleHandler:
                     # Original logic for processing final_content_from_buffer starts here
                     if context.needs_reactivation_after_cycle and getattr(agent, 'intervention_applied_for_build_team_tasks', False) and not cycle_text_content.strip():
                         pass
+                    elif context.action_taken_this_cycle and not cycle_text_content.strip():
+                        logger.debug(f"CycleHandler: Agent '{agent.agent_id}' produced no text response, but action was taken (e.g. native tools). Skipping empty response nudge.")
+                        context.cycle_completed_successfully = True
                     else:
                         final_content_from_buffer = cycle_text_content.strip()
                         if final_content_from_buffer:

@@ -53,10 +53,10 @@ def _get_local_network_cidr() -> Optional[str]:
         return None
     logger.debug("Attempting to determine local network CIDR using netifaces...")
     try:
-        for interface in netifaces.interfaces():
-            addresses = netifaces.ifaddresses(interface)
-            if netifaces.AF_INET in addresses:
-                for addr_info in addresses[netifaces.AF_INET]:
+        for interface in netifaces.interfaces():  # type: ignore[union-attr]
+            addresses = netifaces.ifaddresses(interface)  # type: ignore[union-attr]
+            if netifaces.AF_INET in addresses:  # type: ignore[union-attr]
+                for addr_info in addresses[netifaces.AF_INET]:  # type: ignore[union-attr]
                     ip = addr_info.get('addr')
                     netmask = addr_info.get('netmask')
                     # Ensure we have both IP and netmask, and it's not loopback
@@ -122,8 +122,8 @@ async def scan_for_local_apis(ports: List[int], timeout: float) -> List[str]:
         def run_scan():
             nm = None
             try:
-                nm = nmap.PortScanner()
-            except nmap.PortScannerError as init_err:
+                nm = nmap.PortScanner()  # type: ignore[union-attr]
+            except nmap.PortScannerError as init_err:  # type: ignore[union-attr]
                  logger.warning(f"Failed to initialize nmap.PortScanner: {init_err}. Is nmap installed and in PATH? Local network API scanning will be disabled.")
                  return None # Indicate failure
 
@@ -149,11 +149,29 @@ async def scan_for_local_apis(ports: List[int], timeout: float) -> List[str]:
         scanned_hosts = scanner.all_hosts() # Returns list of IP strings
         logger.info(f"Nmap scan completed. Found {len(scanned_hosts)} hosts with potentially open ports: {scanned_hosts}")
 
+        # Collect all local IPs for this machine so we can skip ourselves.
+        # localhost (127.0.0.1) is already handled, but we also need to skip
+        # this machine's LAN IP (e.g. 192.168.0.22) to avoid registering the
+        # same Ollama instance twice under different URLs.
+        local_ips: Set[str] = {'127.0.0.1', 'localhost'}
+        if NETIFACES_AVAILABLE:
+            try:
+                for interface in netifaces.interfaces():  # type: ignore[union-attr]
+                    addrs = netifaces.ifaddresses(interface)  # type: ignore[union-attr]
+                    if netifaces.AF_INET in addrs:  # type: ignore[union-attr]
+                        for addr_info in addrs[netifaces.AF_INET]:  # type: ignore[union-attr]
+                            ip = addr_info.get('addr')
+                            if ip:
+                                local_ips.add(ip)
+            except Exception as e:
+                logger.warning(f"Could not enumerate local IPs for self-skip: {e}")
+        logger.debug(f"Local IPs for self-skip during nmap dedup: {local_ips}")
+
         # --- CORRECTED PARSING LOOP (Ensure host_ip string is used) ---
         for host_ip in scanned_hosts: # Iterate through the list of IP strings
-            # Skip localhost, it's handled separately by ModelRegistry's direct check
-            if host_ip == '127.0.0.1':
-                logger.debug(f"Skipping localhost ({host_ip}) found by nmap scan.")
+            # Skip localhost AND this machine's own IP addresses
+            if host_ip in local_ips:
+                logger.debug(f"Skipping own machine IP ({host_ip}) found by nmap scan.")
                 continue
 
             logger.debug(f"Checking nmap results for host: {host_ip} (Type: {type(host_ip)})")
@@ -181,7 +199,7 @@ async def scan_for_local_apis(ports: List[int], timeout: float) -> List[str]:
     except ImportError:
          logger.warning("Nmap scan failed: 'python-nmap' library not found. Please install it (`pip install python-nmap`) for local network API scanning.")
     except Exception as e:
-        if isinstance(e, nmap.PortScannerError):
+        if isinstance(e, nmap.PortScannerError):  # type: ignore[union-attr]
             logger.error(f"Nmap scan or XML parsing failed: {e}. This can happen on unstable networks or if the scan is interrupted. Returning empty list of found APIs.", exc_info=True)
         else:
             logger.error(f"Error during nmap scan or processing: {e}", exc_info=True)

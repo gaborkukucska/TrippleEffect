@@ -424,7 +424,23 @@ class OllamaProvider(BaseLLMProvider):
                 try:
                     if use_streaming_mode:
                         logger.debug("Starting streaming using response.content.iter_any()")
-                        async for chunk in response.content.iter_any():
+                        # Use manual async iteration with per-chunk timeout to prevent
+                        # indefinite hangs when Ollama unloads/stops model mid-stream.
+                        # aiohttp's sock_read timeout does not always fire in chunked
+                        # transfer-encoding edge cases, so this is a hard safety net.
+                        chunk_read_timeout = DEFAULT_READ_TIMEOUT  # 240s per chunk
+                        stream_iter = response.content.iter_any().__aiter__()
+                        while True:
+                            try:
+                                chunk = await asyncio.wait_for(stream_iter.__anext__(), timeout=chunk_read_timeout)
+                            except StopAsyncIteration:
+                                break  # Stream ended normally
+                            except asyncio.TimeoutError:
+                                logger.error(f"OllamaProvider: Hard per-chunk read timeout ({chunk_read_timeout}s) fired. Ollama likely stopped mid-stream.")
+                                stream_error_obj = asyncio.TimeoutError(f"No data received from Ollama for {chunk_read_timeout}s during streaming")
+                                yield {"type": "error", "content": f"[Ollama Error]: Stream stalled - no data for {chunk_read_timeout}s. Model may have been unloaded.", "_exception_obj": stream_error_obj}
+                                stream_error_occurred = True
+                                break
                             if not chunk: continue
                             byte_buffer += chunk
                             while b'\n' in byte_buffer:
