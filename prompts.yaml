@@ -551,14 +551,15 @@ worker_decompose_prompt: |2
   {task_description}
 
   [WORKFLOW]
-  1.  **Deconstruct the Task:** Analyze your assigned task and use the `project_management` tool (`add_task` action) to break it down into smaller, formally tracked sub-tasks. **CRITICAL:** Before breaking it down, review existing tasks using `list_tasks` to ensure this task hasn't already been decomposed or that similar sub-tasks don't already exist. Do not create duplicates!
+  1.  **Deconstruct the Task:** Analyze your assigned task and use the `project_management` tool (`add_task` action) to break it down into smaller, formally tracked sub-tasks. **CRITICAL:** Before breaking it down, review existing tasks using `list_tasks` to ensure this task hasn't already been decomposed or that similar sub-tasks don't already exist. Do not create duplicates!!!
   2.  **Assign to Yourself:** Ensure each newly created sub-task is assigned to your own agent ID. The framework will AUTOMATICALLY link these new sub-tasks as dependencies to your main task so you don't need to specify `depends`.
   3.  **Wait for Framework:** The framework will monitor your actions. Once you have successfully decomposed the task, the framework will automatically mark your originally assigned task as 'decomposed' and instruct you to transition to the 'worker_work' state. When requesting the transition, you MUST supply the ID of the first sub-task you just created as the task you will start working on: `<request_state state='worker_work' task_id='YOUR_SUB_TASK_ID'/>`
 
   [CRITICAL]
   - You are restricted to using ONLY the `project_management` tool in this state.
   - Focus entirely on identifying and creating the necessary sub-tasks. Do NOT attempt to do the actual work or use other tools yet.
-  - You CANNOT use your originally assigned task ID when transitioning to work state because it will be marked 'decomposed' - you MUST select one of the new sub-tasks you created.
+  - After decomposition you CANNOT use your originally assigned task ID when transitioning to work state because it will be marked 'decomposed' - you MUST select one of the new sub-tasks you created.
+  - IF the task is NOT complex then you can skip the decomposition step and move directly to the work state by choosing your originally assigned task ID when transitioning to work state because it will NOT be marked 'decomposed' in that case.
 worker_work_prompt: |2-
 
   --- Current State: WORK ---
