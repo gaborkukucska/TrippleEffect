@@ -132,6 +132,39 @@ class CodeEditorTool(BaseTool):
                 
                 occurrences = content.count(search_text)
                 if occurrences == 0:
+                    # Tier 2: First/last line match fallback (handles indentation/whitespace hallucination)
+                    search_lines = [l for l in search_text.splitlines() if l.strip()]
+                    if len(search_lines) >= 2:
+                        first_line = search_lines[0]
+                        last_line = search_lines[-1]
+                        file_lines = content.splitlines(keepends=True)
+                        
+                        start_indices = [
+                            i for i, fl in enumerate(file_lines)
+                            if fl.rstrip('\n\r') == first_line or fl.strip() == first_line.strip()
+                        ]
+                        
+                        matched_spans = []
+                        for start_idx in start_indices:
+                            for end_idx in range(start_idx, min(start_idx + len(search_lines) * 3, len(file_lines))):
+                                if file_lines[end_idx].rstrip('\n\r') == last_line or file_lines[end_idx].strip() == last_line.strip():
+                                    matched_spans.append((start_idx, end_idx))
+                                    break
+                                    
+                        if len(matched_spans) == 1:
+                            start_idx, end_idx = matched_spans[0]
+                            before = "".join(file_lines[:start_idx])
+                            after = "".join(file_lines[end_idx + 1:])
+                            replacement = replace_text
+                            if not replacement.endswith('\n') and after:
+                                replacement += '\n'
+                            content = before + replacement + after
+                            successful += 1
+                            continue
+                        elif len(matched_spans) > 1:
+                            errors.append(f"Chunk {idx}: Search text not found exactly, and first/last line anchor is ambiguous ({len(matched_spans)} matches).")
+                            continue
+                            
                     # Provide fuzzy match attempt context
                     errors.append(f"Chunk {idx}: Search text not found in file. Ensure exact matching.")
                 elif occurrences > 1:

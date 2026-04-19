@@ -602,6 +602,25 @@ class ConstitutionalGuardianHealthMonitor:
             ]
         }
         
+        # Add Admin AI specific recovery logic
+        if agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_WORK:
+            is_pm_loop = False
+            if 'recent_tool_usage' in history_analysis:
+                for tool_use in history_analysis['recent_tool_usage']:
+                    if tool_use.get('tool') == 'project_management':
+                        is_pm_loop = True
+                        break
+                        
+            if is_pm_loop:
+                recovery["actions"].append({
+                    "action": "force_state_change",
+                    "new_state": ADMIN_STATE_CONVERSATION
+                })
+                # Modify guidance to explicitly mention the state change
+                for action in recovery["actions"]:
+                    if action["action"] == "inject_guidance":
+                        action["message"] += "\n\n[Framework Override]: You have been forcefully returned to the 'conversation' state because you were trapped in a loop trying to manage projects. Please rethink your approach or ask the user for clarification before attempting to work again."
+        
         return True, description, recovery
     
     async def _create_stuck_state_intervention(self, agent: 'Agent', record: AgentHealthRecord) -> Tuple[bool, str, Dict]:
@@ -1119,6 +1138,13 @@ class ConstitutionalGuardianHealthMonitor:
         elif action_type == "reset_status":
             new_status = action.get("new_status", AGENT_STATUS_IDLE)
             agent.set_status(new_status)
+            
+        elif action_type == "force_state_change":
+            new_state = action.get("new_state")
+            if new_state:
+                agent.set_state(new_state)
+                agent.set_status(AGENT_STATUS_IDLE)
+                logger.warning(f"ConstitutionalGuardian: Forcefully transitioned agent '{agent.agent_id}' to state '{new_state}'")
             
         elif action_type == "suggest_work_completion":
             completion_message = action.get("completion_message", "Work appears to be complete.")

@@ -568,6 +568,8 @@ class ProjectManagementTool(BaseTool):
                 return {"status": "error", "message": "Missing 'task_id' for 'modify_task'."}
             
             t_id_str = str(task_id).strip()
+            t_id_str = re.sub(r"^[<'\"]+|[>'\"]+$", "", t_id_str).strip()
+            
             if t_id_str in aliases:
                 t_id_str = aliases[t_id_str]
                 
@@ -772,6 +774,8 @@ class ProjectManagementTool(BaseTool):
                 return {"status": "error", "message": "Missing 'task_id' for 'complete_task'."}
             
             t_id_str = str(task_id).strip()
+            t_id_str = re.sub(r"^[<'\"]+|[>'\"]+$", "", t_id_str).strip()
+            
             if t_id_str in aliases:
                 t_id_str = aliases[t_id_str]
                 

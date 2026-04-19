@@ -321,6 +321,46 @@ def find_and_parse_xml_tool_calls(
             return tool_args, None # Success
             
         except ET.ParseError as e:
+            # --- Heuristic Recovery for send_message ---
+            if identified_tool_name.lower() == "send_message":
+                target_match = re.search(r'<target_agent_id[^>]*>(.*?)</target_agent_id>', xml_block, re.IGNORECASE | re.DOTALL)
+                if not target_match:
+                    # check aliases
+                    for alias in ["target", "agent", "recipient", "to"]:
+                        target_match = re.search(rf'<{alias}[^>]*>(.*?)</{alias}>', xml_block, re.IGNORECASE | re.DOTALL)
+                        if target_match: break
+                target_id = target_match.group(1).strip() if target_match else ""
+                
+                content_match = re.search(r'<message_content[^>]*>(.*?)</message_content>', xml_block, re.IGNORECASE | re.DOTALL)
+                if not content_match:
+                    # check aliases
+                    for alias in ["content", "message", "text"]:
+                        content_match = re.search(rf'<{alias}[^>]*>(.*?)</{alias}>', xml_block, re.IGNORECASE | re.DOTALL)
+                        if content_match: break
+                        
+                if not content_match:
+                    # If closing tag is missing completely
+                    open_tag = re.search(r'<message_content[^>]*>(.*)', xml_block, re.IGNORECASE | re.DOTALL)
+                    if not open_tag:
+                        for alias in ["content", "message", "text"]:
+                            open_tag = re.search(rf'<{alias}[^>]*>(.*)', xml_block, re.IGNORECASE | re.DOTALL)
+                            if open_tag: break
+                    if open_tag:
+                        content_str = open_tag.group(1).strip()
+                        end_idx = content_str.lower().rfind(f"</{identified_tool_name.lower()}>")
+                        if end_idx != -1:
+                            content_str = content_str[:end_idx].strip()
+                        message_content = content_str
+                    else:
+                        message_content = ""
+                else:
+                    message_content = content_match.group(1).strip()
+                    
+                if target_id and message_content:
+                    logger.info(f"[PARSE_HELPER] Successfully salvaged malformed 'send_message' call using heuristic fallback.")
+                    return {"target_agent_id": target_id, "message_content": message_content}, None
+            # -------------------------------------------
+
             # Generate detailed error message with correction guidance
             error_details = str(e)
             corrected_example = _generate_corrected_xml_example(identified_tool_name, tools)

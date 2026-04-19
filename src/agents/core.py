@@ -48,6 +48,28 @@ MARKDOWN_FENCE_XML_PATTERN = r"```(?:[a-zA-Z]*\n)?\s*(<({tool_names})(?:\s+[^>]*
 THINK_TAG_PATTERN = r"<think>([\s\S]*?)</think>"
 ROBUST_THINK_TAG_PATTERN = re.compile(r"<think>(.*?)(?:</think>|<(?=[^/]))", re.DOTALL | re.IGNORECASE)
 
+def detect_autoregressive_loop(text: str, min_pattern_length: int = 20, min_repetitions: int = 4) -> bool:
+    """Detects if the end of the text contains a strictly repeating autoregressive loop."""
+    text_len = len(text)
+    if text_len < min_pattern_length * min_repetitions:
+        return False
+    
+    max_pattern = min(1000, text_len // min_repetitions)
+    
+    for pattern_length in range(min_pattern_length, max_pattern + 1):
+        pattern = text[-pattern_length:]
+        is_loop = True
+        for i in range(1, min_repetitions):
+            start_idx = -(pattern_length * (i + 1))
+            end_idx = -(pattern_length * i)
+            segment = text[start_idx:] if end_idx == 0 else text[start_idx:end_idx]
+            if segment != pattern:
+                is_loop = False
+                break
+        if is_loop:
+            return True
+    return False
+
 class Agent:
     def __init__(
         self,
@@ -271,12 +293,36 @@ class Agent:
             )) as provider_stream:
                 
                 native_tool_calls_received = []
+                chunk_counter = 0
     
                 async for event in provider_stream:
                     event_type = event.get("type")
                     if event_type == "response_chunk":
                         content = event.get("content", "")
-                        if content: self.text_buffer += content; complete_assistant_response += content; yielded_chunks = True
+                        if content: 
+                            self.text_buffer += content
+                            complete_assistant_response += content
+                            yielded_chunks = True
+                            chunk_counter += 1
+                            
+                            if chunk_counter % 25 == 0 and detect_autoregressive_loop(self.text_buffer):
+                                error_msg = "[LLM Error] Autoregressive string loop detected. Terminating stream to prevent hang."
+                                logger.error(f"Agent {self.agent_id}: {error_msg}")
+                                error_event = {"type": "error", "content": error_msg, "_exception_obj": ValueError(error_msg), "agent_id": self.agent_id}
+                                yield error_event
+                                stream_had_error = True
+                                break
+                            
+                            # CRITICAL FIX: Hard limit on output size to prevent runaway hallucinations bloating KV cache
+                            if len(self.text_buffer) > 32000:  # ~8k tokens max
+                                error_msg = "[LLM Error] Runaway generation detected (exceeded 32,000 chars). Terminating stream to prevent KV cache exhaustion."
+                                logger.error(f"Agent {self.agent_id}: {error_msg}")
+                                error_event = {"type": "error", "content": error_msg, "_exception_obj": ValueError(error_msg), "agent_id": self.agent_id}
+                                yield error_event
+                                stream_had_error = True
+                                break
+
+
                         yield {"type": "response_chunk", "content": content, "agent_id": self.agent_id}
                     elif event_type == "native_tool_calls":
                         native_tool_calls_received.extend(event.get("tool_calls", []))

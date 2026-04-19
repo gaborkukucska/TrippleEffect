@@ -247,8 +247,8 @@ class AgentWorkflowManager:
                     elif hasattr(agent, '_pm_needs_initial_list_tools'):
                         agent._pm_needs_initial_list_tools = False
 
-                    # Per user request, clear history when entering activate_workers state
-                    if requested_state == PM_STATE_ACTIVATE_WORKERS:
+                    # Per user request, clear history when entering activate_workers or build_team_tasks states
+                    if requested_state in [PM_STATE_ACTIVATE_WORKERS, PM_STATE_BUILD_TEAM_TASKS]:
                         agent.clear_history()
                         agent._last_system_prompt_state = None  # Force fresh prompt generation after history clear
                         logger.info(f"WorkflowManager: Cleared history for PM agent '{agent.agent_id}' upon entering state '{requested_state}'.")
@@ -992,7 +992,8 @@ class AgentWorkflowManager:
             "tool_examples": tool_examples,
             "report_examples": report_examples,
             "kb_search_example": kb_search_example,
-            "workspace_list_example": workspace_list_example
+            "workspace_list_example": workspace_list_example,
+            "team_wip_updates": standard_formatting_context["team_wip_updates"]
         }
         try:
             final_prompt = state_prompt_template.format(**state_formatting_context)

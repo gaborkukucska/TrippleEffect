@@ -146,6 +146,9 @@ class OllamaProvider(BaseLLMProvider):
         if max_tokens is not None:
             valid_options["num_predict"] = max_tokens 
             logger.debug(f"Setting Ollama num_predict (max_tokens) to: {max_tokens}")
+        else:
+            valid_options["num_predict"] = 8192
+            logger.debug(f"Setting Ollama default num_predict to: 8192 to prevent infinite hallucination loops")
         # --- Per-model metadata lookup from ModelRegistry ---
         model_info = None
         if self._model_registry and hasattr(self._model_registry, 'get_model_info'):
@@ -430,6 +433,7 @@ class OllamaProvider(BaseLLMProvider):
                         # transfer-encoding edge cases, so this is a hard safety net.
                         chunk_read_timeout = DEFAULT_READ_TIMEOUT  # 240s per chunk
                         stream_iter = response.content.iter_any().__aiter__()
+                        keep_alive_count = 0
                         while True:
                             try:
                                 chunk = await asyncio.wait_for(stream_iter.__anext__(), timeout=chunk_read_timeout)
@@ -447,6 +451,9 @@ class OllamaProvider(BaseLLMProvider):
                                 line_bytes, byte_buffer = byte_buffer.split(b'\n', 1)
                                 line = line_bytes.decode('utf-8').strip()
                                 if not line:
+                                    keep_alive_count += 1
+                                    if keep_alive_count % 5 == 0:  # Yield status every 5 keep-alives
+                                        yield {"type": "status", "content": f"Ollama is actively processing context (keep-alive {keep_alive_count})..."}
                                     continue
                                 processed_lines += 1
                                 try:
@@ -462,7 +469,7 @@ class OllamaProvider(BaseLLMProvider):
                                             "content" in chunk_data["message"]:
                                              content_chunk = chunk_data["message"]["content"]
                                              if content_chunk: 
-                                                 logger.debug(f"OllamaProvider: Yielding response_chunk: {content_chunk[:100]}...")
+                                                 # logger.debug(f"OllamaProvider: Yielding response_chunk: {content_chunk[:100]}...") # Disabled to prevent log spam
                                                  yield {"type": "response_chunk", "content": content_chunk}
                                     if chunk_data.get("done", False):
                                         total_duration = chunk_data.get("total_duration")

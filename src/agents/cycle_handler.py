@@ -799,7 +799,8 @@ class AgentCycleHandler:
                         cycle_text_content = current_buffer
                         
                     event_type = event.get("type")
-                    logger.debug(f"CycleHandler '{agent.agent_id}': Received Event from Agent.process_message: Type='{event_type}', Keys={list(event.keys())}")
+                    if event_type != "response_chunk":
+                        logger.debug(f"CycleHandler '{agent.agent_id}': Received Event from Agent.process_message: Type='{event_type}', Keys={list(event.keys())}")
 
                     if event_type == "error":
                         context.last_error_obj = event.get('_exception_obj', ValueError(event.get('content', 'Unknown Agent Core Error')))

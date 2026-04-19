@@ -55,21 +55,24 @@ class ContextSummarizer:
             threshold = settings.SUMMARIZER_TRIGGER_THRESHOLD
         
         if context_length > threshold:
-            # CRITICAL FIX: Prevent infinite summarization loops.
-            # If the context already contains summaries, don't re-summarize.
-            # This happens when the system prompt + minimum retained messages
-            # already exceed the threshold — re-summarizing won't help.
+            # CRITICAL FIX: Prevent infinite summarization loops, but allow EMERGENCY truncation.
             if message_history:
                 summary_count = sum(
                     1 for msg in message_history
                     if msg.get('role') == 'system' and '[CONTEXT SUMMARY' in msg.get('content', '')
                 )
+                
+                hard_limit = int(model_num_ctx * 0.9) if (model_num_ctx and model_num_ctx > 0) else 29000
+                
                 if summary_count >= 2:
-                    logger.info(f"Context summarization SKIPPED for agent {agent_id}. "
-                               f"Context: {context_length} tokens > Threshold: {threshold}, "
-                               f"but {summary_count} summaries already present — "
-                               f"re-summarizing would cause an infinite loop.")
-                    return False
+                    if context_length >= hard_limit:
+                        logger.warning(f"CRITICAL: Context {context_length} tokens approaching hard limit {hard_limit} for agent {agent_id}! Forcing emergency hard truncation.")
+                        return True
+                    else:
+                        logger.info(f"Context summarization SKIPPED for agent {agent_id}. "
+                                   f"Context: {context_length} tokens > Threshold: {threshold}, "
+                                   f"but {summary_count} summaries already present.")
+                        return False
             
             logger.info(f"Context summarization triggered for agent {agent_id}. "
                        f"Context: {context_length} tokens, Threshold: {threshold}")
@@ -96,6 +99,30 @@ class ContextSummarizer:
         if CONSTITUTIONAL_GUARDIAN_AGENT_ID not in self._manager.agents:
             logger.warning("Constitutional Guardian not available for context summarization")
             return False, None
+            
+        # Check if we need to do an emergency hard truncate instead of LLM summarization
+        summary_count = sum(1 for msg in message_history if msg.get('role') == 'system' and '[CONTEXT SUMMARY' in msg.get('content', ''))
+        if summary_count >= 2:
+            logger.warning(f"Performing emergency HARD TRUNCATION for agent {agent_id} to avoid context limit loops.")
+            condensed = []
+            if message_history and message_history[0].get('role') == 'system':
+                condensed.append(message_history[0])
+            
+            for msg in message_history:
+                if msg.get('role') == 'system' and '[CONTEXT SUMMARY' in msg.get('content', ''):
+                    condensed.append(msg)
+                    
+            if len(message_history) > 2:
+                for msg in message_history[-2:]:
+                    # Truncate content of preserved messages to prevent single huge messages from blowing up the context
+                    msg_copy = dict(msg)
+                    content = msg_copy.get('content', '')
+                    if isinstance(content, str) and len(content) > 8000:
+                        msg_copy['content'] = content[:7900] + "\n...[System: content truncated due to context limit]...\n" + content[-100:]
+                    if msg_copy not in condensed:
+                        condensed.append(msg_copy)
+                        
+            return True, condensed
             
         try:
             # Split context into two manageable chunks
