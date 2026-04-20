@@ -98,6 +98,26 @@ export const restoreMessages = () => {
 
         if (savedComms && commsArea) {
             commsArea.innerHTML = savedComms;
+            
+            // Retro-fit data-category attributes to older messages saved before the filter feature
+            import('./ui.js').then(uiModule => {
+                const typeToCategory = uiModule.typeToCategory;
+                if (typeToCategory) {
+                    commsArea.querySelectorAll('.message:not([data-category])').forEach(msg => {
+                        const classes = Array.from(msg.classList);
+                        let assigned = false;
+                        for (const cls of classes) {
+                            if (typeToCategory[cls]) {
+                                msg.setAttribute('data-category', typeToCategory[cls]);
+                                assigned = true;
+                                break;
+                            }
+                        }
+                        if (!assigned) msg.setAttribute('data-category', 'system');
+                    });
+                }
+            }).catch(err => console.error("Failed to retro-fit categories:", err));
+
             commsArea.scrollTop = commsArea.scrollHeight;
             restoredAny = true;
             console.log(`ChatPersistence: Restored internal comms messages (${commsArea.children.length} elements).`);

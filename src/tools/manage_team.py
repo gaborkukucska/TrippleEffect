@@ -157,7 +157,17 @@ class ManageTeamTool(BaseTool):
             if not params.get("role"): missing.append("'role'")
             if not params.get("system_prompt"): missing.append("'system_prompt'")
             if not params.get("persona"): missing.append("'persona'")
-            if missing: error_message = f"Error: Missing required parameter(s) for 'create_agent': {', '.join(missing)}."
+            if missing: 
+                error_message = (
+                    f"Error: Missing required parameter(s) for 'create_agent': {', '.join(missing)}.\n"
+                    f"Example:\n"
+                    f"<manage_team>\n"
+                    f"  <action>create_agent</action>\n"
+                    f"  <role>Developer</role>\n"
+                    f"  <persona>Senior Developer</persona>\n"
+                    f"  <system_prompt>You are an expert coder. Write clean python code.</system_prompt>\n"
+                    f"</manage_team>"
+                )
         elif action == "delete_agent":
             if not params.get("target_agent_id"): error_message = "Error: Missing required 'target_agent_id' parameter for 'delete_agent'."
         elif action == "create_team":

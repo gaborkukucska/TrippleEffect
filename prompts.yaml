@@ -462,7 +462,15 @@ pm_audit_prompt: |2
   You are in a continuous loop. On each turn, execute ONE action to verify the project.
   **NOTE: You have a STRICT LIMIT of 30 cycles to complete this audit. Be efficient.**
 
-  1. **Review Instructions & Documentation:** Use available tools state to read the original requirements or design docs.
+  **MANDATORY FIRST STEP — TASK DATABASE CHECK:**
+  Before doing ANYTHING else, you MUST call `list_tasks` to check for remaining pending tasks:
+    * `<project_management><action>list_tasks</action><project_filter>{project_name}</project_filter></project_management>`
+  If the result shows ANY pending or in-progress tasks, you MUST IMMEDIATELY abandon the audit and transition back to manage state:
+    * `<request_state state='pm_manage'/>`
+  Do NOT proceed to file review or declare completion if tasks remain. The framework will BLOCK any completion report if pending tasks exist.
+
+  **If and ONLY if 0 pending tasks remain, proceed:**
+  1. **Review Instructions & Documentation:** Use available tools to read the original requirements or design docs.
   2. **Verify Codebase:** Check the actual project files to ensure they match the requirements.
   3. **Run Tests:** If applicable, use your terminal or testing tools to run the test suite and verify functionality.
   4. **Compile Report:** Once all checks are complete, write an honest audit report detailing what was checked, any discrepancies found (or fixed), and the final confirmation of success.
@@ -472,6 +480,7 @@ pm_audit_prompt: |2
       * `<request_state state='pm_standby'/>`
 
   [CRITICAL]
+  - **VERIFY TASKS FIRST.** If you skip the task database check and declare completion, your report will be rejected by the framework.
   - Be thorough. An audit implies looking closely at the actual output, not just trusting the task list.
   - If you find critical missing pieces during the audit, you may need to transition back to `<request_state state='pm_manage'/>` and assign new tasks to fix them.
 pm_standby_prompt: |2

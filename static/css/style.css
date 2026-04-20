@@ -1001,3 +1001,36 @@ body {
     opacity: 0.6; /* Slightly more opacity for disabled state */
     box-shadow: none;
 }
+
+/* --- Internal Comms Filter Bar --- */
+.comms-filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 15px;
+    font-size: 0.85em;
+    margin-top: 5px;
+    padding: 8px 12px;
+    background-color: var(--bg-color-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+}
+.comms-filter-bar label {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--text-color-secondary);
+    user-select: none;
+}
+.comms-filter-bar label:hover {
+    color: var(--text-color-primary);
+}
+
+/* --- Internal Comms Filtering Logic (CSS-driven) --- */
+#internal-comms-area[data-filter-system="false"] .message[data-category="system"],
+#internal-comms-area[data-filter-agent="false"] .message[data-category="agent"],
+#internal-comms-area[data-filter-tool="false"] .message[data-category="tool"],
+#internal-comms-area[data-filter-cg="false"] .message[data-category="cg"],
+#internal-comms-area[data-filter-error="false"] .message[data-category="error"] {
+    display: none !important;
+}

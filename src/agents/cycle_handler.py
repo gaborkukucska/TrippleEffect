@@ -17,7 +17,7 @@ from src.agents.constants import (  # type: ignore[import]
     AGENT_STATUS_ERROR, AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER,
     ADMIN_STATE_PLANNING, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STARTUP, ADMIN_STATE_WORK, ADMIN_STATE_STANDBY,
     PM_STATE_STARTUP, PM_STATE_MANAGE, PM_STATE_WORK, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_STANDBY,
-    PM_STATE_REPORT_CHECK,
+    PM_STATE_REPORT_CHECK, PM_STATE_AUDIT,
     WORKER_STATE_WAIT, WORKER_STATE_WORK, WORKER_STATE_REPORT, WORKER_STATE_DECOMPOSE,
     REQUEST_STATE_TAG_PATTERN,
     CONSTITUTIONAL_GUARDIAN_AGENT_ID, # Added for CG
@@ -2078,8 +2078,31 @@ class AgentCycleHandler:
                                     "and execute the single most appropriate management action (e.g., assign task, review work, or send a status update)."
                                 )
                             elif called_tool_name == "send_message" and called_tool_args.get("target_agent_id") == BOOTSTRAP_AGENT_ID:
-                                # This handles the case after the PM reports project completion to the Admin AI.
-                                if "is complete" in called_tool_args.get("message_content", "").lower():
+                                # --- PM AUDIT COMPLETION GATE ---
+                                msg_content_lower = called_tool_args.get("message_content", "").lower()
+                                if agent.state == PM_STATE_AUDIT and ("complete" in msg_content_lower or "audit" in msg_content_lower):
+                                    # Verify task counts before allowing the PM to report completion
+                                    try:
+                                        from src.tools.project_management import ProjectManagementTool, TASKLIB_AVAILABLE
+                                        if TASKLIB_AVAILABLE and self._manager.current_project and self._manager.current_session:
+                                            pm_tool = ProjectManagementTool()
+                                            tw = pm_tool._get_taskwarrior_instance(self._manager.current_project, self._manager.current_session)
+                                            if tw:
+                                                pending_count = len(tw.tasks.filter(status='pending'))
+                                                if pending_count > 0:
+                                                    logger.warning(f"CycleHandler: PM AUDIT GATE ACTIVATED. PM '{agent.agent_id}' tried to report completion to Admin AI but {pending_count} tasks are still pending. Blocking send_message.")
+                                                    # Override the tool result to inform the PM
+                                                    directive_message_content = (
+                                                        f"[Framework System Message - AUDIT GATE BLOCK]: Your completion report was BLOCKED. "
+                                                        f"The task database still has {pending_count} PENDING tasks. "
+                                                        "You MUST transition back to pm_manage to address the remaining work. "
+                                                        "Output ONLY: <request_state state='pm_manage'/>"
+                                                    )
+                                    except Exception as e:
+                                        logger.warning(f"CycleHandler: Failed to verify tasks in PM audit gate: {e}")
+
+                                # Original directive for valid completion reports
+                                if not directive_message_content and "is complete" in msg_content_lower:
                                     directive_message_content = (
                                         "[Framework System Message]: You have successfully reported project completion. "
                                         "Your MANDATORY next action is to transition to a standby state. "
@@ -2156,6 +2179,40 @@ class AgentCycleHandler:
                             if thought_content_for_history:
                                 final_content = f"{thought_content_for_history}\n{final_content}"
                                 original_event_data['content'] = final_content # Update event data for UI/logging
+
+                            # --- START ADMIN FINAL_RESPONSE HARD GATE (mirrors agent_raw_response gate) ---
+                            if agent.agent_id == BOOTSTRAP_AGENT_ID and final_content:
+                                lower_fc = final_content.lower()
+                                if ("complete" in lower_fc or "finished" in lower_fc or "done" in lower_fc) and "project" in lower_fc:
+                                    try:
+                                        if self._manager.current_project and self._manager.current_session:
+                                            from src.tools.project_management import ProjectManagementTool, TASKLIB_AVAILABLE
+                                            if TASKLIB_AVAILABLE:
+                                                pm_tool = ProjectManagementTool()
+                                                tw = pm_tool._get_taskwarrior_instance(self._manager.current_project, self._manager.current_session)
+                                                if tw:
+                                                    pending_tasks = tw.tasks.filter(status='pending')
+                                                    pending_count = len(pending_tasks)
+                                                    if pending_count > 0:
+                                                        logger.warning(f"CycleHandler: FINAL_RESPONSE HARD GATE ACTIVATED. Admin AI attempted to report completion while {pending_count} tasks are pending. Blocking delivery to user.")
+                                                        gate_msg = (
+                                                            f"[Framework System Message - HARD GATE BLOCK]: Your response was BLOCKED from reaching the user. "
+                                                            f"You claimed the project was complete, but the backend database shows {pending_count} PENDING tasks. "
+                                                            "You MUST use project_management list_tasks to verify the actual task status, "
+                                                            "or message the PM for an explanation. Do not falsely report completion."
+                                                        )
+                                                        agent.message_history.append({"role": "system", "content": gate_msg})
+                                                        # Send a sanitized notification to the UI instead of the false completion
+                                                        await self._manager.send_to_ui({
+                                                            "type": "system_event",
+                                                            "agent_id": agent.agent_id,
+                                                            "content": f"[Framework] Blocked false completion report from Admin AI. {pending_count} tasks still pending."
+                                                        })
+                                                        context.needs_reactivation_after_cycle = True
+                                                        continue  # Skip delivering this final_response to the user
+                                    except Exception as e:
+                                        logger.warning(f"CycleHandler: Failed to verify task completion in final_response hard gate: {e}")
+                            # --- END ADMIN FINAL_RESPONSE HARD GATE ---
     
                             # --- START: Worker Auto-Save File Feature ---
                             if agent.agent_type == AGENT_TYPE_WORKER and final_content and "<request_state state='worker_wait'/>" in final_content:

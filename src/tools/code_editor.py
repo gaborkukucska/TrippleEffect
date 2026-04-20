@@ -132,38 +132,46 @@ class CodeEditorTool(BaseTool):
                 
                 occurrences = content.count(search_text)
                 if occurrences == 0:
-                    # Tier 2: First/last line match fallback (handles indentation/whitespace hallucination)
-                    search_lines = [l for l in search_text.splitlines() if l.strip()]
-                    if len(search_lines) >= 2:
-                        first_line = search_lines[0]
-                        last_line = search_lines[-1]
-                        file_lines = content.splitlines(keepends=True)
+                    # Tier 2: Whitespace and indentation agnostic match
+                    search_lines_clean = [l.strip() for l in search_text.splitlines() if l.strip()]
+                    if not search_lines_clean:
+                        errors.append(f"Chunk {idx}: Search text is empty or only whitespace.")
+                        continue
                         
-                        start_indices = [
-                            i for i, fl in enumerate(file_lines)
-                            if fl.rstrip('\n\r') == first_line or fl.strip() == first_line.strip()
-                        ]
-                        
-                        matched_spans = []
-                        for start_idx in start_indices:
-                            for end_idx in range(start_idx, min(start_idx + len(search_lines) * 3, len(file_lines))):
-                                if file_lines[end_idx].rstrip('\n\r') == last_line or file_lines[end_idx].strip() == last_line.strip():
-                                    matched_spans.append((start_idx, end_idx))
+                    file_lines = content.splitlines(keepends=True)
+                    matched_spans = []
+                    
+                    for i in range(len(file_lines)):
+                        if file_lines[i].strip() == search_lines_clean[0]:
+                            # Potential start, check subsequent non-empty lines
+                            match_idx = 1
+                            curr_idx = i + 1
+                            while match_idx < len(search_lines_clean) and curr_idx < len(file_lines):
+                                if not file_lines[curr_idx].strip():
+                                    curr_idx += 1
+                                    continue
+                                if file_lines[curr_idx].strip() == search_lines_clean[match_idx]:
+                                    match_idx += 1
+                                    curr_idx += 1
+                                else:
                                     break
-                                    
-                        if len(matched_spans) == 1:
-                            start_idx, end_idx = matched_spans[0]
-                            before = "".join(file_lines[:start_idx])
-                            after = "".join(file_lines[end_idx + 1:])
-                            replacement = replace_text
-                            if not replacement.endswith('\n') and after:
-                                replacement += '\n'
-                            content = before + replacement + after
-                            successful += 1
-                            continue
-                        elif len(matched_spans) > 1:
-                            errors.append(f"Chunk {idx}: Search text not found exactly, and first/last line anchor is ambiguous ({len(matched_spans)} matches).")
-                            continue
+                            
+                            if match_idx == len(search_lines_clean):
+                                matched_spans.append((i, curr_idx - 1))
+                                
+                    if len(matched_spans) == 1:
+                        start_idx, end_idx = matched_spans[0]
+                        before = "".join(file_lines[:start_idx])
+                        after = "".join(file_lines[end_idx + 1:])
+                        replacement = replace_text
+                        if not replacement.endswith('\n') and after:
+                            replacement += '\n'
+                        content = before + replacement + after
+                        successful += 1
+                        continue
+                    elif len(matched_spans) > 1:
+                        errors.append(f"Chunk {idx}: Search text is ambiguous (found {len(matched_spans)} times ignoring whitespace).")
+                        continue
                             
                     # Provide fuzzy match attempt context
                     errors.append(f"Chunk {idx}: Search text not found in file. Ensure exact matching.")

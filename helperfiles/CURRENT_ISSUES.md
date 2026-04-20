@@ -35,6 +35,26 @@
 
 ## Recently Resolved Issues
 
+### +27. Background Process Port Locking
+- **Severity:** Medium (P2)
+- **Description:** Background processes (like dev servers) spawned child processes that were not being killed when the background process was terminated via `command_executor`. This caused ports to remain locked and prevented subsequent restarts of the dev server.
+- **Fix:** (RESOLVED) Updated `src/tools/command_executor.py` to use `os.setsid` during subprocess creation and `os.killpg` during termination to cleanly kill the entire process tree.
+
+### +26. Missing Tool Arguments Result in Raw Exceptions
+- **Severity:** Medium (P2)
+- **Description:** Agents omitting required arguments like `action` in `github_tool` or `role` in `manage_team` resulted in raw Python exceptions or generic errors, causing agent confusion.
+- **Fix:** (RESOLVED) Enhanced error handling in `github_tool.py` and `manage_team.py` to explicitly specify which parameter is missing and provide actionable XML examples to correct it.
+
+### +25. Overly Strict Code Editor Matching
+- **Severity:** High (P1)
+- **Description:** The `code_editor` tool's exact string matching was failing frequently because local LLMs sometimes output different indentation or add/remove empty lines, causing Tier 2 fallback to fail and breaking code edits.
+- **Fix:** (RESOLVED) Updated `src/tools/code_editor.py` to use fuzzy whitespace matching by stripping lines before comparison during the Tier 2 fallback search.
+
+### +24. PM Context Loops (Stuttering)
+- **Severity:** Critical (P0)
+- **Description:** PM agents occasionally became trapped in autoregressive memory loops, repeatedly calling the exact same tool and parameters even after receiving a `DUPLICATE BLOCKED` feedback message, polluting their context window.
+- **Fix:** (RESOLVED) Lowered the `is_stuck_in_loop` threshold from 4 to 2 in `next_step_scheduler.py` and introduced a critical fix to truncate the agent's recent message history (removing the last 4 messages) when a loop is detected. This effectively breaks the context loop.
+
 ### +23. Missing Context in Worker Report/Wait States
 - **Severity:** High (P1)
 - **Description:** Workers lost task context when in `worker_report` and `worker_wait` states due to prompt injection logic omitting task descriptions, leading to amnesia loops.

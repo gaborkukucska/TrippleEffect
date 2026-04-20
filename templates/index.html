@@ -63,9 +63,18 @@
 
         <!-- Internal Communications View -->
         <div id="internal-comms-view" class="view-panel">
-             <div class="view-header"><h1>Internal Communications</h1></div>
+             <div class="view-header">
+                 <h1>Internal Communications</h1>
+                 <div class="comms-filter-bar">
+                     <label><input type="checkbox" id="filter-system" checked> System Events</label>
+                     <label><input type="checkbox" id="filter-agent" checked> Agent Outputs</label>
+                     <label><input type="checkbox" id="filter-tool" checked> Tool Execution</label>
+                     <label><input type="checkbox" id="filter-cg" checked> Guardian</label>
+                     <label><input type="checkbox" id="filter-error" checked> Errors</label>
+                 </div>
+             </div>
              <div class="view-content">
-                <div id="internal-comms-area" class="message-area system-log-area"> <!-- Re-use system-log-area styling -->
+                <div id="internal-comms-area" class="message-area system-log-area" data-filter-system="true" data-filter-agent="true" data-filter-tool="true" data-filter-cg="true" data-filter-error="true"> <!-- Re-use system-log-area styling -->
                      <div class="message status initial-placeholder"><span>Admin <-> Agent Comms, Tools, Status</span></div>
                      <div class="message status initial-connecting initial-placeholder"><span>Connecting...</span></div>
                 </div>

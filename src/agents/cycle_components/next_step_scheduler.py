@@ -188,7 +188,7 @@ class NextStepScheduler:
             # without error and without requesting a state change, it gets reactivated.
             elif (agent.agent_type, agent.state) in persistent_states and not context.state_change_requested_this_cycle:
                 # Add loop detection for all persistent states to prevent infinite stagnation
-                is_stuck_in_loop = getattr(agent, '_duplicate_tool_call_count', 0) >= 4
+                is_stuck_in_loop = getattr(agent, '_duplicate_tool_call_count', 0) >= 2
                 if not is_stuck_in_loop and self._detect_tool_execution_loops(agent):
                     is_stuck_in_loop = True
                     
@@ -215,6 +215,14 @@ class NextStepScheduler:
                             try:
                                 # For PM, force a context refresh by clearing immediate history and asking for a summary
                                 setattr(agent, '_duplicate_tool_call_count', 0)
+                                
+                                # CRITICAL FIX: Truncate message history to break context loop
+                                history_len = len(agent.message_history)
+                                if history_len > 6:
+                                    # Pop the last 4 messages to remove the repetitive loop context
+                                    agent.message_history = agent.message_history[:-4]
+                                    logger.info(f"NextStepScheduler: Truncated last 4 messages from PM '{agent_id}' to break loop context.")
+
                                 override_msg = "[EMERGENCY SYSTEM OVERRIDE]: You are stuck in an infinite loop repeating the same actions. You MUST STOP. Take a step back, review the overall project status via 'project_management' list_tasks, and decide on a NEW course of action. Do NOT repeat your previous tool calls."
                                 agent.message_history.append({"role": "system", "content": override_msg})
                                 if self._manager and hasattr(self._manager, 'db_manager') and self._manager.current_session_db_id:

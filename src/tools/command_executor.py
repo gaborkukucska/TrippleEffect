@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import subprocess
 import os
+import signal
 
 from src.tools.base import BaseTool, ToolParameter
 
@@ -125,7 +126,8 @@ class CommandExecutionTool(BaseTool):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 # Add basic env isolation if necessary, or pass existing env
-                env=os.environ.copy()
+                env=os.environ.copy(),
+                preexec_fn=os.setsid
             )
 
             try:
@@ -134,15 +136,15 @@ class CommandExecutionTool(BaseTool):
                 returncode = process.returncode
             except asyncio.TimeoutError:
                 # Terminate the process if it times out
-                logger.warning(f"Agent {agent_id} command '{command}' timed out after {timeout}s by terminating process.")
+                logger.warning(f"Agent {agent_id} command '{command}' timed out after {timeout}s by terminating process group.")
                 try:
-                    process.terminate()
+                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
                     # Give it a tiny bit to terminate, then kill
                     await asyncio.sleep(0.5)
                     if process.returncode is None:
-                        process.kill()
+                        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
                 except Exception as cleanup_err:
-                    logger.error(f"Error terminating timed-out process: {cleanup_err}")
+                    logger.error(f"Error terminating timed-out process group: {cleanup_err}")
                 return {
                     "status": "error",
                     "message": f"Command execution timed out after {timeout} seconds. Interactive commands (like nano, vim, prompts) or long-running processes are not supported and will hang until timeout."

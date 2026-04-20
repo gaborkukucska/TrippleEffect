@@ -151,6 +151,13 @@
 * [X] **Admin AI Orchestration Upgrade:** Transitioned the Admin AI from a passive message relay to the active "Ultimate Orchestrator" capable of dynamically dropping into an investigatory `work` state to run system tools without interrupting active agents.
 * [X] **Knowledge Base Migration (v2.44):** Deprecated `whiteboard.md` inter-agent communication in favor of the `knowledge_base` tool. Updated PM and Worker system prompts in `prompts.yaml` and `settings.py`. Extended `KnowledgeBaseTool` with segmented `get_detailed_usage(sub_action=...)` help and action aliases. Replaced dynamic prompt injection variables in `workflow_manager.py` (`whiteboard_read_example` → `kb_search_example`). Removed auto-generation of `whiteboard.md` from `manager.py`.
 
+**Framework Stabilization Updates (v2.45, Completed)**
+
+* [X] **Background Process Port Locking:** Updated `command_executor.py` to use `os.setsid` and `os.killpg` to cleanly kill child processes and free ports.
+* [X] **XML Tooling Fallbacks & Missing Parameters:** Enhanced `github_tool.py` and `manage_team.py` to provide actionable XML examples when required parameters like `action` or `role` are missing, instead of generic errors.
+* [X] **Relaxed Code Editor Strictness:** Implemented line-by-line `.strip()` fuzzy whitespace matching in `code_editor.py` Tier 2 fallback to prevent LLM tokenization spacing issues from causing edit failures.
+* [X] **Loop Mitigation & Context Stuttering:** Lowered the `is_stuck_in_loop` threshold in `next_step_scheduler.py` from 4 to 2. Added context truncation logic that removes the last 4 messages from PM history during loop intervention to definitively break autoregressive LLM memory loops.
+
 **Future Goals:**
 
 * **Phase 28: Advanced Memory & Learning.** (Feedback Loop, Learned Principles, Advanced Context Management, Long-term Memory Systems).

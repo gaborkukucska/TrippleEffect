@@ -92,6 +92,18 @@ const setupEventListeners = () => {
          DOM.shutdownServerButton.addEventListener('click', handlers.handleShutdownServer);
      } else { console.warn("Main: Shutdown server button not found during listener setup."); }
 
+     // --- Internal Comms Filter Setup ---
+     const internalCommsArea = document.getElementById('internal-comms-area');
+     const filterIds = ['filter-system', 'filter-agent', 'filter-tool', 'filter-cg', 'filter-error'];
+     filterIds.forEach(id => {
+         const checkbox = document.getElementById(id);
+         if (checkbox && internalCommsArea) {
+             checkbox.addEventListener('change', (e) => {
+                 const filterKey = id.replace('filter-', '');
+                 internalCommsArea.setAttribute(`data-filter-${filterKey}`, e.target.checked);
+             });
+         }
+     });
 
      // --- Global Accessibility for Inline Handlers (If Required) ---
      // Expose necessary UI functions globally if they MUST be called from inline HTML onclick

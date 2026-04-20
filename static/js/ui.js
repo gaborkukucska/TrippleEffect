@@ -9,6 +9,15 @@ import * as DOM from './domElements.js'; // Import all exported elements
 import * as state from './state.js'; // Import state getter/setters
 import { scheduleSaveMessages } from './chatPersistence.js'; // Persist chat across refreshes
 
+// Map system message types to filter categories
+export const typeToCategory = {
+    'error': 'error', 'system_error_feedback': 'error', 'malformed_tool_call': 'error', 'pm_startup_error': 'error', 'invalid_state_request': 'error',
+    'system_event': 'system', 'log': 'system', 'system_notification': 'system', 'workflow_executed': 'system', 'cycle_complete': 'system', 'status': 'system', 'system_confirmation': 'system', 'agent_state_transition': 'system', 'agent_state_request': 'system',
+    'log-tool-use': 'tool', 'tool_execution_start': 'tool', 'tool_execution_complete_success': 'tool', 'tool_execution_complete_failure': 'tool',
+    'response_chunk': 'agent', 'agent_thought': 'agent', 'agent_raw_response': 'agent',
+    'constitutional_concern': 'cg', 'cg_concern_message': 'cg', 'awaiting_review': 'cg', 'review_complete': 'cg', 'system_request': 'cg'
+};
+
 /**
  * Displays a message in the specified message area (conversation or internal comms).
  * Handles auto-scrolling, message limits, and groups response chunks in internal comms
@@ -113,6 +122,7 @@ export const displayMessage = (text, type, targetAreaId, agentId = null, agentPe
             messageElement.classList.add('message', type); // Use original type for class
             // Add unique message ID
             messageElement.setAttribute('data-message-id', `msg-${Date.now()}-${Math.floor(Math.random() * 1000)}`);
+            messageElement.setAttribute('data-category', typeToCategory[type] || 'system'); // Assign category for filtering
             if (agentId) {
                 messageElement.setAttribute('data-agent-id', agentId);
                 // Keep specific class for agent responses in conversation for potential specific styling

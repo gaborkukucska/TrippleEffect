@@ -253,6 +253,30 @@ class AgentWorkflowManager:
                         agent._last_system_prompt_state = None  # Force fresh prompt generation after history clear
                         logger.info(f"WorkflowManager: Cleared history for PM agent '{agent.agent_id}' upon entering state '{requested_state}'.")
 
+                    # --- PM AUDIT ATTEMPT TRACKING & CIRCUIT BREAKER ---
+                    if requested_state == PM_STATE_AUDIT:
+                        if not hasattr(agent, '_pm_audit_attempt_count'):
+                            agent._pm_audit_attempt_count = 0
+                        agent._pm_audit_attempt_count += 1
+                        
+                        if agent._pm_audit_attempt_count > 2:
+                            logger.warning(f"WorkflowManager: PM '{agent.agent_id}' has attempted audit {agent._pm_audit_attempt_count} times. Injecting warning about repeated audits.")
+                            agent.message_history.append({
+                                "role": "system",
+                                "content": (
+                                    f"[Framework Warning]: This is your audit attempt #{agent._pm_audit_attempt_count}. "
+                                    "You have already audited this project multiple times. If tasks are still pending, "
+                                    "you should focus on managing workers to complete them rather than re-auditing. "
+                                    "Use list_tasks to check the ACTUAL task database first."
+                                )
+                            })
+                        
+                        # Clear history on audit entry for clean context (same as build_team_tasks)
+                        agent.clear_history()
+                        agent._last_system_prompt_state = None
+                        logger.info(f"WorkflowManager: Cleared history for PM agent '{agent.agent_id}' upon entering state 'pm_audit' (attempt #{agent._pm_audit_attempt_count}).")
+                    # --- END AUDIT TRACKING ---
+
                     # --- DELIVERY OF QUEUED MESSAGES ---
                     if requested_state in [PM_STATE_MANAGE, PM_STATE_STANDBY, PM_STATE_REPORT_CHECK, PM_STATE_AUDIT]:
                         if hasattr(agent, 'message_inbox') and agent.message_inbox:

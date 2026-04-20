@@ -239,7 +239,16 @@ class GitHubTool(BaseTool):
         logger.info(f"Agent {agent_id} attempting GitHub action '{action}' (Target: {repo_full_name_or_username}, Path: {path}, Ref: {ref}, Recursive: {recursive})")
 
         if not action or action not in ["list_repos", "list_files", "read_file"]:
-            return {"status": "error", "message": "Invalid or missing 'action'. Must be 'list_repos', 'list_files', or 'read_file'."}
+            error_msg = (
+                f"Error: Invalid or missing 'action'. You must specify a valid action inside the XML block.\n"
+                f"Make sure you are using the correct XML format. For example:\n"
+                f"<github_tool>\n"
+                f"  <action>list_files</action>\n"
+                f"  <repo_full_name>octocat/Spoon-Knife</repo_full_name>\n"
+                f"</github_tool>\n\n"
+                f"Valid actions are: 'list_repos', 'list_files', 'read_file'."
+            )
+            return {"status": "error", "message": error_msg}
 
         try:
             if action == "list_repos":
