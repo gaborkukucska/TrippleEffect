@@ -16,8 +16,9 @@ class SendMessageTool(BaseTool):
     auth_level: str = "worker" # Accessible by all
     summary: Optional[str] = "Sends a message to another specified agent."
     description: str = (
-        "Sends a message to a specified teammate agent. "
-        "Use this to ask questions, delegate tasks, provide information, or request reviews from agents listed in your system prompt."
+        "Sends a message to any agent on your team or project. "
+        "Use this to ask questions, delegate tasks, provide information, request reviews, or coordinate with peer workers. "
+        "Workers can message other workers directly — you do not need to go through the PM for peer coordination."
     )
     parameters: List[ToolParameter] = [
         ToolParameter(
@@ -102,24 +103,36 @@ class SendMessageTool(BaseTool):
         usage = """
         **Tool Name:** send_message
 
-        **Description:** Sends a message to another agent. Used for delegation, asking questions, providing information, or reporting results.
+        **Description:** Sends a message to another agent. Used for delegation, asking questions, providing information, reporting results, or **coordinating directly with peer workers**.
+
+        **Who can I message?**
+        *   Your **Project Manager (PM)** — for status reports, questions, and task completion.
+        *   **Other workers on your team** — for direct coordination, asking for help, sharing context, or requesting reviews. You do NOT need to go through the PM to talk to peers.
 
         **Parameters:**
 
         *   `<target_agent_id>` (string, required): The unique ID of the agent to send the message to.
-            *   **CRITICAL:** Use the exact agent ID (e.g., `agent_17..._abc`, `admin_ai`) obtained from `ManageTeamTool` (`create_agent` feedback or `list_agents`). Using personas might fail if not unique.
+            *   **CRITICAL:** Use the exact agent ID (e.g., `W1`, `W2`, `PM_1`, `admin_ai`) obtained from `ManageTeamTool` (`create_agent` feedback or `list_agents`). Using personas might fail if not unique.
         *   `<message_content>` (string, required): The content of the message to send.
             *   **IMPORTANT:** For large outputs (code, reports), use the `file_system` tool to write the content to a file first, then use `send_message` to notify the recipient about the file (`filename` and `scope`). Do not include large content directly in the message.
 
-        **Example:**
+        **Example (messaging PM):**
         ```xml
         <send_message>
-          <target_agent_id>agent_coder_123</target_agent_id>
-          <message_content>Please review the code in shared workspace file 'src/utils.py' and provide feedback.</message_content>
+          <target_agent_id>PM_1</target_agent_id>
+          <message_content>Task T5 is complete. The server module has been implemented at src/server.py.</message_content>
+        </send_message>
+        ```
+
+        **Example (messaging a peer worker):**
+        ```xml
+        <send_message>
+          <target_agent_id>W2</target_agent_id>
+          <message_content>I've finished the database schema. You can now start implementing the API endpoints that depend on it.</message_content>
         </send_message>
         ```
 
         **Reporting Task Completion:**
-        After completing your assigned task, your **final action** MUST be to use this tool to report completion and results (or file location) back to the agent who assigned the task (usually `admin_ai`). Stop generating output after sending this final message.
+        After completing your assigned task, your **final action** MUST be to use this tool to report completion and results (or file location) back to the agent who assigned the task (usually the PM). Stop generating output after sending this final message.
         """
         return usage.strip()

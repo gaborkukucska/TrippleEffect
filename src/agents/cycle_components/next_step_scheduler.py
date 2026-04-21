@@ -187,6 +187,28 @@ class NextStepScheduler:
             # This logic ensures that if an agent in a persistent state completes a cycle
             # without error and without requesting a state change, it gets reactivated.
             elif (agent.agent_type, agent.state) in persistent_states and not context.state_change_requested_this_cycle:
+                # Track consecutive failed cycles for workers to prevent infinite stagnation
+                if agent.agent_type == AGENT_TYPE_WORKER and agent.state == WORKER_STATE_WORK:
+                    if not context.executed_tool_successfully_this_cycle and context.action_taken_this_cycle:
+                        current_failures = getattr(agent, '_consecutive_failed_cycles', 0)
+                        setattr(agent, '_consecutive_failed_cycles', current_failures + 1)
+                    elif context.executed_tool_successfully_this_cycle:
+                        setattr(agent, '_consecutive_failed_cycles', 0)
+                        
+                    if getattr(agent, '_consecutive_failed_cycles', 0) >= 3:
+                        logger.critical(f"NextStepScheduler: Worker '{agent_id}' had {getattr(agent, '_consecutive_failed_cycles')} consecutive failed cycles. FORCING transition to report state.")
+                        if hasattr(self._manager, 'workflow_manager'):
+                            self._manager.workflow_manager.change_state(agent, WORKER_STATE_REPORT)
+                            setattr(agent, '_consecutive_failed_cycles', 0)
+                            override_msg = "[EMERGENCY SYSTEM OVERRIDE]: You have failed to execute tools successfully for 3 consecutive cycles. The framework has automatically transitioned you to the 'worker_report' state. You MUST now summarize the issues you encountered and report back to the PM."
+                            agent.message_history.append({"role": "system", "content": override_msg})
+                            if self._manager and hasattr(self._manager, 'db_manager') and self._manager.current_session_db_id:
+                                asyncio.create_task(self._manager.db_manager.log_interaction(session_id=self._manager.current_session_db_id, agent_id=agent.agent_id, role="system_emergency_override", content=override_msg))
+                            agent.set_status(AGENT_STATUS_IDLE)
+                            await self._schedule_new_cycle(agent, 0)
+                            self._log_end_of_schedule_next_step(agent, "Path B-Worker-Failure-Override")
+                            return
+
                 # Add loop detection for all persistent states to prevent infinite stagnation
                 is_stuck_in_loop = getattr(agent, '_duplicate_tool_call_count', 0) >= 2
                 if not is_stuck_in_loop and self._detect_tool_execution_loops(agent):

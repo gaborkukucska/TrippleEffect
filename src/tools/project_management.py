@@ -178,9 +178,12 @@ class ProjectManagementTool(BaseTool):
             "finish": "complete_task",
             "mark_complete": "complete_task",
             "mark_completed": "complete_task",
+            "mark_task_complete": "complete_task",
+            "mark_task_finished": "complete_task",
             "complete": "complete_task",
             "task_complete": "complete_task",
             "get_task": "list_tasks",
+            "get_task_list": "list_tasks",
             "get": "list_tasks",
             "task_list": "list_tasks",
             "list_sub_tasks": "list_tasks",
@@ -374,7 +377,7 @@ class ProjectManagementTool(BaseTool):
                     task['depends'] = resolved_deps
                     logger.info(f"ProjectManagementTool: Set {len(resolved_deps)} dependencies for task.")
 
-            # --- AUTO-LINK DEPENDENCY FOR DECOMPOSE STATE ---
+            # --- DECOMPOSE STATE: Tag parent as decomposed (keep pending) ---
             manager = kwargs.get("manager")
             if manager:
                 agent = manager.agents.get(agent_id)
@@ -384,31 +387,24 @@ class ProjectManagementTool(BaseTool):
                         parent_is_uuid = bool(re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', parent_task_id, re.IGNORECASE))
                         parent_task = tw.tasks.get(uuid=parent_task_id) if parent_is_uuid else tw.tasks.get(id=int(parent_task_id))
                         
-                        if 'depends' not in task or task['depends'] is None:
-                            task['depends'] = set()
+                        # Tag the sub-task with parent UUID for traceability (no dependency link)
+                        existing_sub_tags = list(task['tags']) if 'tags' in task and task['tags'] else []
+                        existing_sub_tags.append(f"parent:{parent_task['uuid']}")
+                        task['tags'] = list(set(existing_sub_tags))
                         
-                        task['depends'].add(parent_task)
-                        
-                        # --- FIX: Mark parent task as COMPLETED after decomposition ---
-                        # The parent task is now broken into sub-tasks. Mark it as completed
-                        # so the PM doesn't see it as active work. The PM should focus on
-                        # the resulting sub-tasks instead.
-                        parent_task['task_progress'] = 'completed'
+                        # Mark parent as decomposed but keep it PENDING.
+                        # Do NOT call .done() — other tasks may depend on this parent,
+                        # and completing it prematurely would unblock them before the
+                        # actual work (sub-tasks) is finished.
+                        # The parent will be auto-completed when all sub-tasks finish.
+                        parent_task['task_progress'] = 'decomposed'
                         existing_tags = list(parent_task['tags']) if 'tags' in parent_task and parent_task['tags'] else []
                         parent_task['tags'] = list(set(existing_tags + ['decomposed']))
+                        parent_task.save()
                         
-                        # Complete the parent task in Taskwarrior
-                        try:
-                            parent_task.done()
-                            logger.info(f"ProjectManagementTool: Parent task '{parent_task_id}' marked as COMPLETED (decomposed into sub-tasks).")
-                        except Exception as done_err:
-                            # Fallback: just save with completed progress if .done() fails
-                            parent_task.save()
-                            logger.warning(f"ProjectManagementTool: Could not call .done() on parent task '{parent_task_id}': {done_err}. Saved with 'completed' progress instead.")
-                        
-                        logger.info(f"ProjectManagementTool: Auto-linked new sub-task to parent task '{parent_task_id}'. Parent task completed after decomposition.")
+                        logger.info(f"ProjectManagementTool: Parent task '{parent_task_id}' marked as DECOMPOSED (stays pending). Sub-task tagged with parent UUID for traceability.")
                     except Exception as e:
-                        logger.warning(f"ProjectManagementTool: Failed to auto-link parent task '{agent.current_task_id}': {e}")
+                        logger.warning(f"ProjectManagementTool: Failed to tag parent task '{agent.current_task_id}' as decomposed: {e}")
             # ------------------------------------------------
 
             try:
@@ -547,6 +543,7 @@ class ProjectManagementTool(BaseTool):
             
             # Create a truly minimal output format replacing low-fi status with descriptive task_progress
             minimal_task_list = []
+            decomposed_hidden_count = 0
             for task in tasks:
                 try:
                     t_prog = task['task_progress']
@@ -560,6 +557,13 @@ class ProjectManagementTool(BaseTool):
                     except KeyError:
                         t_status = None
                     t_prog = "finished" if t_status == "completed" else "todo"
+                
+                # Auto-hide decomposed parent tasks from default queries.
+                # These are shell tasks that have been broken into sub-tasks;
+                # showing them to the PM causes confusion and reassignment loops.
+                if t_prog == 'decomposed':
+                    decomposed_hidden_count += 1
+                    continue
                     
                 minimal_task_list.append({
                     "uuid": task['uuid'], 
@@ -568,7 +572,12 @@ class ProjectManagementTool(BaseTool):
                     "assignee": task['assignee'] if task['assignee'] is not None else None,
                     "depends": [t['uuid'] for t in (task['depends'] if task['depends'] is not None else [])]
                 })
-            return {"status": "success", "message": f"Found {len(minimal_task_list)} task(s). ({completed_count} completed tasks are hidden by default).", "tasks": minimal_task_list}
+            
+            hidden_note = f" ({completed_count} completed"
+            if decomposed_hidden_count > 0:
+                hidden_note += f", {decomposed_hidden_count} decomposed"
+            hidden_note += " tasks hidden by default)."
+            return {"status": "success", "message": f"Found {len(minimal_task_list)} task(s).{hidden_note}", "tasks": minimal_task_list}
 
     async def _execute_modify_task(self, tw, aliases, project_name, session_name, agent_id, kwargs):
             task_id = kwargs.get("task_id") or kwargs.get("task_uuid")
@@ -658,6 +667,45 @@ class ProjectManagementTool(BaseTool):
                     "message": f"Task '{task_id}' not found. Note that integer IDs shift as tasks are completed, and UUIDs must be exact. Detail: {e}",
                     "suggestion": "IMPORTANT: You should run <project_management><action>list_tasks</action></project_management> to get the current list of tasks and their valid IDs/UUIDs."
                 }
+
+            # --- GUARD: Block modification of decomposed tasks ---
+            try:
+                current_task_progress = task['task_progress']
+            except (KeyError, AttributeError):
+                current_task_progress = None
+            
+            task_tags = list(task['tags']) if 'tags' in task and task['tags'] else []
+            is_decomposed = current_task_progress == 'decomposed' or 'decomposed' in task_tags
+            
+            if is_decomposed:
+                # Find sub-tasks that reference this parent
+                parent_uuid = task['uuid']
+                sub_tasks = []
+                try:
+                    for t in tw.tasks.pending():
+                        t_tags = list(t['tags']) if 'tags' in t and t['tags'] else []
+                        if f"parent:{parent_uuid}" in t_tags:
+                            sub_tasks.append({"uuid": t['uuid'], "description": t['description'], "task_progress": t.get('task_progress', 'todo')})
+                except Exception:
+                    pass
+                
+                sub_task_summary = ""
+                if sub_tasks:
+                    sub_task_summary = "\n\nSub-tasks derived from this parent:\n" + "\n".join(
+                        f"  - [{st['task_progress']}] {st['description']} (UUID: {st['uuid']})" for st in sub_tasks
+                    )
+                
+                return {
+                    "status": "error",
+                    "message": (
+                        f"Task '{task_id}' has been DECOMPOSED into sub-tasks and cannot be modified or reassigned. "
+                        f"This is a parent shell task — the actual work lives in the sub-tasks below. "
+                        f"Please manage, assign, or complete the sub-tasks instead. "
+                        f"The parent will be automatically completed by the framework when all sub-tasks are finished."
+                        f"{sub_task_summary}"
+                    )
+                }
+            # --- END GUARD ---
 
             # Validate task_progress or legacy status if provided
             if "task_progress" in kwargs or "status" in kwargs:
@@ -837,6 +885,43 @@ class ProjectManagementTool(BaseTool):
                     "suggestion": "IMPORTANT: You should run <project_management><action>list_tasks</action></project_management> to get the current list of tasks and their valid IDs/UUIDs."
                 }
 
+            # --- GUARD: Block direct completion of decomposed tasks ---
+            try:
+                current_task_progress = task['task_progress']
+            except (KeyError, AttributeError):
+                current_task_progress = None
+            
+            task_tags = list(task['tags']) if 'tags' in task and task['tags'] else []
+            is_decomposed = current_task_progress == 'decomposed' or 'decomposed' in task_tags
+            
+            if is_decomposed:
+                parent_uuid = task['uuid']
+                sub_tasks = []
+                try:
+                    for t in tw.tasks.pending():
+                        t_tags = list(t['tags']) if 'tags' in t and t['tags'] else []
+                        if f"parent:{parent_uuid}" in t_tags:
+                            sub_tasks.append({"uuid": t['uuid'], "description": t['description'], "task_progress": t.get('task_progress', 'todo')})
+                except Exception:
+                    pass
+                
+                sub_task_summary = ""
+                if sub_tasks:
+                    sub_task_summary = "\n\nPending sub-tasks that must be completed first:\n" + "\n".join(
+                        f"  - [{st['task_progress']}] {st['description']} (UUID: {st['uuid']})" for st in sub_tasks
+                    )
+                
+                return {
+                    "status": "error",
+                    "message": (
+                        f"Task '{task_id}' is a DECOMPOSED parent task and cannot be directly completed. "
+                        f"You must complete all its sub-tasks first. "
+                        f"The framework will automatically mark this parent as finished once all sub-tasks are done."
+                        f"{sub_task_summary}"
+                    )
+                }
+            # --- END GUARD ---
+
             try:
                 is_dry_run = str(kwargs.get("dry_run")).lower() == "true"
                 if not is_dry_run:
@@ -844,6 +929,60 @@ class ProjectManagementTool(BaseTool):
                     task['task_progress'] = "finished"
                     task.save()
                     asyncio.create_task(broadcast(json.dumps({"type": "project_tasks_updated", "project_name": project_name, "session_name": session_name})))
+                    
+                    # --- AUTO-COMPLETE DECOMPOSED PARENT ---
+                    # Check if this completed task is a sub-task of a decomposed parent.
+                    # If ALL sibling sub-tasks are now finished, auto-complete the parent.
+                    completed_uuid = task['uuid']
+                    parent_uuid_tag = None
+                    for tag in task_tags:
+                        if tag.startswith('parent:'):
+                            parent_uuid_tag = tag[len('parent:'):]
+                            break
+                    
+                    if parent_uuid_tag:
+                        try:
+                            parent_task = tw.tasks.get(uuid=parent_uuid_tag)
+                            parent_progress = None
+                            try:
+                                parent_progress = parent_task['task_progress']
+                            except (KeyError, AttributeError):
+                                pass
+                            
+                            if parent_progress == 'decomposed':
+                                # Find all sibling sub-tasks
+                                all_siblings_done = True
+                                sibling_count = 0
+                                for t in tw.tasks.all():
+                                    t_tags_check = list(t['tags']) if 'tags' in t and t['tags'] else []
+                                    if f"parent:{parent_uuid_tag}" in t_tags_check:
+                                        sibling_count += 1
+                                        t_status = None
+                                        try:
+                                            t_status = t['status']
+                                        except (KeyError, AttributeError):
+                                            pass
+                                        t_prog = None
+                                        try:
+                                            t_prog = t['task_progress']
+                                        except (KeyError, AttributeError):
+                                            pass
+                                        if t_status != 'completed' and t_prog not in ('finished',):
+                                            all_siblings_done = False
+                                            break
+                                
+                                if all_siblings_done and sibling_count > 0:
+                                    parent_task['task_progress'] = 'finished'
+                                    try:
+                                        parent_task.done()
+                                    except Exception:
+                                        pass
+                                    parent_task.save()
+                                    logger.info(f"ProjectManagementTool: Auto-completed decomposed parent task '{parent_uuid_tag}' — all {sibling_count} sub-tasks are finished.")
+                                    asyncio.create_task(broadcast(json.dumps({"type": "project_tasks_updated", "project_name": project_name, "session_name": session_name})))
+                        except Exception as parent_err:
+                            logger.warning(f"ProjectManagementTool: Failed to check/auto-complete parent '{parent_uuid_tag}': {parent_err}")
+                    # --- END AUTO-COMPLETE ---
                 else:
                     logger.info("ProjectManagementTool: 'complete_task' dry_run succeeded. Database not modified.")
             except Exception as e:

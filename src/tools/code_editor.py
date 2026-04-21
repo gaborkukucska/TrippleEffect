@@ -61,6 +61,10 @@ class CodeEditorTool(BaseTool):
     ) -> Dict[str, Any]:
         
         action = kwargs.get("action")
+        # Handle aliases
+        if action in ["replace", "edit", "modify", "replace_chunk"]:
+            action = "replace_chunks"
+            
         if action != "replace_chunks":
             return {"status": "error", "message": "Only 'replace_chunks' action is supported."}
             
@@ -132,45 +136,30 @@ class CodeEditorTool(BaseTool):
                 
                 occurrences = content.count(search_text)
                 if occurrences == 0:
-                    # Tier 2: Whitespace and indentation agnostic match
-                    search_lines_clean = [l.strip() for l in search_text.splitlines() if l.strip()]
-                    if not search_lines_clean:
+                    import re
+                    # Try regex match ignoring all whitespace
+                    pieces = [re.escape(p) for p in search_text.split() if p]
+                    if not pieces:
                         errors.append(f"Chunk {idx}: Search text is empty or only whitespace.")
                         continue
                         
-                    file_lines = content.splitlines(keepends=True)
-                    matched_spans = []
+                    regex_pattern = r'\s*'.join(pieces)
+                    matches = list(re.finditer(regex_pattern, content))
                     
-                    for i in range(len(file_lines)):
-                        if file_lines[i].strip() == search_lines_clean[0]:
-                            # Potential start, check subsequent non-empty lines
-                            match_idx = 1
-                            curr_idx = i + 1
-                            while match_idx < len(search_lines_clean) and curr_idx < len(file_lines):
-                                if not file_lines[curr_idx].strip():
-                                    curr_idx += 1
-                                    continue
-                                if file_lines[curr_idx].strip() == search_lines_clean[match_idx]:
-                                    match_idx += 1
-                                    curr_idx += 1
-                                else:
-                                    break
-                            
-                            if match_idx == len(search_lines_clean):
-                                matched_spans.append((i, curr_idx - 1))
-                                
-                    if len(matched_spans) == 1:
-                        start_idx, end_idx = matched_spans[0]
-                        before = "".join(file_lines[:start_idx])
-                        after = "".join(file_lines[end_idx + 1:])
+                    if len(matches) == 1:
+                        match = matches[0]
+                        before = content[:match.start()]
+                        after = content[match.end():]
+                        
                         replacement = replace_text
-                        if not replacement.endswith('\n') and after:
+                        if not replacement.endswith('\n') and after and not after.startswith('\n'):
                             replacement += '\n'
+                            
                         content = before + replacement + after
                         successful += 1
                         continue
-                    elif len(matched_spans) > 1:
-                        errors.append(f"Chunk {idx}: Search text is ambiguous (found {len(matched_spans)} times ignoring whitespace).")
+                    elif len(matches) > 1:
+                        errors.append(f"Chunk {idx}: Search text is ambiguous (found {len(matches)} times ignoring whitespace).")
                         continue
                             
                     # Provide fuzzy match attempt context
@@ -211,24 +200,27 @@ class CodeEditorTool(BaseTool):
         *   **scope:** (string, optional) - Target scope ('private', 'shared', or 'projects').
 
         **Example:**
-        ```json
-        {
-            "action": "replace_chunks",
-            "filename": "src/main.py",
-            "chunks": [
-                {
-                    "search": "def old_function():\\n    print('A')",
-                    "replace": "def new_function():\\n    print('B')"
-                },
-                {
-                    "search": "x = 10",
-                    "replace": "x = 20"
-                }
-            ]
-        }
+        ```xml
+        <code_editor>
+            <action>replace_chunks</action>
+            <filename>src/main.py</filename>
+            <chunks>
+                [
+                    {
+                        "search": "def old_function():\n    print('A')",
+                        "replace": "def new_function():\n    print('B')"
+                    },
+                    {
+                        "search": "x = 10",
+                        "replace": "x = 20"
+                    }
+                ]
+            </chunks>
+        </code_editor>
         ```
         Important Notes:
-        - The `search` block must exactly match existing content (including whitespace/indentation) exactly ONCE.
-        - If a search string appears multiple times or zero times, the entire tool call is atomically rejected and no changes are written.
+        - The `chunks` parameter MUST be a valid JSON array of objects inside the XML tag.
+        - The `search` block must match existing content exactly ONCE (including whitespace/indentation).
+        - If a search string appears multiple times or zero times, the entire tool call is rejected.
         """
         return usage.strip()

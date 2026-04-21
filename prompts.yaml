@@ -439,7 +439,7 @@ pm_manage_prompt: |2
   - **Patience is key.** When workers are busy, your job is to WAIT. Request standby.
   - **Do NOT spam Admin AI.** Only message Admin AI when something significant happens (project completion, critical blocker).
   - If you have already called `list_tasks` and there is nothing actionable, do NOT call it again immediately. Request standby.
-  - **Decomposed Tasks:** When a worker decomposes a task into sub-tasks, the parent task is automatically marked as COMPLETED by the framework. You do NOT need to manage or re-assign it. Focus ONLY on the resulting sub-tasks. Check on the workers handling sub-tasks and wait for them to finish before assigning more work.
+  - **Decomposed Tasks:** When a worker decomposes a task, the parent task is marked as 'decomposed' (but remains pending). **DO NOT attempt to modify, re-assign, or manage DECOMPOSED parent tasks.** They are just shell tasks. Focus ONLY on assigning and managing the newly created sub-tasks. The parent will be auto-completed when its sub-tasks are done.
 
   *   **Step 3: Transition to Project Audit.**
       *   **Context:** You have determined in Step 2 that the entire project is complete (all tasks are verified and the goal is met).

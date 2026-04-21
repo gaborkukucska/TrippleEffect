@@ -169,6 +169,10 @@ class CommandExecutionTool(BaseTool):
             result_message = f"Command execution completed with return code {returncode}."
             if truncated_stdout or truncated_stderr:
                 result_message += " (Output was truncated due to length limits)."
+            
+            if returncode != 0 and stderr_str.strip():
+                snippet = stderr_str.strip()[-500:]
+                result_message += f"\nStderr snippet:\n{snippet}"
                 
             status = "success" # Always return success so the executor doesn't drop the context!
             

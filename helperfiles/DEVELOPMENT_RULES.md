@@ -10,5 +10,5 @@
 * Unless you've received other specific tasks, follow a phased implementation as outlined in the `helperfiles/PROJECT_PLAN.md` file.
 * Maintain `README.md`, `helperfiles/PROJECT_PLAN.md` (update status) updating it at the end of every milestone.
 * Write the location and name of every file in its first line like `<!-- # START OF FILE subfolder/file_name.extension -->`.
-* Whenever available use the log files to find clues. These files might be very large so first search them for warnings, errors or other specific strings, then use the time stamps to find more detailed debug logs around those times.**
-* Keep ALL test and help functions that you might need to create during your work in the `tests/` directory.  Name them clearly and use them in your analysis and to verify your changes.
+* Whenever available use the log files you find in the `logs/` folder to find clues. These files might be very large so first search them for warnings, errors or other specific strings, then use the time stamps to find more detailed debug logs around those times.
+* Keep ALL test and help functions that you might need to create during your work in the `tests/` directory. Name them clearly and use them in your analysis and to verify your changes.

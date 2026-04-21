@@ -467,6 +467,21 @@ class AgentInteractionHandler:
                 )
                 raw_result = handler_result
                 result_content = json.dumps(raw_result, indent=2)
+            # --- START FIX: Break PM Decomposed Task Loop ---
+            elif tool_name == ProjectManagementTool.name and isinstance(raw_result, dict) and raw_result.get("status") == "error" and "has been DECOMPOSED" in raw_result.get("message", ""):
+                logger.critical(f"InteractionHandler: Intercepting DECOMPOSED error for '{agent.agent_id}'. Forcing history truncation to break loop.")
+                # The PM gets stuck repeatedly trying to assign decomposed tasks because the old UUID
+                # is deeply embedded in its recent context window. We must perform a hard truncation.
+                history_len = len(agent.message_history)
+                if history_len > 4:
+                    # Drop the last 4 messages to purge the invalid UUID from its short-term memory
+                    agent.message_history = agent.message_history[:-4]
+                    logger.info(f"InteractionHandler: Dropped 4 messages from '{agent.agent_id}' history (was {history_len}, now {len(agent.message_history)}).")
+                
+                # Append a massive system override to the returned error to jolt it into running list_tasks
+                override_text = "\n\n[EMERGENCY SYSTEM OVERRIDE]: You were stuck in a loop trying to assign a parent task. Your short-term memory has been purged. You MUST run a fresh <project_management><action>list_tasks</action></project_management> right now to see the actual sub-tasks you need to assign."
+                raw_result["message"] = raw_result["message"] + override_text
+                result_content = json.dumps(raw_result, indent=2)
             # --- END MODIFIED ---
             elif isinstance(raw_result, str):
                 result_content = raw_result

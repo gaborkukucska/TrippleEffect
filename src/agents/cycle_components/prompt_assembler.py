@@ -378,16 +378,17 @@ class PromptAssembler:
 
             # 3.7 Report-state safety check: remind worker of unread messages before reporting
             if agent.agent_type == AGENT_TYPE_WORKER and agent.state == WORKER_STATE_REPORT and unread_messages:
-                agent._report_safety_check_count = getattr(agent, '_report_safety_check_count', 0) + 1
-                if agent._report_safety_check_count > 3:
+                current_count = getattr(agent, '_report_safety_check_count', 0)
+                setattr(agent, '_report_safety_check_count', current_count + 1)
+                if getattr(agent, '_report_safety_check_count', 0) > 3:
                     if not getattr(agent, 'read_message_ids', None):
                         agent.read_message_ids = set()
                     agent.read_message_ids.update(unread_messages)
                     logger.warning(f"Auto-marking {len(unread_messages)} messages as read for '{agent.agent_id}' after 3 failed safety check cycles to break loop.")
                     unread_messages = []
-                    agent._report_safety_check_count = 0
+                    setattr(agent, '_report_safety_check_count', 0)
             else:
-                agent._report_safety_check_count = 0
+                setattr(agent, '_report_safety_check_count', 0)
                 
             if agent.agent_type == AGENT_TYPE_WORKER and agent.state == WORKER_STATE_REPORT and unread_messages:
                 safety_msg = (
@@ -401,6 +402,42 @@ class PromptAssembler:
                 safety_system_msg: MessageDict = {"role": "system", "content": safety_msg}
                 history_for_call.append(safety_system_msg)
                 logger.info(f"Injected report safety check for worker '{agent.agent_id}' with {len(unread_messages)} unread messages.")
+
+            # 3.8 Task Reminder Pin for workers in work state
+            if agent.agent_type == AGENT_TYPE_WORKER and agent.state == WORKER_STATE_WORK and len(history_for_call) > 8:
+                active_task_id = getattr(agent, 'active_task_id', None)
+                if active_task_id:
+                    try:
+                        from src.tools.project_management import ProjectManagementTool, TASKLIB_AVAILABLE
+                        if TASKLIB_AVAILABLE:
+                            pm_tool = ProjectManagementTool()
+                            proj_name = self._manager.current_project or ""
+                            sess_name = self._manager.current_session or ""
+                            tw = pm_tool._get_taskwarrior_instance(proj_name, sess_name)
+                            if tw:
+                                aliases = pm_tool._load_aliases(proj_name, sess_name)
+                                resolved_id = str(active_task_id).strip()
+                                if resolved_id in aliases:
+                                    resolved_id = aliases[resolved_id]
+                                task = None
+                                if '-' in resolved_id and len(resolved_id) > 10:
+                                    task = tw.tasks.get(uuid=resolved_id)
+                                elif resolved_id.isdigit():
+                                    task = tw.tasks.get(id=int(resolved_id))
+                                
+                                if task:
+                                    desc = task['description']
+                                    reminder_msg = (
+                                        f"[TASK FOCUS REMINDER - IMPORTANT]\n"
+                                        f"You are currently working on task_id: {active_task_id}\n"
+                                        f"Goal: {desc}\n"
+                                        f"Please review your recent tool results above and take the next concrete step to complete this task.\n"
+                                        f"If the task is complete, use the <request_state state='worker_report'/> tag."
+                                    )
+                                    history_for_call.append({"role": "system", "content": reminder_msg})
+                                    logger.debug(f"Injected task reminder pin for worker '{agent.agent_id}'.")
+                    except Exception as e:
+                        logger.warning(f"PromptAssembler: Failed to fetch task for reminder pin: {e}")
 
         context.history_for_call = history_for_call
 

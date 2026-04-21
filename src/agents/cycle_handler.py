@@ -78,9 +78,27 @@ class AgentCycleHandler:
         resolved = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state)
         if resolved != WORKER_STATE_WORK:
             return
+            
+        if not hasattr(self, '_missing_task_id_counts'):
+            self._missing_task_id_counts = {}
 
         if not task_id:
-            raise ValueError(f"You MUST specify a 'task_id' parameter when transitioning to '{WORKER_STATE_WORK}' state.\nIf you do not know your task_id:\n1. Check previous tool responses if you just created the task.\n2. Otherwise, use the project_management tool with action='list_tasks' to find the correct ID.\nThen retry with the attribute: <request_state state='worker_work' task_id='THE_ID'/>.")
+            count = self._missing_task_id_counts.get(agent.agent_id, 0) + 1
+            self._missing_task_id_counts[agent.agent_id] = count
+
+            if count >= 2:
+                inferred_task_id = self._infer_worker_task(agent.agent_id)
+                if inferred_task_id:
+                    logger.warning(f"CycleHandler: Auto-inferred task '{inferred_task_id}' for worker '{agent.agent_id}' after multiple omissions.")
+                    task_id = inferred_task_id
+                    self._missing_task_id_counts[agent.agent_id] = 0
+                else:
+                    raise ValueError(f"You MUST specify a 'task_id' parameter when transitioning to '{WORKER_STATE_WORK}' state.\nIf you do not know your task_id:\n1. Check previous tool responses if you just created the task.\n2. Otherwise, use the project_management tool with action='list_tasks' to find the correct ID.\nThen retry with the attribute: <request_state state='worker_work' task_id='THE_ID'/>.")
+            else:
+                raise ValueError(f"You MUST specify a 'task_id' parameter when transitioning to '{WORKER_STATE_WORK}' state.\nIf you do not know your task_id:\n1. Check previous tool responses if you just created the task.\n2. Otherwise, use the project_management tool with action='list_tasks' to find the correct ID.\nThen retry with the attribute: <request_state state='worker_work' task_id='THE_ID'/>.")
+        else:
+            if hasattr(self, '_missing_task_id_counts'):
+                self._missing_task_id_counts[agent.agent_id] = 0
 
         agent.active_task_id = task_id
         logger.info(f"CycleHandler: Worker '{agent.agent_id}' set active_task_id='{task_id}' for work state transition.")
@@ -149,6 +167,35 @@ class AgentCycleHandler:
             raise # Re-raise validation error
         except Exception as e:
             logger.warning(f"CycleHandler: Error auto-updating task '{task_id}' to in_progress: {e}")
+
+    def _infer_worker_task(self, agent_id: str) -> Optional[str]:
+        try:
+            if self._manager.current_project and self._manager.current_session:
+                from src.tools.project_management import ProjectManagementTool, TASKLIB_AVAILABLE
+                if TASKLIB_AVAILABLE:
+                    pm_tool = ProjectManagementTool()
+                    tw = pm_tool._get_taskwarrior_instance(self._manager.current_project, self._manager.current_session)
+                    if tw:
+                        tasks = tw.tasks.filter(status="pending")
+                        for task in tasks:
+                            try:
+                                is_assigned = False
+                                if 'assignee' in task and task['assignee'] == agent_id:
+                                    is_assigned = True
+                                elif 'tags' in task and task['tags']:
+                                    tags = task['tags']
+                                    if 'assigned' in tags and (agent_id in tags or f"+{agent_id}" in tags):
+                                        is_assigned = True
+                                        
+                                if is_assigned:
+                                    progress = task.get('task_progress')
+                                    if progress in ['doing', 'in_progress', 'todo', 'pending', None]:
+                                        return str(task['uuid'])
+                            except Exception:
+                                pass
+        except Exception as e:
+            logger.warning(f"Failed to infer task for {agent_id}: {e}")
+        return None
 
     def _report_tool_execution_stats(self):
         """Report current tool execution statistics"""

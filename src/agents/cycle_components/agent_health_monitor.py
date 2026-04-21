@@ -469,6 +469,14 @@ class ConstitutionalGuardianHealthMonitor:
                 "action": "suggest_work_completion",
                 "completion_message": self._generate_work_completion_message(agent, history_analysis)
             })
+        elif agent.agent_type == AGENT_TYPE_WORKER:
+            recovery["actions"].append({
+                "action": "force_state_change",
+                "new_state": WORKER_STATE_WAIT
+            })
+            for action in recovery["actions"]:
+                if action["action"] == "inject_guidance":
+                    action["message"] += "\n\n[Framework Override]: You have been forcefully returned to the 'wait' state because you failed to provide meaningful responses. Please wait for your PM to reassign your task or provide guidance."
         
         return True, description, recovery
     
