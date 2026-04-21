@@ -474,4 +474,22 @@ This entirely breaks the LLM's autoregressive death spiral by physically moving 
 **Files:** `prompts.yaml`, `src/config/settings.py`, `src/tools/knowledge_base.py`, `src/agents/workflow_manager.py`, `src/agents/manager.py`
 
 ---
+
+#### Phase S: Worker Efficiency Upgrades (April 2026)
+
+**Problem 1 (Token Waste & Complex Editing Failures):** Workers heavily relied on the `file_system` tool's `search_replace_block` action to edit existing files, which frequently failed due to indentation tokenization issues and wasted context repeatedly reading full files.
+**Fix 1:** Promoted the dedicated `code_editor` tool across system prompts (`prompts.yaml`, `workflow_manager.py`). Modified `file_system.py` guardrails to actively reject full file overwrites (`write`) on existing files, explicitly redirecting agents to use the `<code_editor>` tool's `replace_chunks` action instead.
+
+**Problem 2 (Blind File Traversal for Code Discovery):** Agents wasted numerous cycles running `file_system.list` and `read` to manually discover where functions or variables were defined across the repository.
+**Fix 2:** Introduced the native `codebase_search` tool (`src/tools/codebase_search.py`), a wrapper around `grep` that allows agents to perform rapid, regex-capable codebase searches, dramatically reducing file navigation token consumption.
+
+**Problem 3 (Unverified Code Completion):** Agents frequently marked coding tasks as "finished" without verifying if the code actually compiled or ran, pushing broken code to the next workflow stage.
+**Fix 3:** Developed the `test_runner` tool (`src/tools/test_runner.py`), giving agents a sandboxed subprocess shell with a strict timeout (max 120s) to execute tests (e.g., `pytest`, `npm test`). Agents can now capture `stdout`/`stderr` to independently verify code correctness before task submission.
+
+**Problem 4 (Opaque Task Dependencies):** PMs struggled to understand complex task relationships because `depends` were just UUID strings in the database, leading to suboptimal task assignment ordering.
+**Fix 4:** Enhanced `project_management.py` with a `get_dependency_graph` action. The PM can now generate a `Mermaid.js` diagram of all pending tasks and their blocking relationships, providing instant visual clarity on the project's critical path.
+
+**Files:** `src/agents/workflow_manager.py`, `prompts.yaml`, `src/tools/file_system.py`, `src/tools/codebase_search.py`, `src/tools/test_runner.py`, `src/tools/project_management.py`
+
+---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

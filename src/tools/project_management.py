@@ -193,12 +193,12 @@ class ProjectManagementTool(BaseTool):
         if not action:
             return {
                 "status": "error", 
-                "message": "Missing required 'action' parameter. Must be one of: add_task, list_tasks, modify_task, complete_task.",
+                "message": "Missing required 'action' parameter. Must be one of: add_task, list_tasks, modify_task, complete_task, get_dependency_graph.",
                 "error_type": "missing_parameter",
-                "valid_actions": ["add_task", "list_tasks", "modify_task", "complete_task"]
+                "valid_actions": ["add_task", "list_tasks", "modify_task", "complete_task", "get_dependency_graph"]
             }
         
-        valid_actions = ["add_task", "list_tasks", "modify_task", "complete_task"]
+        valid_actions = ["add_task", "list_tasks", "modify_task", "complete_task", "get_dependency_graph"]
         if action not in valid_actions:
             if action in action_suggestions:
                 corrected_action = action_suggestions[action]
@@ -234,6 +234,8 @@ class ProjectManagementTool(BaseTool):
                 return await self._execute_modify_task(tw, aliases, project_name, session_name, agent_id, kwargs)
             elif action == "complete_task":
                 return await self._execute_complete_task(tw, aliases, project_name, session_name, kwargs)
+            elif action == "get_dependency_graph":
+                return await self._execute_get_dependency_graph(tw, kwargs)
             else:
                 return {"status": "error", "message": f"Unknown action: '{action}'."}
 
@@ -337,8 +339,14 @@ class ProjectManagementTool(BaseTool):
                 
             if kwargs.get("depends"): 
                 dep_val_raw = str(kwargs["depends"]).strip()
-                # Support comma-separated dependency lists (e.g. "task_1,task_2,task_3")
-                dep_items = [d.strip() for d in dep_val_raw.split(',') if d.strip()]
+                # Clean up common LLM hallucinations like list formatting '[]', '["task_1"]' or literal 'None'
+                dep_val_raw = dep_val_raw.replace('[', '').replace(']', '').replace('"', '').replace("'", "").strip()
+                if dep_val_raw.lower() in ['none', 'null', '']:
+                    dep_items = []
+                else:
+                    # Support comma-separated dependency lists (e.g. "task_1,task_2,task_3")
+                    dep_items = [d.strip() for d in dep_val_raw.split(',') if d.strip()]
+                
                 resolved_deps = set()
                 for dep_item in dep_items:
                     # Resolve aliases first
@@ -851,6 +859,57 @@ class ProjectManagementTool(BaseTool):
                 "dry_run": str(kwargs.get("dry_run")).lower() == "true"
             }
 
+    async def _execute_get_dependency_graph(self, tw, kwargs):
+        try:
+            tasks_query = tw.tasks.pending()
+            if kwargs.get("project_filter"): 
+                tasks_query = tasks_query.filter(project=kwargs["project_filter"])
+            
+            tasks = tasks_query.all()
+            
+            if not tasks:
+                return {"status": "success", "message": "No pending tasks found to graph.", "graph": "graph TD;\n  Empty[No pending tasks]"}
+
+            # Build Mermaid Graph
+            mermaid_lines = ["graph TD;"]
+            
+            # Create nodes
+            for t in tasks:
+                uuid_short = str(t['uuid'])[:8]
+                desc = str(t['description'] or "Unnamed Task").replace('"', "'")
+                assignee = t['assignee'] or "Unassigned"
+                
+                # Check for id, old tasks might not have it loaded in memory depending on tasklib 
+                t_id = "?"
+                try: t_id = t['id']
+                except Exception: pass
+                
+                mermaid_lines.append(f'  {uuid_short}["[{t_id}] {desc} ({assignee})"];')
+
+            # Create edges
+            for t in tasks:
+                t_uuid = str(t['uuid'])[:8]
+                if t['depends']:
+                    for dep in t['depends']:
+                        try:
+                            if isinstance(dep, str):
+                                dep_uuid = dep[:8]
+                            else:
+                                dep_uuid = str(dep['uuid'])[:8]
+                            mermaid_lines.append(f"  {dep_uuid} --> {t_uuid};")
+                        except Exception as dep_err:
+                            logger.warning(f"Error parsing dependency for graph: {dep_err}")
+
+            graph_output = "\n".join(mermaid_lines)
+            
+            return {
+                "status": "success",
+                "message": "Dependency graph generated successfully.",
+                "graph": graph_output
+            }
+        except Exception as e:
+            logger.error(f"Error generating dependency graph: {e}")
+            return {"status": "error", "message": f"Failed to generate dependency graph: {e}"}
 
     def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None, sub_action: Optional[str] = None) -> str:
         """Returns detailed usage instructions for the ProjectManagementTool."""
@@ -940,6 +999,17 @@ Marks a task as completely finished. Shortcut for `modify_task` with `task_progr
     </project_management>
     ```
 """
+        elif sub_action == "get_dependency_graph":
+            return common_header + """
+**Action: get_dependency_graph**
+Generates a Mermaid.js diagram illustrating the dependencies between all pending tasks.
+*   Example:
+    ```xml
+    <project_management>
+      <action>get_dependency_graph</action>
+    </project_management>
+    ```
+"""
 
         return common_header + """
 **Available Actions Summary:**
@@ -947,6 +1017,7 @@ Marks a task as completely finished. Shortcut for `modify_task` with `task_progr
 2.  **list_tasks:** Lists existing tasks.
 3.  **modify_task:** Modifies an existing task.
 4.  **complete_task:** Marks a task as completed.
+5.  **get_dependency_graph:** Returns a visual graph of task blocking relationships.
 
 **To get detailed instructions and parameter lists for a specific action, call:**
 <tool_information>

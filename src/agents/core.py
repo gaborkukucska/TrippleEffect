@@ -26,8 +26,8 @@ from src.agents.constants import (
     AGENT_STATUS_AWAITING_TOOL, AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_ERROR,
     AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER,
     ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK,
-    PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_AUDIT,
-    WORKER_STATE_STARTUP, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK, WORKER_STATE_WAIT,
+    PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_AUDIT, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_REPORT_CHECK,
+    WORKER_STATE_STARTUP, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK, WORKER_STATE_WAIT, WORKER_STATE_REPORT,
     DEFAULT_STATE
 )
 # --- END Import status and state constants ---
@@ -107,6 +107,7 @@ class Agent:
         self.text_buffer: str = ""
         self._pm_report_check_cycle_count: int = 0
         self._pm_audit_cycle_count: int = 0
+        self._pm_audit_attempt_count: int = 0
         safe_agent_id = self.agent_id if self.agent_id.startswith(("agent_", "pm_", "admin_")) else f"agent_{self.agent_id}"
         self.sandbox_path: Path = BASE_DIR / "sandboxes" / safe_agent_id
         self.raw_xml_tool_call_pattern = None
@@ -234,13 +235,18 @@ class Agent:
             tool_schemas = None
             if settings.NATIVE_TOOL_CALLING_ENABLED and self.manager and getattr(self.manager, 'tool_executor', None):
                 # Native tools should only be provided to states that expect interactive tool usage.
-                # States outputting structural XML (like startup, report_check) break if forced into tool-call mode.
-                if self.state in {ADMIN_STATE_WORK, ADMIN_STATE_CONVERSATION, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_AUDIT, WORKER_STATE_WORK, WORKER_STATE_DECOMPOSE}:
+                # States outputting purely structural XML (like startup) break if forced into tool-call mode.
+                if self.state in {ADMIN_STATE_WORK, ADMIN_STATE_CONVERSATION, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_AUDIT, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_REPORT_CHECK, WORKER_STATE_WORK, WORKER_STATE_DECOMPOSE, WORKER_STATE_REPORT}:
                     tool_schemas = []
                     for tool_name, tool in self.manager.tool_executor.tools.items():
-                        # Restrict WORKER_STATE_DECOMPOSE to only the project_management tool
-                        if self.agent_type == AGENT_TYPE_WORKER and self.state == WORKER_STATE_DECOMPOSE:
-                            if tool_name != 'project_management':
+                        # Restrict specific states to only the tools they actually need
+                        if self.agent_type == AGENT_TYPE_WORKER:
+                            if self.state == WORKER_STATE_DECOMPOSE and tool_name != 'project_management':
+                                continue
+                            if self.state == WORKER_STATE_REPORT and tool_name != 'send_message':
+                                continue
+                        elif self.agent_type == AGENT_TYPE_PM:
+                            if self.state == PM_STATE_BUILD_TEAM_TASKS and tool_name != 'manage_team':
                                 continue
                                 
                         # Apply standard auth checks for native tools

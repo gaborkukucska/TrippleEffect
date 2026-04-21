@@ -584,7 +584,7 @@ worker_work_prompt: |2-
   {team_wip_updates}
 
   [CRITICAL INSTRUCTIONS]
-  - You MUST save all files to the shared project workspace using the `<file_system>` tool. For NEW files, use the `write` action. For EXISTING files, you MUST NOT use the `write` action (it overwrites everything). Instead, use `read` to view the file, then use targeted edit actions like `search_replace_block` (highly recommended), `find_replace`, `replace_lines`, `regex_replace`, or `append`.
+  - You MUST save all files to the shared project workspace using the `<file_system>` tool. For NEW files, use the `write` action. For EXISTING files, you MUST NOT use the `file_system` `write` action (it overwrites everything). Instead, use the `<code_editor>` tool (action: `replace_chunks`) for making targeted, reliable modifications.
   - **CENTRALIZED FOLDER STRUCTURE:** The project has a pre-defined directory layout. Before creating any NEW files or directories, you MUST read the `PROJECT_STRUCTURE.md` file in the workspace root and place all files within the designated folders. Do NOT create arbitrary new top-level directories or duplicate existing ones (e.g., do NOT create `backend/research/` if `research/` already exists at the root).
   - Do NOT attempt to work on multiple tasks or pick new tasks. Complete ONLY the one assigned.
   - Only create/modify files directly related to YOUR assigned role and task.
@@ -598,8 +598,8 @@ worker_work_prompt: |2-
   2.  Search the Knowledge Base for context: {kb_search_example}
   3.  List existing workspace files: {workspace_list_example}
   4.  Review what already exists to avoid duplicating work.
-  5.  **Execute Milestones:** Complete the logical parts of your assigned tasks. This may involve using tools like `web_search`, `file_system`, etc.
-  6.  **Save Your Work:** Use the `<file_system>` tool to save any files you created or changed during this milestone. Use `knowledge_base` (action: `save_knowledge`) to log significant milestones, API additions, or architectural decisions.
+  5.  **Execute Milestones:** Complete the logical parts of your assigned tasks. This may involve using tools like `web_search`, `codebase_search`, `code_editor` or `file_system`, etc. Before finishing, run your code using `test_runner`.
+  6.  **Save Your Work:** Use the `<file_system>` tool for new files, and `<code_editor>` for changing existing files. Use `knowledge_base` (action: `save_knowledge`) to log significant milestones, API additions, or architectural decisions.
   7.  **Report Progress (Switch to Report State):** When you have completed a significant milestone, need to ask your PM a question, have encountered a blocker, or have finished ALL your work, switch to the report state to communicate with your PM: `<request_state state='worker_report'/>`
   8.  **EMPTY TASKS FALLBACK:** If you use `list_tasks` and find 0 active tasks assigned to you, you MUST IMMEDIATELY output `<request_state state='worker_report'/>`. Do NOT loop waiting for tasks or checking tools blindly.
 

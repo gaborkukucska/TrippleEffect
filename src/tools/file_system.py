@@ -920,7 +920,7 @@ Pushes changes to a remote repository.
             logger.warning(f"Agent {agent_id} attempted to overwrite existing file '{filename}'. Write rejected to strongly encourage find/replace targeted edits.")
             return {
                 "status": "error", 
-                "message": f"File '{filename}' already exists. Overwriting entire existing files using 'write' is disabled to save tokens and prevent accidental code loss. You MUST NOT call 'write' on this file again. Instead, please use 'read' (if you don't have the context) and then use targeted editing actions like 'search_replace_block', 'replace_lines', 'insert_lines', 'append', or 'find_replace' to modify it. If you absolutely need to recreate the file from scratch, you must call 'delete' first."
+                "message": f"File '{filename}' already exists. Overwriting entire existing files using the file_system 'write' action is disabled to save tokens and prevent accidental code loss. You MUST NOT call 'write' on this file again. Instead, please use the separate '<code_editor>' tool (action 'replace_chunks') to modify existing code. If you absolutely need to recreate the file from scratch, you must call 'delete' first."
             }
             
         try:

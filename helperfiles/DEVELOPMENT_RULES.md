@@ -1,11 +1,11 @@
 <!-- # START OF FILE helperfiles/DEVELOPMENT_RULES.md -->
 # Development Rules for LLMs and Other AI Systems
 
-# **IMPORTANT**
+## **IMPORTANT**
 
 **DO NOT** confuse parts of the TrippleEffect framework, especially contents of `prompts.json`, `governance.yaml` and similar files with the rules of your own system!!!
 
-# During development please follow these rules
+## During development please follow these rules
 
 * Unless you've received other specific tasks, follow a phased implementation as outlined in the `helperfiles/PROJECT_PLAN.md` file.
 * Maintain `README.md`, `helperfiles/PROJECT_PLAN.md` (update status) updating it at the end of every milestone.

@@ -247,16 +247,19 @@ class AgentWorkflowManager:
                     elif hasattr(agent, '_pm_needs_initial_list_tools'):
                         agent._pm_needs_initial_list_tools = False
 
-                    # Per user request, clear history when entering activate_workers or build_team_tasks states
-                    if requested_state in [PM_STATE_ACTIVATE_WORKERS, PM_STATE_BUILD_TEAM_TASKS]:
+                    # Clear history when entering activate_workers state for a clean start.
+                    # NOTE: Do NOT clear history for PM_STATE_BUILD_TEAM_TASKS here!
+                    # PMKickoffWorkflow injects the MASTER KICKOFF PLAN directive into 
+                    # message_history BEFORE returning WorkflowResult with next_agent_state=PM_STATE_BUILD_TEAM_TASKS.
+                    # Clearing history here would destroy that critical directive, leaving the PM
+                    # with no instructions on what roles/team to create.
+                    if requested_state == PM_STATE_ACTIVATE_WORKERS:
                         agent.clear_history()
                         agent._last_system_prompt_state = None  # Force fresh prompt generation after history clear
                         logger.info(f"WorkflowManager: Cleared history for PM agent '{agent.agent_id}' upon entering state '{requested_state}'.")
 
                     # --- PM AUDIT ATTEMPT TRACKING & CIRCUIT BREAKER ---
                     if requested_state == PM_STATE_AUDIT:
-                        if not hasattr(agent, '_pm_audit_attempt_count'):
-                            agent._pm_audit_attempt_count = 0
                         agent._pm_audit_attempt_count += 1
                         
                         if agent._pm_audit_attempt_count > 2:
@@ -832,13 +835,15 @@ class AgentWorkflowManager:
 3. Each tool has its own XML format - get the format using tool_information first
 4. Examples of CORRECT formats:
    - List tools: `<tool_information><action>list_tools</action></tool_information>`
-   - Get tool info: `<tool_information><action>get_info</action><tool_name>file_system</tool_name></tool_information>`
-   - Use file_system: `<file_system><action>write</action><filepath>test.txt</filepath><content>Hello</content></file_system>`
-5. NEVER put <parameters> tags inside tool_information - use the actual tool parameters"""
+   - Get tool info: `<tool_information><action>get_info</action><tool_name>code_editor</tool_name></tool_information>`
+   - Use code_editor (for modifying existing files): `<code_editor><action>replace_chunks</action><filepath>src/main.py</filepath><replacements>[{"search": "old_code", "replace": "new_code"}]</replacements></code_editor>`
+5. NEVER put <parameters> tags inside tool_information - use the actual tool parameters
+6. **IMPORTANT:** ALWAYS use `code_editor` for modifying existing code. Only use `file_system` (write action) for creating BRAND NEW files."""
 
         native_tool_instructions = """[TOOL USE]
 - **Native JSON Tools:** You have access to native JSON tool calling capabilities.
-- **Workflow:** Use the provided JSON tool functions to execute actions. Do NOT output XML `<tool_name>...</tool_name>` tags to call tools. Simply call the tool naturally! Your tool calls will be intercepted and executed by the system automatically."""
+- **Workflow:** Use the provided JSON tool functions to execute actions. Do NOT output XML `<tool_name>...</tool_name>` tags to call tools. Simply call the tool naturally! Your tool calls will be intercepted and executed by the system automatically.
+- **IMPORTANT:** ALWAYS use `code_editor` for modifying existing code. Only use `file_system` (write action) for creating BRAND NEW files."""
 
         state_uses_native_tools = agent.state in {ADMIN_STATE_WORK, ADMIN_STATE_CONVERSATION, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_AUDIT, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK}
         use_native_instructions = settings.NATIVE_TOOL_CALLING_ENABLED and state_uses_native_tools
@@ -846,8 +851,8 @@ class AgentWorkflowManager:
         tool_instructions = native_tool_instructions if use_native_instructions else xml_tool_instructions
 
         xml_tool_examples = """[EXAMPLE TOOL USE RESPONSE]
-<think>I need to save the main application logic I've written.</think>
-<file_system><action>write</action><filepath>src/main.py</filepath><content># Python application code...</content></file_system>
+<think>I need to add a new function to the main application logic.</think>
+<code_editor><action>replace_chunks</action><filepath>src/main.py</filepath><replacements>[{"search": "def old_func():\\n    pass", "replace": "def old_func():\\n    pass\\n\\ndef new_func():\\n    print('Hello')"}]</replacements></code_editor>
 
 [EXAMPLE: SWITCHING TO REPORT STATE]
 <think>I have completed the first milestone. I need to report my progress to the PM.</think>

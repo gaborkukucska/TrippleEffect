@@ -60,7 +60,7 @@ class AgentInteractionHandler:
             message = f"Action '{action_to_perform}' failed or not recognized."
             result_data = None
 
-            agent_id_param = action_params.get("agent_id")
+            agent_id_param = action_params.get("agent_id") or action_params.get("target_agent_id")
             team_id_param = action_params.get("team_id")
 
             if action_to_perform == "create_agent":
@@ -91,7 +91,7 @@ class AgentInteractionHandler:
                 message = f"Found {len(result_data)} team(s)."
             elif action_to_perform == "get_agent_details":
                 if not agent_id_param:
-                    return {"status": "error", "message": "No agent_id provided for get_agent_details."}
+                    return {"status": "error", "message": "No target_agent_id provided for get_agent_details."}
                 success, message, result_data = self._get_agent_details(agent_id_param)
             elif action_to_perform == "set_agent_state":
                 success, message, result_data = await self._set_agent_state(action_params)
@@ -124,7 +124,7 @@ class AgentInteractionHandler:
         return True, f"Successfully retrieved details for agent '{agent_id}'.", result_data
 
     async def _set_agent_state(self, params: Dict[str, Any]) -> Tuple[bool, str, Optional[Dict]]:
-        agent_id = params.get("agent_id")
+        agent_id = params.get("agent_id") or params.get("target_agent_id")
         new_state = params.get("new_state")
         agent = self._manager.agents.get(agent_id)
 
