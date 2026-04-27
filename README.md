@@ -6,9 +6,9 @@
 > **⚠️ EXPERIMENTAL SOFTWARE — R&D USE ONLY**
 >
 > TrippleEffect is an **experimental research framework** under active development.
-> It grants AI agents access to tools that can read, write, and execute on your system.
+> It grants AI agents access to tools that while sandboxed, can read, write, and execute on your system!
 >
-> 🔒 **Always install and run TrippleEffect inside an isolated virtual machine or container.**
+> 🔒 **Recommended to install and run TrippleEffect inside an isolated virtual machine or container.**
 > Do not run it on a machine with sensitive data or production workloads.
 > You have been warned! 🧪
 
