@@ -143,6 +143,12 @@ class OllamaProvider(BaseLLMProvider):
 
         raw_options = {"temperature": temperature, **kwargs}
         valid_options = {k: v for k, v in raw_options.items() if k in KNOWN_OLLAMA_OPTIONS and v is not None}
+        
+        # --- Add repeat_penalty if not specified ---
+        if "repeat_penalty" not in valid_options and "repeat_penalty" not in kwargs:
+            valid_options["repeat_penalty"] = 1.15
+            logger.debug(f"Setting Ollama default repeat_penalty to: 1.15 to prevent repetitive loops")
+            
         if max_tokens is not None:
             valid_options["num_predict"] = max_tokens 
             logger.debug(f"Setting Ollama num_predict (max_tokens) to: {max_tokens}")
@@ -240,6 +246,11 @@ class OllamaProvider(BaseLLMProvider):
             if msg.get("role") == "tool" and role == "user":
                 tool_name = msg.get("name", "unknown")
                 processed_content = f"--- Tool Response ({tool_name}) ---\n{processed_content}\n-----------------------"
+
+            # If this is a converted system message, explicitly format it so the LLM knows it's the system speaking.
+            if msg.get("role") == "system" and role == "user":
+                if not processed_content.lstrip().startswith("["):
+                    processed_content = f"[System Notification]:\n{processed_content}"
 
             msg_to_send: Dict[str, Any] = {"role": role, "content": processed_content}
             # We explicitly DO NOT send `tool_calls` because TrippleEffect relies on XML-in-content 

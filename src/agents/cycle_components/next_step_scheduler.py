@@ -222,6 +222,14 @@ class NextStepScheduler:
                                 target_state = WORKER_STATE_REPORT if agent.state == WORKER_STATE_WORK else WORKER_STATE_WAIT
                                 self._manager.workflow_manager.change_state(agent, target_state)
                                 setattr(agent, '_duplicate_tool_call_count', 0)
+                                
+                                # CRITICAL FIX: Truncate message history to break context loop for workers
+                                history_len = len(agent.message_history)
+                                if history_len > 6:
+                                    # Pop the last 4 messages to remove the repetitive loop context
+                                    agent.message_history = agent.message_history[:-4]
+                                    logger.info(f"NextStepScheduler: Truncated last 4 messages from Worker '{agent_id}' to break loop context.")
+                                
                                 override_msg = f"[EMERGENCY SYSTEM OVERRIDE]: You were stuck in an infinite loop repeating the exact same tool calls. The framework has automatically transitioned you to the '{target_state}' state. You MUST stop repeating your previous actions."
                                 agent.message_history.append({"role": "system", "content": override_msg})
                                 if self._manager and hasattr(self._manager, 'db_manager') and self._manager.current_session_db_id:

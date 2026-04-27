@@ -80,6 +80,8 @@ class Settings:
     def __init__(self):
         # --- Provider URLs and Referer (from .env) ---
         self.OPENAI_BASE_URL: Optional[str] = os.getenv("OPENAI_BASE_URL")
+        self.VLLM_BASE_URL: Optional[str] = os.getenv("VLLM_BASE_URL", "http://localhost:8000/v1")
+        self.VLLM_API_KEY: Optional[str] = os.getenv("VLLM_API_KEY", "EMPTY")
         self.OPENROUTER_BASE_URL: Optional[str] = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
         self.OPENROUTER_REFERER: Optional[str] = os.getenv("OPENROUTER_REFERER")
 
@@ -101,7 +103,7 @@ class Settings:
         # --- Load Multiple API Keys ---
         self.PROVIDER_API_KEYS: Dict[str, List[str]] = {}
         provider_key_pattern = re.compile(r"^([A-Z_]+)_API_KEY(?:_(\d+))?$")
-        known_provider_env_prefixes = ["OPENAI", "OPENROUTER", "LITELLM", "ANTHROPIC", "GOOGLE", "DEEPSEEK"]
+        known_provider_env_prefixes = ["OPENAI", "OPENROUTER", "LITELLM", "ANTHROPIC", "GOOGLE", "DEEPSEEK", "VLLM"]
         logger.debug("Settings Init: Scanning environment variables for API keys...")
         for key, value in os.environ.items():
             match = provider_key_pattern.match(key)
@@ -368,6 +370,7 @@ class Settings:
         config = {}
         provider_name = provider_name.lower()
         if provider_name == "openai": config['base_url'] = self.OPENAI_BASE_URL
+        elif provider_name == "vllm": config['base_url'] = self.VLLM_BASE_URL
         elif provider_name == "openrouter":
              referer = self.OPENROUTER_REFERER or f"http://localhost:8000/{self.DEFAULT_PERSONA}" # Fallback referer
              config['base_url'] = self.OPENROUTER_BASE_URL

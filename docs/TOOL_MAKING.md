@@ -11,7 +11,7 @@ This guide explains how to create new tools that agents within the TrippleEffect
 * **Base Class:** Every tool class MUST inherit from `src.tools.base.BaseTool`.
 * **Registration:** The `ToolExecutor` automatically finds and registers valid tool classes inheriting from `BaseTool` (excluding `BaseTool` itself and files starting with `_`).
 * **Invocation Format:** Agents request tool execution using either a structured **JSON capability (default)** or an **XML block** at the end of their message (legacy fallback).
-* **Auto-Translation:** You define your tool parameters using standard Pydantic logic. The `BaseTool` class houses a `get_json_schema()` function that automatically builds the complex JSON schemas passed to modern providers (Ollama, OpenAI, Anthropic), meaning you *never* have to write separate JSON and XML tools manually.
+* **Auto-Translation:** You define your tool parameters using standard Pydantic logic. The `BaseTool` class houses a `get_json_schema()` function that automatically builds the complex JSON schemas passed to modern providers (vLLM, Ollama, OpenAI, Anthropic), meaning you *never* have to write separate JSON and XML tools manually.
 
 ## Creating a New Tool
 
@@ -164,7 +164,7 @@ Depending on the `NATIVE_TOOL_CALLING_ENABLED` setting in `settings.py`, the age
 
 ### Native JSON Execution (Default)
 
-The underlying provider (e.g., Ollama or OpenAI) intercepts the framework's JSON schema block and securely invokes the `CalculatorTool` internally, returning the direct JSON parameters back to the framework without generating textual tags in the response!
+The underlying provider (e.g., vLLM, Ollama, or OpenAI) intercepts the framework's JSON schema block and securely invokes the `CalculatorTool` internally, returning the direct JSON parameters back to the framework without generating textual tags in the response!
 
 ### Fallback XML Execution
 

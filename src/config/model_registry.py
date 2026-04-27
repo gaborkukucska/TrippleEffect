@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Default Ports and Public Endpoints
 DEFAULT_OLLAMA_PORT = 11434
+DEFAULT_VLLM_PORT = 8000
 DEFAULT_LITELLM_PORT = 4000 # Adjust if your LiteLLM default is different
 
 # --- NEW: TypedDict for ModelInfo ---
@@ -260,11 +261,20 @@ class ModelRegistry:
                                 data = await response.json(content_type=None)
                                 models_data_openai = data.get("data", [])
                                 if isinstance(models_data_openai, list) and models_data_openai and isinstance(models_data_openai[0], dict) and "id" in models_data_openai[0]:
-                                    unique_provider_name = f"litellm-local-{ip_suffix}" # Assume LiteLLM if OpenAI compatible
-                                    # LiteLLM typically doesn't provide param counts via this endpoint
+                                    is_vllm = any(m.get("owned_by") == "vllm" for m in models_data_openai)
+                                    if is_vllm:
+                                        unique_provider_name = f"vllm-local-{ip_suffix}"
+                                        logger_msg = "vLLM"
+                                    else:
+                                        unique_provider_name = f"litellm-local-{ip_suffix}" # Assume LiteLLM if OpenAI compatible
+                                        logger_msg = "assumed LiteLLM"
                                     final_models_list = [ModelInfo(id=m.get("id"), provider=unique_provider_name) for m in models_data_openai if m.get("id")]
-                                    logger.info(f"Verified OpenAI compatible endpoint (assumed LiteLLM) at {base_url} ({unique_provider_name}). Found {len(final_models_list)} models.")
+                                    
+                                    # Ensure we save the correct base_url that includes /v1 if the endpoint matched /v1/models
+                                    verified_base_url = check_url.replace('/models', '')
+                                    logger.info(f"Verified OpenAI compatible endpoint ({logger_msg}) at {verified_base_url} ({unique_provider_name}). Found {len(final_models_list)} models.")
                                     verified_provider_name = unique_provider_name
+                                    base_url = verified_base_url # Update base_url to be returned correctly
                                     break 
                                 else: logger.debug(f"Endpoint {check_url} returned 200 but response format doesn't match OpenAI /models.")
                             else: logger.debug(f"OpenAI compatible check failed for {check_url}. Status: {response.status}")
@@ -323,6 +333,14 @@ class ModelRegistry:
         urls_to_verify.add(f"http://127.0.0.1:{DEFAULT_OLLAMA_PORT}")
         urls_to_verify.add(f"http://localhost:{DEFAULT_LITELLM_PORT}")
         urls_to_verify.add(f"http://127.0.0.1:{DEFAULT_LITELLM_PORT}")
+        urls_to_verify.add(f"http://localhost:{DEFAULT_VLLM_PORT}")
+        urls_to_verify.add(f"http://127.0.0.1:{DEFAULT_VLLM_PORT}")
+
+        # Also add any custom ports defined in LOCAL_API_SCAN_PORTS to localhost checks
+        if self.settings.LOCAL_API_SCAN_PORTS:
+            for port in self.settings.LOCAL_API_SCAN_PORTS:
+                urls_to_verify.add(f"http://localhost:{port}")
+                urls_to_verify.add(f"http://127.0.0.1:{port}")
 
         network_scan_urls = set()
         if self.settings.LOCAL_API_SCAN_ENABLED:
@@ -360,6 +378,7 @@ class ModelRegistry:
                             if is_loopback:
                                 service_type = "unknown"
                                 if provider_name.startswith("ollama-"): service_type = "ollama"
+                                elif provider_name.startswith("vllm-"): service_type = "vllm"
                                 elif provider_name.startswith("litellm-"): service_type = "litellm"
                                 canonical_service_id = (service_type, port_part)
                                 if canonical_service_id in self._verified_local_canonical_services: logger.debug(f"Skipping registration for {verified_url}: Canonical service {canonical_service_id} already registered."); processed_urls.add(verified_url); continue
@@ -384,7 +403,7 @@ class ModelRegistry:
         else: logger.info("No local endpoints found or configured to verify.")
 
         # Check if any local providers were actually added to _reachable_providers
-        local_providers_found_this_run = [p for p in self._reachable_providers if p.startswith("ollama-local") or p.startswith("litellm-local") or p == "ollama-proxy"]
+        local_providers_found_this_run = [p for p in self._reachable_providers if p.startswith("ollama-local") or p.startswith("litellm-local") or p.startswith("vllm-local") or p == "ollama-proxy"]
         if not local_providers_found_this_run:
             logger.warning("ModelRegistry: No local LLM providers were successfully verified or registered in this discovery cycle, despite attempts.")
         else:
@@ -417,16 +436,17 @@ class ModelRegistry:
     def _format_model_list_output(self, include_header: bool = True) -> str:
         if not self.available_models: return "Model Availability: No models discovered or available after filtering." if include_header else "No models available."
         lines = []; found_any = False
-        provider_groups: Dict[str, List[Tuple[str, List[ModelInfo]]]] = {"ollama": [], "litellm": [], "openrouter": [], "openai": [], "other": []}
+        provider_groups: Dict[str, List[Tuple[str, List[ModelInfo]]]] = {"ollama": [], "litellm": [], "vllm": [], "openrouter": [], "openai": [], "other": []}
         for provider, models in self.available_models.items():
             base_type = "other"
             if provider.startswith("ollama"): base_type = "ollama"
+            elif provider.startswith("vllm"): base_type = "vllm"
             elif provider.startswith("litellm"): base_type = "litellm"
             elif provider == "openrouter": base_type = "openrouter"
             elif provider == "openai": base_type = "openai"
             provider_groups[base_type].append((provider, models))
         try:
-            for base_type in ["ollama", "litellm", "openrouter", "openai", "other"]:
+            for base_type in ["ollama", "vllm", "litellm", "openrouter", "openai", "other"]:
                 group = sorted(provider_groups[base_type], key=lambda item: item[0])
                 if not group: continue
                 for provider, models in group:
@@ -436,7 +456,7 @@ class ModelRegistry:
                          if provider == "ollama-proxy": tag = " (Local Proxy)" # Keep proxy tag if it appears
                          elif "-local-" in provider: tag = " (Local Discovered)"
                          elif provider in ["openrouter", "openai"]: tag = " (Remote)"
-                         if provider.startswith("ollama") or provider.startswith("litellm"): prefix = provider.split('-local-')[0].split('-proxy')[0] + "/"
+                         if provider.startswith("ollama") or provider.startswith("litellm") or provider.startswith("vllm"): prefix = provider.split('-local-')[0].split('-proxy')[0] + "/"
                          display_names = [f"{prefix}{name}" for name in model_names]
                          if include_header: lines.append(f"- **{provider}{tag}**: `{', '.join(display_names)}`")
                          else: lines.append(f"  {provider}{tag}: {len(display_names)} models -> {display_names}")
@@ -516,7 +536,7 @@ class ModelRegistry:
                 continue
 
             # Identify provider type (more robustly)
-            is_local = provider.startswith("ollama-local") or provider.startswith("litellm-local") or provider == "ollama-proxy"
+            is_local = provider.startswith("ollama-local") or provider.startswith("litellm-local") or provider.startswith("vllm-local") or provider == "ollama-proxy"
             logger.debug(f"Filtering provider '{provider}'. Identified as Local: {is_local}")
 
             if is_local:
@@ -562,7 +582,7 @@ class ModelRegistry:
     def get_available_models_list(self, provider: Optional[str] = None) -> List[str]:
         """ Gets a list of available model IDs, optionally filtered by provider (base name or specific instance). """
         model_ids = set()
-        provider_order = ["ollama", "litellm", "openrouter", "openai"]
+        provider_order = ["ollama", "vllm", "litellm", "openrouter", "openai"]
         if provider:
             if provider in self.available_models: return sorted([m.get("id", "unknown") for m in self.available_models[provider]])
             else:

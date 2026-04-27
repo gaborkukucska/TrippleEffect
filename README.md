@@ -113,9 +113,9 @@ Ready to dive in? Here's how to get your agents up and running quickly:
 ### Prerequisites
 
 * **Termux app** if used on Android mobile devices! 📱
-* Python 3.9+
+* Python 3.10+
 * Node.js and npm (only if using the optional Ollama proxy)
-* Access to LLM APIs (OpenAI, OpenRouter) and/or a running local **Ollama** instance.
+* Access to LLM APIs (OpenAI, OpenRouter) and/or a running local **Ollama** or **vLLM** instance.
 * Nmap to enable automatic local API provider discovery (optional).
 
 > **📱 Termux/Android Note:** The setup script automatically detects Termux and uses `pkg` instead of `apt-get`/`sudo`. Some optional features (local network API scanning via `netifaces`/`nmap`) may require additional packages: `pkg install libffi openssl clang`. The framework runs fully without these optional packages — network scanning simply falls back gracefully.
@@ -137,8 +137,8 @@ Ready to dive in? Here's how to get your agents up and running quickly:
     ./setup.sh
     ```
 
-3. **Configure:**
-    Edit the created `.env` file with your API keys (OpenAI, OpenRouter, GitHub PAT, local Ollama endpoints, etc.). Set `MODEL_TIER` to `LOCAL`, `FREE`, or `ALL`.
+3. **Configure Environment:**
+    Edit the created `.env` file with your API keys (OpenAI, OpenRouter, GitHub PAT, local Ollama/vLLM endpoints, etc.). Set `MODEL_TIER` to `LOCAL`, `FREE`, or `ALL`.
 
 4. **Run:**
     *(This activates the environment and starts the application using FastAPI)*

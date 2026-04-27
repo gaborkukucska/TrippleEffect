@@ -3,7 +3,8 @@ import openai
 import json
 import asyncio
 import logging 
-import time 
+import time
+import httpx
 from typing import List, Dict, Any, Optional, AsyncGenerator
 
 from .base import BaseLLMProvider, MessageDict, ToolDict, ToolResultDict
@@ -35,6 +36,20 @@ OPENAI_COMPLETIONS_VALID_KWARGS = {
     "stream_options", "temperature", "tool_choice", "tools", "top_p", "user",
 }
 
+# --- Concurrency Limiter ---
+_openai_semaphores = {}
+
+def get_openai_semaphore(is_vllm: bool = False) -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    key = (loop, is_vllm)
+    if key not in _openai_semaphores:
+        if is_vllm:
+            limit = getattr(settings, 'VLLM_CONCURRENCY_LIMIT', 2)
+        else:
+            limit = getattr(settings, 'OPENAI_CONCURRENCY_LIMIT', 50)
+        _openai_semaphores[key] = asyncio.Semaphore(limit)
+    return _openai_semaphores[key]
+# ---------------------------
 
 class OpenAIProvider(BaseLLMProvider):
     """
@@ -45,6 +60,10 @@ class OpenAIProvider(BaseLLMProvider):
     """
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, **kwargs):
+        # Configure generous timeout defaults (e.g. 20 mins) for local models that queue heavily
+        if "timeout" not in kwargs:
+            kwargs["timeout"] = httpx.Timeout(1200.0, connect=15.0)
+
         # Filter kwargs for AsyncOpenAI constructor
         valid_client_kwargs = {k: v for k, v in kwargs.items() if k in OPENAI_CLIENT_VALID_INIT_KWARGS}
         ignored_client_kwargs = {k: v for k, v in kwargs.items() if k not in OPENAI_CLIENT_VALID_INIT_KWARGS}
@@ -101,74 +120,80 @@ class OpenAIProvider(BaseLLMProvider):
             else:
                 logger.warning(f"OpenAIProvider stream_completion: Ignoring unsupported kwarg '{k}' for OpenAI chat completions.")
 
-        for attempt in range(MAX_RETRIES + 1):
-            try:
-                log_params = {k: v for k, v in api_params.items() if k != 'messages'}
-                logger.info(f"OpenAIProvider making API call (Attempt {attempt + 1}/{MAX_RETRIES + 1}). Params: {log_params}")
-
+        is_vllm = self.__class__.__name__ == "VllmProvider"
+        semaphore = get_openai_semaphore(is_vllm)
+        logger.debug(f"OpenAIProvider '{model}': Waiting for semaphore (limit {semaphore._value})...")
+        
+        async with semaphore:
+            logger.debug(f"OpenAIProvider '{model}': Semaphore acquired!")
+            for attempt in range(MAX_RETRIES + 1):
                 try:
-                    full_api_params_json_str = json.dumps(api_params, indent=2, default=str) 
-                    logger.debug(f"OpenAIProvider '{model}': FULL JSON equivalent of api_params being sent:\n{full_api_params_json_str}")
-                except Exception as e_full_params_log:
-                    logger.error(f"OpenAIProvider '{model}': CRITICAL - Could not serialize FULL api_params for logging: {e_full_params_log}")
-                    logger.debug(f"OpenAIProvider '{model}': Fallback api_params parts: model={api_params.get('model')}, options_subset={ {k:v for k,v in api_params.items() if k not in ['messages']} }")
+                    log_params = {k: v for k, v in api_params.items() if k != 'messages'}
+                    logger.info(f"OpenAIProvider making API call (Attempt {attempt + 1}/{MAX_RETRIES + 1}). Params: {log_params}")
 
-                response_stream = await self._openai_client.chat.completions.create(**api_params)
-                logger.info(f"API call successful on attempt {attempt + 1}.")
-                last_exception = None
-                break 
-
-            except LOCAL_RETRYABLE_EXCEPTIONS as e: 
-                last_exception = e; logger.warning(f"Retryable error on attempt {attempt + 1}/{MAX_RETRIES + 1}: {type(e).__name__} - {e}")
-                if attempt < MAX_RETRIES:
-                    logger.info(f"Waiting {RETRY_DELAY_SECONDS}s before retrying...") 
-                    await asyncio.sleep(RETRY_DELAY_SECONDS); continue 
-                else:
-                    logger.error(f"Max retries ({MAX_RETRIES}) reached after retryable error.") 
-                    yield {"type": "error", "content": f"[OpenAIProvider Error]: Max retries reached. Last error: {type(e).__name__}", "_exception_obj": e}
-                    return
-            except (openai.AuthenticationError, openai.BadRequestError, openai.PermissionDeniedError, openai.NotFoundError) as e: 
-                 error_type_name = type(e).__name__
-                 status_code = getattr(e, 'status_code', 'N/A')
-                 error_body = getattr(e, 'body', 'N/A')
-                 logger.error(f"Non-retryable OpenAI API error: {error_type_name} (Status: {status_code}), Body: {error_body}")
-                 user_message = f"[OpenAIProvider Error]: {error_type_name}"
-                 try:
-                     body_dict = json.loads(error_body) if isinstance(error_body, str) else (error_body if isinstance(error_body, dict) else {}) 
-                     error_detail = body_dict.get('error', {}).get('message') or body_dict.get('message') 
-                     if error_detail:
-                         user_message += f" - {str(error_detail)[:100]}"
-                 except Exception: 
-                     pass
-                 yield {"type": "error", "content": user_message, "_exception_obj": e}
-                 return
-            except openai.APIStatusError as e:
-                last_exception = e
-                logger.warning(f"API Status Error on attempt {attempt + 1}/{MAX_RETRIES + 1}: Status={e.status_code}, Body={e.body}")
-                if (e.status_code >= 500 or e.status_code in RETRYABLE_STATUS_CODES) and attempt < MAX_RETRIES: 
-                    logger.info(f"Status {e.status_code} is retryable. Waiting {RETRY_DELAY_SECONDS}s before retrying...") 
-                    await asyncio.sleep(RETRY_DELAY_SECONDS) 
-                    continue
-                else:
-                    logger.error(f"Non-retryable API Status Error ({e.status_code}) or max retries reached.") 
-                    user_message = f"[OpenAIProvider Error]: API Status {e.status_code}"
                     try:
-                        body_dict = json.loads(e.body) if isinstance(e.body, str) else (e.body if isinstance(e.body, dict) else {}) 
-                        error_detail = body_dict.get('error', {}).get('message') or body_dict.get('message') 
-                        if error_detail: user_message += f" - {str(error_detail)[:100]}"
-                    except Exception: pass 
-                    yield {"type": "error", "content": user_message, "_exception_obj": e}
-                    return
-            except Exception as e: 
-                last_exception = e; logger.exception(f"Unexpected Error during API call attempt {attempt + 1}: {type(e).__name__} - {e}")
-                if attempt < MAX_RETRIES:
-                    logger.info(f"Waiting {RETRY_DELAY_SECONDS}s before retrying...") 
-                    await asyncio.sleep(RETRY_DELAY_SECONDS) 
-                    continue
-                else:
-                    logger.error(f"Max retries ({MAX_RETRIES}) reached after unexpected error.") 
-                    yield {"type": "error", "content": f"[OpenAIProvider Error]: Unexpected Error after retries - {type(e).__name__}", "_exception_obj": e}
-                    return
+                        full_api_params_json_str = json.dumps(api_params, indent=2, default=str) 
+                        logger.debug(f"OpenAIProvider '{model}': FULL JSON equivalent of api_params being sent:\n{full_api_params_json_str}")
+                    except Exception as e_full_params_log:
+                        logger.error(f"OpenAIProvider '{model}': CRITICAL - Could not serialize FULL api_params for logging: {e_full_params_log}")
+                        logger.debug(f"OpenAIProvider '{model}': Fallback api_params parts: model={api_params.get('model')}, options_subset={ {k:v for k,v in api_params.items() if k not in ['messages']} }")
+
+                    response_stream = await self._openai_client.chat.completions.create(**api_params)
+                    logger.info(f"API call successful on attempt {attempt + 1}.")
+                    last_exception = None
+                    break 
+
+                except LOCAL_RETRYABLE_EXCEPTIONS as e: 
+                    last_exception = e; logger.warning(f"Retryable error on attempt {attempt + 1}/{MAX_RETRIES + 1}: {type(e).__name__} - {e}")
+                    if attempt < MAX_RETRIES:
+                        logger.info(f"Waiting {RETRY_DELAY_SECONDS}s before retrying...") 
+                        await asyncio.sleep(RETRY_DELAY_SECONDS); continue 
+                    else:
+                        logger.error(f"Max retries ({MAX_RETRIES}) reached after retryable error.") 
+                        yield {"type": "error", "content": f"[OpenAIProvider Error]: Max retries reached. Last error: {type(e).__name__}", "_exception_obj": e}
+                        return
+                except (openai.AuthenticationError, openai.BadRequestError, openai.PermissionDeniedError, openai.NotFoundError) as e: 
+                     error_type_name = type(e).__name__
+                     status_code = getattr(e, 'status_code', 'N/A')
+                     error_body = getattr(e, 'body', 'N/A')
+                     logger.error(f"Non-retryable OpenAI API error: {error_type_name} (Status: {status_code}), Body: {error_body}")
+                     user_message = f"[OpenAIProvider Error]: {error_type_name}"
+                     try:
+                         body_dict = json.loads(error_body) if isinstance(error_body, str) else (error_body if isinstance(error_body, dict) else {}) 
+                         error_detail = body_dict.get('error', {}).get('message') or body_dict.get('message') 
+                         if error_detail:
+                             user_message += f" - {str(error_detail)[:100]}"
+                     except Exception: 
+                         pass
+                     yield {"type": "error", "content": user_message, "_exception_obj": e}
+                     return
+                except openai.APIStatusError as e:
+                    last_exception = e
+                    logger.warning(f"API Status Error on attempt {attempt + 1}/{MAX_RETRIES + 1}: Status={e.status_code}, Body={e.body}")
+                    if (e.status_code >= 500 or e.status_code in RETRYABLE_STATUS_CODES) and attempt < MAX_RETRIES: 
+                        logger.info(f"Status {e.status_code} is retryable. Waiting {RETRY_DELAY_SECONDS}s before retrying...") 
+                        await asyncio.sleep(RETRY_DELAY_SECONDS) 
+                        continue
+                    else:
+                        logger.error(f"Non-retryable API Status Error ({e.status_code}) or max retries reached.") 
+                        user_message = f"[OpenAIProvider Error]: API Status {e.status_code}"
+                        try:
+                            body_dict = json.loads(e.body) if isinstance(e.body, str) else (e.body if isinstance(e.body, dict) else {}) 
+                            error_detail = body_dict.get('error', {}).get('message') or body_dict.get('message') 
+                            if error_detail: user_message += f" - {str(error_detail)[:100]}"
+                        except Exception: pass 
+                        yield {"type": "error", "content": user_message, "_exception_obj": e}
+                        return
+                except Exception as e: 
+                    last_exception = e; logger.exception(f"Unexpected Error during API call attempt {attempt + 1}: {type(e).__name__} - {e}")
+                    if attempt < MAX_RETRIES:
+                        logger.info(f"Waiting {RETRY_DELAY_SECONDS}s before retrying...") 
+                        await asyncio.sleep(RETRY_DELAY_SECONDS) 
+                        continue
+                    else:
+                        logger.error(f"Max retries ({MAX_RETRIES}) reached after unexpected error.") 
+                        yield {"type": "error", "content": f"[OpenAIProvider Error]: Unexpected Error after retries - {type(e).__name__}", "_exception_obj": e}
+                        return
 
         if response_stream is None:
              logger.error("API call failed after all retries, response_stream is None.")

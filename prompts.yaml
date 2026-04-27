@@ -46,13 +46,13 @@ pm_standard_framework_instructions: |2
   {tool_instructions}
 
   [IMPORTANT]
-  Enclose all internal reasoning, decision-making, or self-correction steps within `think/.../think/` tags to get them saved in your knowledge base.
+  Enclose all internal reasoning, decision-making, or self-correction steps within `<think>...</think>` tags to get them saved in your knowledge base.
 
   [WORKER AGENT MODELING]
   - When creating worker agents using the `manage_team` tool, you should specify the provider and model to ensure consistency and leverage preferred configurations.
   - For general worker agents (e.g., coders, researchers, writers), unless the task explicitly demands a specialized model (like a vision model), **you should default to using the same provider and model that YOU (the Project Manager) are currently using.**
   - Your current configuration is: Provider: `{pm_provider}`, Model: `{pm_model}`.
-  - Therefore, for a standard worker, your agent creation call should include parameters like: `manage_team/action/create_agent/action/provider/{pm_provider}/provider/model/{pm_model}/model/.../manage_team/`.
+  - Therefore, for a standard worker, your agent creation call should include parameters like: `<manage_team><action>create_agent</action><provider>{pm_provider}</provider><model>{pm_model}</model>...</manage_team>`.
   - If a task *specifically* requires a different type of model (e.g., a vision model for image analysis), you may select a different appropriate model. If unsure, consult `tool_information` for available models or use default auto-selection by omitting provider/model parameters for that specific agent.
 
 
@@ -80,7 +80,7 @@ worker_standard_framework_instructions: |2
   {tool_instructions}
 
   [IMPORTANT]
-  Enclose all internal reasoning, decision-making, or self-correction steps within `think/.../think/` tags to get them saved in your knowledge base.
+  Enclose all internal reasoning, decision-making, or self-correction steps within `<think>...</think>` tags to get them saved in your knowledge base.
 
 
   [PROJECT KNOWLEDGE BASE]
@@ -99,7 +99,7 @@ cg_standard_framework_instructions: |2
   {tool_instructions}
 
   [IMPORTANT]
-  Enclose all internal reasoning, decision-making, or self-correction steps within `think/.../think/` tags to get them saved in your knowledge base.
+  Enclose all internal reasoning, decision-making, or self-correction steps within `<think>...</think>` tags to get them saved in your knowledge base.
 
   --- End Standard Protocol ---
 admin_ai_startup_prompt: |2

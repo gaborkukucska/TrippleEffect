@@ -318,6 +318,22 @@ def find_and_parse_xml_tool_calls(
                 param_name = child.tag
                 param_value = child.text.strip() if child.text else ""
                 tool_args[param_name] = html.unescape(param_value)
+                
+            # Fallback: if there's raw text inside the root element and we didn't parse it as a child tag
+            if root.text and root.text.strip():
+                raw_text = html.unescape(root.text.strip())
+                # Try to map to known primary content parameters if they are missing
+                if identified_tool_name.lower() == "file_system" and "content" not in tool_args:
+                    tool_args["content"] = raw_text
+                elif identified_tool_name.lower() == "send_message" and "message_content" not in tool_args:
+                    tool_args["message_content"] = raw_text
+                elif identified_tool_name.lower() == "code_editor" and "replacements" not in tool_args:
+                    tool_args["replacements"] = raw_text
+                elif identified_tool_name.lower() == "project_management" and "task_description" not in tool_args:
+                    tool_args["task_description"] = raw_text
+                elif "content" not in tool_args:
+                    tool_args["content"] = raw_text
+                    
             return tool_args, None # Success
             
         except ET.ParseError as e:

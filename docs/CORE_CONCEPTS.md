@@ -18,9 +18,9 @@
     *   **Cycle Components Architecture**: Modular, extensible system for agent cycle management
 *   **Team Work In Progress (WIP) Injection:** The framework automatically constructs and injects a real-time summary of team activities (WIP tasks, agent states, recent actions) into the standard formatting context for all agents. This serves as a "heartbeat" to improve cross-agent alignment and minimize duplicated efforts or blind spots.
 *   **Intelligent Model Handling:**
-    *   **Discovery:** Automatically finds reachable LLM providers (Ollama, OpenRouter, OpenAI) and available models at startup.
+    *   **Discovery:** Automatically finds reachable LLM providers (vLLM, Ollama, OpenRouter, OpenAI) and available models at startup.
     *   **Filtering:** Filters discovered models based on the `MODEL_TIER` setting (`.env`).
-    *   **Auto-Selection:** Automatically selects the best model for Admin AI (at startup) and dynamic agents (at creation if not specified). Selection priority is Tier -> Model Size (parameter count, larger preferred) -> Performance Score -> ID. `num_parameters` are discovered for providers like OpenRouter and Ollama where available.
+    *   **Auto-Selection:** Automatically selects the best model for Admin AI (at startup) and dynamic agents (at creation if not specified). Selection priority is Tier -> Model Size (parameter count, larger preferred) -> Performance Score -> ID. `num_parameters` are discovered for providers like OpenRouter, vLLM and Ollama where available.
     *   **Failover:** Automatic API key cycling and model/provider failover (Local -> Free -> Paid tiers) on persistent errors during generation. Model selection during failover also respects the new Size/Performance priority.
     *   **Performance Tracking:** Records success rate and latency per model, persisting data (`data/model_performance_metrics.json`).
 *   **Tool-Based Interaction:** Agents use tools via an **XML format**. The framework can now process multiple distinct tool calls found in a single agent response; these are executed sequentially, and all results are then fed back to the agent in the next turn.

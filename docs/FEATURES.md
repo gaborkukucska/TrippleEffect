@@ -12,9 +12,9 @@
     *   **Health Analytics**: Detailed agent behavior analysis and intervention strategies
     *   **Team Work In Progress (WIP) Injection**: Dynamic injection of real-time team status updates into active agent prompts to ensure cross-agent situational awareness and minimize duplicated efforts.
 *   **Configurable Model Selection:**
-    *   Dynamic discovery of providers/models (Ollama, OpenRouter, OpenAI).
+    *   Dynamic discovery of providers/models (vLLM, Ollama, OpenRouter, OpenAI).
     *   Filtering based on `MODEL_TIER` (.env: `FREE` or `ALL`).
-    *   Automatic model selection for Admin AI and dynamic agents, now prioritizing: Tier -> Model Size (parameter count, larger preferred) -> Performance Score -> ID. `num_parameters` are discovered for some providers (e.g., OpenRouter, Ollama).
+    *   Automatic model selection for Admin AI and dynamic agents, now prioritizing: Tier -> Model Size (parameter count, larger preferred) -> Performance Score -> ID. `num_parameters` are discovered for some providers (e.g., OpenRouter, vLLM, Ollama).
 *   **Robust Error Handling:**
     *   Automatic retries for transient LLM API errors.
     *   Multi-key support and key cycling for providers (`PROVIDER_API_KEY_N` in `.env`).

@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 from src.llm_providers.openai_provider import OpenAIProvider
 from src.llm_providers.ollama_provider import OllamaProvider
 from src.llm_providers.openrouter_provider import OpenRouterProvider
+from src.llm_providers.vllm_provider import VllmProvider
 # --- End Provider Imports ---
 
 # --- Import new sorting utility ---
@@ -36,6 +37,7 @@ from src.agents.agent_utils import sort_models_by_size_performance_id
 PROVIDER_CLASS_MAP: Dict[str, type[BaseLLMProvider]] = {
     "openai": OpenAIProvider,
     "ollama": OllamaProvider,
+    "vllm": VllmProvider,
     "openrouter": OpenRouterProvider,
     # TODO: Add LiteLLMProvider when implemented
     # "litellm": LiteLLMProvider,
@@ -53,12 +55,15 @@ def _get_base_provider_type_for_class_lookup(specific_provider_name: str) -> str
     This is used for looking up the provider class in PROVIDER_CLASS_MAP.
     Handles "ollama-local", "ollama-local-IP", "ollama-proxy" -> "ollama"
     Handles "litellm-local", "litellm-local-IP", "litellm-proxy" -> "litellm"
+    Handles "vllm-local", "vllm-local-IP", "vllm-proxy" -> "vllm"
     Defaults to returning the original name for direct mappings like "openai".
     """
     if specific_provider_name.startswith("ollama-local") or specific_provider_name == "ollama-proxy":
         return "ollama"
     if specific_provider_name.startswith("litellm-local") or specific_provider_name == "litellm-proxy":
         return "litellm"
+    if specific_provider_name.startswith("vllm-local") or specific_provider_name == "vllm-proxy":
+        return "vllm"
     # Add other known base types if they have dynamic naming conventions, e.g.
     # if specific_provider_name.startswith("someother-local"):
     #     return "someother"
@@ -92,7 +97,7 @@ async def _select_best_available_model( # Added current_rr_indices_override to s
     from src.agents.failover_handler import _models_without_tool_support
     # --- End Import ---
 
-    local_provider_type_preference = ["ollama", "litellm"]
+    local_provider_type_preference = ["ollama", "vllm", "litellm"]
 
     for base_provider_type in local_provider_type_preference:
         logger.debug(f"API-first RR: Accessing manager.available_local_providers_list. Current content: {manager.available_local_providers_list}")
@@ -243,7 +248,7 @@ async def _select_best_available_model( # Added current_rr_indices_override to s
         perf_score = model_info.get("performance_score", 0.0)
 
         base_provider_type_comp = specific_provider_name.split("-local-")[0].split("-proxy")[0]
-        is_provider_local_comp = base_provider_type_comp in ["ollama", "litellm"]
+        is_provider_local_comp = base_provider_type_comp in ["ollama", "vllm", "litellm"]
 
         if current_model_tier == "LOCAL" and not is_provider_local_comp:
             logger.debug(f"Comprehensive Fallback: Skipping '{specific_provider_name}/{model_id_suffix}': Tier is LOCAL, provider is remote.")
@@ -329,7 +334,7 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
             logger.info(f"Lifecycle: Agent '{agent_id}' defined in config.yaml: Provider='{config_provider}', Model='{config_model}'")
 
             # --- New Logic for Generic Local Provider Round-Robin ---
-            if config_provider in ["ollama", "litellm"]:
+            if config_provider in ["ollama", "vllm", "litellm"]:
                 logger.info(f"Lifecycle: Config provider '{config_provider}' is a generic local type. Attempting round-robin mapping.")
                 specific_local_provider_list = manager.available_local_providers_list.get(config_provider)
 
@@ -379,7 +384,7 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
             # --- End New Logic for Generic Local Provider Round-Robin ---
 
             # --- Existing Logic for Remote Providers or Specific Local (if new logic didn't set use_config_value) ---
-            if not use_config_value and config_provider not in ["ollama", "litellm"]: # Only run this for remote or if local RR failed
+            if not use_config_value and config_provider not in ["ollama", "vllm", "litellm"]: # Only run this for remote or if local RR failed
                 provider_configured = settings.is_provider_configured(config_provider)
                 if not provider_configured:
                     logger.warning(f"Lifecycle: Remote provider '{config_provider}' for agent '{agent_id}' not configured in .env. Ignoring config.")
@@ -387,7 +392,7 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
                 else:
                     # Validate format and get model suffix (this part is mostly for remote)
                     model_id_suffix_remote = None
-                    if config_model.startswith("ollama/") or config_model.startswith("litellm/"):
+                    if config_model.startswith("ollama/") or config_model.startswith("vllm/") or config_model.startswith("litellm/"):
                         logger.warning(f"Lifecycle: Agent '{agent_id}' model '{config_model}' in config.yaml starts with local prefix, but provider is remote '{config_provider}'. Ignoring config.")
                         # use_config_value remains False
                     else: # Remote provider
@@ -400,7 +405,7 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
                             final_provider_for_creation = config_provider
                             final_model_canonical = config_model
                             use_config_value = True
-            elif not use_config_value and config_provider in ["ollama", "litellm"]:
+            elif not use_config_value and config_provider in ["ollama", "vllm", "litellm"]:
                  logger.info(f"Lifecycle: Round-robin for generic local provider '{config_provider}' did not yield a usable model for agent '{agent_id}'. Will attempt auto-selection.")
 
         # --- Fallback to automatic selection if config wasn't valid, specified, or available ---
@@ -433,7 +438,7 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
             final_provider_for_creation = selected_provider
             # Determine canonical model ID for storage/logging
             base_provider_type_fallback = selected_provider.split('-local-')[0].split('-proxy')[0]
-            if base_provider_type_fallback in ["ollama", "litellm"]:
+            if base_provider_type_fallback in ["ollama", "vllm", "litellm"]:
                 final_model_canonical = f"{base_provider_type_fallback}/{selected_model_suffix}"
             else:
                 final_model_canonical = selected_model_suffix
@@ -461,7 +466,7 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
 
         # Check key depletion only for remote providers, using the base name
         base_provider_name_check = final_provider_for_creation.split('-local-')[0].split('-proxy')[0]
-        if base_provider_name_check not in ["ollama", "litellm"]:
+        if base_provider_name_check not in ["ollama", "vllm", "litellm"]:
             if await manager.key_manager.is_provider_depleted(base_provider_name_check):
                 logger.error(f"Lifecycle: Cannot initialize '{agent_id}': All keys for selected provider '{base_provider_name_check}' (base for '{final_provider_for_creation}', method: {selection_method}) are quarantined. Skipping.")
                 continue
@@ -494,7 +499,9 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
 
             # Inject max_tokens if needed (logic remains the same, based on final provider)
         is_local_provider_selected = final_provider_for_creation.startswith("ollama-local-") or \
+                                         final_provider_for_creation.startswith("vllm-local-") or \
                                          final_provider_for_creation.startswith("litellm-local-") or \
+                                         final_provider_for_creation == "vllm-proxy" or \
                                          final_provider_for_creation.endswith("-proxy")
         if is_local_provider_selected:
                 if "max_tokens" not in final_agent_config_data and "num_predict" not in final_agent_config_data:
@@ -644,7 +651,7 @@ async def _create_agent_internal(
     specific_provider_name_resolved = provider_name # Will be updated if generic is resolved
     model_suffix_for_check = model_id_canonical # Will be updated if prefix is part of canonical
 
-    if provider_name in ["ollama", "litellm"] and model_id_canonical and not is_bootstrap: # Generic local provider specified in config for a dynamic agent
+    if provider_name in ["ollama", "vllm", "litellm"] and model_id_canonical and not is_bootstrap: # Generic local provider specified in config for a dynamic agent
         logger.info(f"Lifecycle: Generic local provider '{provider_name}' with model '{model_id_canonical}' specified for dynamic agent '{agent_id}'. Attempting to map to specific instance.")
 
         # Determine potential model suffix
@@ -717,7 +724,7 @@ async def _create_agent_internal(
         provider_name = selected_provider # This is the specific instance name (e.g., ollama-local-...)
         # Construct canonical ID carefully, avoid double prefix
         base_provider_type_sel = provider_name.split('-local-')[0].split('-proxy')[0]
-        if base_provider_type_sel in ["ollama", "litellm"]:
+        if base_provider_type_sel in ["ollama", "vllm", "litellm"]:
              if selected_model_suffix.startswith(f"{base_provider_type_sel}/"):
                   model_id_canonical = selected_model_suffix
                   logger.warning(f"Auto-selected model suffix '{selected_model_suffix}' unexpectedly contained prefix for provider '{provider_name}'. Using suffix directly.")
@@ -743,7 +750,7 @@ async def _create_agent_internal(
     base_provider_name_val = _get_base_provider_type_for_class_lookup(provider_name)
 
 
-    if base_provider_name_val in ["ollama", "litellm"]: # This refers to generic base types or specific instances mapped to them
+    if base_provider_name_val in ["ollama", "vllm", "litellm"]: # This refers to generic base types or specific instances mapped to them
             # For specific local instances (e.g. ollama-local-ip), provider_name is specific.
             # For generic "ollama" that might not have resolved, this check is still relevant.
             if provider_name not in model_registry._reachable_providers: # Check specific instance if provider_name is specific, or generic if not
@@ -754,7 +761,7 @@ async def _create_agent_internal(
                 msg = f"{error_prefix} Provider '{base_provider_name_val}' not configured in .env settings.";
                 logger.error(msg); return False, msg, None
 
-            if base_provider_name_val not in ["ollama", "litellm"] and await manager.key_manager.is_provider_depleted(base_provider_name_val):
+            if base_provider_name_val not in ["ollama", "vllm", "litellm"] and await manager.key_manager.is_provider_depleted(base_provider_name_val):
                 msg = f"{error_prefix} All keys for '{base_provider_name_val}' are quarantined.";
                 logger.error(msg); return False, msg, None
 
@@ -765,6 +772,8 @@ async def _create_agent_internal(
     # provider_name here is now specific_provider_name_resolved if mapping occurred
     is_definitely_local_type_after_resolution = provider_name.startswith("ollama-local") or \
                                               provider_name == "ollama-proxy" or \
+                                              provider_name.startswith("vllm-local") or \
+                                              provider_name == "vllm-proxy" or \
                                               provider_name.startswith("litellm-local") or \
                                               provider_name == "litellm-proxy"
 
@@ -776,7 +785,7 @@ async def _create_agent_internal(
         else:
             model_id_for_provider = model_id_canonical # Assume it's already a suffix
     else: # Remote or unmapped generic (though unmapped generic should ideally not reach here if validation is strict)
-        if model_id_canonical.startswith("ollama/") or model_id_canonical.startswith("litellm/"):
+        if model_id_canonical.startswith("ollama/") or model_id_canonical.startswith("vllm/") or model_id_canonical.startswith("litellm/"):
              error_msg_val = f"{error_prefix} Remote model ID '{model_id_canonical}' (for provider '{provider_name}') should not start with a local provider prefix."
              logger.error(error_msg_val)
              validation_passed = False
