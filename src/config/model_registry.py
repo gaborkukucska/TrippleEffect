@@ -608,6 +608,12 @@ class ModelRegistry:
 
     def find_provider_for_model(self, model_id: str) -> Optional[str]:
         """ Finds the unique provider name (potentially dynamic) for a given model ID. """
+        # 1. Exact match first (handles HuggingFace repos with slashes like 'wizardeur/Qwen3.5')
+        for provider_name, models in self.available_models.items():
+            if any(m.get("id") == model_id for m in models):
+                return provider_name
+                
+        # 2. Fallback: try splitting off provider prefix (e.g. 'vllm/qwen3.5')
         target_model_name = model_id; provider_prefix_search = None
         if '/' in model_id: provider_prefix_search, target_model_name = model_id.split('/', 1)
         for provider_name, models in self.available_models.items():
@@ -630,16 +636,23 @@ class ModelRegistry:
         Returns:
             The ModelInfo dict if found, or None.
         """
+        # 1. Exact match across all providers (crucial for HF repo IDs like 'wizardeur/Qwen3.5')
+        for provider_name, models in sorted(self.available_models.items(), 
+                                             key=lambda x: (0 if x[0].startswith("ollama-local") else 1)):
+            for m in models:
+                if m.get("id") == model_id:
+                    return m
+                    
+        # 2. Try stripping provider prefix
         target_model_name = model_id
         if '/' in model_id:
             _, target_model_name = model_id.split('/', 1)
         
-        # Search local providers first (ollama-local-*), then others
-        for provider_name, models in sorted(self.available_models.items(), 
-                                             key=lambda x: (0 if x[0].startswith("ollama-local") else 1)):
-            for m in models:
-                if m.get("id") == target_model_name:
-                    return m
+            for provider_name, models in sorted(self.available_models.items(), 
+                                                 key=lambda x: (0 if x[0].startswith("ollama-local") else 1)):
+                for m in models:
+                    if m.get("id") == target_model_name:
+                        return m
         
         logger.debug(f"get_model_info: Could not find ModelInfo for model ID '{model_id}' (target: '{target_model_name}')")
         return None
