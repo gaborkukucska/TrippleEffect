@@ -32,12 +32,12 @@ agents:
       # model: "google/gemini-flash-1.5:free"
       # model: "google/gemma-3-27b-it:free"
       # You can also specify local models!
-      # provider: "ollama" # Set the provider
-      provider: "vllm" # Set the provider
+      provider: "ollama" # Set the provider
+      # provider: "vllm" # Set the provider
       # model: "deepseek-r1:14b"
       # model: "qwen3-coder:30b"
       # model: "qwen3:14b"
-      # model: "qwen3.5:9b-q4_K_M"
+      model: "qwen3.5:9b-q4_K_M"
       # model: "qwen3.5:2b"
       # model: "gpt-oss:20b"
       # model: "ollama/llama3.2:3b-instruct-q4_K_M" # Make sure the selected local model is available on a local API
@@ -53,11 +53,12 @@ agents:
       # model: "google/gemini-flash-1.5:free"
       # model: "google/gemma-3-27b-it:free"
       # You can also specify local models!
-      provider: "vllm" # Set the provider
+      # provider: "vllm"
+      provider: "ollama"
       # model: "deepseek-r1:14b"
       # model: "qwen3-coder:30b"
       # model: "qwen3:14b"
-      # model: "qwen3.5:9b-q4_K_M"
+      model: "qwen3.5:9b-q4_K_M"
       # model: "qwen3.5:2b"
       # model: "gpt-oss:20b"
       # model: "granite3.3:2b"
@@ -74,11 +75,12 @@ agents:
       # model: "google/gemini-flash-1.5:free"
       # model: "google/gemma-3-27b-it:free"
       # You can also specify local models!
-      provider: "vllm" # Set the provider
+      # provider: "vllm" # Set the provider
+      provider: "ollama"
       # model: "deepseek-r1:14b"
       # model: "qwen3-coder:30b"
       # model: "qwen3:14b"
-      # model: "qwen3.5:9b-q4_K_M"
+      model: "qwen3.5:9b-q4_K_M"
       # model: "qwen3.5:2b"
       # model: "gpt-oss:20b"
       # model: "granite3.3:2b"
