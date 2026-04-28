@@ -847,15 +847,11 @@ Pushes changes to a remote repository.
             fail_count = self._failed_reads[agent_id].get(filename, 0) + 1
             self._failed_reads[agent_id][filename] = fail_count
             
-            if fail_count >= 3:
-                parent_dir = str(parent.relative_to(base_path)) if parent.is_relative_to(base_path) else "."
-                list_result = await self._list_directory(base_path, parent_dir, agent_id, scope_description)
-                list_content = list_result.get("message", "(Could not list directory)")
-                override_message = f"[Framework Intervention]: You have failed to read '{filename}' {fail_count} times. The file does NOT exist. To help you recover, the framework has automatically run the 'list' command on the parent directory '{parent_dir}'. Please review these contents and use the correct filename:\n\n{list_content}"
-                logger.warning(f"Agent {agent_id} stuck in read loop for '{filename}'. Auto-fallback to list directory triggered.")
-                return {"status": "error", "message": override_message}
+            parent_dir = str(parent.relative_to(base_path)) if parent.is_relative_to(base_path) else "."
+            list_result = await self._list_directory(base_path, parent_dir, agent_id, scope_description)
+            list_content = list_result.get("message", "(Could not list directory)")
             
-            hint += f"\n\n[Framework Intervention]: You have failed to read '{filename}' {fail_count} times. STOP trying to read this specific file. Run the 'list' action on the root directory or relevant parent directory to understand the actual file structure. The file you are looking for likely has a different name or path."
+            hint += f"\n\n[Framework Intervention]: You have failed to read '{filename}' {fail_count} times. The file does NOT exist. The framework has automatically run the 'list' command on the parent directory '{parent_dir}'. Please review these contents and use the correct filename:\n\n{list_content}"
             # ----------------------------------------
             
             return {"status": "error", "message": f"File not found: '{filename}' in {scope_description}.{hint}"}
@@ -881,17 +877,13 @@ Pushes changes to a remote repository.
             if agent_id not in self._failed_reads: self._failed_reads[agent_id] = {}
             fail_count = self._failed_reads[agent_id].get(filename, 0) + 1
             self._failed_reads[agent_id][filename] = fail_count
-            hint = ""
-            if fail_count >= 3:
-                parent = validated_path.parent
-                parent_dir = str(parent.relative_to(base_path)) if parent.is_relative_to(base_path) else "."
-                list_result = await self._list_directory(base_path, parent_dir, agent_id, scope_description)
-                list_content = list_result.get("message", "(Could not list directory)")
-                override_message = f"[Framework Intervention]: You have failed to read '{filename}' {fail_count} times. The file does NOT exist. To help you recover, the framework has automatically run the 'list' command on the parent directory '{parent_dir}'. Please review these contents and use the correct filename:\n\n{list_content}"
-                logger.warning(f"Agent {agent_id} stuck in read loop for '{filename}'. Auto-fallback to list directory triggered.")
-                return {"status": "error", "message": override_message}
-                
-            hint = f"\n\n[Framework Intervention]: You have failed to read '{filename}' {fail_count} times. STOP trying to read this specific file. Run the 'list' action on the root directory or relevant parent directory to understand the actual file structure."
+            
+            parent = validated_path.parent
+            parent_dir = str(parent.relative_to(base_path)) if parent.is_relative_to(base_path) else "."
+            list_result = await self._list_directory(base_path, parent_dir, agent_id, scope_description)
+            list_content = list_result.get("message", "(Could not list directory)")
+            
+            hint = f"\n\n[Framework Intervention]: You have failed to read '{filename}' {fail_count} times. The file does NOT exist. The framework has automatically run the 'list' command on the parent directory '{parent_dir}'. Please review these contents and use the correct filename:\n\n{list_content}"
             # ----------------------------------------
             logger.warning(f"Agent {agent_id} file read error (FileNotFound): File not found at '{filename}' in {scope_description}."); return {"status": "error", "message": f"File not found at '{filename}' in {scope_description}.{hint}"}
         except PermissionError: logger.error(f"Agent {agent_id} file read error: Permission denied for '{filename}' in {scope_description}."); return {"status": "error", "message": f"Permission denied when reading file '{filename}'."}
@@ -923,23 +915,14 @@ Pushes changes to a remote repository.
                 "message": (
                     f"File '{filename}' already exists. Overwriting entire existing files using the file_system 'write' action is disabled to save tokens and prevent accidental code loss. "
                     "You MUST NOT call 'write' on this file again. "
-                    "Instead, please use the separate 'code_editor' tool (action 'replace_chunks') to modify existing code.\n\n"
+                    "Instead, please use the separate 'code_editor' native JSON tool to modify existing code.\n\n"
                     "Example usage:\n"
-                    "```xml\n"
-                    "<code_editor>\n"
-                    "  <action>replace_chunks</action>\n"
-                    f"  <filename>{filename}</filename>\n"
-                    "  <chunks>\n"
-                    "    [\n"
-                    "      {\n"
-                    "        \"search\": \"existing code to replace\",\n"
-                    "        \"replace\": \"new code\"\n"
-                    "      }\n"
-                    "    ]\n"
-                    "  </chunks>\n"
-                    "</code_editor>\n"
-                    "```\n\n"
-                    "If you absolutely need to recreate the file from scratch, you must call 'delete' first."
+                    "Tool: `code_editor`\n"
+                    "Arguments:\n"
+                    "  - action: 'replace_chunks'\n"
+                    f"  - filename: '{filename}'\n"
+                    "  - chunks: [{'search': 'exact existing code', 'replace': 'new code'}]\n\n"
+                    "If you absolutely need to recreate the file from scratch, you must call the 'file_system' tool with action 'delete' first."
                 )
             }
             
