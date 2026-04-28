@@ -11,6 +11,7 @@
     *   **Workflow Continuation**: Smart reactivation logic for multi-step agent workflows
     *   **Health Analytics**: Detailed agent behavior analysis and intervention strategies
     *   **Team Work In Progress (WIP) Injection**: Dynamic injection of real-time team status updates into active agent prompts to ensure cross-agent situational awareness and minimize duplicated efforts.
+    *   **Smart Decompose Detection**: Worker `decompose`→`work` transitions are validated by checking whether the worker actually created sub-tasks assigned to themselves. Workers who skip decomposition for simple tasks are allowed to proceed directly without losing their parent task.
 *   **Configurable Model Selection:**
     *   Dynamic discovery of providers/models (vLLM, Ollama, OpenRouter, OpenAI).
     *   Filtering based on `MODEL_TIER` (.env: `FREE` or `ALL`).
@@ -25,8 +26,9 @@
 *   **State-Driven Admin AI Workflow:** Admin AI operates based on its current state (`conversation`, `planning`).
     *   **Conversation State:** Focuses on user interaction, KB search/save, monitoring PM updates, and identifying new tasks. Uses `<request_state state='planning'>` to signal task identification.
     *   **Planning State:** Focuses solely on creating a plan with a `<title>` tag. Framework handles project/PM creation upon plan submission.
-*   **XML Tooling:** Agents request tool use via XML format. Available tools:
-    *   `FileSystemTool`: Read, Write, List, Mkdir, Delete, Find/Replace, Fuzzy Search/Replace (`search_replace_block`), and Git operations (`git_commit`, `git_status`, `git_diff`) in sandbox or shared workspaces.
+*   **Dual-Mode Tooling (Native JSON primary, XML fallback):** Agents request tool use via native JSON tool calls (default) or XML format (legacy fallback). Controlled by `NATIVE_TOOL_CALLING_ENABLED` in `.env`. Available tools:
+    *   `FileSystemTool`: Read, Write, List, Mkdir, Delete, Find/Replace, Fuzzy Search/Replace (`search_replace_block`), and Git operations (`git_commit`, `git_status`, `git_diff`) in sandbox or shared workspaces. **Enhanced error recovery:** Read errors for missing files now automatically append the parent directory listing so agents immediately know what files actually exist. Write errors for existing files now include native-JSON `code_editor` usage examples rather than XML instructions.
+    *   `CodeEditorTool`: Mandatory for modifying existing files (`replace_chunks` action). Overwrites are blocked at the `FileSystemTool` level and agents are directed here instead.
     *   `GitHubTool`: List Repos, List Files (Recursive), Read File content using PAT.
     *   `ManageTeamTool`: Create/Delete Agents/Teams, Assign Agents, List Agents/Teams, Get Agent Details.
     *   `SendMessageTool`: Communicate between agents within a team or with Admin AI (using exact agent IDs).

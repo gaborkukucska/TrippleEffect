@@ -1,8 +1,8 @@
 <!-- # START OF FILE helperfiles/PROJECT_PLAN.md -->
 # Project Plan: TrippleEffect
 
-**Version:** 2.45
-**Date:** 2026-04-21
+**Version:** 2.46
+**Date:** 2026-04-28
 
 ## 1. Project Goals
 
@@ -157,6 +157,14 @@
 * [X] **XML Tooling Fallbacks & Missing Parameters:** Enhanced `github_tool.py` and `manage_team.py` to provide actionable XML examples when required parameters like `action` or `role` are missing, instead of generic errors.
 * [X] **Relaxed Code Editor Strictness:** Implemented line-by-line `.strip()` fuzzy whitespace matching in `code_editor.py` Tier 2 fallback to prevent LLM tokenization spacing issues from causing edit failures.
 * [X] **Loop Mitigation & Context Stuttering:** Lowered the `is_stuck_in_loop` threshold in `next_step_scheduler.py` from 4 to 2. Added context truncation logic that removes the last 4 messages from PM history during loop intervention to definitively break autoregressive LLM memory loops.
+
+**Framework Stability Hardening (v2.46, Completed)**
+
+* [X] **Critical Fix — Worker Task Loss During Decompose→Work Transition:** Fixed a critical bug in `src/agents/workflow_manager.py` where workers lost their assigned task when skipping decomposition. The `tw.tasks.filter(depends=main_task)` check was matching *unrelated kick-off tasks* that depended on the parent, not worker-created sub-tasks. Added an assignee filter (`st.get('assignee') == agent.agent_id`) so only genuinely worker-owned sub-tasks count as evidence of decomposition. Workers who skip decomposition now retain their original task and receive a `[Framework Note]` explaining they are working directly on it.
+* [X] **Prompt Standardization — Native JSON Tool Calling:** Scrubbed `prompts.yaml` of all embedded XML tool-call tag examples (e.g. `<send_message>`, `<manage_team>`, `<project_management>`). Tool references are now backtick-quoted names, allowing the `WorkflowManager` to dynamically inject the correct JSON or XML format at runtime. Eliminates agent XML output when running in native JSON mode.
+* [X] **FileSystemTool Error Recovery Enhancements:** `_read_file` now auto-appends a `list_directory` result to any `FileNotFoundError`, giving agents instant filesystem context and eliminating 3+ retry loops on missing paths. `_write_file` overwrite errors now include native-JSON `code_editor` examples (not XML) so agents self-correct cleanly in JSON tool-calling mode.
+* [X] **Unit Test Suite — 76/76 Passing:** Resolved `test_failover_handler.py` failures caused by missing `agent_type` attribute on `MagicMock` instances and incorrect positional argument count for `_select_alternate_models`. Fixed `test_settings.py` overly strict `assert_called_once()` assertion. Full suite now green across all 11 test modules.
+
 
 **Future Goals:**
 

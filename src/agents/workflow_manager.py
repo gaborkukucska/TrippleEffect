@@ -297,6 +297,7 @@ class AgentWorkflowManager:
                     # --- DECOMPOSE TRANSITION VALIDATION ---
                     if current_state == WORKER_STATE_DECOMPOSE and requested_state == WORKER_STATE_WORK:
                         valid_transition = True
+                        worker_actually_decomposed = False  # Track if this worker created real sub-tasks
                         if hasattr(agent, 'manager') and hasattr(agent.manager, 'tool_executor') and 'project_management' in agent.manager.tool_executor.tools:
                             pm_tool = agent.manager.tool_executor.tools['project_management']
                             try:
@@ -320,10 +321,17 @@ class AgentWorkflowManager:
                                             
                                         if main_task:
                                             subtasks = tw.tasks.filter(depends=main_task)
-                                            if len(subtasks) == 0:
-                                                valid_transition = False
-                                            else:
-                                                # New auto-completion of the decomposed "kick-off" / parent task
+                                            
+                                            # --- FIX: Distinguish real sub-tasks (created by this worker) from
+                                            # unrelated kick-off tasks that merely depend on the parent ---
+                                            worker_subtasks = [
+                                                st for st in subtasks
+                                                if str(st.get('assignee', '') or '') == agent.agent_id
+                                            ]
+                                            
+                                            if len(worker_subtasks) > 0:
+                                                # Worker genuinely decomposed: mark parent as decomposed and reassign to PM
+                                                worker_actually_decomposed = True
                                                 try:
                                                     main_task['task_progress'] = "decomposed"
                                                     
@@ -355,26 +363,28 @@ class AgentWorkflowManager:
                                                     # Ignore if already completed to avoid crashing
                                                     if "completed" not in str(e).lower() and "Cannot complete a completed task" not in str(e):
                                                         logger.error(f"WorkflowManager: Failed to auto-complete decomposed task '{getattr(main_task, 'uuid', task_id_str)}': {e}")
+                                            else:
+                                                # Worker skipped decomposition (no sub-tasks assigned to them).
+                                                # Allow the transition and let them work on the parent task directly.
+                                                logger.info(
+                                                    f"WorkflowManager: Worker '{agent.agent_id}' skipped decomposition for task "
+                                                    f"'{task_id_str}' (found {len(subtasks)} dependent task(s) but none assigned to this worker). "
+                                                    f"Allowing direct work on the original task."
+                                                )
+                                                # Provide feedback so the worker knows it's working on the original task
+                                                skip_decompose_msg = (
+                                                    f"[Framework Note] You chose to skip decomposition for task '{agent.current_task_id}'. "
+                                                    f"You will now work directly on this task. Focus on completing it efficiently."
+                                                )
+                                                if not hasattr(agent, 'message_history'):
+                                                    agent.message_history = []
+                                                agent.message_history.append({"role": "system", "content": skip_decompose_msg})
                                         else:
                                             logger.warning(f"WorkflowManager: Could not retrieve task '{task_id_str}' for validation. Proceeding without sub-task validation.")
                                     except Exception as e:
                                         logger.warning(f"WorkflowManager: Could not retrieve task '{task_id_str}' for validation: {e}. Proceeding without sub-task validation.")
                             except Exception as e:
                                 logger.error(f"WorkflowManager: Error validating subtask creation for {agent.agent_id}: {e}", exc_info=True)
-                                
-                        if not valid_transition:
-                            logger.warning(f"WorkflowManager: Agent '{agent.agent_id}' attempted to leave decompose state without creating subtasks for task '{agent.current_task_id}'. Rejecting transition.")
-                            feedback_msg = (
-                                f"[Framework Feedback]\nTransition to '{WORKER_STATE_WORK}' rejected. "
-                                f"You MUST use the `project_management` tool (`add_task` action) to create sub-tasks for your assigned task "
-                                f"(task_id: {agent.current_task_id}) before starting work. Ensure you set the `depends` parameter "
-                                f"on the new sub-tasks to your assigned task ID."
-                            )
-                            if not hasattr(agent, 'message_history'):
-                                agent.message_history = []
-                            agent.message_history.append({"role": "system", "content": feedback_msg})
-                            agent._last_system_prompt_state = None # Force prompt refresh
-                            return False
                         
                         # --- DECOMPOSE TO WORK: CONTEXT CLEARING ---
                         # Condense history to prevent autoregressive looping where the agent

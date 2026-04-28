@@ -1,7 +1,7 @@
 # TrippleEffect - Current Issues
 
-**Last Updated:** 2026-04-07
-**Based on log:** `app_20260406_184558_865072.log` (SnakeyDoodle test run #2, ~6 hours)
+**Last Updated:** 2026-04-28
+**Based on log:** `app_20260428_102543_830757.log` (SnakeyDoodle test run #3)
 
 ---
 
@@ -34,6 +34,24 @@
 ---
 
 ## Recently Resolved Issues
+
+### +30. Worker Loses Assigned Task During Decompose→Work Transition
+- **Severity:** Critical (P0)
+- **Description:** When a worker agent (e.g., W1) entered `worker_decompose` and skipped decomposition (for simple tasks), the framework falsely concluded the worker had decomposed and stripped its task. The `tw.tasks.filter(depends=main_task)` query matched *unrelated kick-off tasks* that simply depended on the parent, not sub-tasks the worker created. The parent was then marked `decomposed` (hidden from `list_tasks`) and reassigned to PM — leaving the worker with 0 tasks and causing a stall loop.
+- **Fix:** (RESOLVED) Added an assignee filter in `WorkflowManager.change_state` to only count subtasks assigned to **this specific worker** (`st.get('assignee') == agent.agent_id`) as evidence of decomposition. If no worker-owned subtasks exist, the transition is allowed without marking the parent as decomposed — the worker retains its original task. Workers who genuinely decompose still trigger the old behaviour (parent marked `decomposed`, reassigned to PM).
+- **Files:** `src/agents/workflow_manager.py` (lines ~297–388)
+
+### +29. XML Tool-Call Instructions Persisting in prompts.yaml
+- **Severity:** Medium (P2)
+- **Description:** Several worker and PM state prompts in `prompts.yaml` contained hardcoded XML tool-call tag examples (e.g. `<send_message>`, `<project_management>`, `<manage_team>`). When the framework operates in native JSON mode (`NATIVE_TOOL_CALLING_ENABLED=true`), agents would occasionally output XML-wrapped tool calls because the prompt examples reinforced that pattern, triggering XML parse failures.
+- **Fix:** (RESOLVED) Removed all embedded XML tag examples from `prompts.yaml`. Tool references were replaced with backtick-quoted tool names (e.g. `` `send_message` ``, `` `project_management` ``), allowing the `WorkflowManager` to dynamically inject the correct format (JSON vs XML) at runtime via the standard native tool call preamble.
+- **Files:** `prompts.yaml`
+
+### +28. FileSystem Tool Errors Provide Insufficient Recovery Context
+- **Severity:** Medium (P2)
+- **Description:** When an agent attempted to read a non-existent file, the generic `FileNotFoundError` gave no indication of what files actually existed nearby, causing agents to retry the same path 3+ times before recovering. Similarly, when agents attempted to overwrite an existing file via `file_system` write, the error message included XML-formatted instructions for `code_editor` which clashed with native JSON mode.
+- **Fix:** (RESOLVED) `src/tools/file_system.py` updated in two areas: (1) `_read_file` now immediately runs `list_directory` on the parent path and appends the directory listing to any `FileNotFoundError`, giving agents instant filesystem context. (2) `_write_file` now emits plain-text (non-XML) `code_editor` instructions with a native JSON tool call example so the agent can self-correct without format confusion.
+- **Files:** `src/tools/file_system.py`
 
 ### +27. Background Process Port Locking
 - **Severity:** Medium (P2)

@@ -1,7 +1,7 @@
 <!-- # IT IS CRITICAL THAT ALL AIs and LLMs FOLLOW THE DEVELOPMENT INSTRUCTIONS IN THE `helperfiles/DEVELOPMENT_RULES.md` FILE WHEN FURTHER DEVELOPING THIS FRAMEWORK!!! -->
 # 🚀 TrippleEffect Multi-Agent Framework
 
-**Version:** 2.45
+**Version:** 2.46
 
 > **⚠️ EXPERIMENTAL SOFTWARE — R&D USE ONLY**
 >
@@ -84,6 +84,7 @@ The **#1 challenge** with local LLMs is limited context. TrippleEffect tackles t
 | 📋 **Filtered Task Views** | When the PM lists tasks, the framework auto-filters to show only *unassigned* work — no dumping hundreds of already-delegated items into the prompt. |
 | 🗜️ **Auto Context Summarization** | When an agent's history grows too long, an LLM summarizes older messages while preserving critical anchors (tool results, state transitions). |
 | 📬 **Message Inboxing** | Messages between agents are queued and delivered only when the recipient enters a safe state — no context pollution mid-thought. |
+| 📂 **Contextual Error Recovery** | When agents hit file-not-found errors, the framework immediately appends the real directory listing to the error so agents self-correct without retry loops. |
 
 ### 🔁 Assisted Workflows — The Framework Does the Heavy Lifting
 
@@ -95,6 +96,7 @@ Agents don't just chat — the framework actively manages their lifecycle:
 * 🏥 **Health Monitoring** — The `AgentHealthMonitor` tracks cycle patterns. If an agent stalls, the Constitutional Guardian writes a diagnostic report and delivers it to the agent's supervisor.
 * 🔀 **Automatic Failover** — If a model or provider fails, the framework tries alternate local APIs, then alternate models, then external providers — all transparently.
 * 🧰 **Smart Error Recovery** — When a tool call fails, the error message includes the tool's own documentation so the agent can self-correct.
+* 🧩 **Smart Decompose Detection** — Workers can skip decomposition for simple tasks. The framework validates transitions by checking worker-owned sub-tasks (not unrelated dependent tasks), so workers never lose their assigned task.
 
 ### 🔑 Key Design Principles
 
@@ -168,8 +170,8 @@ To keep this README clean and exciting, we've moved all the heavy lifting and de
 
 ## 🚀 Development Status
 
-* **Current Version:** 2.45
-* **Recent Highlights:** We recently deployed Worker Efficiency Upgrades including native codebase searching, a sandboxed test runner, visual task dependency graphing via Mermaid, and proactive redirection to our `code_editor` tool for reliable targeted code modifications.
+* **Current Version:** 2.46
+* **Recent Highlights:** Stability hardening — fixed a critical bug where workers lost their assigned task during the `decompose→work` transition (false-positive decomposition detection via unrelated dependent tasks). Overhauled `prompts.yaml` to remove embedded XML tool-call examples, aligning all agent instructions with native JSON tool calling. Enhanced `FileSystemTool` error recovery with automatic directory listings on file-not-found errors and native-JSON `code_editor` guidance on overwrite attempts. Full unit test suite now passing (76/76).
 * **Current Phase:** Target Phase 28 features Advanced Memory & Learning systems, proactive behaviors, and federated communication foundations.
 
 ## 🤝 Contributing & License
