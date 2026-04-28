@@ -48,6 +48,7 @@ class CodeEditorTool(BaseTool):
             type="array",
             description="An array of objects, where each object has 'search' and 'replace' string keys. The tool will find exact matches for 'search' and replace them with 'replace'.",
             required=True,
+            aliases=["replacements", "replace_chunks", "edits", "replacements_json", "modifications"]
         )
     ]
 
@@ -78,6 +79,13 @@ class CodeEditorTool(BaseTool):
         if not filename or not chunks:
             return {"status": "error", "message": "Missing 'filename' or 'chunks' parameter."}
             
+        if isinstance(chunks, str):
+            try:
+                import json
+                chunks = json.loads(chunks)
+            except Exception as e:
+                return {"status": "error", "message": f"'chunks' was provided as a string but is not valid JSON: {e}"}
+                
         if not isinstance(chunks, list):
             return {"status": "error", "message": "'chunks' must be a list of dicts with 'search' and 'replace' keys."}
 
@@ -158,11 +166,26 @@ class CodeEditorTool(BaseTool):
                         content = before + replacement + after
                         successful += 1
                         continue
-                    elif len(matches) > 1:
                         errors.append(f"Chunk {idx}: Search text is ambiguous (found {len(matches)} times ignoring whitespace).")
                         continue
                             
                     # Provide fuzzy match attempt context
+                    import difflib
+                    search_lines = search_text.splitlines()
+                    content_lines = content.splitlines()
+                    if search_lines and content_lines:
+                        first_line = next((line for line in search_lines if line.strip()), None)
+                        if first_line:
+                            close_matches = difflib.get_close_matches(first_line, content_lines, n=1, cutoff=0.6)
+                            if close_matches:
+                                best_line = close_matches[0]
+                                line_idx = content_lines.index(best_line)
+                                start_idx = max(0, line_idx - 2)
+                                end_idx = min(len(content_lines), line_idx + len(search_lines) + 2)
+                                context = '\n'.join(content_lines[start_idx:end_idx])
+                                errors.append(f"Chunk {idx}: Search text not found exactly. Found a close match here:\n```\n{context}\n```\nPlease ensure EXACT spacing and indentation matching the file.")
+                                continue
+                                
                     errors.append(f"Chunk {idx}: Search text not found in file. Ensure exact matching.")
                 elif occurrences > 1:
                     errors.append(f"Chunk {idx}: Search text is ambiguous (found {occurrences} times). Please make the search block larger/more unique.")

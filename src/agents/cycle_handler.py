@@ -2681,7 +2681,7 @@ class AgentCycleHandler:
                 content=final_output_content,
                 has_action=context.action_taken_this_cycle,
                 has_thought=context.thought_produced_this_cycle,
-                took_meaningful_action=context.executed_tool_successfully_this_cycle or context.state_change_requested_this_cycle
+                took_meaningful_action=context.executed_tool_successfully_this_cycle or context.state_change_requested_this_cycle or bool(context.all_tool_results)
             )
     
             # Constitutional Guardian Health Intervention Check

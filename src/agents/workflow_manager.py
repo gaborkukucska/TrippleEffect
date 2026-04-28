@@ -846,7 +846,7 @@ class AgentWorkflowManager:
 4. Examples of CORRECT formats:
    - List tools: `<tool_information><action>list_tools</action></tool_information>`
    - Get tool info: `<tool_information><action>get_info</action><tool_name>code_editor</tool_name></tool_information>`
-   - Use code_editor (for modifying existing files): `<code_editor><action>replace_chunks</action><filepath>src/main.py</filepath><replacements>[{"search": "old_code", "replace": "new_code"}]</replacements></code_editor>`
+   - Use code_editor (for modifying existing files): `<code_editor><action>replace_chunks</action><filepath>src/main.py</filepath><chunks>[{"search": "old_code", "replace": "new_code"}]</chunks></code_editor>`
 5. NEVER put <parameters> tags inside tool_information - use the actual tool parameters
 6. **IMPORTANT:** ALWAYS use `code_editor` for modifying existing code. Only use `file_system` (write action) for creating BRAND NEW files."""
 
@@ -862,7 +862,7 @@ class AgentWorkflowManager:
 
         xml_tool_examples = """[EXAMPLE TOOL USE RESPONSE]
 <think>I need to add a new function to the main application logic.</think>
-<code_editor><action>replace_chunks</action><filepath>src/main.py</filepath><replacements>[{"search": "def old_func():\\n    pass", "replace": "def old_func():\\n    pass\\n\\ndef new_func():\\n    print('Hello')"}]</replacements></code_editor>
+<code_editor><action>replace_chunks</action><filepath>src/main.py</filepath><chunks>[{"search": "def old_func():\\n    pass", "replace": "def old_func():\\n    pass\\n\\ndef new_func():\\n    print('Hello')"}]</chunks></code_editor>
 
 [EXAMPLE: SWITCHING TO REPORT STATE]
 <think>I have completed the first milestone. I need to report my progress to the PM.</think>

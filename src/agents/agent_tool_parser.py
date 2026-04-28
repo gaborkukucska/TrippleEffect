@@ -196,6 +196,10 @@ def find_and_parse_xml_tool_calls(
         # Escape content inside known parameter tags to prevent ET.ParseError on unescaped HTML/XML
         # IMPORTANT: Also escape content in ALIAS tags that LLMs commonly use instead of schema names
         PARAM_ALIAS_MAP = {
+            "code_editor": {
+                "chunks": ["replacements", "replace_chunks", "edits", "replacements_json", "modifications"],
+                "filename": ["filepath", "file_path", "file_name", "path", "file"],
+            },
             "file_system": {
                 "search_block": ["search", "search_string", "find", "find_text", "search_text", "search_term"],
                 "replace_block": ["replace", "replacement", "replace_string", "replace_text", "replace_term"],
@@ -327,8 +331,8 @@ def find_and_parse_xml_tool_calls(
                     tool_args["content"] = raw_text
                 elif identified_tool_name.lower() == "send_message" and "message_content" not in tool_args:
                     tool_args["message_content"] = raw_text
-                elif identified_tool_name.lower() == "code_editor" and "replacements" not in tool_args:
-                    tool_args["replacements"] = raw_text
+                elif identified_tool_name.lower() == "code_editor" and "chunks" not in tool_args and "replacements" not in tool_args:
+                    tool_args["chunks"] = raw_text
                 elif identified_tool_name.lower() == "project_management" and "task_description" not in tool_args:
                     tool_args["task_description"] = raw_text
                 elif "content" not in tool_args:
