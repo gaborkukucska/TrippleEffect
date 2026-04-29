@@ -15,7 +15,7 @@ from src.agents.constants import (
     AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER,
     ADMIN_STATE_CONVERSATION, ADMIN_STATE_WORK, ADMIN_STATE_PLANNING,
     PM_STATE_MANAGE, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS,
-    WORKER_STATE_WORK, WORKER_STATE_WAIT, CONSTITUTIONAL_GUARDIAN_AGENT_ID
+    WORKER_STATE_WORK, WORKER_STATE_TEST, WORKER_STATE_WAIT, CONSTITUTIONAL_GUARDIAN_AGENT_ID
 )
 
 # Import for automatic contaminated history cleanup
@@ -922,8 +922,8 @@ class ConstitutionalGuardianHealthMonitor:
     def _generate_state_progression_guidance(self, agent: 'Agent', history_analysis: Dict) -> str:
         """Generate guidance for agents stuck in the same state."""
         
-        # Worker-specific guidance with explicit state transition instructions
-        if agent.agent_type == AGENT_TYPE_WORKER and agent.state == WORKER_STATE_WORK:
+        # Additional contextual hint for workers in work or test state
+        if agent.agent_type == AGENT_TYPE_WORKER and agent.state in [WORKER_STATE_WORK, WORKER_STATE_TEST]:
             return (
                 f"[Constitutional Guardian - STATE PROGRESSION REQUIRED]: You have been stuck in state "
                 f"'{agent.state}' for {history_analysis.get('focus', 'many')} cycles without making progress.\n\n"
@@ -1222,7 +1222,8 @@ class ConstitutionalGuardianHealthMonitor:
             
             (AGENT_TYPE_PM, PM_STATE_MANAGE): "Continuously manage the project: assess status → analyze and decide → take one management action → repeat.",
             
-            (AGENT_TYPE_WORKER, WORKER_STATE_WORK): "Complete your assigned task step by step, save your work to files, and report progress to your Project Manager."
+            (AGENT_TYPE_WORKER, WORKER_STATE_WORK): "Complete your assigned task step by step, save your work to files, and report progress to your Project Manager.",
+            (AGENT_TYPE_WORKER, WORKER_STATE_TEST): "Test your work, run commands to verify it functions, and fix bugs or report to PM.",
         }
         
         return reminders.get((agent.agent_type, workflow_state))

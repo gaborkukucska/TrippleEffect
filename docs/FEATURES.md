@@ -12,6 +12,7 @@
     *   **Health Analytics**: Detailed agent behavior analysis and intervention strategies
     *   **Team Work In Progress (WIP) Injection**: Dynamic injection of real-time team status updates into active agent prompts to ensure cross-agent situational awareness and minimize duplicated efforts.
     *   **Smart Decompose Detection**: Worker `decompose`→`work` transitions are validated by checking whether the worker actually created sub-tasks assigned to themselves. Workers who skip decomposition for simple tasks are allowed to proceed directly without losing their parent task.
+*   **Test-Driven Agent Workflow:** Workers feature a dedicated `worker_test` multi-cycle state to explicitly run tests via `command_executor`. Code tasks must be validated before being marked complete, significantly improving output reliability.
 *   **Configurable Model Selection:**
     *   Dynamic discovery of providers/models (vLLM, Ollama, OpenRouter, OpenAI).
     *   Filtering based on `MODEL_TIER` (.env: `FREE` or `ALL`).

@@ -18,7 +18,7 @@ from src.agents.constants import (
     PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_STANDBY,
     PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS,
     PM_STATE_REPORT_CHECK, PM_STATE_AUDIT,
-    WORKER_STATE_STARTUP, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK, WORKER_STATE_REPORT, WORKER_STATE_WAIT,
+    WORKER_STATE_STARTUP, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK, WORKER_STATE_TEST, WORKER_STATE_REPORT, WORKER_STATE_WAIT,
     DEFAULT_STATE, BOOTSTRAP_AGENT_ID, AGENT_STATUS_IDLE
 )
 from src.config.settings import settings, BASE_DIR
@@ -39,7 +39,7 @@ class AgentWorkflowManager:
         self._valid_states: Dict[str, List[str]] = {
             AGENT_TYPE_ADMIN: [ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK, ADMIN_STATE_STANDBY, DEFAULT_STATE],
             AGENT_TYPE_PM: [PM_STATE_STARTUP, PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_REPORT_CHECK, PM_STATE_AUDIT, PM_STATE_STANDBY, DEFAULT_STATE],
-            AGENT_TYPE_WORKER: [WORKER_STATE_STARTUP, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK, WORKER_STATE_REPORT, WORKER_STATE_WAIT, DEFAULT_STATE]
+            AGENT_TYPE_WORKER: [WORKER_STATE_STARTUP, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK, WORKER_STATE_TEST, WORKER_STATE_REPORT, WORKER_STATE_WAIT, DEFAULT_STATE]
         }
         self._prompt_map: Dict[Tuple[str, str], str] = {
             (AGENT_TYPE_ADMIN, ADMIN_STATE_STARTUP): "admin_ai_startup_prompt",
@@ -64,6 +64,7 @@ class AgentWorkflowManager:
             (AGENT_TYPE_WORKER, WORKER_STATE_STARTUP): "worker_startup_prompt",
             (AGENT_TYPE_WORKER, WORKER_STATE_DECOMPOSE): "worker_decompose_prompt",
             (AGENT_TYPE_WORKER, WORKER_STATE_WORK): "worker_work_prompt",
+            (AGENT_TYPE_WORKER, WORKER_STATE_TEST): "worker_test_prompt",
             (AGENT_TYPE_WORKER, WORKER_STATE_REPORT): "worker_report_prompt",
             (AGENT_TYPE_WORKER, WORKER_STATE_WAIT): "worker_wait_prompt",
             (AGENT_TYPE_WORKER, DEFAULT_STATE): "default_system_prompt"
@@ -95,6 +96,7 @@ class AgentWorkflowManager:
             (AGENT_TYPE_WORKER, "startup"): WORKER_STATE_STARTUP,
             (AGENT_TYPE_WORKER, "decompose"): WORKER_STATE_DECOMPOSE,
             (AGENT_TYPE_WORKER, "work"): WORKER_STATE_WORK,
+            (AGENT_TYPE_WORKER, "test"): WORKER_STATE_TEST,
             (AGENT_TYPE_WORKER, "report"): WORKER_STATE_REPORT,
             (AGENT_TYPE_WORKER, "wait"): WORKER_STATE_WAIT,
         }
@@ -855,7 +857,9 @@ class AgentWorkflowManager:
 - **Workflow:** Use the provided JSON tool functions to execute actions. Do NOT output XML `<tool_name>...</tool_name>` tags to call tools. Simply call the tool naturally! Your tool calls will be intercepted and executed by the system automatically.
 - **IMPORTANT:** ALWAYS use `code_editor` for modifying existing code. Only use `file_system` (write action) for creating BRAND NEW files."""
 
-        state_uses_native_tools = agent.state in {ADMIN_STATE_WORK, ADMIN_STATE_CONVERSATION, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_AUDIT, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK}
+        # Identify if the agent's current state requires native tool handling.
+        # Active work/management states generally use native tools.
+        state_uses_native_tools = agent.state in {ADMIN_STATE_WORK, ADMIN_STATE_CONVERSATION, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_AUDIT, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK, WORKER_STATE_TEST}
         use_native_instructions = settings.NATIVE_TOOL_CALLING_ENABLED and state_uses_native_tools
 
         tool_instructions = native_tool_instructions if use_native_instructions else xml_tool_instructions

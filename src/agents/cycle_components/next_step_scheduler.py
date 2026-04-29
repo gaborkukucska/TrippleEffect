@@ -12,8 +12,8 @@ from src.agents.constants import (
     ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK, ADMIN_STATE_STANDBY,
     PM_STATE_STARTUP, PM_STATE_MANAGE, PM_STATE_WORK, PM_STATE_AUDIT, PM_STATE_STANDBY,
     # Add new PM states for checks
-    PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_REPORT_CHECK,
-    WORKER_STATE_WAIT, WORKER_STATE_WORK, WORKER_STATE_REPORT, WORKER_STATE_DECOMPOSE
+    PM_STATE_PLAN_DECOMPOSITION, PM_STATE_ACTIVATE_WORKERS, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_REPORT_CHECK,
+    WORKER_STATE_WAIT, WORKER_STATE_WORK, WORKER_STATE_TEST, WORKER_STATE_REPORT, WORKER_STATE_DECOMPOSE
 )
 
 if TYPE_CHECKING:
@@ -152,6 +152,7 @@ class NextStepScheduler:
                 (AGENT_TYPE_PM, PM_STATE_MANAGE),
                 (AGENT_TYPE_PM, PM_STATE_AUDIT),
                 (AGENT_TYPE_WORKER, WORKER_STATE_WORK),
+                (AGENT_TYPE_WORKER, WORKER_STATE_TEST),
                 (AGENT_TYPE_WORKER, WORKER_STATE_REPORT),
                 (AGENT_TYPE_ADMIN, ADMIN_STATE_WORK),
             }
@@ -187,8 +188,8 @@ class NextStepScheduler:
             # This logic ensures that if an agent in a persistent state completes a cycle
             # without error and without requesting a state change, it gets reactivated.
             elif (agent.agent_type, agent.state) in persistent_states and not context.state_change_requested_this_cycle:
-                # Track consecutive failed cycles for workers to prevent infinite stagnation
-                if agent.agent_type == AGENT_TYPE_WORKER and agent.state == WORKER_STATE_WORK:
+                # Track consecutive failed cycles            # 1. Worker needs explicit state transition attribute
+                if agent.agent_type == AGENT_TYPE_WORKER and agent.state in [WORKER_STATE_WORK, WORKER_STATE_TEST]:
                     if not context.executed_tool_successfully_this_cycle and context.action_taken_this_cycle:
                         current_failures = getattr(agent, '_consecutive_failed_cycles', 0)
                         setattr(agent, '_consecutive_failed_cycles', current_failures + 1)
@@ -216,10 +217,10 @@ class NextStepScheduler:
                     
                 if is_stuck_in_loop:
                     logger.critical(f"NextStepScheduler: Agent '{agent_id}' is stuck in a loop in persistent state '{agent.state}'. FORCING intervention.")
-                    if agent.agent_type == AGENT_TYPE_WORKER and agent.state in [WORKER_STATE_WORK, WORKER_STATE_REPORT]:
+                    if agent.agent_type == AGENT_TYPE_WORKER and agent.state in [WORKER_STATE_WORK, WORKER_STATE_TEST, WORKER_STATE_REPORT]:
                         if hasattr(self._manager, 'workflow_manager'):
                             try:
-                                target_state = WORKER_STATE_REPORT if agent.state == WORKER_STATE_WORK else WORKER_STATE_WAIT
+                                target_state = WORKER_STATE_REPORT if agent.state in [WORKER_STATE_WORK, WORKER_STATE_TEST] else WORKER_STATE_WAIT
                                 self._manager.workflow_manager.change_state(agent, target_state)
                                 setattr(agent, '_duplicate_tool_call_count', 0)
                                 

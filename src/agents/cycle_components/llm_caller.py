@@ -8,7 +8,7 @@ from src.llm_providers.base import ToolResultDict
 # Import specific constants if needed, or rely on CycleContext for error types
 from src.agents.constants import (
     AGENT_TYPE_PM, AGENT_TYPE_WORKER, PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE,
-    WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_WAIT
+    WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_TEST, WORKER_STATE_WAIT
 )
 
 
@@ -66,7 +66,7 @@ class LLMCaller:
         elif agent.agent_type == AGENT_TYPE_WORKER:
             if agent.state == WORKER_STATE_STARTUP:
                 max_tokens_override = self._settings.WORKER_STARTUP_STATE_MAX_TOKENS
-            elif agent.state == WORKER_STATE_WORK:
+            elif agent.state in [WORKER_STATE_WORK, WORKER_STATE_TEST]:
                 max_tokens_override = self._settings.WORKER_WORK_STATE_MAX_TOKENS
             elif agent.state == WORKER_STATE_WAIT:
                  max_tokens_override = self._settings.WORKER_WAIT_STATE_MAX_TOKENS

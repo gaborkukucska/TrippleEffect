@@ -18,7 +18,7 @@ from src.agents.constants import (  # type: ignore[import]
     ADMIN_STATE_PLANNING, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STARTUP, ADMIN_STATE_WORK, ADMIN_STATE_STANDBY,
     PM_STATE_STARTUP, PM_STATE_MANAGE, PM_STATE_WORK, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_STANDBY,
     PM_STATE_REPORT_CHECK, PM_STATE_AUDIT,
-    WORKER_STATE_WAIT, WORKER_STATE_WORK, WORKER_STATE_REPORT, WORKER_STATE_DECOMPOSE,
+    WORKER_STATE_WAIT, WORKER_STATE_WORK, WORKER_STATE_TEST, WORKER_STATE_REPORT, WORKER_STATE_DECOMPOSE,
     REQUEST_STATE_TAG_PATTERN,
     CONSTITUTIONAL_GUARDIAN_AGENT_ID, # Added for CG
     BOOTSTRAP_AGENT_ID
@@ -76,7 +76,7 @@ class AgentCycleHandler:
         if agent.agent_type != AGENT_TYPE_WORKER:
             return
         resolved = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state)
-        if resolved != WORKER_STATE_WORK:
+        if resolved not in [WORKER_STATE_WORK, WORKER_STATE_TEST]:
             return
             
         if not hasattr(self, '_missing_task_id_counts'):
@@ -93,9 +93,9 @@ class AgentCycleHandler:
                     task_id = inferred_task_id
                     self._missing_task_id_counts[agent.agent_id] = 0
                 else:
-                    raise ValueError(f"You MUST specify a 'task_id' parameter when transitioning to '{WORKER_STATE_WORK}' state.\nIf you do not know your task_id:\n1. Check previous tool responses if you just created the task.\n2. Otherwise, use the project_management tool with action='list_tasks' to find the correct ID.\nThen retry with the attribute: <request_state state='worker_work' task_id='THE_ID'/>.")
+                    raise ValueError(f"You MUST specify a 'task_id' parameter when transitioning to '{resolved}' state.\nIf you do not know your task_id:\n1. Check previous tool responses if you just created the task.\n2. Otherwise, use the project_management tool with action='list_tasks' to find the correct ID.\nThen retry with the attribute: <request_state state='{resolved}' task_id='THE_ID'/>.")
             else:
-                raise ValueError(f"You MUST specify a 'task_id' parameter when transitioning to '{WORKER_STATE_WORK}' state.\nIf you do not know your task_id:\n1. Check previous tool responses if you just created the task.\n2. Otherwise, use the project_management tool with action='list_tasks' to find the correct ID.\nThen retry with the attribute: <request_state state='worker_work' task_id='THE_ID'/>.")
+                raise ValueError(f"You MUST specify a 'task_id' parameter when transitioning to '{resolved}' state.\nIf you do not know your task_id:\n1. Check previous tool responses if you just created the task.\n2. Otherwise, use the project_management tool with action='list_tasks' to find the correct ID.\nThen retry with the attribute: <request_state state='{resolved}' task_id='THE_ID'/>.")
         else:
             if hasattr(self, '_missing_task_id_counts'):
                 self._missing_task_id_counts[agent.agent_id] = 0
