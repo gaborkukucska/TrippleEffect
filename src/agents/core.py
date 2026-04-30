@@ -238,12 +238,14 @@ class Agent:
                 for tool_name, tool in self.manager.tool_executor.tools.items():
                     # Restrict specific states to only the tools they actually need
                     if self.agent_type == AGENT_TYPE_WORKER:
-                        if self.state == WORKER_STATE_DECOMPOSE and tool_name != 'project_management':
+                        if self.state == WORKER_STATE_DECOMPOSE and tool_name not in ['project_management', 'file_system', 'codebase_search', 'mark_message_read', 'send_message']:
                             continue
-                        if self.state == WORKER_STATE_REPORT and tool_name != 'send_message':
+                        if self.state == WORKER_STATE_REPORT and tool_name not in ['send_message', 'mark_message_read', 'project_management']:
+                            continue
+                        if self.state == WORKER_STATE_WAIT and tool_name not in ['send_message', 'mark_message_read', 'project_management']:
                             continue
                     elif self.agent_type == AGENT_TYPE_PM:
-                        if self.state == PM_STATE_BUILD_TEAM_TASKS and tool_name != 'manage_team':
+                        if self.state == PM_STATE_BUILD_TEAM_TASKS and tool_name not in ['manage_team', 'tool_information', 'mark_message_read', 'send_message']:
                             continue
                             
                     # Apply standard auth checks for native tools

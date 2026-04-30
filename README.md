@@ -1,7 +1,7 @@
 <!-- # IT IS CRITICAL THAT ALL AIs and LLMs FOLLOW THE DEVELOPMENT INSTRUCTIONS IN THE `helperfiles/DEVELOPMENT_RULES.md` FILE WHEN FURTHER DEVELOPING THIS FRAMEWORK!!! -->
 # 🚀 TrippleEffect Multi-Agent Framework
 
-**Version:** 2.46
+**Version:** 2.48
 
 > **⚠️ EXPERIMENTAL SOFTWARE — R&D USE ONLY**
 >
@@ -170,8 +170,8 @@ To keep this README clean and exciting, we've moved all the heavy lifting and de
 
 ## 🚀 Development Status
 
-* **Current Version:** 2.46
-* **Recent Highlights:** Stability hardening — fixed a critical bug where workers lost their assigned task during the `decompose→work` transition (false-positive decomposition detection via unrelated dependent tasks). Overhauled `prompts.yaml` to remove embedded XML tool-call examples, aligning all agent instructions with native JSON tool calling. Enhanced `FileSystemTool` error recovery with automatic directory listings on file-not-found errors and native-JSON `code_editor` guidance on overwrite attempts. Full unit test suite now passing (76/76).
+* **Current Version:** 2.48
+* **Recent Highlights:** Optimization pass (v2.48) — added `force_overwrite` parameter to `file_system write` for explicit full-file replacement, eliminating 128 overwrite-block errors on template files. Expanded `worker_report`/`worker_wait` whitelists to include `project_management`. Rewrote loop detection to be progress-aware — workers with 3+ unique tool signatures are cleared as productive. Raised duplicate-call threshold from 2→4 for work states. All enforcement points synchronized. Full unit test suite passing (76/76).
 * **Current Phase:** Target Phase 28 features Advanced Memory & Learning systems, proactive behaviors, and federated communication foundations.
 
 ## 🤝 Contributing & License

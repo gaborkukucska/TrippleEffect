@@ -1,7 +1,7 @@
 # TrippleEffect - Current Issues
 
-**Last Updated:** 2026-04-28
-**Based on log:** `app_20260428_102543_830757.log` (SnakeyDoodle test run #3)
+**Last Updated:** 2026-04-30
+**Based on log:** `app_20260430_161149_974450.log` (long-duration stability audit)
 
 ---
 
@@ -34,6 +34,48 @@
 ---
 
 ## Recently Resolved Issues
+
+### +38. Concentrated File Overwrite Blocks on Template Files (RESOLVED v2.48)
+- **Severity:** Medium (P2)
+- **Description:** Workers repeatedly hit overwrite blocks (128x per run) on `src/index.html` (68x) and `src/ui/ui_components.js` (60x) — files they genuinely needed to replace entirely rather than surgically edit. The blanket overwrite protection had no escape hatch after the `delete+write` workaround was removed in v2.47.
+- **Fix:** (RESOLVED) Added `force_overwrite` boolean parameter to `file_system` tool's `write` action. Workers can now set `force_overwrite: true` to explicitly replace entire files. Default behavior (block overwrites) preserved. Updated `worker_work_prompt` with guidance on when to use it.
+- **Files:** `src/tools/file_system.py`, `prompts.yaml`
+
+### +37. Workers Blocked from project_management in Report/Wait States (RESOLVED v2.48)
+- **Severity:** Low (P3)
+- **Description:** Workers trying to call `project_management` (3x) and `code_editor` (1x) while in `worker_report` state to verify task status before reporting. The whitelist only allowed `send_message`, `request_state`, and `mark_message_read`.
+- **Fix:** (RESOLVED) Added `project_management` to the `worker_report` and `worker_wait` whitelists across all three enforcement points.
+- **Files:** `src/tools/executor.py`, `src/agents/core.py`
+
+### +36. Aggressive Loop Detection Interrupting Genuine Multi-File Work (RESOLVED v2.48)
+- **Severity:** Medium (P2)
+- **Description:** Workers (W1: 3x, W2: 2x) hit "stuck in loop" interventions during legitimate multi-file editing sessions. The loop detector used a flat `_duplicate_tool_call_count >= 2` threshold and the `_detect_tool_execution_loops` function couldn't distinguish "read file A → edit → read file A again to verify" from genuine stalls.
+- **Fix:** (RESOLVED) Two changes: (1) `_detect_tool_execution_loops()` rewritten to be progress-aware — agents with 3+ unique tool signatures in recent history are explicitly cleared as "productive". (2) `_duplicate_tool_call_count` threshold raised from 2 to 4 for workers in `worker_work`/`worker_test` states while keeping 2 for all other states.
+- **Files:** `src/agents/cycle_components/next_step_scheduler.py`
+
+### +35. Tool Authorization Misalignment Across Three Enforcement Points (RESOLVED v2.47)
+- **Severity:** Critical (P0)
+- **Description:** State-based tool whitelists were only updated in `executor.py` (both `get_available_tools_list_str` and `execute_tool`), but a third enforcement point in `core.py:process_message()` — which controls which native JSON tool schemas are sent to the LLM API — still used the old restrictive lists. Workers in `worker_decompose` could only see `project_management` as a native tool, and `worker_report` could only see `send_message`. This meant even with executor fixes, the LLM never received schemas for newly-allowed tools and wouldn't attempt to call them.
+- **Fix:** (RESOLVED) Synchronized all three enforcement points: `executor.py:get_available_tools_list_str()`, `executor.py:execute_tool()`, and `core.py:process_message()`. Workers in decompose state now have `project_management`, `file_system`, `codebase_search`, `mark_message_read`, `send_message`. Report/wait states now have `send_message`, `mark_message_read`. PM build_team_tasks now has `manage_team`, `tool_information`, `mark_message_read`, `send_message`.
+- **Files:** `src/tools/executor.py`, `src/agents/core.py`
+
+### +34. Admin AI PM Routing Failure — Unpopulated Placeholder (RESOLVED v2.47)
+- **Severity:** High (P1)
+- **Description:** The `admin_ai_delegated_prompt` in `prompts.yaml` contained a literal `{pm_agent_id}` placeholder that was never populated at runtime (the `format()` call didn't include it). This caused Admin AI to attempt `send_message` to the string `{pm_agent_id}` instead of the actual PM agent, resulting in message delivery failures.
+- **Fix:** (RESOLVED) Replaced the broken placeholder with explicit instruction to check the Address Book for the PM agent ID dynamically.
+- **Files:** `prompts.yaml`
+
+### +33. Worker File-Not-Found Loop — No Fuzzy Suggestions (RESOLVED v2.47)
+- **Severity:** High (P1)
+- **Description:** Workers repeatedly tried to read non-existent filenames (e.g., `src/core/Game.js`) even though the framework auto-listed the parent directory showing the correct names (`gameLoop.js`, `inputHandler.js`). W1 hit `*** STUCK IN LOOP ***` 7 times with 251 mentions of `Game.js`. The directory listing alone was insufficient for agents to self-correct.
+- **Fix:** (RESOLVED) Added `difflib.get_close_matches()` to `file_system.py:_read_file()`. After 2+ consecutive failed reads of the same filename, the error now explicitly suggests the closest matching filenames: *"Did you mean one of these? gameLoop.js, inputHandler.js"*.
+- **Files:** `src/tools/file_system.py`
+
+### +32. Workers Default to `file_system write` Instead of `code_editor` (RESOLVED v2.47)
+- **Severity:** Medium (P2)
+- **Description:** Workers consistently tried `file_system write` on existing files (341 overwrite-blocked errors per test run) because the `worker_work_prompt` mentioned `file_system write` first and `code_editor` only as a secondary fallback. Workers also exploited a suggested `delete` + `write` workaround in the overwrite error message instead of learning `code_editor`.
+- **Fix:** (RESOLVED) Two changes: (1) Rewrote `worker_work_prompt` in `prompts.yaml` to lead with `code_editor` as the primary tool for modifying existing files. (2) Removed the `delete` + `write` escape hatch from the overwrite error message — workers are now exclusively directed to `code_editor`.
+- **Files:** `prompts.yaml`, `src/tools/file_system.py`
 
 ### +30. Worker Loses Assigned Task During Decompose→Work Transition
 - **Severity:** Critical (P0)

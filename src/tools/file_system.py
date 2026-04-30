@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 import logging
 import re # Import re for find_replace
 import shutil # Added for copy and move
+import difflib # Added for fuzzy filename suggestions
 from diff_match_patch import diff_match_patch # Added for search_replace_block
 import git # Added for git integration
 from git.exc import InvalidGitRepositoryError, GitCommandError
@@ -177,6 +178,12 @@ class FileSystemTool(BaseTool):
             name="remote",
             type="string",
             description="Git remote name (default: 'origin'). Used for 'git_push' and 'git_pull'.",
+            required=False,
+        ),
+        ToolParameter(
+            name="force_overwrite",
+            type="boolean",
+            description="Set to true ONLY when you intentionally want to replace the ENTIRE contents of an existing file via the 'write' action. Default is false. Use code_editor for partial edits.",
             required=False,
         ),
     ]
@@ -385,7 +392,7 @@ class FileSystemTool(BaseTool):
                 if filename.endswith('/'):
                     return {"status": "error", "message": f"The path '{filename}' appears to be a directory. Please use the 'mkdir' action to create directories."}
                 if content is None: return {"status": "error", "message": "'content' parameter is required for 'write'."}
-                result = await self._write_file(base_path, filename, content, agent_id, scope_description)
+                result = await self._write_file(base_path, filename, content, agent_id, scope_description, force_overwrite=kwargs.get('force_overwrite', False))
             elif action == "list":
                 # relative_path default handled above
                 result = await self._list_directory(base_path, relative_path if isinstance(relative_path, str) else ".", agent_id, scope_description)
@@ -852,6 +859,12 @@ Pushes changes to a remote repository.
             list_content = list_result.get("message", "(Could not list directory)")
             
             hint += f"\n\n[Framework Intervention]: You have failed to read '{filename}' {fail_count} times. The file does NOT exist. The framework has automatically run the 'list' command on the parent directory '{parent_dir}'. Please review these contents and use the correct filename:\n\n{list_content}"
+            
+            # After 2+ failures for the same filename, suggest closest match
+            if fail_count >= 2 and existing_files:
+                close = difflib.get_close_matches(validated_path.name, existing_files, n=3, cutoff=0.4)
+                if close:
+                    hint += f"\n\n[CRITICAL SUGGESTION]: You have tried '{filename}' {fail_count} times and it does NOT exist. Did you mean one of these? {', '.join(close)}. You MUST use one of the listed filenames instead of '{validated_path.name}'."
             # ----------------------------------------
             
             return {"status": "error", "message": f"File not found: '{filename}' in {scope_description}.{hint}"}
@@ -884,20 +897,33 @@ Pushes changes to a remote repository.
             list_content = list_result.get("message", "(Could not list directory)")
             
             hint = f"\n\n[Framework Intervention]: You have failed to read '{filename}' {fail_count} times. The file does NOT exist. The framework has automatically run the 'list' command on the parent directory '{parent_dir}'. Please review these contents and use the correct filename:\n\n{list_content}"
+            
+            # After 2+ failures, try fuzzy match on parent directory files
+            if fail_count >= 2:
+                try:
+                    parent_path = validated_path.parent if validated_path else base_path / Path(filename).parent
+                    if parent_path.is_dir():
+                        dir_files = sorted([f.name for f in parent_path.iterdir() if f.is_file()][:20])
+                        if dir_files:
+                            close = difflib.get_close_matches(Path(filename).name, dir_files, n=3, cutoff=0.4)
+                            if close:
+                                hint += f"\n\n[CRITICAL SUGGESTION]: You have tried '{filename}' {fail_count} times and it does NOT exist. Did you mean one of these? {', '.join(close)}. You MUST use one of the listed filenames instead of '{Path(filename).name}'."
+                except Exception:
+                    pass
             # ----------------------------------------
             logger.warning(f"Agent {agent_id} file read error (FileNotFound): File not found at '{filename}' in {scope_description}."); return {"status": "error", "message": f"File not found at '{filename}' in {scope_description}.{hint}"}
         except PermissionError: logger.error(f"Agent {agent_id} file read error: Permission denied for '{filename}' in {scope_description}."); return {"status": "error", "message": f"Permission denied when reading file '{filename}'."}
         except Exception as e: logger.error(f"Agent {agent_id} error reading file '{filename}' in {scope_description}: {e}", exc_info=True); return {"status": "error", "message": f"Error reading file '{filename}': {type(e).__name__} - {e}"}
 
 
-    async def _write_file(self, base_path: Path, filename: str, content: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+    async def _write_file(self, base_path: Path, filename: str, content: str, agent_id: str, scope_description: str, force_overwrite: bool = False) -> Dict[str, Any]:
         """Writes content to a file within the specified base path."""
         validated_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
         if not validated_path: return {"status": "error", "message": f"Invalid or disallowed file path '{filename}' in {scope_description}."}
         if validated_path.is_dir(): logger.warning(f"Agent {agent_id} attempted to write to directory: {filename} in {scope_description}"); return {"status": "error", "message": f"Cannot write file. '{filename}' points to an existing directory."}
         
-        # Prevent overwriting existing files to force surgical edits
-        if validated_path.exists():
+        # Prevent overwriting existing files unless force_overwrite is explicitly set
+        if validated_path.exists() and not force_overwrite:
             # Check if the content is exactly identical, in which case just return success to avoid looping the agent
             try:
                 if validated_path.read_text(encoding='utf-8') == content:
@@ -922,7 +948,7 @@ Pushes changes to a remote repository.
                     "  - action: 'replace_chunks'\n"
                     f"  - filename: '{filename}'\n"
                     "  - chunks: [{'search': 'exact existing code', 'replace': 'new code'}]\n\n"
-                    "If you absolutely need to recreate the file from scratch, you must call the 'file_system' tool with action 'delete' first."
+                    "Do NOT attempt to delete and recreate the file. Use code_editor for ALL modifications."
                 )
             }
             

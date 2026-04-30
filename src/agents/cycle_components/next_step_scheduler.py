@@ -211,7 +211,10 @@ class NextStepScheduler:
                             return
 
                 # Add loop detection for all persistent states to prevent infinite stagnation
-                is_stuck_in_loop = getattr(agent, '_duplicate_tool_call_count', 0) >= 2
+                # Workers in work/test states get a higher threshold since multi-file edits
+                # naturally involve re-reading the same files between edits
+                dup_threshold = 4 if (agent.agent_type == AGENT_TYPE_WORKER and agent.state in [WORKER_STATE_WORK, WORKER_STATE_TEST]) else 2
+                is_stuck_in_loop = getattr(agent, '_duplicate_tool_call_count', 0) >= dup_threshold
                 if not is_stuck_in_loop and self._detect_tool_execution_loops(agent):
                     is_stuck_in_loop = True
                     
@@ -717,37 +720,62 @@ class NextStepScheduler:
         """
         Detect if the agent is executing the same tools repeatedly in a loop pattern.
         
+        Smart detection: Workers doing genuine multi-file work use diverse tools
+        (read file A, edit file B, search, write file C). This is NOT a loop even
+        if they call the same tool name multiple times with different arguments.
+        
+        A real loop is: identical (tool_name + args) repeated 3+ times, OR
+        a tight A-B-A-B alternation with identical signatures.
+        
         Returns True if a dangerous loop pattern is detected.
         """
         if not hasattr(agent, 'message_history') or len(agent.message_history) < 6:
             return False
         
-        # Look at recent tool executions
+        # Look at recent tool executions — collect signatures
         recent_tool_calls = []
-        for msg in reversed(agent.message_history[-8:]):  # Check last 8 messages
+        for msg in reversed(agent.message_history[-12:]):  # Check last 12 messages for wider window
             if msg.get('role') == 'assistant' and msg.get('tool_calls'):
                 for call in msg.get('tool_calls', []):
-                    tool_signature = f"{call.get('name')}:{call.get('arguments', {})}"
-                    recent_tool_calls.append(tool_signature)
-                if len(recent_tool_calls) >= 4:  # We have enough to check
+                    tool_name = call.get('name', '')
+                    tool_args = call.get('arguments', {})
+                    # Full signature = name + args (exact match)
+                    full_signature = f"{tool_name}:{tool_args}"
+                    # Name-only signature (for diversity check)
+                    recent_tool_calls.append({
+                        'full': full_signature,
+                        'name': tool_name,
+                        'args': str(tool_args)
+                    })
+                if len(recent_tool_calls) >= 6:  # Enough to analyze
                     break
         
+        if len(recent_tool_calls) < 4:
+            return False
+        
+        # === Check 1: Identical full signatures repeated 3+ times ===
+        last_full = recent_tool_calls[0]['full']
+        identical_count = sum(1 for call in recent_tool_calls[:6] if call['full'] == last_full)
+        if identical_count >= 3:
+            logger.warning(f"NextStepScheduler: Detected tool execution loop - identical call repeated {identical_count} times: '{recent_tool_calls[0]['name']}'")
+            return True
+        
+        # === Check 2: Alternating A-B-A-B pattern (with identical args) ===
         if len(recent_tool_calls) >= 4:
-            # Check for identical repeated patterns
-            last_call = recent_tool_calls[0] if recent_tool_calls else ""
-            if last_call:
-                identical_count = sum(1 for call in recent_tool_calls if call == last_call)
-                if identical_count >= 3:  # 3+ identical calls in recent history
-                    logger.warning(f"NextStepScheduler: Detected tool execution loop - '{last_call}' repeated {identical_count} times")
-                    return True
-                    
-            # Check for alternating patterns (A-B-A-B)
-            if len(recent_tool_calls) >= 4:
-                if (recent_tool_calls[0] == recent_tool_calls[2] and 
-                    recent_tool_calls[1] == recent_tool_calls[3] and
-                    recent_tool_calls[0] != recent_tool_calls[1]):
-                    logger.warning(f"NextStepScheduler: Detected alternating tool execution pattern")
-                    return True
+            if (recent_tool_calls[0]['full'] == recent_tool_calls[2]['full'] and 
+                recent_tool_calls[1]['full'] == recent_tool_calls[3]['full'] and
+                recent_tool_calls[0]['full'] != recent_tool_calls[1]['full']):
+                logger.warning(f"NextStepScheduler: Detected alternating tool execution pattern")
+                return True
+        
+        # === Check 3: Progress check — are tool ARGUMENTS actually changing? ===
+        # If the agent is calling the same tool name but with DIFFERENT arguments
+        # (e.g., reading different files), that's productive work, not a loop.
+        unique_full_sigs = set(call['full'] for call in recent_tool_calls[:6])
+        if len(unique_full_sigs) >= 3:
+            # 3+ unique tool call signatures in recent history = making progress
+            logger.debug(f"NextStepScheduler: Agent has {len(unique_full_sigs)} unique tool signatures - productive work, not a loop")
+            return False
         
         return False
     

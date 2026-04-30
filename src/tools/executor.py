@@ -203,7 +203,7 @@ class ToolExecutor:
             logger.error(f"Error formatting tool descriptions as JSON: {e}", exc_info=True)
             return json.dumps({"tools": [], "error": f"Failed to format tools: {e}"}, indent=2)
 
-    def get_available_tools_list_str(self, agent_type: str, agent_state: str = None) -> str:
+    def get_available_tools_list_str(self, agent_type: str, agent_state: Optional[str] = None) -> str:
         if not self.tools:
             return "No tools are currently available."
 
@@ -217,12 +217,12 @@ class ToolExecutor:
             # Apply state-based filtering to hide tools not allowed in certain states
             if agent_state:
                 if agent_type == AGENT_TYPE_WORKER:
-                    if agent_state == WORKER_STATE_DECOMPOSE and name != 'project_management':
+                    if agent_state == WORKER_STATE_DECOMPOSE and name not in ['project_management', 'file_system', 'codebase_search', 'mark_message_read', 'send_message', 'request_state']:
                         continue
-                    if agent_state in [WORKER_STATE_REPORT, WORKER_STATE_WAIT] and name not in ['send_message', 'request_state']:
+                    if agent_state in [WORKER_STATE_REPORT, WORKER_STATE_WAIT] and name not in ['send_message', 'request_state', 'mark_message_read', 'project_management']:
                         continue
                 elif agent_type == AGENT_TYPE_PM:
-                    if agent_state == PM_STATE_BUILD_TEAM_TASKS and name != 'manage_team':
+                    if agent_state == PM_STATE_BUILD_TEAM_TASKS and name not in ['manage_team', 'tool_information', 'mark_message_read', 'send_message', 'request_state']:
                         continue
 
             tool_auth_level = getattr(tool_instance, 'auth_level', 'worker')
@@ -543,19 +543,19 @@ class ToolExecutor:
                     is_authorized = tool_auth_level in [AGENT_TYPE_PM, AGENT_TYPE_WORKER]
                     logger.debug(f"ToolExecutor: Auth: PM agent '{agent_id}' authorization check: tool_auth_level='{tool_auth_level}' in ['pm', 'worker'] = {is_authorized}")
                     if is_authorized and original_state:
-                        if original_state == PM_STATE_BUILD_TEAM_TASKS and tool_name != 'manage_team':
+                        if original_state == PM_STATE_BUILD_TEAM_TASKS and tool_name not in ['manage_team', 'tool_information', 'mark_message_read', 'send_message', 'request_state']:
                             is_authorized = False
-                            error_msg = f"[Tool Execution Blocked]: The '{tool_name}' tool is not authorized for use while in the '{original_state}' state. Use 'manage_team'."
+                            error_msg = f"[Tool Execution Blocked]: The '{tool_name}' tool is not authorized for use while in the '{original_state}' state. Use 'manage_team', 'tool_information', 'mark_message_read', 'send_message', or 'request_state'."
                 elif agent_type_for_auth == AGENT_TYPE_WORKER:
                     is_authorized = tool_auth_level == AGENT_TYPE_WORKER
                     logger.debug(f"ToolExecutor: Auth: WORKER agent '{agent_id}' authorization check: tool_auth_level='{tool_auth_level}' == 'worker' = {is_authorized}")
                     if is_authorized and original_state:
-                        if original_state == WORKER_STATE_DECOMPOSE and tool_name != 'project_management':
+                        if original_state == WORKER_STATE_DECOMPOSE and tool_name not in ['project_management', 'file_system', 'codebase_search', 'mark_message_read', 'send_message', 'request_state']:
                             is_authorized = False
-                            error_msg = f"[Tool Execution Blocked]: The '{tool_name}' tool is not authorized for use while in the '{original_state}' state. Use 'project_management'."
-                        elif original_state in [WORKER_STATE_REPORT, WORKER_STATE_WAIT] and tool_name not in ['send_message', 'request_state']:
+                            error_msg = f"[Tool Execution Blocked]: The '{tool_name}' tool is not authorized for use while in the '{original_state}' state. Use 'project_management', 'file_system', 'codebase_search', 'mark_message_read', 'send_message', or 'request_state'."
+                        elif original_state in [WORKER_STATE_REPORT, WORKER_STATE_WAIT] and tool_name not in ['send_message', 'request_state', 'mark_message_read', 'project_management']:
                             is_authorized = False
-                            error_msg = f"[Tool Execution Blocked]: The '{tool_name}' tool is not authorized for use while in the '{original_state}' state. Use 'send_message' or 'request_state'."
+                            error_msg = f"[Tool Execution Blocked]: The '{tool_name}' tool is not authorized for use while in the '{original_state}' state. Use 'send_message', 'request_state', 'mark_message_read', or 'project_management'."
                 else: 
                     logger.error(f"ToolExecutor: Auth: Unknown agent type '{agent_type_for_auth}' for agent '{agent_id}'. Denying tool use.")
             else:

@@ -1,8 +1,8 @@
 <!-- # START OF FILE helperfiles/PROJECT_PLAN.md -->
 # Project Plan: TrippleEffect
 
-**Version:** 2.46
-**Date:** 2026-04-28
+**Version:** 2.48
+**Date:** 2026-04-30
 
 ## 1. Project Goals
 
@@ -164,6 +164,25 @@
 * [X] **Prompt Standardization — Native JSON Tool Calling:** Scrubbed `prompts.yaml` of all embedded XML tool-call tag examples (e.g. `<send_message>`, `<manage_team>`, `<project_management>`). Tool references are now backtick-quoted names, allowing the `WorkflowManager` to dynamically inject the correct JSON or XML format at runtime. Eliminates agent XML output when running in native JSON mode.
 * [X] **FileSystemTool Error Recovery Enhancements:** `_read_file` now auto-appends a `list_directory` result to any `FileNotFoundError`, giving agents instant filesystem context and eliminating 3+ retry loops on missing paths. `_write_file` overwrite errors now include native-JSON `code_editor` examples (not XML) so agents self-correct cleanly in JSON tool-calling mode.
 * [X] **Unit Test Suite — 76/76 Passing:** Resolved `test_failover_handler.py` failures caused by missing `agent_type` attribute on `MagicMock` instances and incorrect positional argument count for `_select_alternate_models`. Fixed `test_settings.py` overly strict `assert_called_once()` assertion. Full suite now green across all 11 test modules.
+
+**Log Audit & Stability Hardening (v2.47, Completed)**
+
+* [X] **Critical Fix — Tool Authorization Alignment Across Three Enforcement Points:** Identified and synchronized state-based tool whitelists across all three enforcement layers: `executor.py:get_available_tools_list_str()` (prompt visibility), `executor.py:execute_tool()` (runtime execution), and `core.py:process_message()` (native JSON schema injection). Previously, `core.py` restricted `WORKER_STATE_DECOMPOSE` to only `project_management` and `WORKER_STATE_REPORT` to only `send_message`, blocking workers from using essential tools like `file_system`, `codebase_search`, and `mark_message_read` even after executor whitelists were expanded. Added `WORKER_STATE_WAIT` filtering to `core.py` (previously unhandled).
+* [X] **PM Build Team Tasks — Expanded Tool Access:** Added `tool_information`, `mark_message_read`, and `send_message` to the PM `pm_build_team_tasks` whitelist across all three enforcement points, enabling PMs to inspect agent/model schemas during team initialization.
+* [X] **Admin AI Prompt Routing Fix:** Corrected `admin_ai_delegated_prompt` in `prompts.yaml` where the `{pm_agent_id}` placeholder was never populated at runtime, causing Admin AI to send messages to the literal string `{pm_agent_id}`. Replaced with dynamic Address Book lookup instruction.
+* [X] **Fuzzy Filename Suggestions for File-Not-Found Loops:** Added `difflib.get_close_matches()` to `file_system.py:_read_file()` — after 2+ consecutive failed reads of the same filename, the error now suggests the closest matching filenames from the parent directory. Directly targets the W1 `Game.js` stall pattern (7 stall interventions, 251 occurrences in test run).
+* [X] **Worker Prompt — Code Editor Emphasis:** Rewrote `worker_work_prompt` in `prompts.yaml` to lead with `code_editor` as the primary tool for existing file modification, with `file_system write` explicitly limited to new files only. Previously, the instruction mentioned `file_system write` first, causing 341 overwrite-block errors per test run.
+* [X] **Overwrite Error — Removed Delete+Write Escape Hatch:** Tightened the `file_system.py` write-blocked error message to remove the suggestion to use `delete` then `write` as a workaround. Workers are now exclusively directed to `code_editor`.
+* [X] **Unit Test Suite — 76/76 Passing:** All changes verified with full test suite, no regressions.
+
+**Log Audit & Optimization (v2.48, Completed)**
+
+* [X] **Force Overwrite for Full File Replacement:** Added `force_overwrite` boolean parameter to the `file_system` tool's `write` action. Workers can now explicitly replace entire existing files by setting `force_overwrite: true`, eliminating the 128 overwrite-block errors concentrated on template files (`index.html`, `ui_components.js`). Default behavior (block overwrites) preserved for safety.
+* [X] **Worker Report/Wait — Project Management Access:** Added `project_management` to the `worker_report` and `worker_wait` state whitelists across all three enforcement points (`executor.py` visibility + execution, `core.py` native schema injection). Workers can now verify task status before sending reports, eliminating 4 tool-block errors.
+* [X] **Smart Loop Detection — Progress-Aware:** Rewrote `_detect_tool_execution_loops()` in `next_step_scheduler.py` to distinguish genuine multi-file work from stalls. New algorithm: (1) Only flags truly identical (name+args) calls repeated 3+ times, (2) Detects A-B-A-B alternation, (3) Explicitly clears agents with 3+ unique tool signatures as "productive". Also raised the `_duplicate_tool_call_count` threshold from 2 to 4 for workers in `worker_work`/`worker_test` states, since multi-file edits naturally involve re-reading files.
+* [X] **Fuzzy Filename Match — Second Handler:** Added `difflib.get_close_matches()` to the second `FileNotFoundError` handler in `_read_file()` (the `read_text` exception path), which was missed in v2.47.
+* [X] **Worker Prompt — Force Overwrite Guidance:** Updated `worker_work_prompt` in `prompts.yaml` with a third instruction: "If you genuinely need to rewrite an entire existing file from scratch, use `file_system` with `force_overwrite: true`."
+* [X] **Unit Test Suite — 76/76 Passing:** All changes verified with full test suite, no regressions.
 
 
 **Future Goals:**
