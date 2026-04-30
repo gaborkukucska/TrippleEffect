@@ -147,7 +147,7 @@ class CommandExecutionTool(BaseTool):
                     logger.error(f"Error terminating timed-out process group: {cleanup_err}")
                 return {
                     "status": "error",
-                    "message": f"Command execution timed out after {timeout} seconds. Interactive commands (like nano, vim, prompts) or long-running processes are not supported and will hang until timeout."
+                    "message": f"Command execution timed out after {timeout} seconds. Interactive commands (like nano, vim, prompts) are not supported. If you are starting a server or long-running process, you MUST append ` &` to your command to run it in the background."
                 }
                 
             stdout_str = stdout_bytes.decode('utf-8', errors='replace')
@@ -205,7 +205,7 @@ class CommandExecutionTool(BaseTool):
 
         **Description:** Executes shell commands within the restricted agent sandbox or shared workspace.
 
-        **CRITICAL WARNING - NO INTERACTIVE COMMANDS:** Do NOT attempt to run interactive terminal commands like `nano`, `vim`, `top`, or scripts that prompt for user input (e.g., `input()`). They will cause the execution to freeze and time out. Always use non-interactive flags (like `-y` for apt/npm/pip installations).
+        **CRITICAL WARNING - NO INTERACTIVE COMMANDS:** Do NOT attempt to run interactive terminal commands like `nano`, `vim`, `top`, or scripts that prompt for user input (e.g., `input()`). They will cause the execution to freeze and time out. Always use non-interactive flags (like `-y` for apt/npm/pip installations). If starting a server or long-running daemon, you MUST append ` &` to the command to run it in the background.
 
         **Actions & Parameters:**
 

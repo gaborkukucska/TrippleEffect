@@ -148,6 +148,18 @@ class ProjectManagementTool(BaseTool):
                 "status": "error",
                 "message": "ERROR: You cannot change your state using the project_management tool. You must use the standalone XML tag <request_state state='...'/> instead."
             }
+            
+        if action in ["read_message", "get_message", "check_messages"]:
+            return {
+                "status": "error",
+                "message": "ERROR: There is no 'read_message' action. All messages sent to you are automatically appended to your conversation history. Just read your recent context."
+            }
+            
+        if action in ["read_file", "read", "view_file", "cat"]:
+            return {
+                "status": "error",
+                "message": "ERROR: You cannot read files using the project_management tool. You MUST use the separate 'file_system' tool with action='read' to read files."
+            }
 
         # Check for common mistakes and provide helpful suggestions
         action_suggestions = {
@@ -173,6 +185,7 @@ class ProjectManagementTool(BaseTool):
             "update_progress": "modify_task",
             "set_progress": "modify_task",
             "progress_update": "modify_task",
+            "update_task_progress": "modify_task",
             "finish_task": "complete_task",
             "done": "complete_task",
             "finish": "complete_task",
@@ -180,6 +193,7 @@ class ProjectManagementTool(BaseTool):
             "mark_completed": "complete_task",
             "mark_task_complete": "complete_task",
             "mark_task_finished": "complete_task",
+            "mark_finished": "complete_task",
             "complete": "complete_task",
             "task_complete": "complete_task",
             "get_task": "list_tasks",
@@ -370,7 +384,7 @@ class ProjectManagementTool(BaseTool):
                         logger.warning(f"ProjectManagementTool: Invalid dependency format: '{dep_item}' (from raw: '{dep_val_raw}').")
                         return {
                             "status": "error",
-                            "message": f"Invalid dependency format: '{dep_item}'. Dependencies must be valid UUIDs, integer IDs, or recognized task aliases (e.g. 'T1').",
+                            "message": f"Invalid dependency format: '{dep_item}'. Dependencies must be valid UUIDs, integer IDs, or recognized task aliases (e.g. 'T1'). If you don't know the ID, use action='list_tasks' to find it.",
                             "error_type": "invalid_dependency_format"
                         }
                 if resolved_deps:

@@ -1677,8 +1677,8 @@ class AgentCycleHandler:
                                     error_msg = (
                                         f"ERROR: Your other tool call(s) ({', '.join(other_tool_names)}) were executed successfully. "
                                         f"CRITICAL INSTRUCTION: You attempted to use send_message alongside other active tool calls. "
-                                        f"You may ONLY run send_message alongside a state transition request <request_state...>. "
-                                        f"Please wait until all other tasks are complete, then send your message alongside your state transition."
+                                        f"STOP attempting this combination. You must ONLY use send_message by itself, or alongside a state transition request <request_state...>. "
+                                        f"Your message was DROPPED. You MUST wait until your current work is done and you are ready to transition states before trying to send this message again."
                                     )
                                     result_dict = {
                                         "status": "error",

@@ -83,8 +83,18 @@ class CodeEditorTool(BaseTool):
             try:
                 import json
                 chunks = json.loads(chunks)
-            except Exception as e:
-                return {"status": "error", "message": f"'chunks' was provided as a string but is not valid JSON: {e}"}
+            except Exception as e1:
+                try:
+                    import ast
+                    chunks = ast.literal_eval(chunks)
+                except Exception as e2:
+                    try:
+                        clean_chunks = chunks.strip("` \n\r")
+                        if clean_chunks.startswith("json\n"):
+                            clean_chunks = clean_chunks[5:]
+                        chunks = json.loads(clean_chunks)
+                    except Exception as e3:
+                        return {"status": "error", "message": f"'chunks' was provided as a string but is not valid JSON. Ensure you use an array of objects: {e1}"}
                 
         if not isinstance(chunks, list):
             return {"status": "error", "message": "'chunks' must be a list of dicts with 'search' and 'replace' keys."}
@@ -166,6 +176,7 @@ class CodeEditorTool(BaseTool):
                         content = before + replacement + after
                         successful += 1
                         continue
+                    elif len(matches) > 1:
                         errors.append(f"Chunk {idx}: Search text is ambiguous (found {len(matches)} times ignoring whitespace).")
                         continue
                             
@@ -183,7 +194,7 @@ class CodeEditorTool(BaseTool):
                                 start_idx = max(0, line_idx - 2)
                                 end_idx = min(len(content_lines), line_idx + len(search_lines) + 2)
                                 context = '\n'.join(content_lines[start_idx:end_idx])
-                                errors.append(f"Chunk {idx}: Search text not found exactly. Found a close match here:\n```\n{context}\n```\nPlease ensure EXACT spacing and indentation matching the file.")
+                                errors.append(f"Chunk {idx}: Search text not found exactly. Found a close match here:\n```\n{context}\n```\nCRITICAL: You MUST copy the 'search' block exactly as it appears above, including all indentation and spacing.")
                                 continue
                                 
                     errors.append(f"Chunk {idx}: Search text not found in file. Ensure exact matching.")
