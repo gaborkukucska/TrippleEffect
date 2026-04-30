@@ -148,7 +148,7 @@ This is the engine that drives the agent execution loop. It is stateless itself,
 - **Implementation Details**: It is composed of several sub-components that handle specific parts of the cycle (`PromptAssembler`, `OutcomeDeterminer`, `NextStepScheduler`, etc.). This compositional design makes the cycle logic easier to manage and extend.
 - **Cycle Components**:
     - **`PromptAssembler`**: Responsible for constructing the exact list of messages for the LLM, injecting system prompts and context. It actively queries the file system to inject a detailed `[SHARED WORKSPACE TREE]` structure directly into PM and Worker agents' history, guaranteeing deep ambient awareness of project deliverables without requiring costly CLI-probe turns.
-    - **`XMLValidator`**: A utility used to validate and attempt recovery of malformed XML tool calls from an agent's response.
+    - **`XMLValidator`**: A legacy utility used to validate and attempt recovery of malformed XML tool calls from an agent's response if NATIVE_TOOL_CALLING_ENABLED is disabled.
     - **`ContextSummarizer`**: An intelligent component that monitors the token count of an agent's history and, if it exceeds a threshold, uses an LLM to summarize the context, preventing token overflow errors with smaller models.
     - **`AgentHealthMonitor`**: Tracks agent behavior over multiple cycles to detect problematic patterns like loops, empty responses, or repetitive actions, and can trigger recovery plans.
     - **Cross-Cycle Duplicate Detection**: A specialized mechanism that detects when PM agents repeat identical tool calls across consecutive cycles. When detected, tool execution is skipped (cached results are served), escalated directives are injected, and after 3+ consecutive duplicates the framework auto-advances the workflow by executing the next expected tool call on the agent's behalf.
@@ -250,9 +250,9 @@ Communication within the framework is handled through several distinct channels.
     -   Give context for a new state (e.g., "You are now in the 'work' state. Your task is...").
     -   Intervene to break loops (e.g., "You appear to be stuck. Please try a different tool.").
 
--   **Agent <-> Tools (Native JSON / XML)**: The definitive method for an agent to request a tool execution is automatically handled depending on the `NATIVE_TOOL_CALLING_ENABLED` setting. 
+-   **Agent <-> Tools (Native JSON default)**: The definitive method for an agent to request a tool execution is Native JSON schemas (tool_calls API parameter) automatically handled depending on the `NATIVE_TOOL_CALLING_ENABLED` setting (Enabled globally across all states). 
     - **Native JSON (Default):** For modern models (OpenAI, Anthropic, Qwen3), `BaseTool` automatically converts its Python properties into rich JSON schemas. The application orchestrator parses the returned `tool_calls` array, bypassing text parsing altogether.
-    - **XML Fallback:** If native capability is turned off, the agent outputs a structured XML block in its textural response. The framework uses regex (`raw_xml_tool_call_pattern`) to parse these blocks. The format is always:
+    - **Legacy XML Fallback:** If native capability is completely turned off, the agent outputs a structured XML block in its textural response. The framework uses regex (`raw_xml_tool_call_pattern`) to parse these blocks. This format is fully deprecated for normal use. The format is:
     ```xml
     <tool_name>
         <action>action_to_perform</action>

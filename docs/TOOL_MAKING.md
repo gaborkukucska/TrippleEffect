@@ -1,7 +1,7 @@
 <!-- # START OF FILE helperfiles/TOOL_MAKING.md -->
 # TrippleEffect: Tool Development Guide
 
-This guide explains how to create new tools that agents within the TrippleEffect framework can utilize. Modern TrippleEffect automatically handles translations between **Native JSON schemas** (the default) and the legacy **XML format** (fallback) transparently behind the scenes.
+This guide explains how to create new tools that agents within the TrippleEffect framework can utilize. TrippleEffect now uses a pure **Native JSON schema** architecture. Legacy **XML format** support is retained purely as a fallback, handled transparently behind the scenes.
 
 ## Core Concepts
 
@@ -10,7 +10,7 @@ This guide explains how to create new tools that agents within the TrippleEffect
 * **Structure:** Each tool should ideally be in its own Python file (e.g., `my_tool.py`).
 * **Base Class:** Every tool class MUST inherit from `src.tools.base.BaseTool`.
 * **Registration:** The `ToolExecutor` automatically finds and registers valid tool classes inheriting from `BaseTool` (excluding `BaseTool` itself and files starting with `_`).
-* **Invocation Format:** Agents request tool execution using either a structured **JSON capability (default)** or an **XML block** at the end of their message (legacy fallback).
+* **Invocation Format:** Agents request tool execution purely using the native **JSON capability** via the LLM API's `tool_calls` parameter. Legacy XML blocks are actively discouraged.
 * **Auto-Translation:** You define your tool parameters using standard Pydantic logic. The `BaseTool` class houses a `get_json_schema()` function that automatically builds the complex JSON schemas passed to modern providers (vLLM, Ollama, OpenAI, Anthropic), meaning you *never* have to write separate JSON and XML tools manually.
 
 ## Creating a New Tool
