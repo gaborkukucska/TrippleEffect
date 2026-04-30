@@ -857,10 +857,8 @@ class AgentWorkflowManager:
 - **Workflow:** Use the provided JSON tool functions to execute actions. Do NOT output XML `<tool_name>...</tool_name>` tags to call tools. Simply call the tool naturally! Your tool calls will be intercepted and executed by the system automatically.
 - **IMPORTANT:** ALWAYS use `code_editor` for modifying existing code. Only use `file_system` (write action) for creating BRAND NEW files."""
 
-        # Identify if the agent's current state requires native tool handling.
-        # Active work/management states generally use native tools.
-        state_uses_native_tools = agent.state in {ADMIN_STATE_WORK, ADMIN_STATE_CONVERSATION, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_AUDIT, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK, WORKER_STATE_TEST}
-        use_native_instructions = settings.NATIVE_TOOL_CALLING_ENABLED and state_uses_native_tools
+        # All states now support native tools natively if enabled globally.
+        use_native_instructions = settings.NATIVE_TOOL_CALLING_ENABLED
 
         tool_instructions = native_tool_instructions if use_native_instructions else xml_tool_instructions
 

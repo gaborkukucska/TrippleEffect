@@ -93,9 +93,9 @@ class AgentCycleHandler:
                     task_id = inferred_task_id
                     self._missing_task_id_counts[agent.agent_id] = 0
                 else:
-                    raise ValueError(f"You MUST specify a 'task_id' parameter when transitioning to '{resolved}' state.\nIf you do not know your task_id:\n1. Check previous tool responses if you just created the task.\n2. Otherwise, use the project_management tool with action='list_tasks' to find the correct ID.\nThen retry with the attribute: <request_state state='{resolved}' task_id='THE_ID'/>.")
+                    raise ValueError(f"You MUST specify a 'task_id' parameter when transitioning to '{resolved}' state.\nIf you do not know your task_id:\n1. Check previous tool responses if you just created the task.\n2. Otherwise, use the project_management tool with action='list_tasks' to find the correct ID.\nThen retry by calling the 'request_state' tool with state='{resolved}' and task_id='THE_ID'.")
             else:
-                raise ValueError(f"You MUST specify a 'task_id' parameter when transitioning to '{resolved}' state.\nIf you do not know your task_id:\n1. Check previous tool responses if you just created the task.\n2. Otherwise, use the project_management tool with action='list_tasks' to find the correct ID.\nThen retry with the attribute: <request_state state='{resolved}' task_id='THE_ID'/>.")
+                raise ValueError(f"You MUST specify a 'task_id' parameter when transitioning to '{resolved}' state.\nIf you do not know your task_id:\n1. Check previous tool responses if you just created the task.\n2. Otherwise, use the project_management tool with action='list_tasks' to find the correct ID.\nThen retry by calling the 'request_state' tool with state='{resolved}' and task_id='THE_ID'.")
         else:
             if hasattr(self, '_missing_task_id_counts'):
                 self._missing_task_id_counts[agent.agent_id] = 0
@@ -532,7 +532,7 @@ class AgentCycleHandler:
             "1. Execute ONLY ONE tool call per response to avoid overwhelming yourself\n"
             "2. DO NOT repeat the same tool with identical parameters\n"
             "3. After testing a tool, provide a brief summary of what you learned\n"
-            "4. When you have completed testing, transition to conversation state with: <request_state state='conversation'/>\n\n"
+            "4. When you have completed testing, transition to conversation state by calling the 'request_state' tool with state='conversation'\n\n"
             f"**For context, here is a summary of tools currently available to you:**\n{tool_list_str}"
         )
         return task_message
@@ -688,7 +688,7 @@ class AgentCycleHandler:
         if agent._cycles_without_transition >= 10:
             logger.warning(f"Watchdog: Agent '{agent.agent_id}' has been running for {agent._cycles_without_transition} cycles without changing from state '{agent.state}'. Flagging for intervention.")
             if agent._cycles_without_transition % 5 == 0:  # Inject every 5 cycles after hitting 10
-                intervention_msg = f"[Framework Watchdog Intervention]: You have been in the '{agent.state}' state for {agent._cycles_without_transition} cycles without transitioning. If you are stuck or have completed your work, please forcefully transition your state using <request_state state='worker_wait' /> or the appropriate state for your role."
+                intervention_msg = f"[Framework Watchdog Intervention]: You have been in the '{agent.state}' state for {agent._cycles_without_transition} cycles without transitioning. If you are stuck or have completed your work, please forcefully transition your state by calling the 'request_state' tool with state='worker_wait' or the appropriate state for your role."
                 agent.message_history.append({"role": "system", "content": intervention_msg})
         # -------------------------------------------------------------------------
         
@@ -1148,13 +1148,13 @@ class AgentCycleHandler:
                             continue # Stop processing this event; do NOT apply state change
 
                         # Record the agent's action in its history so it knows it made the request
-                        history_content = f"<request_state state='{requested_state}'"
+                        history_content = f"[Action Taken: Transitioned to state '{requested_state}'"
                         if event_task_id:
-                            history_content += f" task_id='{event_task_id}'"
+                            history_content += f", task_id='{event_task_id}'"
                         if task_description:
                             # optional if needed, usually not logged but good to keep it exact
-                            history_content += f" task_description='{task_description}'"
-                        history_content += "/>"
+                            history_content += f", task_description='{task_description}'"
+                        history_content += "]"
                         
                         agent.message_history.append({
                             "role": "assistant",
@@ -1264,7 +1264,7 @@ class AgentCycleHandler:
                             if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="agent_state_change", content=f"State changed to: {requested_state}")
                             
                             # CRITICAL FIX: Append a user message so the next cycle has a clear trigger to start generating
-                            # Without this, the last message is the assistant's <request_state> tag, causing empty outputs
+                            # Without this, the last message is the assistant's state transition notification, causing empty outputs
                             agent.message_history.append({
                                 "role": "user",
                                 "content": f"[System State Change]: State changed to {requested_state}. Your instructions have been updated. Please proceed."
@@ -1282,7 +1282,7 @@ class AgentCycleHandler:
                         # Variables to hold state change info until tools finish executing
                         deferred_state_change = None
                         deferred_task_desc = None
-                        deferred_task_id = None  # task_id from <request_state> tag
+                        deferred_task_id = None  # task_id from request_state tool
 
                         # CRITICAL FIX: Check if the raw response also contains a state change request
                         # This handles the case where agent produces both state change + tool calls in same response
@@ -1356,12 +1356,12 @@ class AgentCycleHandler:
                             final_content_for_history += content_for_history
 
                         if deferred_state_change:
-                            history_state_tag = f"\n<request_state state='{deferred_state_change}'"
+                            history_state_tag = f"\n[Action Taken: Transitioned to state '{deferred_state_change}'"
                             if deferred_task_id:
-                                history_state_tag += f" task_id='{deferred_task_id}'"
+                                history_state_tag += f", task_id='{deferred_task_id}'"
                             if deferred_task_desc:
-                                history_state_tag += f" task_description='{deferred_task_desc}'"
-                            history_state_tag += "/>"
+                                history_state_tag += f", task_description='{deferred_task_desc}'"
+                            history_state_tag += "]"
                             final_content_for_history += history_state_tag
 
                         # CRITICAL FIX: Changed `... or None` to `... or ""` to prevent null content,
@@ -1611,7 +1611,7 @@ class AgentCycleHandler:
                                     else:
                                         # Use CG to evaluate duplicate block
                                         verdict = "BLOCK_AND_GUIDE"
-                                        feedback = f"You already called '{tool_name}' with these exact arguments and it succeeded. You MUST use <request_state> to move to the next step."
+                                        feedback = f"You already called '{tool_name}' with these exact arguments and it succeeded. You MUST use the 'request_state' tool to move to the next step."
                                         
                                         if hasattr(self._health_monitor, 'evaluate_duplicate_tool_call'):
                                             try:
@@ -1677,7 +1677,7 @@ class AgentCycleHandler:
                                     error_msg = (
                                         f"ERROR: Your other tool call(s) ({', '.join(other_tool_names)}) were executed successfully. "
                                         f"CRITICAL INSTRUCTION: You attempted to use send_message alongside other active tool calls. "
-                                        f"STOP attempting this combination. You must ONLY use send_message by itself, or alongside a state transition request <request_state...>. "
+                                        f"STOP attempting this combination. You must ONLY use send_message by itself, or alongside a call to the 'request_state' tool. "
                                         f"Your message was DROPPED. You MUST wait until your current work is done and you are ready to transition states before trying to send this message again."
                                     )
                                     result_dict = {
@@ -1805,7 +1805,7 @@ class AgentCycleHandler:
                                     "[Framework System Message]: You have successfully added a sub-task.\n"
                                     "If you need to add more sub-tasks, continue using the project_management tool.\n"
                                     "If you have finished decomposing your assignment into sub-tasks, your MANDATORY NEXT ACTION is to output ONLY:\n"
-                                    "<request_state state='worker_work' task_id='[ID OF ONE OF YOUR NEW SUB-TASKS]'/>\n"
+                                    "Call the 'request_state' tool with state='worker_work' and task_id='[ID OF ONE OF YOUR NEW SUB-TASKS]'.\n"
                                     "Note: You CANNOT use your originally assigned task ID. You must choose a sub-task you just created."
                                 )
                                 directive_msg: MessageDict = {"role": "system", "content": directive_message_content}
@@ -1845,8 +1845,7 @@ class AgentCycleHandler:
                                     "[Framework System Message]: Team creation complete. Step 1 is DONE \u2014 do NOT call create_team again.\n\n"
                                     "The framework has automatically retrieved the create_agent tool information for you (Step 2 complete).\n\n"
                                     f"**create_agent Tool Usage:**\n{tool_info_text}\n\n"
-                                    "Your MANDATORY next action is Step 3: Create your first worker agent based on your kickoff plan using the "
-                                    "'<manage_team><action>create_agent</action>...' XML format shown above."
+                                    "Your MANDATORY next action is Step 3: Create your first worker agent based on your kickoff plan using the 'manage_team' tool (action='create_agent')."
                                 )
                             elif called_tool_name == "tool_information" and \
                                  called_tool_args.get("action") == "get_info" and \
@@ -1856,8 +1855,7 @@ class AgentCycleHandler:
                                 agent.successfully_created_agent_count_for_build = 0 # Reset counter before first create
                                 directive_message_content = (
                                     "[Framework System Message]: You have successfully retrieved the detailed information for the 'manage_team' tool with sub_action 'create_agent'. "
-                                    "Your MANDATORY next action is to proceed with Step 2 of your workflow: Create your first worker agent based on your kickoff plan using the "
-                                    "'<manage_team><action>create_agent</action>...' XML format."
+                                    "Your MANDATORY next action is to proceed with Step 2 of your workflow: Create your first worker agent based on your kickoff plan using the 'manage_team' tool (action='create_agent')."
                                 )
                             elif called_tool_name == "manage_team" and called_tool_args.get("action") == "create_agent":
                                 # This was an agent creation action. This is the new, context-aware intervention logic.
@@ -1909,8 +1907,8 @@ class AgentCycleHandler:
                                         f"{team_status_context}\n\n"
                                         f"[CONCLUSION]\n"
                                         f"Because {reason}, your work in this state is complete.\n\n"
-                                        "Your MANDATORY next action is to proceed to Step 4 of your workflow: Request 'Activate Workers' State by outputting ONLY the following XML:\n"
-                                        "<request_state state='pm_activate_workers'/>"
+                                        "Your MANDATORY next action is to proceed to Step 4 of your workflow: Request 'Activate Workers' State by executing the following tool:\n"
+                                        "Call the 'request_state' tool with state='pm_activate_workers'."
                                     )
                                 else:
                                     # More agents need to be created
@@ -2143,7 +2141,7 @@ class AgentCycleHandler:
                                                         f"[Framework System Message - AUDIT GATE BLOCK]: Your completion report was BLOCKED. "
                                                         f"The task database still has {pending_count} PENDING tasks. "
                                                         "You MUST transition back to pm_manage to address the remaining work. "
-                                                        "Output ONLY: <request_state state='pm_manage'/>"
+                                                        "Call the 'request_state' tool with state='pm_manage'."
                                                     )
                                     except Exception as e:
                                         logger.warning(f"CycleHandler: Failed to verify tasks in PM audit gate: {e}")
@@ -2153,7 +2151,7 @@ class AgentCycleHandler:
                                     directive_message_content = (
                                         "[Framework System Message]: You have successfully reported project completion. "
                                         "Your MANDATORY next action is to transition to a standby state. "
-                                        "Output ONLY the following XML: <request_state state='pm_standby'/>"
+                                        "Call the 'request_state' tool with state='pm_standby'."
                                     )
 
                             if directive_message_content:
@@ -2176,7 +2174,7 @@ class AgentCycleHandler:
                         if deferred_state_change:
                             if send_message_blocked_by_multi_tool:
                                 logger.warning(f"Blocking deferred_state_change '{deferred_state_change}' for '{agent.agent_id}' because send_message was blocked.")
-                                invalid_msg = f"[Framework Error]: Your state transition to '{deferred_state_change}' was BLOCKED because your <send_message> call failed (you cannot use send_message alongside other active tools). Please review the feedback from your other tools, then repeat your send_message and request_state alone."
+                                invalid_msg = f"[Framework Error]: Your state transition to '{deferred_state_change}' was BLOCKED because your 'send_message' tool call failed (you cannot use send_message alongside other active tools). Please review the feedback from your other tools, then repeat your send_message and request_state alone."
                                 agent.message_history.append({"role": "system", "content": invalid_msg})
                             else:
                                 try:
@@ -2187,7 +2185,7 @@ class AgentCycleHandler:
                                         logger.info(f"CycleHandler: Successfully changed agent '{agent.agent_id}' state to '{deferred_state_change}' after tool processing")
                                         
                                         # CRITICAL FIX: Append a user message so the next cycle has a clear trigger to start generating
-                                        # Without this, the last message is the assistant's <request_state> tag, causing empty outputs
+                                        # Without this, the last message is the assistant's state transition notification, causing empty outputs
                                         agent.message_history.append({
                                             "role": "user",
                                             "content": f"[System State Change]: State changed to {deferred_state_change}. Your instructions have been updated. Please proceed."
@@ -2262,7 +2260,7 @@ class AgentCycleHandler:
                             # --- END ADMIN FINAL_RESPONSE HARD GATE ---
     
                             # --- START: Worker Auto-Save File Feature ---
-                            if agent.agent_type == AGENT_TYPE_WORKER and final_content and "<request_state state='worker_wait'/>" in final_content:
+                            if agent.agent_type == AGENT_TYPE_WORKER and final_content and "state='worker_wait'" in final_content:
                                 logger.info(f"CycleHandler: Worker '{agent.agent_id}' produced final content. Checking for files to auto-save.")
                                 # Regex to find all markdown code blocks
                                 code_blocks = re.findall(r"```(?:\w+)?\n(.*?)\n```", final_content, re.DOTALL)
@@ -2329,13 +2327,13 @@ class AgentCycleHandler:
                             agent.message_history.append({"role": "assistant", "content": invalid_content})
                             
                             # Try to resolve the alias and provide helpful feedback
-                            requested_state_match = re.search(r"state=['\"]([\w_]+)['\"]", invalid_content)
+                            requested_state_match = re.search(r"state=[\'\"]([\w_]+)[\'\"]", invalid_content)
                             resolved_hint = ""
                             if requested_state_match and hasattr(self._manager, 'workflow_manager'):
                                 raw_state = requested_state_match.group(1)
                                 resolved = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, raw_state)
                                 if resolved != raw_state:
-                                    resolved_hint = f" Did you mean '{resolved}'? Try: <request_state state='{resolved}'/>"
+                                    resolved_hint = f" Did you mean '{resolved}'? Try calling the 'request_state' tool with state='{resolved}'"
                             
                             valid_states = self._manager.workflow_manager._valid_states.get(agent.agent_type, [])
                             feedback_msg = (
@@ -2374,7 +2372,7 @@ class AgentCycleHandler:
                             "Use `<project_management><action>list_tasks</action></project_management>` to check for any remaining tasks. "
                             "If no unassigned tasks remain and all work is truly complete, report completion to the Admin AI using: "
                             f"`<send_message><target_agent_id>{BOOTSTRAP_AGENT_ID}</target_agent_id><message_content>Project [PROJECT_NAME] is complete. All tasks have been finished successfully.</message_content></send_message>` "
-                            "followed by requesting standby state: `<request_state state='pm_standby'/>`"
+                            "followed by calling the 'request_state' tool with state='pm_standby'"
                         )
                         
                         agent.message_history.append({"role": "system", "content": completion_verification_directive})
@@ -2456,7 +2454,7 @@ class AgentCycleHandler:
                                 standby_message_content = (
                                     "[Framework Intervention]: You have completed multiple management cycles without taking concrete action. "
                                     "Your project appears to be in a stable state. You will now transition to standby mode. "
-                                    "Output ONLY the following XML: <request_state state='pm_standby'/>"
+                                    "Call the 'request_state' tool with state='pm_standby'."
                                 )
                                 agent.message_history.append({"role": "system", "content": standby_message_content})
                                 
@@ -2484,7 +2482,7 @@ class AgentCycleHandler:
                                 directive_message_content = (
                                     f"[Framework Intervention]: This is your {agent._manage_unproductive_cycles} consecutive management cycle without concrete action. "
                                     "All workers appear to be busy. You should transition to standby and wait for worker reports. "
-                                    "Output ONLY: <request_state state='pm_standby'/>"
+                                    "Call the 'request_state' tool with state='pm_standby'."
                                 )
                                 agent.message_history.append({"role": "system", "content": directive_message_content})
                                 
@@ -2515,7 +2513,7 @@ class AgentCycleHandler:
                                     if "create_team" in tool_content.lower() and \
                                        ("successfully" in tool_content.lower() or "created" in tool_content.lower()):
                                         team_created_successfully = True
-                                        match = re.search(r'\"created_team_id\":\s*\"([^\"]+)\"', tool_content)
+                                        match = re.search(r'"created_team_id":\s*"([^"]+)"', tool_content)
                                         if match:
                                             created_team_id_for_message = match.group(1)
                                         else:
@@ -2536,7 +2534,7 @@ class AgentCycleHandler:
                             intervention_message_content = (
                                 f"[Framework Intervention]: Team '{created_team_id_for_message}' is now created. "
                                 "Your mandatory next action is to get specific instructions for creating an agent. "
-                                "Output ONLY the following XML: <tool_information><action>get_info</action><tool_name>manage_team</tool_name><sub_action>create_agent</sub_action></tool_information>"
+                                "You MUST execute the 'tool_information' tool with action='get_info', tool_name='manage_team', and sub_action='create_agent'."
                             )
                             intervention_message: MessageDict = {"role": "system", "content": intervention_message_content}
                             agent.message_history.append(intervention_message)

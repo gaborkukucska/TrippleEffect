@@ -506,6 +506,7 @@ class ToolExecutor:
 
         original_state = None
         current_agent_instance_for_tool_call = None 
+        error_msg = None
 
         # --- Authorization Check Section ---
         is_authorized = False
@@ -564,7 +565,8 @@ class ToolExecutor:
         # --- End Authorization Check Section ---
 
         if not is_authorized:
-            error_msg = f"AUTHORIZATION FAILED: Agent '{agent_id}' (type: {agent_type_for_auth}) is not authorized to use tool '{tool_name}' (required level: {tool_auth_level})."
+            if not error_msg:
+                error_msg = f"AUTHORIZATION FAILED: Agent '{agent_id}' (type: {agent_type_for_auth}) is not authorized to use tool '{tool_name}' (required level: {tool_auth_level})."
             logger.error(f"[TOOL_EXEC_ERROR] ID:{execution_id} | {error_msg}")
             self._update_execution_stats(success=False)
             if tool_name == ManageTeamTool.name:

@@ -234,62 +234,57 @@ class Agent:
 
             tool_schemas = None
             if settings.NATIVE_TOOL_CALLING_ENABLED and self.manager and getattr(self.manager, 'tool_executor', None):
-                # Native tools should only be provided to states that expect interactive tool usage.
-                # States outputting purely structural XML (like startup) break if forced into tool-call mode.
-                if self.state in {ADMIN_STATE_WORK, ADMIN_STATE_CONVERSATION, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_AUDIT, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_REPORT_CHECK, WORKER_STATE_WORK, WORKER_STATE_TEST, WORKER_STATE_DECOMPOSE, WORKER_STATE_REPORT}:
-                    tool_schemas = []
-                    for tool_name, tool in self.manager.tool_executor.tools.items():
-                        # Restrict specific states to only the tools they actually need
-                        if self.agent_type == AGENT_TYPE_WORKER:
-                            if self.state == WORKER_STATE_DECOMPOSE and tool_name != 'project_management':
-                                continue
-                            if self.state == WORKER_STATE_REPORT and tool_name != 'send_message':
-                                continue
-                        elif self.agent_type == AGENT_TYPE_PM:
-                            if self.state == PM_STATE_BUILD_TEAM_TASKS and tool_name != 'manage_team':
-                                continue
-                                
-                        # Apply standard auth checks for native tools
-                        tool_auth_level = getattr(tool, 'auth_level', 'worker')
-                        is_authorized = False
-                        if self.agent_type == AGENT_TYPE_ADMIN:
-                            is_authorized = True
-                        elif self.agent_type == AGENT_TYPE_PM:
-                            is_authorized = tool_auth_level in ['pm', 'worker']
-                        elif self.agent_type == AGENT_TYPE_WORKER:
-                            is_authorized = tool_auth_level == 'worker'
+                tool_schemas = []
+                for tool_name, tool in self.manager.tool_executor.tools.items():
+                    # Restrict specific states to only the tools they actually need
+                    if self.agent_type == AGENT_TYPE_WORKER:
+                        if self.state == WORKER_STATE_DECOMPOSE and tool_name != 'project_management':
+                            continue
+                        if self.state == WORKER_STATE_REPORT and tool_name != 'send_message':
+                            continue
+                    elif self.agent_type == AGENT_TYPE_PM:
+                        if self.state == PM_STATE_BUILD_TEAM_TASKS and tool_name != 'manage_team':
+                            continue
                             
-                        if is_authorized:
-                            tool_schemas.append(tool.get_json_schema())
-                            
-                    # Inject request_state as a pseudo-tool so LLM knows its schema
-                    tool_schemas.append({
-                        "type": "function",
-                        "function": {
-                            "name": "request_state",
-                            "description": "Request a state transition for the agent.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "state": {
-                                        "type": "string",
-                                        "description": "The destination state to transition to (e.g., worker_work, worker_test, worker_report, worker_wait)."
-                                    },
-                                    "task_id": {
-                                        "type": ["string", "null"],
-                                        "description": "REQUIRED when transitioning to 'worker_work' or 'worker_test' state. The UUID of the sub-task you are choosing to work on."
-                                    },
-                                    "task_description": {
-                                        "type": "string",
-                                        "description": "Optional description of the task."
-                                    }
+                    # Apply standard auth checks for native tools
+                    tool_auth_level = getattr(tool, 'auth_level', 'worker')
+                    is_authorized = False
+                    if self.agent_type == AGENT_TYPE_ADMIN:
+                        is_authorized = True
+                    elif self.agent_type == AGENT_TYPE_PM:
+                        is_authorized = tool_auth_level in ['pm', 'worker']
+                    elif self.agent_type == AGENT_TYPE_WORKER:
+                        is_authorized = tool_auth_level == 'worker'
+                        
+                    if is_authorized:
+                        tool_schemas.append(tool.get_json_schema())
+                        
+                # Inject request_state as a pseudo-tool so LLM knows its schema
+                tool_schemas.append({
+                    "type": "function",
+                    "function": {
+                        "name": "request_state",
+                        "description": "Request a state transition for the agent.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "state": {
+                                    "type": "string",
+                                    "description": "The destination state to transition to (e.g., worker_work, worker_test, worker_report, worker_wait)."
                                 },
-                                "required": ["state"]
-                            }
+                                "task_id": {
+                                    "type": ["string", "null"],
+                                    "description": "REQUIRED when transitioning to 'worker_work' or 'worker_test' state. The UUID of the sub-task you are choosing to work on."
+                                },
+                                "task_description": {
+                                    "type": "string",
+                                    "description": "Optional description of the task."
+                                }
+                            },
+                            "required": ["state"]
                         }
-                    })
-                else:
-                    logger.debug(f"Agent {self.agent_id}: State '{self.state}' is structural and does not use tools. Native tools payload omitted.")
+                    }
+                })
 
             from contextlib import aclosing
             
