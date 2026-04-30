@@ -194,10 +194,10 @@ class CodeEditorTool(BaseTool):
                                 start_idx = max(0, line_idx - 2)
                                 end_idx = min(len(content_lines), line_idx + len(search_lines) + 2)
                                 context = '\n'.join(content_lines[start_idx:end_idx])
-                                errors.append(f"Chunk {idx}: Search text not found exactly. Found a close match here:\n```\n{context}\n```\nCRITICAL: You MUST copy the 'search' block exactly as it appears above, including all indentation and spacing.")
+                                errors.append(f"Chunk {idx}: Search text not found exactly. Found a close match here:\n```\n{context}\n```\nCRITICAL: If the block above is the section you want to edit, you MUST copy it EXACTLY including all indentation and spacing. If it is NOT the correct section, you MUST use the `file_system` tool with `action='read'` to review the file contents to find the correct exact text before trying to edit again.")
                                 continue
                                 
-                    errors.append(f"Chunk {idx}: Search text not found in file. Ensure exact matching.")
+                    errors.append(f"Chunk {idx}: Search text not found in file. Ensure exact matching. Use the `file_system` tool with `action='read'` to review the file contents to find the correct exact text before trying again.")
                 elif occurrences > 1:
                     errors.append(f"Chunk {idx}: Search text is ambiguous (found {occurrences} times). Please make the search block larger/more unique.")
                 else:

@@ -669,11 +669,11 @@ worker_report_prompt: |2
       - Have you finished ALL your work?
   2.  **Send your report:** Use the `send_message` tool to send a concise report to your Project Manager. Check your Address Book for your PM's agent ID.
   3.  **After sending your report, you MUST choose one of the following:**
-      - If you have MORE work to do: `<request_state state='worker_work'/>`
-      - If your task is FULLY COMPLETE (all your sub-tasks are marked finished): `<request_state state='worker_wait'/>`
+      - If you have MORE work to do: call the `request_state` tool with state='worker_work'
+      - If your task is FULLY COMPLETE (all your sub-tasks are marked finished): call the `request_state` tool with state='worker_wait'
 
   [CRITICAL]
-  - Your response MUST contain a call to the `send_message` tool to your PM followed by a `<request_state>` tag.
+  - Your response MUST contain a call to the `send_message` tool to your PM AND a call to the `request_state` tool in the same response.
   - Do NOT use any other tools (file_system, project_management, etc.) in this state. If you realize you need to do more work, switch back to worker_work first.
   - If you have finished ALL work, make sure you have marked all your sub-tasks as finished using project_management BEFORE entering this state.
 

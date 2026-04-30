@@ -874,7 +874,7 @@ class AgentWorkflowManager:
 
         native_tool_examples = """[EXAMPLE: SWITCHING TO REPORT STATE]
 <think>I have completed the first milestone using my native tools. I need to report my progress to the PM.</think>
-<request_state state='worker_report'/>"""
+(Call the request_state tool here using native JSON)"""
 
         xml_report_examples = """[EXAMPLE: MILESTONE REPORT]
 <think>I completed the database schema and saved it. I still have more work to do.</think>
@@ -888,13 +888,11 @@ class AgentWorkflowManager:
 
         native_report_examples = """[EXAMPLE: MILESTONE REPORT]
 <think>I completed the database schema and saved it. I still have more work to do.</think>
-(Call the send_message tool here using native JSON)
-<request_state state='worker_work'/>
+(Call both the send_message AND request_state tools here using native JSON)
 
 [EXAMPLE: FINAL REPORT]
 <think>All sub-tasks are done and the main task is marked completed. Time for my final report.</think>
-(Call the send_message tool here using native JSON)
-<request_state state='worker_wait'/>"""
+(Call both the send_message AND request_state tools here using native JSON)"""
 
         tool_examples = native_tool_examples if use_native_instructions else xml_tool_examples
         report_examples = native_report_examples if use_native_instructions else xml_report_examples

@@ -13,7 +13,7 @@ import logging
 
 from src.tools.base import BaseTool
 from src.tools.manage_team import ManageTeamTool
-from src.agents.constants import AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER
+from src.agents.constants import AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WORKER, WORKER_STATE_DECOMPOSE, WORKER_STATE_REPORT, WORKER_STATE_WAIT, PM_STATE_BUILD_TEAM_TASKS
 from src.tools.project_management import ProjectManagementTool
 from src.api.websocket_manager import broadcast
 from src.tools.error_handler import tool_error_handler, ErrorType
@@ -203,7 +203,7 @@ class ToolExecutor:
             logger.error(f"Error formatting tool descriptions as JSON: {e}", exc_info=True)
             return json.dumps({"tools": [], "error": f"Failed to format tools: {e}"}, indent=2)
 
-    def get_available_tools_list_str(self, agent_type: str) -> str:
+    def get_available_tools_list_str(self, agent_type: str, agent_state: str = None) -> str:
         if not self.tools:
             return "No tools are currently available."
 
@@ -213,6 +213,17 @@ class ToolExecutor:
         for name in all_tool_names:
             tool_instance = self.tools.get(name)
             if not tool_instance: continue
+
+            # Apply state-based filtering to hide tools not allowed in certain states
+            if agent_state:
+                if agent_type == AGENT_TYPE_WORKER:
+                    if agent_state == WORKER_STATE_DECOMPOSE and name != 'project_management':
+                        continue
+                    if agent_state in [WORKER_STATE_REPORT, WORKER_STATE_WAIT] and name not in ['send_message', 'request_state']:
+                        continue
+                elif agent_type == AGENT_TYPE_PM:
+                    if agent_state == PM_STATE_BUILD_TEAM_TASKS and name != 'manage_team':
+                        continue
 
             tool_auth_level = getattr(tool_instance, 'auth_level', 'worker')
             is_authorized = False
@@ -225,8 +236,8 @@ class ToolExecutor:
                 authorized_tools_summary.append(f"- {name}: {summary.strip()}")
         
         if not authorized_tools_summary:
-            return f"No tools are accessible for your agent type ({agent_type})."
-        return f"Tools available to you (Agent Type: {agent_type}):\n" + "\n".join(authorized_tools_summary)
+            return f"No tools are accessible for your agent type ({agent_type}) in state ({agent_state})."
+        return f"Tools available to you (Agent Type: {agent_type}, State: {agent_state}):\n" + "\n".join(authorized_tools_summary)
 
     def _update_execution_stats(self, success: bool, retried: bool = False, fallback_used: bool = False):
         """Update internal execution statistics"""
@@ -290,7 +301,7 @@ class ToolExecutor:
                     last_error = error_msg
                     
                     # For certain recoverable errors, try again
-                    if self._is_recoverable_error(error_msg) and attempt < self._max_retry_attempts - 1:
+                    if self._is_recoverable_error(error_msg, tool_name) and attempt < self._max_retry_attempts - 1:
                         await asyncio.sleep(self._retry_delay_seconds * (attempt + 1))  # Exponential backoff
                         continue
                     else:
@@ -306,7 +317,7 @@ class ToolExecutor:
                 last_error = error_msg
                 
                 # Check if this is a recoverable error
-                if self._is_recoverable_error(error_msg) and attempt < self._max_retry_attempts - 1:
+                if self._is_recoverable_error(error_msg, tool_name) and attempt < self._max_retry_attempts - 1:
                     logger.info(f"[TOOL_EXEC_RETRY] ID:{execution_id} | Retrying in {self._retry_delay_seconds * (attempt + 1)}s")
                     await asyncio.sleep(self._retry_delay_seconds * (attempt + 1))  # Exponential backoff
                     continue
@@ -319,8 +330,12 @@ class ToolExecutor:
         logger.error(f"[TOOL_EXEC_FAILED] ID:{execution_id} | {final_error}")
         return None, False, final_error
 
-    def _is_recoverable_error(self, error_msg: str) -> bool:
+    def _is_recoverable_error(self, error_msg: str, tool_name: str) -> bool:
         """Determine if an error is recoverable and worth retrying"""
+        # Deterministic tools should never be retried internally with the exact same arguments
+        if tool_name in ["code_editor", "file_system", "project_management"]:
+            return False
+            
         recoverable_patterns = [
             "timeout",
             "connection",
@@ -526,9 +541,20 @@ class ToolExecutor:
                 elif agent_type_for_auth == AGENT_TYPE_PM:
                     is_authorized = tool_auth_level in [AGENT_TYPE_PM, AGENT_TYPE_WORKER]
                     logger.debug(f"ToolExecutor: Auth: PM agent '{agent_id}' authorization check: tool_auth_level='{tool_auth_level}' in ['pm', 'worker'] = {is_authorized}")
+                    if is_authorized and original_state:
+                        if original_state == PM_STATE_BUILD_TEAM_TASKS and tool_name != 'manage_team':
+                            is_authorized = False
+                            error_msg = f"[Tool Execution Blocked]: The '{tool_name}' tool is not authorized for use while in the '{original_state}' state. Use 'manage_team'."
                 elif agent_type_for_auth == AGENT_TYPE_WORKER:
                     is_authorized = tool_auth_level == AGENT_TYPE_WORKER
                     logger.debug(f"ToolExecutor: Auth: WORKER agent '{agent_id}' authorization check: tool_auth_level='{tool_auth_level}' == 'worker' = {is_authorized}")
+                    if is_authorized and original_state:
+                        if original_state == WORKER_STATE_DECOMPOSE and tool_name != 'project_management':
+                            is_authorized = False
+                            error_msg = f"[Tool Execution Blocked]: The '{tool_name}' tool is not authorized for use while in the '{original_state}' state. Use 'project_management'."
+                        elif original_state in [WORKER_STATE_REPORT, WORKER_STATE_WAIT] and tool_name not in ['send_message', 'request_state']:
+                            is_authorized = False
+                            error_msg = f"[Tool Execution Blocked]: The '{tool_name}' tool is not authorized for use while in the '{original_state}' state. Use 'send_message' or 'request_state'."
                 else: 
                     logger.error(f"ToolExecutor: Auth: Unknown agent type '{agent_type_for_auth}' for agent '{agent_id}'. Denying tool use.")
             else:

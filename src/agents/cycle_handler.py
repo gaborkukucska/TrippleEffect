@@ -511,7 +511,7 @@ class AgentCycleHandler:
         if hasattr(self._manager, 'tool_executor') and self._manager.tool_executor:
             try:
                 # Using a method that gets a simple list for the agent's type.
-                tool_list_str = self._manager.tool_executor.get_available_tools_list_str(agent.agent_type)
+                tool_list_str = self._manager.tool_executor.get_available_tools_list_str(agent.agent_type, agent.state)
             except Exception as e:
                 logger.error(f"Error getting tool list for tool testing task generation: {e}")
 
