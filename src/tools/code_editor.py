@@ -99,6 +99,20 @@ class CodeEditorTool(BaseTool):
         if not isinstance(chunks, list):
             return {"status": "error", "message": "'chunks' must be a list of dicts with 'search' and 'replace' keys."}
 
+        # --- FIX +42: Guard against oversized chunks that cause LLM JSON overflow ---
+        MAX_CHUNKS = 20
+        MAX_CHUNK_SIZE_CHARS = 4096  # 4KB per individual chunk
+        
+        if len(chunks) > MAX_CHUNKS:
+            return {"status": "error", "message": f"Too many chunks ({len(chunks)}). Maximum is {MAX_CHUNKS}. Please split your edits into multiple smaller tool calls."}
+        
+        for idx, chunk in enumerate(chunks):
+            if isinstance(chunk, dict):
+                search_len = len(str(chunk.get('search', '')))
+                replace_len = len(str(chunk.get('replace', '')))
+                if search_len + replace_len > MAX_CHUNK_SIZE_CHARS:
+                    return {"status": "error", "message": f"Chunk {idx} is too large ({search_len + replace_len} chars, max {MAX_CHUNK_SIZE_CHARS}). Split this edit into multiple smaller chunks."}
+
         # --- Base path logic identical to file_system ---
         base_path: Optional[Path] = None
         scope_description = ""

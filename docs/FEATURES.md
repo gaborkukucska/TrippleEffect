@@ -8,7 +8,7 @@
     *   **Cross-Cycle Duplicate Prevention**: Detects and intercepts repeated identical tool calls across agent cycles, serving cached results and auto-advancing stalled workflows
     *   **XML Recovery**: Intelligent parsing and recovery of malformed XML tool calls
     *   **Context Optimization**: Automatic context summarization for improved performance
-    *   **Workflow Continuation**: Smart reactivation logic for multi-step agent workflows
+    *   **Workflow Continuation & Resilience**: Smart reactivation logic for multi-step agent workflows. Includes automatic detection of workflow execution failures (like malformed XML Kickoff Plans) with explicit feedback injection and consecutive failure limits to prevent infinite loops.
     *   **Health Analytics**: Detailed agent behavior analysis and intervention strategies
     *   **Team Work In Progress (WIP) Injection**: Dynamic injection of real-time team status updates into active agent prompts to ensure cross-agent situational awareness and minimize duplicated efforts.
     *   **Smart Decompose Detection**: Worker `decompose`→`work` transitions are validated by checking whether the worker actually created sub-tasks assigned to themselves. Workers who skip decomposition for simple tasks are allowed to proceed directly without losing their parent task.

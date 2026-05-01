@@ -296,6 +296,17 @@ class AgentWorkflowManager:
                     
                 # Worker State-specific logic
                 elif agent.agent_type == AGENT_TYPE_WORKER:
+                    # Track state transition history for workers (mirrors PM tracking)
+                    if not hasattr(agent, '_state_transition_history'):
+                        agent._state_transition_history = []
+                    agent._state_transition_history.append({
+                        'from_state': current_state,
+                        'to_state': requested_state,
+                        'timestamp': time.time()
+                    })
+                    if len(agent._state_transition_history) > 20:
+                        agent._state_transition_history = agent._state_transition_history[-20:]
+
                     # --- DECOMPOSE TRANSITION VALIDATION ---
                     if current_state == WORKER_STATE_DECOMPOSE and requested_state == WORKER_STATE_WORK:
                         valid_transition = True
@@ -326,10 +337,14 @@ class AgentWorkflowManager:
                                             
                                             # --- FIX: Distinguish real sub-tasks (created by this worker) from
                                             # unrelated kick-off tasks that merely depend on the parent ---
-                                            worker_subtasks = [
-                                                st for st in subtasks
-                                                if str(st.get('assignee', '') or '') == agent.agent_id
-                                            ]
+                                            worker_subtasks = []
+                                            for st in subtasks:
+                                                try:
+                                                    assignee = str(st['assignee'] or '')
+                                                except (KeyError, TypeError):
+                                                    assignee = ''
+                                                if assignee == agent.agent_id:
+                                                    worker_subtasks.append(st)
                                             
                                             if len(worker_subtasks) > 0:
                                                 # Worker genuinely decomposed: mark parent as decomposed and reassign to PM
@@ -401,6 +416,54 @@ class AgentWorkflowManager:
                         agent._last_system_prompt_state = None  # Force fresh system prompt generation
                         # --- END DECOMPOSE TO WORK ---
                     # --- END DECOMPOSE TRANSITION VALIDATION ---
+
+                    # --- FIX +44: SOFT NUDGE FOR SKIPPED TESTING ---
+                    # When a worker goes directly work → report, check if they produced code files
+                    # but never went through worker_test. If so, inject a nudge (but don't block).
+                    if current_state == WORKER_STATE_WORK and requested_state == WORKER_STATE_REPORT:
+                        CODE_EXTENSIONS = {'.js', '.py', '.html', '.css', '.ts', '.jsx', '.tsx', 
+                                          '.sh', '.go', '.rs', '.java', '.c', '.cpp', '.rb', '.php'}
+                        
+                        # Check if the worker ever visited worker_test during this task
+                        visited_test = False
+                        if hasattr(agent, '_state_transition_history'):
+                            for t in getattr(agent, '_state_transition_history', []):
+                                if t.get('to_state') == WORKER_STATE_TEST:
+                                    visited_test = True
+                                    break
+                        
+                        if not visited_test:
+                            # Scan recent message history for evidence of code file operations
+                            produced_code = False
+                            code_files_found = []
+                            for msg in agent.message_history:
+                                content = str(msg.get("content", ""))
+                                # Check tool results for file_system write or code_editor operations
+                                if msg.get("role") in ("assistant", "tool"):
+                                    for ext in CODE_EXTENSIONS:
+                                        if ext in content.lower():
+                                            # Look for patterns like "File written: foo.js" or "path: game.py"
+                                            import re as _re
+                                            file_pattern = _re.findall(r'[\w/\\.-]+' + _re.escape(ext) + r'\b', content, _re.IGNORECASE)
+                                            if file_pattern:
+                                                code_files_found.extend(file_pattern[:3])  # Limit to avoid noise
+                                                produced_code = True
+                            
+                            if produced_code:
+                                # Deduplicate file list
+                                code_files_found = list(set(code_files_found))[:5]
+                                nudge_msg = (
+                                    f"[Framework Testing Reminder]: You appear to have created/modified code files "
+                                    f"({', '.join(code_files_found)}) but are going directly to REPORT without testing. "
+                                    f"Consider transitioning to 'worker_test' state first to verify your code works. "
+                                    f"If this is intentional (e.g., non-executable config files), you may proceed to report."
+                                )
+                                agent.message_history.append({"role": "system", "content": nudge_msg})
+                                logger.info(
+                                    f"WorkflowManager: Worker '{agent.agent_id}' skipping test state after producing "
+                                    f"code files: {code_files_found}. Nudge injected."
+                                )
+                    # --- END SKIPPED TESTING NUDGE ---
 
                     # --- DELIVERY OF QUEUED ACTIVATION MESSAGES ---
                     # Only deliver new queued tasks when the worker is fully idle (WAIT state).
@@ -476,19 +539,19 @@ class AgentWorkflowManager:
         was_fenced = False
         content_to_process_for_xml_tag_search = initial_content_to_process
 
-        # Robust Fence Detection: Use regex to find a markdown fence *anywhere*
-        # Non-greedy `+?` is important for `([\s\S]+?)`
-        markdown_fence_pattern = r"```(?:xml)?\s*([\s\S]+?)\s*```"
+        # Instead of aggressive markdown fence extraction that breaks if a fence is inside the XML tag,
+        # we check if the entire output is wrapped in a markdown fence. If there's surrounding text
+        # (like "Here is the plan: ```xml <plan>...</plan> ```"), we will just search the whole text.
+        # The XML regex matcher can find the tag anywhere.
+        markdown_fence_pattern = r"^```(?:xml)?\s*([\s\S]+?)\s*```$"
         fence_search_match = re.search(markdown_fence_pattern, initial_content_to_process, re.DOTALL)
 
         if fence_search_match:
             was_fenced = True
-            # The new content_to_process_for_xml_tag_search becomes the *inner content* of this first detected fence
             content_to_process_for_xml_tag_search = fence_search_match.group(1).strip()
-            logger.debug(f"WorkflowManager: Found Markdown fence. Inner content for XML tag search: '{content_to_process_for_xml_tag_search[:200]}...'")
+            logger.debug(f"WorkflowManager: Output wrapped in Markdown fence. Inner content: '{content_to_process_for_xml_tag_search[:200]}...'")
         else:
-            # No fence found, content_to_process_for_xml_tag_search remains the original stripped input
-            logger.debug(f"WorkflowManager: No Markdown fence found. Processing original stripped input for XML tags: '{content_to_process_for_xml_tag_search[:200]}...'")
+            logger.debug(f"WorkflowManager: No wrapping Markdown fence found. Processing original stripped input for XML tags.")
 
         for (allowed_type, allowed_state, trigger_tag), workflow_instance in self._workflow_triggers.items():
             if agent.agent_type == allowed_type and agent.state == allowed_state:
@@ -614,6 +677,10 @@ class AgentWorkflowManager:
                                             xml_full_trigger_block,
                                             flags=re.IGNORECASE
                                         )
+                                    
+                                    # Fix common LLM hallucination: closing a <dir> tag with </file>
+                                    xml_full_trigger_block = xml_full_trigger_block.replace("</file>", "</dir>")
+                                    
                                 xml_element_for_workflow = ET.fromstring(xml_full_trigger_block)
                             except ET.ParseError as e:
                                 logger.error(f"Failed to parse XML for workflow trigger '{trigger_tag}': {e}. Content: {xml_full_trigger_block[:200]}...")

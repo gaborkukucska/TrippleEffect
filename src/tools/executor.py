@@ -219,7 +219,7 @@ class ToolExecutor:
                 if agent_type == AGENT_TYPE_WORKER:
                     if agent_state == WORKER_STATE_DECOMPOSE and name not in ['project_management', 'file_system', 'codebase_search', 'mark_message_read', 'send_message', 'request_state']:
                         continue
-                    if agent_state in [WORKER_STATE_REPORT, WORKER_STATE_WAIT] and name not in ['send_message', 'request_state', 'mark_message_read', 'project_management']:
+                    if agent_state in [WORKER_STATE_REPORT, WORKER_STATE_WAIT] and name not in ['send_message', 'request_state', 'mark_message_read', 'project_management', 'file_system']:
                         continue
                 elif agent_type == AGENT_TYPE_PM:
                     if agent_state == PM_STATE_BUILD_TEAM_TASKS and name not in ['manage_team', 'tool_information', 'mark_message_read', 'send_message', 'request_state']:
@@ -553,9 +553,9 @@ class ToolExecutor:
                         if original_state == WORKER_STATE_DECOMPOSE and tool_name not in ['project_management', 'file_system', 'codebase_search', 'mark_message_read', 'send_message', 'request_state']:
                             is_authorized = False
                             error_msg = f"[Tool Execution Blocked]: The '{tool_name}' tool is not authorized for use while in the '{original_state}' state. Use 'project_management', 'file_system', 'codebase_search', 'mark_message_read', 'send_message', or 'request_state'."
-                        elif original_state in [WORKER_STATE_REPORT, WORKER_STATE_WAIT] and tool_name not in ['send_message', 'request_state', 'mark_message_read', 'project_management']:
+                        elif original_state in [WORKER_STATE_REPORT, WORKER_STATE_WAIT] and tool_name not in ['send_message', 'request_state', 'mark_message_read', 'project_management', 'file_system']:
                             is_authorized = False
-                            error_msg = f"[Tool Execution Blocked]: The '{tool_name}' tool is not authorized for use while in the '{original_state}' state. Use 'send_message', 'request_state', 'mark_message_read', or 'project_management'."
+                            error_msg = f"[Tool Execution Blocked]: The '{tool_name}' tool is not authorized for use while in the '{original_state}' state. Use 'send_message', 'request_state', 'mark_message_read', 'project_management', or 'file_system'."
                 else: 
                     logger.error(f"ToolExecutor: Auth: Unknown agent type '{agent_type_for_auth}' for agent '{agent_id}'. Denying tool use.")
             else:

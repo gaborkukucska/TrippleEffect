@@ -848,6 +848,15 @@ Pushes changes to a remote repository.
             else:
                 hint = f" The directory '{parent.name}/' does not exist. Use 'list' action first to discover the workspace structure."
             
+            # Warn on extension mismatch (e.g. .js vs .py)
+            if existing_files and validated_path.suffix:
+                ext = validated_path.suffix.lower()
+                alt_ext = '.py' if ext == '.js' else ('.js' if ext == '.py' else None)
+                if alt_ext:
+                    alt_name = validated_path.stem + alt_ext
+                    if alt_name in existing_files:
+                        hint += f"\n\n[CRITICAL WARNING]: You requested '{validated_path.name}' but only '{alt_name}' exists. Ensure you are using the correct programming language as defined in PROJECT_STRUCTURE.md!"
+            
             # --- File-Not-Found Loop Escalation ---
             if not hasattr(self, '_failed_reads'): self._failed_reads = {}
             if agent_id not in self._failed_reads: self._failed_reads[agent_id] = {}
@@ -885,6 +894,22 @@ Pushes changes to a remote repository.
             logger.info(f"Agent {agent_id} successfully read file: '{filename}' from {scope_description}")
             return {"status": "success", "content": content}
         except FileNotFoundError: 
+            # Warn on extension mismatch (e.g. .js vs .py) before doing the list directory fallback
+            ext_warning = ""
+            try:
+                parent_path = validated_path.parent if validated_path else base_path / Path(filename).parent
+                if parent_path.is_dir():
+                    dir_files = sorted([f.name for f in parent_path.iterdir() if f.is_file()][:20])
+                    if dir_files and validated_path.suffix:
+                        ext = validated_path.suffix.lower()
+                        alt_ext = '.py' if ext == '.js' else ('.js' if ext == '.py' else None)
+                        if alt_ext:
+                            alt_name = validated_path.stem + alt_ext
+                            if alt_name in dir_files:
+                                ext_warning = f"\n\n[CRITICAL WARNING]: You requested '{validated_path.name}' but only '{alt_name}' exists. Ensure you are using the correct programming language as defined in PROJECT_STRUCTURE.md!"
+            except Exception:
+                pass
+
             # --- File-Not-Found Loop Escalation ---
             if not hasattr(self, '_failed_reads'): self._failed_reads = {}
             if agent_id not in self._failed_reads: self._failed_reads[agent_id] = {}
@@ -896,7 +921,7 @@ Pushes changes to a remote repository.
             list_result = await self._list_directory(base_path, parent_dir, agent_id, scope_description)
             list_content = list_result.get("message", "(Could not list directory)")
             
-            hint = f"\n\n[Framework Intervention]: You have failed to read '{filename}' {fail_count} times. The file does NOT exist. The framework has automatically run the 'list' command on the parent directory '{parent_dir}'. Please review these contents and use the correct filename:\n\n{list_content}"
+            hint = f"{ext_warning}\n\n[Framework Intervention]: You have failed to read '{filename}' {fail_count} times. The file does NOT exist. The framework has automatically run the 'list' command on the parent directory '{parent_dir}'. Please review these contents and use the correct filename:\n\n{list_content}"
             
             # After 2+ failures, try fuzzy match on parent directory files
             if fail_count >= 2:
@@ -939,16 +964,11 @@ Pushes changes to a remote repository.
             return {
                 "status": "error", 
                 "message": (
-                    f"File '{filename}' already exists. Overwriting entire existing files using the file_system 'write' action is disabled to save tokens and prevent accidental code loss. "
-                    "You MUST NOT call 'write' on this file again. "
-                    "Instead, please use the separate 'code_editor' native JSON tool to modify existing code.\n\n"
-                    "Example usage:\n"
-                    "Tool: `code_editor`\n"
-                    "Arguments:\n"
-                    "  - action: 'replace_chunks'\n"
-                    f"  - filename: '{filename}'\n"
-                    "  - chunks: [{'search': 'exact existing code', 'replace': 'new code'}]\n\n"
-                    "Do NOT attempt to delete and recreate the file. Use code_editor for ALL modifications."
+                    f"File '{filename}' already exists. Overwriting entire existing files using the file_system 'write' action is blocked by default to prevent accidental data loss.\n\n"
+                    "HOW TO PROCEED:\n"
+                    "1. BEST: Use the 'code_editor' tool for partial updates.\n"
+                    "2. IF YOU MUST OVERWRITE THE ENTIRE FILE: You MUST add the parameter `force_overwrite: true` to your `file_system` `write` tool call.\n"
+                    "Do not attempt to delete and recreate the file."
                 )
             }
             

@@ -671,6 +671,67 @@ class AgentCycleHandler:
         
         return None
 
+    def _detect_cross_cycle_identical_failure(self, agent: Agent, tool_name: str, tool_args: Dict[str, Any]) -> Optional[str]:
+        """
+        Detect if a tool call with the same name and arguments already failed
+        in a previous cycle. Returns the failure message if found.
+        """
+        if not agent.message_history:
+            return None
+        
+        current_sig = (tool_name, json.dumps(tool_args, sort_keys=True))
+        
+        def _is_equivalent(sig1: Tuple[str, str], sig2: Tuple[str, str]) -> bool:
+            if sig1 == sig2:
+                return True
+            tname1, targs1_json = sig1
+            tname2, targs2_json = sig2
+            if tname1 != tname2: return False
+            try:
+                dict1 = json.loads(targs1_json)
+                dict2 = json.loads(targs2_json)
+                return dict1 == dict2
+            except json.JSONDecodeError:
+                return False
+                
+        for i in range(len(agent.message_history) - 1, 0, -1):
+            msg = agent.message_history[i]
+            if msg.get("role") == "assistant":
+                tc_json = msg.get("tool_calls_json") or msg.get("tool_calls")
+                if tc_json:
+                    try:
+                        tcs = json.loads(tc_json) if isinstance(tc_json, str) else tc_json
+                    except json.JSONDecodeError:
+                        continue
+                    
+                    for tc in tcs:
+                        prev_name = tc.get("name") or (tc.get("function", {}).get("name") if isinstance(tc, dict) else None)
+                        prev_args = tc.get("arguments") or (tc.get("function", {}).get("arguments") if isinstance(tc, dict) else {})
+                        
+                        if isinstance(prev_args, str):
+                            try:
+                                prev_args = json.loads(prev_args)
+                            except json.JSONDecodeError:
+                                prev_args = {}
+                                
+                        prev_sig = (str(prev_name) if prev_name is not None else "", json.dumps(prev_args, sort_keys=True))
+                        
+                        if _is_equivalent(current_sig, prev_sig):
+                            tc_id = tc.get("id")
+                            if i + 1 < len(agent.message_history):
+                                result_msg = agent.message_history[i + 1]
+                                if result_msg.get("role") == "tool" and (not tc_id or result_msg.get("tool_call_id") == tc_id):
+                                    result_content = result_msg.get("content", "")
+                                    if isinstance(result_content, str):
+                                        if (
+                                            "[Tool Execution Failed]" in result_content or 
+                                            "[Framework Error]" in result_content or 
+                                            "[Error]" in result_content or
+                                            result_content.strip() == ""
+                                        ):
+                                            return result_content  # Found an identical failure
+        return None
+
     async def run_cycle(self, agent: Agent, retry_count: int = 0): # pyright: ignore[reportGeneralTypeIssues]
         logger.critical(f"!!! CycleHandler: run_cycle TASK STARTED for Agent '{agent.agent_id}' (Retry: {retry_count}) !!!")
         
@@ -688,6 +749,19 @@ class AgentCycleHandler:
         if agent._cycles_without_transition >= 10:
             logger.warning(f"Watchdog: Agent '{agent.agent_id}' has been running for {agent._cycles_without_transition} cycles without changing from state '{agent.state}'. Flagging for intervention.")
             if agent._cycles_without_transition % 5 == 0:  # Inject every 5 cycles after hitting 10
+                # CRITICAL FIX (+40): Remove ALL previous watchdog messages before injecting a new one
+                # to prevent message accumulation that pollutes agent context.
+                if hasattr(agent, 'message_history') and agent.message_history:
+                    original_len = len(agent.message_history)
+                    agent.message_history = [
+                        msg for msg in agent.message_history
+                        if not (msg.get("role") == "system" and 
+                                "[Framework Watchdog Intervention]" in msg.get("content", ""))
+                    ]
+                    removed = original_len - len(agent.message_history)
+                    if removed > 0:
+                        logger.info(f"Watchdog: Cleaned {removed} stale watchdog messages from '{agent.agent_id}' history before injecting fresh one.")
+                
                 intervention_msg = f"[Framework Watchdog Intervention]: You have been in the '{agent.state}' state for {agent._cycles_without_transition} cycles without transitioning. If you are stuck or have completed your work, please forcefully transition your state by calling the 'request_state' tool with state='worker_wait' or the appropriate state for your role."
                 agent.message_history.append({"role": "system", "content": intervention_msg})
         # -------------------------------------------------------------------------
@@ -909,6 +983,39 @@ class AgentCycleHandler:
                             # Default reactivation logic for failed workflow
                             context.needs_reactivation_after_cycle = not (workflow_result.tasks_to_schedule and any(ts_agent.agent_id == agent.agent_id for ts_agent, _ in workflow_result.tasks_to_schedule)) and \
                                                                 (not workflow_result.next_agent_state and workflow_result.next_agent_status != AGENT_STATUS_ERROR)
+                            
+                            if context.needs_reactivation_after_cycle:
+                                # Inject explicit feedback so the agent knows WHY the workflow failed and can correct it.
+                                feedback_msg = (
+                                    f"[Framework Feedback: Workflow Execution Error]\n"
+                                    f"Your attempt to execute the '{workflow_result.workflow_name}' workflow failed.\n"
+                                    f"Error Details: {workflow_result.message}\n"
+                                    f"Please review your output and correct the issues. You MUST try again."
+                                )
+                                agent.message_history.append({"role": "system", "content": feedback_msg})
+                                
+                                # Track consecutive workflow failures to prevent infinite loops
+                                if not hasattr(agent, '_consecutive_workflow_failures'):
+                                    agent._consecutive_workflow_failures = 0
+                                agent._consecutive_workflow_failures += 1
+                                
+                                if agent._consecutive_workflow_failures >= 3:
+                                    logger.error(f"CycleHandler: Agent '{agent.agent_id}' had {agent._consecutive_workflow_failures} consecutive workflow failures. Forcing to error state.")
+                                    agent.set_status(AGENT_STATUS_ERROR)
+                                    context.needs_reactivation_after_cycle = False
+                                    fatal_msg = f"[Framework Error]: Exceeded maximum workflow failure limit ({agent._consecutive_workflow_failures}). Halting to prevent infinite loop."
+                                    agent.message_history.append({"role": "system", "content": fatal_msg})
+                                    await self._manager.send_to_ui({"type": "error", "agent_id": agent.agent_id, "content": fatal_msg})
+                                else:
+                                    logger.warning(f"CycleHandler: Injected workflow error feedback for agent '{agent.agent_id}' (Failure #{agent._consecutive_workflow_failures}).")
+                                
+                                if context.current_db_session_id:
+                                    await self._manager.db_manager.log_interaction(
+                                        session_id=context.current_db_session_id,
+                                        agent_id=agent.agent_id,
+                                        role="system_error_feedback",
+                                        content=feedback_msg
+                                    )
                         llm_stream_ended_cleanly = False; break
 
                     elif event_type == "malformed_tool_call":
@@ -1657,9 +1764,74 @@ class AgentCycleHandler:
                                             
                                             continue  # Skip actual tool execution
                                 else:
-                                    # Not a duplicate - reset counter
+                                    # Not a duplicate success - reset counter
                                     if hasattr(agent, '_duplicate_tool_call_count'):
                                         agent._duplicate_tool_call_count = 0
+                                        
+                                    # --- NEW: CHECK IDENTICAL FAILURES ---
+                                    prev_failure = self._detect_cross_cycle_identical_failure(agent, tool_name, tool_args)
+                                    if prev_failure is not None:
+                                        if not hasattr(agent, '_duplicate_failure_count'):
+                                            agent._duplicate_failure_count = 0
+                                        agent._duplicate_failure_count += 1
+                                        
+                                        logger.warning(
+                                            f"CycleHandler: IDENTICAL FAILURE DETECTED for '{agent.agent_id}' - "
+                                            f"tool '{tool_name}' failed with same args previously. "
+                                            f"Failure count: {agent._duplicate_failure_count}. Skipping re-execution."
+                                        )
+                                        
+                                        # Provide truncated failure message
+                                        truncated_failure = prev_failure
+                                        if len(prev_failure) > 500:
+                                            truncated_failure = prev_failure[:500] + "\n... [TRUNCATED - duplicate failed call]"
+                                        history_item: MessageDict = {
+                                            "role": "tool",
+                                            "tool_call_id": tool_id or f"cached_id_{i}",
+                                            "name": tool_name or f"unknown_tool_{i}",
+                                            "content": truncated_failure
+                                        }
+                                        all_tool_results_for_history.append(history_item)
+                                        any_tool_success = True  # We handled it, don't execute
+                                        
+                                        if agent._duplicate_failure_count >= 3:
+                                            cross_cycle_duplicate_blocked = True
+                                            if agent.agent_type == AGENT_TYPE_WORKER:
+                                                logger.error(f"CycleHandler: HARD-ADVANCING worker '{agent.agent_id}' after {agent._duplicate_failure_count} identical failures.")
+                                                agent.set_state("worker_report")
+                                                escalation_msg: MessageDict = {
+                                                    "role": "system",
+                                                    "content": (
+                                                        f"[Framework Circuit Breaker]: You have repeatedly tried to execute '{tool_name}' "
+                                                        f"with the EXACT same arguments that previously failed {agent._duplicate_failure_count} times in a row. "
+                                                        "Because you were stuck in a loop, your task state has been forcibly changed to 'worker_report'. "
+                                                        "Stop trying this exact approach. If you are stuck on a large file edit, you MUST use "
+                                                        "`file_system write` with `force_overwrite=true` to replace the whole file instead of replacing chunks."
+                                                    )
+                                                }
+                                                all_tool_results_for_history.append(escalation_msg)
+                                                agent._duplicate_failure_count = 0
+                                                context.needs_reactivation_after_cycle = True
+                                            elif agent.agent_type == AGENT_TYPE_PM:
+                                                logger.error(f"CycleHandler: FORCE-ADVANCING PM '{agent.agent_id}' after identical failures.")
+                                                self._manager.workflow_manager.change_state(agent, PM_STATE_STANDBY)
+                                                escalation_msg: MessageDict = {
+                                                    "role": "system",
+                                                    "content": (
+                                                        f"[Framework Circuit Breaker]: You have repeatedly tried to execute '{tool_name}' "
+                                                        f"with the EXACT same arguments that previously failed {agent._duplicate_failure_count} times in a row. "
+                                                        "To prevent infinite loops, you have been forcibly transitioned to 'pm_standby'."
+                                                    )
+                                                }
+                                                if hasattr(self, '_deduplicate_pm_framework_messages'):
+                                                    self._deduplicate_pm_framework_messages(agent)
+                                                all_tool_results_for_history.append(escalation_msg)
+                                                agent._duplicate_failure_count = 0
+                                                context.needs_reactivation_after_cycle = True
+                                        continue
+                                    else:
+                                        if hasattr(agent, '_duplicate_failure_count'):
+                                            agent._duplicate_failure_count = 0
                             # --- END CROSS-CYCLE DUPLICATE DETECTION ---
                             
                             # --- SEND_MESSAGE MULTI-TOOL CONSTRAINT ---

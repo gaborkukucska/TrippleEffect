@@ -133,7 +133,7 @@ class OllamaProvider(BaseLLMProvider):
         session = await self._create_request_session()
         chat_endpoint = "/api/chat"
 
-        if tools or tool_choice: logger.warning(f"OllamaProvider ignoring tools/tool_choice arguments as XML parsing is primary.")
+        if tools or tool_choice: logger.debug(f"OllamaProvider ignoring tools/tool_choice arguments as XML parsing is primary.")
 
         # --- Explicitly remove 'project_name' if present in kwargs, as it's not an Ollama option ---
         if 'project_name' in kwargs:

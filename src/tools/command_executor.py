@@ -62,7 +62,7 @@ class CommandExecutionTool(BaseTool):
         
         action = kwargs.get("action")
         command = kwargs.get("command")
-        scope = kwargs.get("scope", "private").lower()
+        scope = kwargs.get("scope", "shared").lower()
         timeout = float(kwargs.get("timeout", 60.0))
         
         if not action or action != "run_command":
@@ -147,7 +147,7 @@ class CommandExecutionTool(BaseTool):
                     logger.error(f"Error terminating timed-out process group: {cleanup_err}")
                 return {
                     "status": "error",
-                    "message": f"Command execution timed out after {timeout} seconds. Interactive commands (like nano, vim, prompts) are not supported. If you are starting a server or long-running process, you MUST append ` &` to your command to run it in the background."
+                    "message": f"Command execution timed out after {timeout} seconds. Interactive commands (like nano, vim, prompts) are not supported. If you meant to start a server or a long-running process, you MUST use the `&` symbol to background it. For example: `python server.py &` or `npm start &`."
                 }
                 
             stdout_str = stdout_bytes.decode('utf-8', errors='replace')

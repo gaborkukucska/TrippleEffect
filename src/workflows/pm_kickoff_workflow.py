@@ -45,6 +45,9 @@ class PMKickoffWorkflow(BaseWorkflow):
         "    <task id=\"task_1\">High-level kick-off task 1 description</task>\n"
         "    <task id=\"task_2\" depends_on=\"task_1\">High-level kick-off task 2 description</task>\n"
         "  </tasks>\n"
+        "  <code_base_definitions>\n"
+        "    Define the tech stack, code conventions, testing framework, and specific code base constraints here.\n"
+        "  </code_base_definitions>\n"
         "  <project_structure>\n"
         "    <dir name=\"src\">\n"
         "      <dir name=\"core\"/>\n"
@@ -187,6 +190,9 @@ class PMKickoffWorkflow(BaseWorkflow):
 
         # --- Create Project Directory Structure ---
         structure_element = data_input.find("project_structure")
+        code_base_def_element = data_input.find("code_base_definitions")
+        code_base_definitions = code_base_def_element.text.strip() if code_base_def_element is not None and code_base_def_element.text else None
+        
         created_dirs: List[str] = []
         if structure_element is not None and project_context and manager.current_session:
             workspace_path = settings.PROJECTS_BASE_DIR / str(project_context) / str(manager.current_session) / "shared_workspace"
@@ -194,7 +200,7 @@ class PMKickoffWorkflow(BaseWorkflow):
                 created_dirs = self._create_directory_structure(structure_element, workspace_path)
                 if created_dirs:
                     # Generate PROJECT_STRUCTURE.md manifest
-                    self._write_project_structure_md(workspace_path, created_dirs)
+                    self._write_project_structure_md(workspace_path, created_dirs, code_base_definitions)
                     logger.info(f"PMKickoffWorkflow: Auto-created {len(created_dirs)} directories and PROJECT_STRUCTURE.md for project '{project_context}'.")
                 else:
                     logger.info(f"PMKickoffWorkflow: <project_structure> was present but contained no <dir> elements.")
@@ -396,7 +402,7 @@ class PMKickoffWorkflow(BaseWorkflow):
 
         return created
 
-    def _write_project_structure_md(self, workspace_path: Path, created_dirs: List[str]) -> None:
+    def _write_project_structure_md(self, workspace_path: Path, created_dirs: List[str], code_base_definitions: Optional[str] = None) -> None:
         """
         Write a PROJECT_STRUCTURE.md file into the workspace root that documents
         the pre-defined directory layout. Workers are instructed to read this
@@ -412,11 +418,20 @@ class PMKickoffWorkflow(BaseWorkflow):
             "**All workers MUST place their files within the directories listed below.**",
             "Do NOT create arbitrary new top-level directories without PM approval.",
             "",
+        ]
+
+        if code_base_definitions:
+            lines.append("## Code Base Definitions & Standards")
+            lines.append("")
+            lines.append(code_base_definitions)
+            lines.append("")
+
+        lines.extend([
             "## Directory Layout",
             "",
             "```",
             "./  (workspace root)",
-        ]
+        ])
 
         for d in sorted_dirs:
             depth = d.count(os.sep)

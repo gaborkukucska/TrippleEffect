@@ -123,6 +123,21 @@ class ManageTeamTool(BaseTool):
         action = kwargs.get("action")
         params = kwargs 
 
+        # Resolve common LLM hallucinated action names to valid ones
+        ACTION_ALIASES = {
+            "add_agent": "create_agent",
+            "remove_agent": "delete_agent",
+            "add_team": "create_team",
+            "remove_team": "delete_team",
+            "change_state": "set_agent_state",
+            "update_state": "set_agent_state",
+        }
+        if action and action in ACTION_ALIASES:
+            resolved = ACTION_ALIASES[action]
+            logger.info(f"ManageTeamTool: Resolved action alias '{action}' -> '{resolved}' for agent '{agent_id}'")
+            action = resolved
+            params["action"] = resolved
+
         logger.info(f"'{agent_id}' requested ManageTeamTool action '{action}' with params: {params}")
 
         if not action or action not in VALID_ACTIONS:

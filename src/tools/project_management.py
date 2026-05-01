@@ -186,6 +186,8 @@ class ProjectManagementTool(BaseTool):
             "set_progress": "modify_task",
             "progress_update": "modify_task",
             "update_task_progress": "modify_task",
+            "set_task_progress": "modify_task",
+            "transition_to": "modify_task",
             "finish_task": "complete_task",
             "done": "complete_task",
             "finish": "complete_task",

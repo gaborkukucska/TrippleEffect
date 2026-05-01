@@ -299,6 +299,32 @@ class PromptAssembler:
                 filtered_history.append(msg)
             agent.message_history = filtered_history
 
+        # 1.6 Prune stale tool error results from history (Fix +47)
+        # Failed tool results persist across cycles and pollute context.
+        # Keep only the most recent 2 error messages to provide corrective context
+        # without overwhelming the LLM.
+        STALE_ERROR_MARKERS = ["[Tool Execution Failed]", "[Tool Execution Blocked]", "Code edit failed:"]
+        error_indices = []
+        for idx, msg in enumerate(agent.message_history):
+            content = msg.get("content", "")
+            if msg.get("role") in ("system", "tool") and any(marker in content for marker in STALE_ERROR_MARKERS):
+                error_indices.append(idx)
+        
+        MAX_ERROR_MESSAGES = 2
+        if len(error_indices) > MAX_ERROR_MESSAGES:
+            indices_to_remove = set(error_indices[:-MAX_ERROR_MESSAGES])  # Remove all but last N
+            original_len = len(agent.message_history)
+            agent.message_history = [
+                msg for i, msg in enumerate(agent.message_history)
+                if i not in indices_to_remove
+            ]
+            removed_count = original_len - len(agent.message_history)
+            if removed_count > 0:
+                logger.info(
+                    f"PromptAssembler: Pruned {removed_count} stale tool error messages from '{agent.agent_id}' history "
+                    f"(kept {MAX_ERROR_MESSAGES} most recent)."
+                )
+
         # 2. Prepare History for LLM Call
         history_for_call = agent.message_history.copy() # Start with agent's current history
         logger.debug(f"PromptAssembler '{agent.agent_id}': Raw agent.message_history (len {len(agent.message_history)}) before modifications: {json.dumps(agent.message_history, indent=2)}")
