@@ -519,4 +519,22 @@ This entirely breaks the LLM's autoregressive death spiral by physically moving 
 **Files:** `src/agents/workflow_manager.py`, `prompts.yaml`, `src/tools/file_system.py`, `src/tools/codebase_search.py`, `src/tools/test_runner.py`, `src/tools/project_management.py`
 
 ---
+
+#### Phase T: Framework Hardening & Native Tool Standardization (May 2026)
+
+**Problem 1 (Watchdog False Positives for Project Completion):** The Constitutional Guardian / Cycle Handler had an overly broad heuristic that blocked the Admin AI if it used the words "project" and "complete" in the same paragraph (e.g., "The kickoff is complete... building the project"). This forced the Admin into false audit loops.
+**Fix 1:** Replaced the loose substring checks with a strict regular expression (`\bproject is complete\b`, etc.) in `cycle_handler.py`. The framework now only blocks explicit assertions of final project completion when tasks are still pending.
+
+**Problem 2 (Legacy State Whitelist Tool Blocking):** Although native tools were enabled globally, legacy state-based tool constraints were left buried in `executor.py`. This caused workers in `worker_report` or `worker_wait` states to be arbitrarily blocked from fixing bugs with `code_editor` or running tests with `command_executor`.
+**Fix 2:** Completely removed all state-based tool blocking logic from `executor.py`. Agents now have unconditional access to all tools authorized for their role (Worker, PM, Admin), relying purely on dynamic LLM decision-making rather than hardcoded workflow gates.
+
+**Problem 3 (Code Editor Malformed Chunk Infinite Loops):** Agents repeatedly failed to use `code_editor` properly, providing chunks with only a `replace` string and getting rejected by the backend validation.
+**Fix 3:** Updated `prompts.yaml` with a `CRITICAL` instruction explicitly enforcing the use of `start_line`/`end_line` keys or a literal `search` string alongside `replace`. Also injected a robust, native JSON example into `native_tool_examples` within `workflow_manager.py` to provide a bulletproof reference format.
+
+**Problem 4 (File System Tool Deficiencies):** Agents struggled with file/directory existence checks (often trying to `read` missing files and blowing context) and lacked readable directory structure insights.
+**Fix 4:** Enhanced `file_system.py` with three new actions: `rename` (an intuitive alias for `move`), `exists` (a lightweight, non-reading existence and stat check that provides sibling suggestions on failure), and `tree` (a recursive depth-controlled directory listing that automatically ignores noise folders like `.git` and `__pycache__`).
+
+**Files:** `src/agents/cycle_handler.py`, `src/tools/executor.py`, `prompts.yaml`, `src/agents/workflow_manager.py`, `src/tools/file_system.py`
+
+---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

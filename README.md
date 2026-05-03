@@ -171,7 +171,7 @@ To keep this README clean and exciting, we've moved all the heavy lifting and de
 ## 🚀 Development Status
 
 * **Current Version:** 2.48
-* **Recent Highlights:** Optimization pass (v2.48) — added `force_overwrite` parameter to `file_system write` for explicit full-file replacement, eliminating 128 overwrite-block errors on template files. Expanded `worker_report`/`worker_wait` whitelists to include `project_management`. Rewrote loop detection to be progress-aware — workers with 3+ unique tool signatures are cleared as productive. Raised duplicate-call threshold from 2→4 for work states. All enforcement points synchronized. Full unit test suite passing (76/76).
+* **Recent Highlights:** Phase T Framework Hardening (May 2026) — Removed legacy state-based tool blocking, completely unlocking native JSON tool capabilities for all agents. Implemented strict targeted chunking enforcement for the Code Editor to eliminate malformed JSON loops. Added `rename`, `tree`, and `exists` capabilities to the File System tool for deeper workspace insight. Replaced the overly sensitive project completion watchdog heuristic with precise regex, eliminating false audit loops for Admin AI.
 * **Current Phase:** Target Phase 28 features Advanced Memory & Learning systems, proactive behaviors, and federated communication foundations.
 
 ## 🤝 Contributing & License
