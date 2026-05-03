@@ -46,7 +46,7 @@ class CodeEditorTool(BaseTool):
         ToolParameter(
             name="chunks",
             type="array",
-            description="An array of objects, where each object has 'search' and 'replace' string keys. The tool will find exact matches for 'search' and replace them with 'replace'.",
+            description="An array of objects. Each object MUST have a 'replace' string. To target lines, provide 'start_line' and 'end_line' integers. To target text, provide a 'search' string.",
             required=True,
             aliases=["replacements", "replace_chunks", "edits", "replacements_json", "modifications"]
         )
@@ -159,64 +159,95 @@ class CodeEditorTool(BaseTool):
             errors = []
             
             for idx, chunk in enumerate(chunks):
-                if not isinstance(chunk, dict) or 'search' not in chunk or 'replace' not in chunk:
-                    errors.append(f"Chunk {idx} is malformed (missing 'search' or 'replace' key).")
+                if not isinstance(chunk, dict) or 'replace' not in chunk:
+                    errors.append(f"Chunk {idx} is malformed (missing 'replace' key).")
                     continue
                     
-                search_text = chunk['search']
                 replace_text = chunk['replace']
+                start_line = chunk.get('start_line') or chunk.get('from_line') or chunk.get('line_start')
+                end_line = chunk.get('end_line') or chunk.get('to_line') or chunk.get('line_end')
+                search_text = chunk.get('search')
                 
-                occurrences = content.count(search_text)
-                if occurrences == 0:
-                    import re
-                    # Try regex match ignoring all whitespace
-                    pieces = [re.escape(p) for p in search_text.split() if p]
-                    if not pieces:
-                        errors.append(f"Chunk {idx}: Search text is empty or only whitespace.")
+                if start_line is not None and end_line is not None:
+                    try:
+                        start_line = int(start_line)
+                        end_line = int(end_line)
+                    except ValueError:
+                        errors.append(f"Chunk {idx}: start_line and end_line must be integers.")
                         continue
                         
-                    regex_pattern = r'\s*'.join(pieces)
-                    matches = list(re.finditer(regex_pattern, content))
+                    lines = content.splitlines(True)
+                    start_idx = max(0, start_line - 1)
+                    end_idx = min(len(lines), end_line)
                     
-                    if len(matches) == 1:
-                        match = matches[0]
-                        before = content[:match.start()]
-                        after = content[match.end():]
+                    if start_idx >= len(lines) or start_idx > end_idx:
+                        errors.append(f"Chunk {idx}: Invalid start_line/end_line range for file with {len(lines)} lines.")
+                        continue
                         
-                        replacement = replace_text
-                        if not replacement.endswith('\n') and after and not after.startswith('\n'):
-                            replacement += '\n'
-                            
-                        content = before + replacement + after
-                        successful += 1
-                        continue
-                    elif len(matches) > 1:
-                        errors.append(f"Chunk {idx}: Search text is ambiguous (found {len(matches)} times ignoring whitespace).")
-                        continue
-                            
-                    # Provide fuzzy match attempt context
-                    import difflib
-                    search_lines = search_text.splitlines()
-                    content_lines = content.splitlines()
-                    if search_lines and content_lines:
-                        first_line = next((line for line in search_lines if line.strip()), None)
-                        if first_line:
-                            close_matches = difflib.get_close_matches(first_line, content_lines, n=1, cutoff=0.6)
-                            if close_matches:
-                                best_line = close_matches[0]
-                                line_idx = content_lines.index(best_line)
-                                start_idx = max(0, line_idx - 2)
-                                end_idx = min(len(content_lines), line_idx + len(search_lines) + 2)
-                                context = '\n'.join(content_lines[start_idx:end_idx])
-                                errors.append(f"Chunk {idx}: Search text not found exactly. Found a close match here:\n```\n{context}\n```\nCRITICAL: If the block above is the section you want to edit, you MUST copy it EXACTLY including all indentation and spacing. If it is NOT the correct section, you MUST use the `file_system` tool with `action='read'` to review the file contents to find the correct exact text before trying to edit again.")
-                                continue
-                                
-                    errors.append(f"Chunk {idx}: Search text not found in file. Ensure exact matching. Use the `file_system` tool with `action='read'` to review the file contents to find the correct exact text before trying again.")
-                elif occurrences > 1:
-                    errors.append(f"Chunk {idx}: Search text is ambiguous (found {occurrences} times). Please make the search block larger/more unique.")
-                else:
-                    content = content.replace(search_text, replace_text)
+                    replacement = replace_text
+                    if not replacement.endswith('\n') and end_idx < len(lines) and not lines[end_idx].startswith('\n'):
+                        replacement += '\n'
+                        
+                    before = "".join(lines[:start_idx])
+                    after = "".join(lines[end_idx:])
+                    content = before + replacement + after
                     successful += 1
+                    continue
+                elif search_text is not None:
+                    occurrences = content.count(search_text)
+                    if occurrences == 0:
+                        import re
+                        # Try regex match ignoring all whitespace
+                        pieces = [re.escape(p) for p in search_text.split() if p]
+                        if not pieces:
+                            errors.append(f"Chunk {idx}: Search text is empty or only whitespace.")
+                            continue
+                            
+                        regex_pattern = r'\s*'.join(pieces)
+                        matches = list(re.finditer(regex_pattern, content))
+                        
+                        if len(matches) == 1:
+                            match = matches[0]
+                            before = content[:match.start()]
+                            after = content[match.end():]
+                            
+                            replacement = replace_text
+                            if not replacement.endswith('\n') and after and not after.startswith('\n'):
+                                replacement += '\n'
+                                
+                            content = before + replacement + after
+                            successful += 1
+                            continue
+                        elif len(matches) > 1:
+                            errors.append(f"Chunk {idx}: Search text is ambiguous (found {len(matches)} times ignoring whitespace).")
+                            continue
+                                
+                        # Provide fuzzy match attempt context
+                        import difflib
+                        search_lines = search_text.splitlines()
+                        content_lines = content.splitlines()
+                        if search_lines and content_lines:
+                            first_line = next((line for line in search_lines if line.strip()), None)
+                            if first_line:
+                                close_matches = difflib.get_close_matches(first_line, content_lines, n=1, cutoff=0.6)
+                                if close_matches:
+                                    best_line = close_matches[0]
+                                    line_idx = content_lines.index(best_line)
+                                    start_idx = max(0, line_idx - 2)
+                                    end_idx = min(len(content_lines), line_idx + len(search_lines) + 2)
+                                    context = '\n'.join(content_lines[start_idx:end_idx])
+                                    errors.append(f"Chunk {idx}: Search text not found exactly. Found a close match here:\n```\n{context}\n```\nCRITICAL: If the block above is the section you want to edit, you MUST copy it EXACTLY including all indentation and spacing. If it is NOT the correct section, you MUST use the `file_system` tool with `action='read'` to review the file contents to find the correct exact text before trying to edit again.")
+                                    continue
+                                    
+                        errors.append(f"Chunk {idx}: Search text not found in file. Ensure exact matching. Use the `file_system` tool with `action='read'` to review the file contents to find the correct exact text before trying again.")
+                    elif occurrences > 1:
+                        errors.append(f"Chunk {idx}: Search text is ambiguous (found {occurrences} times). Please make the search block larger/more unique, or use start_line and end_line.")
+                    else:
+                        content = content.replace(search_text, replace_text)
+                        successful += 1
+                else:
+                    errors.append(f"Chunk {idx} is malformed: Provide either 'start_line'/'end_line' OR 'search'.")
+                    continue
             
             if errors:
                 return {
@@ -244,7 +275,7 @@ class CodeEditorTool(BaseTool):
         **Parameters:**
         *   **action:** (string, required) - Must be 'replace_chunks'.
         *   **filename:** (string, required) - Relative path to the file.
-        *   **chunks:** (array, required) - Array of objects containing 'search' and 'replace' keys.
+        *   **chunks:** (array, required) - Array of objects containing 'replace' and either 'start_line' & 'end_line' (preferred) or 'search' (fallback).
         *   **scope:** (string, optional) - Target scope ('private', 'shared', or 'projects').
 
         **Example:**

@@ -833,7 +833,7 @@ class ConstitutionalGuardianHealthMonitor:
         # Add context-specific guidance based on history analysis
         if "Completion language detected" in history_analysis.get("loop_indicators", []):
             base_msg += ("You appear to have completed work. Provide a comprehensive summary of what you accomplished, "
-                        "then use <request_state state='admin_conversation'> to transition to an appropriate state.")
+                        "then call the 'request_state' tool with state='admin_conversation' to transition to an appropriate state.")
         elif recently_listed_tools:
             base_msg += ("You have already listed the available tools. Repeating this action is not productive. "
                          "MANDATORY NEXT ACTION: Choose ONE specific tool from the list you already have. "
@@ -855,15 +855,15 @@ class ConstitutionalGuardianHealthMonitor:
             if agent.state == ADMIN_STATE_WORK:
                 base_msg += (" As Admin AI in work state, your NEXT RESPONSE must include either: "
                            "1) A tool call like <file_system><action>list</action><path>.</path></file_system>, OR "
-                           "2) A completion summary with <request_state state='admin_conversation'>")
+                           "2) A completion summary by calling the 'request_state' tool with state='admin_conversation'")
             else:
                 base_msg += (" As Admin AI, provide a meaningful text response to the user about your current status.")
         elif agent.agent_type == AGENT_TYPE_WORKER:
             base_msg += (
                 " As a Worker, you MUST execute a tool. Example: use <project_management><action>list_tasks</action></project_management> "
                 "or <file_system><action>list</action><path>.</path></file_system>. "
-                "If you are stuck, report to PM: <request_state state='worker_report'/> "
-                "or wait: <request_state state='worker_wait'/>"
+                "If you are stuck, report to PM by calling the 'request_state' tool with state='worker_report' "
+                "or wait by calling the 'request_state' tool with state='worker_wait'"
             )
             
         return base_msg
@@ -915,7 +915,7 @@ class ConstitutionalGuardianHealthMonitor:
                "2. AVAILABLE TOOLS: file_system, github_tool, knowledge_base, manage_team, project_management, send_message, system_help, tool_information, web_search\\n"
                "3. CHOOSE ONE DIFFERENT TOOL (not tool_information) and test it with a simple action\\n"
                "4. EXAMPLE VALID RESPONSE: <file_system><action>list</action><path>.</path></file_system>\\n"
-               "5. AFTER TESTING ONE TOOL: Provide summary and use <request_state state='conversation'/>\\n\\n"
+               "5. AFTER TESTING ONE TOOL: Provide summary and call the 'request_state' tool with state='conversation'\\n\\n"
                "CRITICAL WARNING: Any further tool_information+list_tools calls will result in emergency system override.\\n"
                "YOUR NEXT RESPONSE MUST NOT CONTAIN tool_information calls.")
     
@@ -930,9 +930,9 @@ class ConstitutionalGuardianHealthMonitor:
                 f"YOUR TASK APPEARS COMPLETE OR BLOCKED. You MUST take ONE of these actions NOW:\n\n"
                 f"**Option 1 — Report your progress to your PM:**\n"
                 f"First switch to report state, then send a message:\n"
-                f"  <request_state state='worker_report'/>\n\n"
+                f"  Call the 'request_state' tool with state='worker_report'\n\n"
                 f"**Option 2 — If your work is saved but you need to wait:**\n"
-                f"  <request_state state='worker_wait'/>\n\n"
+                f"  Call the 'request_state' tool with state='worker_wait'\n\n"
                 f"**Option 3 — If you still have work to do:**\n"
                 f"Use a tool RIGHT NOW (e.g., <file_system><action>write</action>...) to make concrete progress.\n\n"
                 f"DO NOT produce another empty or thinking-only response. The framework will escalate if you do not act."
@@ -944,7 +944,7 @@ class ConstitutionalGuardianHealthMonitor:
                 f"[Constitutional Guardian - STATE PROGRESSION REQUIRED]: You have been stuck in state "
                 f"'{agent.state}' without making progress. Review your workers' status and take action:\n"
                 f"1. List tasks to check progress: <project_management><action>list_tasks</action></project_management>\n"
-                f"2. If all workers are busy, go to standby: <request_state state='pm_standby'/>\n"
+                f"2. If all workers are busy, go to standby by calling the 'request_state' tool with state='pm_standby'\n"
                 f"3. If a worker needs help, send them guidance via <send_message>."
             )
         
@@ -1527,7 +1527,7 @@ class ConstitutionalGuardianHealthMonitor:
         
         cg_agent = self._manager.agents.get(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
         if not cg_agent or not cg_agent.llm_provider:
-             return "BLOCK_AND_GUIDE", f"You already called '{tool_name}' with these exact arguments and it succeeded. CRITICAL INSTRUCTION: You MUST use <request_state> to move to the next phase."
+             return "BLOCK_AND_GUIDE", f"You already called '{tool_name}' with these exact arguments and it succeeded. CRITICAL INSTRUCTION: You MUST use the 'request_state' tool to move to the next phase."
              
         eval_prompt = (
             f"You are the Constitutional Guardian. Agent '{agent.agent_id}' in state '{agent.state}' "
@@ -1562,13 +1562,13 @@ class ConstitutionalGuardianHealthMonitor:
             elif "ESCALATE" in verdict: verdict = "ESCALATE"
             else: verdict = "BLOCK_AND_GUIDE"
             
-            feedback = lines[1].strip() if len(lines) > 1 else f"You already called '{tool_name}' with these exact arguments and it succeeded. CRITICAL INSTRUCTION: You MUST use <request_state> to move to the next phase."
+            feedback = lines[1].strip() if len(lines) > 1 else f"You already called '{tool_name}' with these exact arguments and it succeeded. CRITICAL INSTRUCTION: You MUST use the 'request_state' tool to move to the next phase."
             
             return verdict, feedback
             
         except Exception as e:
             logger.error(f"ConstitutionalGuardian: Error during evaluate_duplicate_tool_call: {e}")
-            return "BLOCK_AND_GUIDE", f"You already called '{tool_name}' with these exact arguments and it succeeded. CRITICAL INSTRUCTION: You MUST use <request_state> to move to the next phase."
+            return "BLOCK_AND_GUIDE", f"You already called '{tool_name}' with these exact arguments and it succeeded. CRITICAL INSTRUCTION: You MUST use the 'request_state' tool to move to the next phase."
 
 # Keep the original AgentHealthMonitor class for backward compatibility
 # but delegate to the new ConstitutionalGuardianHealthMonitor

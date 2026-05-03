@@ -345,7 +345,7 @@ pm_activate_workers_prompt: |2
   Your current goal is to assign the *initial, actionable* kick-off tasks to the appropriate worker agents. DO NOT assign all tasks if some depend on others being completed first!!! Execute **EXACTLY ONE TASK ASSIGNMENT or ONE INFORMATION GATHERING STEP or ONE FINAL ACTION PER TURN**.
 
   [CRITICAL]
-  1.  **ONE ACTION PER TURN:** Your response MUST contain EITHER a single XML tool call (for task assignment or information gathering) OR a final action (reporting or state change).
+  1.  **ONE ACTION PER TURN:** Your response MUST contain EITHER a single tool call (for task assignment or information gathering) OR a final action (reporting or state change). Use the native JSON tool calling — do NOT write XML tags.
   2.  **THINK FIRST, THEN ACT:** ALWAYS start your response with a `<think>...</think>` block. Inside, you MUST:
       a. Briefly acknowledge the result of your *previous* action (if any).
       b. Clearly state the *CURRENT STEP* from the 'Activation Workflow' you are now executing.
@@ -408,7 +408,7 @@ pm_manage_prompt: |2
   {team_wip_updates}
 
   [CRITICAL]
-  1.  **ONE ACTION PER TURN:** Your response MUST contain EITHER a single XML tool call OR a final state change request.
+  1.  **ONE ACTION PER TURN:** Your response MUST contain EITHER a single tool call OR a final state change request. Use the native JSON tool calling — do NOT write XML tags.
   2.  **THINK FIRST, THEN ACT:** ALWAYS start your response with a `<think>...</think>` block. Inside, you MUST:
       a. Briefly acknowledge the result of your *previous* action (if any).
       b. Clearly state the *CURRENT STEP* from the 'Management Workflow' you are now executing.
@@ -596,7 +596,10 @@ worker_work_prompt: |2-
   {team_wip_updates}
 
   [CRITICAL INSTRUCTIONS]
-  - **MODIFYING EXISTING FILES:** You MUST use the `code_editor` tool (action: `replace_chunks`) for ALL modifications to existing files. NEVER use `file_system` with action `write` on an existing file — the framework will reject it.
+  - **MODIFYING EXISTING FILES (LINE-BASED TARGETING):** You MUST use the `code_editor` tool (action: `replace_chunks`) for ALL modifications to existing files. 
+    1. FIRST, read the file using `file_system` (action: `read` or `read_with_lines`). This will output the file with `1: `, `2: ` line numbers prefixed to every line.
+    2. THEN, use `code_editor` and provide `start_line` and `end_line` keys inside your chunk objects to explicitly target the exact line numbers you want to replace. Do NOT rely on the exact `search` string matching if possible, as it is prone to whitespace errors.
+    **CRITICAL:** Every chunk in the array MUST contain either `start_line` AND `end_line`, OR a `search` string alongside the `replace` string. A chunk with ONLY a `replace` string is INVALID and will be rejected.
   - **CREATING NEW FILES ONLY:** Use the `file_system` tool with action `write` ONLY for brand new files that do not yet exist.
   - **REPLACING ENTIRE FILES:** If you genuinely need to rewrite an entire existing file from scratch (not just edit parts of it), use `file_system` with action `write` AND set `force_overwrite` to `true`.
   - **CENTRALIZED FOLDER STRUCTURE:** The project has a pre-defined directory layout. Before creating any NEW files or directories, you MUST read the `PROJECT_STRUCTURE.md` file in the workspace root and place all files within the designated folders. Do NOT create arbitrary new top-level directories or duplicate existing ones (e.g., do NOT create `backend/research/` if `research/` already exists at the root).

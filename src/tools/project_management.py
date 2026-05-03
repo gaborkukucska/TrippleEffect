@@ -146,7 +146,7 @@ class ProjectManagementTool(BaseTool):
         if action in ["switch_state", "change_state", "request_state"]:
             return {
                 "status": "error",
-                "message": "ERROR: You cannot change your state using the project_management tool. You must use the standalone XML tag <request_state state='...'/> instead."
+                "message": "ERROR: You cannot change your state using the project_management tool. You must use the 'request_state' native JSON tool instead."
             }
             
         if action in ["read_message", "get_message", "check_messages"]:
@@ -577,7 +577,8 @@ class ProjectManagementTool(BaseTool):
                 # Auto-hide decomposed parent tasks from default queries.
                 # These are shell tasks that have been broken into sub-tasks;
                 # showing them to the PM causes confusion and reassignment loops.
-                if t_prog == 'decomposed':
+                task_tags = list(task['tags']) if task['tags'] else []
+                if t_prog == 'decomposed' or 'decomposed' in task_tags:
                     decomposed_hidden_count += 1
                     continue
                     
@@ -778,7 +779,7 @@ class ProjectManagementTool(BaseTool):
                 new_assignee = assignee_arg
                 if task['assignee'] == new_assignee:
                     # Silently accept redundant assignment to prevent LLM retry loops
-                    pass
+                    modified_fields.append("assignee")
                 elif task['status'] == 'pending' and task['assignee'] and task['assignee'] != agent_id and not agent_id.startswith("admin") and not agent_id.startswith("PM"):
                     return {"status": "error", "message": f"Task '{task_id}' is already 'pending' and actively assigned to '{task['assignee']}'. Reassigning active tasks owned by others is blocked to prevent disruption. Only the assignee can hand it off, or its status must first be changed to 'waiting'."}
                 else:

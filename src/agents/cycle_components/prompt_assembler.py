@@ -234,7 +234,7 @@ class PromptAssembler:
 
             lines.append("")
             lines.append("[IMPORTANT] When transitioning to work state, you MUST specify the task_id:")
-            lines.append("  <request_state state='worker_work' task_id='PASTE_UUID_HERE'/>")
+            lines.append("  Call the 'request_state' tool with state='worker_work' and task_id='PASTE_UUID_HERE'")
 
             return "\n".join(lines)
 
@@ -458,7 +458,7 @@ class PromptAssembler:
                                         f"You are currently working on task_id: {active_task_id}\n"
                                         f"Goal: {desc}\n"
                                         f"Please review your recent tool results above and take the next concrete step to complete this task.\n"
-                                        f"If the task is complete, use the <request_state state='worker_report'/> tag."
+                                        f"If the task is complete, call the 'request_state' tool with state='worker_report'."
                                     )
                                     history_for_call.append({"role": "system", "content": reminder_msg})
                                     logger.debug(f"Injected task reminder pin for worker '{agent.agent_id}'.")

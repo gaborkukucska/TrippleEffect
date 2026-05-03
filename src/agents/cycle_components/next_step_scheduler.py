@@ -476,7 +476,7 @@ class NextStepScheduler:
                         "AUTOMATIC TASK COMPLETION: The Admin AI has successfully identified 9 available tools through the tool_information system. "
                         "The tools include: file_system, github_tool, knowledge_base, manage_team, project_management, send_message, "
                         "system_help, tool_information, and web_search. Tool testing has been completed.\n\n"
-                        "MANDATORY: Request state change immediately with: <request_state state='conversation'/>"
+                        "MANDATORY: Request state change immediately by calling the 'request_state' tool with state='conversation'"
                     )
                     
                     agent.message_history.append({"role": "system", "content": completion_message})
@@ -514,7 +514,7 @@ class NextStepScheduler:
                         "2. You have these tools available: file_system, github_tool, knowledge_base, manage_team, project_management, send_message, system_help, tool_information, web_search\n"
                         "3. Choose ONE different tool (NOT tool_information) and test it\n"
                         "4. Example: <file_system><action>list</action><path>.</path></file_system>\n"
-                        "5. After testing ONE tool, provide a summary and request: <request_state state='conversation'/>\n\n"
+                        "5. After testing ONE tool, provide a summary and call the 'request_state' tool with state='conversation'\n\n"
                         "CRITICAL: Your next response MUST NOT contain tool_information calls. Use a different tool or request state change."
                     )
                     
@@ -567,7 +567,7 @@ class NextStepScheduler:
                             "[Framework Intervention]: You are repeating the same tool execution pattern multiple times. "
                             f"Detected pattern: {last_execution}\\n\\n"
                             "Please try a different approach or tool to continue your work, or provide a summary "
-                            "if your task is complete and request: <request_state state='conversation'/>"
+                            "if your task is complete and call the 'request_state' tool with state='conversation'"
                         )
                         
                         agent.message_history.append({"role": "system", "content": general_loop_message})
@@ -626,7 +626,7 @@ class NextStepScheduler:
                         "project_management, send_message, and others. I have completed testing the tool_information tool multiple times. "
                         "My task was to test all available tools and I have made progress on this. "
                         "I will now request a state change to complete this task.\n\n"
-                        "<request_state state='conversation'/>\n\n"
+                        "Call the 'request_state' tool with state='conversation'\n\n"
                         "COPY THIS RESPONSE EXACTLY. DO NOT MODIFY IT."
                     )
                 else:

@@ -667,19 +667,18 @@ class AgentWorkflowManager:
                                 if isinstance(workflow_instance, PMKickoffWorkflow) and trigger_tag == "kickoff_plan":
                                     def escape_tag_content(tag_name: str):
                                         def _replacer(m):
-                                            return f"<{tag_name}>{html.escape(m.group(1))}</{tag_name}>"
+                                            # m.group(1) captures attributes, m.group(2) captures the content
+                                            attrs = m.group(1) or ""
+                                            return f"<{tag_name}{attrs}>{html.escape(m.group(2))}</{tag_name}>"
                                         return _replacer
-                                    # Escape content in both <task> and <role> tags to prevent XML parse errors
+                                    # Escape content in both <task> and <role> tags to prevent XML parse errors, while preserving attributes
                                     for tag_to_escape in ["task", "role"]:
                                         xml_full_trigger_block = re.sub(
-                                            rf"<{tag_to_escape}>([\s\S]*?)</{tag_to_escape}>",
+                                            rf"<{tag_to_escape}(\s+[^>]*)?>([\s\S]*?)</{tag_to_escape}>",
                                             escape_tag_content(tag_to_escape),
                                             xml_full_trigger_block,
                                             flags=re.IGNORECASE
                                         )
-                                    
-                                    # Fix common LLM hallucination: closing a <dir> tag with </file>
-                                    xml_full_trigger_block = xml_full_trigger_block.replace("</file>", "</dir>")
                                     
                                 xml_element_for_workflow = ET.fromstring(xml_full_trigger_block)
                             except ET.ParseError as e:
@@ -935,21 +934,25 @@ class AgentWorkflowManager:
 
 [EXAMPLE: SWITCHING TO REPORT STATE]
 <think>I have completed the first milestone. I need to report my progress to the PM.</think>
-<request_state state='worker_report'/>"""
+Call the 'request_state' tool with state='worker_report'"""
 
-        native_tool_examples = """[EXAMPLE: SWITCHING TO REPORT STATE]
+        native_tool_examples = """[EXAMPLE TOOL USE RESPONSE]
+<think>I need to modify the main logic to add a new parameter.</think>
+(Call the code_editor tool using native JSON. Include 'start_line' and 'end_line' keys to target lines, OR use the 'search' string. Do NOT just provide 'replace'.)
+
+[EXAMPLE: SWITCHING TO REPORT STATE]
 <think>I have completed the first milestone using my native tools. I need to report my progress to the PM.</think>
 (Call the request_state tool here using native JSON)"""
 
         xml_report_examples = """[EXAMPLE: MILESTONE REPORT]
 <think>I completed the database schema and saved it. I still have more work to do.</think>
 <send_message><target_agent_id>PM1</target_agent_id><message_content>Milestone complete: Database schema created and saved to db/schema.sql. Moving on to implementing the API endpoints next.</message_content></send_message>
-<request_state state='worker_work'/>
+Call the 'request_state' tool with state='worker_work'
 
 [EXAMPLE: FINAL REPORT]
 <think>All sub-tasks are done and the main task is marked completed. Time for my final report.</think>
 <send_message><target_agent_id>PM1</target_agent_id><message_content>Task complete: 'Implement User Authentication'. Created login page (ui/login.html), auth API (api/auth.py), and user model (models/user.py). All files saved to workspace.</message_content></send_message>
-<request_state state='worker_wait'/>"""
+Call the 'request_state' tool with state='worker_wait'"""
 
         native_report_examples = """[EXAMPLE: MILESTONE REPORT]
 <think>I completed the database schema and saved it. I still have more work to do.</think>

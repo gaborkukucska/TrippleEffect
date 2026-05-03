@@ -1323,8 +1323,8 @@ class AgentCycleHandler:
                                 directive_for_activate_workers = (
                                     f"[Framework System Message]: You are now in state '{PM_STATE_ACTIVATE_WORKERS}'. "
                                     "Your MANDATORY next action is to begin Step 1 of your workflow: Identify the first Kick-Off Task and a suitable Worker Agent. "
-                                    "Use `<project_management><action>list_tasks</action>...</project_management>` and/or "
-                                    "`<manage_team><action>list_agents</action>...</manage_team>` as needed. "
+                                    "Use the 'project_management' tool (action='list_tasks') and/or "
+                                    "the 'manage_team' tool (action='list_agents') as needed. "
                                     "Remember to use `<think>...</think>` before acting."
                                 )
                                 agent.message_history.append({"role": "system", "content": directive_for_activate_workers})

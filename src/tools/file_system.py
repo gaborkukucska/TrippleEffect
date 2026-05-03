@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 import logging
 import re # Import re for find_replace
 import shutil # Added for copy and move
+import datetime # Added for exists/stat
 import difflib # Added for fuzzy filename suggestions
 from diff_match_patch import diff_match_patch # Added for search_replace_block
 import git # Added for git integration
@@ -25,19 +26,20 @@ class FileSystemTool(BaseTool):
     """
     name: str = "file_system"
     auth_level: str = "worker" # Accessible by all
-    summary: Optional[str] = "Performs file system operations (read, write, append, insert_lines, replace_lines, list, mkdir, delete, find_replace, regex_replace, copy, move) within allowed scopes. Use tool_information with sub_action for per-action help."
+    summary: Optional[str] = "Performs file system operations (read, write, append, insert_lines, replace_lines, list, tree, mkdir, delete, find_replace, regex_replace, copy, move, rename, exists) within allowed scopes. Use tool_information with sub_action for per-action help."
     description: str = ( # Updated description
-        "Reads, writes, appends, inserts, or replaces lines in files. Also lists, creates, or moves files/directories. "
+        "Reads, writes, appends, inserts, or replaces lines in files. Also lists, creates, moves, or renames files/directories. "
         "Use 'scope' ('private', 'shared', or 'projects') to specify the target area. Default: 'private'. "
         "Actions: 'read', 'write' (for NEW files only), 'append' (add to end), 'insert_lines', 'replace_lines', "
-        "'list', 'mkdir', 'delete', 'find_replace', 'regex_replace', 'copy', 'move', 'search_replace_block', 'git_commit', 'git_status', 'git_diff', 'git_init'. "
+        "'list', 'tree' (recursive listing), 'mkdir', 'delete', 'find_replace', 'regex_replace', 'copy', 'move', 'rename', "
+        "'exists' (check file/dir existence and metadata), 'search_replace_block', 'git_commit', 'git_status', 'git_diff', 'git_init'. "
         "All paths are relative to the selected scope."
     )
     parameters: List[ToolParameter] = [
         ToolParameter(
             name="action",
             type="string",
-            description="The operation: 'read', 'write', 'list', 'mkdir', 'delete', 'find_replace', 'regex_replace', 'copy', 'move', 'search_replace_block', 'git_commit', 'git_status', 'git_diff'.",
+            description="The operation: 'read', 'write', 'list', 'tree', 'mkdir', 'delete', 'find_replace', 'regex_replace', 'copy', 'move', 'rename', 'exists', 'search_replace_block', 'git_commit', 'git_status', 'git_diff'.",
             required=True,
         ),
         ToolParameter(
@@ -63,14 +65,14 @@ class FileSystemTool(BaseTool):
          ToolParameter(
             name="path",
             type="string",
-            description="Relative path to a directory or file. Required for 'list', 'mkdir', 'delete', 'copy' (as source), 'move' (as source). For 'list', defaults to '.' (scope root).",
+            description="Relative path to a directory or file. Required for 'list', 'tree', 'mkdir', 'delete', 'copy' (as source), 'move' (as source), 'rename' (as source), 'exists'. For 'list'/'tree', defaults to '.' (scope root).",
             required=False, # Dynamically required by action
             aliases=["dir", "directory", "folder", "target_dir"]
         ),
         ToolParameter(
             name="destination_path",
             type="string",
-            description="The target relative path. Required for 'copy', 'move'.",
+            description="The target relative path. Required for 'copy', 'move', 'rename'.",
             required=False, # Dynamically required
         ),
         ToolParameter(
@@ -97,6 +99,12 @@ class FileSystemTool(BaseTool):
             name="start_line",
             type="integer",
             description="Optional starting line number (1-indexed) for 'read'.",
+            required=False,
+        ),
+        ToolParameter(
+            name="show_line_numbers",
+            type="boolean",
+            description="Prefix each line with its line number for 'read'. Defaults to true.",
             required=False,
         ),
         ToolParameter(
@@ -186,6 +194,12 @@ class FileSystemTool(BaseTool):
             description="Set to true ONLY when you intentionally want to replace the ENTIRE contents of an existing file via the 'write' action. Default is false. Use code_editor for partial edits.",
             required=False,
         ),
+        ToolParameter(
+            name="max_depth",
+            type="integer",
+            description="Maximum recursion depth for the 'tree' action. Default: 5. Set lower for large workspaces to reduce output size.",
+            required=False,
+        ),
     ]
 
     @staticmethod
@@ -230,6 +244,7 @@ class FileSystemTool(BaseTool):
         regex_pattern = kwargs.get("regex_pattern") # Used by regex_replace
         start_line = kwargs.get("start_line") # Used by read
         end_line = kwargs.get("end_line") # Used by read
+        show_line_numbers = kwargs.get("show_line_numbers", True) # Used by read, default True
         insert_line = _fo(kwargs.get("insert_line"), kwargs.get("line_number"), kwargs.get("line"), kwargs.get("at_line")) # Used by insert_lines (NOTE: 'position' excluded — it's a semantic hint like 'after'/'before', not a line number)
         replace_start_line = _fo(kwargs.get("replace_start_line"), kwargs.get("start_line_number"), kwargs.get("from_line")) # Used by replace_lines
         replace_end_line = _fo(kwargs.get("replace_end_line"), kwargs.get("end_line_number"), kwargs.get("to_line")) # Used by replace_lines
@@ -261,7 +276,7 @@ class FileSystemTool(BaseTool):
             action = "write"
         valid_actions = [
             "read", "write", "append", "insert_lines", "replace_lines", "search_replace_block", 
-            "list", "mkdir", "delete", "find_replace", "regex_replace", "copy", "move", 
+            "list", "tree", "mkdir", "delete", "find_replace", "regex_replace", "copy", "move", "rename", "exists",
             "git_commit", "git_status", "git_diff", "git_log", "git_branch", "git_checkout", 
             "git_pull", "git_push", "git_add", "git_init"
         ]
@@ -280,6 +295,7 @@ class FileSystemTool(BaseTool):
             "save_file": "write",
             "save": "write",
             "read_file": "read",
+            "read_with_lines": "read",
             "list_files": "list",
             "list_directory": "list",
             "delete_file": "delete",
@@ -287,6 +303,15 @@ class FileSystemTool(BaseTool):
             "remove": "delete",
             "insert_line": "insert_lines",
             "replace_line": "replace_lines",
+            "move_file": "move",
+            "rename_file": "rename",
+            "file_exists": "exists",
+            "check_exists": "exists",
+            "stat": "exists",
+            "file_info": "exists",
+            "tree_view": "tree",
+            "recursive_list": "tree",
+            "find_files": "tree",
             "commit": "git_commit",
             "status": "git_status",
             "diff": "git_diff",
@@ -339,7 +364,7 @@ class FileSystemTool(BaseTool):
         if base_path is None: return {"status": "error", "message": "Internal error determining workspace path."}
 
         # Default relative path for list action if not provided
-        if action == "list" and relative_path is None:
+        if action in ("list", "tree") and relative_path is None:
              relative_path = "."
 
         # Extract agent_type from manager if available
@@ -349,7 +374,7 @@ class FileSystemTool(BaseTool):
             agent_type = getattr(manager.agents[agent_id], "agent_type", "worker")
 
         # --- WORKSPACE BLOAT PROTECTION ---
-        if action in ["write", "mkdir", "copy", "move"] and "shared workspace" in scope_description and agent_type != "pm":
+        if action in ["write", "mkdir", "copy", "move", "rename"] and "shared workspace" in scope_description and agent_type != "pm":
             target_file_param = filename if action == "write" else (destination_path if action in ["copy", "move"] else relative_path)
             if target_file_param:
                 validated_target = await self._resolve_and_validate_path(base_path, target_file_param, agent_id, scope_description)
@@ -386,7 +411,7 @@ class FileSystemTool(BaseTool):
         try:
             if action == "read":
                 if not filename: return {"status": "error", "message": "'filename' parameter is required for 'read'."}
-                result = await self._read_file(base_path, filename, start_line, end_line, agent_id, scope_description)
+                result = await self._read_file(base_path, filename, start_line, end_line, show_line_numbers, agent_id, scope_description)
             elif action == "write":
                 if not filename: return {"status": "error", "message": "'filename' (or 'filepath') parameter is required for 'write'."}
                 if filename.endswith('/'):
@@ -487,6 +512,17 @@ class FileSystemTool(BaseTool):
                  if not relative_path: return {"status": "error", "message": "'path' parameter (source) is required for 'move'."}
                  if not destination_path: return {"status": "error", "message": "'destination_path' parameter is required for 'move'."}
                  result = await self._move_item(base_path, relative_path, destination_path, agent_id, scope_description)
+            elif action == "rename":
+                 if not relative_path: return {"status": "error", "message": "'path' parameter (source) is required for 'rename'."}
+                 if not destination_path: return {"status": "error", "message": "'destination_path' parameter (new name/path) is required for 'rename'."}
+                 result = await self._move_item(base_path, relative_path, destination_path, agent_id, scope_description)
+            elif action == "tree":
+                 result = await self._tree_directory(base_path, relative_path if isinstance(relative_path, str) else ".", agent_id, scope_description, max_depth=kwargs.get("max_depth", 5))
+            elif action == "exists":
+                 if not relative_path and not filename:
+                     return {"status": "error", "message": "'path' or 'filename' parameter is required for 'exists'."}
+                 target = str(relative_path or filename)
+                 result = await self._exists_stat(base_path, target, agent_id, scope_description)
             # --- END NEW ---
 
         except Exception as e:
@@ -515,7 +551,7 @@ class FileSystemTool(BaseTool):
 **Description:** Performs operations on files and directories within different scopes. All paths MUST be relative to the scope root.
 
 **CRITICAL - Valid Actions Only:** The following actions are the ONLY valid actions:
-read, write, append, insert_lines, replace_lines, list, mkdir, delete, find_replace, regex_replace, copy, move
+read, write, append, insert_lines, replace_lines, list, tree, mkdir, delete, find_replace, regex_replace, copy, move, rename, exists
 
 **Scopes:**
 *   `private`: Agent's own sandbox directory (Default).
@@ -530,6 +566,7 @@ Reads the content of a file.
 *   `<filename>` (string, required): Relative path to the file.
 *   `<start_line>` (integer, optional): Line number to start reading from (1-indexed).
 *   `<end_line>` (integer, optional): Line number to stop reading at (inclusive).
+*   `<show_line_numbers>` (boolean, optional): Whether to prefix each line with its line number. Default: true.
 *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
 """
         elif sub_action == "write":
@@ -538,6 +575,7 @@ Reads the content of a file.
 Writes content to a NEW file (Forbidden on existing files to save tokens/prevent data loss). For targeted edits on existing files, use `replace_lines`, `find_replace`, `regex_replace`, or `append`! DO NOT use `write` to create directories — use `mkdir` instead!
 *   `<filename>` (string, required): Relative path to the file.
 *   `<content>` (string, required): The complete file content to write.
+*   `<force_overwrite>` (boolean, optional): Set to `true` ONLY when you intentionally want to **replace the entire contents** of an existing file. Default: `false`. **Use this sparingly** — prefer `code_editor` or `find_replace` for partial edits.
 *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
 """
         elif sub_action == "append":
@@ -593,7 +631,7 @@ Replaces a specific block of existing lines with new content. STRONGLY RECOMMEND
         elif sub_action == "list":
             return common_header + """
 **Action: list**
-Lists files and directories within a path.
+Lists files and directories within a single directory (non-recursive). For a full recursive view, use `tree` instead.
 *   `<path>` (string, optional): Relative directory path. Defaults to root of scope.
 *   `<scope>` (string, optional): 'private', 'shared', 'projects'. Default: 'private'.
 """
@@ -640,9 +678,32 @@ Copies a file/directory.
         elif sub_action == "move":
             return common_header + """
 **Action: move**
-Moves/renames a file/directory.
+Moves/renames a file/directory. (Tip: use `rename` as a more readable alias.)
 *   `<path>` (string, required): Source path.
 *   `<destination_path>` (string, required): Target path.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+        elif sub_action == "rename":
+            return common_header + """
+**Action: rename**
+Renames a file or directory (alias for `move`).
+*   `<path>` (string, required): Current path of the file/directory.
+*   `<destination_path>` (string, required): New path/name for the file/directory.
+*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+"""
+        elif sub_action == "tree":
+            return common_header + """
+**Action: tree**
+Recursively lists all files and directories in a tree format, showing the full workspace structure at a glance.
+*   `<path>` (string, optional): Relative directory path. Defaults to root of scope.
+*   `<max_depth>` (integer, optional): Maximum depth of recursion. Default: 5. Set lower for large workspaces.
+*   `<scope>` (string, optional): 'private', 'shared', 'projects'. Default: 'private'.
+"""
+        elif sub_action == "exists":
+            return common_header + """
+**Action: exists**
+Checks if a file or directory exists and returns metadata (type, size, last modified). Much faster than `read` when you only need to check existence.
+*   `<path>` (string, required): Relative path to check.
 *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
 """
         elif sub_action == "search_replace_block":
@@ -742,28 +803,31 @@ Pushes changes to a remote repository.
         return common_header + """
 **Available Actions Summary:**
 1.  **read:** Reads file content. (Use start_line and end_line for large files).
-2.  **write:** Overwrites a file completely.
+2.  **write:** Creates a new file (use `force_overwrite=true` for existing files).
 3.  **append:** Adds text to the end of a file.
 4.  **insert_lines:** Inserts a block of text at a specific line number, or relative to a search anchor.
 5.  **replace_lines:** Replaces a block of lines with new text.
-6.  **list:** Lists files in a directory.
-7.  **mkdir:** Creates a directory.
-8.  **delete:** Deletes a file or empty directory.
-9.  **find_replace:** Exact string replacement.
-10. **regex_replace:** Regex based string replacement.
-11. **copy:** Copies files/directories.
-12. **move:** Moves/renames files/directories.
-13. **search_replace_block:** Fuzzy search and replace code blocks.
-14. **git_commit:** Commits modifications via Git.
-15. **git_status:** Gets repository status.
-16. **git_diff:** Gets undiscarded modifications.
-17. **git_log:** Gets repository commit history.
-18. **git_branch:** Lists or creates branches.
-19. **git_checkout:** Switches branches.
-20. **git_add:** Stages files.
-21. **git_pull:** Pulls from remote.
-22. **git_push:** Pushes to remote.
-23. **git_init:** Initializes a new git repository.
+6.  **list:** Lists files in a single directory.
+7.  **tree:** Recursively lists all files/directories in a tree format.
+8.  **mkdir:** Creates a directory.
+9.  **delete:** Deletes a file or empty directory.
+10. **find_replace:** Exact string replacement.
+11. **regex_replace:** Regex based string replacement.
+12. **copy:** Copies files/directories.
+13. **move:** Moves/renames files/directories.
+14. **rename:** Alias for move — renames a file or directory.
+15. **exists:** Checks if a file/directory exists and returns metadata (size, modified time).
+16. **search_replace_block:** Fuzzy search and replace code blocks.
+17. **git_commit:** Commits modifications via Git.
+18. **git_status:** Gets repository status.
+19. **git_diff:** Gets undiscarded modifications.
+20. **git_log:** Gets repository commit history.
+21. **git_branch:** Lists or creates branches.
+22. **git_checkout:** Switches branches.
+23. **git_add:** Stages files.
+24. **git_pull:** Pulls from remote.
+25. **git_push:** Pushes to remote.
+26. **git_init:** Initializes a new git repository.
 
 **To get detailed instructions and parameter lists for a specific action, call:**
 <tool_information>
@@ -827,7 +891,7 @@ Pushes changes to a remote repository.
             return None
 
 
-    async def _read_file(self, base_path: Path, filename: str, start_line: Optional[int], end_line: Optional[int], agent_id: str, scope_description: str) -> Dict[str, Any]:
+    async def _read_file(self, base_path: Path, filename: str, start_line: Optional[int], end_line: Optional[int], show_line_numbers: bool, agent_id: str, scope_description: str) -> Dict[str, Any]:
         """Reads content from a file within the specified base path."""
         validated_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
         if not validated_path: return {"status": "error", "message": f"Invalid or disallowed file path '{filename}' in {scope_description}."}
@@ -879,13 +943,24 @@ Pushes changes to a remote repository.
             return {"status": "error", "message": f"File not found: '{filename}' in {scope_description}.{hint}"}
         try:
             content = await asyncio.to_thread(validated_path.read_text, encoding='utf-8')
+            lines = content.splitlines(True)
+            
+            if show_line_numbers:
+                # Add line numbers preserving original newlines
+                numbered_lines = []
+                for i, line in enumerate(lines):
+                    numbered_lines.append(f"{i + 1}: {line}")
+                lines = numbered_lines
+                
             if start_line is not None or end_line is not None:
-                lines = content.splitlines(True)
                 start_idx = max(0, start_line - 1) if start_line is not None else 0
                 end_idx = min(len(lines), end_line) if end_line is not None else len(lines)
                 if start_idx >= len(lines) or start_idx > end_idx:
                     return {"status": "error", "message": f"Invalid start_line/end_line range for file with {len(lines)} lines."}
                 content = "".join(lines[start_idx:end_idx])
+            else:
+                content = "".join(lines)
+            
             
             # Reset fail count on success
             if hasattr(self, '_failed_reads') and agent_id in self._failed_reads and filename in self._failed_reads[agent_id]:
@@ -1174,6 +1249,164 @@ Pushes changes to a remote repository.
         except Exception as e:
             logger.error(f"Agent {agent_id} error moving '{relative_src}' to '{relative_dst}': {e}", exc_info=True)
             return {"status": "error", "message": f"Error moving '{relative_src}' to '{relative_dst}': {e}"}
+
+    # --- NEW: _tree_directory method ---
+    async def _tree_directory(self, base_path: Path, relative_dir: str, agent_id: str, scope_description: str, max_depth: int = 5) -> Dict[str, Any]:
+        """Recursively lists all files and directories in a tree format."""
+        validated_path = await self._resolve_and_validate_path(base_path, relative_dir, agent_id, scope_description)
+        if not validated_path: return {"status": "error", "message": f"Invalid or disallowed path '{relative_dir}' in {scope_description}."}
+        if not validated_path.is_dir():
+            return {"status": "error", "message": f"Path '{relative_dir}' is not a directory in {scope_description}. Use 'exists' to check individual files."}
+
+        # Ensure max_depth is reasonable
+        try:
+            max_depth = int(max_depth) if max_depth is not None else 5
+        except (ValueError, TypeError):
+            max_depth = 5
+        max_depth = max(1, min(max_depth, 10))  # Clamp between 1 and 10
+
+        # Hidden/ignored patterns to skip
+        skip_names = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.env', '.idea', '.vscode', '.DS_Store'}
+        
+        tree_lines = []
+        file_count = 0
+        dir_count = 0
+        MAX_ENTRIES = 500  # Safety limit to prevent enormous outputs
+
+        def build_tree(current_path: Path, prefix: str, depth: int):
+            nonlocal file_count, dir_count
+            if depth > max_depth or (file_count + dir_count) >= MAX_ENTRIES:
+                return
+            try:
+                entries = sorted(current_path.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+            except PermissionError:
+                tree_lines.append(f"{prefix}[permission denied]")
+                return
+            except OSError as e:
+                tree_lines.append(f"{prefix}[error: {e}]")
+                return
+
+            # Filter out hidden/ignored
+            entries = [e for e in entries if e.name not in skip_names]
+
+            for i, entry in enumerate(entries):
+                if (file_count + dir_count) >= MAX_ENTRIES:
+                    tree_lines.append(f"{prefix}... (truncated, {MAX_ENTRIES} entry limit reached)")
+                    return
+                is_last = (i == len(entries) - 1)
+                connector = "└── " if is_last else "├── "
+                extension = "    " if is_last else "│   "
+
+                if entry.is_dir():
+                    dir_count += 1
+                    tree_lines.append(f"{prefix}{connector}{entry.name}/")
+                    if depth < max_depth:
+                        build_tree(entry, prefix + extension, depth + 1)
+                elif entry.is_file():
+                    file_count += 1
+                    # Show file size for context
+                    try:
+                        size = entry.stat().st_size
+                        if size < 1024:
+                            size_str = f"{size}B"
+                        elif size < 1024 * 1024:
+                            size_str = f"{size / 1024:.1f}KB"
+                        else:
+                            size_str = f"{size / (1024 * 1024):.1f}MB"
+                        tree_lines.append(f"{prefix}{connector}{entry.name} ({size_str})")
+                    except OSError:
+                        tree_lines.append(f"{prefix}{connector}{entry.name}")
+                else:
+                    tree_lines.append(f"{prefix}{connector}{entry.name} (symlink/other)")
+
+        try:
+            await asyncio.to_thread(build_tree, validated_path, "", 0)
+        except Exception as e:
+            logger.error(f"Agent {agent_id} error building tree for '{relative_dir}' in {scope_description}: {e}", exc_info=True)
+            return {"status": "error", "message": f"Error building directory tree: {type(e).__name__} - {e}"}
+
+        if not tree_lines:
+            return {"status": "success", "message": f"Directory '{relative_dir}' in {scope_description} is empty.", "files": 0, "directories": 0}
+
+        header = f"Tree of '{relative_dir}' in {scope_description} (depth={max_depth}):"
+        summary = f"\n\n({file_count} file(s), {dir_count} directory/ies)"
+        tree_output = header + "\n" + "\n".join(tree_lines) + summary
+        
+        logger.info(f"Agent {agent_id} successfully listed tree for '{relative_dir}' in {scope_description} ({file_count} files, {dir_count} dirs)")
+        return {"status": "success", "message": tree_output, "files": file_count, "directories": dir_count}
+
+    # --- NEW: _exists_stat method ---
+    async def _exists_stat(self, base_path: Path, relative_path: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+        """Checks if a file or directory exists and returns metadata."""
+        validated_path = await self._resolve_and_validate_path(base_path, relative_path, agent_id, scope_description)
+        if not validated_path: 
+            return {"status": "success", "exists": False, "message": f"Invalid path '{relative_path}' in {scope_description}.", "path": relative_path}
+
+        if not validated_path.exists():
+            # Provide helpful suggestions if the parent exists
+            parent = validated_path.parent
+            suggestions = ""
+            if parent.is_dir():
+                try:
+                    siblings = sorted([f.name for f in parent.iterdir()][:20])
+                    if siblings:
+                        suggestions = f" Items in '{parent.name}/': {', '.join(siblings)}"
+                except Exception:
+                    pass
+            logger.info(f"Agent {agent_id} checked existence of '{relative_path}' in {scope_description}: does not exist")
+            return {
+                "status": "success", 
+                "exists": False, 
+                "message": f"'{relative_path}' does not exist in {scope_description}.{suggestions}",
+                "path": relative_path
+            }
+
+        try:
+            stat_info = await asyncio.to_thread(validated_path.stat)
+            is_file = validated_path.is_file()
+            is_dir = validated_path.is_dir()
+            item_type = "file" if is_file else ("directory" if is_dir else "other")
+            
+            # Format size
+            size_bytes = stat_info.st_size
+            if size_bytes < 1024:
+                size_str = f"{size_bytes} bytes"
+            elif size_bytes < 1024 * 1024:
+                size_str = f"{size_bytes / 1024:.1f} KB"
+            else:
+                size_str = f"{size_bytes / (1024 * 1024):.1f} MB"
+
+            # Format modification time
+            mod_time = datetime.datetime.fromtimestamp(stat_info.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+
+            result = {
+                "status": "success",
+                "exists": True,
+                "path": relative_path,
+                "type": item_type,
+                "size_bytes": size_bytes,
+                "size_human": size_str,
+                "last_modified": mod_time,
+                "message": f"'{relative_path}' exists in {scope_description}. Type: {item_type}, Size: {size_str}, Last modified: {mod_time}"
+            }
+
+            # For directories, also include item count
+            if is_dir:
+                try:
+                    children = list(await asyncio.to_thread(validated_path.iterdir))
+                    child_files = sum(1 for c in children if c.is_file())
+                    child_dirs = sum(1 for c in children if c.is_dir())
+                    result["child_files"] = child_files
+                    result["child_directories"] = child_dirs
+                    result["message"] += f", Contains: {child_files} file(s) and {child_dirs} subdirectory/ies"
+                except Exception:
+                    pass
+
+            logger.info(f"Agent {agent_id} checked existence of '{relative_path}' in {scope_description}: exists ({item_type})")
+            return result
+        except Exception as e:
+            logger.error(f"Agent {agent_id} error checking '{relative_path}' in {scope_description}: {e}", exc_info=True)
+            return {"status": "error", "message": f"Error checking '{relative_path}': {type(e).__name__} - {e}"}
 
     async def _append_to_file(self, base_path: Path, filename: str, content: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
         val_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
