@@ -1202,7 +1202,10 @@ class AgentCycleHandler:
                         # --- START ADMIN VERIFICATION HARD GATE ---
                         if agent.agent_id == BOOTSTRAP_AGENT_ID and raw_content:
                             lower_content = raw_content.lower()
-                            if ("complete" in lower_content or "finished" in lower_content or "done" in lower_content) and "project" in lower_content:
+                            import re
+                            # Use regex to find strong assertions of final project completion
+                            completion_pattern = r'\b(project\s+is\s+(complete|finished|done)|all\s+tasks\s+(are\s+)?(complete|finished|done)|project\s+completed|finished\s+(the\s+)?project)\b'
+                            if re.search(completion_pattern, lower_content):
                                 is_actually_complete = True
                                 pending_count = 0
                                 try:
