@@ -21,7 +21,7 @@ class CodeEditorTool(BaseTool):
     description: str = (
         "Advanced code editing capabilities for precise modifications. "
         "Allows modifying multiple non-contiguous segments of code in a single file safely. "
-        "Actions: 'replace_chunks'."
+        "Actions: 'replace_chunks'. Note: Each chunk's 'search' + 'replace' text is strictly limited to a combined 16384 characters. If editing massive files, split into multiple chunks or calls."
     )
     parameters: List[ToolParameter] = [
         ToolParameter(
@@ -84,24 +84,44 @@ class CodeEditorTool(BaseTool):
                 import json
                 chunks = json.loads(chunks)
             except Exception as e1:
+                # JSON Resilience Layer
                 try:
-                    import ast
-                    chunks = ast.literal_eval(chunks)
+                    import re
+                    # Try to fix common JSON errors (single quotes, trailing commas, missing closing brackets)
+                    fixed_str = chunks.strip()
+                    # Remove markdown formatting if present
+                    if fixed_str.startswith("```json"):
+                        fixed_str = fixed_str[7:]
+                    elif fixed_str.startswith("```"):
+                        fixed_str = fixed_str[3:]
+                    if fixed_str.endswith("```"):
+                        fixed_str = fixed_str[:-3]
+                    
+                    # Fix single quotes to double quotes, being careful around escaped quotes
+                    # This is a naive regex but helps with simple LLM errors
+                    fixed_str = re.sub(r"(?<!\\)'", '"', fixed_str)
+                    # Fix trailing commas
+                    fixed_str = re.sub(r',\s*([}\]])', r'\1', fixed_str)
+                    
+                    chunks = json.loads(fixed_str)
                 except Exception as e2:
                     try:
-                        clean_chunks = chunks.strip("` \n\r")
-                        if clean_chunks.startswith("json\n"):
-                            clean_chunks = clean_chunks[5:]
-                        chunks = json.loads(clean_chunks)
+                        import ast
+                        # AST fallback for single-quote JSON
+                        parsed = ast.literal_eval(chunks.strip())
+                        if isinstance(parsed, list):
+                            chunks = parsed
+                        else:
+                            raise ValueError("AST evaluated to non-list")
                     except Exception as e3:
-                        return {"status": "error", "message": f"'chunks' was provided as a string but is not valid JSON. Ensure you use an array of objects: {e1}"}
+                        return {"status": "error", "message": f"'chunks' was provided as a string but is not valid JSON. Ensure you use an array of objects. Parse error: {e1}. Repair attempt failed: {e3}"}
                 
         if not isinstance(chunks, list):
             return {"status": "error", "message": "'chunks' must be a list of dicts with 'search' and 'replace' keys."}
 
         # --- FIX +42: Guard against oversized chunks that cause LLM JSON overflow ---
         MAX_CHUNKS = 20
-        MAX_CHUNK_SIZE_CHARS = 4096  # 4KB per individual chunk
+        MAX_CHUNK_SIZE_CHARS = 16384  # 16KB per individual chunk (increased from 4096)
         
         if len(chunks) > MAX_CHUNKS:
             return {"status": "error", "message": f"Too many chunks ({len(chunks)}). Maximum is {MAX_CHUNKS}. Please split your edits into multiple smaller tool calls."}
@@ -111,7 +131,9 @@ class CodeEditorTool(BaseTool):
                 search_len = len(str(chunk.get('search', '')))
                 replace_len = len(str(chunk.get('replace', '')))
                 if search_len + replace_len > MAX_CHUNK_SIZE_CHARS:
-                    return {"status": "error", "message": f"Chunk {idx} is too large ({search_len + replace_len} chars, max {MAX_CHUNK_SIZE_CHARS}). Split this edit into multiple smaller chunks."}
+                    # Auto-split oversized chunk logic is too complex for this tool's exact search match, 
+                    # so we instruct the LLM to do it instead.
+                    return {"status": "error", "message": f"Chunk {idx} is too large ({search_len + replace_len} chars, max {MAX_CHUNK_SIZE_CHARS}). Split this edit into multiple smaller chunks by separating your changes into distinct search/replace blocks."}
 
         # --- Base path logic identical to file_system ---
         base_path: Optional[Path] = None
@@ -254,6 +276,17 @@ class CodeEditorTool(BaseTool):
                     "status": "error",
                     "message": f"Code edit failed: {successful} chunks succeeded, but {len(errors)} failed issues occurred.\n" + "\n".join(errors) + "\nNo changes were saved."
                 }
+                
+            # Perform basic Python syntax validation if modifying a python file
+            if filename.endswith('.py'):
+                try:
+                    import ast
+                    ast.parse(content)
+                except SyntaxError as syntax_err:
+                    return {
+                        "status": "error",
+                        "message": f"Code edit rejected due to Python SyntaxError in resulting code: {syntax_err.msg} at line {syntax_err.lineno}. No changes were saved. Please check your indentation and brackets."
+                    }
             
             # Save if all success
             await asyncio.to_thread(abs_path.write_text, content, encoding="utf-8")

@@ -210,8 +210,8 @@ class Settings:
         try: self.PM_WORK_STATE_MAX_TOKENS: int = int(os.getenv("PM_WORK_STATE_MAX_TOKENS", "4096")); logger.info(f"Loaded PM_WORK_STATE_MAX_TOKENS: {self.PM_WORK_STATE_MAX_TOKENS}")
         except ValueError: logger.warning("Invalid PM_WORK_STATE_MAX_TOKENS, using 4096."); self.PM_WORK_STATE_MAX_TOKENS = 4096
         # --- Max PM Manage State Tokens ---
-        try: self.PM_MANAGE_STATE_MAX_TOKENS: int = int(os.getenv("PM_MANAGE_STATE_MAX_TOKENS", "4096")); logger.info(f"Loaded PM_MANAGE_STATE_MAX_TOKENS: {self.PM_MANAGE_STATE_MAX_TOKENS}")
-        except ValueError: logger.warning("Invalid PM_MANAGE_STATE_MAX_TOKENS, using 4096."); self.PM_MANAGE_STATE_MAX_TOKENS = 4096
+        try: self.PM_MANAGE_STATE_MAX_TOKENS: int = int(os.getenv("PM_MANAGE_STATE_MAX_TOKENS", "12288")); logger.info(f"Loaded PM_MANAGE_STATE_MAX_TOKENS: {self.PM_MANAGE_STATE_MAX_TOKENS}")
+        except ValueError: logger.warning("Invalid PM_MANAGE_STATE_MAX_TOKENS, using 12288."); self.PM_MANAGE_STATE_MAX_TOKENS = 12288
         # --- Max WORKER Startup State Tokens ---
         try: self.WORKER_STARTUP_STATE_MAX_TOKENS: int = int(os.getenv("WORKER_STARTUP_STATE_MAX_TOKENS", "1024")); logger.info(f"Loaded WORKER_STARTUP_STATE_MAX_TOKENS: {self.WORKER_STARTUP_STATE_MAX_TOKENS}")
         except ValueError: logger.warning("Invalid WORKER_STARTUP_STATE_MAX_TOKENS, using 1024."); self.WORKER_STARTUP_STATE_MAX_TOKENS = 1024
@@ -219,8 +219,8 @@ class Settings:
         try: self.WORKER_DECOMPOSE_STATE_MAX_TOKENS: int = int(os.getenv("WORKER_DECOMPOSE_STATE_MAX_TOKENS", "1024")); logger.info(f"Loaded WORKER_DECOMPOSE_STATE_MAX_TOKENS: {self.WORKER_DECOMPOSE_STATE_MAX_TOKENS}")
         except ValueError: logger.warning("Invalid WORKER_DECOMPOSE_STATE_MAX_TOKENS, using 1024."); self.WORKER_DECOMPOSE_STATE_MAX_TOKENS = 1024
         # --- Max WORKER Work State Tokens ---
-        try: self.WORKER_WORK_STATE_MAX_TOKENS: int = int(os.getenv("WORKER_WORK_STATE_MAX_TOKENS", "4096")); logger.info(f"Loaded WORKER_WORK_STATE_MAX_TOKENS: {self.WORKER_WORK_STATE_MAX_TOKENS}")
-        except ValueError: logger.warning("Invalid WORKER_WORK_STATE_MAX_TOKENS, using 4096."); self.WORKER_WORK_STATE_MAX_TOKENS = 4096
+        try: self.WORKER_WORK_STATE_MAX_TOKENS: int = int(os.getenv("WORKER_WORK_STATE_MAX_TOKENS", "16384")); logger.info(f"Loaded WORKER_WORK_STATE_MAX_TOKENS: {self.WORKER_WORK_STATE_MAX_TOKENS}")
+        except ValueError: logger.warning("Invalid WORKER_WORK_STATE_MAX_TOKENS, using 16384."); self.WORKER_WORK_STATE_MAX_TOKENS = 16384
         # --- Max WORKER Wait State Tokens ---
         try: self.WORKER_WAIT_STATE_MAX_TOKENS: int = int(os.getenv("WORKER_WAIT_STATE_MAX_TOKENS", "512")); logger.info(f"Loaded WORKER_WAIT_STATE_MAX_TOKENS: {self.WORKER_WAIT_STATE_MAX_TOKENS}")
         except ValueError: logger.warning("Invalid WORKER_WAIT_STATE_MAX_TOKENS, using 512."); self.WORKER_WAIT_STATE_MAX_TOKENS = 512

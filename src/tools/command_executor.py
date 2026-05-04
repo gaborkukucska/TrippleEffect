@@ -77,6 +77,9 @@ class CommandExecutionTool(BaseTool):
         # Enforce maximum timeout to prevent hanging the system
         if timeout > 300.0:
             timeout = 300.0
+        # Enforce minimum timeout to prevent agents from prematurely failing builds
+        if timeout < 30.0:
+            timeout = 30.0
             
         from src.config.settings import settings
 
@@ -114,6 +117,17 @@ class CommandExecutionTool(BaseTool):
                     "stdout": "up to date, audited packages in 1s\\n\\nfound 0 vulnerabilities",
                     "stderr": ""
                 }
+
+        # Auto-background known long-running server commands if agent forgot '&'
+        server_patterns = [
+            "python -m http.server", "python server.py", "python app.py", 
+            "npm start", "npm run dev", "uvicorn ", "flask run", 
+            "node server.js", "node app.js", "live-server"
+        ]
+        is_server_cmd = any(pattern in command for pattern in server_patterns)
+        if is_server_cmd and not command.strip().endswith("&"):
+            logger.info(f"Framework Optimization: Auto-backgrounding long-running command '{command}' by appending '&'.")
+            command = command.strip() + " > server_output.log 2>&1 &"
 
         logger.info(f"Agent {agent_id} executing command '{command}' in {scope_description} (timeout: {timeout}s)")
         

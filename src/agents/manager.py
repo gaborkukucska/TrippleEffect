@@ -492,16 +492,21 @@ class AgentManager:
                         current_time = time.time()
                         last_wake = getattr(agent, '_last_standby_wake_time', 0)
                         
+                        # Track previously seen waiting workers to avoid waking for the same workers repeatedly
+                        seen_waiting = getattr(agent, '_seen_waiting_workers', set())
+                        current_waiting_ids = {w.agent_id for w in waiting_workers}
+                        new_waiting_ids = current_waiting_ids - seen_waiting
+                        
                         if has_inbox:
                             # Immediate wake
                             should_wake = True
                             logger.info(f"PM '{agent.agent_id}' has INBOX MESSAGES. Waking immediately.")
-                        elif has_waiting_workers:
+                        elif new_waiting_ids:
                             # Wake only if 60 seconds have passed since last standby wake
                             time_since_wake = current_time - last_wake
                             if time_since_wake > 60:
                                 should_wake = True
-                                logger.info(f"PM '{agent.agent_id}' has waiting workers and backoff ({time_since_wake:.1f}s > 60s) cleared. Waking.")
+                                logger.info(f"PM '{agent.agent_id}' has NEW waiting workers ({new_waiting_ids}) and backoff ({time_since_wake:.1f}s > 60s) cleared. Waking.")
                             else:
                                 should_wake = False
                         else:
@@ -509,11 +514,14 @@ class AgentManager:
                         
                         if should_wake:
                             agent._last_standby_wake_time = current_time
+                            # Update seen workers (only when we actually wake)
+                            agent._seen_waiting_workers = current_waiting_ids
+                            
                             reason = []
                             if has_inbox:
                                 reason.append(f"{len(agent.message_inbox)} inbox message(s)")
-                            if has_waiting_workers:
-                                reason.append(f"{len(waiting_workers)} worker(s) in worker_wait")
+                            if new_waiting_ids:
+                                reason.append(f"{len(new_waiting_ids)} NEW worker(s) in worker_wait")
                             reason_str = " and ".join(reason)
                             
                             logger.warning(

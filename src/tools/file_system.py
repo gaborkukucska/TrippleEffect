@@ -1048,6 +1048,17 @@ Pushes changes to a remote repository.
             }
             
         try:
+            # Perform basic Python syntax validation if modifying a python file
+            if filename.endswith('.py'):
+                try:
+                    import ast
+                    ast.parse(content)
+                except SyntaxError as syntax_err:
+                    return {
+                        "status": "error",
+                        "message": f"Write rejected due to Python SyntaxError in resulting code: {syntax_err.msg} at line {syntax_err.lineno}. No changes were saved. Please check your indentation and brackets."
+                    }
+                    
             await asyncio.to_thread(validated_path.parent.mkdir, parents=True, exist_ok=True)
             await asyncio.to_thread(validated_path.write_text, content, encoding='utf-8')
             logger.info(f"Agent {agent_id} successfully wrote file: '{filename}' to {scope_description}")

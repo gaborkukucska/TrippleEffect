@@ -727,6 +727,7 @@ class AgentCycleHandler:
                                             "[Tool Execution Failed]" in result_content or 
                                             "[Framework Error]" in result_content or 
                                             "[Error]" in result_content or
+                                            "ERROR:" in result_content or
                                             result_content.strip() == ""
                                         ):
                                             return result_content  # Found an identical failure
@@ -1853,7 +1854,7 @@ class AgentCycleHandler:
                                         f"ERROR: Your other tool call(s) ({', '.join(other_tool_names)}) were executed successfully. "
                                         f"CRITICAL INSTRUCTION: You attempted to use send_message alongside other active tool calls. "
                                         f"STOP attempting this combination. You must ONLY use send_message by itself, or alongside a call to the 'request_state' tool. "
-                                        f"Your message was DROPPED. You MUST wait until your current work is done and you are ready to transition states before trying to send this message again."
+                                        f"Your message was DROPPED. If your task is complete, your ONLY valid action in the next cycle is to call request_state to transition to 'worker_report' (or your appropriate next state). DO NOT try to re-send this message while in the 'worker_work' state."
                                     )
                                     result_dict = {
                                         "status": "error",
