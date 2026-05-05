@@ -376,6 +376,7 @@ class Agent:
 
                 # --- PM Startup Missing Task List Check ---
                 if think_content_extracted and \
+                   not native_tool_calls_received and \
                    (not remaining_text_after_processing_tags or remaining_text_after_processing_tags.isspace()) and \
                    self.agent_type == AGENT_TYPE_PM and \
                    self.state == PM_STATE_STARTUP:
@@ -457,32 +458,6 @@ class Agent:
                             remaining_text_after_processing_tags = remaining_text_after_processing_tags.replace(state_request_tag, '', 1).strip()
 
                 final_cleaned_response_for_tools_or_text = remaining_text_after_processing_tags
-
-                if self.agent_type == AGENT_TYPE_PM and \
-                   self.state == PM_STATE_STARTUP and \
-                   (not 'workflow_result' in locals() or not workflow_result):
-
-                    pm_kickoff_trigger_tag = "task_list"
-                    if hasattr(self.manager, 'workflow_manager') and self.manager.workflow_manager and \
-                       hasattr(self.manager.workflow_manager, '_workflow_triggers'):
-                        for trigger_key, wf_instance in self.manager.workflow_manager._workflow_triggers.items():
-                            if hasattr(wf_instance, 'name') and wf_instance.name == "pm_project_kickoff":
-                                pm_kickoff_trigger_tag = trigger_key[2]
-                                break
-
-                    if f"<{pm_kickoff_trigger_tag}>" not in final_cleaned_response_for_tools_or_text:
-                        logger.warning(
-                            f"Agent {self.agent_id} (PM) in state '{self.state}' did not output the expected '<{pm_kickoff_trigger_tag}>' tag. "
-                            f"Forcing retry by re-requesting current state with feedback. Output was: '{final_cleaned_response_for_tools_or_text[:200]}...'"
-                        )
-                        feedback_content = (
-                            f"[Framework Feedback for PM Retry]\n"
-                            f"Your previous output did not contain the required '<{pm_kickoff_trigger_tag}>' XML structure. "
-                            f"Please review your instructions for the '{self.state}' state and ensure your entire response is the XML task list as specified."
-                        )
-                        self.message_history.append({"role": "system", "content": feedback_content})
-                        yield {"type": "agent_state_change_requested", "requested_state": PM_STATE_STARTUP, "agent_id": self.agent_id}
-                        return
 
                 tool_requests_to_yield = []
                 valid_calls: List[Any] = []
@@ -619,6 +594,35 @@ class Agent:
                     return
                 else:
                     # No tool requests yielded
+                    
+                    # --- PM Startup Missing Task List Check (Moved here to allow tool use first) ---
+                    if self.agent_type == AGENT_TYPE_PM and \
+                       self.state == PM_STATE_STARTUP and \
+                       not state_change_to_yield:
+
+                        pm_kickoff_trigger_tag = "task_list"
+                        if hasattr(self.manager, 'workflow_manager') and self.manager.workflow_manager and \
+                           hasattr(self.manager.workflow_manager, '_workflow_triggers'):
+                            for trigger_key, wf_instance in self.manager.workflow_manager._workflow_triggers.items():
+                                if hasattr(wf_instance, 'name') and wf_instance.name == "pm_project_kickoff":
+                                    pm_kickoff_trigger_tag = trigger_key[2]
+                                    break
+
+                        if f"<{pm_kickoff_trigger_tag}>" not in final_cleaned_response_for_tools_or_text:
+                            logger.warning(
+                                f"Agent {self.agent_id} (PM) in state '{self.state}' did not output the expected '<{pm_kickoff_trigger_tag}>' tag. "
+                                f"Forcing retry by re-requesting current state with feedback. Output was: '{final_cleaned_response_for_tools_or_text[:200]}...'"
+                            )
+                            feedback_content = (
+                                f"[Framework Feedback for PM Retry]\n"
+                                f"Your previous output did not contain the required '<{pm_kickoff_trigger_tag}>' XML structure. "
+                                f"Please review your instructions for the '{self.state}' state and ensure your entire response is the XML task list as specified."
+                            )
+                            self.message_history.append({"role": "system", "content": feedback_content})
+                            yield {"type": "agent_state_change_requested", "requested_state": PM_STATE_STARTUP, "agent_id": self.agent_id}
+                            return
+                    # --- END PM Startup Missing Task List Check ---
+
                     if state_change_to_yield:
                         # Only a state change (no tools)
                         yield state_change_to_yield

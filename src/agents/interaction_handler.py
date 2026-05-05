@@ -536,7 +536,8 @@ class AgentInteractionHandler:
                                 await self._manager.activate_worker_with_task_details(
                                     worker_agent_id=assignee_id,
                                     task_id_from_tool=task_identifier_for_activation,
-                                    task_description_from_tool=task_description_for_worker
+                                    task_description_from_tool=task_description_for_worker,
+                                    task_progress_from_tool=raw_result.get("task_progress", "todo")
                                 )
                                 
                                 # Append confirmation so the PM knows the worker is active

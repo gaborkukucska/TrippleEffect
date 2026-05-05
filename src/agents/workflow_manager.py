@@ -333,7 +333,7 @@ class AgentWorkflowManager:
                                             main_task = None
                                             
                                         if main_task:
-                                            subtasks = tw.tasks.filter(depends=main_task)
+                                            subtasks = tw.tasks.filter(tags=f"parent:{main_task['uuid']}")
                                             
                                             # --- FIX: Distinguish real sub-tasks (created by this worker) from
                                             # unrelated kick-off tasks that merely depend on the parent ---

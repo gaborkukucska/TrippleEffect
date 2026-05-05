@@ -771,7 +771,7 @@ class AgentManager:
         logger.info(f"Agent '{agent_id}' set to IDLE and rescheduled for retry with user and CG feedback.")
         return True, f"Agent '{agent_id}' will retry with feedback."
 
-    async def activate_worker_with_task_details(self, worker_agent_id: str, task_id_from_tool: str, task_description_from_tool: str):
+    async def activate_worker_with_task_details(self, worker_agent_id: str, task_id_from_tool: str, task_description_from_tool: str, task_progress_from_tool: str = "todo"):
         """
         Activates a worker agent with specific task details, ensuring the task description
         is injected for its next cycle.
@@ -796,9 +796,14 @@ class AgentManager:
             
             # Queue the activation directive in the inbox so it's delivered when the state changes.
             # We also defer setting the context variables so the worker's current cycle isn't corrupted.
+            if task_progress_from_tool in ["finished", "completed"]:
+                directive_content = f"[Framework Directive]: The PM has marked your task '{task_description_from_tool}' as FINISHED. Please acknowledge this and transition your state to 'worker_report' or 'worker_wait' as appropriate."
+            else:
+                directive_content = f"[Framework Directive]: You have been assigned a new task: {task_description_from_tool}\nThe system prompt has been updated with this goal. You MUST now begin executing it (request state change to worker_decompose if currently waiting)."
+
             activation_message = {
                 "role": "user",
-                "content": f"[Framework Directive]: You have been assigned a new task: {task_description_from_tool}\nThe system prompt has been updated with this goal. You MUST now begin executing it (request state change to worker_decompose if currently waiting).",
+                "content": directive_content,
                 "_deferred_task_description": task_description_from_tool,
                 "_deferred_task_id": task_id_from_tool
             }
@@ -873,9 +878,14 @@ class AgentManager:
                 logger.info(f"AgentManager: Condensed history for worker '{worker_agent_id}' down to {len(worker_agent.message_history)} messages.")
 
         # Wake up the worker with a system directive and workspace context so it knows what exists
+        if task_progress_from_tool in ["finished", "completed"]:
+            immediate_directive = f"[Framework Directive]: The PM has marked your task '{task_description_from_tool}' as FINISHED. Please acknowledge this and transition your state to 'worker_report' or 'worker_wait' as appropriate.{workspace_listing}"
+        else:
+            immediate_directive = f"[Framework Directive]: You have been assigned a new task: {task_description_from_tool}\nThe system prompt has been updated with this goal. You MUST now begin executing it.{workspace_listing}"
+
         worker_agent.message_history.append({
             "role": "user",
-            "content": f"[Framework Directive]: You have been assigned a new task: {task_description_from_tool}\nThe system prompt has been updated with this goal. You MUST now begin executing it.{workspace_listing}"
+            "content": immediate_directive
         })
 
         # Log this activation and context injection to DB for traceability

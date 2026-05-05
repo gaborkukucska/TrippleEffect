@@ -136,10 +136,12 @@ class AgentCycleHandler:
                                     
                                 if current_progress == 'decomposed':
                                     raise ValueError(f"Task '{task_id}' has already been marked as 'decomposed'. You MUST select one of the new sub-tasks you created, NOT the parent task.")
-                                    
-                                task['task_progress'] = 'doing'
-                                task.save()
-                                logger.info(f"CycleHandler: Auto-updated task '{task_id}' (resolved: '{resolved_id}') to 'doing' for worker '{agent.agent_id}'.")
+                                elif current_progress in ['finished', 'completed', 'deleted', 'waiting']:
+                                    logger.info(f"CycleHandler: Task '{task_id}' (resolved: '{resolved_id}') is already '{current_progress}'. Not auto-updating to 'doing'.")
+                                else:
+                                    task['task_progress'] = 'doing'
+                                    task.save()
+                                    logger.info(f"CycleHandler: Auto-updated task '{task_id}' (resolved: '{resolved_id}') to 'doing' for worker '{agent.agent_id}'.")
                                 # Auto-trigger UI refresh for tasks
                                 try:
                                     import asyncio

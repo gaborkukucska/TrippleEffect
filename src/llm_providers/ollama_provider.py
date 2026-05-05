@@ -363,6 +363,12 @@ class OllamaProvider(BaseLLMProvider):
                                 logger.warning(f"Ollama native tool execution failed ({response_status}): '{response_text[:100]}'. Stripping tools from payload and falling back to RAW mode!")
                                 del payload["tools"]
                                 payload["stream"] = self.streaming_mode
+                                use_streaming_mode = self.streaming_mode
+                                
+                                for m in payload.get("messages", []):
+                                    if "tool_calls" in m:
+                                        del m["tool_calls"]
+                                        
                                 if response and not response.closed: response.release()
                                 continue
                             # --- NATIVE TOOL FALLBACK END ---
@@ -570,6 +576,7 @@ class OllamaProvider(BaseLLMProvider):
                                      response_data["error"] = has_error
                              if response_data.get("error"):
                                  error_msg = response_data["error"]
+
                                  logger.error(f"Ollama non-streaming error: {error_msg}")
                                  stream_error_obj = ValueError(f"[Ollama Error]: {error_msg}")
                                  yield {"type": "error", "content": f"[Ollama Error]: {error_msg}", "_exception_obj": stream_error_obj}

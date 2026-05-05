@@ -330,6 +330,9 @@ class FileSystemTool(BaseTool):
         if not action:
             return {"status": "error", "message": f"Missing required 'action' parameter. Must be one of: {', '.join(valid_actions)}."}
         
+        if action == "replace_chunks":
+            return {"status": "error", "message": "The 'replace_chunks' action belongs to the 'code_editor' tool, not 'file_system'. Please use the 'code_editor' tool for this action."}
+        
         if action not in valid_actions:
             if action in action_suggestions:
                 corrected_action = action_suggestions[action]
@@ -1041,7 +1044,7 @@ Pushes changes to a remote repository.
                 "message": (
                     f"File '{filename}' already exists. Overwriting entire existing files using the file_system 'write' action is blocked by default to prevent accidental data loss.\n\n"
                     "HOW TO PROCEED:\n"
-                    "1. BEST: Use the 'code_editor' tool for partial updates.\n"
+                    "1. BEST: Use the 'code_editor' tool with action 'replace_chunks' for partial updates.\n"
                     "2. IF YOU MUST OVERWRITE THE ENTIRE FILE: You MUST add the parameter `force_overwrite: true` to your `file_system` `write` tool call.\n"
                     "Do not attempt to delete and recreate the file."
                 )

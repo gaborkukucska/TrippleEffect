@@ -166,6 +166,7 @@ class ProjectManagementTool(BaseTool):
             "assign_task": "modify_task",
             "create_task": "add_task",
             "decompose_task": "add_task",
+            "decompose": "add_task",
             "new_task": "add_task", 
             "add": "add_task",
             "create": "add_task",
@@ -468,8 +469,12 @@ class ProjectManagementTool(BaseTool):
                 simulated_id = 0
             
             if user_task_id and isinstance(user_task_id, str) and not is_dry_run:
-                aliases[user_task_id] = task['uuid']
-                self._save_aliases(project_name, session_name, aliases)
+                user_task_id = user_task_id.strip()
+                if re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', user_task_id, re.IGNORECASE):
+                    logger.warning(f"ProjectManagementTool: Ignored 'task_id'={user_task_id} in add_task because it is a UUID format. Aliases should be custom names like 'task_1'.")
+                else:
+                    aliases[user_task_id] = task['uuid']
+                    self._save_aliases(project_name, session_name, aliases)
                 
             depends_list = [t['uuid'] for t in (task['depends'] if task['depends'] is not None else [])]
             return {
@@ -580,6 +585,10 @@ class ProjectManagementTool(BaseTool):
                 except Exception as e:
                     logger.warning(f"Error filtering tasks by tags: {e}")
             
+            include_decomposed = kwargs.get("include_decomposed", False)
+            if isinstance(include_decomposed, str):
+                include_decomposed = include_decomposed.lower() == 'true'
+
             # Create a truly minimal output format replacing low-fi status with descriptive task_progress
             minimal_task_list = []
             decomposed_hidden_count = 0
@@ -601,7 +610,7 @@ class ProjectManagementTool(BaseTool):
                 # These are shell tasks that have been broken into sub-tasks;
                 # showing them to the PM causes confusion and reassignment loops.
                 task_tags = list(task['tags']) if task['tags'] else []
-                if t_prog == 'decomposed' or 'decomposed' in task_tags:
+                if not include_decomposed and (t_prog == 'decomposed' or 'decomposed' in task_tags):
                     decomposed_hidden_count += 1
                     continue
                     

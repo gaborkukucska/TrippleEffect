@@ -264,7 +264,8 @@ async def get_project_tasks(project_name: str, session_name: str):
             action="list_tasks",
             project_name=project_name,
             session_name=session_name,
-            status_filter="all"
+            status_filter="all",
+            include_decomposed=True
         )
         if result.get("status") == "success":
             return JSONResponse(content={"tasks": result.get("tasks", [])})
