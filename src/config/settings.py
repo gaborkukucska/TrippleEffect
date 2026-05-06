@@ -100,6 +100,9 @@ class Settings:
             self.LOCAL_API_SCAN_TIMEOUT = 0.5
         logger.info(f"Local API Discovery settings: Enabled={self.LOCAL_API_SCAN_ENABLED}, Ports={self.LOCAL_API_SCAN_PORTS}, Timeout={self.LOCAL_API_SCAN_TIMEOUT}s")
 
+        # --- Custom Local API URLs ---
+        self.OLLAMA_API_URLS: List[str] = [url.strip() for url in os.getenv("OLLAMA_API_URLS", "").split(",") if url.strip()]
+        self.VLLM_API_URLS: List[str] = [url.strip() for url in os.getenv("VLLM_API_URLS", "").split(",") if url.strip()]
         # --- Load Multiple API Keys ---
         self.PROVIDER_API_KEYS: Dict[str, List[str]] = {}
         provider_key_pattern = re.compile(r"^([A-Z_]+)_API_KEY(?:_(\d+))?$")

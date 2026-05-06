@@ -58,7 +58,7 @@ def _get_local_network_cidr() -> Optional[str]:
             if netifaces.AF_INET in addresses:  # type: ignore[union-attr]
                 for addr_info in addresses[netifaces.AF_INET]:  # type: ignore[union-attr]
                     ip = addr_info.get('addr')
-                    netmask = addr_info.get('netmask')
+                    netmask = addr_info.get('netmask') or addr_info.get('mask')
                     # Ensure we have both IP and netmask, and it's not loopback
                     if ip and netmask and not ip.startswith("127."):
                         try:

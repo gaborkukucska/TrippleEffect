@@ -336,6 +336,15 @@ class ModelRegistry:
         urls_to_verify.add(f"http://localhost:{DEFAULT_VLLM_PORT}")
         urls_to_verify.add(f"http://127.0.0.1:{DEFAULT_VLLM_PORT}")
 
+        # Add explicit custom local API URLs
+        for url in self.settings.OLLAMA_API_URLS:
+            if not url.startswith(('http://', 'https://')): url = f"http://{url}"
+            urls_to_verify.add(url)
+            
+        for url in self.settings.VLLM_API_URLS:
+            if not url.startswith(('http://', 'https://')): url = f"http://{url}"
+            urls_to_verify.add(url)
+
         # Also add any custom ports defined in LOCAL_API_SCAN_PORTS to localhost checks
         if self.settings.LOCAL_API_SCAN_PORTS:
             for port in self.settings.LOCAL_API_SCAN_PORTS:
