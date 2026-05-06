@@ -17,7 +17,8 @@ beautifulsoup4
 SQLAlchemy>=2.0 # Added for Database Memory
 aiosqlite # Async driver for SQLite
 # alembic # Skipping for now for Termux compatibility
-netifaces # Optional: for local network API discovery (graceful fallback if missing)
+netifaces2 # Optional: Added for local network API discovery (graceful fallback if missing)
+taskw # Added for tasklib
 tasklib # Added for Project Management Tool
 python-nmap # Added for nmap-based network discovery
 GitPython>=3.1.43 # Added for Git integration in FileSystemTool
