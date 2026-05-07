@@ -89,7 +89,7 @@ class WebSearchTool(BaseTool):
         logger.info(f"Agent {agent_id} performing web search for: '{query[:100]}...' (num_results={num_results})")
 
         try:
-            results, source = await self._perform_search(query, num_results, engines, time_range, language)
+            results, source, unresponsive_engines = await self._perform_search(query, num_results, engines, time_range, language)
 
             if results is None:
                 return {
@@ -104,16 +104,31 @@ class WebSearchTool(BaseTool):
                 }
 
             if not results:
+                suggestions = [
+                    "Try using different keywords",
+                    "Make your query more specific or more general",
+                    "Check for spelling errors in your query"
+                ]
+                message = f"No search results found for query: '{query}'"
+
+                if unresponsive_engines:
+                    try:
+                        unresponsive_info = ", ".join([f"{e[0]} ({e[1]})" for e in unresponsive_engines if len(e) >= 2])
+                        if unresponsive_info:
+                            message += f"\n\nNote: The following engines were unresponsive or blocked the request: {unresponsive_info}."
+                            if engines:
+                                message += f"\nSince you explicitly requested engines '{engines}', they might be blocking the request."
+                                suggestions.insert(0, "Omit the 'engines' parameter to allow SearXNG to use all available engines automatically (RECOMMENDED)")
+                                suggestions.insert(1, "Try specifying different engines like 'duckduckgo', 'bing', or 'startpage'")
+                    except Exception as parse_err:
+                        logger.warning(f"Failed to parse unresponsive_engines: {parse_err}")
+
                 return {
                     "status": "success", 
-                    "message": f"No search results found for query: '{query}'",
+                    "message": message,
                     "source": source, 
                     "results": [],
-                    "suggestions": [
-                        "Try using different keywords",
-                        "Make your query more specific or more general",
-                        "Check for spelling errors in your query"
-                    ]
+                    "suggestions": suggestions
                 }
 
             logger.info(f"Agent {agent_id} retrieved {len(results)} search results from {source}")
@@ -141,7 +156,7 @@ class WebSearchTool(BaseTool):
                 ]
             }
 
-    async def _perform_search(self, query: str, num_results: int, engines: Optional[str] = None, time_range: Optional[str] = None, language: str = "en") -> Tuple[Optional[List[Dict[str, Any]]], str]:
+    async def _perform_search(self, query: str, num_results: int, engines: Optional[str] = None, time_range: Optional[str] = None, language: str = "en") -> Tuple[Optional[List[Dict[str, Any]]], str, List[Any]]:
         if settings.SEARXNG_URL:
             try:
                 base_url = settings.SEARXNG_URL.rstrip('/')
@@ -167,12 +182,13 @@ class WebSearchTool(BaseTool):
                         "url": r.get("url", "N/A"),
                         "snippet": r.get("content", "N/A")
                     })
-                return results, "SearXNG API"
+                unresponsive = data.get("unresponsive_engines", [])
+                return results, "SearXNG API", unresponsive
             except Exception as e:
                 logger.error(f"SearXNG API search failed: {e}", exc_info=True)
                 # Fallback to scraping if SearXNG fails
 
-        return await self._search_with_scraping(query, num_results), "DuckDuckGo Scraping"
+        return await self._search_with_scraping(query, num_results), "DuckDuckGo Scraping", []
 
     async def _search_with_scraping(self, query: str, num_results: int) -> Optional[List[Dict]]:
         encoded_query = urllib.parse.quote_plus(query)
