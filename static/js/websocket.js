@@ -38,8 +38,12 @@ export const connectWebSocket = () => {
             displayStatusMessage("Connected to backend.", false, false, 'internal-comms-area');
             console.log("WebSocket connection established.");
             sendMessage(JSON.stringify({ type: "request_full_agent_status" }));
-             // Maybe request initial full status upon connection?
-             // sendMessage(JSON.stringify({ type: 'get_initial_status' })); // If backend supports
+            
+            // Check if conversation area is empty (new session). If so, request history to get preloaded greeting.
+            const conversationArea = document.getElementById('conversation-area');
+            if (conversationArea && conversationArea.children.length === 0) {
+                sendMessage(JSON.stringify({ type: "request_chat_history" }));
+            }
         };
 
         ws.onmessage = (event) => {

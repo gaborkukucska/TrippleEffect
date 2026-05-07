@@ -202,6 +202,12 @@ class AgentManager:
                 agent = self.agents.get(agent_id)
                 if agent: await self.db_manager.add_agent_record(session_id=self.current_session_db_id, agent_id=agent.agent_id, persona=agent.persona, model_config_dict=agent.agent_config.get("config", {}))
         else: logger.warning("Cannot log bootstrap agent DB records: current_session_db_id is None.")
+        
+        # Proactively start Admin AI so its greeting is ready
+        admin_agent = self.agents.get("admin_ai")
+        if admin_agent:
+            logger.info("Backend: Proactively starting Admin AI greeting sequence.")
+            asyncio.create_task(self.handle_user_message("[System: Backend initialized, begin proactive startup sequence. Introduce yourself briefly.]", client_id="system_init"))
 
     async def create_agent_instance( self, agent_id_requested: Optional[str], provider: Optional[str], model: Optional[str], system_prompt: str, persona: str, team_id: Optional[str] = None, temperature: Optional[float] = None, **kwargs ) -> Tuple[bool, str, Optional[str]]:
         success, message, created_agent_id = await agent_lifecycle.create_agent_instance(self, agent_id_requested, provider, model, system_prompt, persona, team_id, temperature, **kwargs)

@@ -89,12 +89,6 @@ async def websocket_endpoint(websocket: WebSocket):
         return # Don't proceed if we can't even send the first message
 
     try:
-        # Check if Admin AI should be proactively started
-        if len(active_connections) == 1 and agent_manager_instance:
-            logger.info("First client connected, proactively starting Admin AI...")
-            # Spook a startup message. The actual prompt is handled by manager/cycle_handler depending on state
-            asyncio.create_task(agent_manager_instance.handle_user_message("[System: User connected, begin proactive startup sequence]", client_id=client_host))
-
         while True:
             # Wait for a message from the client
             data = await websocket.receive_text()
@@ -197,6 +191,31 @@ async def websocket_endpoint(websocket: WebSocket):
                         await websocket.send_text(json.dumps({
                             "type": "error",
                             "content": "Backend AgentManager not available to provide full status."
+                        }))
+                elif message_type == "request_chat_history":
+                    logger.info(f"Received request_chat_history from {client_host}.")
+                    if agent_manager_instance:
+                        admin_agent = agent_manager_instance.agents.get("admin_ai")
+                        if admin_agent:
+                            for msg in admin_agent.message_history:
+                                role = msg.get("role")
+                                content = msg.get("content")
+                                # Skip system prompts and internal framework messages
+                                if role == "system": continue
+                                if role == "user" and "[System: Backend initialized" in content: continue
+                                
+                                msg_type = "user" if role == "user" else "agent_response"
+                                await websocket.send_text(json.dumps({
+                                    "type": msg_type,
+                                    "agent_id": "admin_ai" if role != "user" else "human_user",
+                                    "content": content
+                                }))
+                            logger.info(f"Sent chat history to {client_host}.")
+                    else:
+                        logger.error("AgentManager not available. Cannot send chat history.")
+                        await websocket.send_text(json.dumps({
+                            "type": "error",
+                            "content": "Backend AgentManager not available to provide chat history."
                         }))
                 else:
                     # Handle other potential JSON message types if added later

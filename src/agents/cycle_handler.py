@@ -2484,10 +2484,14 @@ class AgentCycleHandler:
                                 if re.match(r'^\s*(<tool_call>.*?</tool_call>\s*)+$', final_content, re.DOTALL):
                                     logger.info(f"CycleHandler: Skipping CG review for tool-call-only response from '{agent.agent_id}'")
                                     cg_verdict = "<OK/>"
+                                elif agent.agent_id == "admin_ai" and len(agent.message_history) <= 3:
+                                    logger.info(f"CycleHandler: Skipping CG review for Admin AI's initial startup greeting to prevent UI race conditions.")
+                                    cg_verdict = "<OK/>"
                                 else:
                                     cg_verdict = await self._get_cg_verdict(agent, final_content)
                                 if cg_verdict == "<OK/>":
                                     if context.current_db_session_id and (not agent.message_history or not agent.message_history[-1].get("tool_calls")): await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content)
+                                    agent.message_history.append({"role": "assistant", "content": final_content})
                                     await self._manager.send_to_ui(original_event_data)
                                 else: # CG Concern
                                     agent.cg_original_text = final_content; agent.cg_concern_details = cg_verdict; agent.cg_original_event_data = original_event_data
@@ -2497,6 +2501,7 @@ class AgentCycleHandler:
                                     llm_stream_ended_cleanly = False; break
                             else: # No content or CG agent itself
                                 if context.current_db_session_id and final_content and (not agent.message_history or not agent.message_history[-1].get("tool_calls")): await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content)
+                                if final_content: agent.message_history.append({"role": "assistant", "content": final_content})
                                 await self._manager.send_to_ui(original_event_data)
                         elif event_type == "invalid_state_request_output":
                             invalid_content = event.get("content", "")

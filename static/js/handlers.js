@@ -59,6 +59,16 @@ export const handleWebSocketMessage = (data) => {
                   console.warn("Handler: Received full_status without valid agents object:", data);
              }
              if (data.current_project && data.current_session) {
+                 const previousSession = sessionStorage.getItem('te_current_session');
+                 if (previousSession && previousSession !== data.current_session) {
+                     console.log(`Handler: Session changed from ${previousSession} to ${data.current_session}. Clearing obsolete chat and requesting new history.`);
+                     if (DOM.conversationArea) DOM.conversationArea.innerHTML = '';
+                     if (DOM.internalCommsArea) DOM.internalCommsArea.innerHTML = '';
+                     clearStoredMessages();
+                     ws.sendMessage(JSON.stringify({ type: "request_chat_history" }));
+                 }
+                 sessionStorage.setItem('te_current_session', data.current_session);
+
                  setCurrentProjectAndSession(data.current_project, data.current_session);
                  api.fetchProjectTasks(data.current_project, data.current_session)
                      .then(response => ui.renderProjectTasks(response.tasks || []))
