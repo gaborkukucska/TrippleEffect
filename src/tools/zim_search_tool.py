@@ -154,7 +154,7 @@ class ZimSearchTool(BaseTool):
         key = str(path)
         if key not in self._archive_cache:
             try:
-                self._archive_cache[key] = libzim.Archive(key)
+                self._archive_cache[key] = libzim.Archive(key)  # type: ignore[attr-defined]
                 logger.info(f"ZimSearchTool: opened archive {path.name}")
             except Exception as exc:
                 logger.error(f"ZimSearchTool: failed to open {path}: {exc}")
@@ -172,8 +172,8 @@ class ZimSearchTool(BaseTool):
         """Run a full-text search against a single archive (blocking)."""
         results = []
         try:
-            searcher = libzim.Searcher(archive)
-            q = libzim.Query().set_query(query)
+            searcher = libzim.Searcher(archive)  # type: ignore[attr-defined]
+            q = libzim.Query().set_query(query)  # type: ignore[attr-defined]
             search = searcher.search(q)
             hits = search.getResults(0, max_results)
 

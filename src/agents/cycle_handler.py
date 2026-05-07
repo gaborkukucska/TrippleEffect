@@ -801,6 +801,8 @@ class AgentCycleHandler:
             current_db_session_id=self._manager.current_session_db_id
         )
         
+        cycle_text_content = ""  # Initialize before the loop so it's available in the post-loop finally block
+        
         # Outer loop to handle priority rechecks by restarting the thinking process
         while True:
             context.turn_count += 1
@@ -822,7 +824,7 @@ class AgentCycleHandler:
 
             # Reset per-iteration flags in context (those not reset by CycleContext init or prepare_llm_call_data)
             context.last_error_obj = None
-            context.last_error_content = None
+            context.last_error_content = ""
             context.action_taken_this_cycle = False
             context.thought_produced_this_cycle = False
             context.state_change_requested_this_cycle = False
@@ -1113,7 +1115,7 @@ class AgentCycleHandler:
                                     logger.error(f"Failed to get detailed usage for tool {malformed_tool_name}: {usage_exc}")
                             
                             # CRITICAL FIX: Removed enhanced feedback for markdown fences, as the parser already strips them.
-                            if "list_tools" in parsing_error_msg:
+                            if parsing_error_msg and "list_tools" in parsing_error_msg:
                                 feedback_to_agent = (f"[Framework Feedback: Tool Usage Error]\n"
                                                    f"You attempted to use '{malformed_tool_name}' with tool_name='list_tools', but 'list_tools' is not a tool name - it's an action.\n"
                                                    f"Correct usage: <tool_information><action>list_tools</action></tool_information>\n"
@@ -1205,7 +1207,6 @@ class AgentCycleHandler:
                         # --- START ADMIN VERIFICATION HARD GATE ---
                         if agent.agent_id == BOOTSTRAP_AGENT_ID and raw_content:
                             lower_content = raw_content.lower()
-                            import re
                             # Use regex to find strong assertions of final project completion
                             completion_pattern = r'\b(project\s+is\s+(complete|finished|done)|all\s+tasks\s+(are\s+)?(complete|finished|done)|project\s+completed|finished\s+(the\s+)?project)\b'
                             if re.search(completion_pattern, lower_content):
@@ -1246,7 +1247,7 @@ class AgentCycleHandler:
                     elif event_type == "agent_state_change_requested":
                         context.action_taken_this_cycle = True
                         context.state_change_requested_this_cycle = True
-                        requested_state = event.get("requested_state")
+                        requested_state = event.get("requested_state", "")
                         task_description = event.get("task_description")
                         event_task_id = event.get("task_id")
 
@@ -1443,7 +1444,7 @@ class AgentCycleHandler:
                                         if not task_description_for_state_change:
                                             # If no user message, check for a message from another agent
                                             for msg in reversed(agent.message_history):
-                                                if msg.get("role") == "user" and "[From @" in msg.get("content"):
+                                                if msg.get("role") == "user" and "[From @" in (msg.get("content") or ""):
                                                     task_description_for_state_change = msg.get("content")
                                                     break
                                         
@@ -1746,7 +1747,7 @@ class AgentCycleHandler:
                                         else:
                                             cross_cycle_duplicate_blocked = True
                                             if verdict == "ESCALATE":
-                                                agent.set_state("worker_report" if agent.agent_type == "worker" else agent.state)
+                                                agent.set_state("worker_report" if agent.agent_type == "worker" else (agent.state or "idle"))
                                                 feedback = f"CRITICAL LOOP ESCALATION: {feedback} Your state has been automatically adjusted to help break the loop."
                                                 
                                             escalation_msg: MessageDict = {
@@ -1764,8 +1765,8 @@ class AgentCycleHandler:
                                                     session_id=context.current_db_session_id,
                                                     agent_id=agent.agent_id,
                                                     role="tool",
-                                                    content=str(prev_result),
-                                                    tool_results=[{"call_id": tool_id, "name": tool_name, "content": str(prev_result)}]
+                                                    content=prev_result,
+                                                    tool_results=[{"call_id": tool_id, "name": tool_name, "content": prev_result}]
                                                 )
                                             
                                             continue  # Skip actual tool execution

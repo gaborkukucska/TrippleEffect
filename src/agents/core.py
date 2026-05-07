@@ -146,6 +146,22 @@ class Agent:
         self.read_message_ids: set = set() # Track read messages
         self.active_task_id: Optional[str] = None # Currently active task UUID for UI tracking
 
+        # Dynamic tracking attributes set by CycleHandler (declared here for type safety)
+        self._cycles_without_transition: int = 0
+        self._last_state_for_watchdog: Optional[str] = None
+        self._consecutive_workflow_failures: int = 0
+        self._recent_error_feedback: Dict[str, float] = {}
+        self._send_msg_multi_tool_error_count: int = 0
+        self._duplicate_tool_call_count: int = 0
+        self._duplicate_failure_count: int = 0
+        self._consecutive_tool_failures: int = 0
+        self._all_kickoff_task_uuids: set = set()
+        self._consecutive_empty_responses: int = 0
+        self._framework_forced_standby_count: int = 0
+        self._manage_cycle_cooldown_until: float = 0.0
+        self._last_standby_wake_time: float = 0.0
+        self.last_error_content: str = ""
+
         # PM kickoff workflow attributes
         self.kick_off_roles: List[str] = []
         self.kick_off_tasks: List[str] = []

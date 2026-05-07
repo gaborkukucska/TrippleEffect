@@ -291,7 +291,7 @@ class OllamaProvider(BaseLLMProvider):
                  payload_copy_for_log = copy.deepcopy(payload) 
                  if "messages" in payload_copy_for_log and isinstance(payload_copy_for_log["messages"], list):
                       messages_summary_str = f"[Summarized: {len(payload_copy_for_log['messages'])} messages. First role: {payload_copy_for_log['messages'][0].get('role') if payload_copy_for_log['messages'] else 'N/A'}, Last role: {payload_copy_for_log['messages'][-1].get('role') if payload_copy_for_log['messages'] else 'N/A'}]"
-                      payload_copy_for_log["messages"] = messages_summary_str
+                      payload_copy_for_log["messages"] = messages_summary_str  # type: ignore[assignment]
                       payload_for_log_str_summary = json.dumps(payload_copy_for_log, indent=2)
                       logger.debug(f"OllamaProvider: Payload being sent to {chat_endpoint} (Messages Summarized for Log):\n{payload_for_log_str_summary}")
                  else:
@@ -300,7 +300,7 @@ class OllamaProvider(BaseLLMProvider):
                  logger.debug(f"OllamaProvider: Payload being sent to {chat_endpoint}:\n{payload_for_log_str}")
         except Exception as e_payload_log:
             logger.error(f"OllamaProvider: Could not serialize/log payload: {e_payload_log}")
-            logger.debug(f"OllamaProvider: Basic payload info - model={payload.get('model')}, num_messages={len(payload.get('messages', []))}, options={payload.get('options')}")
+            logger.debug(f"OllamaProvider: Basic payload info - model={payload.get('model')}, num_messages={len(payload.get('messages', []))}, options={payload.get('options')}")  # type: ignore[arg-type]
 
         mode_log = "Streaming" if self.streaming_mode else "Non-Streaming"
         options_log = valid_options 
@@ -365,8 +365,8 @@ class OllamaProvider(BaseLLMProvider):
                                 payload["stream"] = self.streaming_mode
                                 use_streaming_mode = self.streaming_mode
                                 
-                                for m in payload.get("messages", []):
-                                    if "tool_calls" in m:
+                                for m in payload.get("messages", []):  # type: ignore[union-attr]
+                                    if isinstance(m, dict) and "tool_calls" in m:
                                         del m["tool_calls"]
                                         
                                 if response and not response.closed: response.release()
