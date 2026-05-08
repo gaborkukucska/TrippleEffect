@@ -220,12 +220,18 @@ if __name__ == "__main__":
     
     # Initialize Terminal Listener for Ctrl+Q if running interactively
     if sys.stdin.isatty():
-        import threading, termios, tty
+        import threading, termios, tty, atexit
         
-        def _listen_for_ctrl_q():
-            try:
-                fd = sys.stdin.fileno()
-                old_settings = termios.tcgetattr(fd)
+        try:
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            
+            def _restore_terminal():
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                
+            atexit.register(_restore_terminal)
+            
+            def _listen_for_ctrl_q():
                 try:
                     tty.setcbreak(fd)
                     while True:
@@ -238,14 +244,14 @@ if __name__ == "__main__":
                             print("\r\n[Ctrl+C detected] Initiating graceful shutdown...", flush=True)
                             os.kill(os.getpid(), signal.SIGINT)
                             break
-                finally:
-                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-            except Exception as e:
-                logger.warning(f"Failed to start STDIN listener: {e}")
-                
-        listener_th = threading.Thread(target=_listen_for_ctrl_q, daemon=True)
-        listener_th.start()
-        logger.info("Started Ctrl+Q terminal listener thread.")
+                except Exception as e:
+                    pass
+
+            listener_th = threading.Thread(target=_listen_for_ctrl_q, daemon=True)
+            listener_th.start()
+            logger.info("Started Ctrl+Q terminal listener thread.")
+        except Exception as e:
+            logger.warning(f"Failed to start STDIN listener: {e}")
 
     # Use the log_level_str defined earlier (after initial load_dotenv)
     # Ensure it's lowercase for uvicorn
