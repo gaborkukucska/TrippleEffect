@@ -263,7 +263,7 @@ Saves architecture decisions, API specs, or learnings with keywords for the team
    * `<summary>` (string, required): A concise summary of the information or learning.
    * `<keywords>` (string, required): Comma-separated tags (e.g., `api, architecture`).
    * `<importance>` (float, optional): Score (0.1 to 1.0). Defaults to 0.5.
-   * Example: `<knowledge_base><action>save_knowledge</action><summary>The backend exposes /api/v1/users for auth</summary><keywords>api,auth,backend</keywords></knowledge_base>`
+   * Example: `{"action": "save_knowledge", "summary": "The backend exposes /api/v1/users for auth", "keywords": "api,auth,backend"}`
 """
         elif sub_action == "search_knowledge" or sub_action in ["search", "find", "query"]:
             return base_usage + """
@@ -272,7 +272,7 @@ Searches for project knowledge and architectures using keywords.
    * `<query_keywords>` (string, required): Comma-separated keywords to search for.
    * `<min_importance>` (float, optional): Minimum importance score for results.
    * `<max_results>` (integer, optional): Maximum results. Defaults to 5.
-   * Example: `<knowledge_base><action>search_knowledge</action><query_keywords>architecture,api</query_keywords></knowledge_base>`
+   * Example: `{"action": "search_knowledge", "query_keywords": "architecture,api"}`
 """
         elif sub_action == "search_agent_thoughts":
             return base_usage + """
@@ -281,7 +281,7 @@ Searches for past thoughts of a specific agent.
    * `<agent_identifier>` (string, required): The ID of the agent whose thoughts are being searched.
    * `<additional_keywords>` (string, optional): Additional keywords to narrow the search.
    * `<max_results>` (integer, optional): Maximum results. Defaults to 5.
-   * Example: `<knowledge_base><action>search_agent_thoughts</action><agent_identifier>admin_ai</agent_identifier></knowledge_base>`
+   * Example: `{"action": "search_agent_thoughts", "agent_identifier": "admin_ai"}`
 """
         
         return base_usage.strip()

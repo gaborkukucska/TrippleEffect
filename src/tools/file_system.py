@@ -600,25 +600,25 @@ Inserts a block of text at a specific line number, shifting subsequent lines dow
 *   `<content>` (string, required): Text to insert.
 *   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
 *   Example (by line number):
-    ```xml
-    <file_system>
-      <action>insert_lines</action>
-      <filename>server.js</filename>
-      <insert_line>10</insert_line>
-      <content>const express = require('express');</content>
-      <scope>shared</scope>
-    </file_system>
+    ```json
+    {
+      "action": "insert_lines",
+      "filename": "server.js",
+      "insert_line": 10,
+      "content": "const express = require('express');",
+      "scope": "shared"
+    }
     ```
 *   Example (by search anchor):
-    ```xml
-    <file_system>
-      <action>insert_lines</action>
-      <filename>package.json</filename>
-      <search>"dependencies": {</search>
-      <position>before</position>
-      <content>  "devDependencies": { "jest": "^29.0.0" },</content>
-      <scope>shared</scope>
-    </file_system>
+    ```json
+    {
+      "action": "insert_lines",
+      "filename": "package.json",
+      "search": "\"dependencies\": {",
+      "position": "before",
+      "content": "  \"devDependencies\": { \"jest\": \"^29.0.0\" },",
+      "scope": "shared"
+    }
     ```
 """
         elif sub_action == "replace_lines":
@@ -832,12 +832,14 @@ Pushes changes to a remote repository.
 25. **git_push:** Pushes to remote.
 26. **git_init:** Initializes a new git repository.
 
-**To get detailed instructions and parameter lists for a specific action, call:**
-<tool_information>
-  <action>get_info</action>
-  <tool_name>file_system</tool_name>
-  <sub_action>ACTION_NAME</sub_action>
-</tool_information>
+**To get detailed instructions and parameter lists for a specific action, call the 'tool_information' tool:**
+    ```json
+    {
+      "action": "get_info",
+      "tool_name": "file_system",
+      "sub_action": "ACTION_NAME"
+    }
+    ```
 """
 
     async def _resolve_and_validate_path(self, base_path: Path, relative_file_path: str, agent_id: str, scope_description: str) -> Path | None:
@@ -1045,7 +1047,7 @@ Pushes changes to a remote repository.
                     f"File '{filename}' already exists. Overwriting entire existing files using the file_system 'write' action is blocked by default to prevent accidental data loss.\n\n"
                     "HOW TO PROCEED:\n"
                     "1. BEST: Use the 'code_editor' tool with action 'replace_chunks' for partial updates.\n"
-                    "2. IF YOU MUST OVERWRITE THE ENTIRE FILE: You MUST add the parameter `force_overwrite: true` to your `file_system` `write` tool call.\n"
+                    "2. IF YOU MUST OVERWRITE THE ENTIRE FILE: You MUST include the parameter `\"force_overwrite\": true` in your JSON tool call.\n"
                     "Do not attempt to delete and recreate the file."
                 )
             }

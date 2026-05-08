@@ -35,6 +35,12 @@
 
 ## Recently Resolved Issues
 
+### +39. JSON Tool Brace Escaping Error (KeyError) (RESOLVED)
+- **Severity:** High (P1)
+- **Description:** The framework crashed with a `KeyError` (e.g., `Invalid format specifier`) during prompt assembly. This occurred because `get_detailed_usage` tool documentation contained literal JSON blocks wrapped in Python f-strings without proper brace escaping. Python's `str.format()` engine incorrectly interpreted the raw JSON braces as variable placeholders.
+- **Fix:** (RESOLVED) Conducted a comprehensive audit of all tool classes and escaped all literal JSON braces (`{` -> `{{`, `}` -> `}}`) within f-string templates.
+- **Files:** `src/tools/manage_team.py`, `src/tools/project_management.py`
+
 ### +38. Concentrated File Overwrite Blocks on Template Files (RESOLVED v2.48)
 - **Severity:** Medium (P2)
 - **Description:** Workers repeatedly hit overwrite blocks (128x per run) on `src/index.html` (68x) and `src/ui/ui_components.js` (60x) — files they genuinely needed to replace entirely rather than surgically edit. The blanket overwrite protection had no escape hatch after the `delete+write` workaround was removed in v2.47.

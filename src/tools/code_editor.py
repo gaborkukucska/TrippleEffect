@@ -312,27 +312,25 @@ class CodeEditorTool(BaseTool):
         *   **scope:** (string, optional) - Target scope ('private', 'shared', or 'projects').
 
         **Example:**
-        ```xml
-        <code_editor>
-            <action>replace_chunks</action>
-            <filename>src/main.py</filename>
-            <chunks>
-                [
-                    {
-                        "search": "def old_function():\n    print('A')",
-                        "replace": "def new_function():\n    print('B')"
-                    },
-                    {
-                        "search": "x = 10",
-                        "replace": "x = 20"
-                    }
-                ]
-            </chunks>
-        </code_editor>
+        ```json
+        {
+            "action": "replace_chunks",
+            "filename": "src/main.py",
+            "chunks": [
+                {
+                    "search": "def old_function():\n    print('A')",
+                    "replace": "def new_function():\n    print('B')"
+                },
+                {
+                    "search": "x = 10",
+                    "replace": "x = 20"
+                }
+            ]
+        }
         ```
         Important Notes:
-        - The `chunks` parameter MUST be a valid JSON array of objects inside the XML tag.
-        - The `search` block must match existing content exactly ONCE (including whitespace/indentation).
+        - The `search` block must match existing content EXACTLY ONCE (including all whitespace, newlines, and indentation).
+        - If you encounter a 'Search text not found exactly' error, DO NOT guess the whitespace. Use the `file_system` tool with `action='read'` to view the file contents and copy the EXACT text before retrying.
         - If a search string appears multiple times or zero times, the entire tool call is rejected.
         """
         return usage.strip()

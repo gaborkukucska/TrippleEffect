@@ -122,7 +122,7 @@ class ToolInformationTool(BaseTool):
                 resp = ["--- Tool Categories ---"]
                 for cat, tools in categories.items():
                     resp.append(f"• **{cat}**: {', '.join(tools)}")
-                resp.append("\nUse <tool_information><action>list_tools</action><category>CATEGORY_NAME</category></tool_information> to filter.")
+                resp.append("Use the 'tool_information' tool with action='list_tools' and category='CATEGORY_NAME' to filter.")
                 return {"status": "success", "message": "\n".join(resp)}
 
             elif action == "list_tools":
@@ -143,8 +143,8 @@ class ToolInformationTool(BaseTool):
                 for tool_info in tools_list:
                     tools_details.append(f"• **{tool_info['name']}** [{tool_info['category']}]: {tool_info['summary']}")
                 
-                tools_details.append(f"\nTo get detailed usage for any tool, use: <tool_information><action>get_info</action><tool_name>TOOL_NAME</tool_name></tool_information>")
-                tools_details.append(f"For per-action help on complex tools, add: <sub_action>ACTION_NAME</sub_action>")
+                tools_details.append(f"\nTo get detailed usage for any tool, use the 'tool_information' tool with action='get_info' and tool_name='TOOL_NAME'.")
+                tools_details.append(f"For per-action help on complex tools, add sub_action='ACTION_NAME'.")
                 
                 return {"status": "success", "message": "\n".join(tools_details)}
 
@@ -177,7 +177,7 @@ class ToolInformationTool(BaseTool):
         if tool_name_req == "list_tools":
             return {
                 "status": "error", 
-                "message": f"❌ Common mistake detected! 'list_tools' is NOT a tool name - it's an ACTION within the tool_information tool.\n\nCorrect usage:\n<tool_information><action>list_tools</action></tool_information>\n\nNOT:\n<tool_information><action>get_info</action><tool_name>list_tools</tool_name></tool_information>"
+                "message": f"❌ Common mistake detected! 'list_tools' is NOT a tool name - it's an ACTION within the tool_information tool.\n\nCorrect usage:\n{{\"action\": \"list_tools\"}}\n\nNOT:\n{{\"action\": \"get_info\", \"tool_name\": \"list_tools\"}}"
             }
         
         tool = manager.tool_executor.tools.get(tool_name_req)
@@ -186,7 +186,7 @@ class ToolInformationTool(BaseTool):
             available_tools = [name for name, t in manager.tool_executor.tools.items() if self._is_authorized(agent_type, t.auth_level)]
             return {
                 "status": "error", 
-                "message": f"Tool '{tool_name_req}' not found or not authorized.\n\nAvailable tools: {', '.join(available_tools)}\n\nTip: Use <tool_information><action>list_tools</action></tool_information> to see all available tools with descriptions."
+                "message": f"Tool '{tool_name_req}' not found or not authorized.\n\nAvailable tools: {', '.join(available_tools)}\n\nTip: Use the 'tool_information' tool with action='list_tools' to see all available tools with descriptions."
             }
 
         usage_dict = self._get_single_tool_usage_dict(agent_id, agent_type, tool_name_req, sub_action_req, tool, manager)
@@ -295,14 +295,16 @@ class ToolInformationTool(BaseTool):
                 schema_info.append("  - No parameters required")
                 
             schema_info.append(f"\n**Example Usage:**")
-            schema_info.append(f"```xml")
-            schema_info.append(f"<{tool_name}>")
+            schema_info.append(f"```json")
+            schema_info.append(f"{{")
             if tool.parameters:
+                params_list = []
                 for param in tool.parameters:
                     if param.required:
-                        example_value = "example_value" if param.type == "string" else ("1" if param.type in ["integer", "number"] else "true")
-                        schema_info.append(f"  <{param.name}>{example_value}</{param.name}>")
-            schema_info.append(f"</{tool_name}>")
+                        example_value = '"example_value"' if param.type == "string" else ("1" if param.type in ["integer", "number"] else "true")
+                        params_list.append(f"  \"{param.name}\": {example_value}")
+                schema_info.append(",\n".join(params_list))
+            schema_info.append(f"}}")
             schema_info.append(f"```")
             
             return "\n".join(schema_info)
@@ -326,36 +328,36 @@ class ToolInformationTool(BaseTool):
         **Example Calls:**
 
         *   List names and summaries of accessible tools:
-            ```xml
-            <tool_information>
-              <action>list_tools</action>
-            </tool_information>
+            ```json
+            {
+              "action": "list_tools"
+            }
             ```
 
         *   Get detailed usage for all accessible tools:
-            ```xml
-            <tool_information>
-              <action>get_info</action>
-              <tool_name>all</tool_name>
-            </tool_information>
+            ```json
+            {
+              "action": "get_info",
+              "tool_name": "all"
+            }
             ```
             *(Note: If tool_name is omitted, it defaults to 'all')*
 
         *   Get info for the 'file_system' tool:
-            ```xml
-            <tool_information>
-              <action>get_info</action>
-              <tool_name>file_system</tool_name>
-            </tool_information>
+            ```json
+            {
+              "action": "get_info",
+              "tool_name": "file_system"
+            }
             ```
 
         *   Get per-action help (e.g., just the 'create_agent' action of manage_team):
-            ```xml
-            <tool_information>
-              <action>get_info</action>
-              <tool_name>manage_team</tool_name>
-              <sub_action>create_agent</sub_action>
-            </tool_information>
+            ```json
+            {
+              "action": "get_info",
+              "tool_name": "manage_team",
+              "sub_action": "create_agent"
+            }
             ```
         """
         return usage.strip()

@@ -9,7 +9,6 @@ import json
 import importlib
 import inspect
 from pathlib import Path
-import xml.etree.ElementTree as ET
 import html # For unescaping title if extracted via regex
 
 from src.agents.constants import (
@@ -535,164 +534,239 @@ class AgentWorkflowManager:
             logger.debug("Agent type or state not set, cannot process for workflow.")
             return None
 
-        initial_content_to_process = llm_output.strip()
-        was_fenced = False
-        content_to_process_for_xml_tag_search = initial_content_to_process
+        content = llm_output.strip()
 
-        # Instead of aggressive markdown fence extraction that breaks if a fence is inside the XML tag,
-        # we check if the entire output is wrapped in a markdown fence. If there's surrounding text
-        # (like "Here is the plan: ```xml <plan>...</plan> ```"), we will just search the whole text.
-        # The XML regex matcher can find the tag anywhere.
-        markdown_fence_pattern = r"^```(?:xml)?\s*([\s\S]+?)\s*```$"
-        fence_search_match = re.search(markdown_fence_pattern, initial_content_to_process, re.DOTALL)
-
-        if fence_search_match:
-            was_fenced = True
-            content_to_process_for_xml_tag_search = fence_search_match.group(1).strip()
-            logger.debug(f"WorkflowManager: Output wrapped in Markdown fence. Inner content: '{content_to_process_for_xml_tag_search[:200]}...'")
-        else:
-            logger.debug(f"WorkflowManager: No wrapping Markdown fence found. Processing original stripped input for XML tags.")
-
+        # Collect all workflow triggers that match this agent's current type+state
+        matching_triggers = []
         for (allowed_type, allowed_state, trigger_tag), workflow_instance in self._workflow_triggers.items():
             if agent.agent_type == allowed_type and agent.state == allowed_state:
+                matching_triggers.append((trigger_tag, workflow_instance))
+
+        if not matching_triggers:
+            return None
+
+        # --- Strategy 1: JSON Detection (Primary) ---
+        json_result = await self._try_json_workflow_trigger(manager, agent, content, matching_triggers)
+        if json_result is not None:
+            return json_result
+
+        # --- Strategy 2: Legacy XML Fallback (converts to dict for workflow.execute) ---
+        xml_result = await self._try_xml_workflow_trigger_fallback(manager, agent, content, matching_triggers)
+        if xml_result is not None:
+            return xml_result
+
+        return None
+
+    async def _try_json_workflow_trigger(
+        self,
+        manager: 'AgentManager',
+        agent: 'Agent',
+        content: str,
+        matching_triggers: list
+    ) -> Optional[WorkflowResult]:
+        """Try to detect and parse a JSON workflow trigger from the agent output."""
+        json_data = None
+        text_before = ""
+        text_after = ""
+
+        # Pattern 1: Markdown JSON fence (```json ... ``` or ``` ... ```)
+        json_fence_pattern = r'```(?:json)?\s*(\{[\s\S]*?\})\s*```'
+        json_fence_match = re.search(json_fence_pattern, content, re.DOTALL)
+        if json_fence_match:
+            try:
+                json_data = json.loads(json_fence_match.group(1))
+                text_before = content[:json_fence_match.start()].strip()
+                text_after = content[json_fence_match.end():].strip()
+                logger.debug(f"WorkflowManager: Found JSON in markdown fence for agent '{agent.agent_id}'")
+            except json.JSONDecodeError as e:
+                logger.debug(f"WorkflowManager: JSON in markdown fence failed to parse: {e}")
+
+        # Pattern 2: Raw JSON object (not in fence)
+        if json_data is None:
+            raw_json_pattern = r'(\{[\s\S]*\})'
+            raw_json_match = re.search(raw_json_pattern, content, re.DOTALL)
+            if raw_json_match:
                 try:
-                    escaped_trigger_tag = re.escape(trigger_tag)
-                    pattern_str = rf"(<\s*{escaped_trigger_tag}(\s+[^>]*)?>([\s\S]*?)</\s*{escaped_trigger_tag}\s*>)"
-                    
-                    # Search for the XML pattern within the (potentially unfenced) content_to_process_for_xml_tag_search
-                    match = re.search(pattern_str, content_to_process_for_xml_tag_search, re.IGNORECASE | re.DOTALL)
+                    json_data = json.loads(raw_json_match.group(1))
+                    text_before = content[:raw_json_match.start()].strip()
+                    text_after = content[raw_json_match.end():].strip()
+                    logger.debug(f"WorkflowManager: Found raw JSON object for agent '{agent.agent_id}'")
+                except json.JSONDecodeError:
+                    pass
 
-                    if match:
-                        xml_full_trigger_block = match.group(1).strip()
-                        xml_inner_content = match.group(3).strip()
-                        
-                        text_before_xml_tag = content_to_process_for_xml_tag_search[:match.start()].strip()
-                        text_after_xml_tag = content_to_process_for_xml_tag_search[match.end():].strip()
-                        
-                        # Define what is considered "insignificant" surrounding text.
-                        MAX_INSIGNIFICANT_TEXT_LEN_DEFAULT = 15 # For non-fenced content
-                        INSIGNIFICANT_TEXT_PATTERN_DEFAULT = r"^[A-Za-z0-9\s\.,;:!?'\"\(\)\[\]\{\}]{0," + str(MAX_INSIGNIFICANT_TEXT_LEN_DEFAULT) + r"}$"
+        if json_data is None or not isinstance(json_data, dict):
+            return None  # No valid JSON found; caller should try XML fallback
 
-                        MAX_INSIGNIFICANT_TEXT_LEN_FENCED = 1 # Allow potential single newline or space if strip() didn't catch it
-                        INSIGNIFICANT_TEXT_PATTERN_FENCED = r"^\s?$" # Allows empty or a single whitespace char
+        # Validate surrounding text
+        if not self._validate_surrounding_text(agent, text_before, text_after, matching_triggers):
+            return None
 
-                        if was_fenced:
-                            # Inside a fence, text before/after the XML tag must be very minimal (ideally empty)
-                            is_problematic_before_fenced = not (len(text_before_xml_tag) <= MAX_INSIGNIFICANT_TEXT_LEN_FENCED and \
-                                                               re.fullmatch(INSIGNIFICANT_TEXT_PATTERN_FENCED, text_before_xml_tag))
-                            is_problematic_after_fenced = not (len(text_after_xml_tag) <= MAX_INSIGNIFICANT_TEXT_LEN_FENCED and \
-                                                              re.fullmatch(INSIGNIFICANT_TEXT_PATTERN_FENCED, text_after_xml_tag))
-                            if is_problematic_before_fenced or is_problematic_after_fenced:
-                                logger.warning(f"Workflow trigger '{trigger_tag}' found within fenced content for agent '{agent.agent_id}', but has non-minimal surrounding text *inside* the fence. Before: '{text_before_xml_tag}', After: '{text_after_xml_tag}'. Skipping.")
-                                continue
-                        # Logic for non-fenced content or content where the fence itself might contain the surrounding text
-                        else:
-                            # Default problematic flags
-                            is_problematic_before = False
-                            is_problematic_after = False
+        # Determine which workflow to use based on JSON content
+        trigger_tag, workflow_instance = self._match_json_to_workflow(json_data, matching_triggers)
+        if workflow_instance is None:
+            logger.debug(f"WorkflowManager: JSON found for agent '{agent.agent_id}' but could not match to any workflow trigger.")
+            return None
 
-                            # General check for text_after_xml_tag (applies to all non-fenced)
-                            if text_after_xml_tag: # Only check if there's actually text after
-                                # Enhanced pattern to allow backticks and other common formatting artifacts
-                                ENHANCED_INSIGNIFICANT_TEXT_PATTERN = r"^[A-Za-z0-9\s\.,;:!?'\"\(\)\[\]\{\}`\-_]{0," + str(MAX_INSIGNIFICANT_TEXT_LEN_DEFAULT) + r"}$"
-                                
-                                if not (len(text_after_xml_tag) <= MAX_INSIGNIFICANT_TEXT_LEN_DEFAULT and \
-                                        re.fullmatch(ENHANCED_INSIGNIFICANT_TEXT_PATTERN, text_after_xml_tag, re.IGNORECASE)):
-                                    is_problematic_after = True
+        logger.info(f"Workflow trigger '{trigger_tag}' matched via JSON for agent '{agent.agent_id}' in state '{agent.state}'. Executing workflow '{workflow_instance.name}'.")
 
-                            if is_problematic_after:
-                                logger.debug(f"Workflow trigger '{trigger_tag}' for agent '{agent.agent_id}' found, but problematic trailing text detected: '{text_after_xml_tag[:50]}...'. Skipping.")
-                                continue
+        # Special handling for ProjectCreationWorkflow: ensure _raw_plan_body_ is set
+        if isinstance(workflow_instance, ProjectCreationWorkflow):
+            if "_raw_plan_body_" not in json_data:
+                # Use description/body/plan_body or serialize remaining keys
+                json_data["_raw_plan_body_"] = json_data.get("description", json_data.get("body", json_data.get("plan_body", json.dumps(json_data, indent=2))))
 
-                            # Specific check for PM in startup state with kickoff triggers
-                            if agent.agent_type == AGENT_TYPE_PM and \
-                               agent.state == PM_STATE_STARTUP and \
-                               trigger_tag in ("task_list", "kickoff_plan"):
+        try:
+            return await workflow_instance.execute(manager, agent, json_data)
+        except Exception as e:
+            logger.error(f"Error executing workflow '{workflow_instance.name}' for agent '{agent.agent_id}': {e}", exc_info=True)
+            return WorkflowResult(success=False, message=f"Error executing workflow: {e}", workflow_name=workflow_instance.name, next_agent_state=agent.state, next_agent_status=AGENT_STATUS_IDLE)
 
-                                if text_before_xml_tag: # Only check if there's actually text before
-                                    think_block_pattern = r"^\s*<think>[\s\S]+?</think>\s*$" # Allows surrounding whitespace around think block itself
-                                    is_just_a_think_block = bool(re.fullmatch(think_block_pattern, text_before_xml_tag))
+    def _match_json_to_workflow(self, json_data: dict, matching_triggers: list) -> tuple:
+        """Given parsed JSON and a list of (trigger_tag, workflow_instance) pairs, pick the best match."""
+        if len(matching_triggers) == 1:
+            return matching_triggers[0]
 
-                                    if not is_just_a_think_block:
-                                        # If it's not just a think block, check if it's insignificant text
-                                        if not (len(text_before_xml_tag) <= MAX_INSIGNIFICANT_TEXT_LEN_DEFAULT and \
-                                                re.fullmatch(INSIGNIFICANT_TEXT_PATTERN_DEFAULT, text_before_xml_tag, re.IGNORECASE)):
-                                            is_problematic_before = True
-                                    # If it is_just_a_think_block, is_problematic_before remains False (it's allowed)
-                                    else:
-                                        logger.info(f"PM in startup with '{trigger_tag}': Allowed <think> block prefix: '{text_before_xml_tag[:100]}...'")
+        # Multiple triggers for this state — disambiguate based on JSON keys
+        for trigger_tag, wf in matching_triggers:
+            if trigger_tag == "kickoff_plan" and "roles" in json_data and "tasks" in json_data:
+                return (trigger_tag, wf)
+            elif trigger_tag == "task_list" and "tasks" in json_data and "roles" not in json_data:
+                return (trigger_tag, wf)
+            elif trigger_tag == "plan" and "title" in json_data:
+                return (trigger_tag, wf)
 
-                            # General checks for text_before_xml_tag for other cases
-                            elif not (agent.agent_type == AGENT_TYPE_ADMIN and trigger_tag == "plan"): # Admin plan has general leniency for prefix
-                                if text_before_xml_tag: # Only check if there's actually text before
-                                    if not (len(text_before_xml_tag) <= MAX_INSIGNIFICANT_TEXT_LEN_DEFAULT and \
-                                            re.fullmatch(INSIGNIFICANT_TEXT_PATTERN_DEFAULT, text_before_xml_tag, re.IGNORECASE)):
-                                        is_problematic_before = True
+        # Fallback: return the first matching trigger
+        return matching_triggers[0]
 
-                            if is_problematic_before:
-                                logger.debug(f"Workflow trigger '{trigger_tag}' for agent '{agent.agent_id}' found, but problematic prefix detected: '{text_before_xml_tag[:50]}...'. Skipping.")
-                                continue
-                        
-                        logger.info(f"Workflow trigger '{trigger_tag}' matched cleanly for agent '{agent.agent_id}' in state '{agent.state}'. Executing workflow '{workflow_instance.name}'.")
-                        xml_element_for_workflow: Optional[ET.Element] = None
-                        
-                        if isinstance(workflow_instance, ProjectCreationWorkflow):
-                            title_match_in_block = re.search(r"<title>(.*?)</title>", xml_full_trigger_block, re.IGNORECASE | re.DOTALL)
-                            project_title_from_regex = html.unescape(title_match_in_block.group(1).strip()) if title_match_in_block and title_match_in_block.group(1) and title_match_in_block.group(1).strip() else None
-                            if not project_title_from_regex:
-                                logger.error(f"ProjectCreationWorkflow: <title> could not be extracted via regex from the <{trigger_tag}> block. Block: {xml_full_trigger_block[:300]}...")
-                                return WorkflowResult(success=False, message=f"Error: Project title (<title>) could not be extracted from the <{trigger_tag}> block via regex.", workflow_name=workflow_instance.name, next_agent_state=agent.state, next_agent_status=AGENT_STATUS_IDLE)
-                            plan_root_element = ET.Element(trigger_tag); title_el = ET.SubElement(plan_root_element, "title"); title_el.text = project_title_from_regex
-                            raw_body_el = ET.SubElement(plan_root_element, "_raw_plan_body_"); raw_body_el.text = xml_inner_content
-                            xml_element_for_workflow = plan_root_element
-                        
-                        elif isinstance(workflow_instance, PMKickoffWorkflow) and trigger_tag == "task_list":
-                            task_list_root = ET.Element("task_list")
-                            task_tag_matches = re.finditer(r"<task>([\s\S]*?)</task>", xml_inner_content, re.IGNORECASE | re.DOTALL)
-                            tasks_found_count = 0
-                            for task_match in task_tag_matches:
-                                task_text = html.unescape(task_match.group(1).strip())
-                                if task_text:
-                                    task_el = ET.SubElement(task_list_root, "task")
-                                    task_el.text = task_text
-                                    tasks_found_count += 1
-                            if tasks_found_count == 0:
-                                logger.warning(f"PMKickoffWorkflow: No <task> elements found via regex within the <task_list> inner content: {xml_inner_content[:200]}")
-                                return WorkflowResult(success=False, message="Error: No valid <task> elements found inside <task_list>.", workflow_name=workflow_instance.name, next_agent_state=agent.state, next_agent_status=AGENT_STATUS_IDLE)
-                            xml_element_for_workflow = task_list_root
-                            logger.debug(f"PMKickoffWorkflow: Reconstructed <task_list> with {tasks_found_count} tasks.")
+    def _validate_surrounding_text(self, agent: 'Agent', text_before: str, text_after: str, matching_triggers: list) -> bool:
+        """Validate that surrounding text around the JSON block is acceptable (not false positive)."""
+        MAX_INSIGNIFICANT_TEXT_LEN = 15
+        INSIGNIFICANT_PATTERN = r"^[A-Za-z0-9\s\.,;:!?'\"()\[\]{}`\-_]{0," + str(MAX_INSIGNIFICANT_TEXT_LEN) + r"}$"
 
-                        else: 
-                            try:
-                                if isinstance(workflow_instance, PMKickoffWorkflow) and trigger_tag == "kickoff_plan":
-                                    def escape_tag_content(tag_name: str):
-                                        def _replacer(m):
-                                            # m.group(1) captures attributes, m.group(2) captures the content
-                                            attrs = m.group(1) or ""
-                                            return f"<{tag_name}{attrs}>{html.escape(m.group(2))}</{tag_name}>"
-                                        return _replacer
-                                    # Escape content in both <task> and <role> tags to prevent XML parse errors, while preserving attributes
-                                    for tag_to_escape in ["task", "role"]:
-                                        xml_full_trigger_block = re.sub(
-                                            rf"<{tag_to_escape}(\s+[^>]*)?>([\s\S]*?)</{tag_to_escape}>",
-                                            escape_tag_content(tag_to_escape),
-                                            xml_full_trigger_block,
-                                            flags=re.IGNORECASE
-                                        )
-                                    
-                                xml_element_for_workflow = ET.fromstring(xml_full_trigger_block)
-                            except ET.ParseError as e:
-                                logger.error(f"Failed to parse XML for workflow trigger '{trigger_tag}': {e}. Content: {xml_full_trigger_block[:200]}...")
-                                return WorkflowResult(success=False, message=f"Error: XML for workflow trigger '{trigger_tag}' is not well-formed. Problem: {e}", workflow_name=workflow_instance.name, next_agent_state=agent.state, next_agent_status=AGENT_STATUS_IDLE)
-                        
-                        if xml_element_for_workflow is not None:
-                            return await workflow_instance.execute(manager, agent, xml_element_for_workflow)
-                        else: 
-                            logger.error(f"Internal error: xml_element_for_workflow is None after processing for trigger '{trigger_tag}'.")
-                            return WorkflowResult(success=False, message=f"Internal error processing workflow '{trigger_tag}'.", workflow_name=workflow_instance.name, next_agent_state=agent.state, next_agent_status=AGENT_STATUS_IDLE)
+        # Check trailing text
+        if text_after:
+            if not (len(text_after) <= MAX_INSIGNIFICANT_TEXT_LEN and re.fullmatch(INSIGNIFICANT_PATTERN, text_after, re.IGNORECASE)):
+                logger.debug(f"WorkflowManager: JSON found for agent '{agent.agent_id}' but problematic trailing text: '{text_after[:50]}...'. Skipping.")
+                return False
 
+        # Check leading text
+        if text_before:
+            # Always allow <think> blocks before JSON
+            think_block_pattern = r"^\s*<think>[\s\S]+?</think>\s*$"
+            if re.fullmatch(think_block_pattern, text_before):
+                logger.info(f"WorkflowManager: Allowed <think> block prefix for agent '{agent.agent_id}'")
+                return True
+
+            # Admin plan trigger has general leniency for prefix
+            trigger_tags = [t[0] for t in matching_triggers]
+            if agent.agent_type == AGENT_TYPE_ADMIN and "plan" in trigger_tags:
+                return True
+
+            # Otherwise check if it's insignificant
+            if not (len(text_before) <= MAX_INSIGNIFICANT_TEXT_LEN and re.fullmatch(INSIGNIFICANT_PATTERN, text_before, re.IGNORECASE)):
+                logger.debug(f"WorkflowManager: JSON found for agent '{agent.agent_id}' but problematic prefix: '{text_before[:50]}...'. Skipping.")
+                return False
+
+        return True
+
+    async def _try_xml_workflow_trigger_fallback(
+        self,
+        manager: 'AgentManager',
+        agent: 'Agent',
+        content: str,
+        matching_triggers: list
+    ) -> Optional[WorkflowResult]:
+        """Legacy XML fallback: detect XML workflow tags, convert to dict, pass to workflow.execute()."""
+        # Check for markdown fence wrapping
+        was_fenced = False
+        search_content = content
+        fence_match = re.search(r"^```(?:xml|json)?\s*([\s\S]+?)\s*```$", content, re.DOTALL)
+        if fence_match:
+            was_fenced = True
+            search_content = fence_match.group(1).strip()
+
+        for trigger_tag, workflow_instance in matching_triggers:
+            try:
+                escaped_tag = re.escape(trigger_tag)
+                pattern = rf"(<\s*{escaped_tag}(\s+[^>]*)?>)([\s\S]*?)(</\s*{escaped_tag}\s*>)"
+                match = re.search(pattern, search_content, re.IGNORECASE | re.DOTALL)
+
+                if not match:
+                    continue
+
+                inner_content = match.group(3).strip()
+                text_before = search_content[:match.start()].strip()
+                text_after = search_content[match.end():].strip()
+
+                # Validate surrounding text using the same helper
+                if not self._validate_surrounding_text(agent, text_before, text_after, matching_triggers):
+                    continue
+
+                logger.info(f"Workflow trigger '{trigger_tag}' matched via XML fallback for agent '{agent.agent_id}'. Converting to dict.")
+
+                # Convert XML content to dict for the workflow
+                data_dict: dict = {}
+
+                if isinstance(workflow_instance, ProjectCreationWorkflow):
+                    full_block = match.group(0)
+                    title_m = re.search(r"<title>(.*?)</title>", full_block, re.IGNORECASE | re.DOTALL)
+                    title_val = html.unescape(title_m.group(1).strip()) if title_m and title_m.group(1) and title_m.group(1).strip() else None
+                    if not title_val:
+                        logger.error(f"ProjectCreationWorkflow XML fallback: <title> not found in <{trigger_tag}> block.")
+                        return WorkflowResult(success=False, message=f"Error: Project title not found in <{trigger_tag}> block.", workflow_name=workflow_instance.name, next_agent_state=agent.state, next_agent_status=AGENT_STATUS_IDLE)
+                    data_dict = {"title": title_val, "_raw_plan_body_": inner_content}
+
+                elif isinstance(workflow_instance, PMKickoffWorkflow) and trigger_tag == "task_list":
+                    tasks = []
+                    for tm in re.finditer(r"<task>([\s\S]*?)</task>", inner_content, re.IGNORECASE | re.DOTALL):
+                        t = html.unescape(tm.group(1).strip())
+                        if t:
+                            tasks.append({"description": t})
+                    if not tasks:
+                        return WorkflowResult(success=False, message="Error: No tasks found in <task_list>.", workflow_name=workflow_instance.name, next_agent_state=agent.state, next_agent_status=AGENT_STATUS_IDLE)
+                    data_dict = {"tasks": tasks}
+
+                elif isinstance(workflow_instance, PMKickoffWorkflow) and trigger_tag == "kickoff_plan":
+                    full_block = match.group(0)
+                    # Extract roles
+                    roles = [html.unescape(rm.group(1).strip()) for rm in re.finditer(r"<role>([\s\S]*?)</role>", full_block, re.IGNORECASE | re.DOTALL) if rm.group(1).strip()]
+                    # Extract tasks with attributes
+                    tasks = []
+                    for tm in re.finditer(r"<task(\s+[^>]*)?>([^<]*)</task>", full_block, re.IGNORECASE | re.DOTALL):
+                        attrs_str = tm.group(1) or ""
+                        desc = html.unescape(tm.group(2).strip())
+                        task_dict: dict = {"description": desc}
+                        id_m = re.search(r'id="([^"]*)"', attrs_str)
+                        dep_m = re.search(r'depends_on="([^"]*)"', attrs_str)
+                        if id_m: task_dict["id"] = id_m.group(1)
+                        if dep_m: task_dict["depends_on"] = dep_m.group(1)
+                        if desc:
+                            tasks.append(task_dict)
+                    # Extract code_base_definitions
+                    cbd_m = re.search(r"<code_base_definitions>([\s\S]*?)</code_base_definitions>", full_block, re.IGNORECASE | re.DOTALL)
+                    cbd = cbd_m.group(1).strip() if cbd_m else None
+                    # Extract project_structure dirs
+                    dirs = []
+                    for dm in re.finditer(r'<dir\s+name="([^"]*)"', full_block, re.IGNORECASE):
+                        dirs.append({"dir": dm.group(1)})
+                    data_dict = {"roles": roles, "tasks": tasks}
+                    if cbd: data_dict["code_base_definitions"] = cbd
+                    if dirs: data_dict["project_structure"] = dirs
+                else:
+                    # Generic: try to parse inner content as JSON, else wrap it
+                    try:
+                        data_dict = json.loads(inner_content)
+                    except (json.JSONDecodeError, ValueError):
+                        data_dict = {"_raw_content_": inner_content}
+
+                try:
+                    return await workflow_instance.execute(manager, agent, data_dict)
                 except Exception as e:
-                    logger.error(f"Error during workflow trigger check for tag '{trigger_tag}': {e}", exc_info=True)
+                    logger.error(f"Error executing workflow '{workflow_instance.name}' (XML fallback) for agent '{agent.agent_id}': {e}", exc_info=True)
+                    return WorkflowResult(success=False, message=f"Error executing workflow: {e}", workflow_name=workflow_instance.name, next_agent_state=agent.state, next_agent_status=AGENT_STATUS_IDLE)
+
+            except Exception as e:
+                logger.error(f"Error during XML fallback workflow trigger check for tag '{trigger_tag}': {e}", exc_info=True)
         return None
 
 
@@ -899,23 +973,23 @@ class AgentWorkflowManager:
                 if agent.agent_type == allowed_type and agent.state == allowed_state:
                     available_workflow_trigger_info = (
                         f"\n\n**Workflow Trigger:** To initiate the '{wf_instance.name}' process for your current state ('{agent.state}'), "
-                        f"your response **MUST BE ONLY** the XML structure described below (fill in necessary values):\n"
-                        f"```xml\n{html.escape(wf_instance.expected_xml_schema)}\n```" 
+                        f"your response **MUST BE ONLY** the JSON structure described below (fill in necessary values):\n"
+                        f"```json\n{wf_instance.expected_json_schema}\n```" 
                     )
                     break
-        xml_tool_instructions = """[TOOL USE - CRITICAL FORMATS]
-- **Tool Discovery:** To know what tools are available, use `<tool_information><action>list_tools</action></tool_information>`
-- **Tool Details:** To know how a specific tool works, first perform the `list_tools` call, then use `<tool_information><action>get_info</action><tool_name>TOOL_NAME</tool_name></tool_information>` where `TOOL_NAME` you need to replace with the name of the specific tool you got from the 'list_tools' call
+        json_tool_instructions = """[TOOL USE - CRITICAL FORMATS]
+- **Tool Discovery:** To know what tools are available, use `{"action": "list_tools"}`
+- **Tool Details:** To know how a specific tool works, first perform the `list_tools` call, then use `{"action": "get_info", "tool_name": "TOOL_NAME"}`
 
-[XML FORMAT RULES - READ CAREFULLY]
-1. **tool_information** is for getting information ABOUT tools, NOT for executing other tools
-2. NEVER use nested tool names like: `<tool_information><action>execute</action><tool_name>other_tool</tool_name></tool_information>` - THIS IS WRONG
-3. Each tool has its own XML format - get the format using tool_information first
+[JSON FORMAT RULES - READ CAREFULLY]
+1. Output raw JSON for your tool calls.
+2. NEVER nest tool calls or use XML.
+3. Each tool has its own JSON schema - get the format using list_tools first
 4. Examples of CORRECT formats:
-   - List tools: `<tool_information><action>list_tools</action></tool_information>`
-   - Get tool info: `<tool_information><action>get_info</action><tool_name>code_editor</tool_name></tool_information>`
-   - Use code_editor (for modifying existing files): `<code_editor><action>replace_chunks</action><filepath>src/main.py</filepath><chunks>[{"search": "old_code", "replace": "new_code"}]</chunks></code_editor>`
-5. NEVER put <parameters> tags inside tool_information - use the actual tool parameters
+   - List tools: `{"action": "list_tools"}`
+   - Get tool info: `{"action": "get_info", "tool_name": "code_editor"}`
+   - Use code_editor: `{"action": "replace_chunks", "filepath": "src/main.py", "chunks": [{"search": "old_code", "replace": "new_code"}]}`
+5. NEVER put XML parameters inside your response.
 6. **IMPORTANT:** ALWAYS use `code_editor` for modifying existing code. Only use `file_system` (write action) for creating BRAND NEW files."""
 
         native_tool_instructions = """[TOOL USE]
@@ -926,11 +1000,17 @@ class AgentWorkflowManager:
         # All states now support native tools natively if enabled globally.
         use_native_instructions = settings.NATIVE_TOOL_CALLING_ENABLED
 
-        tool_instructions = native_tool_instructions if use_native_instructions else xml_tool_instructions
+        tool_instructions = native_tool_instructions if use_native_instructions else json_tool_instructions
 
-        xml_tool_examples = """[EXAMPLE TOOL USE RESPONSE]
+        json_tool_examples = """[EXAMPLE TOOL USE RESPONSE]
 <think>I need to add a new function to the main application logic.</think>
-<code_editor><action>replace_chunks</action><filepath>src/main.py</filepath><chunks>[{"search": "def old_func():\\n    pass", "replace": "def old_func():\\n    pass\\n\\ndef new_func():\\n    print('Hello')"}]</chunks></code_editor>
+```json
+{
+  "action": "replace_chunks",
+  "filepath": "src/main.py",
+  "chunks": [{"search": "def old_func():\\n    pass", "replace": "def old_func():\\n    pass\\n\\ndef new_func():\\n    print('Hello')"}]
+}
+```
 
 [EXAMPLE: SWITCHING TO REPORT STATE]
 <think>I have completed the first milestone. I need to report my progress to the PM.</think>
@@ -944,14 +1024,26 @@ Call the 'request_state' tool with state='worker_report'"""
 <think>I have completed the first milestone using my native tools. I need to report my progress to the PM.</think>
 (Call the request_state tool here using native JSON)"""
 
-        xml_report_examples = """[EXAMPLE: MILESTONE REPORT]
+        json_report_examples = """[EXAMPLE: MILESTONE REPORT]
 <think>I completed the database schema and saved it. I still have more work to do.</think>
-<send_message><target_agent_id>PM1</target_agent_id><message_content>Milestone complete: Database schema created and saved to db/schema.sql. Moving on to implementing the API endpoints next.</message_content></send_message>
+```json
+{
+  "action": "send_message",
+  "target_agent_id": "PM1",
+  "message_content": "Milestone complete: Database schema created and saved to db/schema.sql. Moving on to implementing the API endpoints next."
+}
+```
 Call the 'request_state' tool with state='worker_work'
 
 [EXAMPLE: FINAL REPORT]
 <think>All sub-tasks are done and the main task is marked completed. Time for my final report.</think>
-<send_message><target_agent_id>PM1</target_agent_id><message_content>Task complete: 'Implement User Authentication'. Created login page (ui/login.html), auth API (api/auth.py), and user model (models/user.py). All files saved to workspace.</message_content></send_message>
+```json
+{
+  "action": "send_message",
+  "target_agent_id": "PM1",
+  "message_content": "Task complete: 'Implement User Authentication'. Created login page (ui/login.html), auth API (api/auth.py), and user model (models/user.py). All files saved to workspace."
+}
+```
 Call the 'request_state' tool with state='worker_wait'"""
 
         native_report_examples = """[EXAMPLE: MILESTONE REPORT]
@@ -962,16 +1054,16 @@ Call the 'request_state' tool with state='worker_wait'"""
 <think>All sub-tasks are done and the main task is marked completed. Time for my final report.</think>
 (Call both the send_message AND request_state tools here using native JSON)"""
 
-        tool_examples = native_tool_examples if use_native_instructions else xml_tool_examples
-        report_examples = native_report_examples if use_native_instructions else xml_report_examples
+        tool_examples = native_tool_examples if use_native_instructions else json_tool_examples
+        report_examples = native_report_examples if use_native_instructions else json_report_examples
 
-        xml_kb_search = "`<knowledge_base><action>search_knowledge</action><query_keywords>architecture,api</query_keywords></knowledge_base>`"
+        fallback_kb_search = "`{\"action\": \"search_knowledge\", \"query_keywords\": \"architecture,api\"}`"
         json_kb_search = "using the `knowledge_base` tool (search_knowledge action)"
-        kb_search_example = json_kb_search if use_native_instructions else xml_kb_search
+        kb_search_example = json_kb_search if use_native_instructions else fallback_kb_search
 
-        xml_workspace_list = "`<file_system><action>list</action></file_system>`"
+        fallback_workspace_list = "`{\"action\": \"list\"}`"
         json_workspace_list = "using the `file_system` tool (list action)"
-        workspace_list_example = json_workspace_list if use_native_instructions else xml_workspace_list
+        workspace_list_example = json_workspace_list if use_native_instructions else fallback_workspace_list
 
         standard_formatting_context = {
             "agent_id": agent.agent_id, "agent_type": agent.agent_type,

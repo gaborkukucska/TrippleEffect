@@ -143,13 +143,13 @@ class ManageTeamTool(BaseTool):
         if not action or action not in VALID_ACTIONS:
             error_msg = (
                 f"Error: Invalid or missing 'action'. You must specify a valid action inside the XML block.\n"
-                f"Make sure you are using the correct XML format. For example:\n"
-                f"<manage_team>\n"
-                f"  <action>create_agent</action>\n"
-                f"  <role>Engineer</role>\n"
-                f"  <persona>A senior engineer</persona>\n"
-                f"  <system_prompt>You are...</system_prompt>\n"
-                f"</manage_team>\n\n"
+                f"Make sure you are using the correct JSON format. For example:\n"
+                f"{{\n"
+                f"  \"action\": \"create_agent\",\n"
+                f"  \"role\": \"Engineer\",\n"
+                f"  \"persona\": \"A senior engineer\",\n"
+                f"  \"system_prompt\": \"You are...\"\n"
+                f"}}\n\n"
                 f"Valid actions are: {', '.join(VALID_ACTIONS)}.\n"
                 f"Do NOT just send empty tags or thoughts without a valid tool call!"
             )
@@ -176,12 +176,12 @@ class ManageTeamTool(BaseTool):
                 error_message = (
                     f"Error: Missing required parameter(s) for 'create_agent': {', '.join(missing)}.\n"
                     f"Example:\n"
-                    f"<manage_team>\n"
-                    f"  <action>create_agent</action>\n"
-                    f"  <role>Developer</role>\n"
-                    f"  <persona>Senior Developer</persona>\n"
-                    f"  <system_prompt>You are an expert coder. Write clean python code.</system_prompt>\n"
-                    f"</manage_team>"
+                    f"{{\n"
+                    f"  \"action\": \"create_agent\",\n"
+                    f"  \"role\": \"Developer\",\n"
+                    f"  \"persona\": \"Senior Developer\",\n"
+                    f"  \"system_prompt\": \"You are an expert coder. Write clean python code.\"\n"
+                    f"}}"
                 )
         elif action == "delete_agent":
             if not params.get("target_agent_id"): error_message = "Error: Missing required 'target_agent_id' parameter for 'delete_agent'."
@@ -243,7 +243,7 @@ class ManageTeamTool(BaseTool):
 """
 
         if sub_action == "create_agent":
-            return common_header + f"""
+            return common_header + f"""\
 **Sub-Action: create_agent**
 Creates a new worker agent for your team.
 *   `<role>` (string, required): The EXACT role name from your kickoff plan that this agent fulfills (e.g., 'Coder', 'UI_Designer'). This MUST match the 'next role to create' instructions exactly.
@@ -255,78 +255,78 @@ Creates a new worker agent for your team.
 *   `<model>` (string, optional): Specify an LLM model (e.g., 'qwen3:14b').
 *   `<temperature>` (float, optional): Model temperature (e.g., 0.7). Defaults to framework settings if omitted.
 *   Example:
-    ```xml
-    <manage_team>
-      <action>create_agent</action>
-      <role>UI_Designer</role>
-      <persona>UI/UX Designer</persona>
-      <system_prompt>You are a UI designer. Your goal is to design a clean, responsive web interface.</system_prompt>
-      <provider>ollama-local</provider>
-      <model>qwen3:14b</model>
-    </manage_team>
+    ```json
+    {{
+      "action": "create_agent",
+      "role": "UI_Designer",
+      "persona": "UI/UX Designer",
+      "system_prompt": "You are a UI designer. Your goal is to design a clean, responsive web interface.",
+      "provider": "ollama-local",
+      "model": "qwen3:14b"
+    }}
     ```
-*   **XML Content Rules for Agent Creation:** Ensure all content within tags like `<system_prompt>` or `<persona>` is plain text. If you need to include characters like `<`, `>`, or `&` within these text blocks, they MUST be XML escaped (e.g., `&lt;` for `<`, `&gt;` for `>`, `&amp;` for `&`). Keep prompts clear and concise.
+*   **JSON Content Rules for Agent Creation:** Ensure all content is properly JSON escaped. Keep prompts clear and concise.
 """
         elif sub_action == "delete_agent":
-            return common_header + f"""
+            return common_header + f"""\
 **Sub-Action: delete_agent**
 Deletes an existing agent. Cannot delete bootstrap agents like Admin AI.
 *   `<target_agent_id>` (string, required): The exact ID of the agent to be deleted.
-*   Example: `<manage_team><action>delete_agent</action><target_agent_id>{worker_agent_id_placeholder}</target_agent_id></manage_team>`
+*   Example: `{{"action": "delete_agent", "target_agent_id": "{worker_agent_id_placeholder}"}}`
 """
         elif sub_action == "create_team":
-            return common_header + f"""
+            return common_header + f"""\
 **Sub-Action: create_team**
 Creates a new team. The agent calling this action will automatically be added to the new team.
 *   `<team_id>` (string, required): A unique ID for the new team (e.g., `{team_id_placeholder}`).
-*   Example: `<manage_team><action>create_team</action><team_id>{team_id_placeholder}</team_id></manage_team>`
+*   Example: `{{"action": "create_team", "team_id": "{team_id_placeholder}"}}`
 """
         elif sub_action == "delete_team":
-            return common_header + f"""
+            return common_header + f"""\
 **Sub-Action: delete_team**
 Deletes an existing team. Agents in the team will become team-less but will not be deleted.
 *   `<team_id>` (string, required): The ID of the team to delete.
-*   Example: `<manage_team><action>delete_team</action><team_id>{team_id_placeholder}</team_id></manage_team>`
+*   Example: `{{"action": "delete_team", "team_id": "{team_id_placeholder}"}}`
 """
         elif sub_action == "add_agent_to_team":
-            return common_header + f"""
+            return common_header + f"""\
 **Sub-Action: add_agent_to_team**
 Adds an existing agent to a team.
 *   `<target_agent_id>` (string, required): The ID of the agent to add.
 *   `<team_id>` (string, required): The ID of the team to add the agent to.
-*   Example: `<manage_team><action>add_agent_to_team</action><target_agent_id>{worker_agent_id_placeholder}</target_agent_id><team_id>{team_id_placeholder}</team_id></manage_team>`
+*   Example: `{{"action": "add_agent_to_team", "target_agent_id": "{worker_agent_id_placeholder}", "team_id": "{team_id_placeholder}"}}`
 """
         elif sub_action == "remove_agent_from_team":
-            return common_header + f"""
+            return common_header + f"""\
 **Sub-Action: remove_agent_from_team**
 Removes an agent from a team. The agent will not be deleted.
 *   `<target_agent_id>` (string, required): The ID of the agent to remove.
 *   `<team_id>` (string, required): The ID of the team to remove the agent from.
-*   Example: `<manage_team><action>remove_agent_from_team</action><target_agent_id>{worker_agent_id_placeholder}</target_agent_id><team_id>{team_id_placeholder}</team_id></manage_team>`
+*   Example: `{{"action": "remove_agent_from_team", "target_agent_id": "{worker_agent_id_placeholder}", "team_id": "{team_id_placeholder}"}}`
 """
         elif sub_action == "list_agents":
-            return common_header + f"""
+            return common_header + f"""\
 **Sub-Action: list_agents**
 Lists active agents.
 *   `<team_id>` (string, optional): If provided, filters the list to agents only within the specified team (e.g., `{team_id_placeholder}`).
-*   Example (list all agents): `<manage_team><action>list_agents</action></manage_team>`
-*   Example (list agents in a specific team): `<manage_team><action>list_agents</action><team_id>{team_id_placeholder}</team_id></manage_team>`
+*   Example (list all agents): `{{"action": "list_agents"}}`
+*   Example (list agents in a specific team): `{{"action": "list_agents", "team_id": "{team_id_placeholder}"}}`
 """
         elif sub_action == "list_teams":
-            return common_header + f"""
+            return common_header + """\
 **Sub-Action: list_teams**
 Lists all currently defined teams.
-*   Example: `<manage_team><action>list_teams</action></manage_team>`
+*   Example: `{"action": "list_teams"}`
 """
         elif sub_action == "get_agent_details":
-            return common_header + f"""
+            return common_header + f"""\
 **Sub-Action: get_agent_details**
 Retrieves detailed information about a specific agent.
 *   `<target_agent_id>` (string, required): The ID of the agent whose details are requested.
-*   Example: `<manage_team><action>get_agent_details</action><target_agent_id>{pm_agent_id_placeholder}</target_agent_id></manage_team>`
+*   Example: `{{"action": "get_agent_details", "target_agent_id": "{pm_agent_id_placeholder}"}}`
 """
         elif sub_action == "set_agent_state":
-            return common_header + f"""
+            return common_header + f"""\
 **Sub-Action: set_agent_state**
 Changes a non-Admin AI agent's workflow state. If the agent is IDLE, this will also trigger its activation.
 *   `<target_agent_id>` (string, required): The ID of the agent whose state is to be changed. **CRITICAL: This cannot be '{BOOTSTRAP_AGENT_ID}' (Admin AI).**
@@ -334,18 +334,18 @@ Changes a non-Admin AI agent's workflow state. If the agent is IDLE, this will a
     *   Valid states for Project Manager (PM) type agents: {', '.join(valid_pm_states)}
     *   Valid states for Worker type agents: {', '.join(valid_worker_states)}
 *   Example (Activate a worker agent by setting its state to 'work'):
-    ```xml
-    <manage_team>
-      <action>set_agent_state</action>
-      <target_agent_id>{worker_agent_id_placeholder}</target_agent_id>
-      <new_state>work</new_state>
-    </manage_team>
+    ```json
+    {{
+      "action": "set_agent_state",
+      "target_agent_id": "{worker_agent_id_placeholder}",
+      "new_state": "work"
+    }}
     ```
 """
         elif sub_action:
              return f"Error: Sub-action '{sub_action}' is not recognized for the 'manage_team' tool."
 
-        return common_header + """
+        return common_header + """\
 **CRITICAL FOR PLANNING:** You MUST check `list_agents` to see the current composition of the team BEFORE attempting to `create_agent` to avoid fulfilling the same role twice.
 
 **Available Sub-Actions Summary:**
@@ -361,9 +361,11 @@ Changes a non-Admin AI agent's workflow state. If the agent is IDLE, this will a
 10. **set_agent_state:** Changes a non-Admin AI agent's workflow state.
 
 **To get detailed instructions and parameter lists for a specific action, call:**
-<tool_information>
-  <action>get_info</action>
-  <tool_name>manage_team</tool_name>
-  <sub_action>ACTION_NAME</sub_action>
-</tool_information>
+```json
+{
+  "action": "get_info",
+  "tool_name": "manage_team",
+  "sub_action": "ACTION_NAME"
+}
+```
 """

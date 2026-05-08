@@ -112,22 +112,22 @@ class SystemHelpTool(BaseTool):
                 *   **max_log_lines** (integer, optional): The maximum number of matching log lines to return. Defaults to 20.
                 *   **agent_id_filter** (string, optional): Filters the log search to only include lines related to a specific agent ID.
 
-        **Example XML Calls:**
+        **Example JSON Calls:**
 
         *   To get the current time:
-            ```xml
-            <system_help>
-              <action>get_time</action>
-            </system_help>
+            ```json
+            {
+              "action": "get_time"
+            }
             ```
 
         *   To search logs for errors related to 'admin_ai':
-            ```xml
-            <system_help>
-              <action>search_logs</action>
-              <log_query>error</log_query>
-              <agent_id_filter>admin_ai</agent_id_filter>
-            </system_help>
+            ```json
+            {
+              "action": "search_logs",
+              "log_query": "error",
+              "agent_id_filter": "admin_ai"
+            }
             ```
         """
         return usage.strip()

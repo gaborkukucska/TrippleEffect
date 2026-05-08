@@ -109,12 +109,10 @@ class ZimSearchTool(BaseTool):
         ),
     ]
     usage_example: str = (
-        "<![CDATA["
-        "<zim_search>"
-        "<query>photosynthesis light reactions</query>"
-        "<max_results>3</max_results>"
-        "</zim_search>"
-        "]]>"
+        "{\n"
+        "  \"query\": \"photosynthesis light reactions\",\n"
+        "  \"max_results\": 3\n"
+        "}"
     )
 
     # ------------------------------------------------------------------ #
@@ -317,11 +315,13 @@ Performs a full-text search across one or all available ZIM archives.
 *   `<snippet_length>` (integer, optional, default 1500): Characters per snippet (200–5000).
 
 **Example:**
-<zim_search>
-  <query>black hole event horizon</query>
-  <max_results>2</max_results>
-  <zim_file>wikipedia_en_all.zim</zim_file>
-</zim_search>
+```json
+{
+  "query": "black hole event horizon",
+  "max_results": 2,
+  "zim_file": "wikipedia_en_all.zim"
+}
+```
 """,
         }
 
@@ -332,10 +332,12 @@ Performs a full-text search across one or all available ZIM archives.
 **Available Actions Summary:**
 1.  **search:** Full-text search across ZIM archives, returns article snippets.
 
-**To get detailed instructions, call:**
-<tool_information>
-  <action>get_info</action>
-  <tool_name>zim_search</tool_name>
-  <sub_action>search</sub_action>
-</tool_information>
+**To get detailed instructions, call the 'tool_information' tool:**
+```json
+{
+  "action": "get_info",
+  "tool_name": "zim_search",
+  "sub_action": "search"
+}
+```
 """

@@ -135,24 +135,22 @@ admin_ai_planning_prompt: |2
   [WORKFLOW]
   1.  **Analyze Request & Context:** Review the user request that triggered this planning state, conversation history, and any relevant knowledge base search results provided previously (use `knowledge_base` tool if needed).
   2.  **Formulate Plan:** Create a clear, detailed overall project plan.
-  3.  **Define Project Title:** Include a concise title for this project within your plan using <title>The Project Title</title> tags as the framework uses this string to name the project.
-  4.  **Output Plan:** Present your complete plan, including the <title> tag, and NEVER include ANY code, within the <plan>...</plan> XML tags. **STOP** after outputting the plan, as the framework will automatically create the project, assign a Project Manager, and notify you.
+  3.  **Define Project Title:** Include a concise title for this project.
+  4.  **Output Plan:** Present your complete plan as a JSON code block with the structure shown below. NEVER include ANY code in the plan. **STOP** after outputting the plan, as the framework will automatically create the project, assign a Project Manager, and notify you.
 
   [EXAMPLE PROJECT PLAN]
-  `<plan>
-    <title>The Project Title</title>
-    **Objective:** The objective.
-    **Tasks:**
-    1.  **Step 1:** Task to do.
-    2.  **Step 2:** The second task to do.
-    3.  **Step 3:** ...
-  </plan>`
+  ```json
+  {{
+    "title": "The Project Title",
+    "_raw_plan_body_": "**Objective:** The objective.\n\n**Tasks:**\n1. **Step 1:** Task to do.\n2. **Step 2:** The second task to do.\n3. **Step 3:** ..."
+  }}
+  ```
 
   [REMEMBER]
   - Focus ONLY on creating the plan.
   - Do NOT attempt to execute tools (other than potentially `knowledge_base` for context gathering) or delegate tasks yourself in this state.
-  - Do NOT call `tool_information` or `list_tools` - you already know what tools exist. Your ONLY job here is to output a `<plan>` with a `<title>`!
-  - Use `<plan>` tags for the final output which MUST include the `<title>` tag!
+  - Do NOT call `tool_information` or `list_tools` - you already know what tools exist. Your ONLY job here is to output a JSON plan with a `title` and `_raw_plan_body_`!
+  - Output your plan as a ```json code block with the structure shown above.
 admin_ai_conversation_prompt: |-
   Today the <assistant> is acting in a way that best utilises the capabilities of The TrippleEffect framework.
   --- Current State: CONVERSATION ---
@@ -287,51 +285,41 @@ pm_startup_prompt: |2
   3.  **Decompose Tasks:** Break down the project into a list of 5 to 15 distinct, high-level kick-off tasks. These initial tasks MUST STRICTLY focus on research (web/document/memory search), project setup, and foundational development tasks requiring well commented and debug logged code. 
       - DO NOT include testing or documentation tasks in the initial kick-off tasks unless the overal project is an extremely simple, single-shot project. Testing and documentation are initiated at the end of most projects!
       - set DEPENDENCIES between the tasks so agents know the execution order (e.g. research before setup, setup before coding, coding before testing, testing before documentation).
-  4.  **Define Project Structure:** Design the centralized directory layout for the project. This is CRITICAL to prevent workers from creating fragmented, duplicated folders. The framework will auto-create these directories in the shared workspace. Use nested `<dir>` tags to define the hierarchy.
+  4.  **Define Project Structure:** Design the centralized directory layout for the project. This is CRITICAL to prevent workers from creating fragmented, duplicated folders. The framework will auto-create these directories in the shared workspace. Define the hierarchy using nested objects with "dir" and optional "children" keys.
   5.  **Define Code Base:** Determine the tech stack, languages, testing frameworks, and coding conventions to be used for the project. These definitions will be provided to all workers.
-  6.  **Structure Output:** After any `<think>` reasoning, your response payload **MUST BE** the following XML structure. Do NOT include any other text after the XML. Populate each section accordingly.
+  6.  **Structure Output:** After any `<think>` reasoning, your response payload **MUST BE ONLY** a JSON code block with the following structure. Do NOT include any other text after the JSON. Populate each section accordingly.
 
-  `<kickoff_plan>
-    <roles>
-      <role>First Unique Role (e.g., Coder)</role>
-      <role>Second Unique Role (e.g., Technical_Writer)</role>
-      <!-- Add one <role> tag for each unique skill set required, even for later phases like testing -->
-    </roles>
-    <tasks>
-      <task id="task_1">Research project requirements</task>
-      <task id="task_2" depends_on="task_1">Setup environment and dependencies</task>
-      <task id="task_3" depends_on="task_2">Foundational development of core module</task>
-      <!-- Add or remove <task> elements as necessary -->
-    </tasks>
-    <code_base_definitions>
-      Define the tech stack, code conventions, testing framework, and specific code base constraints here. These will be added to the project manifest for all workers to read.
-    </code_base_definitions>
-    <project_structure>
-      <!-- Define the centralized folder layout. Use nested <dir> tags for subdirectories. -->
-      <!-- Use <file name="..."> tags to define files inside the directories. -->
-      <!-- CRITICAL: ALL XML tags must be strictly well-formed! You MUST close empty tags like this: <file name="main.py"/> -->
-      <!-- The framework will auto-create ALL these directories, files, AND a PROJECT_STRUCTURE.md file. -->
-      <dir name="src">
-        <dir name="core">
-          <file name="main.py"/>
-        </dir>
-        <dir name="utils"/>
-      </dir>
-      <dir name="docs">
-        <file name="README.md"/>
-      </dir>
-      <dir name="research"/>
-      <dir name="tests"/>
-      <dir name="config"/>
-    </project_structure>
-  </kickoff_plan>`
+  ```json
+  {{
+    "roles": [
+      "First Unique Role (e.g., Coder)",
+      "Second Unique Role (e.g., Technical_Writer)"
+    ],
+    "tasks": [
+      {{"id": "task_1", "description": "Research project requirements"}},
+      {{"id": "task_2", "depends_on": "task_1", "description": "Setup environment and dependencies"}},
+      {{"id": "task_3", "depends_on": "task_2", "description": "Foundational development of core module"}}
+    ],
+    "code_base_definitions": "Define the tech stack, code conventions, testing framework, and specific code base constraints here. These will be added to the project manifest for all workers to read.",
+    "project_structure": [
+      {{"dir": "src", "children": [
+        {{"dir": "core", "files": ["main.py"]}},
+        {{"dir": "utils"}}
+      ]}},
+      {{"dir": "docs", "files": ["README.md"]}},
+      {{"dir": "research"}},
+      {{"dir": "tests"}},
+      {{"dir": "config"}}
+    ]
+  }}
+  ```
 
   [CRITICAL INSTRUCTIONS]
   - Do NOT use any other tools in this state.
-  - Do NOT add any conversational text, greetings, or explanations outside the XML structures.
-  - You MAY use `<think>...</think>` tags before the `<kickoff_plan>` for your reasoning. After your reasoning, output ONLY the `<kickoff_plan>` XML. Example: `<think>My analysis...</think><kickoff_plan>...</kickoff_plan>`
+  - Do NOT add any conversational text, greetings, or explanations outside the JSON structure.
+  - You MAY use `<think>...</think>` tags before the JSON for your reasoning. After your reasoning, output ONLY the JSON code block. Example: `<think>My analysis...</think>` followed by the ```json block.
   - The framework will process this plan to create both the initial tasks AND the project folder structure.
-  - The `<project_structure>` section is MANDATORY. Workers will be instructed to follow this layout strictly.
+  - The `project_structure` section is MANDATORY. Workers will be instructed to follow this layout strictly.
 pm_build_team_tasks_prompt: |2
 
   --- Current State: BUILD TEAM & TASKS ---
@@ -341,7 +329,7 @@ pm_build_team_tasks_prompt: |2
   Create a minimal, efficient team by creating **one worker agent for each unique role** identified in your kickoff plan. Execute **EXACTLY ONE ACTION PER TURN**.
 
   [WORKFLOW AND INSTRUCTIONS]
-  The exact workflow steps, including your task list, roles to create, and the required XML tags, have been injected into your message history as a `[Framework System Message]` containing the **MASTER KICKOFF PLAN SUMMARY**. Read those instructions carefully and follow them step by step.
+  The exact workflow steps, including your task list, roles to create, and the required actions, have been injected into your message history as a `[Framework System Message]` containing the **MASTER KICKOFF PLAN SUMMARY**. Read those instructions carefully and follow them step by step.
 pm_activate_workers_prompt: |2
 
   --- Current State: ACTIVATE WORKERS ---

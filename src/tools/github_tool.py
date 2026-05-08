@@ -87,22 +87,22 @@ class GitHubTool(BaseTool):
 
         1.  **list_repos:** Lists repositories.
             *   `<repo_full_name>` (string, optional): If provided as just a username (e.g., 'octocat'), lists that user's public repositories. If omitted, lists repositories accessible by the authenticated user's token.
-            *   Example (List authenticated user's repos): `<github_tool><action>list_repos</action></github_tool>`
-            *   Example (List public repos of 'octocat'): `<github_tool><action>list_repos</action><repo_full_name>octocat</repo_full_name></github_tool>`
+            *   Example (List authenticated user's repos): `{"action": "list_repos"}`
+            *   Example (List public repos of 'octocat'): `{"action": "list_repos", "repo_full_name": "octocat"}`
 
         2.  **list_files:** Lists files and directories within a repository path.
             *   `<repo_full_name>` (string, required): Full repository name (e.g., 'username/repo-name').
             *   `<path>` (string, optional): Path to list within the repo. Defaults to the root ('/') if omitted.
             *   `<branch_or_ref>` (string, optional): Branch, tag, or commit SHA. Defaults to the repo's default branch.
             *   `<recursive>` (boolean, optional): Set to 'true' to list recursively. Defaults to 'false'.
-            *   Example (List root of main branch): `<github_tool><action>list_files</action><repo_full_name>octocat/Spoon-Knife</repo_full_name></github_tool>`
-            *   Example (List 'src' dir recursively on 'dev' branch): `<github_tool><action>list_files</action><repo_full_name>my_user/my_repo</repo_full_name><path>src</path><branch_or_ref>dev</branch_or_ref><recursive>true</recursive></github_tool>`
+            *   Example (List root of main branch): `{"action": "list_files", "repo_full_name": "octocat/Spoon-Knife"}`
+            *   Example (List 'src' dir recursively on 'dev' branch): `{"action": "list_files", "repo_full_name": "my_user/my_repo", "path": "src", "branch_or_ref": "dev", "recursive": true}`
 
         3.  **read_file:** Reads the content of a specific file in a repository.
             *   `<repo_full_name>` (string, required): Full repository name (e.g., 'username/repo-name').
             *   `<path>` (string, required): Path to the file within the repo (e.g., 'README.md', 'src/main.py'). Cannot be '/'.
             *   `<branch_or_ref>` (string, optional): Branch, tag, or commit SHA. Defaults to the repo's default branch.
-            *   Example: `<github_tool><action>read_file</action><repo_full_name>octocat/Spoon-Knife</repo_full_name><path>README.md</path></github_tool>`
+            *   Example: `{"action": "read_file", "repo_full_name": "octocat/Spoon-Knife", "path": "README.md"}`
 
         **Important Notes:**
         *   Requires a `GITHUB_ACCESS_TOKEN` with 'repo' scope set in the environment.
@@ -240,12 +240,12 @@ class GitHubTool(BaseTool):
 
         if not action or action not in ["list_repos", "list_files", "read_file"]:
             error_msg = (
-                f"Error: Invalid or missing 'action'. You must specify a valid action inside the XML block.\n"
-                f"Make sure you are using the correct XML format. For example:\n"
-                f"<github_tool>\n"
-                f"  <action>list_files</action>\n"
-                f"  <repo_full_name>octocat/Spoon-Knife</repo_full_name>\n"
-                f"</github_tool>\n\n"
+                f"Error: Invalid or missing 'action'. You must specify a valid action inside the JSON block.\n"
+                f"Make sure you are using the correct JSON format. For example:\n"
+                f"{{\n"
+                f"  \"action\": \"list_files\",\n"
+                f"  \"repo_full_name\": \"octocat/Spoon-Knife\"\n"
+                f"}}\n\n"
                 f"Valid actions are: 'list_repos', 'list_files', 'read_file'."
             )
             return {"status": "error", "message": error_msg}

@@ -236,23 +236,23 @@ class WebSearchTool(BaseTool):
         *   `<time_range>` (string, optional): (SearXNG only) Time range ('day', 'week', 'month', 'year').
         *   `<language>` (string, optional): Language code (e.g. 'en'). Defaults to 'en'.
 
-        **Example XML Call:**
+        **Example JSON Call:**
 
         *   To perform a basic search for 'Python async programming':
-            ```xml
-            <web_search>
-              <query>Python async programming best practices</query>
-              <num_results>5</num_results>
-            </web_search>
+            ```json
+            {
+              "query": "Python async programming best practices",
+              "num_results": 5
+            }
             ```
 
         *   To perform a specialized search:
-            ```xml
-            <web_search>
-              <query>latest python release details</query>
-              <engines>google,duckduckgo</engines>
-              <time_range>month</time_range>
-            </web_search>
+            ```json
+            {
+              "query": "latest python release details",
+              "engines": "google,duckduckgo",
+              "time_range": "month"
+            }
             ```
         """
         return usage.strip()

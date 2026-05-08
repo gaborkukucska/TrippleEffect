@@ -160,6 +160,7 @@ class Agent:
         self._framework_forced_standby_count: int = 0
         self._manage_cycle_cooldown_until: float = 0.0
         self._last_standby_wake_time: float = 0.0
+        self._seen_waiting_workers: set = set()
         self.last_error_content: str = ""
 
         # PM kickoff workflow attributes

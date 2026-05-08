@@ -838,30 +838,30 @@ class ConstitutionalGuardianHealthMonitor:
             base_msg += ("You have already listed the available tools. Repeating this action is not productive. "
                          "MANDATORY NEXT ACTION: Choose ONE specific tool from the list you already have. "
                          "Use tool_information to get_info for that tool, then use the actual tool. "
-                         "Example: <tool_information><action>get_info</action><tool_name>file_system</tool_name></tool_information>")
+                         "Example: `{\"action\": \"get_info\", \"tool_name\": \"file_system\"}`")
         elif history_analysis.get("context_complexity") in ["high", "very_high"]:
             base_msg += ("Your context appears complex. IMMEDIATE ACTION REQUIRED: "
                         "Choose the simplest available tool and test it. "
-                        "Example: <file_system><action>list</action><path>.</path></file_system>")
+                        "Example: `{\"action\": \"list\", \"path\": \".\"}`")
         elif not history_analysis.get("recent_tool_usage"):
             base_msg += ("You haven't used any tools recently. MANDATORY IMMEDIATE ACTION: "
-                         "Use <tool_information><action>list_tools</action></tool_information> RIGHT NOW to see available tools.")
+                         "Use `{\"action\": \"list_tools\"}` RIGHT NOW to see available tools.")
         else:
             base_msg += ("You are in a loop. BREAK THE PATTERN: Choose a completely different approach. "
-                        "SUGGESTED ACTION: <file_system><action>list</action><path>.</path></file_system> to test a different tool.")
+                        "SUGGESTED ACTION: `{\"action\": \"list\", \"path\": \".\"}` to test a different tool.")
             
         # Add agent-specific guidance with concrete XML examples
         if agent.agent_type == AGENT_TYPE_ADMIN:
             if agent.state == ADMIN_STATE_WORK:
                 base_msg += (" As Admin AI in work state, your NEXT RESPONSE must include either: "
-                           "1) A tool call like <file_system><action>list</action><path>.</path></file_system>, OR "
+                           "1) A tool call like `{\"action\": \"list\", \"path\": \".\"}`, OR "
                            "2) A completion summary by calling the 'request_state' tool with state='admin_conversation'")
             else:
                 base_msg += (" As Admin AI, provide a meaningful text response to the user about your current status.")
         elif agent.agent_type == AGENT_TYPE_WORKER:
             base_msg += (
-                " As a Worker, you MUST execute a tool. Example: use <project_management><action>list_tasks</action></project_management> "
-                "or <file_system><action>list</action><path>.</path></file_system>. "
+                " As a Worker, you MUST execute a tool. Example: use `{\"action\": \"list_tasks\"}` (project_management) "
+                "or `{\"action\": \"list\", \"path\": \".\"}` (file_system). "
                 "If you are stuck, report to PM by calling the 'request_state' tool with state='worker_report' "
                 "or wait by calling the 'request_state' tool with state='worker_wait'"
             )
@@ -914,7 +914,7 @@ class ConstitutionalGuardianHealthMonitor:
                "1. IMMEDIATELY STOP calling tool_information with list_tools - you already have the complete tool list\\n"
                "2. AVAILABLE TOOLS: file_system, github_tool, knowledge_base, manage_team, project_management, send_message, system_help, tool_information, web_search\\n"
                "3. CHOOSE ONE DIFFERENT TOOL (not tool_information) and test it with a simple action\\n"
-               "4. EXAMPLE VALID RESPONSE: <file_system><action>list</action><path>.</path></file_system>\\n"
+               "4. EXAMPLE VALID RESPONSE: `{\"action\": \"list\", \"path\": \".\"}`\\n"
                "5. AFTER TESTING ONE TOOL: Provide summary and call the 'request_state' tool with state='conversation'\\n\\n"
                "CRITICAL WARNING: Any further tool_information+list_tools calls will result in emergency system override.\\n"
                "YOUR NEXT RESPONSE MUST NOT CONTAIN tool_information calls.")
@@ -934,7 +934,7 @@ class ConstitutionalGuardianHealthMonitor:
                 f"**Option 2 — If your work is saved but you need to wait:**\n"
                 f"  Call the 'request_state' tool with state='worker_wait'\n\n"
                 f"**Option 3 — If you still have work to do:**\n"
-                f"Use a tool RIGHT NOW (e.g., <file_system><action>write</action>...) to make concrete progress.\n\n"
+                f"Use a tool RIGHT NOW (e.g., `{{\"action\": \"list\"}}`...) to make concrete progress.\n\n"
                 f"DO NOT produce another empty or thinking-only response. The framework will escalate if you do not act."
             )
         
@@ -943,7 +943,7 @@ class ConstitutionalGuardianHealthMonitor:
             return (
                 f"[Constitutional Guardian - STATE PROGRESSION REQUIRED]: You have been stuck in state "
                 f"'{agent.state}' without making progress. Review your workers' status and take action:\n"
-                f"1. List tasks to check progress: <project_management><action>list_tasks</action></project_management>\n"
+                f"1. List tasks to check progress: `{{\"action\": \"list_tasks\"}}`\n"
                 f"2. If all workers are busy, go to standby by calling the 'request_state' tool with state='pm_standby'\n"
                 f"3. If a worker needs help, send them guidance via <send_message>."
             )

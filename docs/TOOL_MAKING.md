@@ -49,7 +49,8 @@ Follow these steps to create a new tool:
         * `type`: Expected data type (e.g., 'string', 'integer', 'float', 'boolean'). This is mainly for documentation; validation might be basic.
         * `description`: Clear explanation of the parameter for the LLM.
         * `required` (bool): Whether the agent *must* provide this parameter (defaults to `True`).
-    * `usage_example` (str, optional): A string, often using CDATA for clarity if it contains XML, showing the LLM exactly how to format the XML call for this tool. This is crucial for complex tools or when specific formatting is needed.
+    * `usage_example` (str, optional): A string, often using CDATA for clarity if it contains XML or plain JSON structure, showing the LLM exactly how to format the call for this tool. This is crucial for complex tools or when specific formatting is needed.
+        * **CRITICAL WARNING FOR F-STRINGS:** If you use Python f-strings (e.g., `f"""..."""`) to construct your tool's description, `get_detailed_usage` returns, or usage examples, and you include raw JSON blocks within them, you **MUST** escape all literal JSON braces by doubling them (`{{` and `}}`). Failure to do so will cause the framework to crash with a `KeyError` during dynamic prompt assembly.
 
     ```python
     class CalculatorTool(BaseTool):

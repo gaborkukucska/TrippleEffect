@@ -184,6 +184,10 @@
 * [X] **Worker Prompt — Force Overwrite Guidance:** Updated `worker_work_prompt` in `prompts.yaml` with a third instruction: "If you genuinely need to rewrite an entire existing file from scratch, use `file_system` with `force_overwrite: true`."
 * [X] **Unit Test Suite — 76/76 Passing:** All changes verified with full test suite, no regressions.
 
+**System Stabilization (v2.49, Completed)**
+
+* [X] **JSON Tool Brace Escaping Fix:** Resolved framework-level `KeyError` crashes caused by unescaped literal JSON braces inside f-string tool documentation blocks. Standardized double-brace (`{{ }}`) escaping across all `get_detailed_usage` schemas (`manage_team.py`, `project_management.py`) to ensure flawless prompt assembly.
+
 
 **Future Goals:**
 

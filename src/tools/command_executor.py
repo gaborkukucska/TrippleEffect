@@ -231,15 +231,15 @@ class CommandExecutionTool(BaseTool):
         **Examples:**
         
         *   Run a python script:
-            `<command_executor><action>run_command</action><command>python my_script.py</command></command_executor>`
+            `{"action": "run_command", "command": "python my_script.py"}`
             
         *   Install a package using pip:
-            `<command_executor><action>run_command</action><command>pip install requests</command></command_executor>`
+            `{"action": "run_command", "command": "pip install requests"}`
 
         *   Run pytest tests:
-            `<command_executor><action>run_command</action><scope>shared</scope><command>pytest tests/ --tb=short</command></command_executor>`
+            `{"action": "run_command", "scope": "shared", "command": "pytest tests/ --tb=short"}`
             
         *   List files in a specific format via bash:
-            `<command_executor><action>run_command</action><command>ls -la | grep "py"</command></command_executor>`
+            `{"action": "run_command", "command": "ls -la | grep \\"py\\""}`
         """
         return usage.strip()

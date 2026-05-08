@@ -127,11 +127,11 @@ class ToolExecutor:
             if hasattr(tool, 'get_detailed_usage') and callable(tool.get_detailed_usage):
                 try:
                     detailed_usage = tool.get_detailed_usage()
-                    example_match = re.search(r"```xml\s*(<"+re.escape(schema['name'])+r">[\s\S]*?</"+re.escape(schema['name'])+r">)\s*```", detailed_usage, re.DOTALL)
+                    example_match = re.search(r"```json\s*(\{[\s\S]*?\})\s*```", detailed_usage, re.DOTALL)
                     if example_match:
                         usage_example_str = example_match.group(1)
                     else: 
-                        usage_example_str = f"\n<{schema['name']}>\n  <!-- Refer to 'get_tool_info' for parameter details -->\n</{schema['name']}>\n"
+                        usage_example_str = f"{{\n  \"action\": \"...\"\n}}"
                 except Exception as e_usage:
                     logger.warning(f"Could not generate usage example for tool {schema['name']}: {e_usage}")
             

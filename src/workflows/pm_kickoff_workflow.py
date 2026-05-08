@@ -1,7 +1,7 @@
 # START OF FILE src/workflows/pm_kickoff_workflow.py
 import logging
+import json
 import os
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional
 
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 class PMKickoffWorkflow(BaseWorkflow):
     """
-    Triggered by a PM agent in PM_STATE_STARTUP outputting a <kickoff_plan>.
+    Triggered by a PM agent in PM_STATE_STARTUP outputting a kickoff plan (JSON).
     This workflow processes the plan, creates tasks in TaskWarrior, stores the
     required roles, and transitions the PM to the team building state.
     """
@@ -30,54 +30,52 @@ class PMKickoffWorkflow(BaseWorkflow):
     allowed_agent_type: Optional[str] = AGENT_TYPE_PM
     allowed_agent_state: Optional[str] = PM_STATE_STARTUP
     description: str = (
-        "Processes a PM's kickoff plan from <kickoff_plan> XML, creating tasks "
+        "Processes a PM's kickoff plan from JSON input, creating tasks "
         "in TaskWarrior, storing the identified unique roles, auto-creating the "
         "project directory structure, and transitioning the PM to the team "
         "building state."
     )
-    expected_xml_schema: str = (
-        "<kickoff_plan>\n"
-        "  <roles>\n"
-        "    <role>First Unique Role (e.g., Coder)</role>\n"
-        "    <role>Second Unique Role (e.g., Technical_Writer)</role>\n"
-        "  </roles>\n"
-        "  <tasks>\n"
-        "    <task id=\"task_1\">High-level kick-off task 1 description</task>\n"
-        "    <task id=\"task_2\" depends_on=\"task_1\">High-level kick-off task 2 description</task>\n"
-        "  </tasks>\n"
-        "  <code_base_definitions>\n"
-        "    Define the tech stack, code conventions, testing framework, and specific code base constraints here.\n"
-        "  </code_base_definitions>\n"
-        "  <project_structure>\n"
-        "    <dir name=\"src\">\n"
-        "      <dir name=\"core\"/>\n"
-        "    </dir>\n"
-        "    <dir name=\"docs\"/>\n"
-        "  </project_structure>\n"
-        "</kickoff_plan>"
+    expected_json_schema: str = (
+        "{\n"
+        '  "roles": ["First Unique Role (e.g., Coder)", "Second Unique Role (e.g., Technical_Writer)"],\n'
+        '  "tasks": [\n'
+        '    {"id": "task_1", "description": "High-level kick-off task 1 description"},\n'
+        '    {"id": "task_2", "depends_on": "task_1", "description": "High-level kick-off task 2 description"}\n'
+        '  ],\n'
+        '  "code_base_definitions": "Define the tech stack, code conventions, testing framework, and specific code base constraints here.",\n'
+        '  "project_structure": [\n'
+        '    {"dir": "src/core"},\n'
+        '    {"dir": "docs"}\n'
+        '  ]\n'
+        "}"
     )
 
     async def execute(
         self,
         manager: 'AgentManager',
         agent: 'Agent',  # This will be the PM agent
-        data_input: Any  # This is the <kickoff_plan> element (ET.Element)
+        data_input: Any  # This is the parsed JSON dictionary
     ) -> WorkflowResult:
         logger.info(f"Executing PMKickoffWorkflow for PM agent '{agent.agent_id}'.")
 
-        # --- Extract Roles ---
-        roles_element = data_input.find("roles")
-        role_names: List[str] = []
-        if roles_element is not None:
-            for role_element in roles_element.findall("role"):
-                if role_element.text and role_element.text.strip():
-                    role_names.append(role_element.text.strip())
-
-        if not role_names:
-            logger.warning(f"PMKickoffWorkflow: No roles found in <kickoff_plan> from agent '{agent.agent_id}'.")
+        if not isinstance(data_input, dict):
             return WorkflowResult(
                 success=False,
-                message="No roles were provided in the <kickoff_plan>. Please provide a list of required roles.",
+                message="Invalid kickoff_plan data format. Expected a JSON object.",
+                workflow_name=self.name,
+                next_agent_state=PM_STATE_STARTUP,
+                next_agent_status=AGENT_STATUS_IDLE,
+                tasks_to_schedule=[(agent, 0)]
+            )
+
+        # --- Extract Roles ---
+        role_names: List[str] = data_input.get("roles", [])
+
+        if not role_names or not isinstance(role_names, list):
+            logger.warning(f"PMKickoffWorkflow: No roles found in kickoff_plan from agent '{agent.agent_id}'.")
+            return WorkflowResult(
+                success=False,
+                message="No roles were provided in the kickoff_plan. Please provide a list of required roles.",
                 workflow_name=self.name,
                 next_agent_state=PM_STATE_STARTUP,
                 next_agent_status=AGENT_STATUS_IDLE,
@@ -86,24 +84,25 @@ class PMKickoffWorkflow(BaseWorkflow):
         logger.info(f"PMKickoffWorkflow: Extracted {len(role_names)} unique roles for agent '{agent.agent_id}': {role_names}")
 
         # --- Extract Tasks ---
-        tasks_element = data_input.find("tasks")
+        tasks_list = data_input.get("tasks", [])
         task_descriptions: List[str] = []
         task_info_list: List[dict] = []
-        if tasks_element is not None:
-            for task_element in tasks_element.findall("task"):
-                if task_element.text and task_element.text.strip():
-                    task_descriptions.append(task_element.text.strip())
+        
+        if isinstance(tasks_list, list):
+            for task_info in tasks_list:
+                if isinstance(task_info, dict) and task_info.get("description"):
+                    task_descriptions.append(task_info["description"])
                     task_info_list.append({
-                        "id": task_element.get("id"),
-                        "depends_on": task_element.get("depends_on"),
-                        "description": task_element.text.strip()
+                        "id": task_info.get("id"),
+                        "depends_on": task_info.get("depends_on"),
+                        "description": task_info["description"]
                     })
         
         if not task_descriptions:
-            logger.warning(f"PMKickoffWorkflow: No tasks found in <kickoff_plan> from agent '{agent.agent_id}'.")
+            logger.warning(f"PMKickoffWorkflow: No tasks found in kickoff_plan from agent '{agent.agent_id}'.")
             return WorkflowResult(
                 success=False,
-                message="No tasks were provided in the <kickoff_plan>. Please provide a list of kick-off tasks.",
+                message="No tasks were provided in the kickoff_plan. Please provide a list of kick-off tasks.",
                 workflow_name=self.name,
                 next_agent_state=PM_STATE_STARTUP,
                 next_agent_status=AGENT_STATUS_IDLE,
@@ -189,26 +188,26 @@ class PMKickoffWorkflow(BaseWorkflow):
                 logger.error(f"PMKickoffWorkflow: Exception creating task '{task_desc}': {e}", exc_info=True)
 
         # --- Create Project Directory Structure ---
-        structure_element = data_input.find("project_structure")
-        code_base_def_element = data_input.find("code_base_definitions")
-        code_base_definitions = code_base_def_element.text.strip() if code_base_def_element is not None and code_base_def_element.text else None
+        # --- Create Project Directory Structure ---
+        structure_list = data_input.get("project_structure", [])
+        code_base_definitions = data_input.get("code_base_definitions")
         
         created_dirs: List[str] = []
-        if structure_element is not None and project_context and manager.current_session:
+        if structure_list and project_context and manager.current_session:
             workspace_path = settings.PROJECTS_BASE_DIR / str(project_context) / str(manager.current_session) / "shared_workspace"
             try:
-                created_dirs = self._create_directory_structure(structure_element, workspace_path)
+                created_dirs = self._create_directory_structure(structure_list, workspace_path)
                 if created_dirs:
                     # Generate PROJECT_STRUCTURE.md manifest
                     self._write_project_structure_md(workspace_path, created_dirs, code_base_definitions)
                     logger.info(f"PMKickoffWorkflow: Auto-created {len(created_dirs)} directories and PROJECT_STRUCTURE.md for project '{project_context}'.")
                 else:
-                    logger.info(f"PMKickoffWorkflow: <project_structure> was present but contained no <dir> elements.")
+                    logger.info(f"PMKickoffWorkflow: project_structure was present but contained no directories.")
             except Exception as e:
                 logger.error(f"PMKickoffWorkflow: Failed to create project directory structure: {e}", exc_info=True)
                 # Non-fatal — continue with the rest of the kickoff
         else:
-            logger.warning(f"PMKickoffWorkflow: No <project_structure> section found in kickoff plan from PM '{agent.agent_id}'. Skipping directory auto-creation.")
+            logger.warning(f"PMKickoffWorkflow: No project_structure section found in kickoff plan from PM '{agent.agent_id}'. Skipping directory auto-creation.")
 
         if all_tasks_created_successfully:
             logger.info(f"PMKickoffWorkflow: All tasks created for PM '{agent.agent_id}'. Preparing successful result with reschedule.")
@@ -297,43 +296,23 @@ class PMKickoffWorkflow(BaseWorkflow):
             # caused confusion and duplicate actions.
             team_id = f"team_{project_context}"
 
-            # Format the roles and tasks for inclusion in the message
-            formatted_role_xml = "\n".join([f"    <role>{role}</role>" for role in role_names])
-            formatted_task_xml = "\n".join([
-                f"    <task id=\"{ti.get('id', '')}\" depends_on=\"{ti.get('depends_on', '')}\">{ti['description']}</task>" 
-                if ti.get('id') or ti.get('depends_on') 
-                else f"    <task>{ti['description']}</task>"
-                for ti in task_info_list
-            ])
-
+            # Build the kickoff plan summary as a JSON block
             first_role_to_create = role_names[0] if role_names else "Worker"
-            
-            directive_message_content = (
+            plan_summary = json.dumps({"roles": role_names, "tasks": task_info_list}, indent=2)
+
+            final_directive_content = (
                 "[Framework System Message]\n"
                 "Your previous state 'pm_startup' and its associated plan are complete.\n\n"
                 "**MASTER KICKOFF PLAN SUMMARY**\n"
-                "<kickoff_plan>\n"
-                "  <roles>\n"
-                "{formatted_role_xml}\n"
-                "  </roles>\n"
-                "  <tasks>\n"
-                "{formatted_task_xml}\n"
-                "  </tasks>\n"
-                "</kickoff_plan>\n\n"
-                "You are NOW in state 'pm_build_team_tasks'.\n\n"
-                "**YOUR WORKFLOW:**\n"
-                "Step 1: Create a team using '<manage_team><action>create_team</action><team_id>{team_id}</team_id></manage_team>'\n"
-                "Step 2: The framework will automatically retrieve create_agent tool info for you.\n"
-                "Step 3: Create one worker agent per role listed above. Do NOT create duplicate roles.\n"
-                "Step 4: Once all roles are filled, request state change to 'pm_activate_workers'.\n\n"
-                "Your MANDATORY FIRST ACTION is Step 1: Create the team '{team_id}'.\n"
+                f"```json\n{plan_summary}\n```\n\n"
+                f"You are NOW in state 'pm_build_team_tasks'.\n\n"
+                f"**YOUR WORKFLOW:**\n"
+                f'Step 1: Create a team using the manage_team tool with action "create_team" and team_id "{team_id}"\n'
+                f"Step 2: The framework will automatically retrieve create_agent tool info for you.\n"
+                f"Step 3: Create one worker agent per role listed above. Do NOT create duplicate roles.\n"
+                f"Step 4: Once all roles are filled, request state change to 'pm_activate_workers'.\n\n"
+                f"Your MANDATORY FIRST ACTION is Step 1: Create the team '{team_id}'.\n"
                 f"Your FIRST role to create after the team is formed will be: **'{first_role_to_create}'**."
-            )
-
-            final_directive_content = directive_message_content.format(
-                formatted_role_xml=formatted_role_xml,
-                formatted_task_xml=formatted_task_xml,
-                team_id=team_id
             )
 
             agent.message_history.append({"role": "user", "content": final_directive_content})
@@ -367,24 +346,26 @@ class PMKickoffWorkflow(BaseWorkflow):
 
     def _create_directory_structure(
         self,
-        structure_element: ET.Element,
+        structure_list: List[dict],
         workspace_path: Path,
         _parent_path: Optional[Path] = None
     ) -> List[str]:
         """
-        Recursively parse <dir name="..."> elements and create the directories
+        Recursively parse directory dicts and create the directories
         under the shared workspace. Returns a list of relative path strings
         for all directories created.
         """
         base = _parent_path if _parent_path is not None else workspace_path
         created: List[str] = []
 
-        for dir_element in structure_element.findall("dir"):
-            dir_name = dir_element.get("name", "").strip()
+        for dir_dict in structure_list:
+            if not isinstance(dir_dict, dict):
+                continue
+            dir_name = dir_dict.get("dir", "").strip()
             if not dir_name:
                 continue
             # Sanitize: prevent path traversal
-            safe_name = dir_name.replace("..", "").replace("/", "").replace("\\", "")
+            safe_name = dir_name.replace("..", "").replace("\\", "")
             if not safe_name:
                 continue
 
@@ -396,9 +377,12 @@ class PMKickoffWorkflow(BaseWorkflow):
             created.append(rel_path)
             logger.debug(f"PMKickoffWorkflow: Created directory: {rel_path}")
 
-            # Recurse into nested <dir> children
-            nested = self._create_directory_structure(dir_element, workspace_path, dir_full_path)
-            created.extend(nested)
+            # Recurse into nested children if they exist as a list
+            # We assume a structure like: {"dir": "src", "children": [{"dir": "core"}]}
+            children = dir_dict.get("children", [])
+            if isinstance(children, list) and children:
+                nested = self._create_directory_structure(children, workspace_path, dir_full_path)
+                created.extend(nested)
 
         return created
 

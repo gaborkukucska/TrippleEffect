@@ -2,7 +2,7 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List, Tuple, TYPE_CHECKING
 from pydantic import BaseModel, Field, ConfigDict
-import xml.etree.ElementTree as ET
+from typing import Any  # Replaces ET for data_input type hints
 
 if TYPE_CHECKING:
     from src.agents.core import Agent
@@ -48,7 +48,7 @@ class BaseWorkflow(ABC):
     allowed_agent_type: Optional[str] = None
     allowed_agent_state: Optional[str] = None
     description: str = "Base workflow description."
-    expected_xml_schema: str = "<trigger_tag_name><param>value</param></trigger_tag_name>" # For documentation & prompt injection
+    expected_json_schema: str = '{"trigger_tag_name": {"param": "value"}}' # For documentation & prompt injection
 
     @abstractmethod
     async def execute(

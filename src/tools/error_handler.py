@@ -99,7 +99,7 @@ class ToolErrorHandler:
             # Generic error handling
             error_response["message"] = f"Error using tool '{tool_name}': {error_type.value}"
             error_response["suggestions"] = [
-                f"Check the tool's documentation using: <tool_information><action>get_info</action><tool_name>{tool_name}</tool_name></tool_information>",
+                f"Check the tool's documentation using: {{\"action\": \"get_info\", \"tool_name\": \"{tool_name}\"}}",
                 "Verify all required parameters are provided",
                 "Ensure proper XML formatting"
             ]
@@ -121,7 +121,7 @@ class ToolErrorHandler:
             error_response["message"] = f"Missing 'action' parameter for tool '{tool_name}'"
             error_response["suggestions"] = [
                 f"All tools require an 'action' parameter",
-                f"Get available actions: <tool_information><action>get_info</action><tool_name>{tool_name}</tool_name></tool_information>"
+                f"Get available actions: {{\"action\": \"get_info\", \"tool_name\": \"{tool_name}\"}}"
             ]
             return error_response
             
@@ -143,9 +143,9 @@ class ToolErrorHandler:
                     f"Valid actions: {', '.join(available_actions)}"
                 )
                 
-                # Generate corrected XML example
+                # Generate corrected JSON example
                 corrected_examples.append(
-                    f"<{tool_name}><action>{primary_suggestion}</action></{tool_name}>"
+                    f"{{\"action\": \"{primary_suggestion}\"}}"
                 )
                 
                 suggestions.extend([
@@ -177,7 +177,7 @@ class ToolErrorHandler:
             elif tool_name == "knowledge_base" and attempted_action in ["learn", "remember"]:
                 suggestions.insert(0, "For saving information, use 'save_knowledge' action")
                 corrected_examples.insert(0, 
-                    f"<knowledge_base><action>save_knowledge</action><summary>Your learning here</summary><keywords>relevant,keywords</keywords></knowledge_base>"
+                    f"{{\"action\": \"save_knowledge\", \"summary\": \"Your learning here\", \"keywords\": \"relevant,keywords\"}}"
                 )
                 
         error_response["suggestions"] = suggestions
@@ -208,19 +208,20 @@ class ToolErrorHandler:
         
         suggestions = [
             f"Add missing parameters: {', '.join(missing_params)}",
-            f"Get detailed usage: <tool_information><action>get_info</action><tool_name>{tool_name}</tool_name></tool_information>"
+            f"Get detailed usage: {{\"action\": \"get_info\", \"tool_name\": \"{tool_name}\"}}"
         ]
         
         # Generate example with missing parameters
         if tool_schema and missing_params:
-            example_parts = [f"<{tool_name}>"]
+            example_parts = [f"{{"]
             if tool_args and 'action' in tool_args:
-                example_parts.append(f"<action>{tool_args['action']}</action>")
+                example_parts.append(f"  \"action\": \"{tool_args['action']}\",")
             
-            for param in missing_params[:2]:  # Show first 2 missing params
-                example_parts.append(f"<{param}>your_value_here</{param}>")
+            for i, param in enumerate(missing_params[:2]):  # Show first 2 missing params
+                comma = "," if i < len(missing_params[:2]) - 1 else ""
+                example_parts.append(f"  \"{param}\": \"your_value_here\"{comma}")
                 
-            example_parts.append(f"</{tool_name}>")
+            example_parts.append(f"}}")
             error_response["corrected_examples"] = ["\n".join(example_parts)]
             
         error_response["suggestions"] = suggestions
@@ -239,7 +240,7 @@ class ToolErrorHandler:
         error_response["suggestions"] = [
             "Check parameter types and formats",
             "Ensure string parameters don't contain special characters",
-            f"Get parameter details: <tool_information><action>get_info</action><tool_name>{tool_name}</tool_name></tool_information>"
+            f"Get parameter details: {{\"action\": \"get_info\", \"tool_name\": \"{tool_name}\"}}"
         ]
         
         return error_response

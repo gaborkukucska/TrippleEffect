@@ -104,11 +104,11 @@ class TestRunnerTool(BaseTool):
         *   `<working_dir>` (string, optional): A subdirectory to run the command in.
         *   `<timeout>` (integer, optional): Maximum execution time in seconds.
 
-        **Example XML Call:**
-        ```xml
-        <test_runner>
-          <command>pytest tests/test_api.py</command>
-        </test_runner>
+        **Example JSON Call:**
+        ```json
+        {
+          "command": "pytest tests/test_api.py"
+        }
         ```
         """
         return usage.strip()

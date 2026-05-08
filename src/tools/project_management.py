@@ -714,7 +714,7 @@ class ProjectManagementTool(BaseTool):
                 return {
                     "status": "error", 
                     "message": f"Task '{task_id}' not found. Note that integer IDs shift as tasks are completed, and UUIDs must be exact. Detail: {e}",
-                    "suggestion": "IMPORTANT: You should run <project_management><action>list_tasks</action></project_management> to get the current list of tasks and their valid IDs/UUIDs."
+                    "suggestion": "IMPORTANT: You should run the project_management tool with action='list_tasks' to get the current list of tasks and their valid IDs/UUIDs."
                 }
 
 
@@ -810,8 +810,7 @@ class ProjectManagementTool(BaseTool):
                     "No valid fields provided for modification. "
                     "You must provide at least one of these as a DIRECT parameter (not inside a 'fields' wrapper): "
                     "task_progress, status, description, priority, tags, depends, assignee_agent_id. "
-                    "CORRECT example: <project_management><action>modify_task</action>"
-                    "<task_id>UUID</task_id><task_progress>finished</task_progress></project_management>"
+                    "CORRECT example: {\"action\": \"modify_task\", \"task_id\": \"UUID\", \"task_progress\": \"finished\"}"
                 )}
 
             is_dry_run = str(kwargs.get("dry_run")).lower() == "true"
@@ -894,7 +893,7 @@ class ProjectManagementTool(BaseTool):
                 return {
                     "status": "error", 
                     "message": f"Task '{task_id}' not found. Note that integer IDs shift as tasks are completed, and UUIDs must be exact. Detail: {e}",
-                    "suggestion": "IMPORTANT: You should run <project_management><action>list_tasks</action></project_management> to get the current list of tasks and their valid IDs/UUIDs."
+                    "suggestion": "IMPORTANT: You should run the project_management tool with action='list_tasks' to get the current list of tasks and their valid IDs/UUIDs."
                 }
 
 
@@ -999,15 +998,15 @@ Creates a new task.
 *   `<assignee_agent_id>` (string, optional): The ID of the agent to assign this task to.
 *   `<depends>` (string, optional): The UUID of a task that this new task depends on.
 *   Example:
-    ```xml
-    <project_management>
-      <action>add_task</action>
-      <description>Implement user authentication API endpoint</description>
-      <project_filter>{project_name_placeholder}</project_filter>
-      <task_progress>todo</task_progress>
-      <priority>H</priority>
-      <tags>+backend,+api</tags>
-    </project_management>
+    ```json
+    {{
+      "action": "add_task",
+      "description": "Implement user authentication API endpoint",
+      "project_filter": "{project_name_placeholder}",
+      "task_progress": "todo",
+      "priority": "H",
+      "tags": "+backend,+api"
+    }}
     ```
 """
         elif sub_action == "list_tasks":
@@ -1019,13 +1018,13 @@ Lists existing tasks. Note that we use a granular 'task_progress' system to trac
 *   `<assignee_filter>` (string, optional): Filter by assigned agent ID. To find unassigned tasks awaiting delegation, set this exact value to 'unassigned'.
 *   `<tags_filter>` (string, optional): Filter by a comma-separated list of tags. You can also use the magic tags 'assigned' or 'unassigned' here in combination with exclude/include modes.
 *   Example:
-    ```xml
-    <project_management>
-      <action>list_tasks</action>
-      <project_filter>{project_name_placeholder}</project_filter>
-      <assignee_filter>unassigned</assignee_filter>
-      <task_progress_filter>todo</task_progress_filter>
-    </project_management>
+    ```json
+    {{
+      "action": "list_tasks",
+      "project_filter": "{project_name_placeholder}",
+      "assignee_filter": "unassigned",
+      "task_progress_filter": "todo"
+    }}
     ```
 """
         elif sub_action == "modify_task":
@@ -1040,14 +1039,14 @@ Modifies an existing task.
 *   `<assignee_agent_id>` (string, optional): Reassign the task to a new agent. **REMEMBER to also update the tag.**
 *   `<depends>` (string, optional): Add a dependency by providing the task ID or UUID it depends on.
 *   Example:
-    ```xml
-    <project_management>
-      <action>modify_task</action>
-      <task_id>123e4567-e89b-12d3-a456-426614174000</task_id>
-      <task_progress>in_progress</task_progress>
-      <assignee_agent_id>{project_name_placeholder}_worker_1</assignee_agent_id>
-      <tags>+{project_name_placeholder}_worker_1,assigned</tags>
-    </project_management>
+    ```json
+    {{
+      "action": "modify_task",
+      "task_id": "123e4567-e89b-12d3-a456-426614174000",
+      "task_progress": "in_progress",
+      "assignee_agent_id": "{project_name_placeholder}_worker_1",
+      "tags": "+{project_name_placeholder}_worker_1,assigned"
+    }}
     ```
 """
         elif sub_action == "complete_task":
@@ -1056,11 +1055,11 @@ Modifies an existing task.
 Marks a task as completely finished. Shortcut for `modify_task` with `task_progress='finished'`.
 *   `<task_id>` (string, required): The UUID or integer ID of the task to complete.
 *   Example:
-    ```xml
-    <project_management>
-      <action>complete_task</action>
-      <task_id>1</task_id>
-    </project_management>
+    ```json
+    {
+      "action": "complete_task",
+      "task_id": "1"
+    }
     ```
 """
         elif sub_action == "get_dependency_graph":
@@ -1068,10 +1067,10 @@ Marks a task as completely finished. Shortcut for `modify_task` with `task_progr
 **Action: get_dependency_graph**
 Generates a Mermaid.js diagram illustrating the dependencies between all pending tasks.
 *   Example:
-    ```xml
-    <project_management>
-      <action>get_dependency_graph</action>
-    </project_management>
+    ```json
+    {
+      "action": "get_dependency_graph"
+    }
     ```
 """
 
@@ -1083,10 +1082,12 @@ Generates a Mermaid.js diagram illustrating the dependencies between all pending
 4.  **complete_task:** Marks a task as completed.
 5.  **get_dependency_graph:** Returns a visual graph of task blocking relationships.
 
-**To get detailed instructions and parameter lists for a specific action, call:**
-<tool_information>
-  <action>get_info</action>
-  <tool_name>project_management</tool_name>
-  <sub_action>ACTION_NAME</sub_action>
-</tool_information>
+**To get detailed instructions and parameter lists for a specific action, call the 'tool_information' tool:**
+    ```json
+    {
+      "action": "get_info",
+      "tool_name": "project_management",
+      "sub_action": "ACTION_NAME"
+    }
+    ```
 """

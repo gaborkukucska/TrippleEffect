@@ -202,7 +202,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                 content = msg.get("content")
                                 # Skip system prompts and internal framework messages
                                 if role == "system": continue
-                                if role == "user" and "[System: Backend initialized" in content: continue
+                                if role == "user" and "[System: Backend initialized" in (content or ""): continue
                                 
                                 msg_type = "user" if role == "user" else "agent_response"
                                 await websocket.send_text(json.dumps({

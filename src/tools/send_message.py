@@ -117,19 +117,19 @@ class SendMessageTool(BaseTool):
             *   **IMPORTANT:** For large outputs (code, reports), use the `file_system` tool to write the content to a file first, then use `send_message` to notify the recipient about the file (`filename` and `scope`). Do not include large content directly in the message.
 
         **Example (messaging PM):**
-        ```xml
-        <send_message>
-          <target_agent_id>PM_1</target_agent_id>
-          <message_content>Task T5 is complete. The server module has been implemented at src/server.py.</message_content>
-        </send_message>
+        ```json
+        {
+          "target_agent_id": "PM_1",
+          "message_content": "Task T5 is complete. The server module has been implemented at src/server.py."
+        }
         ```
 
         **Example (messaging a peer worker):**
-        ```xml
-        <send_message>
-          <target_agent_id>W2</target_agent_id>
-          <message_content>I've finished the database schema. You can now start implementing the API endpoints that depend on it.</message_content>
-        </send_message>
+        ```json
+        {
+          "target_agent_id": "W2",
+          "message_content": "I've finished the database schema. You can now start implementing the API endpoints that depend on it."
+        }
         ```
 
         **Reporting Task Completion:**

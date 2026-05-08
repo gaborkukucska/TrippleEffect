@@ -82,12 +82,12 @@ class CodebaseSearchTool(BaseTool):
         *   `<include_pattern>` (string, optional): Glob pattern (e.g. '*.py') to only search specific files.
         *   `<exclude_pattern>` (string, optional): Glob pattern to ignore specific files.
 
-        **Example XML Call:**
-        ```xml
-        <codebase_search>
-          <query>def __init__</query>
-          <include_pattern>*.py</include_pattern>
-        </codebase_search>
+        **Example JSON Call:**
+        ```json
+        {
+          "query": "def __init__",
+          "include_pattern": "*.py"
+        }
         ```
         """
         return usage.strip()

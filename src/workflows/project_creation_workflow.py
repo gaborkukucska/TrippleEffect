@@ -1,7 +1,6 @@
 # START OF FILE src/workflows/project_creation_workflow.py
 import logging
-import xml.etree.ElementTree as ET
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Any
 import re # For sanitizing project title and extracting from raw body
 import html # For unescaping title
 
@@ -24,47 +23,53 @@ class ProjectCreationWorkflow(BaseWorkflow):
     """
     Handles the automatic creation of a project (initial Taskwarrior task) and its dedicated
     Project Manager (PM) agent when the Admin AI submits a plan.
-    Relies on AgentWorkflowManager to prepare a structured XML input with <title> and <_raw_plan_body_>.
+    Relies on AgentWorkflowManager to prepare a JSON dict with 'title' and '_raw_plan_body_'.
     """
     name: str = "project_creation"
     trigger_tag_name: str = "plan" 
     allowed_agent_type: Optional[str] = AGENT_TYPE_ADMIN
     allowed_agent_state: Optional[str] = ADMIN_STATE_PLANNING
     description: str = "Orchestrates project initialization: creates the initial project task and a dedicated Project Manager agent from an Admin AI's plan."
-    expected_xml_schema: str = "<plan><title>Project Title</title>\n  <_raw_plan_body_>(Raw plan description, Markdown is okay here)</_raw_plan_body_>\n</plan>"
+    expected_json_schema: str = '{\n  "title": "Project Title",\n  "_raw_plan_body_": "(Raw plan description, Markdown is okay here)"\n}'
 
     async def execute( # type: ignore[reportIncompatibleMethodOverride]
         self,
         manager: 'AgentManager',
         agent: 'Agent', 
-        xml_data: ET.Element 
+        data_input: Any 
     ) -> WorkflowResult:
-        logger.info(f"Executing ProjectCreationWorkflow for agent '{agent.agent_id}'. Received xml_data root tag: {xml_data.tag}")
+        logger.info(f"Executing ProjectCreationWorkflow for agent '{agent.agent_id}'.")
 
         project_title: Optional[str] = None
         plan_description: str = ""
 
-        title_element = xml_data.find("title")
-        if title_element is not None and title_element.text:
-            raw_title = html.unescape(title_element.text.strip())
+        if not isinstance(data_input, dict):
+            return WorkflowResult(
+                success=False, message="Error: Plan data is not a valid JSON object.",
+                workflow_name=self.name, next_agent_state=agent.state, next_agent_status=AGENT_STATUS_IDLE
+            )
+
+        title_value = data_input.get("title")
+        if title_value and isinstance(title_value, str):
+            raw_title = html.unescape(title_value.strip())
             # Sanitize project title: replace spaces and non-alphanumeric characters with underscores
             sanitized_title = re.sub(r'[^\w]', '_', raw_title)
             # Compress multiple underscores into one
             project_title = re.sub(r'_+', '_', sanitized_title).strip('_')
-            logger.info(f"ProjectCreationWorkflow: Extracted and sanitized title='{project_title}' from <title> (Original: '{raw_title}').")
+            logger.info(f"ProjectCreationWorkflow: Extracted and sanitized title='{project_title}' from JSON (Original: '{raw_title}').")
         else:
-            logger.error("ProjectCreationWorkflow: <title> sub-element not found or empty in provided XML data by AgentWorkflowManager.")
+            logger.error("ProjectCreationWorkflow: 'title' key not found or empty in provided JSON data by AgentWorkflowManager.")
             return WorkflowResult(
-                success=False, message="Error: Project title (<title>) could not be extracted from the processed plan data.",
+                success=False, message="Error: Project title ('title') could not be extracted from the processed plan data.",
                 workflow_name=self.name, next_agent_state=agent.state, next_agent_status=AGENT_STATUS_IDLE
             )
 
-        raw_body_element = xml_data.find("_raw_plan_body_")
-        if raw_body_element is not None and raw_body_element.text:
-            plan_description = raw_body_element.text.strip()
-            logger.info(f"ProjectCreationWorkflow: Extracted plan description from <_raw_plan_body_> (length: {len(plan_description)}).")
+        raw_body_value = data_input.get("_raw_plan_body_")
+        if raw_body_value and isinstance(raw_body_value, str):
+            plan_description = raw_body_value.strip()
+            logger.info(f"ProjectCreationWorkflow: Extracted plan description from '_raw_plan_body_' (length: {len(plan_description)}).")
         else:
-            logger.warning("ProjectCreationWorkflow: <_raw_plan_body_> element not found or empty. Plan description might be missing.")
+            logger.warning("ProjectCreationWorkflow: '_raw_plan_body_' key not found or empty. Plan description might be missing.")
             plan_description = f"Initial project plan for '{project_title}' (Description body was missing from processed plan data)."
 
 

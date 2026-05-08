@@ -513,7 +513,7 @@ class NextStepScheduler:
                         "1. STOP calling tool_information with list_tools - you already have the tool list\n"
                         "2. You have these tools available: file_system, github_tool, knowledge_base, manage_team, project_management, send_message, system_help, tool_information, web_search\n"
                         "3. Choose ONE different tool (NOT tool_information) and test it\n"
-                        "4. Example: <file_system><action>list</action><path>.</path></file_system>\n"
+                        "4. Example: `{\"action\": \"list\", \"path\": \".\"}`\n"
                         "5. After testing ONE tool, provide a summary and call the 'request_state' tool with state='conversation'\n\n"
                         "CRITICAL: Your next response MUST NOT contain tool_information calls. Use a different tool or request state change."
                     )
@@ -612,8 +612,8 @@ class NextStepScheduler:
                         "[CRITICAL Framework Intervention]: You have been producing empty responses. "
                         "I will provide your COMPLETE next response. Copy this ENTIRE response exactly:\n\n"
                         "Great! I can see I've been getting stuck. Let me try the file_system tool to test my capabilities and move forward.\n\n"
-                        "<file_system><action>list</action><path>.</path></file_system>\n\n"
-                        "CRITICAL: You MUST copy the XML tool call above. Do not respond with just text - include the XML."
+                        "```json\n{\n  \"action\": \"list\",\n  \"path\": \".\"\n}\n```\n\n"
+                        "CRITICAL: You MUST copy the JSON tool call above. Do not respond with just text - include the JSON."
                     )
                 elif agent._consecutive_empty_work_cycles <= 4:
                     # Second intervention: Force a simple working response

@@ -37,7 +37,7 @@ from src.agents.cycle_components import (  # type: ignore[import]
     NextStepScheduler,
     AgentHealthMonitor
 )
-from src.agents.cycle_components.xml_validator import XMLValidator  # type: ignore[import]
+from src.agents.cycle_components.json_validator import JSONValidator  # type: ignore[import]
 from src.agents.cycle_components.context_summarizer import ContextSummarizer  # type: ignore[import]
 
 from src.workflows.base import WorkflowResult  # type: ignore[import]
@@ -59,13 +59,13 @@ class AgentCycleHandler:
         self._prompt_assembler: Any = PromptAssembler(self._manager)
         self._outcome_determiner: Any = CycleOutcomeDeterminer()
         self._next_step_scheduler: Any = NextStepScheduler(self._manager)
-        self._xml_validator: Any = XMLValidator()
+        self._json_validator: Any = JSONValidator()
         self._context_summarizer: Any = ContextSummarizer(self._manager)
         self._health_monitor: Any = AgentHealthMonitor(self._manager)
         
         self.request_state_pattern: Any = REQUEST_STATE_TAG_PATTERN 
         self._tool_execution_stats: Dict[str, int] = {"total_calls": 0, "successful_calls": 0, "failed_calls": 0}
-        logger.info("AgentCycleHandler initialized with enhanced tool execution monitoring, XML validation, context summarization, and agent health monitoring.")
+        logger.info("AgentCycleHandler initialized with enhanced tool execution monitoring, JSON validation, context summarization, and agent health monitoring.")
 
     def _handle_worker_task_tracking(self, agent: 'Agent', requested_state: str, task_id: Optional[str] = None) -> None:
         """
@@ -218,7 +218,7 @@ class AgentCycleHandler:
         """
         Enhanced detection for potential tool calls that failed to parse properly.
         This covers various malformed patterns that agents might produce, while avoiding
-        false positives on legitimate workflow XML tags like <plan>, <task_list>, etc.
+        false positives on legitimate workflow JSON tags like <plan>, <task_list>, etc.
         
         Args:
             text: The text to analyze for potential tool calls
@@ -242,7 +242,7 @@ class AgentCycleHandler:
         # Exclude legitimate workflow trigger tags to avoid false positives
         workflow_tags = {'plan', 'task_list', 'request_state', 'think'}
         
-        # Pattern 1: Markdown fenced XML with malformed brackets (SPECIFIC TO TOOL NAMES ONLY)
+        # Pattern 1: Markdown fenced JSON with malformed brackets (SPECIFIC TO TOOL NAMES ONLY)
         # Example: ```tool_information><action>list_tools</action></tool_information>```
         malformed_fence_patterns = []
         for tool_name in tool_names:
@@ -255,7 +255,7 @@ class AgentCycleHandler:
                 rf'```[^`]*?{escaped_tool}[^>]*>.*?</{escaped_tool}>[^`]*?```'
             ])
         
-        # Pattern 2: XML-like structures ONLY for actual tool names (not workflow tags)
+        # Pattern 2: JSON-like structures ONLY for actual tool names (not workflow tags)
         tool_specific_patterns = []
         for tool_name in tool_names:
             escaped_tool = re.escape(tool_name)
@@ -282,7 +282,7 @@ class AgentCycleHandler:
                 logger.debug(f"CycleHandler: Detected malformed fence pattern for tool name: {pattern}")
                 return True
                 
-        # Check tool-specific XML patterns (avoiding workflow tags)
+        # Check tool-specific JSON patterns (avoiding workflow tags)
         for pattern in tool_specific_patterns:
             if re.search(pattern, text, re.IGNORECASE):
                 # Double-check this isn't a workflow tag being caught
@@ -292,7 +292,7 @@ class AgentCycleHandler:
                     # Skip if it's a legitimate workflow tag
                     is_workflow_tag = any(tag in matched_text for tag in workflow_tags)
                     if not is_workflow_tag:
-                        logger.debug(f"CycleHandler: Detected tool-specific XML pattern: {pattern}")
+                        logger.debug(f"CycleHandler: Detected tool-specific JSON pattern: {pattern}")
                         return True
                         
         # Check for action indicators combined with tool names
@@ -487,14 +487,14 @@ class AgentCycleHandler:
                     f"Your last action was an attempt to use the '{tool_name}' tool. "
                     "You are now in a loop. To proceed, you MUST take a different action. "
                     "1. Re-evaluate your goal. What are you trying to accomplish? "
-                    "2. Use the `<tool_information><action>list_tools</action></tool_information>` to see all available tools. "
+                    "2. Use the `{\"action\": \"list_tools\"}` JSON command to see all available tools. "
                     "3. Choose a DIFFERENT tool to continue your task or provide a comprehensive summary of your findings and request a state change."
                 )
             else:
                 guidance = (
                     "You have not taken any meaningful action recently. "
                     "To proceed, you MUST take a concrete action. "
-                    "Use `<tool_information><action>list_tools</action></tool_information>` to see available tools and test one, "
+                    "Use `{\"action\": \"list_tools\"}` to see available tools and test one, "
                     "or provide a summary of your work so far."
                 )
             return base_message + guidance
@@ -523,9 +523,11 @@ class AgentCycleHandler:
             "A new task has been assigned to you to ensure progress.\n\n"
             "**Your New Task: Systematically Test Available Tools**\n\n"
             "**Step 1: Discover all available tools.**\n"
-            "Your first action MUST be to output the following XML to get a list of all tools you can use:\n"
-            "```xml\n"
-            "<tool_information><action>list_tools</action></tool_information>\n"
+            "Your first action MUST be to output the following JSON to get a list of all tools you can use:\n"
+            "```json\n"
+            "{\n"
+            "  \"action\": \"list_tools\"\n"
+            "}\n"
             "```\n\n"
             "**Step 2: Analyze and Test.**\n"
             "After you receive the list, pick ONE tool from the list that you have not recently used and test one of its actions. "
@@ -1026,32 +1028,32 @@ class AgentCycleHandler:
                     elif event_type == "malformed_tool_call":
                         context.action_taken_this_cycle = True; raw_llm_response_with_error = event.get("raw_assistant_response")
                         malformed_tool_name = event.get("tool_name"); parsing_error_msg = event.get("error_message")
-                        logger.warning(f"Agent {agent.agent_id} produced malformed XML for tool '{malformed_tool_name}'. Error: {parsing_error_msg}")
+                        logger.warning(f"Agent {agent.agent_id} produced malformed JSON for tool '{malformed_tool_name}'. Error: {parsing_error_msg}")
                         
-                        # Try XML validation and recovery
-                        recovered_xml = None
+                        # Try JSON validation and recovery
+                        recovered_json = None
                         recovery_attempted = False
                         if raw_llm_response_with_error:
                             try:
-                                validation_result = self._xml_validator.validate_xml(raw_llm_response_with_error)
+                                validation_result = self._json_validator.validate_json(raw_llm_response_with_error)
                                 if not validation_result['is_valid']:
-                                    logger.info(f"CycleHandler: Attempting XML recovery for agent '{agent.agent_id}'")
-                                    recovery_result = self._xml_validator.recover_xml(raw_llm_response_with_error)
+                                    logger.info(f"CycleHandler: Attempting JSON recovery for agent '{agent.agent_id}'")
+                                    recovery_result = self._json_validator.recover_json(raw_llm_response_with_error)
                                     recovery_attempted = True
                                     
                                     if recovery_result['success']:
-                                        recovered_xml = recovery_result['recovered_xml']
-                                        logger.info(f"CycleHandler: XML recovery successful for agent '{agent.agent_id}'. Applied fixes: {recovery_result['applied_fixes']}")
+                                        recovered_json = recovery_result['recovered_json']
+                                        logger.info(f"CycleHandler: JSON recovery successful for agent '{agent.agent_id}'. Applied fixes: {recovery_result['applied_fixes']}")
                                         
-                                        # Try to extract tool calls from recovered XML
-                                        extracted_calls = self._xml_validator.extract_tool_calls(recovered_xml)
+                                        # Try to extract tool calls from recovered JSON
+                                        extracted_calls = self._json_validator.extract_tool_calls(recovered_json)
                                         if extracted_calls:
-                                            logger.info(f"CycleHandler: Extracted {len(extracted_calls)} tool calls from recovered XML")
+                                            logger.info(f"CycleHandler: Extracted {len(extracted_calls)} tool calls from recovered JSON")
                                             await self._manager.send_to_ui({
-                                                "type": "xml_recovery_success",
+                                                "type": "json_recovery_success",
                                                 "agent_id": agent.agent_id,
-                                                "original_xml": raw_llm_response_with_error[:200] + "...",
-                                                "recovered_xml": recovered_xml[:200] + "...",
+                                                "original_json": raw_llm_response_with_error[:200] + "...",
+                                                "recovered_json": recovered_json[:200] + "...",
                                                 "recovered_calls": len(extracted_calls),
                                                 "applied_fixes": recovery_result['applied_fixes']
                                             })
@@ -1060,50 +1062,49 @@ class AgentCycleHandler:
                                             context.cycle_completed_successfully = True
                                             llm_stream_ended_cleanly = False; break
                                         else:
-                                            logger.warning(f"CycleHandler: XML recovery succeeded but no tool calls could be extracted for agent '{agent.agent_id}'")
+                                            logger.warning(f"CycleHandler: JSON recovery succeeded but no tool calls could be extracted for agent '{agent.agent_id}'")
                                     else:
-                                        logger.warning(f"CycleHandler: XML recovery failed for agent '{agent.agent_id}'. Error: {recovery_result.get('error', 'Unknown error')}. Suggestions: {recovery_result.get('suggestions', [])}")
-                            except Exception as xml_recovery_error:
-                                logger.error(f"CycleHandler: Exception during XML recovery for agent '{agent.agent_id}': {xml_recovery_error}", exc_info=True)
+                                        logger.warning(f"CycleHandler: JSON recovery failed for agent '{agent.agent_id}'. Error: {recovery_result.get('error', 'Unknown error')}. Suggestions: {recovery_result.get('suggestions', [])}")
+                            except Exception as json_recovery_error:
+                                logger.error(f"CycleHandler: Exception during JSON recovery for agent '{agent.agent_id}': {json_recovery_error}", exc_info=True)
                         
                         # If recovery failed or wasn't attempted, continue with original error handling
                         if context.current_db_session_id and raw_llm_response_with_error: 
                             await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id,agent_id=agent.agent_id,role="assistant",content=raw_llm_response_with_error)
                         
-                        # CRITICAL FIX: Enhanced XML error feedback deduplication to prevent accumulation
-                        # CRITICAL FIX: Enhanced XML error feedback deduplication to prevent accumulation
-                        # Create broader error signatures to catch similar XML errors
+                        # CRITICAL FIX: Enhanced JSON error feedback deduplication to prevent accumulation
+                        # Create broader error signatures to catch similar JSON errors
                         safe_parsing_msg = parsing_error_msg or ""
-                        base_error_signature = f"xml_error_{malformed_tool_name}"
+                        base_error_signature = f"json_error_{malformed_tool_name}"
                         detailed_error_signature = f"malformed_{malformed_tool_name}_{safe_parsing_msg[:30]}"
                         
                         if not hasattr(agent, '_recent_error_feedback'):
                             agent._recent_error_feedback = {}
                         
-                        # CRITICAL: Check for any recent XML errors for this tool (much shorter timeframe)
+                        # CRITICAL: Check for any recent JSON errors for this tool (much shorter timeframe)
                         current_time = time.time()
                         has_recent_error = False
                         
                         # Check if we've given feedback for this tool recently (last 30 seconds)
                         for error_key, error_time in agent._recent_error_feedback.items():
-                            if (error_key.startswith(f"xml_error_{malformed_tool_name}") or 
+                            if (error_key.startswith(f"json_error_{malformed_tool_name}") or 
                                 error_key.startswith(f"malformed_{malformed_tool_name}")) and \
                                (current_time - error_time) < 30:  # Only 30 seconds
                                 has_recent_error = True
                                 break
                         
-                        # CRITICAL: Also check if we have too many XML error messages in recent history
-                        xml_error_messages_in_recent_history: int = 0
+                        # CRITICAL: Also check if we have too many JSON error messages in recent history
+                        json_error_messages_in_recent_history: int = 0
                         if hasattr(agent, 'message_history') and agent.message_history:
                             for msg in agent.message_history[-5:]:  # Check last 5 messages
                                 if (msg.get('role') == 'system' and 
-                                    'XML Parsing Error' in msg.get('content', '')):
-                                    xml_error_messages_in_recent_history += 1
+                                    'JSON Parsing Error' in msg.get('content', '')):
+                                    json_error_messages_in_recent_history += 1
                         
                         # Only provide feedback if ALL conditions are met
                         should_provide_feedback = (
                             not has_recent_error and 
-                            xml_error_messages_in_recent_history < 2  # Max 2 XML error messages in recent history
+                            json_error_messages_in_recent_history < 2  # Max 2 JSON error messages in recent history
                         )
                         
                         if should_provide_feedback:
@@ -1117,17 +1118,17 @@ class AgentCycleHandler:
                             # CRITICAL FIX: Removed enhanced feedback for markdown fences, as the parser already strips them.
                             if parsing_error_msg and "list_tools" in parsing_error_msg:
                                 feedback_to_agent = (f"[Framework Feedback: Tool Usage Error]\n"
-                                                   f"You attempted to use '{malformed_tool_name}' with tool_name='list_tools', but 'list_tools' is not a tool name - it's an action.\n"
-                                                   f"Correct usage: <tool_information><action>list_tools</action></tool_information>\n"
+                                                   f"You attempted to use '{malformed_tool_name}' with action='list_tools', but list_tools does not belong to that tool.\n"
+                                                   f"Correct usage:\n```json\n{{\n  \"action\": \"list_tools\"\n}}\n```\n"
                                                    f"This will list all available tools and their summaries.")
                             elif malformed_tool_name == "unknown":
-                                feedback_to_agent = (f"[Framework Feedback: XML Parsing Error]\n"
+                                feedback_to_agent = (f"[Framework Feedback: JSON Parsing Error]\n"
                                                    f"Your tool call was malformed: {parsing_error_msg}\n"
                                                    f"Please check your syntax. You must specify a valid tool name from your system instructions.")
                             else:
-                                feedback_to_agent = (f"[Framework Feedback: XML Parsing Error]\n"
-                                                   f"Your XML for '{malformed_tool_name}' was malformed: {parsing_error_msg}\n"
-                                                   f"Please check your XML syntax.\n\n"
+                                feedback_to_agent = (f"[Framework Feedback: JSON Parsing Error]\n"
+                                                   f"Your JSON for '{malformed_tool_name}' was malformed: {parsing_error_msg}\n"
+                                                   f"Please check your JSON syntax.\n\n"
                                                    f"Correct usage for '{malformed_tool_name}':\n{detailed_tool_usage}")
                             
                             agent.message_history.append({"role": "system", "content": feedback_to_agent})
@@ -1138,33 +1139,33 @@ class AgentCycleHandler:
                                 
                             await self._manager.send_to_ui({"type": "system_error_feedback","agent_id": agent.agent_id,"tool_name": malformed_tool_name,"error_message": parsing_error_msg,"content": feedback_to_agent,"detailed_usage": detailed_tool_usage,"original_attempt": raw_llm_response_with_error})
                             
-                            logger.info(f"CycleHandler: Provided XML error feedback to '{agent.agent_id}' for error pattern: {base_error_signature}")
+                            logger.info(f"CycleHandler: Provided JSON error feedback to '{agent.agent_id}' for error pattern: {base_error_signature}")
                         else:
-                            # CRITICAL FIX: If we're skipping feedback due to accumulation, aggressively clean existing XML errors  
-                            logger.warning(f"CycleHandler: XML error feedback spam detected for '{agent.agent_id}' - triggering history cleanup")
+                            # CRITICAL FIX: If we're skipping feedback due to accumulation, aggressively clean existing JSON errors  
+                            logger.warning(f"CycleHandler: JSON error feedback spam detected for '{agent.agent_id}' - triggering history cleanup")
                             
-                            # Remove excessive XML error messages from history to prevent overwhelming the AI
+                            # Remove excessive JSON error messages from history to prevent overwhelming the AI
                             if hasattr(agent, 'message_history') and agent.message_history:
                                 original_length = len(agent.message_history)
                                 cleaned_history = []
                                 xml_error_count: int = 0
                                 
                                 for msg in agent.message_history:
-                                    # Count and filter XML error messages
+                                    # Count and filter JSON error messages
                                     if (msg.get('role') == 'system' and 
-                                        'XML Parsing Error' in msg.get('content', '')):
+                                        ('XML Parsing Error' in msg.get('content', '') or 'JSON Parsing Error' in msg.get('content', ''))):
                                         xml_error_count += 1
-                                        # Only keep the most recent XML error message
+                                        # Only keep the most recent JSON error message
                                         if xml_error_count <= 1:
                                             cleaned_history.append(msg)
                                         else:
-                                            logger.info(f"CycleHandler: Removing duplicate XML error message #{xml_error_count}")
+                                            logger.info(f"CycleHandler: Removing duplicate JSON error message #{xml_error_count}")
                                     else:
                                         cleaned_history.append(msg)
                                 
                                 if len(cleaned_history) != original_length:
                                     agent.message_history = cleaned_history
-                                    logger.critical(f"CycleHandler: CLEANED XML error spam - reduced history from {original_length} to {len(cleaned_history)} messages for agent '{agent.agent_id}'")
+                                    logger.critical(f"CycleHandler: CLEANED JSON error spam - reduced history from {original_length} to {len(cleaned_history)} messages for agent '{agent.agent_id}'")
                                     
                                     # Force database update
                                     if context.current_db_session_id:
@@ -1173,14 +1174,14 @@ class AgentCycleHandler:
                                                 session_id=context.current_db_session_id,
                                                 agent_id=agent.agent_id,
                                                 role="system_cleanup",
-                                                content=f"XML error spam cleanup: Removed {original_length - len(cleaned_history)} duplicate error messages"
+                                                content=f"JSON error spam cleanup: Removed {original_length - len(cleaned_history)} duplicate error messages"
                                             )
                                         except Exception as db_err:
                                             logger.error(f"CycleHandler: Failed to log cleanup to DB: {db_err}")
                             
-                            logger.info(f"CycleHandler: Skipped duplicate XML error feedback for '{agent.agent_id}' - error pattern seen recently: {base_error_signature}")
+                            logger.info(f"CycleHandler: Skipped duplicate JSON error feedback for '{agent.agent_id}' - error pattern seen recently: {base_error_signature}")
                         
-                        context.needs_reactivation_after_cycle = True; context.last_error_content = f"Malformed XML for tool '{malformed_tool_name}'"; context.cycle_completed_successfully = False
+                        context.needs_reactivation_after_cycle = True; context.last_error_content = f"Malformed JSON for tool '{malformed_tool_name}'"; context.cycle_completed_successfully = False
                         llm_stream_ended_cleanly = False; break
 
                     elif event_type == "agent_thought":
@@ -1232,7 +1233,7 @@ class AgentCycleHandler:
                                     system_message = (
                                         "[Framework System Message - HARD GATE BLOCK]: Your response was BLOCKED from reaching the user. "
                                         f"You claimed the project was complete, but the backend database shows {pending_count} PENDING tasks. "
-                                        "You MUST transition to 'admin_work' and use <project_management><action>list_tasks</action></project_management> to verify the actual task status, "
+                                        "You MUST transition to 'admin_work' and use `{\"action\": \"run_command\", \"command\": \"...\"}` or PM tools to verify the actual task status, "
                                         "or ping the PM for an explanation. Do not falsely report completion."
                                     )
                                     agent.message_history.append({"role": "system", "content": system_message})
@@ -1458,7 +1459,7 @@ class AgentCycleHandler:
                         # Construct and append the assistant message for history
                         # Construct and append the assistant message for history
                         # The `content_for_history` from the event now correctly contains only the conversational part of the response,
-                        # with tool call XML properly stripped by the logic in `agent.core`.
+                        # with tool call JSON properly stripped by the logic in `agent.core`.
                         # We will preserve this conversational text, as modern tool-calling models support it.
                         # This fixes a bug where legitimate conversational text was being discarded.
 
@@ -1639,12 +1640,15 @@ class AgentCycleHandler:
                                                             "The framework has automatically executed list_agents for you. "
                                                             "The agent list result is shown above. "
                                                             "Your MANDATORY next action is to assign the first unassigned task "
-                                                            "to a suitable worker agent using: "
-                                                            "<project_management><action>modify_task</action>"
-                                                            "<task_id>TASK_UUID</task_id>"
-                                                            "<assignee_agent_id>WORKER_ID</assignee_agent_id>"
-                                                            "<tags>+WORKER_ID,assigned</tags>"
-                                                            "</project_management>"
+                                                            "to a suitable worker agent using: \n"
+                                                            "```json\n"
+                                                            "{\n"
+                                                            "  \"action\": \"modify_task\",\n"
+                                                            "  \"task_id\": \"TASK_UUID\",\n"
+                                                            "  \"assignee_agent_id\": \"WORKER_ID\",\n"
+                                                            "  \"tags\": [\"+WORKER_ID\", \"assigned\"]\n"
+                                                            "}\n"
+                                                            "```"
                                                         )
                                                     }
                                                     self._deduplicate_pm_framework_messages(agent)
@@ -2177,7 +2181,7 @@ class AgentCycleHandler:
                                         directive_message_content = (
                                             f"[Framework System Message]: Task list retrieved successfully. Here is a summary of the unassigned tasks:\n"
                                             f"{summary_str}\n\n"
-                                            "Your mandatory next action is to get the list of available agents using the `<manage_team><action>list_agents</action>...</manage_team>` tool."
+                                            "Your mandatory next action is to get the list of available agents using the `{\"action\": \"list_agents\"}` tool format."
                                         )
                                     elif action_performed == "modify_task":
                                         # The tool result contains the definitive UUID of the task that was modified
@@ -2534,7 +2538,7 @@ class AgentCycleHandler:
     
                     elif event_type == "pm_startup_missing_task_list_after_think":
                         # ... (feedback prep, append to history, db log) ...
-                        feedback_content = ("Framework Feedback for PM Retry]\nYour previous output consisted only of a <think> block. In the PM_STATE_STARTUP, you must provide the <task_list> XML structure after your thoughts. Please ensure your entire response includes the XML task list as specified in your instructions.")
+                        feedback_content = ("Framework Feedback for PM Retry]\nYour previous output consisted only of a <think> block. In the PM_STATE_STARTUP, you must provide the <task_list> JSON structure after your thoughts. Please ensure your entire response includes the JSON task list as specified in your instructions.")
                         agent.message_history.append({"role": "system", "content": feedback_content})
                         if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="system_feedback", content=feedback_content)
                         context.action_taken_this_cycle = True; context.cycle_completed_successfully = False; context.needs_reactivation_after_cycle = True
@@ -2553,9 +2557,9 @@ class AgentCycleHandler:
                         completion_verification_directive = (
                             "[Framework System Message]: You have expressed thoughts about project completion. "
                             "Your MANDATORY next action is to verify the actual project status. "
-                            "Use `<project_management><action>list_tasks</action></project_management>` to check for any remaining tasks. "
+                            "Use the project management tool with action 'list_tasks' to check for any remaining tasks. "
                             "If no unassigned tasks remain and all work is truly complete, report completion to the Admin AI using: "
-                            f"`<send_message><target_agent_id>{BOOTSTRAP_AGENT_ID}</target_agent_id><message_content>Project [PROJECT_NAME] is complete. All tasks have been finished successfully.</message_content></send_message>` "
+                            "`{\"action\": \"send_message\", \"target_agent_id\": \"" + BOOTSTRAP_AGENT_ID + "\", \"message_content\": \"Project [PROJECT_NAME] is complete. All tasks have been finished successfully.\"}` "
                             "followed by calling the 'request_state' tool with state='pm_standby'"
                         )
                         
