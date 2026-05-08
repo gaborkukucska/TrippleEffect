@@ -1,7 +1,7 @@
 <!-- # IT IS CRITICAL THAT ALL AIs and LLMs FOLLOW THE DEVELOPMENT INSTRUCTIONS IN THE `helperfiles/DEVELOPMENT_RULES.md` FILE WHEN FURTHER DEVELOPING THIS FRAMEWORK!!! -->
 # 🚀 TrippleEffect Multi-Agent Framework
 
-**Version:** 2.48
+**Version:** 2.49
 
 > **⚠️ EXPERIMENTAL SOFTWARE — R&D USE ONLY**
 >
@@ -119,6 +119,7 @@ Ready to dive in? Here's how to get your agents up and running quickly:
 * Node.js and npm (only if using the optional Ollama proxy)
 * Access to LLM APIs (OpenAI, OpenRouter) and/or a running local **Ollama** or **vLLM** instance.
 * Nmap to enable automatic local API provider discovery (optional).
+* **[SearXNG](https://github.com/searxng/searxng)** running locally for superior open-source intelligence gathering via the web search tool (highly recommended).
 
 > **📱 Termux/Android Note:** The setup script automatically detects Termux and uses `pkg` instead of `apt-get`/`sudo`. Some optional features (local network API scanning via `netifaces`/`nmap`) may require additional packages: `pkg install libffi openssl clang`. The framework runs fully without these optional packages — network scanning simply falls back gracefully.
 
@@ -170,8 +171,8 @@ To keep this README clean and exciting, we've moved all the heavy lifting and de
 
 ## 🚀 Development Status
 
-* **Current Version:** 2.48
-* **Recent Highlights:** Phase T Framework Hardening (May 2026) — Removed legacy state-based tool blocking, completely unlocking native JSON tool capabilities for all agents. Implemented strict targeted chunking enforcement for the Code Editor to eliminate malformed JSON loops. Added `rename`, `tree`, and `exists` capabilities to the File System tool for deeper workspace insight. Replaced the overly sensitive project completion watchdog heuristic with precise regex, eliminating false audit loops for Admin AI.
+* **Current Version:** 2.49
+* **Recent Highlights:** System Stabilization (May 2026) — Finalized native JSON orchestration by enforcing strict brace escaping across all tool documentations, preventing `KeyError` crashes. Integrated the new `zim_search` tool for robust offline desktop wiki knowledge base access. Strongly recommend running a local **SearXNG** instance alongside the framework for superior `web_search` open-source intelligence gathering. Removed legacy state-based tool blocking, completely unlocking native JSON tool capabilities for all agents. Implemented strict targeted chunking enforcement for the Code Editor to eliminate malformed JSON loops. Added `rename`, `tree`, and `exists` capabilities to the File System tool for deeper workspace insight. Replaced the overly sensitive project completion watchdog heuristic with precise regex, eliminating false audit loops for Admin AI.
 * **Current Phase:** Target Phase 28 features Advanced Memory & Learning systems, proactive behaviors, and federated communication foundations.
 
 ## 🤝 Contributing & License
