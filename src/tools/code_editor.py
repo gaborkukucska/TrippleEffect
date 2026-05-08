@@ -157,7 +157,6 @@ class CodeEditorTool(BaseTool):
         else:
             return {"status": "error", "message": "Invalid scope. Use 'private', 'shared', or 'projects'."}
 
-        # Validate Path
         try:
             rel_file_path = filename.lstrip('/') or '.'
             if '..' in Path(rel_file_path).parts:
@@ -179,6 +178,16 @@ class CodeEditorTool(BaseTool):
             content = original_content
             successful = 0
             errors = []
+            
+            # Sort chunks to prevent line shifting collisions
+            # Process line-based edits from bottom to top
+            def get_start_line(c):
+                sl = c.get('start_line') or c.get('from_line') or c.get('line_start')
+                try: return int(sl) if sl is not None else -1
+                except: return -1
+            
+            # Use stable sort: line-based chunks descending, search chunks stay in relative order
+            chunks = sorted(chunks, key=get_start_line, reverse=True)
             
             for idx, chunk in enumerate(chunks):
                 if not isinstance(chunk, dict) or 'replace' not in chunk:
@@ -226,6 +235,8 @@ class CodeEditorTool(BaseTool):
                             continue
                             
                         regex_pattern = r'\s*'.join(pieces)
+                        # allow agents to use ... to skip lines
+                        regex_pattern = regex_pattern.replace(re.escape('...'), r'[\s\S]*?')
                         matches = list(re.finditer(regex_pattern, content))
                         
                         if len(matches) == 1:
@@ -243,6 +254,18 @@ class CodeEditorTool(BaseTool):
                         elif len(matches) > 1:
                             errors.append(f"Chunk {idx}: Search text is ambiguous (found {len(matches)} times ignoring whitespace).")
                             continue
+                        else:
+                            # Try robust patch-based mechanism as last resort
+                            try:
+                                dmp = diff_match_patch()
+                                patches = dmp.patch_make(search_text, replace_text)
+                                new_content, results = dmp.patch_apply(patches, content)
+                                if len(results) > 0 and all(results):
+                                    content = new_content
+                                    successful += 1
+                                    continue
+                            except Exception as e:
+                                logger.debug(f"dmp patch failed: {e}")
                                 
                         # Provide fuzzy match attempt context
                         import difflib

@@ -1846,7 +1846,7 @@ class AgentCycleHandler:
                             # --- END CROSS-CYCLE DUPLICATE DETECTION ---
                             
                             # --- SEND_MESSAGE MULTI-TOOL CONSTRAINT ---
-                            if agent.agent_type != "pm" and any(t.get("name") not in ("send_message", "mark_message_read") for t in deduplicated_tool_calls) and tool_name == "send_message":
+                            if any(t.get("name") not in ("send_message", "mark_message_read") for t in deduplicated_tool_calls) and tool_name == "send_message":
                                 non_send_message_tools = [t for t in deduplicated_tool_calls if t.get("name") not in ("send_message", "mark_message_read")]
                                 has_only_state_change_companion = (len(non_send_message_tools) == 0 and deferred_state_change is not None)
                                 

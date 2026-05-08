@@ -565,6 +565,13 @@ class AgentWorkflowManager:
         matching_triggers: list
     ) -> Optional[WorkflowResult]:
         """Try to detect and parse a JSON workflow trigger from the agent output."""
+        
+        # Strip <think> blocks before parsing so they don't interfere with surrounding text validation
+        if hasattr(agent, 'think_pattern'):
+            think_match = agent.think_pattern.search(content)
+            if think_match:
+                content = content.replace(think_match.group(0), '', 1).strip()
+
         json_data = None
         text_before = ""
         text_after = ""
@@ -661,6 +668,10 @@ class AgentWorkflowManager:
             trigger_tags = [t[0] for t in matching_triggers]
             if agent.agent_type == AGENT_TYPE_ADMIN and "plan" in trigger_tags:
                 return True
+                
+            # PM kickoff plan also has general leniency for prefix
+            if agent.agent_type == AGENT_TYPE_PM and "kickoff_plan" in trigger_tags:
+                return True
 
             # Otherwise check if it's insignificant
             if not (len(text_before) <= MAX_INSIGNIFICANT_TEXT_LEN and re.fullmatch(INSIGNIFICANT_PATTERN, text_before, re.IGNORECASE)):
@@ -677,6 +688,13 @@ class AgentWorkflowManager:
         matching_triggers: list
     ) -> Optional[WorkflowResult]:
         """Legacy XML fallback: detect XML workflow tags, convert to dict, pass to workflow.execute()."""
+        
+        # Strip <think> blocks before parsing
+        if hasattr(agent, 'think_pattern'):
+            think_match = agent.think_pattern.search(content)
+            if think_match:
+                content = content.replace(think_match.group(0), '', 1).strip()
+
         # Check for markdown fence wrapping
         was_fenced = False
         search_content = content

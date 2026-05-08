@@ -617,27 +617,28 @@ class Agent:
                        self.state == PM_STATE_STARTUP and \
                        not state_change_to_yield:
 
-                        pm_kickoff_trigger_tag = "task_list"
+                        pm_kickoff_trigger_tag = "kickoff_plan"
                         if hasattr(self.manager, 'workflow_manager') and self.manager.workflow_manager and \
                            hasattr(self.manager.workflow_manager, '_workflow_triggers'):
                             for trigger_key, wf_instance in self.manager.workflow_manager._workflow_triggers.items():
                                 if hasattr(wf_instance, 'name') and wf_instance.name == "pm_project_kickoff":
-                                    pm_kickoff_trigger_tag = trigger_key[2]
+                                    pm_kickoff_trigger_tag = getattr(wf_instance, 'trigger_tag_name', "kickoff_plan")
                                     break
 
-                        if f"<{pm_kickoff_trigger_tag}>" not in final_cleaned_response_for_tools_or_text:
-                            logger.warning(
-                                f"Agent {self.agent_id} (PM) in state '{self.state}' did not output the expected '<{pm_kickoff_trigger_tag}>' tag. "
-                                f"Forcing retry by re-requesting current state with feedback. Output was: '{final_cleaned_response_for_tools_or_text[:200]}...'"
-                            )
-                            feedback_content = (
-                                f"[Framework Feedback for PM Retry]\n"
-                                f"Your previous output did not contain the required '<{pm_kickoff_trigger_tag}>' XML structure. "
-                                f"Please review your instructions for the '{self.state}' state and ensure your entire response is the XML task list as specified."
-                            )
-                            self.message_history.append({"role": "system", "content": feedback_content})
-                            yield {"type": "agent_state_change_requested", "requested_state": PM_STATE_STARTUP, "agent_id": self.agent_id}
-                            return
+                        # If we reached here without returning, the JSON workflow trigger did not fire successfully.
+                        logger.warning(
+                            f"Agent {self.agent_id} (PM) in state '{self.state}' did not output a valid kickoff plan. "
+                            f"Forcing retry by re-requesting current state with feedback. Output was: '{final_cleaned_response_for_tools_or_text[:200]}...'"
+                        )
+                        feedback_content = (
+                            f"[Framework Feedback for PM Retry]\n"
+                            f"Your previous output was not recognized as a valid project kickoff plan.\n"
+                            f"Please review your instructions for the '{self.state}' state and ensure your response contains the required JSON code block. "
+                            f"Do not include conversational text outside of your `<think>` tags."
+                        )
+                        self.message_history.append({"role": "system", "content": feedback_content})
+                        yield {"type": "agent_state_change_requested", "requested_state": PM_STATE_STARTUP, "agent_id": self.agent_id}
+                        return
                     # --- END PM Startup Missing Task List Check ---
 
                     if state_change_to_yield:
