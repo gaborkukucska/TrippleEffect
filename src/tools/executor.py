@@ -667,6 +667,34 @@ class ToolExecutor:
                 execution_id=execution_id
             )
             
+            # --- PATH SANITIZATION ---
+            # Scrub absolute paths from result and error_message before any further processing
+            if project_name and session_name:
+                from src.config.settings import settings
+                base_dir_str = str(settings.PROJECTS_BASE_DIR.resolve())
+                workspace_dir_str = str((settings.PROJECTS_BASE_DIR / project_name / session_name / "shared_workspace").resolve())
+                
+                def sanitize_paths_in_string(s: str) -> str:
+                    s = s.replace(workspace_dir_str + "/", "shared_workspace/")
+                    s = s.replace(workspace_dir_str, "shared_workspace")
+                    s = s.replace(base_dir_str + "/", "projects_base/")
+                    s = s.replace(base_dir_str, "projects_base")
+                    return s
+
+                def sanitize_paths_in_obj(obj: Any) -> Any:
+                    if isinstance(obj, str):
+                        return sanitize_paths_in_string(obj)
+                    elif isinstance(obj, dict):
+                        return {k: sanitize_paths_in_obj(v) for k, v in obj.items()}
+                    elif isinstance(obj, list):
+                        return [sanitize_paths_in_obj(v) for v in obj]
+                    return obj
+                
+                result = sanitize_paths_in_obj(result)
+                if error_message:
+                    error_message = sanitize_paths_in_string(error_message)
+            # --- END PATH SANITIZATION ---
+            
             # Update statistics
             retry_was_used = self._execution_stats["retried_executions"] > 0
             self._update_execution_stats(success=success, retried=retry_was_used)
