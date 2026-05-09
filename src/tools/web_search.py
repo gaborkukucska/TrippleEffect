@@ -23,16 +23,24 @@ class WebSearchTool(BaseTool):
     name: str = "web_search"
     auth_level: str = "worker"
     summary: Optional[str] = "Performs a web search."
-    description: str = "Searches the web for a given query."
+    description: str = "Searches the web for a given query or fetches the full text content of a specific web page."
     parameters: List[ToolParameter] = [
-        ToolParameter(name="query", type="string", description="The search query.", required=True),
-        ToolParameter(name="num_results", type="integer", description="Max number of results (default 3).", required=False),
+        ToolParameter(name="action", type="string", description="The action to perform: 'search' or 'get_page'. Defaults to 'search'.", required=False),
+        ToolParameter(name="query", type="string", description="The search query (required if action='search').", required=False),
+        ToolParameter(name="url", type="string", description="The URL to fetch (required if action='get_page').", required=False),
+        ToolParameter(name="num_results", type="integer", description="Max number of results (default 3, for search).", required=False),
         ToolParameter(name="engines", type="string", description="Optional comma-separated list of engines (e.g., 'google,bing').", required=False),
         ToolParameter(name="time_range", type="string", description="Optional time range (e.g. 'day', 'week', 'month', 'year').", required=False),
         ToolParameter(name="language", type="string", description="Optional language code (e.g. 'en', 'fr').", required=False),
     ]
 
     async def execute(self, agent_id: str, **kwargs: Any) -> Dict[str, Any]: # type: ignore[reportIncompatibleMethodOverride]
+        action = kwargs.get("action", "search").strip().lower()
+
+        if action == "get_page":
+            return await self._get_page_content(agent_id, kwargs.get("url"))
+
+        # --- Search Logic ---
         query = kwargs.get("query")
         
         # Enhanced validation with better error messages
@@ -220,38 +228,108 @@ class WebSearchTool(BaseTool):
             logger.error(f"DDG scraping failed: {e}", exc_info=True)
             return None
 
+    async def _get_page_content(self, agent_id: str, url: Optional[str]) -> Dict[str, Any]:
+        """Fetches the content of a web page and extracts readable text and links."""
+        if not url:
+            return {
+                "status": "error",
+                "message": "Missing required 'url' parameter for action='get_page'."
+            }
+
+        logger.info(f"Agent {agent_id} fetching web page: {url}")
+        try:
+            async with aiohttp.ClientSession(headers=HEADERS) as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                    response.raise_for_status()
+                    html_content = await response.text()
+
+            soup = BeautifulSoup(html_content, 'html.parser')
+
+            # Remove scripts, styles, and non-content tags
+            for element in soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
+                element.decompose()
+
+            # Extract text
+            text = soup.get_text(separator='\n\n', strip=True)
+
+            # Clean up excessive newlines
+            lines = (line.strip() for line in text.splitlines())
+            text = '\n'.join(line for line in lines if line)
+            
+            # Truncate text if it's too long (e.g. > 15k chars) to prevent context overflow
+            if len(text) > 15000:
+                text = text[:15000] + "\n\n...[CONTENT TRUNCATED DUE TO LENGTH]..."
+
+            # Extract top 20 distinct links
+            links = []
+            seen_urls = set()
+            for a_tag in soup.find_all('a', href=True):
+                href = a_tag.get('href')
+                if isinstance(href, list):
+                    href = href[0]
+                # Make relative URLs absolute
+                absolute_url = urllib.parse.urljoin(url, str(href))
+                # Filter out obvious non-web links and fragments
+                if absolute_url.startswith(('http://', 'https://')) and '#' not in absolute_url:
+                    if absolute_url not in seen_urls:
+                        link_text = a_tag.get_text(strip=True)[:50]
+                        if link_text:
+                            links.append({"text": link_text, "url": absolute_url})
+                            seen_urls.add(absolute_url)
+                if len(links) >= 20:
+                    break
+
+            formatted_result = f"=== Page Content ({url}) ===\n\n{text}\n\n"
+            if links:
+                formatted_result += "=== Connected Links ===\n"
+                for i, link in enumerate(links, 1):
+                    formatted_result += f"[{i}] {link['text']} -> {link['url']}\n"
+
+            return {
+                "status": "success",
+                "message": formatted_result
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to fetch page content {url}: {e}", exc_info=True)
+            return {
+                "status": "error",
+                "message": f"Failed to fetch page {url}: {type(e).__name__} - {str(e)}"
+            }
+
     def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None, sub_action: Optional[str] = None) -> str:
         """Returns detailed usage instructions for the WebSearchTool."""
         usage = """
         **Tool Name:** web_search
 
         **Description:**
-        Performs a web search using the SearXNG API if configured, otherwise falls back to scraping DuckDuckGo. Returns a list of search results including title, URL, and snippet.
+        Performs a web search or fetches the content of a specific web page. Returns search results or readable page text with connected links.
 
         **Parameters:**
 
-        *   `<query>` (string, required): The search query. Be specific for better results.
-        *   `<num_results>` (integer, optional): The maximum number of search results to return. Defaults to 3.
-        *   `<engines>` (string, optional): (SearXNG only) Comma-separated list of engines (e.g. 'google,bing,wikipedia').
+        *   `<action>` (string, optional): 'search' (default) or 'get_page'.
+        *   `<query>` (string): The search query. Required for action='search'.
+        *   `<url>` (string): The URL to fetch. Required for action='get_page'.
+        *   `<num_results>` (integer, optional): For search, max results to return. Defaults to 3.
+        *   `<engines>` (string, optional): (SearXNG only) Comma-separated list of engines (e.g. 'google,bing').
         *   `<time_range>` (string, optional): (SearXNG only) Time range ('day', 'week', 'month', 'year').
-        *   `<language>` (string, optional): Language code (e.g. 'en'). Defaults to 'en'.
 
-        **Example JSON Call:**
+        **Example JSON Calls:**
 
-        *   To perform a basic search for 'Python async programming':
+        *   To perform a basic search:
             ```json
             {
+              "action": "search",
               "query": "Python async programming best practices",
               "num_results": 5
             }
             ```
 
-        *   To perform a specialized search:
+        *   To fetch a specific web page:
             ```json
             {
-              "query": "latest python release details",
-              "engines": "google,duckduckgo",
-              "time_range": "month"
+              "action": "get_page",
+              "url": "https://docs.python.org/3/library/asyncio.html"
             }
             ```
         """

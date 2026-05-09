@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _get(session: aiohttp.ClientSession, url: str, params: Dict = None) -> Dict:
+async def _get(session: aiohttp.ClientSession, url: str, params: Optional[Dict] = None) -> Dict:
     """Perform a GET request and return parsed JSON, or an error dict."""
     try:
         async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=20)) as r:
@@ -171,7 +171,10 @@ async def _search_sketchfab(
             headers=headers,
             timeout=aiohttp.ClientTimeout(total=20),
         ) as r:
-            data = await r.json(content_type=None) if r.status == 200 else {"_error": f"HTTP {r.status}"}
+            if r.status == 200:
+                data: Dict[str, Any] = await r.json(content_type=None)
+            else:
+                data = {"_error": f"HTTP {r.status}"}
     except Exception as exc:
         data = {"_error": str(exc)}
     if "_error" in data:
@@ -421,27 +424,30 @@ class AssetSearchTool(BaseTool):
         ),
     ]
 
-    usage_example: str = """<![CDATA[
-<!-- Search for explosion sound effects -->
-<asset_search>
-  <action>search</action>
-  <query>explosion</query>
-  <category>sounds</category>
-  <limit>5</limit>
-</asset_search>
+    usage_example: str = """
+    ```json
+    {
+      "action": "search",
+      "query": "explosion",
+      "category": "sounds",
+      "limit": 5
+    }
+    ```
 
-<!-- Download a specific asset -->
-<asset_search>
-  <action>download</action>
-  <download_url>https://freesound.org/apiv2/sounds/123456/download/?token=KEY</download_url>
-  <filename>explosion.mp3</filename>
-</asset_search>
+    ```json
+    {
+      "action": "download",
+      "download_url": "https://freesound.org/apiv2/sounds/123456/download/?token=KEY",
+      "filename": "explosion.mp3"
+    }
+    ```
 
-<!-- List available sources -->
-<asset_search>
-  <action>list_sources</action>
-</asset_search>
-]]>"""
+    ```json
+    {
+      "action": "list_sources"
+    }
+    ```
+    """
 
     # ------------------------------------------------------------------
     # execute
@@ -504,7 +510,7 @@ class AssetSearchTool(BaseTool):
                 output_parts.append(f"\n=== {src.upper()} ===")
                 if isinstance(result, Exception):
                     output_parts.append(f"Error: {result}")
-                else:
+                elif isinstance(result, list):
                     output_parts.append(_format_results(result))
 
             return "\n".join(output_parts)
@@ -526,7 +532,7 @@ class AssetSearchTool(BaseTool):
             # Resolve destination: shared workspace > agent sandbox
             if project_name and session_name:
                 from src.config.settings import settings  # type: ignore
-                workspace_root = Path(settings.BASE_DIR) / "workspace" / project_name / session_name
+                workspace_root = Path(settings.PROJECTS_BASE_DIR) / project_name / session_name / "shared_workspace"
                 dest = workspace_root / "assets" / filename
             else:
                 dest = agent_sandbox_path / "assets" / filename
@@ -572,9 +578,15 @@ class AssetSearchTool(BaseTool):
                 "* `<source>` (string, optional): Target a specific source — overrides category. "
                 "Values: freesound, polypizza, sketchfab, iconify, unsplash, pixabay, polyhaven.\n"
                 "* `<limit>` (integer, optional): Results per source, 1–20 (default 5).\n\n"
-                "**Example:**\n"
-                "<asset_search><action>search</action><query>forest ambience</query>"
-                "<category>sounds</category><limit>3</limit></asset_search>\n"
+                "**Example JSON:**\n"
+                "```json\n"
+                "{\n"
+                "  \"action\": \"search\",\n"
+                "  \"query\": \"forest ambience\",\n"
+                "  \"category\": \"sounds\",\n"
+                "  \"limit\": 3\n"
+                "}\n"
+                "```\n"
             ),
             "download": (
                 "\n**Action: download**\n"
@@ -582,18 +594,26 @@ class AssetSearchTool(BaseTool):
                 "**Parameters:**\n"
                 "* `<download_url>` (string, required): Direct file URL from a prior search result.\n"
                 "* `<filename>` (string, required): Target filename (e.g. 'tree.glb').\n\n"
-                "**Example:**\n"
-                "<asset_search><action>download</action>"
-                "<download_url>https://example.com/file.mp3</download_url>"
-                "<filename>forest.mp3</filename></asset_search>\n"
+                "**Example JSON:**\n"
+                "```json\n"
+                "{\n"
+                "  \"action\": \"download\",\n"
+                "  \"download_url\": \"https://example.com/file.mp3\",\n"
+                "  \"filename\": \"forest.mp3\"\n"
+                "}\n"
+                "```\n"
             ),
             "list_sources": (
                 "\n**Action: list_sources**\n"
                 "Returns a table of all supported asset sources, their categories, "
                 "and API key requirements.\n\n"
                 "**Parameters:** none\n\n"
-                "**Example:**\n"
-                "<asset_search><action>list_sources</action></asset_search>\n"
+                "**Example JSON:**\n"
+                "```json\n"
+                "{\n"
+                "  \"action\": \"list_sources\"\n"
+                "}\n"
+                "```\n"
             ),
         }
 
@@ -606,11 +626,13 @@ class AssetSearchTool(BaseTool):
             "2. **download** — Save a specific asset URL to the workspace.\n"
             "3. **list_sources** — Show all sources and their API key requirements.\n\n"
             "**To get detailed help for a specific action:**\n"
-            "<tool_information>\n"
-            "  <action>get_info</action>\n"
-            "  <tool_name>asset_search</tool_name>\n"
-            "  <sub_action>search</sub_action>\n"
-            "</tool_information>\n"
+            "```json\n"
+            "{\n"
+            "  \"action\": \"get_info\",\n"
+            "  \"tool_name\": \"asset_search\",\n"
+            "  \"sub_action\": \"search\"\n"
+            "}\n"
+            "```\n"
         )
         return common_header + summary
 
