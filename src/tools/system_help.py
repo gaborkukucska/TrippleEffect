@@ -93,41 +93,44 @@ class SystemHelpTool(BaseTool):
         """
         Returns detailed usage information for the system_help tool.
         """
-        usage = """
-        **Tool Name:** system_help
+        common_header = (
+            "**Tool Name:** system_help\n\n"
+            "**Description:**\n"
+            "Provides system-level information. This tool is essential for understanding the current operational context and for debugging issues by searching logs.\n"
+        )
 
-        **Description:**
-        Provides system-level information. This tool is essential for understanding the current operational context and for debugging issues by searching logs.
+        action_details: Dict[str, str] = {
+            "get_time": (
+                "\n**Action: get_time**\n"
+                "Retrieves the current time in UTC.\n\n"
+                "**Parameters:** None\n\n"
+                "**Example JSON:**\n"
+                "```json\n"
+                "{\n"
+                "  \"action\": \"get_time\"\n"
+                "}\n"
+                "```\n"
+            ),
+            "search_logs": (
+                "\n**Action: search_logs**\n"
+                "Searches the latest log file for specific information.\n\n"
+                "**Parameters:**\n"
+                "* `log_query` (string, required): The text or pattern to search for in the logs.\n"
+                "* `max_log_lines` (integer, optional): The maximum number of matching log lines to return. Defaults to 20.\n"
+                "* `agent_id_filter` (string, optional): Filters the log search to only include lines related to a specific agent ID.\n\n"
+                "**Example JSON:**\n"
+                "```json\n"
+                "{\n"
+                "  \"action\": \"search_logs\",\n"
+                "  \"log_query\": \"error\",\n"
+                "  \"agent_id_filter\": \"admin_ai\"\n"
+                "}\n"
+                "```\n"
+            )
+        }
 
-        **Actions & Parameters:**
+        if sub_action and sub_action in action_details:
+            return common_header + action_details[sub_action]
 
-        *   **action: 'get_time'**
-            *   **Description:** Retrieves the current time in UTC.
-            *   **Parameters:** None
-
-        *   **action: 'search_logs'**
-            *   **Description:** Searches the latest log file for specific information.
-            *   **Parameters:**
-                *   **log_query** (string, required): The text or pattern to search for in the logs.
-                *   **max_log_lines** (integer, optional): The maximum number of matching log lines to return. Defaults to 20.
-                *   **agent_id_filter** (string, optional): Filters the log search to only include lines related to a specific agent ID.
-
-        **Example JSON Calls:**
-
-        *   To get the current time:
-            ```json
-            {
-              "action": "get_time"
-            }
-            ```
-
-        *   To search logs for errors related to 'admin_ai':
-            ```json
-            {
-              "action": "search_logs",
-              "log_query": "error",
-              "agent_id_filter": "admin_ai"
-            }
-            ```
-        """
-        return usage.strip()
+        full_usage = common_header + "".join(action_details.values())
+        return full_usage.strip()

@@ -299,38 +299,47 @@ class WebSearchTool(BaseTool):
 
     def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None, sub_action: Optional[str] = None) -> str:
         """Returns detailed usage instructions for the WebSearchTool."""
-        usage = """
-        **Tool Name:** web_search
+        common_header = (
+            "**Tool Name:** web_search\n"
+            "**Description:** Performs a web search or fetches the content of a specific web page. "
+            "Returns search results or readable page text with connected links.\n"
+        )
+        
+        action_details: Dict[str, str] = {
+            "search": (
+                "\n**Action: search**\n"
+                "Perform a web search using SearXNG (or DuckDuckGo fallback).\n\n"
+                "**Parameters:**\n"
+                "* `<query>` (string, required): The search query.\n"
+                "* `<num_results>` (integer, optional): Max results to return. Defaults to 3.\n"
+                "* `<engines>` (string, optional): (SearXNG only) Comma-separated list of engines (e.g. 'google,bing').\n"
+                "* `<time_range>` (string, optional): (SearXNG only) Time range ('day', 'week', 'month', 'year').\n\n"
+                "**Example JSON:**\n"
+                "```json\n"
+                "{\n"
+                "  \"action\": \"search\",\n"
+                "  \"query\": \"Python async programming best practices\",\n"
+                "  \"num_results\": 5\n"
+                "}\n"
+                "```\n"
+            ),
+            "get_page": (
+                "\n**Action: get_page**\n"
+                "Fetch the readable text content and absolute links of a specific URL.\n\n"
+                "**Parameters:**\n"
+                "* `<url>` (string, required): The absolute URL to fetch.\n\n"
+                "**Example JSON:**\n"
+                "```json\n"
+                "{\n"
+                "  \"action\": \"get_page\",\n"
+                "  \"url\": \"https://docs.python.org/3/library/asyncio.html\"\n"
+                "}\n"
+                "```\n"
+            )
+        }
 
-        **Description:**
-        Performs a web search or fetches the content of a specific web page. Returns search results or readable page text with connected links.
+        if sub_action and sub_action in action_details:
+            return common_header + action_details[sub_action]
 
-        **Parameters:**
-
-        *   `<action>` (string, optional): 'search' (default) or 'get_page'.
-        *   `<query>` (string): The search query. Required for action='search'.
-        *   `<url>` (string): The URL to fetch. Required for action='get_page'.
-        *   `<num_results>` (integer, optional): For search, max results to return. Defaults to 3.
-        *   `<engines>` (string, optional): (SearXNG only) Comma-separated list of engines (e.g. 'google,bing').
-        *   `<time_range>` (string, optional): (SearXNG only) Time range ('day', 'week', 'month', 'year').
-
-        **Example JSON Calls:**
-
-        *   To perform a basic search:
-            ```json
-            {
-              "action": "search",
-              "query": "Python async programming best practices",
-              "num_results": 5
-            }
-            ```
-
-        *   To fetch a specific web page:
-            ```json
-            {
-              "action": "get_page",
-              "url": "https://docs.python.org/3/library/asyncio.html"
-            }
-            ```
-        """
-        return usage.strip()
+        full_usage = common_header + "".join(action_details.values())
+        return full_usage.strip()
