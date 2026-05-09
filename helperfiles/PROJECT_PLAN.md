@@ -34,7 +34,8 @@
 * Enhance `FileSystemTool` with **find/replace, mkdir, delete**. *(Completed)*
 * Enhance `GitHubTool` with **recursive listing**. *(Completed)*
 * Enhance `ManageTeamTool` with **agent detail retrieval**. *(Completed)*
-* Make `WebSearchTool` more robust with **API fallback**. *(Completed)*
+* Make `WebSearchTool` more robust with **API fallback** and **HTML page scraping**. *(Completed)*
+* Implement `AssetSearchTool` for direct access to open-source assets. *(Completed)*
 * Implement `SystemHelpTool` for Admin AI **time awareness, log searching**. *(Completed)*
 * Implement `ProjectManagementTool` using `tasklib` for task tracking (assigns via tags/UDA CLI workaround). *(Completed in P23, Refined in P24/P25)*
 * Implement `KnowledgeBaseTool` for saving/searching distilled knowledge and agent thoughts. *(Completed in P21, Thoughts added P25)*
@@ -69,7 +70,8 @@
   * `FileSystemTool`: Read/Write/List/FindReplace/Mkdir/Delete.
   * `GitHubTool`: List Repos/Files (Recursive), Read File.
   * `ManageTeamTool`: Agent/Team CRUD, Assign, List, Get Details.
-  * `WebSearchTool`: Tavily API w/ DDG Scraping Fallback.
+  * `WebSearchTool`: SearXNG API w/ DDG Scraping Fallback, HTML Content/Link Extraction.
+  * `AssetSearchTool`: Download sounds, 3D models, icons, textures, and images from 7 sources.
   * `SendMessageTool`: Local agent communication (Layer 2).
   * `SystemHelpTool`: Get Time, Search Logs, Get Tool Info.
   * `KnowledgeBaseTool`: Save/Search knowledge (DB).
@@ -554,6 +556,24 @@ This entirely breaks the LLM's autoregressive death spiral by physically moving 
 **Fix 3:** Conducted a comprehensive TypeChecker stabilization pass. Standardized tool signature schemas to include optional `project` and `session` kwargs. Addressed all ORM `Column[int]` vs `int` Pydantic assignments using strict typing or explicit `type: ignore` suppressions. Repositioned global `json` imports and eliminated `re` shadowing in `code_editor.py`.
 
 **Files:** `src/api/auth.py`, `src/api/auth_routes.py`, `static/js/auth.js`, `templates/index.html`, `src/core/database_manager.py`, `src/agents/cycle_components/agent_health_monitor.py`, `src/tools/*.py`
+
+#### Phase V: Agentic Tool Modernization & Lifecycle Management (May 2026)
+
+**Problem 1 (Admin AI Greeting Loss):** The Admin AI's startup greeting was lost during authentication flows because the session connection didn't immediately request chat history.
+**Fix 1:** Modified `websocket.js` to unconditionally request chat history on `ws.onopen` and implemented `chat_history_start`/`end` markers in `websocket_manager.py` to reconcile state.
+
+**Problem 2 (Missing Project Lifecycle Controls):** Users couldn't cleanly pause, resume, or export specific project sessions, leaving processes orphaned or difficult to share.
+**Fix 2:** Implemented full Project Lifecycle controls via API (`/api/projects/active/stop`, `start`, `download`). Added UI controls and `.gitignore`-aware zip archival for clean workspace exports. Broadcasted `project_tasks_updated` events to sync task state cleanly across resumes.
+
+**Problem 3 (Workflow Trigger Parsing Failures):** The `WorkflowManager` failed to trigger workflows (like plan execution) when the LLM generated JSON embedded within markdown blocks with unescaped newlines.
+**Fix 3:** Switched to `json.loads(..., strict=False)` in `workflow_manager.py` to tolerate control characters and safely parse complex LLM-generated structures.
+
+**Problem 4 (Tool Modernization & Web Surfing Capabilities):** `asset_search_tool` documentation used legacy XML templates, confusing native-JSON agents. `web_search` could only return search results, not actual page content, crippling agents' deep-dive research ability.
+**Fix 4:** 
+- Converted `asset_search_tool.py` help schemas entirely to modern JSON block examples.
+- Completely upgraded `WebSearchTool` with explicit `action` routing (`search`, `get_page`). The `get_page` action now uses BeautifulSoup and `urllib.parse.urljoin` to extract readable markdown text and outgoing absolute links, enabling multi-step autonomous agent web surfing.
+
+**Files:** `src/api/http_routes.py`, `src/agents/websocket_manager.py`, `static/js/websocket.js`, `src/tools/asset_search_tool.py`, `src/tools/web_search.py`, `src/agents/workflow_manager.py`
 
 ---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

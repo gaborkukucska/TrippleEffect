@@ -34,7 +34,8 @@
     *   `GitHubTool`: List Repos, List Files (Recursive), Read File content using PAT.
     *   `ManageTeamTool`: Create/Delete Agents/Teams, Assign Agents, List Agents/Teams, Get Agent Details.
     *   `SendMessageTool`: Communicate between agents within a team or with Admin AI (using exact agent IDs).
-    *   `WebSearchTool`: Search the web (uses Tavily API if configured, falls back to DDG scraping).
+    *   `WebSearchTool`: Search the web (uses SearXNG API if configured, falls back to DDG scraping). Now features an HTML web scraper for fetching readable text content and outgoing links from specific URLs.
+    *   `AssetSearchTool`: Search and download open-source, royalty-free creative assets (sounds, 3D models, icons, photos, textures) from 7 supported sources directly into the shared workspace.
     *   `SystemHelpTool`: Get current time (UTC), Search application logs.
     *   `KnowledgeBaseTool`: Save/Search distilled knowledge in the database. Now includes smarter keyword generation for saved thoughts and a `search_agent_thoughts` action.
     *   `ProjectManagementTool`: Add, list, modify, and complete project tasks (uses `tasklib` backend per session). **Assigns tasks via tags (`+agent_id`)** due to CLI UDA issues. Used primarily by the Project Manager agent.

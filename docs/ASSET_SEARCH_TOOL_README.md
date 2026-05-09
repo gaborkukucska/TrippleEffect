@@ -103,7 +103,7 @@ Search one or more sources for a keyword.
 }
 ```
 
-**XML fallback example:**
+**Legacy XML fallback example:**
 ```xml
 <asset_search>
   <action>search</action>
@@ -135,12 +135,12 @@ Save an asset directly to the shared workspace `assets/` folder.
 | `download_url` | string | ✅        | Direct file URL from a prior search result |
 | `filename`     | string | ✅        | Target filename, e.g. `explosion.mp3`    |
 
-```xml
-<asset_search>
-  <action>download</action>
-  <download_url>https://freesound.org/apiv2/sounds/123456/download/?token=KEY</download_url>
-  <filename>forest_ambience.mp3</filename>
-</asset_search>
+```json
+{
+  "action": "download",
+  "download_url": "https://freesound.org/apiv2/sounds/123456/download/?token=KEY",
+  "filename": "forest_ambience.mp3"
+}
 ```
 
 Files are saved to:
@@ -153,10 +153,10 @@ Files are saved to:
 
 Returns a summary table of all sources with their categories and key requirements.
 
-```xml
-<asset_search>
-  <action>list_sources</action>
-</asset_search>
+```json
+{
+  "action": "list_sources"
+}
 ```
 
 ---
@@ -165,12 +165,12 @@ Returns a summary table of all sources with their categories and key requirement
 
 Agents can request per-action documentation to save context tokens:
 
-```xml
-<tool_information>
-  <action>get_info</action>
-  <tool_name>asset_search</tool_name>
-  <sub_action>search</sub_action>
-</tool_information>
+```json
+{
+  "action": "get_info",
+  "tool_name": "asset_search",
+  "sub_action": "search"
+}
 ```
 
 Valid `sub_action` values: `search`, `download`, `list_sources`.
@@ -182,37 +182,39 @@ Valid `sub_action` values: `search`, `download`, `list_sources`.
 A typical multi-step asset workflow an agent might execute:
 
 1. **Discover sources:**
-   ```xml
-   <asset_search><action>list_sources</action></asset_search>
+   ```json
+   {
+     "action": "list_sources"
+   }
    ```
 
 2. **Search for a 3D tree model:**
-   ```xml
-   <asset_search>
-     <action>search</action>
-     <query>oak tree low poly</query>
-     <category>3d</category>
-     <limit>5</limit>
-   </asset_search>
+   ```json
+   {
+     "action": "search",
+     "query": "oak tree low poly",
+     "category": "3d",
+     "limit": 5
+   }
    ```
 
 3. **Download the best result:**
-   ```xml
-   <asset_search>
-     <action>download</action>
-     <download_url>https://api.poly.pizza/v1/download/abc123.glb</download_url>
-     <filename>oak_tree.glb</filename>
-   </asset_search>
+   ```json
+   {
+     "action": "download",
+     "download_url": "https://api.poly.pizza/v1/download/abc123.glb",
+     "filename": "oak_tree.glb"
+   }
    ```
 
 4. **Fetch a matching ambient sound:**
-   ```xml
-   <asset_search>
-     <action>search</action>
-     <query>wind through leaves</query>
-     <source>freesound</source>
-     <limit>3</limit>
-   </asset_search>
+   ```json
+   {
+     "action": "search",
+     "query": "wind through leaves",
+     "source": "freesound",
+     "limit": 3
+   }
    ```
 
 ---
