@@ -30,13 +30,27 @@ Base: Any = declarative_base()
 
 # --- SQLAlchemy Models ---
 
+class User(Base):
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+    username = Column(String, nullable=False, unique=True)
+    password_hash = Column(String, nullable=False)
+    is_main_user = Column(Integer, default=0)  # SQLite doesn't have native Boolean; 1 = True
+    created_at = Column(DateTime(timezone=True), server_default=sql_func.now())
+
+    projects = relationship("Project", back_populates="owner", cascade="all, delete-orphan")
+
+    __table_args__ = (Index('ix_user_username', 'username'),)
+
 class Project(Base):
     __tablename__ = 'projects'
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False, unique=True)
     description = Column(Text, nullable=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True)  # nullable for backward compat
     created_at = Column(DateTime(timezone=True), server_default=sql_func.now())
 
+    owner = relationship("User", back_populates="projects")
     sessions = relationship("Session", back_populates="project", cascade="all, delete-orphan")
 
     __table_args__ = (Index('ix_project_name', 'name'),) # Index for faster name lookups
@@ -187,6 +201,50 @@ class DatabaseManager:
         finally:
             await session.close()
             logger.debug("DB Session closed.")
+
+    # --- User CRUD Methods ---
+
+    async def create_user(self, username: str, password_hash: str, is_main_user: bool = False) -> Optional[User]:
+        """ Creates a new user. Returns the User object or None if username already exists. """
+        async with self.get_session() as session:
+            stmt = select(User).where(User.username == username)
+            result = await session.execute(stmt)
+            existing = result.scalars().first()
+            if existing:
+                logger.warning(f"User '{username}' already exists.")
+                return None
+            new_user = User(
+                username=username,
+                password_hash=password_hash,
+                is_main_user=1 if is_main_user else 0
+            )
+            session.add(new_user)  # type: ignore
+            await session.flush()
+            await session.refresh(new_user)
+            logger.info(f"Created new user '{username}' (ID: {new_user.id}, main_user={is_main_user}).")
+            return new_user
+
+    async def get_user_by_username(self, username: str) -> Optional[User]:
+        """ Gets a user by username. """
+        async with self.get_session() as session:
+            stmt = select(User).where(User.username == username)
+            result = await session.execute(stmt)
+            return result.scalars().first()
+
+    async def get_user_by_id(self, user_id: int) -> Optional[User]:
+        """ Gets a user by ID. """
+        async with self.get_session() as session:
+            stmt = select(User).where(User.id == user_id)
+            result = await session.execute(stmt)
+            return result.scalars().first()
+
+    async def count_users(self) -> int:
+        """ Returns the total number of registered users. """
+        async with self.get_session() as session:
+            stmt = select(func.count(User.id))
+            result = await session.execute(stmt)
+            count = result.scalar() or 0
+            return count
 
     # --- Basic CRUD Methods ---
 

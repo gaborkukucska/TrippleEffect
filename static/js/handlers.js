@@ -170,6 +170,46 @@ export const handleWebSocketMessage = (data) => {
                 shouldDisplay = false;
                 break;
 
+            // --- Chat History Replay Markers ---
+            case 'chat_history_start':
+                console.log("Handler: chat_history_start — clearing conversation area for replay.");
+                if (DOM.conversationArea) {
+                    DOM.conversationArea.innerHTML = '';
+                }
+                shouldDisplay = false;
+                break;
+            case 'chat_history_end':
+                console.log("Handler: chat_history_end — scrolling to bottom.");
+                if (DOM.conversationArea) {
+                    DOM.conversationArea.scrollTop = DOM.conversationArea.scrollHeight;
+                }
+                shouldDisplay = false;
+                break;
+            case 'internal_comms_history_start':
+                console.log("Handler: internal_comms_history_start — clearing internal comms for replay.");
+                if (DOM.internalCommsArea) {
+                    DOM.internalCommsArea.innerHTML = '';
+                }
+                shouldDisplay = false;
+                break;
+            case 'internal_comms_history_end':
+                console.log("Handler: internal_comms_history_end — scrolling comms to bottom.");
+                if (DOM.internalCommsArea) {
+                    DOM.internalCommsArea.scrollTop = DOM.internalCommsArea.scrollHeight;
+                }
+                shouldDisplay = false;
+                break;
+            case 'internal_comms_message':
+                // Replayed internal comms history message — route to internal comms area
+                targetAreaId = 'internal-comms-area';
+                displayContent = escapeHTML(data.content || '');
+                displayAgentId = data.agent_id || 'system';
+                // Map category to display type for correct CSS styling
+                const categoryMap = { 'system': 'system_event', 'agent': 'log', 'tool': 'tool_result', 'cg': 'system_event', 'error': 'error' };
+                displayType = categoryMap[data.category] || 'log';
+                shouldDisplay = true;
+                break;
+
             // --- System Events (Internal Comms) ---
             case 'agent_deleted':
             case 'agent_added':
@@ -178,6 +218,8 @@ export const handleWebSocketMessage = (data) => {
             case 'system_event':
             case 'agent_moved_team':
             case 'project_approved': // NEW: Handle approval confirmation
+            case 'project_stopped': // NEW: Handle project paused
+            case 'project_started': // NEW: Handle project resumed
                  const eventType = (messageType === 'system_event') ? data.event : messageType;
                  const eventMap = {
                     'agent_added': `Agent Added: ${data.agent_id} (${data.config?.persona || 'N/A'}) to team ${data.team || 'N/A'}`,
@@ -187,7 +229,9 @@ export const handleWebSocketMessage = (data) => {
                     'session_saved': `Session Saved: ${data.project}/${data.session}`,
                     'session_loaded': `Session Loaded: ${data.project}/${data.session}.`,
                     'agent_moved_team': `Agent Moved: ${data.agent_id} to team ${data.new_team_id || 'None'} from ${data.old_team_id || 'N/A'}`,
-                    'project_approved': `Project Approved: ${data.message || `Project for PM ${data.pm_agent_id} started.`}` // NEW
+                    'project_approved': `Project Approved: ${data.message || `Project for PM ${data.pm_agent_id} started.`}`,
+                    'project_stopped': `⏸️ ${data.message || 'Project paused.'}`,
+                    'project_started': `▶️ ${data.message || 'Project resumed.'}`
                  };
                  displayContent = escapeHTML(eventMap[eventType] || data.message || `Event: ${eventType}`);
                  displayAgentId = 'system';
@@ -1001,6 +1045,81 @@ export const handleShutdownServer = async () => {
 };
 
 console.log("Frontend handlers module loaded.");
+
+// --- Project Lifecycle Handlers ---
+
+/**
+ * Handles the Stop button click — pauses the active project.
+ */
+export const handleProjectStop = async () => {
+    console.log("Handler: Project stop requested.");
+    if (DOM.projectStopButton) {
+        DOM.projectStopButton.disabled = true;
+        DOM.projectStopButton.textContent = 'Stopping...';
+    }
+    try {
+        const result = await api.stopProject();
+        console.log("Handler: Project stop successful.", result);
+        ui.displayMessage(`⏸️ ${result.message || 'Project paused.'}`, 'system_event', 'conversation-area', 'system');
+    } catch (error) {
+        console.error("Handler: Error stopping project:", error);
+        ui.displayMessage(`Error stopping project: ${error.message || 'Unknown error'}`, 'error', 'conversation-area', 'system');
+    } finally {
+        if (DOM.projectStopButton) {
+            DOM.projectStopButton.disabled = false;
+            DOM.projectStopButton.textContent = '⏸️ Stop';
+        }
+    }
+};
+
+/**
+ * Handles the Start button click — resumes the active project.
+ */
+export const handleProjectStart = async () => {
+    console.log("Handler: Project start requested.");
+    if (DOM.projectStartButton) {
+        DOM.projectStartButton.disabled = true;
+        DOM.projectStartButton.textContent = 'Starting...';
+    }
+    try {
+        const result = await api.startProject();
+        console.log("Handler: Project start successful.", result);
+        ui.displayMessage(`▶️ ${result.message || 'Project resumed.'}`, 'system_event', 'conversation-area', 'system');
+    } catch (error) {
+        console.error("Handler: Error starting project:", error);
+        ui.displayMessage(`Error starting project: ${error.message || 'Unknown error'}`, 'error', 'conversation-area', 'system');
+    } finally {
+        if (DOM.projectStartButton) {
+            DOM.projectStartButton.disabled = false;
+            DOM.projectStartButton.textContent = '▶️ Start';
+        }
+    }
+};
+
+/**
+ * Handles the Download button click — shows the scope selection modal.
+ */
+export const handleProjectDownload = () => {
+    console.log("Handler: Project download requested — showing scope modal.");
+    const modal = DOM.downloadScopeModal;
+    if (modal) {
+        modal.style.display = 'block';
+    } else {
+        // Fallback: direct download with full scope
+        api.downloadProject('full');
+    }
+};
+
+/**
+ * Handles the download scope selection from the modal.
+ * @param {'full'|'workspace'} scope
+ */
+export const handleDownloadScopeSelect = (scope) => {
+    console.log(`Handler: Download scope selected: ${scope}`);
+    const modal = DOM.downloadScopeModal;
+    if (modal) modal.style.display = 'none';
+    api.downloadProject(scope);
+};
 
 // --- Add Event Listener (in main.js or here if appropriate) ---
 // This part should ideally go in main.js where DOM elements are assigned,

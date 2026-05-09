@@ -110,4 +110,32 @@ export const fetchProjectTasks = async (projectName, sessionName) => {
     return makeApiCall(endpoint, 'GET');
 };
 
+/**
+ * Stops/pauses the currently active project.
+ * @returns {Promise<object>} The JSON response from the backend.
+ */
+export const stopProject = async () => {
+    console.log('API: Sending stop request for active project.');
+    return makeApiCall('/api/projects/active/stop', 'POST');
+};
+
+/**
+ * Starts/resumes the currently active project.
+ * @returns {Promise<object>} The JSON response from the backend.
+ */
+export const startProject = async () => {
+    console.log('API: Sending start request for active project.');
+    return makeApiCall('/api/projects/active/start', 'POST');
+};
+
+/**
+ * Triggers a download of the active project as a zip archive.
+ * @param {'full'|'workspace'} scope - Whether to download the full session or just the workspace.
+ */
+export const downloadProject = (scope = 'full') => {
+    console.log(`API: Triggering download for active project (scope=${scope}).`);
+    // Use window.location to trigger a browser file download
+    window.location.href = `${config.API_BASE_URL}/api/projects/active/download?scope=${encodeURIComponent(scope)}`;
+};
+
 console.log("Frontend API module loaded.");

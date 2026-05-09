@@ -1,6 +1,7 @@
 # Features
 
 *   **Asynchronous Backend:** Built with FastAPI and `asyncio`.
+*   **Authentication & Security:** Robust JWT-based authentication system using `HTTPOnly` cookies, `bcrypt` password hashing, and complete route/WebSocket protection.
 *   **WebSocket Communication:** Real-time updates via WebSockets.
 *   **Dynamic Agent/Team Creation:** Manage agents and teams on the fly using `ManageTeamTool`.
 *   **Advanced Agent Health System:** Comprehensive monitoring and recovery capabilities:

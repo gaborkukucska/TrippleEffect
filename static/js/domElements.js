@@ -5,7 +5,7 @@
  * Should be called only after DOMContentLoaded.
  */
 
-export let messageInput, sendButton, conversationArea, internalCommsArea, agentStatusContent, agentStatusContainer, projectTasksContent, statusPanelsContainer, chatAgentsDivider, viewPanels, navButtons, fileInput, attachFileButton, fileInfoArea, projectSelect, sessionSelect, loadSessionButton, saveProjectNameInput, saveSessionNameInput, saveSessionButton, sessionStatusMessage, configContent, refreshConfigButton, addAgentButton, agentModal, agentForm, modalTitle, editAgentIdInput, shutdownServerButton;
+export let messageInput, sendButton, conversationArea, internalCommsArea, agentStatusContent, agentStatusContainer, projectTasksContent, statusPanelsContainer, chatAgentsDivider, viewPanels, navButtons, fileInput, attachFileButton, fileInfoArea, projectSelect, sessionSelect, loadSessionButton, saveProjectNameInput, saveSessionNameInput, saveSessionButton, sessionStatusMessage, configContent, refreshConfigButton, addAgentButton, agentModal, agentForm, modalTitle, editAgentIdInput, shutdownServerButton, projectStartButton, projectStopButton, projectDownloadButton, downloadScopeModal, downloadWorkspaceBtn, downloadFullBtn;
 
 export const assignElements = () => {
     console.log("DOM Assign: Starting element assignment..."); // Log start
@@ -40,6 +40,12 @@ export const assignElements = () => {
     agentForm = document.getElementById('agent-form');
     modalTitle = document.getElementById('modal-title');
     editAgentIdInput = document.getElementById('edit-agent-id');
+    projectStartButton = document.getElementById('project-start-button');
+    projectStopButton = document.getElementById('project-stop-button');
+    projectDownloadButton = document.getElementById('project-download-button');
+    downloadScopeModal = document.getElementById('download-scope-modal');
+    downloadWorkspaceBtn = document.getElementById('download-workspace-btn');
+    downloadFullBtn = document.getElementById('download-full-btn');
     // --- End Select Elements ---
 
     console.log("DOM Assign: Element selection complete. Validating critical elements..."); // Log validation start

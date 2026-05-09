@@ -541,4 +541,19 @@ This entirely breaks the LLM's autoregressive death spiral by physically moving 
 **Files:** `src/agents/cycle_handler.py`, `src/tools/executor.py`, `prompts.yaml`, `src/agents/workflow_manager.py`, `src/tools/file_system.py`
 
 ---
+
+#### Phase U: Authentication & Stabilization (May 2026)
+
+**Problem 1 (Lack of Access Control & Session Isolation):** The application was fully open on the local network without user authentication, creating security vulnerabilities and preventing proper session/project isolation per user.
+**Fix 1:** Implemented a full JWT-based authentication system using `HTTPOnly` cookies. Created `/api/auth/register`, `/login`, `/logout`, and `/me` routes with `bcrypt` password hashing (using SQLite DB models). Secured WebSocket and REST endpoints with `get_current_user` dependencies. Upgraded the `index.html` frontend to feature a clean Sign In / Register UI overlay and added a session-level logout button to the "Project & Session" panel.
+
+**Problem 2 (Passlib & Modern Bcrypt Incompatibility):** The backend failed to authenticate users out of the box because the `passlib` library crashes when checking for `__about__` or testing `detect_wrap_bug` with `bcrypt>=4.1.0` (which strictly enforces a 72-byte limit).
+**Fix 2:** Downgraded and pinned `bcrypt<4.1.0` in `requirements.txt` and introduced a compatibility monkeypatch in `src/api/auth.py` so `passlib` correctly parses version metadata without crashing on login/registration.
+
+**Problem 3 (Systemic TypeChecker False Positives):** `pyright` flooded the CI/IDE with errors due to ambiguous `aiosqlite` ORM column type derivations (`auth_routes.py`), iterable mismatches from `os.listdir` (`file_system.py`), untyped mutable recovery dicts (`agent_health_monitor.py`), and uninitialized imports / scope shadowing (`code_editor.py`). Furthermore, `execute()` signatures in various tools misaligned with the `BaseTool` protocol.
+**Fix 3:** Conducted a comprehensive TypeChecker stabilization pass. Standardized tool signature schemas to include optional `project` and `session` kwargs. Addressed all ORM `Column[int]` vs `int` Pydantic assignments using strict typing or explicit `type: ignore` suppressions. Repositioned global `json` imports and eliminated `re` shadowing in `code_editor.py`.
+
+**Files:** `src/api/auth.py`, `src/api/auth_routes.py`, `static/js/auth.js`, `templates/index.html`, `src/core/database_manager.py`, `src/agents/cycle_components/agent_health_monitor.py`, `src/tools/*.py`
+
+---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

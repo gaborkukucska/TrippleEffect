@@ -39,11 +39,11 @@ export const connectWebSocket = () => {
             console.log("WebSocket connection established.");
             sendMessage(JSON.stringify({ type: "request_full_agent_status" }));
             
-            // Check if conversation area is empty (new session). If so, request history to get preloaded greeting.
-            const conversationArea = document.getElementById('conversation-area');
-            if (conversationArea && conversationArea.children.length === 0) {
-                sendMessage(JSON.stringify({ type: "request_chat_history" }));
-            }
+            // Always request chat history from the backend to ensure the
+            // Admin AI greeting and any prior conversation are displayed.
+            // The backend sends chat_history_start/chat_history_end markers
+            // so the frontend can clear stale content and re-render cleanly.
+            sendMessage(JSON.stringify({ type: "request_chat_history" }));
         };
 
         ws.onmessage = (event) => {
@@ -71,6 +71,14 @@ export const connectWebSocket = () => {
             const wasConnected = state.getIsConnected(); // Check status *before* changing it
             state.setIsConnected(false);
             state.setWebSocket(null); // Clear the websocket instance from state
+
+            // Handle authentication rejection - do NOT reconnect
+            if (event.code === 4001) {
+                console.warn("WebSocket closed due to authentication failure. Showing login view.");
+                displayStatusMessage("Session expired. Please log in again.", false, true, 'internal-comms-area');
+                import('./auth.js').then(auth => auth.showAuthView());
+                return; // Do not attempt reconnection
+            }
 
             let delay = state.getReconnectDelay() || config.INITIAL_RECONNECT_DELAY; // Get current delay or start fresh
             displayStatusMessage(`Connection closed (${event.code}). Reconnecting in ${delay / 1000}s...`, false, true, 'internal-comms-area');

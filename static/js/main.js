@@ -9,8 +9,10 @@ import * as ws from './websocket.js'; // Import WebSocket connection logic
 // --- Handler Imports ---
 import * as handlers from './handlers.js'; // Import all handlers
 // --- API Import (Modified) ---
-import { approveProject } from './api.js'; // Import specific function
+import { approveProject, downloadProject } from './api.js'; // Import specific functions
 import { restoreMessages } from './chatPersistence.js'; // Restore chat on refresh
+// --- Auth Import ---
+import { checkAuth, showAuthView, hideAuthView, initAuth } from './auth.js';
 
 /**
  * Sets up primary event listeners after DOM elements are assigned.
@@ -92,6 +94,30 @@ const setupEventListeners = () => {
          DOM.shutdownServerButton.addEventListener('click', handlers.handleShutdownServer);
      } else { console.warn("Main: Shutdown server button not found during listener setup."); }
 
+     // --- Project Lifecycle Controls ---
+     if (DOM.projectStartButton) {
+          console.log("Main: Attaching listener to Project Start button...");
+         DOM.projectStartButton.addEventListener('click', handlers.handleProjectStart);
+     } else { console.warn("Main: Project start button not found during listener setup."); }
+
+     if (DOM.projectStopButton) {
+          console.log("Main: Attaching listener to Project Stop button...");
+         DOM.projectStopButton.addEventListener('click', handlers.handleProjectStop);
+     } else { console.warn("Main: Project stop button not found during listener setup."); }
+
+     if (DOM.projectDownloadButton) {
+          console.log("Main: Attaching listener to Project Download button...");
+         DOM.projectDownloadButton.addEventListener('click', handlers.handleProjectDownload);
+     } else { console.warn("Main: Project download button not found during listener setup."); }
+
+     // --- Download Scope Modal Buttons ---
+     if (DOM.downloadWorkspaceBtn) {
+         DOM.downloadWorkspaceBtn.addEventListener('click', () => handlers.handleDownloadScopeSelect('workspace'));
+     }
+     if (DOM.downloadFullBtn) {
+         DOM.downloadFullBtn.addEventListener('click', () => handlers.handleDownloadScopeSelect('full'));
+     }
+
      // --- Internal Comms Filter Setup ---
      const internalCommsArea = document.getElementById('internal-comms-area');
      const filterIds = ['filter-system', 'filter-agent', 'filter-tool', 'filter-cg', 'filter-error'];
@@ -162,20 +188,19 @@ const handleApproveButtonClick = async (event) => {
 
 
 /**
- * Initialization function runs when the DOM is fully loaded.
+ * Performs the full app initialization (DOM, listeners, WebSocket).
+ * Called after authentication is confirmed.
  */
-const initializeApp = () => {
-    // --- REMOVED Destructuring inside initializeApp ---
+const startApp = (username) => {
+    console.log(`Main: Starting app for user '${username}'...`);
 
-    console.log("Main: DOM fully loaded and parsed. Initializing app..."); // Log 1: Start Init
+    console.log("Main: Attempting to assign DOM elements...");
+    DOM.assignElements();
+    console.log("Main: DOM element assignment function executed.");
 
-    console.log("Main: Attempting to assign DOM elements..."); // Log 2: Before Assign
-    DOM.assignElements(); // Crucial: Assign DOM elements FIRST
-    console.log("Main: DOM element assignment function executed."); // Log 3: After Assign
-
-    console.log("Main: Attempting to set up event listeners..."); // Log 4: Before Setup
-    setupEventListeners(); // Setup listeners using assigned elements
-    console.log("Main: Event listener setup function executed."); // Log 5: After Setup
+    console.log("Main: Attempting to set up event listeners...");
+    setupEventListeners();
+    console.log("Main: Event listener setup function executed.");
 
     ui.switchView('chat-view'); // Set the initial view using the UI module
     restoreMessages(); // Restore chat and internal comms from sessionStorage
@@ -247,10 +272,36 @@ const initializeApp = () => {
     }
     // --- END Draggable Divider ---
 
-    console.log("Main: Application initialization sequence complete."); // Log 6: End Init
+    console.log("Main: Application initialization sequence complete.");
+};
+
+/**
+ * Initialization function runs when the DOM is fully loaded.
+ * Checks authentication state before starting the app.
+ */
+const initializeApp = async () => {
+    console.log("Main: DOM fully loaded. Checking authentication...");
+
+    // Initialize auth UI (tab switching, form handlers, logout)
+    initAuth((username) => {
+        // This callback fires on successful login/register
+        startApp(username);
+    });
+
+    // Check if already authenticated (e.g. valid cookie from previous session)
+    const authResult = await checkAuth();
+    if (authResult.authenticated) {
+        console.log(`Main: Already authenticated as '${authResult.username}'. Starting app.`);
+        hideAuthView();
+        startApp(authResult.username);
+    } else {
+        console.log("Main: Not authenticated. Showing login view.");
+        showAuthView();
+    }
 };
 
 // --- Wait for the DOM to be ready before initializing ---
 document.addEventListener('DOMContentLoaded', initializeApp);
 
 console.log("Frontend main.js loaded and initializing...");
+

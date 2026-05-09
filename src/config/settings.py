@@ -179,7 +179,22 @@ class Settings:
         self.SEARXNG_URL: Optional[str] = os.getenv("SEARXNG_URL")
         self.SEARXNG_FORMAT: str = os.getenv("SEARXNG_FORMAT", "json")
         if self.SEARXNG_URL: logger.debug(f"Settings Init: Found SEARXNG_URL.")
-        
+
+        # --- Authentication Settings ---
+        import secrets
+        self.SECRET_KEY: str = os.getenv("SECRET_KEY", "")
+        if not self.SECRET_KEY:
+            self.SECRET_KEY = secrets.token_urlsafe(64)
+            logger.warning("SECRET_KEY not set in .env. Generated a random key for this session. Set SECRET_KEY in .env for persistent sessions across restarts.")
+        self.ALLOW_MULTI_USER_REGISTRATION: bool = os.getenv("ALLOW_MULTI_USER_REGISTRATION", "false").lower() == "true"
+        try:
+            self.JWT_EXPIRATION_MINUTES: int = int(os.getenv("JWT_EXPIRATION_MINUTES", "43200"))
+        except ValueError:
+            logger.warning("Invalid JWT_EXPIRATION_MINUTES, using default 43200 (30 days).")
+            self.JWT_EXPIRATION_MINUTES = 43200
+        self.JWT_ALGORITHM: str = "HS256"
+        logger.info(f"Settings Init: Auth Settings - MultiUser={self.ALLOW_MULTI_USER_REGISTRATION}, JWT Expiry={self.JWT_EXPIRATION_MINUTES}min")
+
         # --- Load Prompts from YAML ---
         self._load_prompts_from_yaml()
 

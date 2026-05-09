@@ -67,21 +67,30 @@ async def broadcast(message: str):
 async def websocket_endpoint(websocket: WebSocket):
     """
     Main WebSocket endpoint for handling client connections.
-    - Accepts new connections.
+    - Authenticates via JWT cookie before accepting.
     - Handles incoming messages by forwarding them to the AgentManager.
     - Removes connections on disconnect.
     """
+    # --- Authenticate WebSocket connection ---
+    from src.api.auth import get_current_user_ws
+    user = await get_current_user_ws(websocket)
+    if user is None:
+        await websocket.close(code=4001, reason="Authentication required")
+        logger.warning(f"Rejected unauthenticated WebSocket connection from {websocket.client.host if websocket.client else 'unknown'}")
+        return
+
     await websocket.accept()
     active_connections.append(websocket)
     client_host = websocket.client.host if websocket.client else "unknown"
-    logger.info(f"New WebSocket connection from {client_host}. Total clients: {len(active_connections)}") # Changed print to logger
+    logger.info(f"New WebSocket connection from {client_host} (user: {user.username}). Total clients: {len(active_connections)}") # Changed print to logger
 
     # Send initial connection confirmation
     try:
         await websocket.send_text(json.dumps({
             "type": "status", 
             "message": "Connected to TrippleEffect backend!",
-            "backend_instance_id": backend_instance_id
+            "backend_instance_id": backend_instance_id,
+            "username": user.username
             }))
     except Exception as e:
         logger.error(f"Error sending initial status to {client_host}: {e}") # Changed print to logger
@@ -197,12 +206,16 @@ async def websocket_endpoint(websocket: WebSocket):
                     if agent_manager_instance:
                         admin_agent = agent_manager_instance.agents.get("admin_ai")
                         if admin_agent:
+                            # --- Chat page history (user + assistant with content only) ---
+                            await websocket.send_text(json.dumps({"type": "chat_history_start"}))
                             for msg in admin_agent.message_history:
                                 role = msg.get("role")
                                 content = msg.get("content")
                                 # Skip system prompts and internal framework messages
                                 if role == "system": continue
                                 if role == "user" and "[System: Backend initialized" in (content or ""): continue
+                                # Skip messages without meaningful content (e.g. pure tool_calls)
+                                if not content or not content.strip(): continue
                                 
                                 msg_type = "user" if role == "user" else "agent_response"
                                 await websocket.send_text(json.dumps({
@@ -210,7 +223,57 @@ async def websocket_endpoint(websocket: WebSocket):
                                     "agent_id": "admin_ai" if role != "user" else "human_user",
                                     "content": content
                                 }))
-                            logger.info(f"Sent chat history to {client_host}.")
+                            await websocket.send_text(json.dumps({"type": "chat_history_end"}))
+                            
+                            # --- Internal comms history (everything for the comms page) ---
+                            await websocket.send_text(json.dumps({"type": "internal_comms_history_start"}))
+                            for msg in admin_agent.message_history:
+                                role = msg.get("role")
+                                content = msg.get("content", "")
+                                tool_calls = msg.get("tool_calls")
+                                
+                                # Skip the initial system boot message
+                                if role == "user" and "[System: Backend initialized" in (content or ""):
+                                    continue
+                                
+                                if role == "system":
+                                    await websocket.send_text(json.dumps({
+                                        "type": "internal_comms_message",
+                                        "category": "system",
+                                        "agent_id": "system",
+                                        "content": content
+                                    }))
+                                elif role == "assistant":
+                                    if tool_calls:
+                                        # Show tool call info in internal comms
+                                        for tc in tool_calls:
+                                            tc_name = tc.get("name", "unknown_tool")
+                                            tc_args = tc.get("arguments", {})
+                                            tc_summary = f"Tool call: {tc_name}({json.dumps(tc_args)[:200]})"
+                                            await websocket.send_text(json.dumps({
+                                                "type": "internal_comms_message",
+                                                "category": "tool",
+                                                "agent_id": "admin_ai",
+                                                "content": tc_summary
+                                            }))
+                                    if content and content.strip():
+                                        await websocket.send_text(json.dumps({
+                                            "type": "internal_comms_message",
+                                            "category": "agent",
+                                            "agent_id": "admin_ai",
+                                            "content": content
+                                        }))
+                                elif role == "tool":
+                                    tool_content = content[:500] if content else "(empty)"
+                                    await websocket.send_text(json.dumps({
+                                        "type": "internal_comms_message",
+                                        "category": "tool",
+                                        "agent_id": msg.get("tool_call_id", "tool"),
+                                        "content": f"Tool result: {tool_content}"
+                                    }))
+                            await websocket.send_text(json.dumps({"type": "internal_comms_history_end"}))
+                            
+                            logger.info(f"Sent chat history and internal comms history to {client_host}.")
                     else:
                         logger.error("AgentManager not available. Cannot send chat history.")
                         await websocket.send_text(json.dumps({

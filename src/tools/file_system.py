@@ -1085,7 +1085,7 @@ Pushes changes to a remote repository.
             # Instead of erroring (which triggers retries), return helpful info with root listing
             try:
                 root_items = await asyncio.to_thread(os.listdir, base_path)
-                root_listing = "\n".join([f"- {item}" for item in sorted(root_items)]) if root_items else "(empty workspace)"
+                root_listing = "\n".join([f"- {item}" for item in sorted([str(i) for i in root_items])]) if root_items else "(empty workspace)"  # type: ignore
             except Exception:
                 root_listing = "(could not list root)"
             return {
@@ -1098,7 +1098,7 @@ Pushes changes to a remote repository.
             if not items: logger.info(f"Agent {agent_id} listed empty directory: '{relative_dir}' in {scope_description}"); return {"status": "success", "message": f"Directory '{relative_dir}' in {scope_description} is empty.", "items": []}
             output_lines = []
             item_details = []
-            for item in sorted(items):
+            for item in sorted([str(i) for i in items]):  # type: ignore
                  try:
                       item_path = validated_path / item
                       item_type = "unknown"
@@ -1267,7 +1267,7 @@ Pushes changes to a remote repository.
             return {"status": "error", "message": f"Error moving '{relative_src}' to '{relative_dst}': {e}"}
 
     # --- NEW: _tree_directory method ---
-    async def _tree_directory(self, base_path: Path, relative_dir: str, agent_id: str, scope_description: str, max_depth: int = 5) -> Dict[str, Any]:
+    async def _tree_directory(self, base_path: Path, relative_dir: str, agent_id: str, scope_description: str, max_depth: Any = 5) -> Dict[str, Any]:
         """Recursively lists all files and directories in a tree format."""
         validated_path = await self._resolve_and_validate_path(base_path, relative_dir, agent_id, scope_description)
         if not validated_path: return {"status": "error", "message": f"Invalid or disallowed path '{relative_dir}' in {scope_description}."}
@@ -1456,7 +1456,7 @@ Pushes changes to a remote repository.
         except Exception:
             return None
 
-    async def _insert_lines_in_file(self, base_path: Path, filename: str, insert_line: int, content: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
+    async def _insert_lines_in_file(self, base_path: Path, filename: str, insert_line: Any, content: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
         # Defensive: ensure insert_line is always int even if caller passes a string
         try:
             insert_line = int(insert_line)

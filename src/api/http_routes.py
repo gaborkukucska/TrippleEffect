@@ -15,6 +15,10 @@ from src.config.settings import settings
 # Import the ConfigManager singleton instance for agent config CRUD
 from src.config.config_manager import config_manager
 
+# Import auth dependency
+from src.api.auth import get_current_user
+from src.core.database_manager import User
+
 # --- Type Hinting & Direct Import for AgentManager ---
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -26,9 +30,10 @@ from src.agents.constants import (
     AGENT_STATUS_IDLE, AGENT_STATUS_PROCESSING, AGENT_STATUS_PLANNING,
     AGENT_STATUS_AWAITING_TOOL, AGENT_STATUS_EXECUTING_TOOL, AGENT_STATUS_ERROR,
     ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK,
-    PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE,
+    PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_STANDBY,
     WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_WAIT,
-    DEFAULT_STATE
+    DEFAULT_STATE,
+    BOOTSTRAP_AGENT_ID, AGENT_TYPE_PM, AGENT_TYPE_WORKER
 )
 # --- END NEW ---
 import asyncio # Import asyncio
@@ -123,7 +128,7 @@ async def get_index_page(request: Request):
 # --- Agent Config CRUD API Endpoints (using ConfigManager, no AgentManager needed) ---
 
 @router.get("/api/config/agents", response_model=List[AgentInfo])
-async def get_agent_configurations():
+async def get_agent_configurations(current_user: User = Depends(get_current_user)):
     """ API endpoint to retrieve a list of configured agents (basic info only). """
     agent_info_list: List[AgentInfo] = []
     try:
@@ -146,7 +151,7 @@ async def get_agent_configurations():
         raise HTTPException(status_code=500, detail=f"Failed to retrieve agent configurations: {e}")
 
 @router.post("/api/config/agents", response_model=GeneralResponse, status_code=http_status.HTTP_201_CREATED)
-async def create_agent_configuration(agent_data: AgentConfigCreate):
+async def create_agent_configuration(agent_data: AgentConfigCreate, current_user: User = Depends(get_current_user)):
     """ API endpoint to add a new agent configuration to config.yaml. Requires restart. """
     try:
         logger.info(f"Received request to create agent: {agent_data.agent_id}")
@@ -166,7 +171,7 @@ async def create_agent_configuration(agent_data: AgentConfigCreate):
         raise HTTPException(status_code=500, detail=f"Failed to create agent configuration: {e}")
 
 @router.put("/api/config/agents/{agent_id}", response_model=GeneralResponse)
-async def update_agent_configuration(agent_id: str, agent_config_data: AgentConfigInput):
+async def update_agent_configuration(agent_id: str, agent_config_data: AgentConfigInput, current_user: User = Depends(get_current_user)):
     """ API endpoint to update an existing agent's configuration in config.yaml. Requires restart. """
     try:
         logger.info(f"Received request to update agent: {agent_id}")
@@ -186,7 +191,7 @@ async def update_agent_configuration(agent_id: str, agent_config_data: AgentConf
         raise HTTPException(status_code=500, detail=f"Failed to update agent configuration: {e}")
 
 @router.delete("/api/config/agents/{agent_id}", response_model=GeneralResponse)
-async def delete_agent_configuration(agent_id: str):
+async def delete_agent_configuration(agent_id: str, current_user: User = Depends(get_current_user)):
     """ API endpoint to remove an agent configuration from config.yaml. Requires restart. """
     try:
         logger.info(f"Received request to delete agent: {agent_id}")
@@ -211,7 +216,7 @@ async def delete_agent_configuration(agent_id: str):
 # --- Project/Session Management API Endpoints (Requires AgentManager) ---
 
 @router.get("/api/projects", response_model=List[ProjectInfo])
-async def list_projects():
+async def list_projects(current_user: User = Depends(get_current_user)):
     """ Lists available projects by scanning the projects base directory. """
     projects = []
     base_dir = settings.PROJECTS_BASE_DIR
@@ -229,7 +234,7 @@ async def list_projects():
 
 
 @router.get("/api/projects/{project_name}/sessions", response_model=List[SessionInfo])
-async def list_sessions(project_name: str):
+async def list_sessions(project_name: str, current_user: User = Depends(get_current_user)):
     """ Lists available sessions within a specific project directory by checking for agent_session_data.json. """
     sessions = []
     project_dir = settings.PROJECTS_BASE_DIR / project_name
@@ -253,7 +258,7 @@ async def list_sessions(project_name: str):
         raise HTTPException(status_code=500, detail=f"Failed to list sessions for project '{project_name}': {e}")
 
 @router.get("/api/projects/{project_name}/sessions/{session_name}/tasks")
-async def get_project_tasks(project_name: str, session_name: str):
+async def get_project_tasks(project_name: str, session_name: str, current_user: User = Depends(get_current_user)):
     """ Fetches the tasks for the specific project and session. """
     try:
         from src.tools.project_management import ProjectManagementTool
@@ -408,9 +413,9 @@ async def approve_project_start(
 import signal
 
 @router.post("/api/shutdown", response_model=GeneralResponse)
-async def shutdown_framework():
+async def shutdown_framework(current_user: User = Depends(get_current_user)):
     """ Triggers a graceful shutdown of the TrippleEffect framework. """
-    logger.info("Shutdown requested via API endpoint.")
+    logger.info(f"Shutdown requested via API endpoint by user '{current_user.username}'.")
     
     # Run the kill signal asynchronously to allow the response to return
     async def _send_signal():
@@ -422,3 +427,270 @@ async def shutdown_framework():
     
     return GeneralResponse(success=True, message="Graceful shutdown initiated. The framework will exit shortly.")
 # --- END NEW ---
+
+
+# --- NEW: Project Lifecycle Endpoints (Stop / Start / Download) ---
+
+@router.post("/api/projects/active/stop", response_model=GeneralResponse)
+async def stop_active_project(
+    manager: AgentManager = Depends(get_agent_manager_dependency),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Stops/pauses the currently active project by transitioning all PM agents
+    to pm_standby and all worker agents to worker_wait.
+    """
+    project_name = manager.current_project
+    session_name = manager.current_session
+    
+    if not project_name or not session_name:
+        raise HTTPException(status_code=400, detail="No active project/session to stop.")
+    
+    logger.info(f"Stop requested for active project '{project_name}/{session_name}' by user '{current_user.username}'.")
+    
+    stopped_agents = []
+    try:
+        agents_snapshot = list(manager.agents.values())
+        for agent in agents_snapshot:
+            # Skip bootstrap admin_ai — it should stay responsive
+            if agent.agent_id == BOOTSTRAP_AGENT_ID:
+                continue
+            
+            if agent.agent_type == AGENT_TYPE_PM:
+                if agent.state != PM_STATE_STANDBY:
+                    manager.workflow_manager.change_state(agent, PM_STATE_STANDBY)
+                agent.set_status(AGENT_STATUS_IDLE)
+                # Clear any pending scheduling state
+                agent._awaiting_project_approval = False
+                stopped_agents.append(agent.agent_id)
+                logger.info(f"Stopped PM agent '{agent.agent_id}' -> pm_standby/idle")
+                
+            elif agent.agent_type == AGENT_TYPE_WORKER:
+                from src.agents.constants import WORKER_STATE_WAIT as _WW
+                if agent.state != _WW:
+                    manager.workflow_manager.change_state(agent, _WW)
+                agent.set_status(AGENT_STATUS_IDLE)
+                stopped_agents.append(agent.agent_id)
+                logger.info(f"Stopped Worker agent '{agent.agent_id}' -> worker_wait/idle")
+            
+            # Push status update to UI for each stopped agent
+            await manager.push_agent_status_update(agent.agent_id)
+        
+        # Broadcast project_stopped event to UI
+        await manager.send_to_ui({
+            "type": "project_stopped",
+            "project_name": project_name,
+            "session_name": session_name,
+            "stopped_agents": stopped_agents,
+            "message": f"Project '{project_name}' has been paused. {len(stopped_agents)} agent(s) stopped."
+        })
+        
+        msg = f"Project '{project_name}' stopped. {len(stopped_agents)} agent(s) paused."
+        logger.info(msg)
+        return GeneralResponse(success=True, message=msg)
+    
+    except Exception as e:
+        logger.error(f"Error stopping project '{project_name}': {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to stop project: {e}")
+
+
+@router.post("/api/projects/active/start", response_model=GeneralResponse)
+async def start_active_project(
+    manager: AgentManager = Depends(get_agent_manager_dependency),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Resumes the currently active project by transitioning PM agents back to
+    pm_manage and scheduling a new cycle. Injects awareness messages into
+    PM and worker histories so they know the session was paused and resumed.
+    """
+    project_name = manager.current_project
+    session_name = manager.current_session
+    
+    if not project_name or not session_name:
+        raise HTTPException(status_code=400, detail="No active project/session to start.")
+    
+    logger.info(f"Start/resume requested for active project '{project_name}/{session_name}' by user '{current_user.username}'.")
+    
+    resumed_agents = []
+    awareness_msg = (
+        "[Framework System Message]: This project session was PAUSED by the user and has now been RESUMED. "
+        "Review the current state of tasks and continue your work. Any work in progress before the pause "
+        "should be picked up where it left off."
+    )
+    
+    try:
+        agents_snapshot = list(manager.agents.values())
+        
+        for agent in agents_snapshot:
+            if agent.agent_id == BOOTSTRAP_AGENT_ID:
+                continue
+            
+            if agent.agent_type == AGENT_TYPE_PM:
+                if agent.state == PM_STATE_STANDBY:
+                    # Inject awareness message
+                    agent.message_history.append({"role": "system", "content": awareness_msg})
+                    
+                    # Transition to pm_manage and schedule a cycle
+                    manager.workflow_manager.change_state(agent, PM_STATE_MANAGE)
+                    agent.set_status(AGENT_STATUS_IDLE)
+                    asyncio.create_task(manager.schedule_cycle(agent, 0))
+                    resumed_agents.append(agent.agent_id)
+                    logger.info(f"Resumed PM agent '{agent.agent_id}' -> pm_manage + scheduled cycle")
+                    
+            elif agent.agent_type == AGENT_TYPE_WORKER:
+                # Inject awareness message into all workers so they know about the pause
+                agent.message_history.append({"role": "system", "content": awareness_msg})
+                resumed_agents.append(agent.agent_id)
+                logger.info(f"Injected resume awareness into Worker agent '{agent.agent_id}'")
+            
+            await manager.push_agent_status_update(agent.agent_id)
+        
+        # Ensure the PM manage timer is running
+        await manager.start_pm_manage_timer()
+        
+        # Broadcast project_started event to UI
+        await manager.send_to_ui({
+            "type": "project_started",
+            "project_name": project_name,
+            "session_name": session_name,
+            "resumed_agents": resumed_agents,
+            "message": f"Project '{project_name}' has been resumed. {len(resumed_agents)} agent(s) reactivated."
+        })
+        
+        msg = f"Project '{project_name}' resumed. {len(resumed_agents)} agent(s) reactivated."
+        logger.info(msg)
+        return GeneralResponse(success=True, message=msg)
+    
+    except Exception as e:
+        logger.error(f"Error starting project '{project_name}': {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to start project: {e}")
+
+
+def _build_exclusion_patterns(project_session_dir: Path) -> list:
+    """
+    Builds a list of exclusion patterns from hardcoded defaults and .gitignore.
+    Returns a list of patterns (strings) to exclude.
+    """
+    # Hard-coded exclusion patterns — always excluded
+    default_exclusions = [
+        '.venv', 'venv', '__pycache__', '.git', 'node_modules',
+        '.env', '.task', '.pytest_cache', '.mypy_cache',
+        '*.pyc', '*.pyo', '.DS_Store', 'Thumbs.db'
+    ]
+    
+    patterns = list(default_exclusions)
+    
+    # Read .gitignore if present
+    gitignore_path = project_session_dir / '.gitignore'
+    if not gitignore_path.is_file():
+        # Also check one level up (project root)
+        gitignore_path = project_session_dir.parent / '.gitignore'
+    
+    if gitignore_path.is_file():
+        try:
+            with open(gitignore_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        # Normalize: remove trailing slashes for directory matching
+                        clean = line.rstrip('/')
+                        if clean and clean not in patterns:
+                            patterns.append(clean)
+            logger.info(f"Loaded {len(patterns)} exclusion patterns (including .gitignore from {gitignore_path})")
+        except Exception as e:
+            logger.warning(f"Failed to read .gitignore at {gitignore_path}: {e}")
+    
+    return patterns
+
+
+def _should_exclude(path: Path, base_dir: Path, patterns: list) -> bool:
+    """
+    Check if a file/directory path should be excluded based on the patterns list.
+    """
+    import fnmatch as fnm
+    
+    rel_path = path.relative_to(base_dir)
+    rel_str = str(rel_path)
+    name = path.name
+    
+    for pattern in patterns:
+        # Match against the filename
+        if fnm.fnmatch(name, pattern):
+            return True
+        # Match against any path component
+        for part in rel_path.parts:
+            if fnm.fnmatch(part, pattern):
+                return True
+        # Match against the full relative path
+        if fnm.fnmatch(rel_str, pattern):
+            return True
+    
+    return False
+
+
+@router.get("/api/projects/active/download")
+async def download_active_project(
+    scope: str = "full",
+    manager: AgentManager = Depends(get_agent_manager_dependency),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Creates a zip archive of the active project/session directory and returns it
+    as a download. Excludes .venv, __pycache__, .git, and .gitignore patterns.
+    
+    Query params:
+        scope: 'full' (entire session folder) or 'workspace' (shared_workspace only)
+    """
+    from fastapi.responses import StreamingResponse
+    import zipfile
+    import io
+    import re as re_module
+    
+    project_name = manager.current_project
+    session_name = manager.current_session
+    
+    if not project_name or not session_name:
+        raise HTTPException(status_code=400, detail="No active project/session to download.")
+    
+    safe_project_name = re_module.sub(r'[^\w\-. ]', '_', project_name)
+    session_dir = settings.PROJECTS_BASE_DIR / safe_project_name / session_name
+    
+    if scope == "workspace":
+        target_dir = session_dir / "shared_workspace"
+        zip_filename = f"{safe_project_name}_{session_name}_workspace.zip"
+    else:
+        target_dir = session_dir
+        zip_filename = f"{safe_project_name}_{session_name}_full.zip"
+    
+    if not target_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Directory not found: {target_dir.name}")
+    
+    exclusion_patterns = _build_exclusion_patterns(session_dir)
+    logger.info(f"Creating zip archive of '{target_dir}' (scope={scope}) with {len(exclusion_patterns)} exclusion patterns.")
+    
+    # Build the zip in memory
+    zip_buffer = io.BytesIO()
+    file_count = 0
+    try:
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for file_path in sorted(target_dir.rglob('*')):
+                if file_path.is_file() and not _should_exclude(file_path, target_dir, exclusion_patterns):
+                    arcname = str(file_path.relative_to(target_dir))
+                    zf.write(file_path, arcname)
+                    file_count += 1
+        
+        zip_buffer.seek(0)
+        logger.info(f"Zip archive created: {zip_filename} with {file_count} files.")
+        
+        return StreamingResponse(
+            zip_buffer,
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename={zip_filename}"}
+        )
+    except Exception as e:
+        logger.error(f"Error creating zip archive: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to create archive: {e}")
+
+# --- END: Project Lifecycle Endpoints ---
+

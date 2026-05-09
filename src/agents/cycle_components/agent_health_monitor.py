@@ -443,7 +443,7 @@ class ConstitutionalGuardianHealthMonitor:
                       f"{record.consecutive_empty_responses} consecutive empty responses detected. "
                       f"This violates the framework's requirement for agents to produce meaningful output.")
         
-        recovery = {
+        recovery: Dict[str, Any] = {
             "type": "empty_response_violation",
             "severity": "critical",
             "history_analysis": history_analysis,
@@ -475,8 +475,10 @@ class ConstitutionalGuardianHealthMonitor:
                 "new_state": WORKER_STATE_WAIT
             })
             for action in recovery["actions"]:
-                if action["action"] == "inject_guidance":
-                    action["message"] += "\n\n[Framework Override]: You have been forcefully returned to the 'wait' state because you failed to provide meaningful responses. Please wait for your PM to reassign your task or provide guidance."
+                if action.get("action") == "inject_guidance":
+                    msg = str(action.get("message", ""))
+                    msg += "\n\n[Framework Override]: You have been forcefully returned to the 'wait' state because you failed to provide meaningful responses. Please wait for your PM to reassign your task or provide guidance."
+                    action["message"] = msg
         
         return True, description, recovery
     
@@ -590,7 +592,7 @@ class ConstitutionalGuardianHealthMonitor:
                       f"Repeated ToolExec Error sequence detected ({record.tool_execution_loop_count} consecutive identical errors). "
                       f"Agent is failing to correct a malformed tool call.")
         
-        recovery = {
+        recovery: Dict[str, Any] = {
             "type": "tool_execution_loop_violation",
             "severity": "critical",
             "history_analysis": history_analysis,
@@ -626,8 +628,10 @@ class ConstitutionalGuardianHealthMonitor:
                 })
                 # Modify guidance to explicitly mention the state change
                 for action in recovery["actions"]:
-                    if action["action"] == "inject_guidance":
-                        action["message"] += "\n\n[Framework Override]: You have been forcefully returned to the 'conversation' state because you were trapped in a loop trying to manage projects. Please rethink your approach or ask the user for clarification before attempting to work again."
+                    if action.get("action") == "inject_guidance":
+                        msg = str(action.get("message", ""))
+                        msg += "\n\n[Framework Override]: You have been forcefully returned to the 'conversation' state because you were trapped in a loop trying to manage projects. Please rethink your approach or ask the user for clarification before attempting to work again."
+                        action["message"] = msg
         
         return True, description, recovery
     

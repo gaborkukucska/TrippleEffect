@@ -448,6 +448,7 @@ class ProjectManagementTool(BaseTool):
                                         if parent_in_deps:
                                             pending_task['depends'].add(task)
                                             pending_task.save()
+                                            asyncio.create_task(broadcast(json.dumps({"type": "project_tasks_updated", "project_name": project_name, "session_name": session_name})))
                                             logger.info(f"ProjectManagementTool: Transferred dependency to sub-task '{task['uuid']}' for dependent task '{pending_task['uuid']}'.")
                             except Exception as e:
                                 logger.warning(f"ProjectManagementTool: Failed to transfer dependencies for parent task '{agent.current_task_id}': {e}")

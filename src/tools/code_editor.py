@@ -3,6 +3,8 @@ import asyncio
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import traceback
+import json
+import re
 
 from src.tools.base import BaseTool, ToolParameter
 from src.config.settings import settings
@@ -81,12 +83,10 @@ class CodeEditorTool(BaseTool):
             
         if isinstance(chunks, str):
             try:
-                import json
                 chunks = json.loads(chunks)
             except Exception as e1:
                 # JSON Resilience Layer
                 try:
-                    import re
                     # Try to fix common JSON errors (single quotes, trailing commas, missing closing brackets)
                     fixed_str = chunks.strip()
                     # Remove markdown formatting if present
@@ -227,7 +227,7 @@ class CodeEditorTool(BaseTool):
                 elif search_text is not None:
                     occurrences = content.count(search_text)
                     if occurrences == 0:
-                        import re
+                        # Fallback to AST literal_eval if json.loads fails
                         # Try regex match ignoring all whitespace
                         pieces = [re.escape(p) for p in search_text.split() if p]
                         if not pieces:

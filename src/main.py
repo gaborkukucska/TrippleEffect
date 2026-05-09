@@ -207,9 +207,11 @@ else:
 # Include the API routers
 logger.info("Including API routers...")
 try:
+    from src.api import auth_routes
+    app.include_router(auth_routes.router)
     app.include_router(http_routes.router)
     app.include_router(websocket_manager.router)
-    logger.info("API routers included.")
+    logger.info("API routers included (auth, http, websocket).")
 except Exception as e:
      logger.error(f"Error including routers: {e}", exc_info=True)
 

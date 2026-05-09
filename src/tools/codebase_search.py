@@ -20,7 +20,7 @@ class CodebaseSearchTool(BaseTool):
         ToolParameter(name="exclude_pattern", type="string", description="Optional glob pattern for files to exclude.", required=False),
     ]
 
-    async def execute(self, agent_id: str, agent_sandbox_path: Path, **kwargs: Any) -> Dict[str, Any]:
+    async def execute(self, agent_id: str, agent_sandbox_path: Path, project_name: Optional[str] = None, session_name: Optional[str] = None, **kwargs: Any) -> Any:
         query = kwargs.get("query")
         if not query:
             return {"status": "error", "message": "Missing required 'query' parameter."}

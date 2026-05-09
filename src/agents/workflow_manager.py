@@ -581,7 +581,7 @@ class AgentWorkflowManager:
         json_fence_match = re.search(json_fence_pattern, content, re.DOTALL)
         if json_fence_match:
             try:
-                json_data = json.loads(json_fence_match.group(1))
+                json_data = json.loads(json_fence_match.group(1), strict=False)
                 text_before = content[:json_fence_match.start()].strip()
                 text_after = content[json_fence_match.end():].strip()
                 logger.debug(f"WorkflowManager: Found JSON in markdown fence for agent '{agent.agent_id}'")
@@ -594,12 +594,12 @@ class AgentWorkflowManager:
             raw_json_match = re.search(raw_json_pattern, content, re.DOTALL)
             if raw_json_match:
                 try:
-                    json_data = json.loads(raw_json_match.group(1))
+                    json_data = json.loads(raw_json_match.group(1), strict=False)
                     text_before = content[:raw_json_match.start()].strip()
                     text_after = content[raw_json_match.end():].strip()
                     logger.debug(f"WorkflowManager: Found raw JSON object for agent '{agent.agent_id}'")
-                except json.JSONDecodeError:
-                    pass
+                except json.JSONDecodeError as e:
+                    logger.debug(f"WorkflowManager: Raw JSON object failed to parse: {e}")
 
         if json_data is None or not isinstance(json_data, dict):
             return None  # No valid JSON found; caller should try XML fallback

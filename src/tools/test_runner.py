@@ -19,7 +19,7 @@ class TestRunnerTool(BaseTool):
         ToolParameter(name="timeout", type="integer", description="Timeout in seconds (default 30, max 120).", required=False),
     ]
 
-    async def execute(self, agent_id: str, agent_sandbox_path: Path, **kwargs: Any) -> Dict[str, Any]:
+    async def execute(self, agent_id: str, agent_sandbox_path: Path, project_name: Optional[str] = None, session_name: Optional[str] = None, **kwargs: Any) -> Any:
         command = kwargs.get("command")
         if not command:
             return {"status": "error", "message": "Missing required 'command' parameter."}

@@ -11,6 +11,35 @@
     <!-- Example: <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css"> -->
 </head>
 <body>
+    <!-- Authentication Overlay -->
+    <div id="auth-view">
+        <div class="auth-card">
+            <h1>TrippleEffect</h1>
+            <p class="auth-subtitle">Multi-Agent Framework</p>
+            <div class="auth-tabs">
+                <button class="auth-tab active" data-tab="login">Sign In</button>
+                <button class="auth-tab" data-tab="register">Register</button>
+            </div>
+            <form id="login-form" class="auth-form active">
+                <label for="login-username">Username</label>
+                <input type="text" id="login-username" placeholder="Enter username" required minlength="3" autocomplete="username">
+                <label for="login-password">Password</label>
+                <input type="password" id="login-password" placeholder="Enter password" required minlength="6" autocomplete="current-password">
+                <div id="login-error" class="auth-error"></div>
+                <button type="submit" class="auth-submit-btn">Sign In</button>
+            </form>
+            <form id="register-form" class="auth-form">
+                <label for="register-username">Username</label>
+                <input type="text" id="register-username" placeholder="Choose a username" required minlength="3" pattern="^[a-zA-Z0-9_-]+$" autocomplete="username">
+                <label for="register-password">Password</label>
+                <input type="password" id="register-password" placeholder="Choose a password (min 6 chars)" required minlength="6" autocomplete="new-password">
+                <div id="register-error" class="auth-error"></div>
+                <button type="submit" class="auth-submit-btn">Create Account</button>
+                <p class="auth-info" id="register-info"></p>
+            </form>
+        </div>
+    </div>
+
     <!-- Main Application Container -->
     <div id="app-container">
 
@@ -52,6 +81,11 @@
                          </div>
                          <div class="project-tasks-container">
                               <h2>Projects & Tasks</h2>
+                              <div class="project-controls" id="project-controls">
+                                  <button id="project-start-button" class="project-ctrl-btn project-ctrl-start" title="Resume active project">▶️ Start</button>
+                                  <button id="project-stop-button" class="project-ctrl-btn project-ctrl-stop" title="Pause active project">⏸️ Stop</button>
+                                  <button id="project-download-button" class="project-ctrl-btn project-ctrl-download" title="Download project archive">📦 Download</button>
+                              </div>
                               <div id="project-tasks-content">
                                   <span class="status-placeholder">Waiting for tasks...</span>
                               </div>
@@ -129,6 +163,7 @@
 
                 <div class="session-section text-center mt-4" style="text-align: center; margin-top: 1.5rem;">
                     <h3>System Controls</h3>
+                    <button id="session-logout-button" class="btn btn-secondary w-100 font-weight-bold" style="background-color: #6c757d; color: white; border: none; padding: 10px; border-radius: 5px; cursor: pointer; display: block; width: 100%; margin-bottom: 10px;">Logout</button>
                     <button id="shutdown-server-button" class="btn btn-danger w-100 font-weight-bold" style="background-color: #dc3545; color: white; border: none; padding: 10px; border-radius: 5px; cursor: pointer; display: block; width: 100%;">Shutdown Framework</button>
                     <p class="text-muted mt-2" style="font-size: 0.8em; margin-top: 5px; color: #6c757d;">Gracefully closes db connections, cleans up instances, and shuts down.</p>
                 </div>
@@ -145,7 +180,7 @@
             <button data-view="internal-comms-view" class="nav-button" title="Internal Comms">📈</button> <!-- Renamed title from Logs -->
             <button data-view="session-view" class="nav-button" title="Project/Session">💾</button>
             <button data-view="config-view" class="nav-button" title="Config">⚙️</button>
-            <!-- Logs button removed -->
+            <button id="logout-button" title="Logout">🚪</button>
         </nav>
 
     </div> <!-- /#app-container -->
@@ -155,6 +190,20 @@
          <div class="modal-content"> <span class="close-button" onclick="window.uiModule.closeModal('agent-modal')">×</span> <h3 id="modal-title">Add Agent</h3> <form id="agent-form"> <input type="hidden" id="edit-agent-id" value=""> <label for="agent-id">Agent ID:</label> <input type="text" id="agent-id" name="agent_id" required pattern="^[a-zA-Z0-9_-]+$" title="Alphanumeric, underscores, hyphens only"> <label for="persona">Persona:</label> <input type="text" id="persona" name="persona"> <label for="provider">Provider:</label> <select id="provider" name="provider" required> <option value="openrouter">OpenRouter</option> <option value="ollama">Ollama</option> <option value="openai">OpenAI</option> </select> <label for="model">Model:</label> <input type="text" id="model" name="model" required> <label for="temperature">Temperature:</label> <input type="number" id="temperature" name="temperature" step="0.1" min="0" max="2.0" value="0.7"> <label for="system_prompt">System Prompt:</label> <textarea id="system_prompt" name="system_prompt" rows="4"></textarea> <div class="modal-actions"> <button type="submit" id="save-agent-button">Save Agent</button> <button type="button" onclick="window.uiModule.closeModal('agent-modal')">Cancel</button> </div> <p class="restart-note">Note: Static config changes require application restart.</p> </form> </div>
     </div>
     <!-- Override Modal Removed -->
+
+    <!-- Download Scope Modal -->
+    <div id="download-scope-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <span class="close-button" onclick="window.uiModule.closeModal('download-scope-modal')">&times;</span>
+            <h3>Download Project</h3>
+            <p style="color: var(--text-color-secondary); margin-bottom: 18px;">Choose what to include in the download:</p>
+            <div class="modal-actions" style="display: flex; flex-direction: column; gap: 10px; text-align: center;">
+                <button type="button" id="download-workspace-btn" class="project-ctrl-btn project-ctrl-download" style="width: 100%; padding: 12px;">📁 Workspace Only<br><small style="opacity:0.7">Just the shared_workspace code output</small></button>
+                <button type="button" id="download-full-btn" class="project-ctrl-btn project-ctrl-start" style="width: 100%; padding: 12px;">📦 Full Session<br><small style="opacity:0.7">All session data, tasks, and workspace</small></button>
+                <button type="button" onclick="window.uiModule.closeModal('download-scope-modal')" style="margin-top: 5px; padding: 8px; background: var(--text-color-muted); border: none; border-radius: 4px; cursor: pointer; color: var(--text-color-primary);">Cancel</button>
+            </div>
+        </div>
+    </div>
 
     <!-- *** UPDATED SCRIPT TAG *** -->
     <script type="module" src="/static/js/main.js"></script>

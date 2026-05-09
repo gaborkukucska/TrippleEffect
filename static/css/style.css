@@ -691,6 +691,48 @@ body {
 .task-item.prog-finished { border-left-color: var(--accent-color-green); }
 .task-item.prog-finished .task-prog { background-color: var(--accent-color-green); }
 
+/* --- Project Lifecycle Controls --- */
+.project-controls {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 8px;
+    padding: 4px 0;
+}
+.project-ctrl-btn {
+    flex: 1;
+    padding: 6px 8px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.8em;
+    font-weight: 600;
+    color: white;
+    transition: filter 0.15s ease, transform 0.1s ease;
+    text-align: center;
+    white-space: nowrap;
+}
+.project-ctrl-btn:hover {
+    filter: brightness(1.2);
+}
+.project-ctrl-btn:active {
+    transform: scale(0.97);
+}
+.project-ctrl-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    filter: none;
+    transform: none;
+}
+.project-ctrl-start {
+    background-color: var(--accent-color-green);
+}
+.project-ctrl-stop {
+    background-color: var(--accent-color-orange);
+}
+.project-ctrl-download {
+    background-color: var(--accent-color-2);
+}
+
 /* --- Modal Styling --- */
 .modal {
     display: none;
@@ -1033,4 +1075,170 @@ body {
 #internal-comms-area[data-filter-cg="false"] .message[data-category="cg"],
 #internal-comms-area[data-filter-error="false"] .message[data-category="error"] {
     display: none !important;
+}
+
+/* --- Authentication View --- */
+#auth-view {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 9999;
+    background: linear-gradient(135deg, #0a0a1a 0%, #1a1a3e 40%, #0d2137 70%, #0a0a1a 100%);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-direction: column;
+}
+#auth-view.hidden {
+    display: none;
+}
+
+.auth-card {
+    background: rgba(30, 30, 50, 0.85);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(100, 100, 200, 0.15);
+    border-radius: 16px;
+    padding: 40px 35px 35px;
+    width: 90%;
+    max-width: 400px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 80px rgba(13, 110, 253, 0.05);
+}
+
+.auth-card h1 {
+    text-align: center;
+    margin: 0 0 8px 0;
+    font-size: 1.8em;
+    color: #e0e0e0;
+    letter-spacing: 1px;
+}
+
+.auth-card .auth-subtitle {
+    text-align: center;
+    color: var(--text-color-muted);
+    font-size: 0.9em;
+    margin-bottom: 25px;
+}
+
+.auth-tabs {
+    display: flex;
+    border-bottom: 2px solid var(--border-color);
+    margin-bottom: 25px;
+}
+
+.auth-tab {
+    flex: 1;
+    background: none;
+    border: none;
+    color: var(--text-color-muted);
+    padding: 10px;
+    font-size: 1em;
+    font-weight: 600;
+    cursor: pointer;
+    transition: color 0.2s, border-bottom 0.2s;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+}
+
+.auth-tab:hover {
+    color: var(--text-color-primary);
+}
+
+.auth-tab.active {
+    color: var(--accent-color-1);
+    border-bottom-color: var(--accent-color-1);
+}
+
+.auth-form {
+    display: none;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.auth-form.active {
+    display: flex;
+}
+
+.auth-form label {
+    font-size: 0.85em;
+    color: var(--text-color-secondary);
+    font-weight: 600;
+    margin-bottom: -8px;
+}
+
+.auth-form input {
+    padding: 12px 14px;
+    border: 1px solid rgba(100, 100, 200, 0.2);
+    background: rgba(20, 20, 40, 0.6);
+    color: var(--text-color-primary);
+    border-radius: 8px;
+    font-size: 1em;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.auth-form input:focus {
+    outline: none;
+    border-color: var(--accent-color-1);
+    box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.15);
+}
+
+.auth-form input::placeholder {
+    color: var(--text-color-muted);
+}
+
+.auth-submit-btn {
+    padding: 12px;
+    background: linear-gradient(135deg, var(--accent-color-1), #0b5ed7);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 1em;
+    font-weight: 700;
+    cursor: pointer;
+    transition: opacity 0.2s, transform 0.1s;
+    margin-top: 8px;
+    letter-spacing: 0.5px;
+}
+
+.auth-submit-btn:hover {
+    opacity: 0.9;
+}
+
+.auth-submit-btn:active {
+    transform: scale(0.98);
+}
+
+.auth-submit-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.auth-error {
+    color: var(--accent-color-red);
+    font-size: 0.85em;
+    text-align: center;
+    min-height: 1.2em;
+    padding: 4px;
+}
+
+.auth-info {
+    color: var(--text-color-muted);
+    font-size: 0.8em;
+    text-align: center;
+    margin-top: 4px;
+}
+
+/* Logout button in nav */
+#logout-button {
+    color: var(--text-color-muted);
+    font-size: 0.85em;
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 5px 10px;
+}
+#logout-button:hover {
+    color: var(--accent-color-red);
 }

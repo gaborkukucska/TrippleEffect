@@ -25,3 +25,12 @@ GitPython>=3.1.43 # Added for Git integration in FileSystemTool
 diff-match-patch>=20230430 # Added for Aider-style Search/Replace in FileSystemTool
 tzdata # Fallback timezone data for environments like Termux missing system zoneinfo
 libzim>=3.4.0 # Dealing with .zim files for knowledge
+
+# Auth Dependencies
+bcrypt<4.1.0
+pyjwt>=2.8.0
+passlib[bcrypt]>=1.7.4
+python-multipart>=0.0.9
+
+# For the asset download tool
+aiofiles
