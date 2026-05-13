@@ -175,6 +175,7 @@ class ManageTeamTool(BaseTool):
             if missing: 
                 error_message = (
                     f"Error: Missing required parameter(s) for 'create_agent': {', '.join(missing)}.\n"
+                    f"You MUST provide the 'role' explicitly based on your kickoff plan. Do not omit these required JSON fields.\n"
                     f"Example:\n"
                     f"{{\n"
                     f"  \"action\": \"create_agent\",\n"

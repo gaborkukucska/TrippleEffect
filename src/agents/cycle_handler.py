@@ -1858,10 +1858,10 @@ class AgentCycleHandler:
                                     logger.warning(f"Agent {agent.agent_id} attempted to use send_message alongside {other_tool_names}. Blocking send_message only.")
                                     send_message_blocked_by_multi_tool = True
                                     error_msg = (
-                                        f"ERROR: Your other tool call(s) ({', '.join(other_tool_names)}) were executed successfully. "
-                                        f"CRITICAL INSTRUCTION: You attempted to use send_message alongside other active tool calls. "
-                                        f"STOP attempting this combination. You must ONLY use send_message by itself, or alongside a call to the 'request_state' tool. "
-                                        f"Your message was DROPPED. If your task is complete, your ONLY valid action in the next cycle is to call request_state to transition to 'worker_report' (or your appropriate next state). DO NOT try to re-send this message while in the 'worker_work' state."
+                                        f"ERROR: Your other tool call(s) ({', '.join(other_tool_names)}) were executed successfully, but your message was DROPPED. "
+                                        f"CRITICAL RULE: You CANNOT use `send_message` at the same time as other action tools. "
+                                        f"Why? You must wait to read the results of your actions before reporting on them. "
+                                        f"What to do: Review the results of your successful tools above. Then, in your NEXT turn, use `send_message` alone (or alongside `request_state`) to communicate the outcome."
                                     )
                                     result_dict = {
                                         "status": "error",

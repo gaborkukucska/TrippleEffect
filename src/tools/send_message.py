@@ -109,6 +109,11 @@ class SendMessageTool(BaseTool):
         *   Your **Project Manager (PM)** — for status reports, questions, and task completion.
         *   **Other workers on your team** — for direct coordination, asking for help, sharing context, or requesting reviews. You do NOT need to go through the PM to talk to peers.
 
+        **CRITICAL RULE: NO MULTI-TOOLING WITH SEND_MESSAGE**
+        You CANNOT use `send_message` in the same turn as other action tools (like `file_system`, `project_management`, `manage_team`). 
+        *Why?* You must wait to see the actual results of your actions before reporting on them.
+        *How:* Execute your action tools first. Then, in your NEXT turn, use `send_message` alone (or alongside `request_state`) to communicate the outcome.
+
         **Parameters:**
 
         *   `<target_agent_id>` (string, required): The unique ID of the agent to send the message to.

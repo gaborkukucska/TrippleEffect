@@ -127,10 +127,10 @@
 - **Fix:** (RESOLVED) Relaxed context injection controls in `workflow_manager.py` to ensure `worker_report` and `worker_wait` states consistently receive `_injected_task_description`.
 - **Files:** `src/agents/workflow_manager.py`
 
-### +22. PM send_message Constraint Blocking
+### +22. PM send_message Constraint Blocking (Reverted Design)
 - **Severity:** Critical (P0)
-- **Description:** PM agents attempting to update tasks and immediately notify workers in the same turn triggered a multi-tool block, preventing workers from waking up.
-- **Fix:** (RESOLVED) Exempted Project Managers (`pm`) from the multi-tool isolation constraint in `cycle_handler.py`. PMs can now seamlessly pair tool actions with `send_message`.
+- **Description:** Previously, we tried exempting Project Managers (`pm`) from the multi-tool isolation constraint. However, log analysis confirmed it is safer to NOT allow the PM (or any agent) to send messages concurrently with other tools. The agent must receive and read the tool call outcomes before deciding what to communicate.
+- **Fix:** (RESOLVED) Reinstated the strict `send_message` multi-tool constraint for ALL agents, including PMs. Enhanced the error message injected by `cycle_handler.py` to explicitly explain the reasoning ("Why? You must wait to read the results of your actions before reporting on them"), and updated the `send_message` tool documentation to warn against multi-tooling upfront.
 - **Files:** `src/agents/cycle_handler.py`
 
 ### +21. Task Tag Auto-Assignment Disconnect

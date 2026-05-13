@@ -208,6 +208,10 @@ class ProjectManagementTool(BaseTool):
             "view_tasks": "list_tasks",
             "start_task": "modify_task",
             "begin_task": "modify_task",
+            "delete_task": "modify_task",
+            "delete": "modify_task",
+            "remove_task": "modify_task",
+            "remove": "modify_task",
         }
         
         if not action:
@@ -223,6 +227,11 @@ class ProjectManagementTool(BaseTool):
             if action in action_suggestions:
                 corrected_action = action_suggestions[action]
                 logger.info(f"ProjectManagementTool: Auto-correcting action '{action}' -> '{corrected_action}'")
+                
+                if action in ["delete_task", "delete", "remove_task", "remove"]:
+                    kwargs["task_progress"] = "deleted"
+                    logger.info("ProjectManagementTool: Auto-injected task_progress='deleted' for deletion intent.")
+                    
                 action = corrected_action
             else:
                 return {
