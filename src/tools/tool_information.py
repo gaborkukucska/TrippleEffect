@@ -107,6 +107,7 @@ class ToolInformationTool(BaseTool):
             "tool_information": "System",
             "system_help": "System",
             "web_search": "Web",
+            "asset_search": "Web",
             "github_tool": "Web"
         }
 
@@ -161,7 +162,7 @@ class ToolInformationTool(BaseTool):
         return tool_auth_level == AGENT_TYPE_WORKER
 
     def _get_info(self, agent_id: str, agent_type: str, tool_name_req: str, sub_action_req: Optional[str], manager: 'AgentManager') -> Dict[str, Any]:
-        CATEGORY_MAP = {"project_management": "Project", "manage_team": "Team", "send_message": "Communication", "file_system": "FileSystem", "code_editor": "FileSystem", "command_executor": "System", "knowledge_base": "System", "tool_information": "System", "system_help": "System", "web_search": "Web", "github_tool": "Web"}
+        CATEGORY_MAP = {"project_management": "Project", "manage_team": "Team", "send_message": "Communication", "file_system": "FileSystem", "code_editor": "FileSystem", "command_executor": "System", "knowledge_base": "System", "tool_information": "System", "system_help": "System", "web_search": "Web", "github_tool": "Web", "asset_search": "Web"}
         
         if tool_name_req.lower() == 'all':
             usage_info = []

@@ -916,7 +916,7 @@ class ConstitutionalGuardianHealthMonitor:
                "LOG PATTERN DETECTED: Multiple consecutive tool_information calls with action='list_tools'\\n\\n"
                "MANDATORY LOOP-BREAKING INSTRUCTIONS:\\n"
                "1. IMMEDIATELY STOP calling tool_information with list_tools - you already have the complete tool list\\n"
-               "2. AVAILABLE TOOLS: file_system, github_tool, knowledge_base, manage_team, project_management, send_message, system_help, tool_information, web_search\\n"
+               "2. AVAILABLE TOOLS: asset_search, file_system, github_tool, knowledge_base, manage_team, project_management, send_message, system_help, tool_information, web_search\\n"
                "3. CHOOSE ONE DIFFERENT TOOL (not tool_information) and test it with a simple action\\n"
                "4. EXAMPLE VALID RESPONSE: `{\"action\": \"list\", \"path\": \".\"}`\\n"
                "5. AFTER TESTING ONE TOOL: Provide summary and call the 'request_state' tool with state='conversation'\\n\\n"

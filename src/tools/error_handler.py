@@ -259,7 +259,7 @@ class ToolErrorHandler:
         common_tool_alternatives = {
             "file": ["file_system"],
             "files": ["file_system"],
-            "search": ["web_search", "knowledge_base"],
+            "search": ["web_search", "knowledge_base", "asset_search"],
             "google": ["web_search"],
             "team": ["manage_team"],
             "agents": ["manage_team"],
