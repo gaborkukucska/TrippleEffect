@@ -143,7 +143,7 @@ class Agent:
         self._pre_report_check_state: Optional[str] = None # Tracks previous state before auto-switching to report check
         self.message_inbox: List[MessageDict] = [] # Inbox for messages received while busy
         self.unassigned_tasks_summary: List[Dict[str, Any]] = []
-        self.read_message_ids: set = set() # Track read messages
+        self.read_message_ids: Dict[str, float] = {} # Track read messages with TTL
         self.active_task_id: Optional[str] = None # Currently active task UUID for UI tracking
 
         # Dynamic tracking attributes set by CycleHandler (declared here for type safety)
@@ -190,6 +190,17 @@ class Agent:
         self.current_tool_info = tool_info if new_status == AGENT_STATUS_EXECUTING_TOOL else None
         self.current_plan = plan_info if new_status == AGENT_STATUS_PLANNING else None
         if self.manager: asyncio.create_task(self.manager.push_agent_status_update(self.agent_id))
+
+    def mark_message_read(self, message_id: str) -> None:
+        """Mark a message as read with a timestamp for TTL pruning."""
+        self.read_message_ids[message_id] = time.time()
+        # Prune entries older than 1 hour (3600 seconds)
+        if len(self.read_message_ids) > 500:
+            cutoff = time.time() - 3600
+            self.read_message_ids = {
+                mid: ts for mid, ts in self.read_message_ids.items()
+                if ts > cutoff
+            }
 
     def set_state(self, new_state: str):
         if self.state != new_state: 

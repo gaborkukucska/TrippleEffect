@@ -114,7 +114,7 @@ class AgentCycleHandler:
                         try:
                             # Resolve aliases (workers use short IDs like "15", not UUIDs)
                             aliases = pm_tool._load_aliases(self._manager.current_project, self._manager.current_session)
-                            resolved_id = str(task_id).strip()
+                            resolved_id = task_id.strip() if task_id else ""
                             if resolved_id in aliases:
                                 resolved_id = aliases[resolved_id]
                             
@@ -738,6 +738,22 @@ class AgentCycleHandler:
         return None
 
     async def run_cycle(self, agent: Agent, retry_count: int = 0): # pyright: ignore[reportGeneralTypeIssues]
+        import asyncio
+        if not hasattr(self._manager, '_agent_cycle_locks'):
+            self._manager._agent_cycle_locks = {}
+            
+        if agent.agent_id not in self._manager._agent_cycle_locks:
+            self._manager._agent_cycle_locks[agent.agent_id] = asyncio.Lock()
+            
+        lock = self._manager._agent_cycle_locks[agent.agent_id]
+        if lock.locked():
+            logger.warning(f"CycleHandler: Skipping run_cycle for Agent '{agent.agent_id}' - already running.")
+            return
+            
+        async with lock:
+            await self._run_cycle_internal(agent, retry_count)
+
+    async def _run_cycle_internal(self, agent: Agent, retry_count: int = 0): # pyright: ignore[reportGeneralTypeIssues]
         logger.critical(f"!!! CycleHandler: run_cycle TASK STARTED for Agent '{agent.agent_id}' (Retry: {retry_count}) !!!")
         
         # --- NEW: Watchdog for Agent Stalls (cycles without state transitions) ---
@@ -1903,7 +1919,7 @@ class AgentCycleHandler:
                                     if tool_name == "mark_message_read":
                                         msg_id = tool_args.get("message_id")
                                         if msg_id:
-                                            agent.read_message_ids.add(msg_id)
+                                            agent.mark_message_read(msg_id)
                                             logger.info(f"CycleHandler: Marked message {msg_id} as read for agent {agent.agent_id}")
                                 # ... (db log tool result, UI send) ...
                                 if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="tool", content=result_content_str, tool_results=[result_dict])
@@ -2056,7 +2072,7 @@ class AgentCycleHandler:
                                 created_count = len(current_worker_agents) # Use the actual count from the state manager
                                 # *** FIX: Corrected variable name from kick_off_task_count_for_build to target_worker_agents_for_build ***
                                 target_workers = getattr(agent, 'target_worker_agents_for_build', -1)
-                                max_workers_allowed = settings.MAX_WORKERS_PER_PM
+                                max_workers_allowed = settings.MAX_WORKERS_PER_TEAM
 
                                 # Construct the context block for the message
                                 team_status_context = (
@@ -2485,9 +2501,14 @@ class AgentCycleHandler:
                             # --- END: Worker Auto-Save File Feature ---
     
                             if final_content and agent.agent_id != CONSTITUTIONAL_GUARDIAN_AGENT_ID:
-                                # Skip CG review for tool-call-only responses (framework operations, not user-facing text)
-                                if re.match(r'^\s*(<tool_call>.*?</tool_call>\s*)+$', final_content, re.DOTALL):
-                                    logger.info(f"CycleHandler: Skipping CG review for tool-call-only response from '{agent.agent_id}'")
+                                # Check if there is a command_executor tool call
+                                has_command_execution = False
+                                if "<tool_call>" in final_content and "command_executor" in final_content:
+                                    has_command_execution = True
+
+                                # Skip CG review for tool-call-only responses, UNLESS they involve command execution
+                                if not has_command_execution and re.match(r'^\s*(<tool_call>.*?</tool_call>\s*)+$', final_content, re.DOTALL):
+                                    logger.info(f"CycleHandler: Skipping CG review for non-command tool-call-only response from '{agent.agent_id}'")
                                     cg_verdict = "<OK/>"
                                 elif agent.agent_id == "admin_ai" and len(agent.message_history) <= 3:
                                     logger.info(f"CycleHandler: Skipping CG review for Admin AI's initial startup greeting to prevent UI race conditions.")

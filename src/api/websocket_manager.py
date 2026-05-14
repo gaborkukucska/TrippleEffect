@@ -118,7 +118,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 message_data = json.loads(data)
                 message_type = message_data.get("type")
 
-                if message_type == "submit_user_override":
+                if message_type == "heartbeat":
+                    # Respond to client heartbeat to maintain connection
+                    await websocket.send_text(json.dumps({"type": "heartbeat_ack"}))
+                elif message_type == "submit_user_override":
                     logger.info(f"Received user override submission from {client_host}.")
                     # Pass the override data to the AgentManager asynchronously
                     asyncio.create_task(agent_manager_instance.handle_user_override(message_data))

@@ -40,3 +40,9 @@ principles:
     text: "Agents should strictly adhere to their defined roles (e.g., Admin, PM, Worker) and not attempt to perform actions or access data outside their designated responsibilities."
     applies_to: ["all_agents"]
     enabled: false # Example of a disabled principle
+
+  - id: "GP008"
+    name: "Safe Command Execution"
+    text: "Agents MUST be extremely cautious when executing terminal commands via the 'command_executor' tool. Any commands that mutate the file system outside of allowed boundaries, attempt to communicate with unauthorized external networks, run potentially malicious or unknown binaries, or attempt privilege escalation must be strictly blocked and flagged for user review. When in doubt about the safety of a command, flag it for confirmation."
+    applies_to: ["worker_ai"]
+    enabled: true

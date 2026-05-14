@@ -59,7 +59,13 @@ class CommandExecutionTool(BaseTool):
         session_name: Optional[str] = None,
         **kwargs: Any
     ) -> Dict[str, Any]:
-        
+        from src.config.settings import settings
+        if getattr(settings, "DISABLE_COMMAND_EXECUTION", False):
+            return {
+                "status": "error",
+                "message": "Command execution is globally disabled by the administrator (DISABLE_COMMAND_EXECUTION is set)."
+            }
+            
         action = kwargs.get("action")
         command = kwargs.get("command")
         scope = kwargs.get("scope", "shared").lower()

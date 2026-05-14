@@ -94,7 +94,7 @@ async def _select_best_available_model( # Added current_rr_indices_override to s
     logger.info("Attempting model selection: API-first Round-Robin strategy...")
     
     # --- Move import here to avoid circular dependency ---
-    from src.agents.failover_handler import _models_without_tool_support
+    from src.agents.failover_handler import is_model_blacklisted
     # --- End Import ---
 
     local_provider_type_preference = ["ollama", "vllm", "litellm"]
@@ -145,7 +145,7 @@ async def _select_best_available_model( # Added current_rr_indices_override to s
                 m_id = str(m_info.get("id", "")).lower()
                 if not m_id: continue
                 # Check tool support blacklist (we only compare model_id strings effectively against what failover tracks)
-                if (chosen_specific_instance, m_id) in _models_without_tool_support:
+                if is_model_blacklisted(chosen_specific_instance, m_id):
                     logger.debug(f"API-first RR: Skipping '{m_id}' on '{chosen_specific_instance}': known to lack tool support.")
                     continue
                 # Heuristic check
@@ -202,7 +202,7 @@ async def _select_best_available_model( # Added current_rr_indices_override to s
             m_id = str(model_data_comp.get("id", "")).lower()
             if not m_id: continue
             
-            if (specific_provider_name_comp, m_id) in _models_without_tool_support:
+            if is_model_blacklisted(specific_provider_name_comp, m_id):
                 logger.debug(f"Comprehensive: Skipping '{m_id}' on '{specific_provider_name_comp}': known to lack tool support.")
                 continue
             if any(bs in m_id for bs in bad_strings):

@@ -12,7 +12,7 @@ from src.agents.constants import (
     ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_PLANNING, ADMIN_STATE_WORK_DELEGATED, ADMIN_STATE_WORK, ADMIN_STATE_STANDBY,
     PM_STATE_STARTUP, PM_STATE_MANAGE, PM_STATE_WORK, PM_STATE_AUDIT, PM_STATE_STANDBY,
     # Add new PM states for checks
-    PM_STATE_PLAN_DECOMPOSITION, PM_STATE_ACTIVATE_WORKERS, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_REPORT_CHECK,
+    PM_STATE_ACTIVATE_WORKERS, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_REPORT_CHECK,
     WORKER_STATE_WAIT, WORKER_STATE_WORK, WORKER_STATE_TEST, WORKER_STATE_REPORT, WORKER_STATE_DECOMPOSE
 )
 
@@ -199,6 +199,15 @@ class NextStepScheduler:
                     if getattr(agent, '_consecutive_failed_cycles', 0) >= 3:
                         logger.critical(f"NextStepScheduler: Worker '{agent_id}' had {getattr(agent, '_consecutive_failed_cycles')} consecutive failed cycles. FORCING transition to report state.")
                         if hasattr(self._manager, 'workflow_manager'):
+                            if hasattr(self._manager, 'loop_coordinator') and not self._manager.loop_coordinator.should_intervene(agent_id, "emergency_override"):
+                                logger.warning(f"NextStepScheduler: Emergency override for '{agent_id}' blocked by LoopCoordinator.")
+                                setattr(agent, '_consecutive_failed_cycles', 0)
+                                agent.set_status(AGENT_STATUS_IDLE)
+                                await self._schedule_new_cycle(agent, 0)
+                                return
+                            if hasattr(self._manager, 'loop_coordinator'):
+                                self._manager.loop_coordinator.record_intervention(agent_id, "emergency_override")
+                                
                             self._manager.workflow_manager.change_state(agent, WORKER_STATE_REPORT)
                             setattr(agent, '_consecutive_failed_cycles', 0)
                             override_msg = "[EMERGENCY SYSTEM OVERRIDE]: You have failed to execute tools successfully for 3 consecutive cycles. The framework has automatically transitioned you to the 'worker_report' state. You MUST now summarize the issues you encountered and report back to the PM."
@@ -220,6 +229,15 @@ class NextStepScheduler:
                     
                 if is_stuck_in_loop:
                     logger.critical(f"NextStepScheduler: Agent '{agent_id}' is stuck in a loop in persistent state '{agent.state}'. FORCING intervention.")
+                    if hasattr(self._manager, 'loop_coordinator') and not self._manager.loop_coordinator.should_intervene(agent_id, "stuck_loop_nudge"):
+                        logger.warning(f"NextStepScheduler: Loop override for '{agent_id}' blocked by LoopCoordinator cooldown.")
+                        setattr(agent, '_duplicate_tool_call_count', 0)
+                        agent.set_status(AGENT_STATUS_IDLE)
+                        await self._schedule_new_cycle(agent, 0)
+                        return
+                    if hasattr(self._manager, 'loop_coordinator'):
+                        self._manager.loop_coordinator.record_intervention(agent_id, "stuck_loop_nudge")
+                        
                     if agent.agent_type == AGENT_TYPE_WORKER and agent.state in [WORKER_STATE_WORK, WORKER_STATE_TEST, WORKER_STATE_REPORT]:
                         if hasattr(self._manager, 'workflow_manager'):
                             try:
@@ -297,7 +315,7 @@ class NextStepScheduler:
                 agent.set_status(AGENT_STATUS_IDLE)
                 await self._schedule_new_cycle(agent, 0)
             elif agent.agent_type == AGENT_TYPE_PM and \
-                 agent.state in [PM_STATE_PLAN_DECOMPOSITION, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS]:
+                 agent.state in [PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS]:
                 logger.info(f"NextStepScheduler: PM agent '{agent_id}' in state '{agent.state}' completed cycle. Reactivating to enforce transitional workflow.")
                 if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear()
                 if agent.status != AGENT_STATUS_ERROR:
@@ -473,9 +491,8 @@ class NextStepScheduler:
                     completion_message = (
                         "[EMERGENCY SYSTEM OVERRIDE]: You have ignored the previous intervention about the tool_information loop. "
                         "The system is now automatically completing your task.\n\n"
-                        "AUTOMATIC TASK COMPLETION: The Admin AI has successfully identified 9 available tools through the tool_information system. "
-                        "The tools include: file_system, github_tool, knowledge_base, manage_team, project_management, send_message, "
-                        "system_help, tool_information, and web_search. Tool testing has been completed.\n\n"
+                        "AUTOMATIC TASK COMPLETION: The Admin AI has successfully identified the available tools through the tool_information system. "
+                        f"The tools include: {', '.join(self._manager.tool_executor.tools.keys()) if hasattr(self._manager, 'tool_executor') else 'all configured tools'}. Tool testing has been completed.\n\n"
                         "MANDATORY: Request state change immediately by calling the 'request_state' tool with state='conversation'"
                     )
                     
@@ -511,7 +528,7 @@ class NextStepScheduler:
                         "LOOP DETECTION: Multiple consecutive tool_information calls with action='list_tools' detected.\n\n"
                         "MANDATORY INSTRUCTIONS TO BREAK THE LOOP:\n"
                         "1. STOP calling tool_information with list_tools - you already have the tool list\n"
-                        "2. You have these tools available: file_system, github_tool, knowledge_base, manage_team, project_management, send_message, system_help, tool_information, web_search\n"
+                        f"2. You have these tools available: {', '.join(self._manager.tool_executor.tools.keys()) if hasattr(self._manager, 'tool_executor') else 'all configured tools'}\n"
                         "3. Choose ONE different tool (NOT tool_information) and test it\n"
                         "4. Example: `{\"action\": \"list\", \"path\": \".\"}`\n"
                         "5. After testing ONE tool, provide a summary and call the 'request_state' tool with state='conversation'\n\n"
@@ -622,8 +639,8 @@ class NextStepScheduler:
                         "I will now provide you with a MANDATORY response template.\n\n"
                         "YOUR MANDATORY RESPONSE (copy exactly):\n\n"
                         "I understand I have been stuck in a loop. I will now complete my task by providing a summary. "
-                        "Based on my attempts, I have successfully identified that I have access to 9 tools including file_system, "
-                        "project_management, send_message, and others. I have completed testing the tool_information tool multiple times. "
+                        f"Based on my attempts, I have successfully identified that I have access to tools including {', '.join(self._manager.tool_executor.tools.keys()) if hasattr(self._manager, 'tool_executor') else 'all configured tools'}. "
+                        "I have completed testing the tool_information tool multiple times. "
                         "My task was to test all available tools and I have made progress on this. "
                         "I will now request a state change to complete this task.\n\n"
                         "Call the 'request_state' tool with state='conversation'\n\n"
@@ -635,7 +652,7 @@ class NextStepScheduler:
                         "[FINAL SYSTEM OVERRIDE]: You have failed to respond appropriately after multiple interventions. "
                         "The system is now automatically completing your task.\n\n"
                         "SYSTEM AUTO-COMPLETION: The Admin AI has tested the tool_information tool successfully. "
-                        "All available tools have been identified. Task completion summary: 9 tools are available and functional. "
+                        "All available tools have been identified. Task completion summary: tools are available and functional. "
                         "The agent has demonstrated the ability to access and use the tool system.\n\n"
                         "FORCED STATE TRANSITION INITIATED."
                     )

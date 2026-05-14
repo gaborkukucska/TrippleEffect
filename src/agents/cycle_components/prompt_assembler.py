@@ -408,8 +408,12 @@ class PromptAssembler:
                 setattr(agent, '_report_safety_check_count', current_count + 1)
                 if getattr(agent, '_report_safety_check_count', 0) > 3:
                     if not getattr(agent, 'read_message_ids', None):
-                        agent.read_message_ids = set()
-                    agent.read_message_ids.update(unread_messages)
+                        agent.read_message_ids = {}
+                    
+                    # Update dictionary with current time for all unread messages
+                    current_time = __import__('time').time()
+                    for unread_msg_id in unread_messages:
+                        agent.read_message_ids[unread_msg_id] = current_time
                     logger.warning(f"Auto-marking {len(unread_messages)} messages as read for '{agent.agent_id}' after 3 failed safety check cycles to break loop.")
                     unread_messages = []
                     setattr(agent, '_report_safety_check_count', 0)

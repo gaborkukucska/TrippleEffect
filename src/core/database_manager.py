@@ -12,6 +12,7 @@ from sqlalchemy import create_engine, Column, Integer, String, Text, Float, Date
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func as sql_func # Alias sql functions
+from sqlalchemy.sql import text # Added for PRAGMA statements
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession # Use Async Engine
 
 # Import settings for DB path and BASE_DIR
@@ -165,6 +166,9 @@ class DatabaseManager:
             async with self._engine.begin() as conn:
                 # await conn.run_sync(Base.metadata.drop_all) # Uncomment to drop tables on startup for testing
                 await conn.run_sync(Base.metadata.create_all)
+                # Enable WAL mode for concurrent read/write performance
+                await conn.execute(text("PRAGMA journal_mode=WAL"))
+                await conn.execute(text("PRAGMA busy_timeout=5000"))
             logger.info("Database tables created/verified successfully.")
 
         except Exception as e:

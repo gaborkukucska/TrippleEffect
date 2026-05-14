@@ -25,7 +25,7 @@ ADMIN_STATE_STANDBY = "admin_standby" # State for Admin AI waiting for user, PM,
 
 # --- PM Agent Workflow State Constants ---
 PM_STATE_STARTUP = "pm_startup" # Initial entry point for a new PM
-PM_STATE_PLAN_DECOMPOSITION = "pm_plan_decomposition" # NEW: For decomposing Admin's plan
+
 PM_STATE_BUILD_TEAM_TASKS = "pm_build_team_tasks"     # NEW: For creating tasks, team, agents
 PM_STATE_ACTIVATE_WORKERS = "pm_activate_workers"   # NEW: For assigning tasks and activating workers
 PM_STATE_MANAGE = "pm_manage" # State for PM monitoring/management tasks (ongoing)

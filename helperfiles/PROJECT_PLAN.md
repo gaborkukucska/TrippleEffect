@@ -1,7 +1,7 @@
 <!-- # START OF FILE helperfiles/PROJECT_PLAN.md -->
 # Project Plan: TrippleEffect
 
-**Version:** 2.48
+**Version:** 2.50
 **Date:** 2026-04-30
 
 ## 1. Project Goals
@@ -574,6 +574,19 @@ This entirely breaks the LLM's autoregressive death spiral by physically moving 
 - Completely upgraded `WebSearchTool` with explicit `action` routing (`search`, `get_page`). The `get_page` action now uses BeautifulSoup and `urllib.parse.urljoin` to extract readable markdown text and outgoing absolute links, enabling multi-step autonomous agent web surfing.
 
 **Files:** `src/api/http_routes.py`, `src/agents/websocket_manager.py`, `static/js/websocket.js`, `src/tools/asset_search_tool.py`, `src/tools/web_search.py`, `src/agents/workflow_manager.py`
+
+#### Phase VI: Framework Stabilization & Security Hardening (May 2026)
+
+**Problem 1 (Resource Exhaustion & Lack of Limits):** A single rogue PM could spam an infinite number of workers, or an Admin could spin up infinite PMs, exhausting system RAM and context windows.
+**Fix 1:** Implemented a robust 3-tier resource limit system (`MAX_PMS_PER_SESSION`, `MAX_TEAMS_PER_SESSION`, `MAX_WORKERS_PER_TEAM`) enforced directly at the `AgentStateManager` and `InteractionHandler` levels.
+
+**Problem 2 (Security & Authentication Incompatibility):** The `passlib` monkeypatch was unstable and unmaintained, and agents could run any shell command without restriction.
+**Fix 2:** Migrated the entire auth flow to native `bcrypt`. Introduced a strict `DISABLE_COMMAND_EXECUTION` global kill-switch. Hardened the `ConstitutionalGuardian` to specifically monitor `command_executor` interactions and flag suspicious shell commands for user review using the new GP008 governance principle. Added a `WebSocket` heartbeat to ensure clean session lifecycles.
+
+**Problem 3 (Watchdog Thrashing & Loops):** Overlapping recovery mechanisms (emergency overrides, periodic checks, standby wakes) caused race conditions. Agents would also hallucinate hardcoded tool lists during loop interventions.
+**Fix 3:** Developed the `LoopCoordinator` to act as an advisory layer with cooldowns, preventing thrashing across the various `NextStepScheduler` and `AgentManager` watchdogs. Implemented dynamic tool list lookups directly from the `ToolExecutor` during interventions. Added a per-agent `asyncio.Lock` mechanism to the cycle handler to serialize event processing and eliminate concurrency race conditions.
+
+**Files:** `src/agents/loop_coordinator.py`, `src/agents/manager.py`, `src/agents/cycle_handler.py`, `src/agents/cycle_components/next_step_scheduler.py`, `src/api/auth.py`, `src/api/websocket_manager.py`
 
 ---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

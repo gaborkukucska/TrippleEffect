@@ -3,6 +3,9 @@ import asyncio
 import json
 import logging
 import time
+import copy
+import os
+import tempfile
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 import copy
@@ -254,5 +257,3 @@ class ModelPerformanceTracker:
         return ranked_list
 
 # --- Helper for atomic writes (needed for save_metrics) ---
-import os
-import tempfile

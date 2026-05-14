@@ -6,13 +6,7 @@ from typing import Optional
 import jwt
 import bcrypt
 
-# Monkey patch for passlib and modern bcrypt compatibility
-if not hasattr(bcrypt, "__about__"):
-    class _About:
-        __version__ = getattr(bcrypt, "__version__", "4.0.1")
-    setattr(bcrypt, "__about__", _About())
 
-from passlib.context import CryptContext
 from fastapi import Request, HTTPException, status, WebSocket
 
 from src.config.settings import settings
@@ -21,17 +15,20 @@ from src.core.database_manager import db_manager, User
 logger = logging.getLogger(__name__)
 
 # --- Password Hashing ---
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 
 def hash_password(password: str) -> str:
     """Hash a plaintext password using bcrypt."""
-    return pwd_context.hash(password)
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
+    return hashed.decode('utf-8')
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a plaintext password against a bcrypt hash."""
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+    except ValueError:
+        return False
 
 
 # --- JWT Token Management ---

@@ -33,8 +33,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Runtime blacklist: (provider, model) pairs that returned "does not support tools".
-# Persists for the lifetime of the process to avoid repeated failures.
-_models_without_tool_support: Set[tuple] = set()
+# Persists for the lifetime of the process to avoid repeated failures, pruned after TTL.
+_models_without_tool_support: Dict[tuple, float] = {}
+
+def is_model_blacklisted(provider: str, model_id: str) -> bool:
+    key = (provider, model_id)
+    if key in _models_without_tool_support:
+        if time.time() - _models_without_tool_support[key] < 3600: # 1 hour TTL
+            return True
+        else:
+            del _models_without_tool_support[key]
+    return False
+
+def add_model_to_blacklist(provider: str, model_id: str):
+    _models_without_tool_support[(provider, model_id)] = time.time()
+
 
 # RAW template patterns that indicate the model has no proper chat template 
 # and therefore likely cannot support tool calling
@@ -123,13 +136,13 @@ async def _select_alternate_models(
         if model_id in tried_models_on_key:
             logger.debug(f"Skipping '{model_id}' for alternates: already in tried_models_on_key.")
             continue
-        if (provider, model_id) in _models_without_tool_support:
+        if is_model_blacklisted(provider, model_id):
             logger.debug(f"Skipping '{model_id}' for alternates: known to lack tool support.")
             continue
         # Pre-filter models with RAW templates (they can't do tool calling)
         if _is_model_raw_template(model_id):
             logger.info(f"Skipping '{model_id}' for alternates: has RAW template (no tool support). Blacklisting.")
-            _models_without_tool_support.add((provider, model_id))
+            add_model_to_blacklist(provider, model_id)
             continue
             
         # Heuristic check: filter out models that are obviously vision/ocr/embedding models if tools are needed
@@ -421,8 +434,8 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
     # --- Detect "does not support tools" errors and blacklist the model ---
     if "does not support tools" in last_error_str.lower():
         blacklist_key = (failed_provider, failed_model)
-        if blacklist_key not in _models_without_tool_support:
-            _models_without_tool_support.add(blacklist_key)
+        if not is_model_blacklisted(*blacklist_key):
+            add_model_to_blacklist(*blacklist_key)
             logger.warning(
                 f"Failover: Blacklisting model '{failed_model}' on provider '{failed_provider}' "
                 f"— it does not support native tool calling. Blacklist size: {len(_models_without_tool_support)}"
@@ -510,7 +523,7 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
             continue
 
         # Check tool support blacklist before trying
-        if (local_provider, original_model) in _models_without_tool_support:
+        if is_model_blacklisted(local_provider, original_model):
             logger.info(f"Pass 1 - Skipping '{original_model}' on '{local_provider}': blacklisted (no tool support).")
             failover_state["tried_models_per_local_provider"][local_provider].add(original_model)
             continue
@@ -608,14 +621,14 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
                 local_model_id_to_try = sorted_model_info["id"]
                 if local_model_id_to_try in tried_on_this_provider: continue
                 # Check tool support blacklist
-                if (local_provider, local_model_id_to_try) in _models_without_tool_support:
+                if is_model_blacklisted(local_provider, local_model_id_to_try):
                     logger.info(f"Failover: Skipping '{local_model_id_to_try}' on '{local_provider}': blacklisted (no tool support).")
                     failover_state["tried_models_per_local_provider"][local_provider].add(local_model_id_to_try)
                     continue
                 # Pre-filter models with RAW templates (they can't do tool calling)
                 if _is_model_raw_template(local_model_id_to_try):
                     logger.info(f"Failover: Skipping '{local_model_id_to_try}' on '{local_provider}': has RAW template (no tool support). Blacklisting.")
-                    _models_without_tool_support.add((local_provider, local_model_id_to_try))
+                    add_model_to_blacklist(local_provider, local_model_id_to_try)
                     failover_state["tried_models_per_local_provider"][local_provider].add(local_model_id_to_try)
                     continue
 

@@ -38,10 +38,15 @@ class AgentStateManager:
             logger.error("Create team failed: Team ID cannot be empty.")
             return False, "Team ID cannot be empty."
         if team_id in self.teams:
-            # --- MODIFIED: Return True if team already exists ---
             logger.warning(f"Create team request: Team '{team_id}' already exists.")
             return True, f"Team '{team_id}' already exists."
             # --- END MODIFICATION ---
+
+        from src.config.settings import settings
+        if len(self.teams) >= settings.MAX_TEAMS_PER_SESSION:
+            msg = f"Session limit reached: Cannot create team '{team_id}'. Maximum teams per session is {settings.MAX_TEAMS_PER_SESSION}."
+            logger.error(msg)
+            return False, msg
 
         self.teams[team_id] = []
         message = f"Team '{team_id}' created successfully."
@@ -118,6 +123,21 @@ class AgentStateManager:
         try:
             # Ensure team list exists before appending (should always be true after create check)
             if team_id not in self.teams: self.teams[team_id] = []
+            
+            from src.config.settings import settings
+            from src.agents.constants import AGENT_TYPE_WORKER
+            agent_instance = self._manager.agents.get(agent_id)
+            if agent_instance and getattr(agent_instance, 'agent_type', '') == AGENT_TYPE_WORKER:
+                worker_count = 0
+                for aid in self.teams[team_id]:
+                    a_inst = self._manager.agents.get(aid)
+                    if a_inst and getattr(a_inst, 'agent_type', '') == AGENT_TYPE_WORKER:
+                        worker_count += 1
+                if worker_count >= settings.MAX_WORKERS_PER_TEAM:
+                    msg = f"Team limit reached: Cannot add worker '{agent_id}' to team '{team_id}'. Maximum workers per team is {settings.MAX_WORKERS_PER_TEAM}."
+                    logger.error(msg)
+                    return False, msg
+
             if agent_id not in self.teams[team_id]:
                 self.teams[team_id].append(agent_id)
                 logger.info(f"StateManager: Appended '{agent_id}' to new team list '{team_id}'.")

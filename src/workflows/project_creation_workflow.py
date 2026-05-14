@@ -91,11 +91,23 @@ class ProjectCreationWorkflow(BaseWorkflow):
                 raise ValueError("Cannot create PM agent: AgentManager is missing active project/session context.")
 
             existing_pm_indices = []
+            pm_count = 0
             for a_id, a_instance in manager.agents.items():
                 if getattr(a_instance, 'agent_type', '') == AGENT_TYPE_PM:
+                    pm_count += 1
                     match = re.match(r'^PM(\d+)$', a_id, re.IGNORECASE)
                     if match:
                         existing_pm_indices.append(int(match.group(1)))
+            
+            if pm_count >= settings.MAX_PMS_PER_SESSION:
+                return WorkflowResult(
+                    success=False, 
+                    message=f"Session limit reached: Cannot create PM. Maximum PMs per session is {settings.MAX_PMS_PER_SESSION}.",
+                    workflow_name=self.name, 
+                    next_agent_state=agent.state, 
+                    next_agent_status=AGENT_STATUS_IDLE 
+                )
+                
             next_pm_index = max(existing_pm_indices, default=0) + 1
             pm_instance_id = f"PM{next_pm_index}"
             pm_bootstrap_config_id = "project_manager_agent"

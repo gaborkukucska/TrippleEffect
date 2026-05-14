@@ -210,13 +210,34 @@ class Settings:
         self.DEFAULT_TEMPERATURE: float = float(os.getenv("DEFAULT_TEMPERATURE", 0.7))
         self.DEFAULT_PERSONA: str = self.PROMPTS.get("default_agent_persona", "Assistant Agent")
 
-        # --- Max Workers per PM ---
+        # --- Security Settings ---
+        self.DISABLE_COMMAND_EXECUTION: bool = os.getenv("DISABLE_COMMAND_EXECUTION", "False").lower() in ("true", "1", "yes")
+        logger.info(f"Loaded DISABLE_COMMAND_EXECUTION: {self.DISABLE_COMMAND_EXECUTION}")
+
+        # --- Three-Tier Agent Limits ---
         try:
-            self.MAX_WORKERS_PER_PM: int = int(os.getenv("MAX_WORKERS_PER_PM", "20")) # User requested increase from 10 to 20
-            logger.info(f"Loaded MAX_WORKERS_PER_PM: {self.MAX_WORKERS_PER_PM}")
+            # Fallback to MAX_WORKERS_PER_PM for backward compatibility if MAX_WORKERS_PER_TEAM isn't set
+            legacy_workers = os.getenv("MAX_WORKERS_PER_PM")
+            worker_default = legacy_workers if legacy_workers else "20"
+            self.MAX_WORKERS_PER_TEAM: int = int(os.getenv("MAX_WORKERS_PER_TEAM", worker_default))
+            logger.info(f"Loaded MAX_WORKERS_PER_TEAM: {self.MAX_WORKERS_PER_TEAM}")
         except ValueError:
-            logger.warning("Invalid MAX_WORKERS_PER_PM in .env, using default 20.") # Default also updated to 20
-            self.MAX_WORKERS_PER_PM = 20
+            logger.warning("Invalid MAX_WORKERS_PER_TEAM in .env, using default 20.")
+            self.MAX_WORKERS_PER_TEAM = 20
+            
+        try:
+            self.MAX_PMS_PER_SESSION: int = int(os.getenv("MAX_PMS_PER_SESSION", "5"))
+            logger.info(f"Loaded MAX_PMS_PER_SESSION: {self.MAX_PMS_PER_SESSION}")
+        except ValueError:
+            logger.warning("Invalid MAX_PMS_PER_SESSION in .env, using default 5.")
+            self.MAX_PMS_PER_SESSION = 5
+            
+        try:
+            self.MAX_TEAMS_PER_SESSION: int = int(os.getenv("MAX_TEAMS_PER_SESSION", "10"))
+            logger.info(f"Loaded MAX_TEAMS_PER_SESSION: {self.MAX_TEAMS_PER_SESSION}")
+        except ValueError:
+            logger.warning("Invalid MAX_TEAMS_PER_SESSION in .env, using default 10.")
+            self.MAX_TEAMS_PER_SESSION = 10
 
         # --- Max ADMIN AI Local Tokens ---
         try: self.ADMIN_AI_LOCAL_MAX_TOKENS: int = int(os.getenv("ADMIN_AI_LOCAL_MAX_TOKENS", "4096")); logger.info(f"Loaded ADMIN_AI_LOCAL_MAX_TOKENS: {self.ADMIN_AI_LOCAL_MAX_TOKENS}")

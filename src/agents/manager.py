@@ -58,6 +58,9 @@ logging.info("manager.py: Imported interaction_handler.")
 logging.info("manager.py: Importing cycle_handler...")
 from src.agents.cycle_handler import AgentCycleHandler
 logging.info("manager.py: Imported cycle_handler.")
+logging.info("manager.py: Importing loop_coordinator...")
+from src.agents.loop_coordinator import LoopCoordinator
+logging.info("manager.py: Imported loop_coordinator.")
 logging.info("manager.py: Importing performance_tracker...")
 from src.agents.performance_tracker import ModelPerformanceTracker
 logging.info("manager.py: Imported performance_tracker.")
@@ -114,8 +117,11 @@ class AgentManager:
         
         logger.info("AgentManager __init__: Instantiating AgentInteractionHandler...");
         self.interaction_handler = AgentInteractionHandler(self)
-        logger.info("AgentManager __init__: Instantiating AgentCycleHandler...");
+        logger.info("AgentManager __init__: Instantiating AgentCycleHandler...")
         self.cycle_handler = AgentCycleHandler(self, self.interaction_handler) 
+        
+        logger.info("AgentManager __init__: Instantiating LoopCoordinator...")
+        self.loop_coordinator = LoopCoordinator()
         
         logger.info("AgentManager __init__: Instantiating ModelPerformanceTracker...");
         self.performance_tracker = ModelPerformanceTracker()
@@ -125,6 +131,7 @@ class AgentManager:
         self._ensure_projects_dir()
         self._pm_manage_task: Optional[asyncio.Task] = None
         self._cg_heartbeat_task: Optional[asyncio.Task] = None
+        self._agent_cycle_locks: Dict[str, asyncio.Lock] = {}
         logger.info("AgentManager __init__: Initialized synchronously.")
         asyncio.create_task(self._ensure_default_db_session())
         asyncio.create_task(self.start_pm_manage_timer())
@@ -406,199 +413,216 @@ class AgentManager:
             try:
                 agents_snapshot = list(self.agents.values()) 
                 for agent in agents_snapshot:
-                    if (agent.agent_type == AGENT_TYPE_PM and
-                        agent.status == AGENT_STATUS_IDLE and
-                        agent.state == PM_STATE_MANAGE and 
-                        not getattr(agent, '_awaiting_project_approval', False)):
+                    try:
+                        if (agent.agent_type == AGENT_TYPE_PM and
+                            agent.status == AGENT_STATUS_IDLE and
+                            agent.state == PM_STATE_MANAGE and 
+                            not getattr(agent, '_awaiting_project_approval', False)):
                         
-                        # Enhanced loop prevention: Check if agent is cycling too frequently
-                        current_time = time.time()
-                        last_check_time = getattr(agent, '_last_periodic_check_time', 0)
-                        time_since_last_check = current_time - last_check_time
+                            # Enhanced loop prevention: Check if agent is cycling too frequently
+                            current_time = time.time()
+                            last_check_time = getattr(agent, '_last_periodic_check_time', 0)
+                            time_since_last_check = current_time - last_check_time
                         
-                        # Track cycle frequency
-                        if not hasattr(agent, '_periodic_cycle_count'):
-                            agent._periodic_cycle_count = 0
-                        if not hasattr(agent, '_periodic_cycle_window_start'):
-                            agent._periodic_cycle_window_start = current_time
+                            # Track cycle frequency
+                            if not hasattr(agent, '_periodic_cycle_count'):
+                                agent._periodic_cycle_count = 0
+                            if not hasattr(agent, '_periodic_cycle_window_start'):
+                                agent._periodic_cycle_window_start = current_time
                             
-                        # Reset counter if outside window (5 minutes)
-                        if current_time - agent._periodic_cycle_window_start > 300:
-                            agent._periodic_cycle_count = 0
-                            agent._periodic_cycle_window_start = current_time
+                            # Reset counter if outside window (5 minutes)
+                            if current_time - agent._periodic_cycle_window_start > 300:
+                                agent._periodic_cycle_count = 0
+                                agent._periodic_cycle_window_start = current_time
                         
-                        # Check if agent is cycling too frequently (more than 20 times in 5 minutes)
-                        if agent._periodic_cycle_count >= 20:
-                            logger.error(f"PM '{agent.agent_id}' has been triggered {agent._periodic_cycle_count} times in the last 5 minutes. This indicates infinite looping. Forcing to error state.")
-                            agent.set_status(AGENT_STATUS_ERROR)
+                            # Check if agent is cycling too frequently (more than 20 times in 5 minutes)
+                            if agent._periodic_cycle_count >= 20:
+                                logger.error(f"PM '{agent.agent_id}' has been triggered {agent._periodic_cycle_count} times in the last 5 minutes. This indicates infinite looping. Forcing to error state.")
+                                agent.set_status(AGENT_STATUS_ERROR)
                             
-                            error_message = f"PM agent '{agent.agent_id}' has been cycling excessively ({agent._periodic_cycle_count} times in 5 minutes). Stopped to prevent infinite loop."
-                            agent.message_history.append({"role": "system", "content": f"[Framework Error]: {error_message}"})
+                                error_message = f"PM agent '{agent.agent_id}' has been cycling excessively ({agent._periodic_cycle_count} times in 5 minutes). Stopped to prevent infinite loop."
+                                agent.message_history.append({"role": "system", "content": f"[Framework Error]: {error_message}"})
                             
-                            if self.current_session_db_id:
-                                await self.db_manager.log_interaction(
-                                    session_id=self.current_session_db_id,
-                                    agent_id=agent.agent_id,
-                                    role="system_error",
-                                    content=error_message
-                                )
+                                if self.current_session_db_id:
+                                    await self.db_manager.log_interaction(
+                                        session_id=self.current_session_db_id,
+                                        agent_id=agent.agent_id,
+                                        role="system_error",
+                                        content=error_message
+                                    )
                             
-                            await self.send_to_ui({"type": "error", "agent_id": agent.agent_id, "content": error_message})
-                            continue
+                                await self.send_to_ui({"type": "error", "agent_id": agent.agent_id, "content": error_message})
+                                continue
                         
-                        # Add completion detection check before scheduling
-                        if await self._check_pm_completion_status(agent):
-                            logger.info(f"PM '{agent.agent_id}' project appears complete. Skipping periodic scheduling.")
-                            continue
+                            # Add completion detection check before scheduling
+                            if await self._check_pm_completion_status(agent):
+                                logger.info(f"PM '{agent.agent_id}' project appears complete. Skipping periodic scheduling.")
+                                continue
                             
-                        # --- MODIFIED: Relax PM if no workers are waiting ---
-                        has_waiting_workers = False
-                        team_id = self.state_manager.get_agent_team(agent.agent_id)
-                        if team_id:
-                            for team_member in self.state_manager.get_agents_in_team(team_id):
-                                if getattr(team_member, 'agent_type', '') == AGENT_TYPE_WORKER and getattr(team_member, 'state', '') == WORKER_STATE_WAIT:
-                                    has_waiting_workers = True
-                                    break
+                            # --- MODIFIED: Relax PM if no workers are waiting ---
+                            has_waiting_workers = False
+                            team_id = self.state_manager.get_agent_team(agent.agent_id)
+                            if team_id:
+                                for team_member in self.state_manager.get_agents_in_team(team_id):
+                                    if getattr(team_member, 'agent_type', '') == AGENT_TYPE_WORKER and getattr(team_member, 'state', '') == WORKER_STATE_WAIT:
+                                        has_waiting_workers = True
+                                        break
                                     
-                        has_inbox = hasattr(agent, 'message_inbox') and len(agent.message_inbox) > 0
+                            has_inbox = hasattr(agent, 'message_inbox') and len(agent.message_inbox) > 0
                         
-                        if not has_waiting_workers and not has_inbox:
-                            logger.debug(f"PM '{agent.agent_id}' is relaxing in MANAGE because no workers are waiting and no messages are queued.")
-                            continue
+                            if not has_waiting_workers and not has_inbox:
+                                logger.debug(f"PM '{agent.agent_id}' is relaxing in MANAGE because no workers are waiting and no messages are queued.")
+                                continue
 
-                        agent._periodic_cycle_count += 1
-                        agent._last_periodic_check_time = current_time
+                            # --- ADD LOOP COORDINATOR CHECK ---
+                            if not self.loop_coordinator.should_intervene(agent.agent_id, "pm_manage_check"):
+                                logger.debug(f"PM '{agent.agent_id}' manage check blocked by LoopCoordinator cooldown.")
+                                continue
+                            self.loop_coordinator.record_intervention(agent.agent_id, "pm_manage_check")
+                            # ----------------------------------
+
+                            agent._periodic_cycle_count += 1
+                            agent._last_periodic_check_time = current_time
                         
-                        logger.info(f"PM '{agent.agent_id}' idle in MANAGE state (Workers waiting: {has_waiting_workers}, Inbox: {has_inbox}). Scheduling cycle by timer. (Count: {agent._periodic_cycle_count})")
-                        await self.schedule_cycle(agent, 0)
+                            logger.info(f"PM '{agent.agent_id}' idle in MANAGE state (Workers waiting: {has_waiting_workers}, Inbox: {has_inbox}). Scheduling cycle by timer. (Count: {agent._periodic_cycle_count})")
+                            await self.schedule_cycle(agent, 0)
                     
-                    # --- FIX: Wake PM from pm_standby if workers are waiting or inbox has messages ---
-                    elif (agent.agent_type == AGENT_TYPE_PM and
-                          agent.status == AGENT_STATUS_IDLE and
-                          agent.state == PM_STATE_STANDBY and
-                          not getattr(agent, '_awaiting_project_approval', False)):
+                        # --- FIX: Wake PM from pm_standby if workers are waiting or inbox has messages ---
+                        elif (agent.agent_type == AGENT_TYPE_PM and
+                              agent.status == AGENT_STATUS_IDLE and
+                              agent.state == PM_STATE_STANDBY and
+                              not getattr(agent, '_awaiting_project_approval', False)):
                         
-                        has_inbox = hasattr(agent, 'message_inbox') and len(agent.message_inbox) > 0
+                            has_inbox = hasattr(agent, 'message_inbox') and len(agent.message_inbox) > 0
                         
-                        # Check if workers in the team are in worker_wait (finished their task, need new assignment)
-                        waiting_workers = []
-                        team_id = self.state_manager.get_agent_team(agent.agent_id)
-                        if team_id:
-                            team_agents = self.state_manager.get_agents_in_team(team_id)
-                            waiting_workers = [
-                                a for a in team_agents
-                                if a.agent_type == AGENT_TYPE_WORKER and a.state == WORKER_STATE_WAIT
-                            ]
+                            # Check if workers in the team are in worker_wait (finished their task, need new assignment)
+                            waiting_workers = []
+                            team_id = self.state_manager.get_agent_team(agent.agent_id)
+                            if team_id:
+                                team_agents = self.state_manager.get_agents_in_team(team_id)
+                                waiting_workers = [
+                                    a for a in team_agents
+                                    if a.agent_type == AGENT_TYPE_WORKER and a.state == WORKER_STATE_WAIT
+                                ]
                         
-                        has_waiting_workers = len(waiting_workers) > 0
+                            has_waiting_workers = len(waiting_workers) > 0
                         
-                        # Implement Backoff to prevent PM Standby oscillation:
-                        # PMs can only be woken by waiting workers if enough time has passed (to prevent 1-second loops).
-                        # Inbox messages bypass this backoff since they represent explicit new events.
-                        current_time = time.time()
-                        last_wake = getattr(agent, '_last_standby_wake_time', 0)
+                            # Implement Backoff to prevent PM Standby oscillation:
+                            # PMs can only be woken by waiting workers if enough time has passed (to prevent 1-second loops).
+                            # Inbox messages bypass this backoff since they represent explicit new events.
+                            current_time = time.time()
+                            last_wake = getattr(agent, '_last_standby_wake_time', 0)
                         
-                        # Track previously seen waiting workers to avoid waking for the same workers repeatedly
-                        seen_waiting = getattr(agent, '_seen_waiting_workers', set())
-                        current_waiting_ids = {w.agent_id for w in waiting_workers}
-                        new_waiting_ids = current_waiting_ids - seen_waiting
+                            # Track previously seen waiting workers to avoid waking for the same workers repeatedly
+                            seen_waiting = getattr(agent, '_seen_waiting_workers', set())
+                            current_waiting_ids = {w.agent_id for w in waiting_workers}
+                            new_waiting_ids = current_waiting_ids - seen_waiting
                         
-                        if has_inbox:
-                            # Immediate wake
-                            should_wake = True
-                            logger.info(f"PM '{agent.agent_id}' has INBOX MESSAGES. Waking immediately.")
-                        elif new_waiting_ids:
-                            # Wake only if 60 seconds have passed since last standby wake
-                            time_since_wake = current_time - last_wake
-                            if time_since_wake > 60:
+                            if has_inbox:
+                                # Immediate wake
                                 should_wake = True
-                                logger.info(f"PM '{agent.agent_id}' has NEW waiting workers ({new_waiting_ids}) and backoff ({time_since_wake:.1f}s > 60s) cleared. Waking.")
+                                logger.info(f"PM '{agent.agent_id}' has INBOX MESSAGES. Waking immediately.")
+                            elif new_waiting_ids:
+                                # Wake only if 60 seconds have passed since last standby wake
+                                time_since_wake = current_time - last_wake
+                                if time_since_wake > 60:
+                                    should_wake = True
+                                    logger.info(f"PM '{agent.agent_id}' has NEW waiting workers ({new_waiting_ids}) and backoff ({time_since_wake:.1f}s > 60s) cleared. Waking.")
+                                else:
+                                    should_wake = False
                             else:
                                 should_wake = False
-                        else:
-                            should_wake = False
                         
-                        if should_wake:
-                            agent._last_standby_wake_time = current_time
-                            # Update seen workers (only when we actually wake)
-                            agent._seen_waiting_workers = current_waiting_ids
+                            if should_wake:
+                                # --- ADD LOOP COORDINATOR CHECK ---
+                                if not self.loop_coordinator.should_intervene(agent.agent_id, "pm_wake_worker"):
+                                    logger.debug(f"PM '{agent.agent_id}' standby wake blocked by LoopCoordinator cooldown.")
+                                    continue
+                                self.loop_coordinator.record_intervention(agent.agent_id, "pm_wake_worker")
+                                # ----------------------------------
+
+                                agent._last_standby_wake_time = current_time
+                                # Update seen workers (only when we actually wake)
+                                agent._seen_waiting_workers = current_waiting_ids
                             
-                            reason = []
-                            if has_inbox:
-                                reason.append(f"{len(agent.message_inbox)} inbox message(s)")
-                            if new_waiting_ids:
-                                reason.append(f"{len(new_waiting_ids)} NEW worker(s) in worker_wait")
-                            reason_str = " and ".join(reason)
+                                reason = []
+                                if has_inbox:
+                                    reason.append(f"{len(agent.message_inbox)} inbox message(s)")
+                                if new_waiting_ids:
+                                    reason.append(f"{len(new_waiting_ids)} NEW worker(s) in worker_wait")
+                                reason_str = " and ".join(reason)
                             
-                            logger.warning(
-                                f"PM '{agent.agent_id}' is in pm_standby but has {reason_str}. "
-                                f"Waking PM back to pm_manage to prevent deadlock."
-                            )
+                                logger.warning(
+                                    f"PM '{agent.agent_id}' is in pm_standby but has {reason_str}. "
+                                    f"Waking PM back to pm_manage to prevent deadlock."
+                                )
                             
-                            # Transition PM back to pm_manage
-                            wake_msg_parts = [
-                                f"[Framework System Message]: You were in standby, but {reason_str} require your attention.",
-                                "You have been reactivated to pm_manage. Review worker reports and assign new tasks as needed."
-                            ]
+                                # Transition PM back to pm_manage
+                                wake_msg_parts = [
+                                    f"[Framework System Message]: You were in standby, but {reason_str} require your attention.",
+                                    "You have been reactivated to pm_manage. Review worker reports and assign new tasks as needed."
+                                ]
                             
-                            if has_waiting_workers:
-                                waiting_agent_ids = [w.agent_id for w in waiting_workers]
-                                ids_str = ", ".join(waiting_agent_ids)
-                                filter_example = f"<project_management><action>list_tasks</action><assignee_filter>{waiting_agent_ids[0]}</assignee_filter></project_management>"
-                                wake_msg_parts.append(f"\\nCRITICAL INSTRUCTION: Since worker(s) {ids_str} are waiting, you MUST use `list_tasks` filtered to their specific ID to see what work they have completed. Example: {filter_example}")
+                                if has_waiting_workers:
+                                    waiting_agent_ids = [w.agent_id for w in waiting_workers]
+                                    ids_str = ", ".join(waiting_agent_ids)
+                                    filter_example = f"<project_management><action>list_tasks</action><assignee_filter>{waiting_agent_ids[0]}</assignee_filter></project_management>"
+                                    wake_msg_parts.append(f"\\nCRITICAL INSTRUCTION: Since worker(s) {ids_str} are waiting, you MUST use `list_tasks` filtered to their specific ID to see what work they have completed. Example: {filter_example}")
                                 
-                            wake_msg = " ".join(wake_msg_parts)
+                                wake_msg = " ".join(wake_msg_parts)
                             
-                            agent.message_history.append({"role": "system", "content": wake_msg})
-                            self.workflow_manager.change_state(agent, PM_STATE_MANAGE)
-                            await self.schedule_cycle(agent, 0)
+                                agent.message_history.append({"role": "system", "content": wake_msg})
+                                self.workflow_manager.change_state(agent, PM_STATE_MANAGE)
+                                await self.schedule_cycle(agent, 0)
                             
-                    # --- ADDED: Catch-all for STUCK agents that illegally dropped to IDLE ---
-                    elif (agent.status == AGENT_STATUS_IDLE and
-                          not getattr(agent, '_awaiting_project_approval', False)):
+                        # --- ADDED: Catch-all for STUCK agents that illegally dropped to IDLE ---
+                        elif (agent.status == AGENT_STATUS_IDLE and
+                              not getattr(agent, '_awaiting_project_approval', False)):
                         
-                        import src.agents.constants as consts
+                            import src.agents.constants as consts
                         
-                        # States where it is INTENDED to be IDLE without a task
-                        expected_idle_states = [
-                            consts.WORKER_STATE_WAIT, consts.WORKER_STATE_STARTUP,
-                            consts.PM_STATE_STANDBY, consts.PM_STATE_STARTUP, consts.PM_STATE_MANAGE,
-                            consts.ADMIN_STATE_STANDBY, consts.ADMIN_STATE_STARTUP,
-                            consts.ADMIN_STATE_CONVERSATION, consts.ADMIN_STATE_WORK_DELEGATED
-                        ]
+                            # States where it is INTENDED to be IDLE without a task
+                            expected_idle_states = [
+                                consts.WORKER_STATE_WAIT, consts.WORKER_STATE_STARTUP,
+                                consts.PM_STATE_STANDBY, consts.PM_STATE_STARTUP, consts.PM_STATE_MANAGE,
+                                consts.ADMIN_STATE_STANDBY, consts.ADMIN_STATE_STARTUP,
+                                consts.ADMIN_STATE_CONVERSATION, consts.ADMIN_STATE_WORK_DELEGATED
+                            ]
                         
-                        if agent.state not in expected_idle_states:
-                            logger.warning(
-                                f"Watchdog: Agent '{agent.agent_id}' is IDLE in an active state '{agent.state}'. "
-                                f"This indicates a stall, crash, or dropped event. Rescheduling..."
-                            )
-                            # Gently nudge the agent to wake it up
-                            agent.message_history.append({"role": "system", "content": "[Framework Watchdog]: You were detected as IDLE while in an active working state. Resuming cycle..."})
-                            await self.schedule_cycle(agent, 0)
+                            if agent.state not in expected_idle_states:
+                                logger.warning(
+                                    f"Watchdog: Agent '{agent.agent_id}' is IDLE in an active state '{agent.state}'. "
+                                    f"This indicates a stall, crash, or dropped event. Rescheduling..."
+                                )
+                                # Gently nudge the agent to wake it up
+                                agent.message_history.append({"role": "system", "content": "[Framework Watchdog]: You were detected as IDLE while in an active working state. Resuming cycle..."})
+                                await self.schedule_cycle(agent, 0)
                         
-                        elif agent.state == consts.WORKER_STATE_WAIT and self.current_project and self.current_session:
-                            # Workers in WAIT might have pending tasks assigned to them but got pushed here by the CG
-                            # Watchdog will verify if they truly have no pending tasks.
-                            try:
-                                from src.tools.project_management import ProjectManagementTool
-                                pm_tool = ProjectManagementTool()
-                                tw_instance = pm_tool._get_taskwarrior_instance(self.current_project, self.current_session)
-                                if tw_instance:
-                                    pending_tasks = tw_instance.tasks.pending().filter(assignee=agent.agent_id)
-                                    if len(pending_tasks) > 0:
-                                        target_task = pending_tasks[0]
-                                        logger.warning(
-                                            f"Watchdog: Worker '{agent.agent_id}' is in 'worker_wait' but has {len(pending_tasks)} pending tasks! "
-                                            f"Auto-activating for task '{target_task['uuid']}'."
-                                        )
-                                        await self.activate_worker_with_task_details(
-                                            worker_agent_id=agent.agent_id,
-                                            task_id_from_tool=target_task['uuid'],
-                                            task_description_from_tool=target_task['description']
-                                        )
-                            except Exception as e:
-                                logger.error(f"Watchdog: Error checking pending tasks for waiting worker '{agent.agent_id}': {e}", exc_info=True)
+                            elif agent.state == consts.WORKER_STATE_WAIT and self.current_project and self.current_session:
+                                # Workers in WAIT might have pending tasks assigned to them but got pushed here by the CG
+                                # Watchdog will verify if they truly have no pending tasks.
+                                try:
+                                    from src.tools.project_management import ProjectManagementTool
+                                    pm_tool = ProjectManagementTool()
+                                    tw_instance = pm_tool._get_taskwarrior_instance(self.current_project, self.current_session)
+                                    if tw_instance:
+                                        pending_tasks = tw_instance.tasks.pending().filter(assignee=agent.agent_id)
+                                        if len(pending_tasks) > 0:
+                                            target_task = pending_tasks[0]
+                                            logger.warning(
+                                                f"Watchdog: Worker '{agent.agent_id}' is in 'worker_wait' but has {len(pending_tasks)} pending tasks! "
+                                                f"Auto-activating for task '{target_task['uuid']}'."
+                                            )
+                                            await self.activate_worker_with_task_details(
+                                                worker_agent_id=agent.agent_id,
+                                                task_id_from_tool=target_task['uuid'],
+                                                task_description_from_tool=target_task['description']
+                                            )
+                                except Exception as e:
+                                    logger.error(f"Watchdog: Error checking pending tasks for waiting worker '{agent.agent_id}': {e}", exc_info=True)
                         
+                    except Exception as e:
+                        logger.error(f"Error processing agent {agent.agent_id} in watchdog: {e}", exc_info=True)
             except Exception as e: logger.error(f"Error during periodic PM manage check: {e}", exc_info=True)
 
     async def start_pm_manage_timer(self):
