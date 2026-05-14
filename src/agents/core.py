@@ -273,6 +273,8 @@ class Agent:
                         if self.state == WORKER_STATE_WAIT and tool_name not in ['send_message', 'mark_message_read', 'project_management']:
                             continue
                     elif self.agent_type == AGENT_TYPE_PM:
+                        if self.state == PM_STATE_STARTUP and tool_name not in ['file_system', 'tool_information']:
+                            continue
                         if self.state == PM_STATE_BUILD_TEAM_TASKS and tool_name not in ['manage_team', 'tool_information', 'mark_message_read', 'send_message']:
                             continue
                             

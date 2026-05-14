@@ -100,10 +100,10 @@ class ToolExecutor:
             name_el = ET.SubElement(tool_element, "name")
             name_el.text = schema['name']
             desc_el = ET.SubElement(tool_element, "description")
-            desc_el.text = schema['description'].strip()
+            desc_el.text = (schema.get('description') or "").strip()
             if schema.get('summary') and schema['summary'] != schema['description']:
                 summary_el = ET.SubElement(tool_element, "summary")
-                summary_el.text = schema['summary'].strip()
+                summary_el.text = (schema.get('summary') or "").strip()
             auth_el = ET.SubElement(tool_element, "auth_level")
             auth_el.text = schema.get('auth_level', 'worker') 
 
@@ -119,7 +119,7 @@ class ToolExecutor:
                      param_req = ET.SubElement(param_el, "required")
                      param_req.text = str(param_data.get('required', True)).lower()
                      param_desc = ET.SubElement(param_el, "description")
-                     param_desc.text = param_data['description'].strip()
+                     param_desc.text = (param_data.get('description') or "").strip()
             else:
                  params_el.text = "<!-- This tool takes no parameters -->"
             
@@ -166,8 +166,8 @@ class ToolExecutor:
             schema = tool.get_schema()
             tool_info = {
                 "name": schema['name'],
-                "description": schema['description'].strip(),
-                "summary": schema.get('summary', schema['description'].strip()), 
+                "description": (schema.get('description') or "").strip(),
+                "summary": (schema.get('summary') or schema.get('description') or "").strip(), 
                 "auth_level": schema.get('auth_level', 'worker'), 
                 "parameters": []
             }
@@ -178,7 +178,7 @@ class ToolExecutor:
                         "name": param_data['name'],
                         "type": param_data['type'],
                         "required": param_data.get('required', True),
-                        "description": param_data['description'].strip()
+                        "description": (param_data.get('description') or "").strip()
                     })
             tool_list.append(tool_info)
 
@@ -224,7 +224,7 @@ class ToolExecutor:
             elif agent_type == AGENT_TYPE_WORKER: is_authorized = tool_auth_level == AGENT_TYPE_WORKER
 
             if is_authorized:
-                summary = getattr(tool_instance, 'summary', None) or tool_instance.description
+                summary = getattr(tool_instance, 'summary', None) or tool_instance.description or ""
                 authorized_tools_summary.append(f"- {name}: {summary.strip()}")
         
         if not authorized_tools_summary:
