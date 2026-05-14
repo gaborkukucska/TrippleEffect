@@ -607,4 +607,18 @@ This entirely breaks the LLM's autoregressive death spiral by physically moving 
 **Files:** `src/tools/code_editor.py`, `src/agents/cycle_handler.py`, `src/agents/workflow_manager.py`, `src/agents/cycle_components/prompt_assembler.py`, `src/tools/file_system.py`
 
 ---
+
+#### Phase X: Ongoing Test Run Log Audit & Capability Upgrades (May 2026)
+
+**Problem 1 (Workspace Bloat False Positives):** Agents attempting to organize their work into standard directories like `css/` were blocked by the `Workspace Bloat Protection` because the directories were not explicitly whitelisted or in `PROJECT_STRUCTURE.md`.
+**Fix 1:** Expanded the hardcoded directory whitelist in `src/tools/file_system.py` to include `css`, `js`, `images`, `img`, `docs`, `config`, and `html`.
+
+**Problem 2 (Code Editor Constraint):** The `code_editor` tool's 16KB limit on `chunks` (`MAX_CHUNK_SIZE_CHARS`) frequently blocked agents from modifying larger existing files, forcing them to fail and attempt full file replacements instead.
+**Fix 2:** Doubled the `MAX_CHUNK_SIZE_CHARS` in `src/tools/code_editor.py` to 32,768 characters to give agents more leeway for substantial but safe partial updates.
+
+**Note on Stability:** The test logs confirmed that the `ConstitutionalGuardian` successfully intervened during identical-response loops (e.g., W2) and that the Phase W loop escalation logic successfully deterred agents from overwriting core game files, proving that the multi-layered recovery systems are working in concert.
+
+**Files:** `src/tools/file_system.py`, `src/tools/code_editor.py`
+
+---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

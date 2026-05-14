@@ -125,7 +125,7 @@ class CodeEditorTool(BaseTool):
 
         # --- FIX +42: Guard against oversized chunks that cause LLM JSON overflow ---
         MAX_CHUNKS = 20
-        MAX_CHUNK_SIZE_CHARS = 16384  # 16KB per individual chunk (increased from 4096)
+        MAX_CHUNK_SIZE_CHARS = 32768  # 32KB per individual chunk (increased from 16384)
         
         if len(chunks) > MAX_CHUNKS:
             return {"status": "error", "message": f"Too many chunks ({len(chunks)}). Maximum is {MAX_CHUNKS}. Please split your edits into multiple smaller tool calls."}

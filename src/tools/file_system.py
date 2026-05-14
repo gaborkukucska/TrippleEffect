@@ -401,7 +401,7 @@ class FileSystemTool(BaseTool):
                                             allowed_top_dirs.add(clean_dir.lower())
                                     
                                     # Whitelist standard web development directories
-                                    allowed_top_dirs.update(["public", "src", "assets", "components", "pages", "styles", "utils", "tests", "dist", "build"])
+                                    allowed_top_dirs.update(["public", "src", "assets", "components", "pages", "styles", "utils", "tests", "dist", "build", "css", "js", "images", "img", "docs", "config", "html"])
 
                                     if allowed_top_dirs and target_top_dir not in allowed_top_dirs:
                                         logger.warning(f"Agent {agent_id} attempted to create unauthorized root folder '{target_top_dir}' in shared workspace.")
