@@ -351,6 +351,7 @@ class AssetSearchTool(BaseTool):
     """
 
     name: str = "asset_search"
+    summary: Optional[str] = "Search and download royalty-free assets (sounds, 3D, images, icons, textures)."
 
     description: str = (
         "Search and download open-source, royalty-free creative assets. "
@@ -371,12 +372,14 @@ class AssetSearchTool(BaseTool):
                 "'list_sources' lists all supported sources."
             ),
             required=True,
+            aliases=["command", "operation"]
         ),
         ToolParameter(
             name="query",
             type="string",
             description="Search query string. Required for action='search'.",
             required=False,
+            aliases=["q", "keyword", "search_term", "search"]
         ),
         ToolParameter(
             name="category",
@@ -387,6 +390,7 @@ class AssetSearchTool(BaseTool):
                 "Determines which sources are queried unless 'source' is specified."
             ),
             required=False,
+            aliases=["type", "asset_type", "kind"]
         ),
         ToolParameter(
             name="source",
@@ -397,12 +401,14 @@ class AssetSearchTool(BaseTool):
                 "Overrides 'category' when provided."
             ),
             required=False,
+            aliases=["provider", "api", "website"]
         ),
         ToolParameter(
             name="limit",
             type="integer",
             description="Max results to return per source (1–20). Defaults to 5.",
             required=False,
+            aliases=["count", "max_results", "per_page"]
         ),
         ToolParameter(
             name="download_url",
@@ -412,15 +418,17 @@ class AssetSearchTool(BaseTool):
                 "Obtain from a prior 'search' result's 'Download' field."
             ),
             required=False,
+            aliases=["url", "link", "asset_url"]
         ),
         ToolParameter(
             name="filename",
             type="string",
             description=(
-                "Destination filename for the downloaded asset (e.g. 'explosion.mp3'). "
-                "Required for action='download'. Saved into the shared workspace 'assets/' folder."
+                "Destination relative path/filename for the downloaded asset (e.g. 'assets/explosion.mp3' or 'public/images/tree.png'). "
+                "Required for action='download'. Saved relative to the shared workspace."
             ),
             required=False,
+            aliases=["dest", "destination", "file_name", "path"]
         ),
     ]
 
@@ -524,18 +532,22 @@ class AssetSearchTool(BaseTool):
             if not filename:
                 return "Error: 'filename' is required for action='download'."
 
-            # Sanitise filename
-            filename = Path(filename).name  # strip any path traversal
-            if not filename:
-                return "Error: Invalid filename."
+            # Sanitise path to prevent directory traversal outside workspace
+            clean_path = str(Path(filename)).lstrip("/")
+            if ".." in clean_path:
+                return "Error: Path traversal (..) is not allowed."
+            
+            # Default to assets/ if no directory is specified
+            if "/" not in clean_path and "\\" not in clean_path:
+                clean_path = f"assets/{clean_path}"
 
             # Resolve destination: shared workspace > agent sandbox
             if project_name and session_name:
                 from src.config.settings import settings  # type: ignore
                 workspace_root = Path(settings.PROJECTS_BASE_DIR) / project_name / session_name / "shared_workspace"
-                dest = workspace_root / "assets" / filename
+                dest = workspace_root / clean_path
             else:
-                dest = agent_sandbox_path / "assets" / filename
+                dest = agent_sandbox_path / clean_path
 
             logger.info(
                 f"[AssetSearchTool] Agent {agent_id} downloading {download_url} -> {dest}"
