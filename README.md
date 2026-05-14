@@ -171,8 +171,8 @@ To keep this README clean and exciting, we've moved all the heavy lifting and de
 
 ## 🚀 Development Status
 
-* **Current Version:** 2.49
-* **Recent Highlights:** System Stabilization (May 2026) — Finalized native JSON orchestration by enforcing strict brace escaping across all tool documentations, preventing `KeyError` crashes. Integrated the new `zim_search` tool for robust offline desktop wiki knowledge base access. Strongly recommend running a local **SearXNG** instance alongside the framework for superior `web_search` open-source intelligence gathering. Removed legacy state-based tool blocking, completely unlocking native JSON tool capabilities for all agents. Implemented strict targeted chunking enforcement for the Code Editor to eliminate malformed JSON loops. Added `rename`, `tree`, and `exists` capabilities to the File System tool for deeper workspace insight. Replaced the overly sensitive project completion watchdog heuristic with precise regex, eliminating false audit loops for Admin AI.
+* **Current Version:** 2.50
+* **Recent Highlights:** Framework Stabilization & Security Hardening (May 2026) — Finalized the implementation of a 3-tier resource exhaustion limit system (Teams, PMs, Workers). Migrated the entire authentication flow to native bcrypt with robust session heartbeat controls. Hardened the Constitutional Guardian to monitor and flag unsafe shell commands. Implemented an advisory LoopCoordinator layer with an asyncio.Lock based cycle execution queue to entirely eliminate watchdog thrashing and UI concurrency race conditions.
 * **Current Phase:** Target Phase 28 features Advanced Memory & Learning systems, proactive behaviors, and federated communication foundations.
 
 ## 🤝 Contributing & License

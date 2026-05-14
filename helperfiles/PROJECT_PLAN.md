@@ -51,7 +51,7 @@
 
 ## 2. Scope
 
-**In Scope (Completed up to Phase 27):**
+**In Scope (Completed up to Phase 27 & Stabilization Phase VI):**
 
 * **Core Backend & Agent Core:** Base functionality, stateful agents (Admin, PM, Worker types).
 * **Admin AI Agent:** Core logic, state machine (`conversation`, `planning`), time/health context, KB search prompt, **framework-driven delegation to PM workflow**.
