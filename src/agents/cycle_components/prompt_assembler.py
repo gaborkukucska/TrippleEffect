@@ -361,11 +361,13 @@ class PromptAssembler:
             workspace_tree_report = await self._generate_workspace_tree_report()
             if workspace_tree_report:
                 tree_msg: MessageDict = {"role": "system", "content": workspace_tree_report}
-                # Insert after the main system prompt but before other history
-                if len(history_for_call) > 1:
-                    history_for_call.insert(1, tree_msg)
-                else:
+                # Insert closer to the bottom to ensure the agent is aware of the current file system state.
+                # We place it before the last 2 messages (which are typically the latest action/feedback).
+                insert_pos = max(1, len(history_for_call) - 2)
+                if len(history_for_call) <= 2:
                     history_for_call.append(tree_msg)
+                else:
+                    history_for_call.insert(insert_pos, tree_msg)
                 logger.debug(f"Injected shared_workspace tree report for {agent.agent_type} '{agent.agent_id}'.")
 
         # 3.55 Inject Worker Assigned Tasks Report (Worker only)

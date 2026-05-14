@@ -1039,7 +1039,15 @@ Pushes changes to a remote repository.
                     }
             except Exception:
                 pass
+            if not hasattr(self, '_failed_writes'): self._failed_writes = {}
+            if agent_id not in self._failed_writes: self._failed_writes[agent_id] = {}
+            fail_count = self._failed_writes[agent_id].get(filename, 0) + 1
+            self._failed_writes[agent_id][filename] = fail_count
             
+            hint = ""
+            if fail_count >= 2:
+                hint = f"\n\n[CRITICAL INTERVENTION]: You have failed to overwrite '{filename}' {fail_count} times in a row. You MUST stop trying to use 'write' on this file. EITHER use 'code_editor' (action='replace_chunks') to modify it, OR include '\"force_overwrite\": true' in your JSON if you intentionally want to delete the old content entirely."
+
             logger.warning(f"Agent {agent_id} attempted to overwrite existing file '{filename}'. Write rejected to strongly encourage find/replace targeted edits.")
             return {
                 "status": "error", 
@@ -1049,6 +1057,7 @@ Pushes changes to a remote repository.
                     "1. BEST: Use the 'code_editor' tool with action 'replace_chunks' for partial updates.\n"
                     "2. IF YOU MUST OVERWRITE THE ENTIRE FILE: You MUST include the parameter `\"force_overwrite\": true` in your JSON tool call.\n"
                     "Do not attempt to delete and recreate the file."
+                    f"{hint}"
                 )
             }
             
@@ -1066,6 +1075,10 @@ Pushes changes to a remote repository.
                     
             await asyncio.to_thread(validated_path.parent.mkdir, parents=True, exist_ok=True)
             await asyncio.to_thread(validated_path.write_text, content, encoding='utf-8')
+            
+            if hasattr(self, '_failed_writes') and agent_id in self._failed_writes and filename in self._failed_writes[agent_id]:
+                self._failed_writes[agent_id][filename] = 0
+                
             logger.info(f"Agent {agent_id} successfully wrote file: '{filename}' to {scope_description}")
             return {"status": "success", "message": f"Successfully wrote content to '{filename}' in {scope_description}."}
         except FileExistsError:

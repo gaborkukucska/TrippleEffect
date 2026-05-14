@@ -589,4 +589,22 @@ This entirely breaks the LLM's autoregressive death spiral by physically moving 
 **Files:** `src/agents/loop_coordinator.py`, `src/agents/manager.py`, `src/agents/cycle_handler.py`, `src/agents/cycle_components/next_step_scheduler.py`, `src/api/auth.py`, `src/api/websocket_manager.py`
 
 ---
+
+#### Phase W: Framework Stability Audit (May 2026)
+
+**Problem 1 (`code_editor` Crash):** The `code_editor` tool crashed with `AttributeError` when the LLM hallucinated a list of strings instead of dicts for `chunks`.
+**Fix 1:** Added strict type checking to `src/tools/code_editor.py` to prevent crashes and return clean JSON schema errors.
+
+**Problem 2 (`send_message` Concurrency Loops):** Agents persistently violated the one-action-per-turn rule by calling `send_message` alongside other tools, getting stuck in infinite "message DROPPED" cycles.
+**Fix 2:** Strengthened the multi-tool block in `src/agents/cycle_handler.py`. If an agent attempts this twice in a row, the framework drops the other tools and strictly enforces the message execution to break the thrashing loop.
+
+**Problem 3 (PM Startup Distraction):** The PM received general tool documentation (like file_system) during `pm_startup`, distracting it from state transition.
+**Fix 3:** Modified `src/agents/workflow_manager.py` to intercept prompt generation for `pm_startup`, providing a heavily restricted set of tool instructions.
+
+**Problem 4 (Worker File Overwrites):** Workers attempted to `write` to existing files without `force_overwrite=true` because they missed the workspace tree at the top of their context.
+**Fix 4:** Relocated the `_generate_workspace_tree_report()` injection point in `src/agents/cycle_components/prompt_assembler.py` to the bottom of the message history. Added an escalation circuit breaker to `src/tools/file_system.py` that injects a CRITICAL INTERVENTION message directly into the tool output after 2 failed overwrite attempts.
+
+**Files:** `src/tools/code_editor.py`, `src/agents/cycle_handler.py`, `src/agents/workflow_manager.py`, `src/agents/cycle_components/prompt_assembler.py`, `src/tools/file_system.py`
+
+---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

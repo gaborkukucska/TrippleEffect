@@ -119,6 +119,10 @@ class CodeEditorTool(BaseTool):
         if not isinstance(chunks, list):
             return {"status": "error", "message": "'chunks' must be a list of dicts with 'search' and 'replace' keys."}
 
+        for idx, chunk in enumerate(chunks):
+            if not isinstance(chunk, dict):
+                return {"status": "error", "message": f"Chunk at index {idx} is invalid (got {type(chunk).__name__}). 'chunks' must be a list of JSON objects containing 'search' and 'replace' keys."}
+
         # --- FIX +42: Guard against oversized chunks that cause LLM JSON overflow ---
         MAX_CHUNKS = 20
         MAX_CHUNK_SIZE_CHARS = 16384  # 16KB per individual chunk (increased from 4096)

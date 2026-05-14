@@ -1543,11 +1543,11 @@ class AgentCycleHandler:
                         has_send = any(t.get("name") == "send_message" for t in deduplicated_tool_calls)
                         other_tools = [t for t in deduplicated_tool_calls if t.get("name") not in ("send_message", "mark_message_read")]
                         
-                        if has_send and len(other_tools) > 0 and not (len(other_tools) == 0 and deferred_state_change is not None):
+                        if has_send and len(other_tools) > 0:
                             if not hasattr(agent, '_send_msg_multi_tool_error_count'): agent._send_msg_multi_tool_error_count = 0
                             agent._send_msg_multi_tool_error_count += 1
                             
-                            if agent._send_msg_multi_tool_error_count >= 3:
+                            if agent._send_msg_multi_tool_error_count >= 2:
                                 logger.warning(f"Agent {agent.agent_id}: send_message multi-tool circuit breaker triggered. Forcing send_message ONLY.")
                                 deduplicated_tool_calls = [t for t in deduplicated_tool_calls if t.get("name") in ("send_message", "mark_message_read")]
                                 agent._send_msg_multi_tool_error_count = 0

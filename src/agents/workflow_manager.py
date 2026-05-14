@@ -1018,7 +1018,10 @@ class AgentWorkflowManager:
         # All states now support native tools natively if enabled globally.
         use_native_instructions = settings.NATIVE_TOOL_CALLING_ENABLED
 
-        tool_instructions = native_tool_instructions if use_native_instructions else json_tool_instructions
+        if agent.state == "pm_startup":
+            tool_instructions = "[TOOL USE - RESTRICTED]\nYou are in startup mode. DO NOT use general action tools like file_system or code_editor. Only use the tools required to transition your state, or output the required JSON plan if requested."
+        else:
+            tool_instructions = native_tool_instructions if use_native_instructions else json_tool_instructions
 
         json_tool_examples = """[EXAMPLE TOOL USE RESPONSE]
 <think>I need to add a new function to the main application logic.</think>
