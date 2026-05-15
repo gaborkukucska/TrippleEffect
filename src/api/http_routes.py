@@ -102,6 +102,15 @@ class AgentConfigCreate(BaseModel):
     agent_id: str = Field(..., description="Unique identifier for the agent (e.g., 'coder_v2'). Cannot contain spaces or special characters.", pattern=r"^[a-zA-Z0-9_-]+$")
     config: AgentConfigInput = Field(..., description="The configuration settings for the agent.")
 
+class ProviderSetupInput(BaseModel):
+    provider: str = Field(..., description="The name of the provider to setup (e.g., 'openai', 'openrouter', 'vllm', 'ollama')")
+    api_key: Optional[str] = Field(None, description="The API key for the provider")
+    base_url: Optional[str] = Field(None, description="The base URL for the provider if applicable")
+
+class ProviderStatusResponse(BaseModel):
+    has_providers: bool
+    message: str
+
 
 # --- HTTP Routes ---
 
@@ -124,6 +133,71 @@ async def get_index_page(request: Request):
         logger.error(f"Error rendering template index.html: {e}\n{trace}")
         error_html = f"<html><body><h1>Internal Server Error</h1><p>An unexpected error occurred while loading the page:</p><pre>{trace}</pre></body></html>"
         return HTMLResponse(content=error_html, status_code=500)
+
+# --- Provider Setup API Endpoints ---
+
+@router.get("/api/config/providers/status", response_model=ProviderStatusResponse)
+async def get_provider_status(manager: AgentManager = Depends(get_agent_manager_dependency), current_user: User = Depends(get_current_user)):
+    """ API endpoint to check if any LLM providers are available in the system. """
+    try:
+        # Checking if available_models is populated by ModelRegistry
+        has_providers = len(manager.model_registry.available_models) > 0
+        return ProviderStatusResponse(has_providers=has_providers, message="Providers found." if has_providers else "No providers available.")
+    except Exception as e:
+        logger.error(f"Error checking provider status: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to check provider status: {e}")
+
+@router.post("/api/config/providers/setup", response_model=GeneralResponse)
+async def setup_initial_provider(setup_data: ProviderSetupInput, current_user: User = Depends(get_current_user)):
+    """ API endpoint to set up an initial LLM provider by appending to .env. """
+    try:
+        env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+        
+        provider = setup_data.provider.upper()
+        api_key = setup_data.api_key
+        base_url = setup_data.base_url
+        
+        env_lines = []
+        if api_key:
+            if provider == "OLLAMA" or provider == "VLLM":
+                # For local providers, we might not strictly need an API key, but VLLM can use one
+                if provider == "VLLM":
+                    env_lines.append(f"{provider}_API_KEY=\"{api_key}\"\n")
+            else:
+                env_lines.append(f"{provider}_API_KEY=\"{api_key}\"\n")
+                
+        if base_url:
+            env_lines.append(f"{provider}_BASE_URL=\"{base_url}\"\n")
+            if provider == "OLLAMA":
+                env_lines.append(f"OLLAMA_API_URLS=\"{base_url}\"\n")
+            elif provider == "VLLM":
+                env_lines.append(f"VLLM_API_URLS=\"{base_url}\"\n")
+                
+        # Also ensure LOCAL_API_SCAN_ENABLED might be helpful to keep true, or configure default models
+        # Let's write the append string
+        append_str = "\n# --- Auto-configured via UI ---\n" + "".join(env_lines)
+        
+        if env_lines:
+            with open(env_path, "a") as f:
+                f.write(append_str)
+            logger.info(f"Appended initial provider configuration for {provider} to .env file.")
+            
+            # Start shutdown sequence async so the response goes through
+            async def _send_signal():
+                import signal
+                await asyncio.sleep(1) # delay to let response complete
+                logger.info("Sending SIGINT to trigger graceful shutdown after provider setup...")
+                os.kill(os.getpid(), signal.SIGINT)
+            
+            asyncio.create_task(_send_signal())
+            
+            return GeneralResponse(success=True, message="Provider settings saved. The system is restarting. Please wait a moment and refresh the page.")
+        else:
+             return GeneralResponse(success=False, message="No configuration details provided.")
+             
+    except Exception as e:
+        logger.error(f"Error setting up initial provider: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to setup initial provider: {e}")
 
 # --- Agent Config CRUD API Endpoints (using ConfigManager, no AgentManager needed) ---
 

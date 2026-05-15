@@ -275,6 +275,91 @@ const startApp = (username) => {
     console.log("Main: Application initialization sequence complete.");
 };
 
+const checkProviderSetupAndStart = async (username) => {
+    try {
+        const response = await fetch('/api/config/providers/status');
+        if (response.ok) {
+            const data = await response.json();
+            if (!data.has_providers) {
+                // Show provider setup modal
+                const modal = document.getElementById('provider-setup-modal');
+                if (modal) modal.style.display = 'flex';
+                return; // Do not start the app yet
+            }
+        }
+    } catch (e) {
+        console.error("Failed to check provider status:", e);
+    }
+    // If providers exist or check failed, proceed to start app
+    startApp(username);
+};
+
+const setupProviderFormListeners = () => {
+    const providerSelect = document.getElementById('setup-provider');
+    const apiKeyContainer = document.getElementById('setup-api-key-container');
+    const baseUrlContainer = document.getElementById('setup-base-url-container');
+    const apiKeyInput = document.getElementById('setup-api-key');
+    const baseUrlInput = document.getElementById('setup-base-url');
+    const form = document.getElementById('provider-setup-form');
+    const errorDiv = document.getElementById('setup-error');
+
+    if (!form || !providerSelect) return;
+
+    providerSelect.addEventListener('change', (e) => {
+        const val = e.target.value;
+        if (val === 'ollama') {
+            apiKeyContainer.style.display = 'none';
+            baseUrlContainer.style.display = 'block';
+            baseUrlInput.required = true;
+            apiKeyInput.required = false;
+        } else if (val === 'vllm' || val === 'litellm') {
+            apiKeyContainer.style.display = 'block';
+            baseUrlContainer.style.display = 'block';
+            baseUrlInput.required = true;
+            apiKeyInput.required = false;
+        } else {
+            apiKeyContainer.style.display = 'block';
+            apiKeyInput.required = true;
+            baseUrlContainer.style.display = 'none';
+            baseUrlInput.required = false;
+        }
+    });
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        errorDiv.textContent = '';
+        const provider = providerSelect.value;
+        const apiKey = apiKeyInput.value;
+        const baseUrl = baseUrlInput.value;
+        const submitBtn = document.getElementById('submit-provider-setup');
+
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Saving...';
+
+        try {
+            const response = await fetch('/api/config/providers/setup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider, api_key: apiKey, base_url: baseUrl })
+            });
+            const data = await response.json();
+            if (response.ok && data.success) {
+                errorDiv.style.color = '#28a745'; // Success green
+                errorDiv.textContent = data.message;
+            } else {
+                errorDiv.textContent = data.detail || data.message || 'Failed to setup provider.';
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Save & Restart Framework';
+            }
+        } catch (err) {
+            console.error(err);
+            errorDiv.textContent = 'Connection error.';
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Save & Restart Framework';
+        }
+    });
+};
+
 /**
  * Initialization function runs when the DOM is fully loaded.
  * Checks authentication state before starting the app.
@@ -282,10 +367,12 @@ const startApp = (username) => {
 const initializeApp = async () => {
     console.log("Main: DOM fully loaded. Checking authentication...");
 
+    setupProviderFormListeners();
+
     // Initialize auth UI (tab switching, form handlers, logout)
-    initAuth((username) => {
+    initAuth(async (username) => {
         // This callback fires on successful login/register
-        startApp(username);
+        await checkProviderSetupAndStart(username);
     });
 
     // Check if already authenticated (e.g. valid cookie from previous session)
@@ -293,7 +380,7 @@ const initializeApp = async () => {
     if (authResult.authenticated) {
         console.log(`Main: Already authenticated as '${authResult.username}'. Starting app.`);
         hideAuthView();
-        startApp(authResult.username);
+        await checkProviderSetupAndStart(authResult.username);
     } else {
         console.log("Main: Not authenticated. Showing login view.");
         showAuthView();

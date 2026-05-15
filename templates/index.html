@@ -205,7 +205,47 @@
         </div>
     </div>
 
+    <!-- Provider Setup Modal -->
+    <div id="provider-setup-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <h3 style="margin-bottom: 10px;">Initial Setup: LLM Provider</h3>
+            <p style="color: var(--text-color-secondary); margin-bottom: 18px; font-size: 0.9em;">
+                No LLM providers were found. Please configure an initial provider to start using the framework.
+            </p>
+            <form id="provider-setup-form">
+                <label for="setup-provider">Select Provider:</label>
+                <select id="setup-provider" name="setup_provider" required>
+                    <option value="" disabled selected>-- Choose Provider --</option>
+                    <option value="openrouter">OpenRouter (Recommended)</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="ollama">Ollama (Local)</option>
+                    <option value="vllm">vLLM (Local)</option>
+                    <option value="litellm">LiteLLM (Local Proxy)</option>
+                </select>
+
+                <div id="setup-api-key-container" style="display: none;">
+                    <label for="setup-api-key">API Key:</label>
+                    <input type="password" id="setup-api-key" name="setup_api_key" placeholder="Enter API Key">
+                    <p style="font-size: 0.8em; color: var(--text-color-muted); margin-top: 4px;" id="setup-api-key-hint"></p>
+                </div>
+
+                <div id="setup-base-url-container" style="display: none;">
+                    <label for="setup-base-url">Base URL (Optional/Required for Local):</label>
+                    <input type="text" id="setup-base-url" name="setup_base_url" placeholder="e.g. http://127.0.0.1:11434">
+                    <p style="font-size: 0.8em; color: var(--text-color-muted); margin-top: 4px;" id="setup-base-url-hint"></p>
+                </div>
+
+                <div id="setup-error" class="auth-error" style="margin-top: 10px;"></div>
+                
+                <div class="modal-actions" style="margin-top: 20px;">
+                    <button type="submit" id="submit-provider-setup" class="project-ctrl-btn project-ctrl-start" style="width: 100%;">Save & Restart Framework</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <!-- *** UPDATED SCRIPT TAG *** -->
-    <script type="module" src="/static/js/main.js"></script>
+    <script type="module" src="/static/js/main.js?v=2"></script>
 </body>
 </html>
