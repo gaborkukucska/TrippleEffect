@@ -301,8 +301,8 @@ class PromptAssembler:
 
         # 1.6 Prune stale tool error results from history (Fix +47)
         # Failed tool results persist across cycles and pollute context.
-        # Keep only the most recent 2 error messages to provide corrective context
-        # without overwhelming the LLM.
+        # Keep only the most recent 1 error message to provide corrective context
+        # without overwhelming the LLM with stale failures.
         STALE_ERROR_MARKERS = ["[Tool Execution Failed]", "[Tool Execution Blocked]", "Code edit failed:"]
         error_indices = []
         for idx, msg in enumerate(agent.message_history):
@@ -310,7 +310,7 @@ class PromptAssembler:
             if msg.get("role") in ("system", "tool") and any(marker in content for marker in STALE_ERROR_MARKERS):
                 error_indices.append(idx)
         
-        MAX_ERROR_MESSAGES = 2
+        MAX_ERROR_MESSAGES = 1
         if len(error_indices) > MAX_ERROR_MESSAGES:
             indices_to_remove = set(error_indices[:-MAX_ERROR_MESSAGES])  # Remove all but last N
             original_len = len(agent.message_history)

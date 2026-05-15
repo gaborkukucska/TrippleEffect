@@ -334,17 +334,29 @@ class NextStepScheduler:
             elif agent.agent_type == AGENT_TYPE_PM and \
                  agent.state == PM_STATE_REPORT_CHECK and not context.state_change_requested_this_cycle:
                 
-                # ENFORCEMENT: pm_report_check cycle cap
+                # ENFORCEMENT: pm_report_check cycle cap (DYNAMIC based on team size)
+                # With N workers, each report may take 2-3 cycles (read + respond + update).
+                # Use max(8, num_workers * 3) to scale appropriately.
+                num_workers = 0
+                try:
+                    team_id = self._manager.state_manager.get_agent_team(agent_id)
+                    if team_id:
+                        team_members = self._manager.state_manager.get_agents_in_team(team_id)
+                        num_workers = sum(1 for m in team_members if getattr(m, 'agent_type', '') == AGENT_TYPE_WORKER)
+                except Exception:
+                    num_workers = 0
+                dynamic_cap = max(8, num_workers * 3)
+                
                 current_count = getattr(agent, '_pm_report_check_cycle_count', 0)
                 setattr(agent, '_pm_report_check_cycle_count', current_count + 1)
                 
-                if getattr(agent, '_pm_report_check_cycle_count') > 5:
-                    logger.critical(f"NextStepScheduler: PM '{agent_id}' has been in 'pm_report_check' for {getattr(agent, '_pm_report_check_cycle_count')} cycles. Forcing transition to pm_manage to prevent infinite loop.")
+                if getattr(agent, '_pm_report_check_cycle_count') > dynamic_cap:
+                    logger.critical(f"NextStepScheduler: PM '{agent_id}' has been in 'pm_report_check' for {getattr(agent, '_pm_report_check_cycle_count')} cycles (cap={dynamic_cap}, workers={num_workers}). Forcing transition to pm_manage to prevent infinite loop.")
                     if hasattr(self._manager, 'workflow_manager'):
                         self._manager.workflow_manager.change_state(agent, PM_STATE_MANAGE)
                         setattr(agent, '_pm_report_check_cycle_count', 0)
                         
-                        override_msg = "[System Enforcement]: You failed to complete the report check within the maximum allowed steps. The system has automatically transitioned you to manage state to prevent compute waste."
+                        override_msg = f"[System Enforcement]: You exceeded the maximum allowed report check steps ({dynamic_cap}). The system has automatically transitioned you to manage state to prevent compute waste."
                         agent.message_history.append({"role": "system", "content": override_msg})
                         
                         agent.set_status(AGENT_STATUS_IDLE)
@@ -355,6 +367,9 @@ class NextStepScheduler:
                 if getattr(context, 'action_taken_this_cycle', False):
                     # PM executed a tool (e.g., send_message, project_management). Allow it to stay in this state to read the result.
                     logger.info(f"NextStepScheduler: PM agent '{agent_id}' in pm_report_check executed a tool. Reactivating to process result.")
+                    # Reset counter on successful tool execution — PM is making progress
+                    if getattr(context, 'executed_tool_successfully_this_cycle', False):
+                        setattr(agent, '_pm_report_check_cycle_count', 0)
                     if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear()
                     if agent.status != AGENT_STATUS_ERROR:
                         agent.set_status(AGENT_STATUS_IDLE)

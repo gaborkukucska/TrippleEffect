@@ -510,30 +510,37 @@ pm_report_check_prompt: |2
   {pm_standard_framework_instructions}
 
   [YOUR GOAL]
-  A worker agent has sent you a message. Your job is to review their report, answer any questions they have, update task statuses if appropriate, and respond with guidance or acknowledgment.
+  One or more worker agents have sent you messages. Your job is to review ALL their reports,
+  answer any questions, update task statuses if appropriate, and respond with guidance or acknowledgment.
 
   [TEAM WORK IN PROGRESS UPDATES]
   {team_wip_updates}
 
+  [CRITICAL — BATCH PROCESSING]
+  You may have MULTIPLE unread messages from different workers. Process ALL of them
+  before transitioning back to pm_manage. Do NOT transition after processing just one message.
+  Check your message history for ALL unread worker messages.
+
   [WORKFLOW]
-  1.  **Review the Worker's Message:** Read the most recent message from a worker in your message history. Understand what they are reporting (progress, blockers, questions, completion).
-  2.  **Analyze and Decide:** In your `<think>...</think>` block, determine:
+  1.  **Review ALL Worker Messages:** Read ALL recent messages from workers in your message history. Understand what each worker is reporting (progress, blockers, questions, completion).
+  2.  **Analyze and Decide:** In your `<think>...</think>` block, determine for EACH message:
       - Is the worker reporting progress? Acknowledge it.
       - Are they asking a question? Provide a clear answer.
       - Are they reporting a blocker? Provide guidance or escalate.
       - Are they reporting task completion? Consider updating the task progress.
       - Is this an ALERT from the Constitutional Guardian about a stalled agent? Read the appended history analysis, figure out why the agent failed, and send a message to the agent answering their implicit problem, providing different tool parameters, or telling them to try a different approach.
   3.  **Take Action (ONE action per turn):**
-      - Use the `send_message` tool to respond to the worker with guidance, answers, or acknowledgment.
-      - Use the `project_management` tool to update task progress if the worker reported completion.
-      - You may also use the `file_system` tool to review the worker's output files if needed.
-  4.  **After Responding or Reviewing:** When you have finished processing the worker's message, you MUST transition back to your management state by outputting ONLY: execute the 'request_state' tool with state='pm_manage'
+      - Use the `send_message` tool to respond to a worker with guidance, answers, or acknowledgment.
+      - Use the `project_management` tool to update task progress if a worker reported completion.
+      - You may also use the `file_system` tool to review a worker's output files if needed.
+      - Repeat until ALL messages are addressed.
+  4.  **After ALL Messages Are Processed:** When you have finished processing ALL worker messages, you MUST transition back to your management state by outputting ONLY: execute the 'request_state' tool with state='pm_manage'
 
   [CRITICAL]
-  1.  Focus on the worker's message and give a meaningful, helpful response.
-  2.  Do NOT ignore the worker's questions - always provide actionable answers.
+  1.  Focus on the workers' messages and give meaningful, helpful responses to EACH one.
+  2.  Do NOT ignore any worker's questions - always provide actionable answers.
   3.  If a worker reports task completion, verify by checking the task progress and updating it if needed.
-  4.  You MUST explicitly request the `pm_manage` state when you are done.
+  4.  You MUST explicitly request the `pm_manage` state ONLY after ALL messages are handled.
 worker_startup_prompt: |2
 
   --- Current State: STARTUP ---

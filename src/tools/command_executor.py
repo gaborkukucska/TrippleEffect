@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import subprocess
@@ -111,6 +112,44 @@ class CommandExecutionTool(BaseTool):
                  await asyncio.to_thread(cwd_path.mkdir, parents=True, exist_ok=True)
              except Exception as e:
                  return {"status": "error", "message": f"Could not create missing working directory {cwd_path}: {e}"}
+
+        # --- PATH NORMALIZATION: Strip redundant `cd` prefixes ---
+        # Agents (especially smaller models) hallucinate Docker-style paths like
+        # `cd /workspace && npm start` or `cd /home/user/project && pytest`.
+        # Since the CWD is already set correctly by the scope parameter, these
+        # `cd` prefixes are always redundant and often cause errors.
+        _cd_prefix_pattern = re.compile(
+            r'^cd\s+'                               # cd followed by space
+            r'(?:/workspace|/home/\S+|/app|'         # common hallucinated absolute paths
+            r'\.(?:/\S+)?|'                          # relative . or ./foo
+            r'\.\.(?:/\S+)?|'                        # relative .. or ../foo
+            r'shared_workspace(?:/\S+)?|'             # agents trying to cd into workspace
+            r'\S+/shared_workspace(?:/\S+)?)'         # full path to shared_workspace
+            r'\s*(?:&&|;)\s*',                       # followed by && or ; separator
+            re.IGNORECASE
+        )
+        original_command = command
+        command = _cd_prefix_pattern.sub('', command).strip()
+        if command != original_command:
+            logger.info(
+                f"Framework Optimization: Stripped redundant 'cd' prefix from command for agent {agent_id}. "
+                f"Original: '{original_command[:100]}' → Cleaned: '{command[:100]}'"
+            )
+        # Handle bare `cd <path>` with no following command (edge case)
+        if re.match(r'^cd\s+\S+$', command, re.IGNORECASE):
+            return {
+                "status": "success",
+                "message": (
+                    "Framework Optimization: The 'cd' command is not needed. "
+                    "The working directory is automatically set by the 'scope' parameter. "
+                    "To run commands in the shared workspace, set scope='shared'. "
+                    "To run in a subdirectory, use a relative path in your command, e.g.: "
+                    "'python src/main.py' instead of 'cd src && python main.py'."
+                ),
+                "return_code": 0,
+                "stdout": "",
+                "stderr": ""
+            }
 
         # Auto-Skip redundant npm installs to save time and compute
         if "npm install" in command or "npm i " in command or command.endswith("npm i"):
@@ -225,26 +264,40 @@ class CommandExecutionTool(BaseTool):
 
         **Description:** Executes shell commands within the restricted agent sandbox or shared workspace.
 
+        **CRITICAL — WORKING DIRECTORY IS AUTOMATIC:**
+        The working directory is automatically set based on the `scope` parameter:
+        - `scope="shared"` → Runs inside the project's shared workspace (most common).
+        - `scope="private"` → Runs inside your private sandbox.
+        You do NOT need to `cd` anywhere. Just run your command directly.
+
         **CRITICAL WARNING - NO INTERACTIVE COMMANDS:** Do NOT attempt to run interactive terminal commands like `nano`, `vim`, `top`, or scripts that prompt for user input (e.g., `input()`). They will cause the execution to freeze and time out. Always use non-interactive flags (like `-y` for apt/npm/pip installations). If starting a server or long-running daemon, you MUST append ` &` to the command to run it in the background.
 
         **Actions & Parameters:**
 
         1.  **run_command:** Executes a parameterized shell command.
             *   `<command>` (string, required): The exact shell command string to execute.
-            *   `<scope>` (string, optional): 'private' (default) or 'shared'. Sets the current working directory of the command.
-            *   `<timeout>` (integer, optional): Max execution time in seconds (default 60, max 300).
+            *   `<scope>` (string, optional): 'private' or 'shared' (default). Sets the current working directory of the command.
+            *   `<timeout>` (integer, optional): Timeout in seconds for command execution. Default is 60. Max is 300.
 
-        **Examples:**
-        
-        *   Run a python script:
-            `{"action": "run_command", "command": "python my_script.py"}`
-            
+        **ANTI-PATTERNS (DO NOT DO):**
+        - WRONG: `{"command": "cd /workspace && npm start"}` — No need to cd! Use scope="shared".
+        - WRONG: `{"command": "cd ../project && pytest"}` — The scope parameter handles directory selection.
+        - WRONG: `{"command": "cd src && python main.py"}` — Use the relative path: `python src/main.py`.
+
+        **Examples (CORRECT):**
+
+        *   Run a python script in the shared workspace:
+            `{"action": "run_command", "command": "python my_script.py", "scope": "shared"}`
+
         *   Install a package using pip:
             `{"action": "run_command", "command": "pip install requests"}`
 
         *   Run pytest tests:
             `{"action": "run_command", "scope": "shared", "command": "pytest tests/ --tb=short"}`
-            
+
+        *   Run a script in a subdirectory (NO cd needed!):
+            `{"action": "run_command", "scope": "shared", "command": "python src/main.py"}`
+
         *   List files in a specific format via bash:
             `{"action": "run_command", "command": "ls -la | grep \\"py\\""}`
         """
