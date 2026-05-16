@@ -134,7 +134,7 @@ class ToolInformationTool(BaseTool):
                         cat = CATEGORY_MAP.get(name, "General")
                         if category_filter and cat.lower() != category_filter.lower():
                              continue
-                        summary = getattr(tool, 'summary', tool.description)
+                        summary = getattr(tool, 'summary', None) or tool.description or ""
                         tools_list.append({"name": name, "summary": summary.strip(), "category": cat})
 
                 tools_details = []

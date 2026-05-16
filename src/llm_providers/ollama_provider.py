@@ -188,13 +188,15 @@ class OllamaProvider(BaseLLMProvider):
                 logger.debug(f"OllamaProvider: No model-specific stop tokens found for '{model}'. "
                              f"Relying on Ollama's built-in template stop handling (no stop token injected).")
         
-        # --- Warn about raw templates ---
+        # --- Warn about raw templates and inject ChatML override ---
+        override_template = None
         if model_info and model_info.get('model_template'):
             stripped_template = model_info['model_template'].strip()
             if stripped_template in ('{{ .Prompt }}', '{{ .Response }}', '{{ .System }}{{ .Prompt }}'):
-                logger.debug(f"OllamaProvider: Model '{model}' has a RAW template ('{stripped_template}'). "
+                logger.info(f"OllamaProvider: Model '{model}' has a RAW template ('{stripped_template}'). "
                                f"Multi-turn /api/chat conversations may not be formatted correctly. "
-                               f"Consider updating the model's Modelfile with a proper chat template.")
+                               f"Forcing ChatML template override for /api/chat.")
+                override_template = '{{ range .Messages }}{{ if eq .Role "system" }}<|im_start|>system\n{{ .Content }}<|im_end|>\n{{ else if eq .Role "user" }}<|im_start|>user\n{{ .Content }}<|im_end|>\n{{ else if eq .Role "assistant" }}<|im_start|>assistant\n{{ .Content }}<|im_end|>\n{{ end }}{{ end }}<|im_start|>assistant\n'
 
         ignored_options = {k: v for k, v in raw_options.items() if k not in KNOWN_OLLAMA_OPTIONS and k != "stop"}
         if ignored_options: logger.warning(f"OllamaProvider ignoring unknown options: {ignored_options}")
@@ -271,6 +273,8 @@ class OllamaProvider(BaseLLMProvider):
             messages_for_ollama_payload.append(msg_to_send)
 
         payload = { "model": model, "messages": messages_for_ollama_payload, "stream": self.streaming_mode, "options": valid_options }
+        if override_template:
+            payload["template"] = override_template
 
         use_streaming_mode = self.streaming_mode
         if settings.NATIVE_TOOL_CALLING_ENABLED and tools:

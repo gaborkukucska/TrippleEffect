@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 import time
 
 from src.tools.base import BaseTool, ToolParameter
+from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,7 @@ class TestRunnerTool(BaseTool):
         ToolParameter(name="command", type="string", description="The test command to run (e.g., 'pytest', 'npm run test:unit').", required=True),
         ToolParameter(name="working_dir", type="string", description="Optional subdirectory to run the tests in.", required=False),
         ToolParameter(name="timeout", type="integer", description="Timeout in seconds (default 30, max 120).", required=False),
+        ToolParameter(name="scope", type="string", description="Target scope: 'private', 'shared', or 'projects'. Defaults to 'shared'.", required=False),
     ]
 
     async def execute(self, agent_id: str, agent_sandbox_path: Path, project_name: Optional[str] = None, session_name: Optional[str] = None, **kwargs: Any) -> Any:
@@ -24,11 +26,29 @@ class TestRunnerTool(BaseTool):
         if not command:
             return {"status": "error", "message": "Missing required 'command' parameter."}
 
+        default_scope = "shared" if project_name and session_name else "private"
+        scope = kwargs.get("scope", default_scope).lower()
+
+        base_path: Optional[Path] = None
+        if scope == "private":
+            base_path = agent_sandbox_path
+            if not base_path.is_dir(): return {"status": "error", "message": f"Sandbox does not exist: {base_path}"}
+        elif scope == "shared":
+            if not project_name or not session_name: return {"status": "error", "message": "Missing project/session context."}
+            safe_project_name = project_name.replace(" ", "_").strip()
+            base_path = settings.PROJECTS_BASE_DIR / safe_project_name / session_name / "shared_workspace"
+            if not base_path.is_dir(): return {"status": "error", "message": "Shared workspace does not exist."}
+        elif scope == "projects":
+            base_path = settings.PROJECTS_BASE_DIR
+            if not base_path.is_dir(): return {"status": "error", "message": "Projects dir does not exist."}
+        else:
+            return {"status": "error", "message": "Invalid scope. Use 'private', 'shared', or 'projects'."}
+
         sub_path = kwargs.get("working_dir", "")
-        run_path = agent_sandbox_path / sub_path
+        run_path = base_path / sub_path
         
-        if not run_path.exists() or not run_path.is_relative_to(agent_sandbox_path):
-            return {"status": "error", "message": f"Invalid or non-existent working directory: {sub_path}"}
+        if not run_path.exists() or not run_path.is_relative_to(base_path):
+            return {"status": "error", "message": f"Invalid or non-existent working directory: {sub_path} in scope {scope}"}
 
         timeout = int(kwargs.get("timeout", 30))
         timeout = max(5, min(120, timeout)) # clamp between 5 and 120 seconds
@@ -103,11 +123,13 @@ class TestRunnerTool(BaseTool):
         *   `<command>` (string, required): The shell command to run.
         *   `<working_dir>` (string, optional): A subdirectory to run the command in.
         *   `<timeout>` (integer, optional): Maximum execution time in seconds.
+        *   `<scope>` (string, optional): 'private', 'shared', or 'projects'. Default: 'shared'.
 
         **Example JSON Call:**
         ```json
         {
-          "command": "pytest tests/test_api.py"
+          "command": "pytest tests/test_api.py",
+          "scope": "shared"
         }
         ```
         """

@@ -158,28 +158,19 @@ Ready to dive in? Here's how to get your agents up and running quickly:
 ## 🛠️ Troubleshooting
 
 ### "RAW template" Warnings in Logs (Ollama)
-If you see a warning in your logs that says `Has RAW template '{{ .Prompt }}'` for a downloaded model, it means the model was packaged without a conversational chat template. This can cause multi-turn conversation parsing errors for the agents. 
+If you see a warning in your logs that says `Has RAW template '{{ .Prompt }}'` for a downloaded model, it means the model was packaged without a conversational chat template. 
 
-**To fix it via Ollama CLI:**
-1. Export the current Modelfile:
-   ```bash
-   ollama show --modelfile <model_name> > Modelfile
-   ```
-2. Open the `Modelfile` and replace the `TEMPLATE """{{ .Prompt }}"""` line with the appropriate chat template for your model (e.g. ChatML for Qwen, Llama3 for Llama), for example here is the ChatML one:
-    ```bash
-    TEMPLATE """{{ if .System }}<|im_start|>system
-{{ .System }}<|im_end|>
-{{ end }}{{ if .Prompt }}<|im_start|>user
-{{ .Prompt }}<|im_end|>
-{{ end }}<|im_start|>assistant
-"""
-    ```
-3. Overwrite the model:
-   ```bash
-   ollama create <model_name> -f Modelfile
-   ```
+**Automatic ChatML Injection:**
+The framework will automatically detect models with RAW templates and dynamically inject a highly robust ChatML template (`<|im_start|>system...`) into the API payload. This ensures multi-turn conversations format correctly without you needing to manually modify Modelfiles.
+
+*(Note: This dynamic template injection is a unique feature of the Ollama provider. Other providers like OpenAI, vLLM, and OpenRouter manage chat templating strictly on their server-side using the standardized `/v1/chat/completions` API schema and do not support payload-level template overrides).*
+
+**Manual Fix via Ollama CLI (Optional):**
+If you want to permanently fix the model in your local registry instead of relying on the dynamic injection:
+1. Export the current Modelfile: `ollama show --modelfile <model_name> > Modelfile`
+2. Replace the `TEMPLATE """{{ .Prompt }}"""` line with the appropriate chat template.
+3. Overwrite the model: `ollama create <model_name> -f Modelfile`
 4. Clean up: `rm Modelfile`
-
 ---
 
 ## 📚 Documentation
