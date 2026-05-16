@@ -637,8 +637,11 @@ class AgentWorkflowManager:
         # Special handling for ProjectCreationWorkflow: ensure _raw_plan_body_ is set
         if isinstance(workflow_instance, ProjectCreationWorkflow):
             if "_raw_plan_body_" not in json_data:
-                # Use description/body/plan_body or serialize remaining keys
-                json_data["_raw_plan_body_"] = json_data.get("description", json_data.get("body", json_data.get("plan_body", json.dumps(json_data, indent=2))))
+                if text_before and len(text_before.strip()) > 50:
+                    json_data["_raw_plan_body_"] = text_before.strip()
+                else:
+                    # Use description/body/plan_body or serialize remaining keys
+                    json_data["_raw_plan_body_"] = json_data.get("description", json_data.get("body", json_data.get("plan_body", json.dumps(json_data, indent=2))))
 
         try:
             return await workflow_instance.execute(manager, agent, json_data)
