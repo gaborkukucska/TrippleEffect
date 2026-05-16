@@ -576,30 +576,48 @@ class AgentWorkflowManager:
         text_before = ""
         text_after = ""
 
+        def _parse_robust(text: str):
+            text = text.strip()
+            last_err = None
+            while text:
+                try:
+                    return json.loads(text, strict=False), None
+                except json.JSONDecodeError as e:
+                    last_err = e
+                    if "Extra data" in str(e):
+                        import re
+                        m = re.search(r'char (\d+)', str(e))
+                        if m:
+                            char_idx = int(m.group(1))
+                            text = text[:char_idx].strip()
+                            continue
+                    break
+            return None, last_err
+
         # Pattern 1: Markdown JSON fence (```json ... ``` or ``` ... ```)
         json_fence_pattern = r'```(?:json)?\s*(\{[\s\S]*?\})\s*```'
         json_fence_match = re.search(json_fence_pattern, content, re.DOTALL)
         if json_fence_match:
-            try:
-                json_data = json.loads(json_fence_match.group(1), strict=False)
+            json_data, err = _parse_robust(json_fence_match.group(1))
+            if json_data:
                 text_before = content[:json_fence_match.start()].strip()
                 text_after = content[json_fence_match.end():].strip()
                 logger.debug(f"WorkflowManager: Found JSON in markdown fence for agent '{agent.agent_id}'")
-            except json.JSONDecodeError as e:
-                logger.debug(f"WorkflowManager: JSON in markdown fence failed to parse: {e}")
+            else:
+                logger.debug(f"WorkflowManager: JSON in markdown fence failed to parse: {err}")
 
         # Pattern 2: Raw JSON object (not in fence)
         if json_data is None:
             raw_json_pattern = r'(\{[\s\S]*\})'
             raw_json_match = re.search(raw_json_pattern, content, re.DOTALL)
             if raw_json_match:
-                try:
-                    json_data = json.loads(raw_json_match.group(1), strict=False)
+                json_data, err = _parse_robust(raw_json_match.group(1))
+                if json_data:
                     text_before = content[:raw_json_match.start()].strip()
                     text_after = content[raw_json_match.end():].strip()
                     logger.debug(f"WorkflowManager: Found raw JSON object for agent '{agent.agent_id}'")
-                except json.JSONDecodeError as e:
-                    logger.debug(f"WorkflowManager: Raw JSON object failed to parse: {e}")
+                else:
+                    logger.debug(f"WorkflowManager: Raw JSON object failed to parse: {err}")
 
         if json_data is None or not isinstance(json_data, dict):
             return None  # No valid JSON found; caller should try XML fallback

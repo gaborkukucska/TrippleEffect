@@ -302,6 +302,23 @@ class ConstitutionalGuardianHealthMonitor:
                             record.tool_execution_loop_detected = True
                             record.tool_execution_loop_count = identical_count
         
+        # ENHANCED: Track dependency installation loops
+        if hasattr(agent, 'message_history') and agent.message_history:
+            recent_dependency_errors = []
+            for msg in reversed(agent.message_history[-8:]):
+                if msg.get('role') == 'tool':
+                    content_str = msg.get('content', '')
+                    if "Could not find a version that satisfies the requirement" in content_str or "No matching distribution found for" in content_str:
+                        recent_dependency_errors.append(content_str)
+            
+            if len(recent_dependency_errors) >= 2:
+                logger.error(f"ConstitutionalGuardian: DETECTED dependency installation loop for agent '{agent_id}'")
+                if not hasattr(record, 'dependency_error_detected'):
+                    record.dependency_error_detected = True
+                    record.dependency_error_count = len(recent_dependency_errors)
+                else:
+                    record.dependency_error_count = len(recent_dependency_errors)
+
         # Use the took_meaningful_action parameter for accurate tracking. This is the critical flag
         # that is only True if a tool was successfully run or a state change was requested.
         # The generic 'has_action' is too broad and counts any final text response as an action.
@@ -371,6 +388,12 @@ class ConstitutionalGuardianHealthMonitor:
         elif hasattr(record, 'tool_execution_loop_detected') and record.tool_execution_loop_detected:
             logger.error(f"ConstitutionalGuardian: BLOCKING '{agent_id}' - tool execution loop detected ({record.tool_execution_loop_count} errors)")
             needs_intervention, description, recovery = await self._create_tool_execution_loop_intervention(agent, record)
+
+        # PRIORITY 0.6: Block dependency error loop immediately
+        elif hasattr(record, 'dependency_error_detected') and record.dependency_error_detected:
+            if record.dependency_error_count >= 2:
+                logger.error(f"ConstitutionalGuardian: BLOCKING '{agent_id}' - dependency error loop detected ({record.dependency_error_count} errors)")
+                needs_intervention, description, recovery = await self._create_dependency_error_intervention(agent, record)
             
         # PRIORITY 1: Block empty responses immediately
         elif record.consecutive_empty_responses >= self.empty_response_threshold:
@@ -583,6 +606,32 @@ class ConstitutionalGuardianHealthMonitor:
         
         return True, description, recovery
 
+    async def _create_dependency_error_intervention(self, agent: 'Agent', record: AgentHealthRecord) -> Tuple[bool, str, Dict]:
+        """Creates intervention for dependency installation error loops."""
+        description = "Dependency installation error loop detected. You are repeatedly trying to install a package that does not exist or is failing to install."
+        
+        recovery = {
+            "type": "dependency_error_reset",
+            "message": (
+                "[CONSTITUTIONAL GUARDIAN INTERVENTION: CRITICAL DEPENDENCY ERROR LOOP DETECTED]\n"
+                "You are stuck in an infinite loop trying to install a package that cannot be found.\n"
+                "1. STOP trying to install this package.\n"
+                "2. If this is a standard Python library (like 'sqlite3', 'math', 'os', 'sys'), it is already built-in. Do not try to pip install it.\n"
+                "3. You MUST edit your requirements.txt file to remove the failing package, or modify your code to not require it.\n"
+                "4. Your loop counter has been reset so you can take corrective action. Move on to fixing the file instead of retrying the command."
+            ),
+            "actions": [
+                {
+                    "action": "clear_inbox"
+                },
+                {
+                    "action": "reset_status", 
+                    "new_status": AGENT_STATUS_IDLE
+                }
+            ]
+        }
+        
+        return True, description, recovery
     async def _create_tool_execution_loop_intervention(self, agent: 'Agent', record: AgentHealthRecord) -> Tuple[bool, str, Dict]:
         """Create intervention for repeated tool execution errors."""
         

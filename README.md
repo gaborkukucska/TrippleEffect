@@ -155,6 +155,33 @@ Ready to dive in? Here's how to get your agents up and running quickly:
 
 ---
 
+## 🛠️ Troubleshooting
+
+### "RAW template" Warnings in Logs (Ollama)
+If you see a warning in your logs that says `Has RAW template '{{ .Prompt }}'` for a downloaded model, it means the model was packaged without a conversational chat template. This can cause multi-turn conversation parsing errors for the agents. 
+
+**To fix it via Ollama CLI:**
+1. Export the current Modelfile:
+   ```bash
+   ollama show --modelfile <model_name> > Modelfile
+   ```
+2. Open the `Modelfile` and replace the `TEMPLATE """{{ .Prompt }}"""` line with the appropriate chat template for your model (e.g. ChatML for Qwen, Llama3 for Llama), for example here is the ChatML one:
+    ```bash
+    TEMPLATE """{{ if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}{{ if .Prompt }}<|im_start|>user
+{{ .Prompt }}<|im_end|>
+{{ end }}<|im_start|>assistant
+"""
+    ```
+3. Overwrite the model:
+   ```bash
+   ollama create <model_name> -f Modelfile
+   ```
+4. Clean up: `rm Modelfile`
+
+---
+
 ## 📚 Documentation
 
 To keep this README clean and exciting, we've moved all the heavy lifting and detailed technical documentation into the `docs/` and `helperfiles/` folders. Check them out here:

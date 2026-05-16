@@ -1606,10 +1606,13 @@ class AgentCycleHandler:
                                     elif tool_name in ["knowledge_base", "web_search", "github_tool", "tool_information"]:
                                         is_read_tool = True
                                         
-                                    MAX_CACHED_RESULT_LEN = 4000 if is_read_tool else 200
+                                    MAX_CACHED_RESULT_LEN = 4000 if is_read_tool else 500
                                     truncated_result = prev_result
                                     if len(prev_result) > MAX_CACHED_RESULT_LEN:
-                                        truncated_result = prev_result[:MAX_CACHED_RESULT_LEN] + f"\n... [TRUNCATED - duplicate call, full result ({len(prev_result)} chars) was already returned to you previously]"
+                                        if MAX_CACHED_RESULT_LEN <= 500:
+                                            truncated_result = prev_result[:250] + f"\n... [TRUNCATED - duplicate call, full result ({len(prev_result)} chars) was already returned to you previously] ...\n" + prev_result[-250:]
+                                        else:
+                                            truncated_result = prev_result[:(MAX_CACHED_RESULT_LEN-1000)] + f"\n... [TRUNCATED - duplicate call, full result ({len(prev_result)} chars) was already returned to you previously] ...\n" + prev_result[-1000:]
                                     history_item: MessageDict = {
                                         "role": "tool",
                                         "tool_call_id": tool_id or f"cached_id_{i}",
@@ -1808,10 +1811,10 @@ class AgentCycleHandler:
                                             f"Failure count: {agent._duplicate_failure_count}. Skipping re-execution."
                                         )
                                         
-                                        # Provide truncated failure message
+                                        # Provide truncated failure message (keeping start and end)
                                         truncated_failure = prev_failure
-                                        if len(prev_failure) > 500:
-                                            truncated_failure = prev_failure[:500] + "\n... [TRUNCATED - duplicate failed call]"
+                                        if len(prev_failure) > 1000:
+                                            truncated_failure = prev_failure[:500] + f"\n... [TRUNCATED - duplicate failed call ({len(prev_failure)} chars) - check original failure above] ...\n" + prev_failure[-500:]
                                         history_item: MessageDict = {
                                             "role": "tool",
                                             "tool_call_id": tool_id or f"cached_id_{i}",

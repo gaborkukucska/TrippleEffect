@@ -176,6 +176,31 @@ class CommandExecutionTool(BaseTool):
 
         logger.info(f"Agent {agent_id} executing command '{command}' in {scope_description} (timeout: {timeout}s)")
         
+        # --- Framework Optimization: Package Blacklist ---
+        if "pip install -r requirements.txt" in command or "pip install " in command:
+            req_file = cwd_path / "requirements.txt"
+            if req_file.exists():
+                content = req_file.read_text(errors='replace')
+                lines = content.split('\n')
+                new_lines = []
+                changed = False
+                for line in lines:
+                    if line.strip().startswith("sqlite3"):
+                        new_lines.append(f"# Framework Optimization: Removed blacklisted built-in package {line.strip()}")
+                        changed = True
+                    else:
+                        new_lines.append(line)
+                if changed:
+                    logger.info(f"Framework Optimization: Sanitized requirements.txt to remove sqlite3")
+                    req_file.write_text('\n'.join(new_lines))
+
+        if "pip install " in command and "sqlite3" in command:
+            return {
+                "status": "error",
+                "message": "Framework Blocked: sqlite3 is a standard library built-in module and cannot be installed via pip. Do not add it to requirements.txt or pip install it.",
+                "content": "Command Execution Failed\n\n--- STDERR ---\nFramework Blocked: sqlite3 is a standard library built-in module and cannot be installed via pip. Do not add it to requirements.txt or pip install it."
+            }
+
         try:
             # Create subprocess
             # We use shell=True to allow compound commands and argument parsing exactly as typed
@@ -243,14 +268,10 @@ class CommandExecutionTool(BaseTool):
                 content_parts.append(f"--- STDERR ---\n{stderr_str.strip()}")
             if returncode != 0 and not stderr_str.strip() and not stdout_str.strip():
                 content_parts.append("--- Output ---\nNo output provided by command.")
-                
             return {
                 "status": status,
                 "message": result_message,
-                "content": "\n\n".join(content_parts),
-                "return_code": returncode,
-                "stdout": stdout_str,
-                "stderr": stderr_str
+                "content": "\n\n".join(content_parts)
             }
             
         except Exception as e:

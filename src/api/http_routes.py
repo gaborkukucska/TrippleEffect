@@ -125,7 +125,7 @@ async def get_index_page(request: Request):
              error_html = f"<html><body><h1>Template Missing</h1><p>Could not load the main application page. Expected template at:</p><pre>{template_path}</pre></body></html>"
              return HTMLResponse(content=error_html, status_code=500)
         # Pass the request object to the template context
-        return templates.TemplateResponse(request=request, name="index.html", context={"request": request})
+        return templates.TemplateResponse("index.html", {"request": request})  # type: ignore
     except Exception as e:
         # Catch potential errors during template rendering
         import traceback
