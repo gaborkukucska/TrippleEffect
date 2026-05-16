@@ -190,7 +190,7 @@ To keep this README clean and exciting, we've moved all the heavy lifting and de
 ## 🚀 Development Status
 
 * **Current Version:** 2.50
-* **Recent Highlights:** Framework Stabilization & Security Hardening (May 2026) — Finalized the implementation of a 3-tier resource exhaustion limit system (Teams, PMs, Workers). Migrated the entire authentication flow to native bcrypt with robust session heartbeat controls. Hardened the Constitutional Guardian to monitor and flag unsafe shell commands. Implemented an advisory LoopCoordinator layer with an asyncio.Lock based cycle execution queue to entirely eliminate watchdog thrashing and UI concurrency race conditions.
+* **Recent Highlights:** Long-Run Stability & JSON Resilience (May 2026) — Finalized the implementation of a 3-tier resource exhaustion limit system (Teams, PMs, Workers). Migrated the entire authentication flow to native bcrypt with robust session heartbeat controls. Implemented an advisory LoopCoordinator layer with an asyncio.Lock based cycle execution queue to entirely eliminate watchdog thrashing. Added robust `scope` resolution logic to `test_runner` and `codebase_search` tools to unlock collaborative codebase interaction. Completely refactored the Admin AI's `ProjectCreationWorkflow` JSON parser to natively intercept and capture Markdown-formatted plans, permanently resolving `JSONDecodeError` workflow stalls.
 * **Current Phase:** Target Phase 28 features Advanced Memory & Learning systems, proactive behaviors, and federated communication foundations.
 
 ## 🤝 Contributing & License

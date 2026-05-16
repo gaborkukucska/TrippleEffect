@@ -621,4 +621,18 @@ This entirely breaks the LLM's autoregressive death spiral by physically moving 
 **Files:** `src/tools/file_system.py`, `src/tools/code_editor.py`
 
 ---
+
+#### Phase Y: Final Stability Pass & JSON Resilience (May 2026)
+
+**Problem 1 (Tool Workspace Scope Deficiencies):** Agents correctly identified they should use the `shared` workspace, but the `test_runner` and `codebase_search` tools were hardcoded to only run inside the `agent_sandbox_path`, causing `Invalid or non-existent path` errors during collaborative work.
+**Fix 1:** Added the `scope` parameter to both tools' JSON schemas. Implemented the standard path resolution logic to automatically map `scope="shared"` to `settings.PROJECTS_BASE_DIR`, allowing agents to seamlessly test and search the collaborative codebase.
+
+**Problem 2 (Admin AI Planning JSON Syntax Errors):** The Admin AI frequently stalled during the `planning` state. The LLM was failing to format its multi-line Markdown plan securely inside the `_raw_plan_body_` JSON string parameter, causing unescaped newlines and quote collisions that triggered `JSONDecodeError` exceptions in the workflow manager.
+**Fix 2:** 
+- Updated `prompts.yaml` (`admin_ai_planning_prompt`) to instruct the LLM to output its full plan normally in Markdown text, followed by a tiny JSON block at the very end containing only the project `title`.
+- Modified `src/agents/workflow_manager.py`'s `ProjectCreationWorkflow` JSON parser to dynamically capture the Markdown text preceding the JSON block and inject it into the `_raw_plan_body_` field behind the scenes. This eliminates the need for the LLM to escape complex strings, ensuring 100% reliable JSON parsing.
+
+**Files:** `src/tools/test_runner.py`, `src/tools/codebase_search.py`, `prompts.yaml`, `src/agents/workflow_manager.py`
+
+---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->
