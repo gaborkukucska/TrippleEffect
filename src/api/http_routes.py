@@ -445,7 +445,7 @@ async def approve_project_start(
             if initial_plan_description:
                 try:
                     import re
-                    safe_project_name = re.sub(r'[^\w\-. ]', '_', pm_project_name)
+                    safe_project_name = re.sub(r'[^\w\-. ]', '_', pm_project_name)[:50].rstrip('_')
                     workspace_path = settings.PROJECTS_BASE_DIR / safe_project_name / pm_session_name / "shared_workspace"
                     workspace_path.mkdir(parents=True, exist_ok=True)
                     plan_file_path = workspace_path / "PROJECT_PLAN.md"
@@ -727,7 +727,7 @@ async def download_active_project(
     if not project_name or not session_name:
         raise HTTPException(status_code=400, detail="No active project/session to download.")
     
-    safe_project_name = re_module.sub(r'[^\w\-. ]', '_', project_name)
+    safe_project_name = re_module.sub(r'[^\w\-. ]', '_', project_name)[:50].rstrip('_')
     session_dir = settings.PROJECTS_BASE_DIR / safe_project_name / session_name
     
     if scope == "workspace":

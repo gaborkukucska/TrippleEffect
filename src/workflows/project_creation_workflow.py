@@ -56,6 +56,15 @@ class ProjectCreationWorkflow(BaseWorkflow):
             sanitized_title = re.sub(r'[^\w]', '_', raw_title)
             # Compress multiple underscores into one
             project_title = re.sub(r'_+', '_', sanitized_title).strip('_')
+            # Hard cap length to 50 characters to strictly adhere to filesystem NAME_MAX (255)
+            # and allow room for subdirectories, team prefixes, and session names.
+            MAX_PROJECT_TITLE_LEN = 50
+            if len(project_title) > MAX_PROJECT_TITLE_LEN:
+                logger.warning(f"ProjectCreationWorkflow: Project title '{project_title}' exceeded {MAX_PROJECT_TITLE_LEN} chars ({len(project_title)}). Truncating.")
+                project_title = project_title[:MAX_PROJECT_TITLE_LEN].rstrip('_')
+            if not project_title:
+                import time
+                project_title = f"Project_{int(time.time())}"
             logger.info(f"ProjectCreationWorkflow: Extracted and sanitized title='{project_title}' from JSON (Original: '{raw_title}').")
         else:
             logger.error("ProjectCreationWorkflow: 'title' key not found or empty in provided JSON data by AgentWorkflowManager.")

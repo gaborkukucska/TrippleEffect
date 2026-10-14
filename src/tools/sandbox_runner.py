@@ -148,12 +148,19 @@ def resolve_shared_workspace(projects_base: Path, project_name: str, session_nam
     InteractionHandler always use the underscore form, so it wins whenever it
     exists; the raw name is only used if it is the sole existing folder.
     """
-    raw = Path(projects_base) / project_name / session_name / "shared_workspace"
-    safe = Path(projects_base) / project_name.replace(" ", "_").strip() / session_name / "shared_workspace"
-    if safe.is_dir():
-        return safe
-    if raw.is_dir():
-        return raw
+    safe_name = project_name.replace(" ", "_").strip()[:50].rstrip('_')
+    raw = Path(projects_base) / project_name[:50].rstrip('_') / session_name / "shared_workspace"
+    safe = Path(projects_base) / safe_name / session_name / "shared_workspace"
+    try:
+        if safe.is_dir():
+            return safe
+    except OSError:
+        pass
+    try:
+        if raw.is_dir():
+            return raw
+    except OSError:
+        pass
     return safe
 
 

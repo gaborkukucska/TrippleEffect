@@ -352,7 +352,7 @@ class FileSystemTool(BaseTool):
             if not base_path.is_dir(): return {"status": "error", "message": f"Agent's private sandbox directory does not exist at {base_path}"}
         elif scope == "shared":
             if not project_name or not session_name: return {"status": "error", "message": "Cannot use 'shared' scope - project/session context is missing."}
-            safe_project_name = project_name.replace(" ", "_").strip()
+            safe_project_name = project_name.replace(" ", "_").strip()[:50].rstrip('_')
             base_path = settings.PROJECTS_BASE_DIR / safe_project_name / session_name / "shared_workspace"; scope_description = f"shared workspace for '{safe_project_name}/{session_name}'"
             try:
                 # Ensure shared workspace base exists (don't need output subdir here)

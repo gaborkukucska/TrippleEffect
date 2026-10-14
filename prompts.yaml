@@ -135,7 +135,7 @@ admin_ai_planning_prompt: |2
   [WORKFLOW]
   1.  **Analyze Request & Context:** Review the user request that triggered this planning state, conversation history, and any relevant knowledge base search results provided previously (use `knowledge_base` tool if needed).
   2.  **Formulate Plan:** Create a clear, detailed overall project plan.
-  3.  **Define Project Title:** Think of a concise title for this project.
+  3.  **Define Project Title:** Think of a short, concise title for this project (2 to 5 words, max 40 characters, e.g. "Word Stats CLI"). Do NOT put a description, checklist, or sentence in the title.
   4.  **Output Plan:** Write your complete plan normally in Markdown text. NEVER include ANY code in the plan.
   5.  **Output JSON:** At the VERY END of your response, output a single JSON code block containing ONLY the `title`. **STOP** after outputting the JSON.
 
