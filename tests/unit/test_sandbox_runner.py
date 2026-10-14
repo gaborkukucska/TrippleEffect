@@ -184,7 +184,9 @@ def test_detach_rewrite_only_for_single_trailing_ampersand(tmp_path):
 def test_resolve_shared_workspace_prefers_existing(tmp_path):
     raw = tmp_path / "My Proj" / "s1" / "shared_workspace"
     safe = tmp_path / "My_Proj" / "s1" / "shared_workspace"
-    assert sr.resolve_shared_workspace(tmp_path, "My Proj", "s1") == safe
+    assert sr.resolve_shared_workspace(tmp_path, "My Proj", "s1") == safe   # neither exists
     raw.mkdir(parents=True)
-    assert sr.resolve_shared_workspace(tmp_path, "My Proj", "s1") == raw
+    assert sr.resolve_shared_workspace(tmp_path, "My Proj", "s1") == raw    # only raw exists
+    safe.mkdir(parents=True)
+    assert sr.resolve_shared_workspace(tmp_path, "My Proj", "s1") == safe   # both: match file_system
 # END OF FILE tests/unit/test_sandbox_runner.py

@@ -13,7 +13,7 @@ import { scheduleSaveMessages } from './chatPersistence.js'; // Persist chat acr
 export const typeToCategory = {
     'error': 'error', 'system_error_feedback': 'error', 'malformed_tool_call': 'error', 'pm_startup_error': 'error', 'invalid_state_request': 'error',
     'system_event': 'system', 'log': 'system', 'system_notification': 'system', 'workflow_executed': 'system', 'cycle_complete': 'system', 'status': 'system', 'system_confirmation': 'system', 'agent_state_transition': 'system', 'agent_state_request': 'system',
-    'log-tool-use': 'tool', 'tool_execution_start': 'tool', 'tool_execution_complete_success': 'tool', 'tool_execution_complete_failure': 'tool',
+    'log-tool-use': 'tool', 'tool_execution_start': 'tool', 'tool_execution_complete_success': 'tool', 'tool_execution_complete_failure': 'error',
     'response_chunk': 'agent', 'agent_thought': 'agent', 'agent_raw_response': 'agent',
     'constitutional_concern': 'cg', 'cg_concern_message': 'cg', 'awaiting_review': 'cg', 'review_complete': 'cg', 'system_request': 'cg'
 };

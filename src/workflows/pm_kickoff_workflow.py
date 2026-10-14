@@ -1,9 +1,9 @@
 # START OF FILE src/workflows/pm_kickoff_workflow.py
 import logging
 import json
-import os
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, List, Optional
+import re
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from .base import BaseWorkflow, WorkflowResult
 from src.agents.constants import (
@@ -11,13 +11,205 @@ from src.agents.constants import (
     PM_STATE_STARTUP, PM_STATE_BUILD_TEAM_TASKS,
     AGENT_STATUS_IDLE
 )
-from src.config.settings import settings # May not be needed directly here
+from src.config.settings import settings
+from src.tools.sandbox_runner import resolve_shared_workspace
 
 if TYPE_CHECKING:
     from src.agents.manager import AgentManager
     from src.agents.core import Agent
 
 logger = logging.getLogger(__name__)
+
+
+# --- Project structure parsing (Round 1c) -------------------------------------------
+# The PM's "project_structure" is free-form JSON. The harness must accept every
+# reasonable shape and must never turn a file name into a directory: a
+# {"dir": "__init__.py"} entry once produced src/__init__.py/ as a folder and blocked
+# the worker that later tried to write the real file.
+
+# Extension-less names that are files, not directories.
+_KNOWN_FILE_NAMES = frozenset({
+    "Makefile", "Dockerfile", "LICENSE", "Procfile", "Gemfile", "Rakefile", "Vagrantfile",
+    "Jenkinsfile", "Pipfile", "CNAME", "README", "CHANGELOG",
+    ".gitignore", ".gitattributes", ".dockerignore", ".editorconfig", ".env", ".npmrc",
+    ".prettierrc", ".eslintrc", ".babelrc", ".nvmrc", ".python-version", ".flake8",
+})
+_EXTENSION_RE = re.compile(r"\.[A-Za-z0-9]*[A-Za-z][A-Za-z0-9]*$")
+
+
+def looks_like_file(name: str) -> bool:
+    """True if the last path component reads as a file name (has an extension or is a known file)."""
+    base = PurePosixPath(name.replace("\\", "/").rstrip("/")).name
+    if not base:
+        return False
+    if base in _KNOWN_FILE_NAMES:
+        return True
+    if base.startswith(".") and base.count(".") == 1:
+        return False  # dot-directory such as .github / .vscode
+    return bool(_EXTENSION_RE.search(base))
+
+
+def _clean_rel(name: Any) -> Optional[str]:
+    """Normalises one path fragment; None if not a string, absolute, or escaping the workspace."""
+    if not isinstance(name, str):
+        return None
+    raw = name.strip().replace("\\", "/")
+    if not raw:
+        return None
+    if raw.startswith("/") or re.match(r"^[A-Za-z]:", raw):
+        return None
+    parts = [p for p in PurePosixPath(raw).parts if p not in ("", ".")]
+    if ".." in parts:
+        return None
+    return "/".join(parts)  # "" means the parent itself (e.g. "dir": ".")
+
+
+def plan_project_structure(structure: Any) -> Tuple[List[str], List[str], List[str]]:
+    """
+    Parses a kickoff "project_structure" into (directories, planned_files, notes).
+
+    Accepted shapes (any mix, nested through "children"):
+      {"dir": "src", "children": [...], "files": ["main.py", {"file": "x.py"}]}
+      {"file": "README.md"}  /  {"files": [...]}  /  "src/"  /  "main.py"
+    A "dir" entry whose name looks like a file (and has no children) is recorded as
+    a planned file. Paths are POSIX-style and relative to the workspace root.
+    """
+    dirs: List[str] = []
+    files: List[str] = []
+    notes: List[str] = []
+
+    def add_dir(rel: str) -> None:
+        if rel and rel not in dirs:
+            dirs.append(rel)
+
+    def add_file(rel: str) -> None:
+        if rel and rel not in files:
+            files.append(rel)
+            parent = str(PurePosixPath(rel).parent)
+            if parent not in (".", ""):
+                add_dir(parent)
+
+    def join(parent: str, child: str) -> str:
+        return f"{parent}/{child}" if parent and child else (parent or child)
+
+    def walk(items: Any, parent: str) -> None:
+        if isinstance(items, (str, dict)):
+            items = [items]
+        if not isinstance(items, list):
+            return
+        for item in items:
+            if isinstance(item, str):
+                rel = _clean_rel(item)
+                if not rel:
+                    continue
+                full = join(parent, rel)
+                if looks_like_file(rel) and not item.rstrip().endswith("/"):
+                    add_file(full)
+                else:
+                    add_dir(full)
+                continue
+            if not isinstance(item, dict):
+                continue
+            if "dir" in item or "directory" in item or "folder" in item:
+                raw = item.get("dir", item.get("directory", item.get("folder")))
+                rel = _clean_rel(raw)
+                if rel is None:
+                    if raw not in (None, ""):
+                        notes.append(f"Skipped unsafe or invalid directory entry: {raw!r}")
+                    continue
+                full = join(parent, rel)
+                if rel and looks_like_file(rel) and not item.get("children") and not item.get("files"):
+                    notes.append(f"'{full}' was listed as a directory but looks like a file; recorded as a planned file.")
+                    add_file(full)
+                    continue
+                add_dir(full)
+                walk(item.get("children", []), full)
+                walk(item.get("files", []), full)
+                continue
+            if "file" in item or "path" in item or "name" in item:
+                raw = item.get("file", item.get("path", item.get("name")))
+                rel = _clean_rel(raw)
+                if rel:
+                    add_file(join(parent, rel))
+                elif raw not in (None, ""):
+                    notes.append(f"Skipped unsafe or invalid file entry: {raw!r}")
+                continue
+            if "files" in item or "children" in item:
+                walk(item.get("files", []), parent)
+                walk(item.get("children", []), parent)
+
+    walk(structure, "")
+    return dirs, files, notes
+
+
+def _render_definitions(value: Any, indent: int = 0) -> List[str]:
+    """Renders code_base_definitions (string, list or dict from the model) as Markdown lines."""
+    pad = "  " * indent
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [(pad + line) if line else "" for line in value.splitlines()]
+    if isinstance(value, dict):
+        out: List[str] = []
+        for k, v in value.items():
+            if isinstance(v, (dict, list, tuple)):
+                out.append(f"{pad}- **{k}**:")
+                out.extend(_render_definitions(v, indent + 1))
+            else:
+                out.append(f"{pad}- **{k}**: {v}")
+        return out
+    if isinstance(value, (list, tuple)):
+        out = []
+        for v in value:
+            if isinstance(v, dict) and v and all(not isinstance(x, (dict, list, tuple)) for x in v.values()):
+                out.append(pad + "- " + "; ".join(f"{k}: {x}" for k, x in v.items()))
+            elif isinstance(v, (dict, list, tuple)):
+                out.append(pad + "-")
+                out.extend(_render_definitions(v, indent + 1))
+            else:
+                out.append(f"{pad}- {v}")
+        return out
+    return [pad + str(value)]
+
+
+def render_project_structure_md(dirs: List[str], planned_files: List[str], code_base_definitions: Any = None) -> str:
+    """Builds PROJECT_STRUCTURE.md: standards, then a tree of directories and planned files."""
+    lines = [
+        "# Project Directory Structure",
+        "",
+        "This file was auto-generated by the framework based on the PM's kickoff plan.",
+        "**All workers MUST place their files within the directories listed below.**",
+        "Do NOT create arbitrary new top-level directories without PM approval.",
+        "Directories already exist. Entries marked (planned) are files that do NOT exist yet: create them with file_system 'write'.",
+        "",
+    ]
+    rendered = _render_definitions(code_base_definitions)
+    if rendered:
+        lines += ["## Code Base Definitions & Standards", ""] + rendered + [""]
+
+    tree: Dict[str, Any] = {}
+    for d in dirs:
+        node = tree
+        for part in d.split("/"):
+            node = node.setdefault(part + "/", {})
+    for f in planned_files:
+        node = tree
+        parts = f.split("/")
+        for part in parts[:-1]:
+            node = node.setdefault(part + "/", {})
+        node.setdefault(parts[-1] + "  (planned)", None)
+
+    def emit(node: Dict[str, Any], depth: int) -> None:
+        for name in sorted(node, key=lambda n: (not n.endswith("/"), n.lower())):
+            lines.append("  " * (depth + 1) + name)
+            if isinstance(node[name], dict):
+                emit(node[name], depth + 1)
+
+    lines += ["## Directory Layout", "", "```", "./  (workspace root)"]
+    emit(tree, 0)
+    lines += ["```", ""]
+    return "\n".join(lines)
+
 
 class PMKickoffWorkflow(BaseWorkflow):
     """
@@ -44,8 +236,10 @@ class PMKickoffWorkflow(BaseWorkflow):
         '  ],\n'
         '  "code_base_definitions": "Define the tech stack, code conventions, testing framework, and specific code base constraints here.",\n'
         '  "project_structure": [\n'
-        '    {"dir": "src/core"},\n'
-        '    {"dir": "docs"}\n'
+        '    {"dir": "src", "files": ["__init__.py", "main.py"]},\n'
+        '    {"dir": "tests", "files": ["test_main.py"]},\n'
+        '    {"dir": "docs"},\n'
+        '    {"file": "README.md"}\n'
         '  ]\n'
         "}"
     )
@@ -188,21 +382,23 @@ class PMKickoffWorkflow(BaseWorkflow):
                 logger.error(f"PMKickoffWorkflow: Exception creating task '{task_desc}': {e}", exc_info=True)
 
         # --- Create Project Directory Structure ---
-        # --- Create Project Directory Structure ---
         structure_list = data_input.get("project_structure", [])
         code_base_definitions = data_input.get("code_base_definitions")
         
         created_dirs: List[str] = []
         if structure_list and project_context and manager.current_session:
-            workspace_path = settings.PROJECTS_BASE_DIR / str(project_context) / str(manager.current_session) / "shared_workspace"
+            workspace_path = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, str(project_context), str(manager.current_session))
             try:
-                created_dirs = self._create_directory_structure(structure_list, workspace_path)
-                if created_dirs:
-                    # Generate PROJECT_STRUCTURE.md manifest
-                    self._write_project_structure_md(workspace_path, created_dirs, code_base_definitions)
-                    logger.info(f"PMKickoffWorkflow: Auto-created {len(created_dirs)} directories and PROJECT_STRUCTURE.md for project '{project_context}'.")
+                planned_dirs, planned_files, notes = plan_project_structure(structure_list)
+                for note in notes:
+                    logger.warning(f"PMKickoffWorkflow: project_structure from PM '{agent.agent_id}': {note}")
+                created_dirs = self._create_directory_structure(planned_dirs, workspace_path)
+                if created_dirs or planned_files:
+                    # Generate PROJECT_STRUCTURE.md manifest (directories + planned files)
+                    self._write_project_structure_md(workspace_path, created_dirs, code_base_definitions, planned_files)
+                    logger.info(f"PMKickoffWorkflow: Auto-created {len(created_dirs)} directories, recorded {len(planned_files)} planned files and wrote PROJECT_STRUCTURE.md for project '{project_context}'.")
                 else:
-                    logger.info(f"PMKickoffWorkflow: project_structure was present but contained no directories.")
+                    logger.info("PMKickoffWorkflow: project_structure was present but contained no directories or files.")
             except Exception as e:
                 logger.error(f"PMKickoffWorkflow: Failed to create project directory structure: {e}", exc_info=True)
                 # Non-fatal — continue with the rest of the kickoff
@@ -344,88 +540,43 @@ class PMKickoffWorkflow(BaseWorkflow):
                 tasks_to_schedule=[(agent, 0)] 
             )
 
-    def _create_directory_structure(
-        self,
-        structure_list: List[dict],
-        workspace_path: Path,
-        _parent_path: Optional[Path] = None
-    ) -> List[str]:
+    def _create_directory_structure(self, planned_dirs: List[str], workspace_path: Path) -> List[str]:
         """
-        Recursively parse directory dicts and create the directories
-        under the shared workspace. Returns a list of relative path strings
-        for all directories created.
+        Creates the planned directories (already parsed and sanitised by
+        plan_project_structure) under the shared workspace. Never creates a
+        directory over an existing file. Returns the relative paths created or
+        already present.
         """
-        base = _parent_path if _parent_path is not None else workspace_path
         created: List[str] = []
-
-        for dir_dict in structure_list:
-            if not isinstance(dir_dict, dict):
+        root = workspace_path.resolve()
+        for rel in planned_dirs:
+            target = (workspace_path / rel).resolve()
+            if not (target == root or target.is_relative_to(root)):
+                logger.warning(f"PMKickoffWorkflow: Skipping directory outside workspace: {rel}")
                 continue
-            dir_name = dir_dict.get("dir", "").strip()
-            if not dir_name:
+            if target.exists() and not target.is_dir():
+                logger.warning(f"PMKickoffWorkflow: Not creating directory '{rel}': a file with that name exists.")
                 continue
-            # Sanitize: prevent path traversal
-            safe_name = dir_name.replace("..", "").replace("\\", "")
-            if not safe_name:
+            try:
+                target.mkdir(parents=True, exist_ok=True)
+            except OSError as e:  # e.g. a parent path component is a file
+                logger.warning(f"PMKickoffWorkflow: Could not create directory '{rel}': {e}")
                 continue
-
-            dir_full_path = base / safe_name
-            dir_full_path.mkdir(parents=True, exist_ok=True)
-
-            # Store relative path from workspace root
-            rel_path = str(dir_full_path.relative_to(workspace_path))
-            created.append(rel_path)
-            logger.debug(f"PMKickoffWorkflow: Created directory: {rel_path}")
-
-            # Recurse into nested children if they exist as a list
-            # We assume a structure like: {"dir": "src", "children": [{"dir": "core"}]}
-            children = dir_dict.get("children", [])
-            if isinstance(children, list) and children:
-                nested = self._create_directory_structure(children, workspace_path, dir_full_path)
-                created.extend(nested)
-
+            created.append(rel)
+            logger.debug(f"PMKickoffWorkflow: Created directory: {rel}")
         return created
 
-    def _write_project_structure_md(self, workspace_path: Path, created_dirs: List[str], code_base_definitions: Optional[str] = None) -> None:
+    def _write_project_structure_md(self, workspace_path: Path, created_dirs: List[str],
+                                    code_base_definitions: Any = None,
+                                    planned_files: Optional[List[str]] = None) -> None:
         """
         Write a PROJECT_STRUCTURE.md file into the workspace root that documents
-        the pre-defined directory layout. Workers are instructed to read this
-        file before creating any new files or directories.
+        the pre-defined directory layout and planned files. Workers are instructed
+        to read this file before creating any new files or directories.
         """
-        # Sort for consistent display and build a tree representation
-        sorted_dirs = sorted(created_dirs)
-
-        lines = [
-            "# Project Directory Structure",
-            "",
-            "This file was auto-generated by the framework based on the PM's kickoff plan.",
-            "**All workers MUST place their files within the directories listed below.**",
-            "Do NOT create arbitrary new top-level directories without PM approval.",
-            "",
-        ]
-
-        if code_base_definitions:
-            lines.append("## Code Base Definitions & Standards")
-            lines.append("")
-            lines.append(code_base_definitions)
-            lines.append("")
-
-        lines.extend([
-            "## Directory Layout",
-            "",
-            "```",
-            "./  (workspace root)",
-        ])
-
-        for d in sorted_dirs:
-            depth = d.count(os.sep)
-            indent = "  " * (depth + 1)
-            basename = os.path.basename(d)
-            lines.append(f"{indent}{basename}/")
-
-        lines.append("```")
-        lines.append("")
-
+        content = render_project_structure_md(created_dirs, planned_files or [], code_base_definitions)
+        workspace_path.mkdir(parents=True, exist_ok=True)
         md_path = workspace_path / "PROJECT_STRUCTURE.md"
-        md_path.write_text("\n".join(lines), encoding="utf-8")
+        md_path.write_text(content, encoding="utf-8")
         logger.info(f"PMKickoffWorkflow: Wrote PROJECT_STRUCTURE.md to {md_path}")
+# END OF FILE src/workflows/pm_kickoff_workflow.py

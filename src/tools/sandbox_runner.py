@@ -144,16 +144,16 @@ def resolve_shared_workspace(projects_base: Path, project_name: str, session_nam
     Returns the session's shared_workspace path.
 
     Some code paths used the raw project name and others replaced spaces with
-    underscores. Prefer whichever directory already exists (raw first, so
-    existing sessions keep working); otherwise use the underscore form, which
-    matches InteractionHandler and the other tools.
+    underscores. FileSystemTool (where agents actually write files) and
+    InteractionHandler always use the underscore form, so it wins whenever it
+    exists; the raw name is only used if it is the sole existing folder.
     """
     raw = Path(projects_base) / project_name / session_name / "shared_workspace"
     safe = Path(projects_base) / project_name.replace(" ", "_").strip() / session_name / "shared_workspace"
-    if raw.is_dir():
-        return raw
     if safe.is_dir():
         return safe
+    if raw.is_dir():
+        return raw
     return safe
 
 

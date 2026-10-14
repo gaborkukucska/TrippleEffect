@@ -866,6 +866,11 @@ Pushes changes to a remote repository.
                 if parts and len(base_path.parents) >= 1 and parts[0] == base_path.parent.name:
                     parts = parts[1:] # Strip 'SessionName/'
 
+                # Strip the workspace folder's own name ('shared_workspace/'): agents see it in
+                # the workspace tree and prompts and often prepend it to otherwise correct paths.
+                if parts and parts[0] == base_path.name:
+                    parts = parts[1:] # Strip 'shared_workspace/'
+
                 relative_file_path = str(Path(*parts)) if parts else "."
             
         try:
@@ -1025,10 +1030,23 @@ Pushes changes to a remote repository.
         """Writes content to a file within the specified base path."""
         validated_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
         if not validated_path: return {"status": "error", "message": f"Invalid or disallowed file path '{filename}' in {scope_description}."}
-        if validated_path.is_dir(): logger.warning(f"Agent {agent_id} attempted to write to directory: {filename} in {scope_description}"); return {"status": "error", "message": f"Cannot write file. '{filename}' points to an existing directory."}
+        replace_empty_dir = False
+        if validated_path.is_dir():
+            # Self-heal: an EMPTY directory with the file's name (e.g. 'src/__init__.py/' created by a
+            # bad scaffold) is replaced by the file. Non-empty directories are never removed.
+            try:
+                is_empty_dir = not any(validated_path.iterdir())
+            except Exception:
+                is_empty_dir = False
+            if is_empty_dir and validated_path != base_path.resolve():
+                replace_empty_dir = True
+                logger.warning(f"Agent {agent_id} is writing '{filename}' where an EMPTY directory of that name exists in {scope_description}. The directory will be replaced by the file.")
+            else:
+                logger.warning(f"Agent {agent_id} attempted to write to directory: {filename} in {scope_description}")
+                return {"status": "error", "message": f"Cannot write file. '{filename}' points to an existing directory that is not empty. To create a file inside it, use a path such as '{filename.rstrip('/')}/<file_name>'."}
         
         # Prevent overwriting existing files unless force_overwrite is explicitly set
-        if validated_path.exists() and not force_overwrite:
+        if validated_path.exists() and not force_overwrite and not replace_empty_dir:
             # Check if the content is exactly identical, in which case just return success to avoid looping the agent
             try:
                 if validated_path.read_text(encoding='utf-8') == content:
@@ -1073,6 +1091,8 @@ Pushes changes to a remote repository.
                         "message": f"Write rejected due to Python SyntaxError in resulting code: {syntax_err.msg} at line {syntax_err.lineno}. No changes were saved. Please check your indentation and brackets."
                     }
                     
+            if replace_empty_dir:
+                await asyncio.to_thread(validated_path.rmdir)  # still empty: rmdir fails safely otherwise
             await asyncio.to_thread(validated_path.parent.mkdir, parents=True, exist_ok=True)
             await asyncio.to_thread(validated_path.write_text, content, encoding='utf-8')
             
@@ -1080,7 +1100,10 @@ Pushes changes to a remote repository.
                 self._failed_writes[agent_id][filename] = 0
                 
             logger.info(f"Agent {agent_id} successfully wrote file: '{filename}' to {scope_description}")
-            return {"status": "success", "message": f"Successfully wrote content to '{filename}' in {scope_description}."}
+            success_msg = f"Successfully wrote content to '{filename}' in {scope_description}."
+            if replace_empty_dir:
+                success_msg += " (Framework note: an empty directory with this name was in the way and has been replaced by your file.)"
+            return {"status": "success", "message": success_msg}
         except FileExistsError:
             logger.warning(f"Agent {agent_id} attempted to write file '{filename}' but a parent path exists as a file."); return {"status": "error", "message": f"Cannot write to '{filename}': A parent path already exists but is a FILE, not a directory. Did you previously use 'write' instead of 'mkdir' to create a directory?"}
         except NotADirectoryError:
