@@ -356,7 +356,11 @@ class NextStepScheduler:
                         self._manager.workflow_manager.change_state(agent, PM_STATE_MANAGE)
                         setattr(agent, '_pm_report_check_cycle_count', 0)
                         
-                        override_msg = f"[System Enforcement]: You exceeded the maximum allowed report check steps ({dynamic_cap}). The system has automatically transitioned you to manage state to prevent compute waste."
+                        override_msg = (
+                            f"[System Enforcement]: You have completed reviewing worker reports. "
+                            f"The system has automatically transitioned you to 'pm_manage'. "
+                            f"Now review PROJECT_PLAN.md and autonomously create/assign the next phase of tasks."
+                        )
                         agent.message_history.append({"role": "system", "content": override_msg})
                         
                         agent.set_status(AGENT_STATUS_IDLE)
@@ -367,9 +371,6 @@ class NextStepScheduler:
                 if getattr(context, 'action_taken_this_cycle', False):
                     # PM executed a tool (e.g., send_message, project_management). Allow it to stay in this state to read the result.
                     logger.info(f"NextStepScheduler: PM agent '{agent_id}' in pm_report_check executed a tool. Reactivating to process result.")
-                    # Reset counter on successful tool execution — PM is making progress
-                    if getattr(context, 'executed_tool_successfully_this_cycle', False):
-                        setattr(agent, '_pm_report_check_cycle_count', 0)
                     if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear()
                     if agent.status != AGENT_STATUS_ERROR:
                         agent.set_status(AGENT_STATUS_IDLE)
@@ -382,6 +383,17 @@ class NextStepScheduler:
                             self._manager.workflow_manager.change_state(agent, PM_STATE_MANAGE)
                             agent.set_status(AGENT_STATUS_IDLE)
                             # Let the periodic timer wake it up to prevent busy-looping
+            elif agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_CONVERSATION:
+                if context.executed_tool_successfully_this_cycle and not context.state_change_requested_this_cycle:
+                    logger.info(f"NextStepScheduler: Admin AI '{agent_id}' executed a tool in conversation state. Reactivating to process result.")
+                    agent.set_status(AGENT_STATUS_IDLE)
+                    await self._schedule_new_cycle(agent, 0)
+                    self._log_end_of_schedule_next_step(agent, "Path B-Admin-Conversation-ToolReactivation")
+                    return
+                else:
+                    logger.info(f"NextStepScheduler: Admin AI '{agent_id}' finished conversation turn cleanly without pending tool results.")
+                    if agent.status != AGENT_STATUS_ERROR:
+                        agent.set_status(AGENT_STATUS_IDLE)
             else:
                 logger.info(f"NextStepScheduler: Agent '{agent_id}' ({context.current_model_key_for_tracking}) finished cycle cleanly, no specific reactivation needed by this scheduler.")
                 if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear()

@@ -69,41 +69,40 @@ class AgentCycleHandler:
 
     def _handle_worker_task_tracking(self, agent: 'Agent', requested_state: str, task_id: Optional[str] = None) -> None:
         """
-        When a worker transitions to worker_work with a task_id, automatically:
-        1. Set agent.active_task_id so the UI can display it.
-        2. Update the Taskwarrior database to mark the task as 'doing'.
+        When a worker transitions to worker_work or worker_test with a task_id, automatically:
+        1. Verify that the worker has a valid, pending task (blocks completed/finished tasks).
+        2. Set agent.active_task_id so the UI and framework track it.
+        3. Update the Taskwarrior database to mark the task as 'doing'.
         """
         if agent.agent_type != AGENT_TYPE_WORKER:
             return
         resolved = self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state)
         if resolved not in [WORKER_STATE_WORK, WORKER_STATE_TEST]:
             return
-            
+
         if not hasattr(self, '_missing_task_id_counts'):
             self._missing_task_id_counts = {}
 
         if not task_id:
-            count = self._missing_task_id_counts.get(agent.agent_id, 0) + 1
-            self._missing_task_id_counts[agent.agent_id] = count
-
-            if count >= 2:
-                inferred_task_id = self._infer_worker_task(agent.agent_id)
-                if inferred_task_id:
-                    logger.warning(f"CycleHandler: Auto-inferred task '{inferred_task_id}' for worker '{agent.agent_id}' after multiple omissions.")
-                    task_id = inferred_task_id
+            inferred_task_id = self._infer_worker_task(agent.agent_id)
+            if inferred_task_id:
+                logger.info(f"CycleHandler: Auto-inferred pending task '{inferred_task_id}' for worker '{agent.agent_id}'.")
+                task_id = inferred_task_id
+                if hasattr(self, '_missing_task_id_counts'):
                     self._missing_task_id_counts[agent.agent_id] = 0
-                else:
-                    raise ValueError(f"You MUST specify a 'task_id' parameter when transitioning to '{resolved}' state.\nIf you do not know your task_id:\n1. Check previous tool responses if you just created the task.\n2. Otherwise, use the project_management tool with action='list_tasks' to find the correct ID.\nThen retry by calling the 'request_state' tool with state='{resolved}' and task_id='THE_ID'.")
             else:
-                raise ValueError(f"You MUST specify a 'task_id' parameter when transitioning to '{resolved}' state.\nIf you do not know your task_id:\n1. Check previous tool responses if you just created the task.\n2. Otherwise, use the project_management tool with action='list_tasks' to find the correct ID.\nThen retry by calling the 'request_state' tool with state='{resolved}' and task_id='THE_ID'.")
+                raise ValueError(
+                    f"You currently have no pending tasks assigned to you. You CANNOT transition to '{resolved}'. "
+                    f"You MUST call the 'request_state' tool with state='worker_wait' to wait for your Project Manager to assign you work."
+                )
         else:
             if hasattr(self, '_missing_task_id_counts'):
                 self._missing_task_id_counts[agent.agent_id] = 0
 
         agent.active_task_id = task_id
-        logger.info(f"CycleHandler: Worker '{agent.agent_id}' set active_task_id='{task_id}' for work state transition.")
+        logger.info(f"CycleHandler: Worker '{agent.agent_id}' set active_task_id='{task_id}' for '{resolved}' state transition.")
 
-        # Auto-update Taskwarrior progress to doing
+        # Auto-update Taskwarrior progress to doing and validate status
         try:
             if self._manager.current_project and self._manager.current_session:
                 from src.tools.project_management import ProjectManagementTool, TASKLIB_AVAILABLE
@@ -117,7 +116,7 @@ class AgentCycleHandler:
                             resolved_id = task_id.strip() if task_id else ""
                             if resolved_id in aliases:
                                 resolved_id = aliases[resolved_id]
-                            
+
                             # Look up task by UUID or numeric ID
                             if '-' in resolved_id and len(resolved_id) > 10:
                                 task = tw.tasks.get(uuid=resolved_id)
@@ -125,23 +124,32 @@ class AgentCycleHandler:
                                 task = tw.tasks.get(id=int(resolved_id))
                             else:
                                 task = None
-                            
+
                             if task:
-                                # CRITICAL FIX: Prevent worker from selecting a task that is already decomposed
-                                # tasklib Task uses bracket access, not .get()
                                 try:
                                     current_progress = task['task_progress']
                                 except (KeyError, AttributeError):
                                     current_progress = None
-                                    
+                                try:
+                                    task_status = task['status']
+                                except (KeyError, AttributeError):
+                                    task_status = None
+
                                 if current_progress == 'decomposed':
                                     raise ValueError(f"Task '{task_id}' has already been marked as 'decomposed'. You MUST select one of the new sub-tasks you created, NOT the parent task.")
-                                elif current_progress in ['finished', 'completed', 'deleted', 'waiting']:
-                                    logger.info(f"CycleHandler: Task '{task_id}' (resolved: '{resolved_id}') is already '{current_progress}'. Not auto-updating to 'doing'.")
+                                elif current_progress in ['finished', 'completed', 'deleted'] or task_status in ['completed', 'deleted']:
+                                    raise ValueError(
+                                        f"Task '{task_id}' is already marked as '{current_progress or task_status}'. "
+                                        f"You cannot work on an already completed task. If all your assigned tasks are finished, "
+                                        f"you MUST call the 'request_state' tool with state='worker_wait' to wait for your PM to assign new work."
+                                    )
+                                elif current_progress == 'waiting':
+                                    logger.info(f"CycleHandler: Task '{task_id}' (resolved: '{resolved_id}') is 'waiting'. Not auto-updating to 'doing'.")
                                 else:
                                     task['task_progress'] = 'doing'
                                     task.save()
                                     logger.info(f"CycleHandler: Auto-updated task '{task_id}' (resolved: '{resolved_id}') to 'doing' for worker '{agent.agent_id}'.")
+
                                 # Auto-trigger UI refresh for tasks
                                 try:
                                     import asyncio
@@ -156,17 +164,21 @@ class AgentCycleHandler:
                                             }))
                                         )
                                     except RuntimeError:
-                                        pass # Not in an event loop, should rarely happen here
+                                        pass
                                 except Exception as e:
                                     logger.warning(f"CycleHandler: Failed to trigger UI task refresh: {e}")
                             else:
                                 logger.warning(f"CycleHandler: Could not find task '{task_id}' (resolved: '{resolved_id}') in Taskwarrior for auto-update.")
+                                raise ValueError(
+                                    f"Task '{task_id}' could not be found in the task database. "
+                                    f"If you have no active tasks, you MUST call the 'request_state' tool with state='worker_wait'."
+                                )
                         except ValueError:
-                            raise # Re-raise our validation error
+                            raise  # Re-raise our validation error
                         except Exception as tw_err:
                             logger.warning(f"CycleHandler: Failed to auto-update task '{task_id}': {tw_err}")
         except ValueError:
-            raise # Re-raise validation error
+            raise  # Re-raise validation error
         except Exception as e:
             logger.warning(f"CycleHandler: Error auto-updating task '{task_id}' to in_progress: {e}")
 

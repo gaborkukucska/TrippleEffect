@@ -216,7 +216,12 @@ class PromptAssembler:
             task_list = list(tasks)
 
             if not task_list:
-                return None
+                return (
+                    "[YOUR ASSIGNED TASKS - 0 pending tasks]\n"
+                    "You currently have NO pending tasks assigned to you.\n"
+                    "If you have completed your work and reported to your PM, you MUST transition to 'worker_wait' to wait for new task assignments:\n"
+                    "  Call the 'request_state' tool with state='worker_wait'"
+                )
 
             # Format the report
             lines = [f"[YOUR ASSIGNED TASKS - {len(task_list)} task(s)]"]
@@ -458,16 +463,23 @@ class PromptAssembler:
                                     task = tw.tasks.get(id=int(resolved_id))
                                 
                                 if task:
-                                    desc = task['description']
-                                    reminder_msg = (
-                                        f"[TASK FOCUS REMINDER - IMPORTANT]\n"
-                                        f"You are currently working on task_id: {active_task_id}\n"
-                                        f"Goal: {desc}\n"
-                                        f"Please review your recent tool results above and take the next concrete step to complete this task.\n"
-                                        f"If the task is complete, call the 'request_state' tool with state='worker_report'."
-                                    )
-                                    history_for_call.append({"role": "system", "content": reminder_msg})
-                                    logger.debug(f"Injected task reminder pin for worker '{agent.agent_id}'.")
+                                    t_prog = str(task.get('task_progress', '') or '').lower()
+                                    t_stat = str(task.get('status', '') or '').lower()
+                                    # Only inject reminder for genuinely active, unfinished tasks
+                                    if t_prog not in ['finished', 'completed', 'deleted'] and t_stat not in ['completed', 'deleted']:
+                                        desc = task['description']
+                                        reminder_msg = (
+                                            f"[TASK FOCUS REMINDER - IMPORTANT]\n"
+                                            f"You are currently working on task_id: {active_task_id}\n"
+                                            f"Goal: {desc}\n"
+                                            f"Please review your recent tool results above and take the next concrete step to complete this task.\n"
+                                            f"If the task is complete, call the 'request_state' tool with state='worker_report'."
+                                        )
+                                        history_for_call.append({"role": "system", "content": reminder_msg})
+                                        logger.debug(f"Injected task reminder pin for worker '{agent.agent_id}'.")
+                                    else:
+                                        agent.active_task_id = None
+                                        agent.current_task_id = None
                     except Exception as e:
                         logger.warning(f"PromptAssembler: Failed to fetch task for reminder pin: {e}")
 

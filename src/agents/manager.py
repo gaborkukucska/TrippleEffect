@@ -576,6 +576,14 @@ class AgentManager:
                                 await self.schedule_cycle(agent, 0)
                             
                         # --- ADDED: Catch-all for STUCK agents that illegally dropped to IDLE ---
+                        elif (agent.agent_type == AGENT_TYPE_PM and
+                              agent.status == AGENT_STATUS_IDLE and
+                              agent.state == PM_STATE_REPORT_CHECK and
+                              not getattr(agent, '_awaiting_project_approval', False)):
+                            logger.info(f"Watchdog: PM '{agent.agent_id}' is IDLE in 'pm_report_check'. Auto-advancing to 'pm_manage'.")
+                            self.workflow_manager.change_state(agent, PM_STATE_MANAGE)
+                            await self.schedule_cycle(agent, 0)
+
                         elif (agent.status == AGENT_STATUS_IDLE and
                               not getattr(agent, '_awaiting_project_approval', False)):
                         
@@ -976,32 +984,33 @@ class AgentManager:
                 return False
                 
             tasks = task_data.get("tasks", [])
-            
-            # Check if there are no unassigned tasks
-            unassigned_tasks = [task for task in tasks if not task.get("depends")]
-            
-            if not unassigned_tasks:
-                logger.info(f"PM completion check: No unassigned tasks found for agent '{agent.agent_id}'. Project may be complete.")
-                
-                # Additional check: verify workers are not actively working
-                team_id = self.state_manager.get_agent_team(agent.agent_id)
-                if team_id:
-                    team_agents = self.state_manager.get_agents_in_team(team_id)
-                    active_workers = [a for a in team_agents if a.agent_type == AGENT_TYPE_WORKER and a.status != AGENT_STATUS_IDLE]
-                    
-                    if not active_workers:
-                        logger.info(f"PM completion check: No active workers found for team '{team_id}'. Project appears complete.")
-                        return True
-                    else:
-                        logger.debug(f"PM completion check: Found {len(active_workers)} active workers for team '{team_id}'. Project not complete.")
-                        return False
-                else:
-                    # No team means project is likely complete or has no workers
-                    logger.info(f"PM completion check: No team found for agent '{agent.agent_id}'. Project may be complete.")
-                    return True
-            else:
-                logger.debug(f"PM completion check: Found {len(unassigned_tasks)} unassigned tasks for agent '{agent.agent_id}'. Project not complete.")
+            if not tasks:
                 return False
+                
+            # A project is incomplete if any task is still in progress, todo, waiting, or stuck
+            incomplete_tasks = [
+                task for task in tasks
+                if task.get("task_progress") not in ["finished", "completed", "decomposed", "deleted"]
+            ]
+            
+            if incomplete_tasks:
+                logger.debug(f"PM completion check: Found {len(incomplete_tasks)} incomplete tasks for agent '{agent.agent_id}'. Project NOT complete.")
+                return False
+                
+            # If all current tasks are finished, the PM must also have entered audit or standby
+            if agent.state not in [PM_STATE_AUDIT, PM_STATE_STANDBY]:
+                logger.debug(f"PM completion check: All tasks finished, but PM '{agent.agent_id}' is still in state '{agent.state}'. Project NOT complete yet.")
+                return False
+
+            team_id = self.state_manager.get_agent_team(agent.agent_id)
+            if team_id:
+                team_agents = self.state_manager.get_agents_in_team(team_id)
+                active_workers = [a for a in team_agents if a.agent_type == AGENT_TYPE_WORKER and a.status != AGENT_STATUS_IDLE]
+                if active_workers:
+                    return False
+
+            logger.info(f"PM completion check: All tasks finished and PM '{agent.agent_id}' in '{agent.state}'. Project complete.")
+            return True
                 
         except Exception as e:
             logger.error(f"PM completion check: Error checking completion status for agent '{agent.agent_id}': {e}", exc_info=True)
