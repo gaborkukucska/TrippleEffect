@@ -103,3 +103,20 @@ def test_code_editor_write_file_action_alias(tmp_path):
     assert res["status"] == "success"
     assert (tmp_path / "brand_new.py").read_text() == "# newly created\nx = 42\n"
 # END OF FILE tests/unit/test_round1d.py
+
+def test_manage_team_create_agent_sys_prompt_alias():
+    from src.tools.manage_team import ManageTeamTool
+    tool = ManageTeamTool()
+    # Simulates the exact call from the 2026-10-14 test run that previously failed:
+    res = run(tool.execute(
+        agent_id="PM1",
+        agent_sandbox_path=Path("/tmp"),
+        action="create_agent",
+        role="Coder",
+        persona="Python Coder",
+        sys_prompt="You are a developer.",
+        team_id="team_1"
+    ))
+    assert res["status"] == "success_signal_to_handler"
+    assert res["action_params"]["system_prompt"] == "You are a developer."
+

@@ -85,18 +85,21 @@ class ManageTeamTool(BaseTool):
             type="string",
             description="System prompt for create_agent. Defines the agent's responsibilities.",
             required=False,
+            aliases=["sys_prompt", "prompt", "instructions", "instruction", "system"]
         ),
         ToolParameter(
             name="role",
             type="string",
             description="The exact kickoff role this agent fulfills (e.g., 'Coder', 'Tester'). Required for create_agent.",
             required=False,
+            aliases=["agent_role", "job", "role_name"]
         ),
         ToolParameter(
             name="persona",
             type="string",
             description="Display name for create_agent. Should match the role or be a descriptive title.",
             required=False,
+            aliases=["name", "display_name", "persona_name"]
         ),
          ToolParameter(
             name="temperature",
@@ -160,6 +163,28 @@ class ManageTeamTool(BaseTool):
         missing = []
 
         if action == "create_agent":
+            # Map aliases for system_prompt (e.g. 4B models often send 'sys_prompt' or 'prompt')
+            sys_prompt_alt = (
+                params.get("system_prompt")
+                or params.get("sys_prompt")
+                or params.get("prompt")
+                or params.get("instructions")
+                or params.get("instruction")
+                or params.get("system_instructions")
+                or params.get("system")
+            )
+            if sys_prompt_alt:
+                params["system_prompt"] = sys_prompt_alt
+
+            # Map aliases for role and persona
+            role_alt = params.get("role") or params.get("agent_role") or params.get("job")
+            if role_alt:
+                params["role"] = role_alt
+
+            persona_alt = params.get("persona") or params.get("name") or params.get("display_name")
+            if persona_alt:
+                params["persona"] = persona_alt
+
             # If only role or persona is provided, use it for both
             role = params.get("role")
             persona = params.get("persona")
@@ -168,7 +193,11 @@ class ManageTeamTool(BaseTool):
             elif persona and not role:
                 params["role"] = persona
                 persona = params.get("persona")
-                
+
+            # Fallback for system_prompt if role is provided
+            if not params.get("system_prompt") and role:
+                params["system_prompt"] = f"You are a {role} for this project. Implement your assigned tasks with clean, tested code."
+
             if not params.get("role"): missing.append("'role'")
             if not params.get("system_prompt"): missing.append("'system_prompt'")
             if not params.get("persona"): missing.append("'persona'")
