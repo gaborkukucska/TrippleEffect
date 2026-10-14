@@ -847,6 +847,11 @@ class ProjectManagementTool(BaseTool):
 
     async def _execute_complete_task(self, tw, aliases, project_name, session_name, kwargs):
             task_id = kwargs.get("task_id") or kwargs.get("task_uuid")
+            if not task_id:
+                title_alt = kwargs.get("title") or kwargs.get("title_filter") or kwargs.get("task_title") or kwargs.get("description")
+                if title_alt:
+                    task_id = str(title_alt).strip()
+                    logger.info(f"ProjectManagementTool: Auto-resolved complete_task task_id to title/description '{task_id}'.")
             if task_id is None or task_id == "":
                 return {"status": "error", "message": "Missing 'task_id' for 'complete_task'."}
             

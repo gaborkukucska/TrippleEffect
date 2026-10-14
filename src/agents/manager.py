@@ -619,7 +619,7 @@ class AgentManager:
                                                 task_description_from_tool=target_task['description']
                                             )
                                 except Exception as e:
-                                    logger.error(f"Watchdog: Error checking pending tasks for waiting worker '{agent.agent_id}': {e}", exc_info=True)
+                                    logger.warning(f"Watchdog: Non-fatal error checking pending tasks for worker '{agent.agent_id}': {e}")
                         
                     except Exception as e:
                         logger.error(f"Error processing agent {agent.agent_id} in watchdog: {e}", exc_info=True)

@@ -43,7 +43,7 @@ class CodeEditorTool(BaseTool):
             type="string",
             description="Relative path to the file within the specified scope.",
             required=True,
-            aliases=["filepath", "file"]
+            aliases=["filepath", "file", "path", "file_path"]
         ),
         ToolParameter(
             name="chunks",

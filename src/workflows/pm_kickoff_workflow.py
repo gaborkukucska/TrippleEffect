@@ -285,11 +285,14 @@ class PMKickoffWorkflow(BaseWorkflow):
         if isinstance(tasks_list, list):
             for task_info in tasks_list:
                 if isinstance(task_info, dict) and task_info.get("description"):
-                    task_descriptions.append(task_info["description"])
+                    raw_desc = " ".join(str(task_info["description"]).splitlines()).strip()
+                    dep_val = task_info.get("depends_on") or task_info.get("depends") or task_info.get("dependencies")
+                    task_id_val = task_info.get("id") or task_info.get("task_id")
+                    task_descriptions.append(raw_desc)
                     task_info_list.append({
-                        "id": task_info.get("id"),
-                        "depends_on": task_info.get("depends_on"),
-                        "description": task_info["description"]
+                        "id": task_id_val,
+                        "depends_on": dep_val,
+                        "description": raw_desc
                     })
         
         if not task_descriptions:
