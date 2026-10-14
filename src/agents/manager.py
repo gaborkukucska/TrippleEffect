@@ -831,9 +831,11 @@ class AgentManager:
             else:
                 directive_content = f"[Framework Directive]: You have been assigned a new task: {task_description_from_tool}\nThe system prompt has been updated with this goal. You MUST now begin executing it (request state change to worker_decompose if currently waiting)."
 
+            activation_msg_id = f"msg_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
             activation_message = {
                 "role": "user",
                 "content": directive_content,
+                "message_id": activation_msg_id,
                 "_deferred_task_description": task_description_from_tool,
                 "_deferred_task_id": task_id_from_tool
             }

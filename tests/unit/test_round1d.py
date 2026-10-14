@@ -12,9 +12,9 @@ import asyncio
 from pathlib import Path
 import pytest
 
+import src.agents  # noqa: F401 - resolves pre-existing circular import order
 from src.tools.project_management import ProjectManagementTool
 from src.tools.code_editor import CodeEditorTool
-from src.workflows.pm_kickoff_workflow import PMKickoffWorkflow
 
 
 def run(coro):

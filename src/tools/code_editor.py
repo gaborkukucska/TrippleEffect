@@ -64,20 +64,32 @@ class CodeEditorTool(BaseTool):
     ) -> Dict[str, Any]:
         
         action = kwargs.get("action")
-        # Handle aliases
+        # Handle action aliases
         if action in ["replace", "edit", "modify", "replace_chunk"]:
             action = "replace_chunks"
             
-        if action != "replace_chunks":
-            return {"status": "error", "message": "Only 'replace_chunks' action is supported."}
-            
         default_scope = "shared" if project_name and session_name else "private"
         scope = kwargs.get("scope", default_scope).lower()
-        filename = kwargs.get("filename")
+        filename = kwargs.get("filename") or kwargs.get("filepath") or kwargs.get("file") or kwargs.get("path") or kwargs.get("file_path")
         if isinstance(filename, str):
             filename = filename.strip()
-            
-        chunks = kwargs.get("chunks")
+
+        # Gracefully handle write_file called on code_editor
+        if action in ["write_file", "write", "create_file"]:
+            file_content = kwargs.get("file_content") or kwargs.get("content")
+            if file_content is not None and filename:
+                logger.info(f"CodeEditorTool: Handled '{action}' alias for '{filename}' directly.")
+                from src.tools.file_system import FileSystemTool
+                return await FileSystemTool().execute(
+                    agent_id=agent_id, agent_sandbox_path=agent_sandbox_path,
+                    project_name=project_name, session_name=session_name,
+                    action="write", path=filename, content=str(file_content)
+                )
+
+        if action != "replace_chunks":
+            return {"status": "error", "message": f"Action '{action}' is not supported. Use 'replace_chunks'."}
+
+        chunks = kwargs.get("chunks") or kwargs.get("replacements") or kwargs.get("edits")
         if not filename or not chunks:
             return {"status": "error", "message": "Missing 'filename' or 'chunks' parameter."}
             
@@ -194,14 +206,39 @@ class CodeEditorTool(BaseTool):
             chunks = sorted(chunks, key=get_start_line, reverse=True)
             
             for idx, chunk in enumerate(chunks):
-                if not isinstance(chunk, dict) or 'replace' not in chunk:
+                if not isinstance(chunk, dict):
+                    errors.append(f"Chunk {idx} is malformed (expected a JSON object).")
+                    continue
+                    
+                # Support semantic aliases for replace text
+                replace_text = (
+                    chunk.get('replace') if 'replace' in chunk else
+                    chunk.get('replace_block') if 'replace_block' in chunk else
+                    chunk.get('replace_text') if 'replace_text' in chunk else
+                    chunk.get('replacement') if 'replacement' in chunk else
+                    chunk.get('new') if 'new' in chunk else
+                    chunk.get('new_code')
+                )
+                if replace_text is None:
                     errors.append(f"Chunk {idx} is malformed (missing 'replace' key).")
                     continue
                     
-                replace_text = chunk['replace']
-                start_line = chunk.get('start_line') or chunk.get('from_line') or chunk.get('line_start')
-                end_line = chunk.get('end_line') or chunk.get('to_line') or chunk.get('line_end')
-                search_text = chunk.get('search')
+                start_line = chunk.get('start_line') or chunk.get('from_line') or chunk.get('line_start') or chunk.get('start')
+                end_line = chunk.get('end_line') or chunk.get('to_line') or chunk.get('line_end') or chunk.get('end')
+                search_text = (
+                    chunk.get('search') if 'search' in chunk else
+                    chunk.get('search_block') if 'search_block' in chunk else
+                    chunk.get('search_text') if 'search_text' in chunk else
+                    chunk.get('find') if 'find' in chunk else
+                    chunk.get('old') if 'old' in chunk else
+                    chunk.get('old_code')
+                )
+
+                # Single-line inference if only one bound is provided
+                if start_line is not None and end_line is None and search_text is None:
+                    end_line = start_line
+                elif end_line is not None and start_line is None and search_text is None:
+                    start_line = end_line
                 
                 if start_line is not None and end_line is not None:
                     try:

@@ -49,12 +49,29 @@ class ProjectManagementTool(BaseTool):
         if not TASKLIB_AVAILABLE:
             logger.error("Tasklib library is not installed. ProjectManagementTool will not function.")
 
+    def _heal_taskwarrior_data(self, data_path: Path) -> None:
+        """Self-heals Taskwarrior data files by stripping empty or corrupted lines."""
+        for fname in ("pending.data", "completed.data", "undo.data"):
+            fpath = data_path / fname
+            if not fpath.is_file():
+                continue
+            try:
+                raw_text = fpath.read_text(encoding="utf-8", errors="replace")
+                lines = raw_text.splitlines()
+                cleaned = [ln.strip() for ln in lines if ln.strip()]
+                if len(cleaned) != len(lines) or any(ln != orig for ln, orig in zip(cleaned, lines)):
+                    fpath.write_text("\n".join(cleaned) + ("\n" if cleaned else ""), encoding="utf-8")
+                    logger.warning(f"ProjectManagementTool: Auto-healed {fname} by removing {len(lines) - len(cleaned)} empty/whitespace line(s).")
+            except Exception as heal_err:
+                logger.debug(f"ProjectManagementTool: Could not check/heal {fname}: {heal_err}")
+
     def _get_taskwarrior_instance(self, project_name: str, session_name: str) -> Any:
         if not TASKLIB_AVAILABLE:
             return None
         data_path = BASE_DIR / "projects" / project_name / session_name / "task_data"
         try:
             data_path.mkdir(parents=True, exist_ok=True)
+            self._heal_taskwarrior_data(data_path)
             taskrc_path = data_path / '.taskrc'
             if not taskrc_path.exists():
                 with open(taskrc_path, 'w') as f:
@@ -295,6 +312,9 @@ class ProjectManagementTool(BaseTool):
             if not main_desc:
                 return {"status": "error", "message": "Missing 'title' or 'description' for 'add_task'."}
 
+            # Sanitize newlines: Taskwarrior line-oriented format breaks on embedded newlines
+            main_desc = " ".join(str(main_desc).splitlines()).strip()
+
             import difflib
             existing_tasks = tw.tasks.pending()
             if kwargs.get("project_filter"):
@@ -309,6 +329,11 @@ class ProjectManagementTool(BaseTool):
                 similarity = difflib.SequenceMatcher(None, target_desc_lower, existing_desc).ratio()
                 if similarity > 0.8 or target_desc_lower in existing_desc or existing_desc in target_desc_lower:
                     logger.warning(f"ProjectManagementTool: Prevented duplicate task creation: '{main_desc}' is very similar ({similarity:.2f}) to existing task UUID {t['uuid']}")
+                    # Map alias for skipped duplicate so downstream dependencies still resolve
+                    user_task_id = kwargs.get("task_id")
+                    if user_task_id and isinstance(user_task_id, str):
+                        aliases[user_task_id.strip()] = t['uuid']
+                        self._save_aliases(project_name, session_name, aliases)
                     depends_list = [dep['uuid'] for dep in t['depends']] if 'depends' in t and t['depends'] else []
                     return {
                         "status": "success",
@@ -640,8 +665,24 @@ class ProjectManagementTool(BaseTool):
 
     async def _execute_modify_task(self, tw, aliases, project_name, session_name, agent_id, kwargs):
             task_id = kwargs.get("task_id") or kwargs.get("task_uuid")
+            if not task_id:
+                # Fallback: check if the model passed title or description instead of task_id
+                title_alt = kwargs.get("title") or kwargs.get("title_filter") or kwargs.get("task_title") or kwargs.get("description")
+                if title_alt:
+                    task_id = str(title_alt).strip()
+                    logger.info(f"ProjectManagementTool: Auto-resolved missing task_id to title/description '{task_id}'.")
+                elif agent_id and agent_id.startswith("W"):
+                    # Fallback: if worker has exactly one pending assigned task, auto-infer it
+                    try:
+                        worker_pending = list(tw.tasks.pending().filter(assignee=agent_id))
+                        if len(worker_pending) == 1:
+                            task_id = worker_pending[0]['uuid']
+                            logger.info(f"ProjectManagementTool: Auto-inferred task_id '{task_id}' for worker '{agent_id}' with exactly one pending task.")
+                    except Exception as infer_err:
+                        logger.debug(f"Could not auto-infer worker task: {infer_err}")
+
             if task_id is None or task_id == "":
-                return {"status": "error", "message": "Missing 'task_id' for 'modify_task'."}
+                return {"status": "error", "message": "Missing 'task_id' for 'modify_task'. Provide the task's UUID, integer ID, alias, or description."}
             
             t_id_str = str(task_id).strip()
             t_id_str = re.sub(r"^[<'\"]+|[>'\"]+$", "", t_id_str).strip()
