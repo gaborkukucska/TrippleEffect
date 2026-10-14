@@ -2503,13 +2503,11 @@ class AgentCycleHandler:
                             # --- END: Worker Auto-Save File Feature ---
     
                             if final_content and agent.agent_id != CONSTITUTIONAL_GUARDIAN_AGENT_ID:
-                                # Check if there is a command_executor tool call
-                                has_command_execution = False
-                                if "<tool_call>" in final_content and "command_executor" in final_content:
-                                    has_command_execution = True
-
-                                # Skip CG review for tool-call-only responses, UNLESS they involve command execution
-                                if not has_command_execution and re.match(r'^\s*(<tool_call>.*?</tool_call>\s*)+$', final_content, re.DOTALL):
+                                # Shell commands are checked deterministically by src/tools/policy_gate.py inside
+                                # ToolExecutor for native and legacy tool calls. The former text check for
+                                # '<tool_call>' + 'command_executor' here never matched native calls (Review S2/D2).
+                                # Skip CG review for tool-call-only responses
+                                if re.match(r'^\s*(<tool_call>.*?</tool_call>\s*)+$', final_content, re.DOTALL):
                                     logger.info(f"CycleHandler: Skipping CG review for non-command tool-call-only response from '{agent.agent_id}'")
                                     cg_verdict = "<OK/>"
                                 elif agent.agent_id == "admin_ai" and len(agent.message_history) <= 3:

@@ -325,7 +325,8 @@ class ToolExecutor:
     def _is_recoverable_error(self, error_msg: str, tool_name: str) -> bool:
         """Determine if an error is recoverable and worth retrying"""
         # Deterministic tools should never be retried internally with the exact same arguments
-        if tool_name in ["code_editor", "file_system", "project_management"]:
+        # Shell tools have side effects (installs, writes, servers): never re-run them automatically.
+        if tool_name in ["code_editor", "file_system", "project_management", "command_executor", "test_runner", "codebase_search"]:
             return False
             
         recoverable_patterns = [
@@ -658,6 +659,44 @@ class ToolExecutor:
                     logger.error(f"ToolExecutor: {error_msg}")
                     return error_msg
             
+            # --- Deterministic Policy Gate (Review S2) ---
+            # Runs for native and legacy tool calls alike, after authorization and
+            # argument validation and before any side effect. Shell tools are checked
+            # against fixed rules in src/tools/policy_gate.py; other tools pass through.
+            gate_block_message = None
+            try:
+                from src.tools.policy_gate import evaluate_tool_call
+                policy_decision = evaluate_tool_call(
+                    tool_name, kwargs_for_tool,
+                    agent_id=agent_id, agent_type=agent_type_for_auth,
+                    agent_sandbox_path=agent_sandbox_path,
+                    project_name=project_name, session_name=session_name,
+                )
+                if not policy_decision.allowed:
+                    gate_block_message = policy_decision.format_for_agent()
+            except Exception as gate_err:
+                logger.error(f"[TOOL_EXEC_ERROR] ID:{execution_id} | Policy gate failed for tool '{tool_name}': {gate_err}", exc_info=True)
+                if tool_name in ("command_executor", "test_runner"):
+                    gate_block_message = ("[Policy Gate] The command could not be checked because of an internal error, "
+                                          "so it was not run (fail-closed). Report this to your supervisor.")
+            if gate_block_message:
+                logger.warning(f"[TOOL_EXEC_BLOCKED] ID:{execution_id} | Tool '{tool_name}' blocked by policy gate for agent '{agent_id}'.")
+                self._update_execution_stats(success=False)
+                try:
+                    await broadcast(json.dumps({
+                        "type": "tool_execution_complete",
+                        "agent_id": agent_id,
+                        "tool_name": tool_name,
+                        "execution_id": execution_id,
+                        "success": False,
+                        "error_message": gate_block_message[:200],
+                        "timestamp": time.time()
+                    }))
+                except Exception as e:
+                    logger.warning(f"Failed to broadcast tool_execution_complete (policy block) event: {e}")
+                return f"{fuzzy_warning}Error from tool '{tool_name}': {gate_block_message}"
+            # --- End Policy Gate ---
+
             # Use the robust retry mechanism
             result, success, error_message = await self._execute_tool_with_retry(
                 tool=tool,

@@ -214,6 +214,19 @@ class Settings:
         self.DISABLE_COMMAND_EXECUTION: bool = os.getenv("DISABLE_COMMAND_EXECUTION", "False").lower() in ("true", "1", "yes")
         logger.info(f"Loaded DISABLE_COMMAND_EXECUTION: {self.DISABLE_COMMAND_EXECUTION}")
 
+        # --- Command Policy Gate & Shell Sandbox (Review S1/S2/S3) ---
+        # enforce = block matching commands, warn = log only, off = no checks
+        self.COMMAND_POLICY_MODE: str = os.getenv("COMMAND_POLICY_MODE", "enforce").strip().lower()
+        if self.COMMAND_POLICY_MODE not in ("enforce", "warn", "off"):
+            logger.warning(f"Invalid COMMAND_POLICY_MODE '{self.COMMAND_POLICY_MODE}'. Using 'enforce'.")
+            self.COMMAND_POLICY_MODE = "enforce"
+        # Extra environment variable names agent shells may inherit (explicit opt-in, even for secrets)
+        self.SANDBOX_ENV_PASSTHROUGH: List[str] = [v.strip() for v in os.getenv("SANDBOX_ENV_PASSTHROUGH", "").split(",") if v.strip()]
+        # Give agent shells their own HOME so ~/.npmrc, ~/.git-credentials etc. are not picked up
+        self.SANDBOX_ISOLATE_HOME: bool = os.getenv("SANDBOX_ISOLATE_HOME", "true").lower() in ("true", "1", "yes")
+        self.SANDBOX_HOME_DIR: Path = Path(os.getenv("SANDBOX_HOME_DIR", str(BASE_DIR / "sandboxes" / "_shell_home")))
+        logger.info(f"Loaded shell sandbox settings: PolicyMode={self.COMMAND_POLICY_MODE}, IsolateHome={self.SANDBOX_ISOLATE_HOME}, Passthrough={self.SANDBOX_ENV_PASSTHROUGH}")
+
         # --- Three-Tier Agent Limits ---
         try:
             # Fallback to MAX_WORKERS_PER_PM for backward compatibility if MAX_WORKERS_PER_TEAM isn't set
