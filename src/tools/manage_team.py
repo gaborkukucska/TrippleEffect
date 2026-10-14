@@ -177,11 +177,11 @@ class ManageTeamTool(BaseTool):
                 params["system_prompt"] = sys_prompt_alt
 
             # Map aliases for role and persona
-            role_alt = params.get("role") or params.get("agent_role") or params.get("job")
+            role_alt = params.get("role") or params.get("agent_role") or params.get("job") or params.get("role_name")
             if role_alt:
                 params["role"] = role_alt
 
-            persona_alt = params.get("persona") or params.get("name") or params.get("display_name")
+            persona_alt = params.get("persona") or params.get("name") or params.get("display_name") or params.get("persona_name")
             if persona_alt:
                 params["persona"] = persona_alt
 

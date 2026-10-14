@@ -65,6 +65,15 @@ class ProjectManagementTool(BaseTool):
             except Exception as heal_err:
                 logger.debug(f"ProjectManagementTool: Could not check/heal {fname}: {heal_err}")
 
+    def _is_worker_agent(self, agent_id: Optional[str]) -> bool:
+        """True if agent_id represents a worker (not admin, PM, framework, or system)."""
+        if not agent_id:
+            return False
+        aid = str(agent_id).lower()
+        if aid in ("admin_ai", "framework", "system", "human_user") or aid.startswith("pm"):
+            return False
+        return True
+
     def _get_taskwarrior_instance(self, project_name: str, session_name: str) -> Any:
         if not TASKLIB_AVAILABLE:
             return None
@@ -365,7 +374,7 @@ class ProjectManagementTool(BaseTool):
             
             if kwargs.get("assignee_agent_id"): 
                 task['assignee'] = kwargs["assignee_agent_id"]
-            elif agent_id.startswith("W"):
+            elif self._is_worker_agent(agent_id):
                 # Auto-assign the task to the worker who is creating it if no assignee is specified
                 task['assignee'] = agent_id
                 
@@ -553,7 +562,7 @@ class ProjectManagementTool(BaseTool):
                 kwargs.get("assignee_filter"),
                 kwargs.get("tags_filter")
             ])
-            if not has_filters and agent_id and not agent_id.startswith("W"):
+            if not has_filters and agent_id and not self._is_worker_agent(agent_id):
                 # PM must always specify filtering. List yet unassigned tasks by default when no filter is provided.
                 kwargs["assignee_filter"] = "unassigned"
 
@@ -561,7 +570,7 @@ class ProjectManagementTool(BaseTool):
                 a_filter = str(kwargs["assignee_filter"]).strip()
                 if a_filter.lower() not in ["none", "null", "unassigned"]:
                     tasks_query = tasks_query.filter(assignee=a_filter)
-            elif agent_id and agent_id.startswith("W"):
+            elif agent_id and self._is_worker_agent(agent_id):
                 # Auto-filter for the specific worker if no filter is provided
                 tasks_query = tasks_query.filter(assignee=agent_id)
             
@@ -671,7 +680,7 @@ class ProjectManagementTool(BaseTool):
                 if title_alt:
                     task_id = str(title_alt).strip()
                     logger.info(f"ProjectManagementTool: Auto-resolved missing task_id to title/description '{task_id}'.")
-                elif agent_id and agent_id.startswith("W"):
+                elif agent_id and self._is_worker_agent(agent_id):
                     # Fallback: if worker has exactly one pending assigned task, auto-infer it
                     try:
                         worker_pending = list(tw.tasks.pending().filter(assignee=agent_id))
