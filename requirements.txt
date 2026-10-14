@@ -1,36 +1,44 @@
 # START OF FILE requirements.txt
-fastapi
-uvicorn
-websockets
-jinja2
-python-dotenv
-openai>=1.10.0 # Ensure you have a recent version
-PyYAML
-# httpx # Remove if not needed elsewhere
-aiohttp
+# Upper bounds = next major version above the versions verified on Python 3.14
+# (Linux, 2026-10-14: every src module imports). Raise them deliberately after testing.
+
+fastapi<1.0
+uvicorn<1.0
+websockets<18
+jinja2<4
+python-dotenv<2
+openai>=1.10.0,<4
+PyYAML<7
+# httpx is imported directly by src/llm_providers/openai_provider.py; newer openai
+# releases no longer pull it in (they depend on httpx2), so it must be declared.
+httpx>=0.27,<1.0
+aiohttp<4
 # duckduckgo-search # Removed: Replaced with SearXNG + DDG scraping
 # PyGithub
 # lxml # Removed: replaced by stdlib html.parser in web_search.py (avoids C compilation on Termux)
 # pynacl # Removed: was never imported or used by any framework code
-beautifulsoup4
+beautifulsoup4<5
 # tavily-python # Removed: was never imported — WebSearchTool uses SearXNG + DDG scraping
-SQLAlchemy>=2.0 # Added for Database Memory
-aiosqlite # Async driver for SQLite
+# [asyncio] pulls in greenlet, which SQLAlchemy >= 2.1 no longer installs by default
+# but create_async_engine requires. (On Termux greenlet builds from source: pkg install clang)
+SQLAlchemy[asyncio]>=2.0,<3
+aiosqlite<1.0 # Async driver for SQLite
 # alembic # Skipping for now for Termux compatibility
-netifaces2 # Optional: Added for local network API discovery (graceful fallback if missing)
-taskw # Added for tasklib
-tasklib # Added for Project Management Tool
-python-nmap # Added for nmap-based network discovery
-GitPython>=3.1.43 # Added for Git integration in FileSystemTool
+netifaces2<1.0 # Optional: Added for local network API discovery (graceful fallback if missing)
+taskw<3 # Added for tasklib
+tasklib<3 # Added for Project Management Tool
+python-nmap<1.0 # Added for nmap-based network discovery
+GitPython>=3.1.43,<4 # Added for Git integration in FileSystemTool
 diff-match-patch>=20230430 # Added for Aider-style Search/Replace in FileSystemTool
 tzdata # Fallback timezone data for environments like Termux missing system zoneinfo
-libzim>=3.4.0 # Dealing with .zim files for knowledge
+libzim>=3.4.0,<4 # Dealing with .zim files for knowledge
 
 # Auth Dependencies
+# bcrypt pin is reviewed in Round 2 together with the >72-byte password fix in src/api/auth.py
 bcrypt<4.1.0
-pyjwt>=2.8.0
+pyjwt>=2.8.0,<3
 
-python-multipart>=0.0.9
+python-multipart>=0.0.9,<1.0
 
 # For the asset download tool
-aiofiles
+aiofiles<26
