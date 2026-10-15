@@ -21,8 +21,98 @@ except ImportError:
 from .base import BaseTool, ToolParameter
 from src.config.settings import BASE_DIR
 from typing import List
+from src.utils.task_utils import get_task_field
 
 logger = logging.getLogger(__name__)
+
+
+# --- Input hygiene for values that end up inside Taskwarrior's line-oriented data files -------------
+# Taskwarrior stores one task per line and writes each tag as an attribute KEY (tags_<tag>:"x") without
+# escaping. A tag that contains a line break (e.g. the model passing assignee_agent_id="\nW1\n") therefore
+# splits a record across lines and every later `task export` fails with "Unrecognized Taskwarrior file
+# format ... at line N" (observed 2026-10-15 10:22). These helpers keep such values out of the database
+# and repair files that were already damaged.
+_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_.:\-]+$")
+_WS_RE = re.compile(r"\s+")
+_LITERAL_ESCAPE_RE = re.compile(r"\\[nrt]")
+_TAGS_ATTR_RE = re.compile(r'(?:(?<=\s)|(?<=\[))tags:"([^"]*)"')
+_ASSIGNEE_ATTR_RE = re.compile(r'(?:(?<=\s)|(?<=\[))assignee:"([^"]*)"')
+_TAG_FLAG_RE = re.compile(r'(\s)(tags_[^\s:"]+:"x")')
+
+
+def clean_agent_id(value: Any) -> Optional[str]:
+    """Returns the agent id without surrounding whitespace/quotes, or None if it is not a plausible id."""
+    if value is None:
+        return None
+    text = str(value).strip().strip("'\"").strip()
+    return text if _AGENT_ID_RE.match(text) else None
+
+
+def clean_tag(value: Any) -> str:
+    """Makes a value safe to use as a Taskwarrior tag: no quotes/brackets/commas, whitespace becomes '_'."""
+    text = str(value).replace('"', "").replace("'", "").replace("[", "").replace("]", "").replace(",", "")
+    return _WS_RE.sub("_", text.strip())
+
+
+def _clean_tags_attr(match: "re.Match") -> str:
+    parts: List[str] = []
+    for element in match.group(1).split(","):
+        element = _WS_RE.sub("_", _LITERAL_ESCAPE_RE.sub("", element).strip())
+        if element and element not in parts:
+            parts.append(element)
+    return 'tags:"' + ",".join(parts) + '"'
+
+
+def _clean_assignee_attr(match: "re.Match") -> str:
+    cleaned = _LITERAL_ESCAPE_RE.sub("", match.group(1)).strip()
+    return 'assignee:"' + (cleaned or match.group(1)) + '"'
+
+
+def _clean_record(record: str) -> str:
+    record = _TAGS_ATTR_RE.sub(_clean_tags_attr, record)
+    record = _ASSIGNEE_ATTR_RE.sub(_clean_assignee_attr, record)
+    seen: set = set()
+
+    def _drop_duplicate_flag(m: "re.Match") -> str:
+        if m.group(2) in seen:
+            return ""
+        seen.add(m.group(2))
+        return m.group(1) + m.group(2)
+
+    return _TAG_FLAG_RE.sub(_drop_duplicate_flag, record)
+
+
+def repair_taskwarrior_records(lines: List[str]) -> List[str]:
+    """
+    Best-effort repair of Taskwarrior pending.data / completed.data lines:
+      * drops empty lines and surrounding whitespace;
+      * re-joins a record that a stray line break split over several lines (a record is "[...]");
+      * removes line-break escapes/whitespace from tag values and duplicate tag flags.
+    Well-formed records are returned unchanged.
+    """
+    records: List[str] = []
+    partial: Optional[str] = None
+    for raw in lines:
+        s = raw.strip()
+        if not s:
+            continue
+        if partial is not None:
+            if s.startswith("["):
+                records.append(partial)  # unterminated fragment that cannot be completed: keep as is
+                partial = None
+            else:
+                partial += s
+                if s.endswith("]"):
+                    records.append(partial)
+                    partial = None
+                continue
+        if s.startswith("[") and not s.endswith("]"):
+            partial = s
+            continue
+        records.append(s)
+    if partial is not None:
+        records.append(partial)
+    return [_clean_record(r) if r.startswith("[") else r for r in records]
 
 class ProjectManagementTool(BaseTool):
     name = "project_management"
@@ -58,10 +148,15 @@ class ProjectManagementTool(BaseTool):
             try:
                 raw_text = fpath.read_text(encoding="utf-8", errors="replace")
                 lines = raw_text.splitlines()
-                cleaned = [ln.strip() for ln in lines if ln.strip()]
+                if fname == "undo.data":
+                    # undo.data is a multi-line journal: only strip empty/whitespace lines (original behaviour).
+                    cleaned = [ln.strip() for ln in lines if ln.strip()]
+                else:
+                    # pending/completed: also re-join records split by a stray line break and clean tag values.
+                    cleaned = repair_taskwarrior_records(lines)
                 if len(cleaned) != len(lines) or any(ln != orig for ln, orig in zip(cleaned, lines)):
                     fpath.write_text("\n".join(cleaned) + ("\n" if cleaned else ""), encoding="utf-8")
-                    logger.warning(f"ProjectManagementTool: Auto-healed {fname} by removing {len(lines) - len(cleaned)} empty/whitespace line(s).")
+                    logger.warning(f"ProjectManagementTool: Auto-healed {fname} ({len(lines)} -> {len(cleaned)} line(s): removed empty lines, re-joined split records, cleaned tag values).")
             except Exception as heal_err:
                 logger.debug(f"ProjectManagementTool: Could not check/heal {fname}: {heal_err}")
 
@@ -373,7 +468,11 @@ class ProjectManagementTool(BaseTool):
             if kwargs.get("project_filter"): task['project'] = kwargs["project_filter"]
             
             if kwargs.get("assignee_agent_id"): 
-                task['assignee'] = kwargs["assignee_agent_id"]
+                clean_assignee = clean_agent_id(kwargs["assignee_agent_id"])
+                if not clean_assignee:
+                    return {"status": "error", "message": f"Invalid assignee_agent_id {kwargs['assignee_agent_id']!r}. Use the plain agent id such as 'W1' (letters, digits, '_', '.', ':' or '-'; no spaces or line breaks)."}
+                kwargs["assignee_agent_id"] = clean_assignee
+                task['assignee'] = clean_assignee
             elif self._is_worker_agent(agent_id):
                 # Auto-assign the task to the worker who is creating it if no assignee is specified
                 task['assignee'] = agent_id
@@ -388,16 +487,15 @@ class ProjectManagementTool(BaseTool):
                     raw_tags = [str(tags_arg).strip()]
                 sanitized = []
                 for t in raw_tags:
-                    t = t.lstrip('+-').strip()
-                    t = t.replace('"', '').replace("'", "").replace("[", "").replace("]", "").strip()
+                    t = clean_tag(t.lstrip('+-'))
                     if t:
                         sanitized.append(t)
                 task['tags'] = set(sanitized)
                 
-            if 'assignee' in task and task['assignee']:
-                current_tags = task['tags'] if 'tags' in task and task['tags'] else set()
+            if get_task_field(task, 'assignee'):
+                current_tags = set(get_task_field(task, 'tags') or [])
                 current_tags.add("assigned")
-                current_tags.add(task['assignee'])
+                current_tags.add(clean_tag(task['assignee']))
                 task['tags'] = current_tags
                 
             if kwargs.get("depends"): 
@@ -448,7 +546,7 @@ class ProjectManagementTool(BaseTool):
                         parent_task = tw.tasks.get(uuid=parent_task_id) if parent_is_uuid else tw.tasks.get(id=int(parent_task_id))
                         
                         # Tag the sub-task with parent UUID for traceability (no dependency link)
-                        existing_sub_tags = list(task['tags']) if 'tags' in task and task['tags'] else []
+                        existing_sub_tags = list(get_task_field(task, 'tags') or [])
                         existing_sub_tags.append(f"parent:{parent_task['uuid']}")
                         task['tags'] = list(set(existing_sub_tags))
                         
@@ -576,7 +674,7 @@ class ProjectManagementTool(BaseTool):
             
             # Gracefully handle corrupted TaskWarrior data (e.g. malformed tags causing Invalid JSON)
             try:
-                tasks = tasks_query.all()
+                tasks = list(tasks_query)  # evaluate now: a lazy query would only fail later, outside this handler
             except Exception as tw_err:
                 err_str = str(tw_err)
                 if "Invalid JSON" in err_str or "JSONDecodeError" in err_str:
@@ -589,6 +687,13 @@ class ProjectManagementTool(BaseTool):
                     return {
                         "status": "error",
                         "message": f"TaskWarrior data contains corrupted entries (likely malformed tags). Total tasks in DB: {raw_count}. Consider modifying the corrupted task's tags to fix this.",
+                        "error_type": "data_corruption"
+                    }
+                if "Unrecognized Taskwarrior file format" in err_str:
+                    logger.error(f"ProjectManagementTool: TaskWarrior data file is damaged: {err_str[-300:]}")
+                    return {
+                        "status": "error",
+                        "message": "The task database file is damaged and could not be read. The framework repairs such files automatically before each call; if this message repeats, tell the user.",
                         "error_type": "data_corruption"
                     }
                 raise  # re-raise non-JSON errors
@@ -790,7 +895,7 @@ class ProjectManagementTool(BaseTool):
                 modified_fields = []
 
             if "description" in kwargs: 
-                task['description'] = kwargs["description"]; modified_fields.append("description")
+                task['description'] = " ".join(str(kwargs["description"]).splitlines()).strip(); modified_fields.append("description")
             if "priority" in kwargs: 
                 prio = str(kwargs["priority"]).upper()
                 if prio in ['HIGH', 'H']: prio = 'H'
@@ -816,8 +921,7 @@ class ProjectManagementTool(BaseTool):
                 for t in raw_tags:
                     t = t.strip()
                     is_remove = t.startswith('-')
-                    t_clean = t.lstrip('+-').strip()
-                    t_clean = t_clean.replace('"', '').replace("'", "").replace("[", "").replace("]", "").strip()
+                    t_clean = clean_tag(t.lstrip('+-'))
                     if not t_clean:
                         continue
                         
@@ -831,7 +935,9 @@ class ProjectManagementTool(BaseTool):
             
             assignee_arg = kwargs.get("assignee_agent_id") or kwargs.get("assignee")
             if assignee_arg: 
-                new_assignee = assignee_arg
+                new_assignee = clean_agent_id(assignee_arg)
+                if not new_assignee:
+                    return {"status": "error", "message": f"Invalid assignee_agent_id {assignee_arg!r}. Use the plain agent id such as 'W1' (letters, digits, '_', '.', ':' or '-'; no spaces or line breaks)."}
                 if task['assignee'] == new_assignee:
                     # Silently accept redundant assignment to prevent LLM retry loops
                     modified_fields.append("assignee")
@@ -880,7 +986,7 @@ class ProjectManagementTool(BaseTool):
             else:
                 logger.info("ProjectManagementTool: 'modify_task' dry_run succeeded. Database not modified.")
                 
-            assignee_to_return = kwargs.get("assignee_agent_id") or task['assignee']
+            assignee_to_return = task['assignee'] or kwargs.get("assignee_agent_id")
             depends_list = [t['uuid'] for t in (task['depends'] if task['depends'] is not None else [])]
             return {
                 "status": "success", 
