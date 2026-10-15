@@ -599,6 +599,22 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
 # --- END initialize_bootstrap_agents ---
 
 
+def _requested_model_is_available(provider_name: Optional[str], model_id_canonical: Optional[str]) -> bool:
+    """
+    True if the explicitly requested provider/model pair exists in the ModelRegistry.
+    Mirrors the suffix handling used by the final validation in _create_agent_internal:
+    local provider types (ollama/vllm/litellm) are checked by suffix, others by canonical ID.
+    """
+    if not provider_name or not model_id_canonical:
+        return False
+    base_type = _get_base_provider_type_for_class_lookup(provider_name)
+    if base_type in ("ollama", "vllm", "litellm") and model_id_canonical.startswith(f"{base_type}/"):
+        model_to_check = model_id_canonical[len(base_type) + 1:]
+    else:
+        model_to_check = model_id_canonical
+    return bool(model_registry.is_model_available(provider_name, model_to_check))
+
+
 # --- _create_agent_internal (with corrected validation) ---
 async def _create_agent_internal(
     manager: 'AgentManager',
@@ -695,6 +711,20 @@ async def _create_agent_internal(
             # model_id_canonical in agent_config_data should already be the canonical one.
             # The model_id_for_provider (suffix) will be derived again later based on the now specific provider_name.
     # --- END: Generic Local Provider Mapping ---
+
+    # --- Fallback: an explicitly requested model/provider that does not exist (dynamic agents only) ---
+    # Small local models often invent model names (e.g. copy an example from tool docs). Instead of failing
+    # the whole create_agent call, discard the unusable request and let automatic selection choose.
+    if (not is_bootstrap and not loading_from_session and provider_name and model_id_canonical
+            and not _requested_model_is_available(provider_name, model_id_canonical)):
+        logger.warning(
+            f"Lifecycle: Requested model '{model_id_canonical}' (provider '{provider_name}') is not available for "
+            f"dynamic agent '{agent_id}'. Falling back to automatic model selection."
+        )
+        provider_name = None
+        model_id_canonical = None
+        agent_config_data.pop("provider", None)
+        agent_config_data.pop("model", None)
 
     # Auto-selection only for non-bootstrap agents if needed
     if not provider_name or not model_id_canonical:

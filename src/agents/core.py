@@ -649,7 +649,8 @@ class Agent:
                             f"[Framework Feedback for PM Retry]\n"
                             f"Your previous output was not recognized as a valid project kickoff plan.\n"
                             f"Please review your instructions for the '{self.state}' state and ensure your response contains the required JSON code block. "
-                            f"Do not include conversational text outside of your `<think>` tags."
+                            f"Do not include conversational text outside of your `<think>` tags.\n"
+                            f"The JSON must be strictly valid: every string value (including references such as \"depends_on\": \"task_1\") must be in double quotes; no comments, no trailing commas, no bare words."
                         )
                         self.message_history.append({"role": "system", "content": feedback_content})
                         yield {"type": "agent_state_change_requested", "requested_state": PM_STATE_STARTUP, "agent_id": self.agent_id}

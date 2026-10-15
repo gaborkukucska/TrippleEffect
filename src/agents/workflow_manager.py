@@ -33,6 +33,34 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Matches either a complete JSON string literal (group 1, left untouched) or a bare word used as a
+# value, i.e. directly after ':' '[' or ',' and directly before ',' '}' or ']' (groups 2 and 3).
+_BARE_JSON_VALUE_RE = re.compile(
+    r'("(?:\\.|[^"\\])*")'
+    r'|([:\[,]\s*)([A-Za-z_][A-Za-z0-9_.\-]*)(?=\s*[,}\]])'
+)
+
+
+def _repair_bare_json_values(text: str) -> str:
+    """
+    Conservative repair for a very common small-model slip: unquoted identifiers as JSON values,
+    e.g. {"id": "task_2", "depends_on": task_1}. Bare words are quoted; Python-style True/False/None
+    become true/false/null; valid JSON literals and everything inside strings are left untouched.
+    Only intended to be used after strict json.loads has already failed.
+    """
+    def _sub(match):
+        if match.group(1) is not None:
+            return match.group(1)
+        prefix, word = match.group(2), match.group(3)
+        if word in ("true", "false", "null"):
+            return match.group(0)
+        python_literals = {"True": "true", "False": "false", "None": "null"}
+        if word in python_literals:
+            return prefix + python_literals[word]
+        return prefix + '"' + word + '"'
+    return _BARE_JSON_VALUE_RE.sub(_sub, text)
+
+
 class AgentWorkflowManager:
     def __init__(self):
         self._valid_states: Dict[str, List[str]] = {
@@ -591,6 +619,15 @@ class AgentWorkflowManager:
                             char_idx = int(m.group(1))
                             text = text[:char_idx].strip()
                             continue
+                    # Last resort: quote bare-word values (e.g. "depends_on": task_0) and retry once.
+                    repaired = _repair_bare_json_values(text)
+                    if repaired != text:
+                        try:
+                            data = json.loads(repaired, strict=False)
+                            logger.info("WorkflowManager: Parsed JSON after repairing unquoted bare-word values.")
+                            return data, None
+                        except json.JSONDecodeError as repair_err:
+                            last_err = repair_err
                     break
             return None, last_err
 

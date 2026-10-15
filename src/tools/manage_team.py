@@ -281,8 +281,7 @@ Creates a new worker agent for your team.
 *   `<system_prompt>` (string, required): The main instruction set defining the agent's role, capabilities, and goal.
 *   `<agent_id>` (string, optional): A custom unique ID for the agent (e.g., `{worker_agent_id_placeholder}`). If omitted, one will be generated.
 *   `<team_id>` (string, optional): The ID of the team to assign this agent to (e.g., `{team_id_placeholder}`).
-*   `<provider>` (string, optional): Specify an LLM provider (e.g., 'ollama-local').
-*   `<model>` (string, optional): Specify an LLM model (e.g., 'qwen3:14b').
+*   `<provider>` and `<model>` (string, optional): LEAVE THESE OUT. The framework automatically picks a valid, available model for every new agent. Only set them if you were explicitly given an exact provider and model name; invented names are not available and are ignored.
 *   `<temperature>` (float, optional): Model temperature (e.g., 0.7). Defaults to framework settings if omitted.
 *   Example:
     ```json
@@ -290,9 +289,7 @@ Creates a new worker agent for your team.
       "action": "create_agent",
       "role": "UI_Designer",
       "persona": "UI/UX Designer",
-      "system_prompt": "You are a UI designer. Your goal is to design a clean, responsive web interface.",
-      "provider": "ollama-local",
-      "model": "qwen3:14b"
+      "system_prompt": "You are a UI designer. Your goal is to design a clean, responsive web interface."
     }}
     ```
 *   **JSON Content Rules for Agent Creation:** Ensure all content is properly JSON escaped. Keep prompts clear and concise.
