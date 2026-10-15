@@ -1,0 +1,461 @@
+#!/usr/bin/env python3
+"""
+TrippleEffect: Session & Log Collector  (v2: smart log reduction)
+
+Run from the TrippleEffect repository root:   python3 collect.py
+Output directory: ~/Desktop/te_session_data     (change with --dest)
+
+What it collects (same names as before, plus the new zz_ files):
+  workspace__*          shared workspace files of the latest session (each capped at 200 KB)
+  task_data__*          Taskwarrior data files of the latest session
+  agent_session_data.json.txt
+  zz_session_summary.txt        what was collected, sizes, and how much the log was reduced
+  zz_events.txt                 NEW. Every INFO/WARNING/ERROR/CRITICAL line of the WHOLE run, one line each
+                                (max 300 chars), without database noise and routine per-call boilerplate
+                                (headers, scheduling, status flips). Read this first: it is the timeline.
+  zz_llm_raw_outputs.txt        NEW. What each agent actually said ("Raw response before post-processing").
+  zz_latest_session_log.txt     The log with the bulk removed (see below). Replaces the old head+tail copy.
+  zz_log_error_scan.txt         WARNING/ERROR/CRITICAL entries, GROUPED: each distinct problem once with
+                                its count, first/last time and (for errors) the traceback.
+  zz_tool_errors_scan.txt       Tool execution failures, grouped the same way.
+
+How the log is reduced (nothing is cut by position, so the middle of a long run is never lost):
+  * database/Taskwarrior debug chatter (aiosqlite, tasklib.backends, database_manager DEBUG) is dropped;
+  * prompt dumps are de-duplicated: every agent call re-prints its whole conversation, so a continuation
+    line that was already printed earlier is not printed again (new messages still show, with their role);
+  * identical repeated one-line entries are shown a few times, then counted in a footer;
+  * very long lines and long continuation blocks are capped.
+Only if the result is still > 1 MB is it trimmed (first 250 KB + last 750 KB, with a visible marker).
+
+The script only writes files it generates into the destination folder (earlier exports of the same
+names are replaced). It never touches your repository.
+"""
+import argparse
+import os
+import re
+import shutil
+import sys
+from collections import OrderedDict
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+EXCLUDE_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".idea", ".vscode"}
+GENERATED_PREFIXES = ("workspace__", "task_data__", "zz_")
+GENERATED_NAMES = {"agent_session_data.json.txt"}
+
+HEADER_RE = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+ - ([\w.]+) - (\w+) - (.*)$")
+UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+CALL_ID_RE = re.compile(r"call_[a-z0-9]+")
+HEX_RE = re.compile(r"0x[0-9a-fA-F]+")
+BIGNUM_RE = re.compile(r"\d{4,}")
+INDEX_RE = re.compile(r"^\s*\[\d+\]\s*")
+
+NOISE_MODULES = {"aiosqlite", "tasklib.backends", "asyncio", "urllib3", "httpx", "httpcore", "multipart", "PIL"}
+LEVELS_INFO_PLUS = {"INFO", "WARNING", "ERROR", "CRITICAL"}
+LEVELS_WARN_PLUS = {"WARNING", "ERROR", "CRITICAL"}
+
+MAX_FILE_COPY = 200_000
+MAX_FINAL_LOG = 1_000_000
+HEAD_KEEP, TAIL_KEEP = 250_000, 750_000
+
+TOOL_ERR_RE = re.compile(
+    r"TOOL_EXEC_|Tool Execution Failed|Tool Execution Blocked|tool_execution_complete_failure|ToolError|"
+    r"Invalid action|State transition rejected|Auto-correct|Action .* is not supported|Missing .* parameter",
+    re.IGNORECASE,
+)
+
+
+# --------------------------------------------------------------------------------------
+# log parsing
+# --------------------------------------------------------------------------------------
+class Entry:
+    __slots__ = ("module", "level", "msg", "header", "cont")
+
+    def __init__(self, module: str, level: str, msg: str, header: str):
+        self.module, self.level, self.msg, self.header = module, level, msg, header
+        self.cont: List[str] = []
+
+    @property
+    def stamp(self) -> str:
+        return self.header[:23]
+
+
+def parse_entries(text: str) -> List[Entry]:
+    entries: List[Entry] = []
+    current: Optional[Entry] = None
+    for line in text.splitlines():
+        m = HEADER_RE.match(line)
+        if m:
+            current = Entry(m.group(1), m.group(2), m.group(3), line)
+            entries.append(current)
+        elif current is not None:
+            current.cont.append(line)
+        else:  # preamble before the first timestamp
+            current = Entry("?", "INFO", line, line)
+            entries.append(current)
+    return entries
+
+
+def is_noise(e: Entry) -> bool:
+    if e.module in NOISE_MODULES or e.module.split(".")[0] in NOISE_MODULES:
+        return e.level not in LEVELS_WARN_PLUS
+    if e.module.endswith("database_manager") and e.level == "DEBUG":
+        return True
+    return False
+
+
+def norm_key(s: str) -> str:
+    """Identity of a line for de-duplication. Only ids that differ on every call are normalised; numbers are NOT,
+    so lines carrying measurements (durations, counts, sizes) are never mistaken for repeats."""
+    s = UUID_RE.sub("U", s)
+    s = CALL_ID_RE.sub("call_X", s)
+    return HEX_RE.sub("0xH", s)
+
+
+def clip(line: str, limit: int) -> str:
+    return line if len(line) <= limit else f"{line[:limit]} ...[+{len(line) - limit} chars]"
+
+
+# --------------------------------------------------------------------------------------
+# reduced log
+# --------------------------------------------------------------------------------------
+def reduce_continuation(e: Entry, seen: set) -> List[str]:
+    """Continuation lines to print for an entry (global de-duplication for DEBUG prompt dumps)."""
+    if not e.cont:
+        return []
+    if e.level in ("ERROR", "CRITICAL"):
+        return [clip(l, 400) for l in e.cont[:60]] + ([f"    ... [{len(e.cont) - 60} more lines]"] if len(e.cont) > 60 else [])
+    if e.level == "WARNING":
+        return [clip(l, 400) for l in e.cont[:25]] + ([f"    ... [{len(e.cont) - 25} more lines]"] if len(e.cont) > 25 else [])
+    if e.level == "INFO":
+        return [clip(l, 400) for l in e.cont[:8]] + ([f"    ... [{len(e.cont) - 8} more lines]"] if len(e.cont) > 8 else [])
+
+    # DEBUG: print only continuation lines that were not printed before.
+    out: List[str] = []
+    short_buf: List[str] = []   # short structural lines (braces, "role": ...) kept only next to new content
+    omitted = 0
+    for line in e.cont:
+        stripped = line.strip()
+        if len(stripped) < 40:
+            short_buf.append(line)
+            if len(short_buf) > 3:
+                short_buf.pop(0)
+            continue
+        key = norm_key(stripped)
+        if key in seen:
+            omitted += 1
+            short_buf = []
+            continue
+        seen.add(key)
+        out.extend(clip(l, 600) for l in short_buf)
+        short_buf = []
+        out.append(clip(line, 600))
+        if len(out) >= 120:
+            out.append("    ... [output capped]")
+            break
+    if omitted:
+        out.append(f"    ... [{omitted} line(s) already shown earlier omitted]")
+    return out
+
+
+def build_reduced_log(entries: List[Entry]) -> Tuple[str, Dict[str, int]]:
+    out: List[str] = []
+    seen_lines: set = set()
+    counts: Dict[Tuple[str, str, str], int] = {}
+    suppressed: "OrderedDict[Tuple[str, str, str], List]" = OrderedDict()
+    stats = {"entries": len(entries), "noise": 0, "suppressed": 0}
+    for e in entries:
+        if is_noise(e):
+            stats["noise"] += 1
+            continue
+        key = (e.module, e.level, norm_key(e.msg)[:600])
+        counts[key] = counts.get(key, 0) + 1
+        limit = 3 if e.level == "DEBUG" else 6
+        # suppress repeats of identical SINGLE-line entries (entries with a traceback/body are judged by header too,
+        # but only after `limit` full copies were shown)
+        if counts[key] > limit:
+            stats["suppressed"] += 1
+            info = suppressed.setdefault(key, [0, e.stamp, e.stamp, e.header])
+            info[0] += 1
+            info[2] = e.stamp
+            continue
+        out.append(clip(e.header, 700 if e.level != "DEBUG" else 300))
+        out.extend(reduce_continuation(e, seen_lines))
+    if suppressed:
+        out.append("")
+        out.append("=" * 100)
+        out.append("SUPPRESSED REPEATS (identical entries shown several times above, then only counted)")
+        out.append("=" * 100)
+        for (module, level, _), (n, first, last, sample) in suppressed.items():
+            out.append(f"x{n:<5} {level:<8} {module}  [{first[11:]} .. {last[11:]}]")
+            out.append(f"        {clip(sample[26:], 260)}")
+    return "\n".join(out) + "\n", stats
+
+
+def trim_if_large(text: str) -> str:
+    if len(text) <= MAX_FINAL_LOG:
+        return text
+    cut = len(text) - HEAD_KEEP - TAIL_KEEP
+    return (
+        text[:HEAD_KEEP]
+        + f"\n\n... [TRIMMED {cut:,} chars from the middle of the reduced log; zz_events.txt has the complete timeline] ...\n\n"
+        + text[-TAIL_KEEP:]
+    )
+
+
+# --------------------------------------------------------------------------------------
+# other log views
+# --------------------------------------------------------------------------------------
+# Routine per-call boilerplate: carries no information beyond "a call happened" and would bury the timeline.
+# (zz_events.txt only; the call start/finish lines "making API call" and "Response Status" are kept for latency.)
+CHATTY_EVENT_RE = re.compile(
+    r"^(Request Headers Sent|Response Headers Received|API call headers OK|Sending agent_raw_response event|"
+    r"Sending tool_result event to UI|Successfully sent .* to UI via broadcast)|"
+    r"stream_completion finished cleanly|Using model-native num_ctx|has a RAW template|Native tool calling enabled|"
+    r"preparing request|schedule_cycle ASYNC called|Successfully created asyncio task|_schedule_new_cycle|"
+    r"Closing agent_generator|Finished processing cycle attempt|Finished cycle logic|Status changed from|"
+    r"WORKER_ACTIVATION_DEBUG|Executor: Executing tool"
+)
+
+
+def build_events(entries: List[Entry]) -> str:
+    return "\n".join(
+        clip(e.header, 300)
+        for e in entries
+        if e.level in LEVELS_INFO_PLUS and not is_noise(e) and not (e.level == "INFO" and CHATTY_EVENT_RE.search(e.msg))
+    ) + "\n"
+
+
+def build_raw_outputs(entries: List[Entry]) -> str:
+    blocks = []
+    for e in entries:
+        if "Raw response before post-processing" in e.msg:
+            body = [clip(l, 600) for l in e.cont[:60]]
+            if len(e.cont) > 60:
+                body.append(f"    ... [{len(e.cont) - 60} more lines]")
+            blocks.append("\n".join([clip(e.header, 300)] + body))
+    return "\n\n".join(blocks) + "\n" if blocks else "No raw LLM response blocks found in the log.\n"
+
+
+def grouped_scan(entries: List[Entry], selector, title: str, max_chars: int = 150_000) -> str:
+    groups: "OrderedDict[Tuple[str, str, str], List]" = OrderedDict()
+    for e in entries:
+        if is_noise(e) or not selector(e):
+            continue
+        key = (e.module, e.level, BIGNUM_RE.sub("N", norm_key(e.msg.splitlines()[0] if e.msg else ""))[:160])
+        g = groups.get(key)
+        if g is None:
+            groups[key] = [1, e.stamp, e.stamp, e]
+        else:
+            g[0] += 1
+            g[2] = e.stamp
+    if not groups:
+        return f"{title}: nothing matched.\n"
+    out = [f"{title}: {sum(g[0] for g in groups.values())} entries, {len(groups)} distinct problem(s)", "=" * 100]
+    for (module, level, _), (n, first, last, e) in groups.items():
+        out.append(f"x{n}  {level}  {module}  first {first[5:]}  last {last[5:]}")
+        out.append("  " + clip(e.msg, 700))
+        cap = 40 if e.level in ("ERROR", "CRITICAL") else 8
+        out.extend("  | " + clip(l, 400) for l in e.cont[:cap])
+        if len(e.cont) > cap:
+            out.append(f"  | ... [{len(e.cont) - cap} more lines]")
+        out.append("-" * 100)
+        if sum(len(x) + 1 for x in out) > max_chars:
+            out.append("... [scan truncated at size limit; remaining groups omitted; see zz_events.txt]")
+            break
+    return "\n".join(out) + "\n"
+
+
+# --------------------------------------------------------------------------------------
+# file helpers
+# --------------------------------------------------------------------------------------
+def flat_name(prefix: str, rel_path: Path) -> str:
+    return f"{prefix}__" + "__".join(rel_path.parts) + ".txt"
+
+
+def copy_capped(src: Path, dest: Path) -> int:
+    data = src.read_bytes()
+    if len(data) > MAX_FILE_COPY:
+        half = MAX_FILE_COPY // 2
+        marker = f"\n\n... [TRIMMED {len(data) - MAX_FILE_COPY:,} bytes from the middle] ...\n\n".encode()
+        data = data[:half] + marker + data[-half:]
+    dest.write_bytes(data)
+    return src.stat().st_size
+
+
+def get_latest_session_dir(root: Path) -> Optional[Path]:
+    projects_dir = root / "projects"
+    if not projects_dir.is_dir():
+        return None
+    sessions = []
+    for ws in projects_dir.rglob("shared_workspace"):
+        try:
+            if ws.is_dir():
+                sessions.append((ws.stat().st_mtime, ws.parent))
+        except OSError:
+            continue
+    sessions.sort()
+    return sessions[-1][1] if sessions else None
+
+
+def get_latest_log_file(root: Path) -> Optional[Path]:
+    logs_dir = root / "logs"
+    if not logs_dir.is_dir():
+        return None
+    log_files = []
+    for f in logs_dir.rglob("*.log"):
+        try:
+            if f.is_file():
+                log_files.append((f.stat().st_mtime, f))
+        except OSError:
+            continue
+    log_files.sort()
+    return log_files[-1][1] if log_files else None
+
+
+def clear_previous_export(dest: Path) -> None:
+    """Remove only files this script generates (earlier exports); anything else in the folder is kept."""
+    if not dest.is_dir():
+        return
+    for item in dest.iterdir():
+        if item.is_file() and (item.name.startswith(GENERATED_PREFIXES) or item.name in GENERATED_NAMES):
+            item.unlink()
+
+
+def kb(n: int) -> str:
+    return f"{n / 1024:,.0f} KB"
+
+
+# --------------------------------------------------------------------------------------
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Collect TrippleEffect session data with a reduced log.")
+    ap.add_argument("--root", default=".", help="TrippleEffect repository root (default: current directory)")
+    ap.add_argument("--dest", default=str(Path.home() / "Desktop" / "te_session_data"))
+    ap.add_argument("--log", default=None, help="Specific log file (default: newest *.log under logs/)")
+    ap.add_argument("--raw", action="store_true", help="Also write zz_raw_log_head_tail.txt (old behaviour: 400 KB head + 600 KB tail)")
+    args = ap.parse_args()
+
+    root = Path(args.root).resolve()
+    dest = Path(args.dest).expanduser()
+    if not (root / "src").is_dir():
+        sys.exit("ERROR: Run this script from the TrippleEffect repository root (or pass --root).")
+
+    dest.mkdir(parents=True, exist_ok=True)
+    clear_previous_export(dest)
+    summary = ["# TrippleEffect Latest Session Summary\n"]
+
+    # 1. Session files --------------------------------------------------------------
+    session_dir = get_latest_session_dir(root)
+    if not session_dir:
+        summary.append("No project sessions found under projects/.")
+        print("WARNING: No project sessions found under projects/.")
+    else:
+        try:
+            rel_sess = session_dir.relative_to(root)
+        except ValueError:
+            rel_sess = session_dir
+        summary.append(f"Latest Session: {rel_sess}\n")
+        print(f"Collecting from session: {rel_sess}")
+
+        ws_dir = session_dir / "shared_workspace"
+        summary.append("## Shared Workspace Files:")
+        count = 0
+        if ws_dir.is_dir():
+            for walk_root, dirs, files in os.walk(ws_dir):
+                dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+                for f in sorted(files):
+                    src_f = Path(walk_root) / f
+                    rel = src_f.relative_to(ws_dir)
+                    try:
+                        size = copy_capped(src_f, dest / flat_name("workspace", rel))
+                        summary.append(f"  - {rel} ({size} bytes)")
+                        count += 1
+                    except Exception as exc:
+                        summary.append(f"  - {rel} (copy failed: {exc})")
+            if count == 0:
+                summary.append("  (shared_workspace is empty)")
+        else:
+            summary.append("  (shared_workspace folder does not exist)")
+
+        task_dir = session_dir / "task_data"
+        if task_dir.is_dir():
+            summary.append("\n## Task Data:")
+            for item in sorted(task_dir.iterdir()):
+                if item.is_file():
+                    try:
+                        size = copy_capped(item, dest / f"task_data__{item.name}.txt")
+                        summary.append(f"  - {item.name} ({size} bytes)")
+                    except Exception as exc:
+                        summary.append(f"  - {item.name}: copy failed ({exc})")
+
+        sess_json = session_dir / "agent_session_data.json"
+        if sess_json.is_file():
+            size = copy_capped(sess_json, dest / "agent_session_data.json.txt")
+            summary.append(f"\nCopied agent_session_data.json ({size} bytes)")
+
+    # 2. Log ------------------------------------------------------------------------
+    log_file = Path(args.log) if args.log else get_latest_log_file(root)
+    if log_file and log_file.is_file():
+        try:
+            rel_log = log_file.relative_to(root)
+        except ValueError:
+            rel_log = log_file
+        raw_text = log_file.read_text(encoding="utf-8", errors="replace")
+        raw_size = len(raw_text.encode("utf-8", errors="replace"))
+        print(f"Reading log: {log_file.name} ({kb(raw_size)})")
+        entries = parse_entries(raw_text)
+
+        events = build_events(entries)
+        raw_out = build_raw_outputs(entries)
+        reduced, stats = build_reduced_log(entries)
+        reduced = trim_if_large(reduced)
+        tool_scan = grouped_scan(
+            entries, lambda e: e.level in LEVELS_WARN_PLUS and bool(TOOL_ERR_RE.search(e.msg)), "Tool execution failures")
+        err_scan = grouped_scan(entries, lambda e: e.level in LEVELS_WARN_PLUS, "Warnings / errors / critical")
+
+        files = OrderedDict([
+            ("zz_events.txt", events),
+            ("zz_llm_raw_outputs.txt", raw_out),
+            ("zz_latest_session_log.txt", reduced),
+            ("zz_log_error_scan.txt", err_scan),
+            ("zz_tool_errors_scan.txt", tool_scan),
+        ])
+        for name, content in files.items():
+            (dest / name).write_text(content, encoding="utf-8")
+
+        first = next((e.stamp for e in entries if HEADER_RE.match(e.header)), "?")
+        last = next((e.stamp for e in reversed(entries) if HEADER_RE.match(e.header)), "?")
+        summary.append(f"\n## Latest Log: {rel_log}")
+        summary.append(f"Source: {kb(raw_size)}, {stats['entries']:,} entries, covering {first} .. {last}")
+        summary.append(f"Reduced log: {kb(len(reduced.encode('utf-8', errors='replace')))} "
+                       f"({stats['noise']:,} noise entries dropped, {stats['suppressed']:,} repeated entries counted in the footer)")
+        for name in files:
+            summary.append(f"Generated: {name} ({kb(len(files[name].encode('utf-8', errors='replace')))})")
+        summary.append("Read zz_events.txt first: it is the complete, untruncated timeline of the run.")
+
+        if args.raw:
+            half_head, half_tail = 400_000, 600_000
+            body = raw_text
+            if len(body) > half_head + half_tail:
+                body = body[:half_head] + f"\n\n... [TRUNCATED {len(body) - half_head - half_tail:,} chars] ...\n\n" + body[-half_tail:]
+            (dest / "zz_raw_log_head_tail.txt").write_text(body, encoding="utf-8")
+            summary.append("Generated: zz_raw_log_head_tail.txt (--raw)")
+    else:
+        summary.append("\nNo log file found under logs/ (and no --log given).")
+        print("WARNING: no log file found.")
+
+    (dest / "zz_session_summary.txt").write_text("\n".join(summary) + "\n", encoding="utf-8")
+
+    print(f"\n[DONE] All session data exported to: {dest}")
+    total = 0
+    print("\nFiles ready:")
+    for f in sorted(dest.iterdir()):
+        if f.is_file():
+            total += f.stat().st_size
+            print(f"  - {f.name} ({f.stat().st_size:,} bytes)")
+    print(f"\nTotal: {kb(total)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

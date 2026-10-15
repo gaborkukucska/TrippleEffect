@@ -23,4 +23,6 @@ sandboxes/
 security/
 scripts/
 .task/
-*.py
+
+# scratch patch script
+/fix.py
