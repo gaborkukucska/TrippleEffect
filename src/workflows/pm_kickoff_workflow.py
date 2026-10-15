@@ -142,6 +142,36 @@ def plan_project_structure(structure: Any) -> Tuple[List[str], List[str], List[s
     return dirs, files, notes
 
 
+_MANAGER_ROLE_RE = re.compile(r"(^|[^a-z0-9])(pm\d*|project[\s_\-]*manager|projectmanager)($|[^a-z0-9])", re.IGNORECASE)
+
+
+def sanitize_worker_roles(roles: List[Any]) -> Tuple[List[Any], List[str]]:
+    """
+    Returns (kept_roles, dropped_manager_roles). The PM is already the project manager, so manager-type
+    roles (e.g. 'Project_Manager', 'PM1_Project_Manager') must not become worker agents. Duplicate roles
+    (case-insensitive) are removed; non-string entries are passed through unchanged.
+    """
+    kept: List[Any] = []
+    dropped: List[str] = []
+    seen = set()
+    for role in roles:
+        if not isinstance(role, str):
+            kept.append(role)
+            continue
+        name = role.strip()
+        if not name:
+            continue
+        if _MANAGER_ROLE_RE.search(name):
+            dropped.append(name)
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(name)
+    return kept, dropped
+
+
 def _render_definitions(value: Any, indent: int = 0) -> List[str]:
     """Renders code_base_definitions (string, list or dict from the model) as Markdown lines."""
     pad = "  " * indent
@@ -264,12 +294,17 @@ class PMKickoffWorkflow(BaseWorkflow):
 
         # --- Extract Roles ---
         role_names: List[str] = data_input.get("roles", [])
+        dropped_roles: List[str] = []
+        if isinstance(role_names, list):
+            role_names, dropped_roles = sanitize_worker_roles(role_names)
+            if dropped_roles:
+                logger.warning(f"PMKickoffWorkflow: Dropped manager-type role(s) {dropped_roles} from kickoff_plan of agent '{agent.agent_id}' (the PM is the project manager).")
 
         if not role_names or not isinstance(role_names, list):
             logger.warning(f"PMKickoffWorkflow: No roles found in kickoff_plan from agent '{agent.agent_id}'.")
             return WorkflowResult(
                 success=False,
-                message="No roles were provided in the kickoff_plan. Please provide a list of required roles.",
+                message=("No roles were provided in the kickoff_plan. Please provide a list of required roles." + (f" Manager roles ({', '.join(dropped_roles)}) are not allowed because you are already the project manager; list only worker roles such as 'Coder'." if dropped_roles else "")),
                 workflow_name=self.name,
                 next_agent_state=PM_STATE_STARTUP,
                 next_agent_status=AGENT_STATUS_IDLE,

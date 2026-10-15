@@ -183,6 +183,7 @@ class AgentCycleHandler:
             logger.warning(f"CycleHandler: Error auto-updating task '{task_id}' to in_progress: {e}")
 
     def _infer_worker_task(self, agent_id: str) -> Optional[str]:
+        from src.utils.task_utils import get_task_field, task_is_assigned_to
         try:
             if self._manager.current_project and self._manager.current_session:
                 from src.tools.project_management import ProjectManagementTool, TASKLIB_AVAILABLE
@@ -193,16 +194,10 @@ class AgentCycleHandler:
                         tasks = tw.tasks.filter(status="pending")
                         for task in tasks:
                             try:
-                                is_assigned = False
-                                if 'assignee' in task and task['assignee'] == agent_id:
-                                    is_assigned = True
-                                elif 'tags' in task and task['tags']:
-                                    tags = task['tags']
-                                    if 'assigned' in tags and (agent_id in tags or f"+{agent_id}" in tags):
-                                        is_assigned = True
-                                        
+                                is_assigned = task_is_assigned_to(task, agent_id)
+
                                 if is_assigned:
-                                    progress = task.get('task_progress')
+                                    progress = get_task_field(task, 'task_progress')
                                     if progress in ['doing', 'in_progress', 'todo', 'pending', None]:
                                         return str(task['uuid'])
                             except Exception:

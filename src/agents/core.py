@@ -70,6 +70,43 @@ def detect_autoregressive_loop(text: str, min_pattern_length: int = 20, min_repe
             return True
     return False
 
+def build_request_state_schema(agent_type, state, valid_states):
+    """
+    Builds the native `request_state` pseudo-tool schema for an agent, or None if it must not be offered.
+    - A PM in pm_startup must output the JSON kickoff plan, so the tool is not offered at all.
+    - Other PM states get a description listing the states a PM can really request (the old text always
+      listed worker states, which a PM can never enter).
+    - Admin and worker agents get exactly the schema they always had.
+    """
+    if agent_type == AGENT_TYPE_PM and state == PM_STATE_STARTUP:
+        return None
+    if agent_type == AGENT_TYPE_PM:
+        shown = [s for s in (valid_states or []) if s and s not in ("default", PM_STATE_STARTUP, state)]
+        state_desc = "The destination state to transition to."
+        if shown:
+            state_desc += " Valid states for you: " + ", ".join(shown) + "."
+        task_desc = "Only used by workers; leave empty."
+    else:
+        state_desc = "The destination state to transition to (e.g., worker_work, worker_test, worker_report, worker_wait)."
+        task_desc = "REQUIRED when transitioning to 'worker_work' or 'worker_test' state. The UUID of the sub-task you are choosing to work on."
+    return {
+        "type": "function",
+        "function": {
+            "name": "request_state",
+            "description": "Request a state transition for the agent.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "state": {"type": "string", "description": state_desc},
+                    "task_id": {"type": ["string", "null"], "description": task_desc},
+                    "task_description": {"type": "string", "description": "Optional description of the task."},
+                },
+                "required": ["state"],
+            },
+        },
+    }
+
+
 class Agent:
     def __init__(
         self,
@@ -293,32 +330,14 @@ class Agent:
                     if is_authorized:
                         tool_schemas.append(tool.get_json_schema())
                         
-                # Inject request_state as a pseudo-tool so LLM knows its schema
-                tool_schemas.append({
-                    "type": "function",
-                    "function": {
-                        "name": "request_state",
-                        "description": "Request a state transition for the agent.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "state": {
-                                    "type": "string",
-                                    "description": "The destination state to transition to (e.g., worker_work, worker_test, worker_report, worker_wait)."
-                                },
-                                "task_id": {
-                                    "type": ["string", "null"],
-                                    "description": "REQUIRED when transitioning to 'worker_work' or 'worker_test' state. The UUID of the sub-task you are choosing to work on."
-                                },
-                                "task_description": {
-                                    "type": "string",
-                                    "description": "Optional description of the task."
-                                }
-                            },
-                            "required": ["state"]
-                        }
-                    }
-                })
+                # Inject request_state as a pseudo-tool so LLM knows its schema (not offered to a PM in pm_startup)
+                _valid_states_for_type = getattr(getattr(self.manager, 'workflow_manager', None), '_valid_states', {}).get(self.agent_type, [])
+                _request_state_schema = build_request_state_schema(self.agent_type, self.state, _valid_states_for_type)
+                if _request_state_schema:
+                    tool_schemas.append(_request_state_schema)
+
+            if tool_schemas is not None and not tool_schemas:
+                tool_schemas = None
 
             from contextlib import aclosing
             
@@ -505,7 +524,9 @@ class Agent:
                             if isinstance(arguments, str):
                                 arguments = json.loads(arguments)
                             call_id = call_data.get("id", f"native_call_{self.agent_id}_{int(time.time() * 1000)}_{os.urandom(2).hex()}")
-                            if tool_name in self.manager.tool_executor.tools:
+                            if self.agent_type == AGENT_TYPE_PM and self.state == PM_STATE_STARTUP:
+                                logger.warning(f"Agent {self.agent_id}: Ignoring native call to '{tool_name}' in {PM_STATE_STARTUP} (no tools are offered; output the JSON kickoff plan).")
+                            elif tool_name in self.manager.tool_executor.tools:
                                 tool_requests_to_yield.append({"id": call_id, "name": tool_name, "arguments": arguments})
                             elif tool_name == "request_state":
                                 requested_state = arguments.get("state")

@@ -33,6 +33,54 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+def _repair_json_syntax(text: str) -> str:
+    """
+    String-aware repair of Python-style JSON slips made by small models: single-quoted strings
+    ({'file': 'a.txt'}) become double-quoted and trailing commas before } or ] are removed.
+    Content of double-quoted strings is copied verbatim. Only used after strict json.loads failed.
+    """
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            j = i + 1
+            while j < n:
+                if text[j] == '\\':
+                    j += 2
+                    continue
+                if text[j] == '"':
+                    break
+                j += 1
+            out.append(text[i:j + 1])
+            i = j + 1
+        elif ch == "'":
+            j = i + 1
+            buf = []
+            while j < n and text[j] != "'":
+                if text[j] == '\\' and j + 1 < n:
+                    buf.append("'" if text[j + 1] == "'" else text[j:j + 2])
+                    j += 2
+                    continue
+                buf.append('\\"' if text[j] == '"' else text[j])
+                j += 1
+            out.append('"' + ''.join(buf) + '"')
+            i = j + 1
+        elif ch == ',':
+            k = i + 1
+            while k < n and text[k].isspace():
+                k += 1
+            if k < n and text[k] in '}]':
+                i += 1
+            else:
+                out.append(ch)
+                i += 1
+        else:
+            out.append(ch)
+            i += 1
+    return ''.join(out)
+
+
 # Matches either a complete JSON string literal (group 1, left untouched) or a bare word used as a
 # value, i.e. directly after ':' '[' or ',' and directly before ',' '}' or ']' (groups 2 and 3).
 _BARE_JSON_VALUE_RE = re.compile(
@@ -620,7 +668,7 @@ class AgentWorkflowManager:
                             text = text[:char_idx].strip()
                             continue
                     # Last resort: quote bare-word values (e.g. "depends_on": task_0) and retry once.
-                    repaired = _repair_bare_json_values(text)
+                    repaired = _repair_bare_json_values(_repair_json_syntax(text))
                     if repaired != text:
                         try:
                             data = json.loads(repaired, strict=False)

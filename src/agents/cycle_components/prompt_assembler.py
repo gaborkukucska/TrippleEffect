@@ -463,8 +463,9 @@ class PromptAssembler:
                                     task = tw.tasks.get(id=int(resolved_id))
                                 
                                 if task:
-                                    t_prog = str(task.get('task_progress', '') or '').lower()
-                                    t_stat = str(task.get('status', '') or '').lower()
+                                    from src.utils.task_utils import get_task_field
+                                    t_prog = str(get_task_field(task, 'task_progress', '') or '').lower()
+                                    t_stat = str(get_task_field(task, 'status', '') or '').lower()
                                     # Only inject reminder for genuinely active, unfinished tasks
                                     if t_prog not in ['finished', 'completed', 'deleted'] and t_stat not in ['completed', 'deleted']:
                                         desc = task['description']
