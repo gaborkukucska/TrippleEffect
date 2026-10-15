@@ -19,6 +19,12 @@ TITLE_SELECTOR = "h2.result__title a.result__a"
 SNIPPET_SELECTOR = "a.result__snippet"
 URL_SELECTOR = "a.result__url"
 
+# Round 1m: marker (3rd element of an "unresponsive engines" tuple) for a failure of the search BACKEND itself
+# (SearXNG HTTP 429, timeout, ...), as opposed to an engine that was merely unresponsive inside a working SearXNG.
+BACKEND_ERROR_MARKER = "backend_error"
+# A 429 that carries a Retry-After up to this many seconds is retried once; anything longer is not worth blocking a worker.
+MAX_RETRY_AFTER_SECONDS = 10.0
+
 class WebSearchTool(BaseTool):
     name: str = "web_search"
     auth_level: str = "worker"
@@ -99,16 +105,43 @@ class WebSearchTool(BaseTool):
         try:
             results, source, unresponsive_engines = await self._perform_search(query, num_results, engines, time_range, language)
 
+            # Round 1m: failures of the search BACKEND itself are tagged by _perform_search.
+            backend_failures = [
+                e for e in (unresponsive_engines or [])
+                if isinstance(e, (list, tuple)) and len(e) >= 3 and e[2] == BACKEND_ERROR_MARKER
+            ]
+            backend_reasons = "; ".join(f"{e[0]}: {e[1]}" for e in backend_failures)
+
             if results is None:
                 return {
                     "status": "error", 
-                    "message": f"Failed to retrieve search results for query: '{query}'",
+                    "message": f"Failed to retrieve search results for query: '{query}'" + (f" ({backend_reasons})" if backend_reasons else ""),
                     "error_type": "execution_error",
                     "suggestions": [
                         "Try a different search query",
                         "Check your internet connection",
                         "Wait a moment and try again"
                     ]
+                }
+
+            if not results and backend_failures:
+                # Round 1m: before, this case was reported as "No search results found" (status success), so the model
+                # rewrote the query and tried again, burning cycles until the worker was forced into the report state.
+                logger.warning(f"Agent {agent_id}: web search unavailable ({backend_reasons}) and the DuckDuckGo fallback returned nothing for '{query[:80]}'.")
+                return {
+                    "status": "error",
+                    "message": (
+                        f"Web search is unavailable right now ({backend_reasons}) and the DuckDuckGo fallback returned nothing "
+                        f"for query: '{query}'. The search service is failing, not your query: do NOT repeat this search or a "
+                        "reworded one right away. Use zim_search or knowledge_base for reference material, or continue with "
+                        "your own knowledge and state in your report that web research was unavailable."
+                    ),
+                    "error_type": "search_backend_unavailable",
+                    "suggestions": [
+                        "Do not repeat the same search right away",
+                        "Use zim_search or knowledge_base for reference material",
+                        "Continue with your own knowledge and say in your report that web research was unavailable",
+                    ],
                 }
 
             if not results:
@@ -164,10 +197,40 @@ class WebSearchTool(BaseTool):
                 ]
             }
 
+    @staticmethod
+    def _retry_after_seconds(value: Optional[str]) -> Optional[float]:
+        """Parses a numeric Retry-After header; returns None when absent or not a plain number of seconds."""
+        if value is None:
+            return None
+        try:
+            seconds = float(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        return seconds if seconds >= 0 else None
+
+    async def _searxng_request(self, search_url: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """GET the SearXNG JSON API. A 429 that carries a short Retry-After is retried once; every other HTTP error
+        status is raised (aiohttp.ClientResponseError) for the caller to report."""
+        for attempt in (1, 2):
+            async with aiohttp.ClientSession() as session:
+                async with session.get(search_url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                    if response.status == 429 and attempt == 1:
+                        wait = self._retry_after_seconds(response.headers.get("Retry-After"))
+                        if wait is not None and wait <= MAX_RETRY_AFTER_SECONDS:
+                            logger.info(f"SearXNG answered 429 with Retry-After={wait:g}s: retrying once.")
+                            await asyncio.sleep(wait)
+                            continue
+                    response.raise_for_status()
+                    return await response.json()
+        raise RuntimeError("unreachable")  # pragma: no cover - the loop always returns or raises
+
     async def _perform_search(self, query: str, num_results: int, engines: Optional[str] = None, time_range: Optional[str] = None, language: str = "en") -> Tuple[Optional[List[Dict[str, Any]]], str, List[Any]]:
+        # Failures of the SearXNG backend itself are collected here as (name, reason, BACKEND_ERROR_MARKER) tuples and
+        # returned in the third slot, so execute() can tell "backend broken" apart from "backend works, nothing found".
+        backend_failures: List[Any] = []
         if settings.SEARXNG_URL:
+            base_url = settings.SEARXNG_URL.rstrip('/')
             try:
-                base_url = settings.SEARXNG_URL.rstrip('/')
                 search_url = f"{base_url}/search"
                 params = {
                     "q": query,
@@ -177,11 +240,8 @@ class WebSearchTool(BaseTool):
                 if engines: params["engines"] = engines
                 if time_range: params["time_range"] = time_range
 
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(search_url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as response:
-                        response.raise_for_status()
-                        data = await response.json()
-                
+                data = await self._searxng_request(search_url, params)
+
                 results = []
                 # SearXNG returns 'results' list
                 for r in data.get("results", [])[:num_results]:
@@ -192,11 +252,21 @@ class WebSearchTool(BaseTool):
                     })
                 unresponsive = data.get("unresponsive_engines", [])
                 return results, "SearXNG API", unresponsive
+            except aiohttp.ClientResponseError as e:
+                reason = f"HTTP {e.status} {e.message}".strip()
+                hint = ""
+                if e.status == 429:
+                    hint = " Hint: SearXNG's bot limiter is rejecting this client; for a private instance set server.limiter: false in its settings.yml (or allow this client's IP in limiter.toml)."
+                elif e.status == 403:
+                    hint = " Hint: SearXNG may not allow the JSON format; add json to search.formats in its settings.yml."
+                logger.warning(f"SearXNG API search failed: {reason} ({base_url}); falling back to DuckDuckGo scraping.{hint}")
+                backend_failures.append(("SearXNG API", reason, BACKEND_ERROR_MARKER))
             except Exception as e:
                 logger.error(f"SearXNG API search failed: {e}", exc_info=True)
+                backend_failures.append(("SearXNG API", f"{type(e).__name__}: {e}"[:160], BACKEND_ERROR_MARKER))
                 # Fallback to scraping if SearXNG fails
 
-        return await self._search_with_scraping(query, num_results), "DuckDuckGo Scraping", []
+        return await self._search_with_scraping(query, num_results), "DuckDuckGo Scraping", backend_failures
 
     async def _search_with_scraping(self, query: str, num_results: int) -> Optional[List[Dict]]:
         encoded_query = urllib.parse.quote_plus(query)

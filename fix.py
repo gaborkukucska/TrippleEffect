@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
 """
-TrippleEffect: Round 1l Surgical Fix  (src/tools/project_management.py)
+TrippleEffect: Round 1m Surgical Fix  (src/tools/web_search.py)
 
-Rounds 1g-1k are assumed applied (this patch needs the Round 1i/1j state of project_management.py).
+OBSERVED (2026-10-15 15:32-15:45, Temp_Convert_CLI run): every SearXNG request answered HTTP 429 and the DuckDuckGo
+fallback returned nothing, yet web_search answered "No search results found" with status success. The worker (W1)
+rewrote the query and tried again five times; every empty answer counted as a failed cycle, so after three of them the
+framework forced W1 into worker_report (twice) before it had done any research. A search service that is down looks
+exactly like "your query found nothing", and a 4B model cannot tell the two apart unless the tool says so.
 
-OBSERVED (2026-10-15 15:02:47, Temp_Convert_CLI run): the PM, now in pm_manage, called list_tasks with only
-project_filter, exactly as its prompt instructs ("list all active tasks"). The tool answered
-"Found 0 task(s). (0 completed tasks hidden by default)" although 4 pending tasks were assigned to W1. Cause: for any
-caller that is not a worker (Admin AI, PM) and passes no filter at all, list_tasks silently added
-assignee_filter="unassigned". The prompts also tell the Admin AI to use list_tasks to VERIFY that every task is
-finished before reporting completion, so it could be misled the same way. A PM or Admin that believes there are 0 tasks
-may advance the project phase early or declare the project complete.
-
- 1. list_tasks: no implicit "unassigned" filter. With no filter the Admin AI and the PM now see all pending tasks.
-    Unchanged: explicit assignee_filter / task_progress_filter / tags_filter, completed tasks hidden by default,
-    decomposed parents hidden by default, workers defaulting to their own tasks, and the pm_activate_workers call
-    (it passes explicit filters, and the cycle handler already keeps only unassigned tasks from the result).
- 2. tests/unit/test_round1l.py (new, 7 tests, no Taskwarrior needed). Two of them fail without this fix.
+ 1. web_search: when the SearXNG backend itself fails (HTTP 429/403/5xx, timeout, ...) AND the DuckDuckGo fallback also
+    returns nothing, the tool now returns status "error" / error_type "search_backend_unavailable" with the reason and
+    an instruction not to repeat the search (use zim_search / knowledge_base or continue and say so in the report).
+    If DuckDuckGo does return results, they are used exactly as before.
+ 2. A 429 that carries a short numeric Retry-After (<= 10 s) is retried once. Anything else is not retried.
+ 3. The log line for an HTTP error from SearXNG is now one WARNING with a hint (429: set server.limiter: false in the
+    SearXNG settings.yml for a private instance; 403: enable json in search.formats) instead of an ERROR with a full
+    traceback. Unexpected exceptions still log the traceback.
+ Unchanged: a working SearXNG that simply finds nothing still answers "No search results found" (status success), the
+ "unresponsive engines" note, SearXNG results, get_page, parameter validation. Public signatures are unchanged
+ (_perform_search still returns (results, source, unresponsive_list)).
+ 4. tests/unit/test_round1m.py (new, 18 tests, local fake SearXNG/DuckDuckGo server, no real network). 13 fail without
+    this fix.
 
 Usage:
     python3 fix.py --dry-run
@@ -30,134 +34,355 @@ import sys
 from pathlib import Path
 
 ROOT = Path.cwd()
-PM = "src/tools/project_management.py"
+WS = "src/tools/web_search.py"
 
 PATCHES = [
     {
-        "file": PM,
-        "find": r'''            has_filters = any([
-                kwargs.get("task_progress_filter"),
-                kwargs.get("status_filter"),
-                kwargs.get("assignee_filter"),
-                kwargs.get("tags_filter")
-            ])
-            if not has_filters and agent_id and not self._is_worker_agent(agent_id):
-                # PM must always specify filtering. List yet unassigned tasks by default when no filter is provided.
-                kwargs["assignee_filter"] = "unassigned"
+        "file": WS,
+        "find": r'''URL_SELECTOR = "a.result__url"
 ''',
-        "replace": r'''            # Round 1l: callers that pass no filter get ALL pending tasks. (Before, the Admin AI and the PM silently
-            # got only UNASSIGNED tasks, so "Found 0 task(s)" hid every task that was already assigned to a worker.)
-            # Workers still default to their own tasks below; explicit filters behave exactly as before.
+        "replace": r'''URL_SELECTOR = "a.result__url"
+
+# Round 1m: marker (3rd element of an "unresponsive engines" tuple) for a failure of the search BACKEND itself
+# (SearXNG HTTP 429, timeout, ...), as opposed to an engine that was merely unresponsive inside a working SearXNG.
+BACKEND_ERROR_MARKER = "backend_error"
+# A 429 that carries a Retry-After up to this many seconds is retried once; anything longer is not worth blocking a worker.
+MAX_RETRY_AFTER_SECONDS = 10.0
+''',
+    },
+    {
+        "file": WS,
+        "find": r'''            results, source, unresponsive_engines = await self._perform_search(query, num_results, engines, time_range, language)
+''',
+        "replace": r'''            results, source, unresponsive_engines = await self._perform_search(query, num_results, engines, time_range, language)
+
+            # Round 1m: failures of the search BACKEND itself are tagged by _perform_search.
+            backend_failures = [
+                e for e in (unresponsive_engines or [])
+                if isinstance(e, (list, tuple)) and len(e) >= 3 and e[2] == BACKEND_ERROR_MARKER
+            ]
+            backend_reasons = "; ".join(f"{e[0]}: {e[1]}" for e in backend_failures)
+''',
+    },
+    {
+        "file": WS,
+        "find": r'''                    "message": f"Failed to retrieve search results for query: '{query}'",
+''',
+        "replace": r'''                    "message": f"Failed to retrieve search results for query: '{query}'" + (f" ({backend_reasons})" if backend_reasons else ""),
+''',
+    },
+    {
+        "file": WS,
+        "find": r'''            if not results:
+                suggestions = [
+''',
+        "replace": r'''            if not results and backend_failures:
+                # Round 1m: before, this case was reported as "No search results found" (status success), so the model
+                # rewrote the query and tried again, burning cycles until the worker was forced into the report state.
+                logger.warning(f"Agent {agent_id}: web search unavailable ({backend_reasons}) and the DuckDuckGo fallback returned nothing for '{query[:80]}'.")
+                return {
+                    "status": "error",
+                    "message": (
+                        f"Web search is unavailable right now ({backend_reasons}) and the DuckDuckGo fallback returned nothing "
+                        f"for query: '{query}'. The search service is failing, not your query: do NOT repeat this search or a "
+                        "reworded one right away. Use zim_search or knowledge_base for reference material, or continue with "
+                        "your own knowledge and state in your report that web research was unavailable."
+                    ),
+                    "error_type": "search_backend_unavailable",
+                    "suggestions": [
+                        "Do not repeat the same search right away",
+                        "Use zim_search or knowledge_base for reference material",
+                        "Continue with your own knowledge and say in your report that web research was unavailable",
+                    ],
+                }
+
+            if not results:
+                suggestions = [
+''',
+    },
+    {
+        "file": WS,
+        "find": r'''    async def _perform_search(self, query: str, num_results: int, engines: Optional[str] = None, time_range: Optional[str] = None, language: str = "en") -> Tuple[Optional[List[Dict[str, Any]]], str, List[Any]]:
+        if settings.SEARXNG_URL:
+            try:
+                base_url = settings.SEARXNG_URL.rstrip('/')
+                search_url = f"{base_url}/search"
+                params = {
+                    "q": query,
+                    "format": settings.SEARXNG_FORMAT,
+                    "language": language,
+                }
+                if engines: params["engines"] = engines
+                if time_range: params["time_range"] = time_range
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(search_url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                        response.raise_for_status()
+                        data = await response.json()
+                
+                results = []
+                # SearXNG returns 'results' list
+                for r in data.get("results", [])[:num_results]:
+                    results.append({
+                        "title": r.get("title", "N/A"),
+                        "url": r.get("url", "N/A"),
+                        "snippet": r.get("content", "N/A")
+                    })
+                unresponsive = data.get("unresponsive_engines", [])
+                return results, "SearXNG API", unresponsive
+            except Exception as e:
+                logger.error(f"SearXNG API search failed: {e}", exc_info=True)
+                # Fallback to scraping if SearXNG fails
+
+        return await self._search_with_scraping(query, num_results), "DuckDuckGo Scraping", []
+''',
+        "replace": r'''    @staticmethod
+    def _retry_after_seconds(value: Optional[str]) -> Optional[float]:
+        """Parses a numeric Retry-After header; returns None when absent or not a plain number of seconds."""
+        if value is None:
+            return None
+        try:
+            seconds = float(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        return seconds if seconds >= 0 else None
+
+    async def _searxng_request(self, search_url: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """GET the SearXNG JSON API. A 429 that carries a short Retry-After is retried once; every other HTTP error
+        status is raised (aiohttp.ClientResponseError) for the caller to report."""
+        for attempt in (1, 2):
+            async with aiohttp.ClientSession() as session:
+                async with session.get(search_url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                    if response.status == 429 and attempt == 1:
+                        wait = self._retry_after_seconds(response.headers.get("Retry-After"))
+                        if wait is not None and wait <= MAX_RETRY_AFTER_SECONDS:
+                            logger.info(f"SearXNG answered 429 with Retry-After={wait:g}s: retrying once.")
+                            await asyncio.sleep(wait)
+                            continue
+                    response.raise_for_status()
+                    return await response.json()
+        raise RuntimeError("unreachable")  # pragma: no cover - the loop always returns or raises
+
+    async def _perform_search(self, query: str, num_results: int, engines: Optional[str] = None, time_range: Optional[str] = None, language: str = "en") -> Tuple[Optional[List[Dict[str, Any]]], str, List[Any]]:
+        # Failures of the SearXNG backend itself are collected here as (name, reason, BACKEND_ERROR_MARKER) tuples and
+        # returned in the third slot, so execute() can tell "backend broken" apart from "backend works, nothing found".
+        backend_failures: List[Any] = []
+        if settings.SEARXNG_URL:
+            base_url = settings.SEARXNG_URL.rstrip('/')
+            try:
+                search_url = f"{base_url}/search"
+                params = {
+                    "q": query,
+                    "format": settings.SEARXNG_FORMAT,
+                    "language": language,
+                }
+                if engines: params["engines"] = engines
+                if time_range: params["time_range"] = time_range
+
+                data = await self._searxng_request(search_url, params)
+
+                results = []
+                # SearXNG returns 'results' list
+                for r in data.get("results", [])[:num_results]:
+                    results.append({
+                        "title": r.get("title", "N/A"),
+                        "url": r.get("url", "N/A"),
+                        "snippet": r.get("content", "N/A")
+                    })
+                unresponsive = data.get("unresponsive_engines", [])
+                return results, "SearXNG API", unresponsive
+            except aiohttp.ClientResponseError as e:
+                reason = f"HTTP {e.status} {e.message}".strip()
+                hint = ""
+                if e.status == 429:
+                    hint = " Hint: SearXNG's bot limiter is rejecting this client; for a private instance set server.limiter: false in its settings.yml (or allow this client's IP in limiter.toml)."
+                elif e.status == 403:
+                    hint = " Hint: SearXNG may not allow the JSON format; add json to search.formats in its settings.yml."
+                logger.warning(f"SearXNG API search failed: {reason} ({base_url}); falling back to DuckDuckGo scraping.{hint}")
+                backend_failures.append(("SearXNG API", reason, BACKEND_ERROR_MARKER))
+            except Exception as e:
+                logger.error(f"SearXNG API search failed: {e}", exc_info=True)
+                backend_failures.append(("SearXNG API", f"{type(e).__name__}: {e}"[:160], BACKEND_ERROR_MARKER))
+                # Fallback to scraping if SearXNG fails
+
+        return await self._search_with_scraping(query, num_results), "DuckDuckGo Scraping", backend_failures
 ''',
     },
 ]
 
 NEW_FILES = {
-    "tests/unit/test_round1l.py": r'''"""Round 1l tests: list_tasks must not silently hide ASSIGNED tasks from the Admin AI / Project Manager.
+    "tests/unit/test_round1m.py": r'''"""Round 1m tests: web_search must say so when the search BACKEND is failing.
 
-Observed 2026-10-15 15:02:47: the PM (pm_manage) called list_tasks with only project_filter, as its prompt tells it to,
-and got "Found 0 task(s)" although 4 pending tasks were assigned to W1. The tool had added an invisible
-assignee_filter="unassigned" for non-worker callers. A PM that believes there are 0 tasks may advance the project
-phase early or declare it complete.
+Observed 2026-10-15 15:32-15:45 (Temp_Convert_CLI run): every SearXNG request answered HTTP 429, the DuckDuckGo
+fallback returned nothing, and the tool reported "No search results found" with status success. The worker rewrote the
+query and tried again (five times), and each empty answer counted as a failed cycle until the framework forced the
+worker into the report state - twice - before it had done any research.
+
+These tests run a tiny local HTTP server that plays SearXNG and DuckDuckGo; no real network is used.
 """
 import asyncio
 
+import pytest
+from aiohttp import web
+
 import src.agents  # noqa: F401 - resolves pre-existing circular import order
-import src.tools.project_management as pm
+import src.tools.web_search as ws
+
+DDG_HTML_WITH_RESULT = """<html><body>
+<div class="result">
+  <h2 class="result__title"><a class="result__a" href="https://example.org/f">Fahrenheit formula</a></h2>
+  <a class="result__snippet">F = C * 9/5 + 32</a>
+  <a class="result__url">example.org/f</a>
+</div></body></html>"""
+DDG_HTML_EMPTY = "<html><body><p>nothing here</p></body></html>"
 
 
-class FakeTask:
-    def __init__(self, uuid, assignee=None, progress="todo", status="pending", tags=(), depends=()):
-        self._d = {"uuid": uuid, "assignee": assignee, "task_progress": progress, "status": status,
-                   "tags": list(tags), "depends": list(depends), "description": f"task {uuid}", "project": "P"}
+def run_search(monkeypatch, *, searxng, ddg, query="temp formula", configure_searxng=True, ddg_reachable=True):
+    """searxng / ddg: handler(request, hits) -> web.Response. Returns (result_dict, hits)."""
+    hits = {"searxng": 0, "ddg": 0}
 
-    def __getitem__(self, key):
-        return self._d[key]
+    async def go():
+        app = web.Application()
 
+        async def searxng_h(request):
+            hits["searxng"] += 1
+            return searxng(request, hits)
 
-class FakeQuery:
-    def __init__(self, tasks):
-        self._tasks = list(tasks)
+        async def ddg_h(request):
+            hits["ddg"] += 1
+            return ddg(request, hits)
 
-    def filter(self, **kw):
-        out = self._tasks
-        for k, v in kw.items():
-            out = [t for t in out if t[k] == v]
-        return FakeQuery(out)
+        app.router.add_get("/search", searxng_h)
+        app.router.add_get("/ddg", ddg_h)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        base = f"http://127.0.0.1:{port}"
+        monkeypatch.setattr(ws.settings, "SEARXNG_URL", base if configure_searxng else "", raising=False)
+        monkeypatch.setattr(ws.settings, "SEARXNG_FORMAT", "json", raising=False)
+        ddg_base = base if ddg_reachable else "http://127.0.0.1:1"
+        monkeypatch.setattr(ws, "SEARCH_URL_TEMPLATE", ddg_base + "/ddg?q={query}")
+        try:
+            return await ws.WebSearchTool().execute("W1", query=query)
+        finally:
+            await runner.cleanup()
 
-    def pending(self):
-        return FakeQuery([t for t in self._tasks if t["status"] == "pending"])
-
-    def completed(self):
-        return FakeQuery([t for t in self._tasks if t["status"] == "completed"])
-
-    def all(self):
-        return FakeQuery(self._tasks)
-
-    def __iter__(self):
-        return iter(self._tasks)
-
-    def __len__(self):
-        return len(self._tasks)
-
-
-class FakeTW:
-    def __init__(self, tasks):
-        self.tasks = FakeQuery(tasks)
+    return asyncio.run(go()), hits
 
 
-def run(agent_id, tasks, **kwargs):
-    tool = pm.ProjectManagementTool()
-    return asyncio.run(tool._execute_list_tasks(FakeTW(tasks), agent_id, dict(kwargs)))
+def too_many(request, hits):
+    return web.Response(status=429, text="Too Many Requests")
 
 
-def sample():
-    return [
-        FakeTask("u1", assignee="W1", progress="in_progress"),
-        FakeTask("u2", assignee="W1"),
-        FakeTask("u3", assignee=None),
-        FakeTask("u4", assignee="W2", status="completed", progress="finished"),
-    ]
+def ok_json(results, unresponsive=()):
+    def h(request, hits):
+        return web.json_response({"results": results, "unresponsive_engines": list(unresponsive)})
+    return h
 
 
-def uuids(result):
-    return sorted(t["uuid"] for t in result["tasks"])
+def ddg_page(html):
+    def h(request, hits):
+        return web.Response(text=html, content_type="text/html")
+    return h
 
 
-def test_pm_without_filters_sees_assigned_pending_tasks():
-    r = run("PM1", sample(), project_filter="P")
-    assert uuids(r) == ["u1", "u2", "u3"]
+def test_backend_429_and_empty_fallback_is_reported_as_error(monkeypatch):
+    r, hits = run_search(monkeypatch, searxng=too_many, ddg=ddg_page(DDG_HTML_EMPTY))
+    assert r["status"] == "error"
+    assert r["error_type"] == "search_backend_unavailable"
+    assert "429" in r["message"]
+    assert "No search results found" not in r["message"]
+    assert "do NOT repeat" in r["message"]
+    assert hits["searxng"] == 1  # no Retry-After header -> no retry
 
 
-def test_admin_without_filters_sees_assigned_pending_tasks():
-    r = run("admin_ai", sample(), project_filter="P")
-    assert uuids(r) == ["u1", "u2", "u3"]
+def test_backend_429_falls_back_to_duckduckgo_results(monkeypatch):
+    r, hits = run_search(monkeypatch, searxng=too_many, ddg=ddg_page(DDG_HTML_WITH_RESULT))
+    assert r["status"] == "success"
+    assert r["source"] == "DuckDuckGo Scraping"
+    assert len(r["results"]) == 1 and r["results"][0]["title"] == "Fahrenheit formula"
 
 
-def test_explicit_unassigned_filter_still_works():
-    r = run("PM1", sample(), project_filter="P", assignee_filter="unassigned")
-    assert uuids(r) == ["u3"]
+def test_working_searxng_with_results_is_unchanged(monkeypatch):
+    res = [{"title": "T", "url": "https://x.org", "content": "snippet"}]
+    r, hits = run_search(monkeypatch, searxng=ok_json(res), ddg=ddg_page(DDG_HTML_EMPTY))
+    assert r["status"] == "success" and r["source"] == "SearXNG API"
+    assert r["results"][0]["snippet"] == "snippet"
+    assert hits["ddg"] == 0
 
 
-def test_explicit_assignee_filter_still_works():
-    r = run("PM1", sample(), project_filter="P", assignee_filter="W1")
-    assert uuids(r) == ["u1", "u2"]
+def test_working_searxng_with_zero_results_is_still_plain_no_results(monkeypatch):
+    r, hits = run_search(monkeypatch, searxng=ok_json([]), ddg=ddg_page(DDG_HTML_EMPTY))
+    assert r["status"] == "success"
+    assert r["message"].startswith("No search results found")
+    assert r["results"] == []
 
 
-def test_activate_workers_style_call_is_unchanged():
-    r = run("PM1", sample(), project_filter="P", task_progress_filter="todo", tags_filter_mode="exclude", tags_filter="assigned")
-    assert uuids(r) == ["u3"]
+def test_unresponsive_engines_inside_working_searxng_keep_the_old_note(monkeypatch):
+    r, hits = run_search(monkeypatch, searxng=ok_json([], unresponsive=[["google", "CAPTCHA"], ["bing", "timeout", True]]),
+                         ddg=ddg_page(DDG_HTML_EMPTY))
+    assert r["status"] == "success"
+    assert "google (CAPTCHA)" in r["message"]
 
 
-def test_worker_still_defaults_to_its_own_tasks():
-    r = run("W1", sample(), project_filter="P")
-    assert uuids(r) == ["u1", "u2"]
+def test_no_searxng_configured_and_empty_duckduckgo_is_plain_no_results(monkeypatch):
+    r, hits = run_search(monkeypatch, searxng=too_many, ddg=ddg_page(DDG_HTML_EMPTY), configure_searxng=False)
+    assert r["status"] == "success"
+    assert r["message"].startswith("No search results found")
+    assert hits["searxng"] == 0
 
 
-def test_completed_tasks_stay_hidden_by_default():
-    r = run("PM1", sample(), project_filter="P")
-    assert "u4" not in uuids(r)
-    assert "1 completed" in r["message"]
+def test_short_retry_after_is_honoured_exactly_once(monkeypatch):
+    def flaky(request, hits):
+        if hits["searxng"] == 1:
+            return web.Response(status=429, headers={"Retry-After": "0"}, text="slow down")
+        return web.json_response({"results": [{"title": "T", "url": "https://x.org", "content": "c"}]})
+
+    r, hits = run_search(monkeypatch, searxng=flaky, ddg=ddg_page(DDG_HTML_EMPTY))
+    assert r["status"] == "success" and r["source"] == "SearXNG API"
+    assert hits["searxng"] == 2
+
+
+def test_long_retry_after_is_not_waited_for(monkeypatch):
+    def limited(request, hits):
+        return web.Response(status=429, headers={"Retry-After": "3600"}, text="later")
+
+    r, hits = run_search(monkeypatch, searxng=limited, ddg=ddg_page(DDG_HTML_EMPTY))
+    assert r["status"] == "error" and r["error_type"] == "search_backend_unavailable"
+    assert hits["searxng"] == 1
+
+
+def test_retry_after_is_only_retried_once(monkeypatch):
+    def limited(request, hits):
+        return web.Response(status=429, headers={"Retry-After": "0"}, text="still no")
+
+    r, hits = run_search(monkeypatch, searxng=limited, ddg=ddg_page(DDG_HTML_EMPTY))
+    assert r["status"] == "error"
+    assert hits["searxng"] == 2
+
+
+@pytest.mark.parametrize("value,expected", [(None, None), ("3", 3.0), (" 2.5 ", 2.5), ("-1", None),
+                                           ("Wed, 21 Oct 2026 07:28:00 GMT", None), ("", None), ("abc", None)])
+def test_retry_after_parsing(value, expected):
+    assert ws.WebSearchTool._retry_after_seconds(value) == expected
+
+
+def test_both_backends_failing_hard_mentions_the_searxng_reason(monkeypatch):
+    r, hits = run_search(monkeypatch, searxng=too_many, ddg=ddg_page(DDG_HTML_EMPTY), ddg_reachable=False)
+    assert r["status"] == "error"
+    assert "Failed to retrieve search results" in r["message"]
+    assert "429" in r["message"]
+
+
+def test_searxng_server_error_is_also_a_backend_failure(monkeypatch):
+    def boom(request, hits):
+        return web.Response(status=503, text="down")
+
+    r, hits = run_search(monkeypatch, searxng=boom, ddg=ddg_page(DDG_HTML_EMPTY))
+    assert r["status"] == "error" and r["error_type"] == "search_backend_unavailable"
+    assert "503" in r["message"]
 ''',
 }
 
@@ -222,7 +447,7 @@ def apply_patches(dry_run: bool) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Apply TrippleEffect Round 1l fixes.")
+    ap = argparse.ArgumentParser(description="Apply TrippleEffect Round 1m fixes.")
     ap.add_argument("--dry-run", action="store_true", help="Show diffs only; do not write any files.")
     args = ap.parse_args()
     if not (ROOT / "src").is_dir():
