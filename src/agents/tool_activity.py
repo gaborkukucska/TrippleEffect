@@ -132,4 +132,22 @@ def written_code_files(history: Iterable[Dict[str, Any]], limit: int = 5) -> Lis
             if path not in found:
                 found.append(path)
     return found[:limit]
+
+# Strong assertions that the WHOLE project is finished. Same pattern the Admin raw-response gate has always used.
+# The final_response gate used to block any text containing "complete"/"finished"/"done" AND the word "project": Admin's
+# "Kick-off complete! ... Proceed with Phase 1 from PROJECT_PLAN.md" (2026-10-15 18:54:35) matched, was blocked, and sent
+# Admin into 8 pointless "work" cycles (about 17 minutes of the 2 shared LLM slots).
+import re as _re
+
+_PROJECT_COMPLETE_CLAIM_RE = _re.compile(
+    r"\b(project\s+is\s+(complete|finished|done)|all\s+tasks\s+(are\s+)?(complete|finished|done)"
+    r"|project\s+completed|finished\s+(the\s+)?project)\b"
+)
+
+
+def claims_project_complete(text: Optional[str]) -> bool:
+    """True if the text strongly asserts that the whole project is complete."""
+    return bool(text) and _PROJECT_COMPLETE_CLAIM_RE.search(str(text).lower()) is not None
+
+
 # END OF FILE src/agents/tool_activity.py

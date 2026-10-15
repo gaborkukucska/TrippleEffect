@@ -1112,6 +1112,19 @@ Pushes changes to a remote repository.
             success_msg = f"Successfully wrote content to '{filename}' in {scope_description}."
             if replace_empty_dir:
                 success_msg += " (Framework note: an empty directory with this name was in the way and has been replaced by your file.)"
+            if filename.endswith('.py'):
+                # Round 1o: non-blocking hints about defects the syntax check cannot see (missing imports, docstring-only functions).
+                try:
+                    from src.tools.python_static_check import python_code_notes
+                    code_notes = python_code_notes(content)
+                except Exception as note_err:
+                    logger.debug(f"Agent {agent_id}: python_code_notes failed for '{filename}': {note_err}")
+                    code_notes = []
+                if code_notes:
+                    success_msg += (
+                        "\n[Framework check - the file WAS saved, but please fix:]\n- " + "\n- ".join(code_notes)
+                        + "\nUse 'find_replace' or 'insert_lines' for small fixes; do not resend the whole file."
+                    )
             return {"status": "success", "message": success_msg}
         except FileExistsError:
             logger.warning(f"Agent {agent_id} attempted to write file '{filename}' but a parent path exists as a file."); return {"status": "error", "message": f"Cannot write to '{filename}': A parent path already exists but is a FILE, not a directory. Did you previously use 'write' instead of 'mkdir' to create a directory?"}

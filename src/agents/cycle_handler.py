@@ -41,7 +41,7 @@ from src.agents.cycle_components.json_validator import JSONValidator  # type: ig
 from src.agents.cycle_components.context_summarizer import ContextSummarizer  # type: ignore[import]
 
 from src.workflows.base import WorkflowResult  # type: ignore[import]
-from src.agents.tool_activity import is_tool_result_failure  # type: ignore[import]
+from src.agents.tool_activity import is_tool_result_failure, claims_project_complete  # type: ignore[import]
 
 if TYPE_CHECKING:
     from src.agents.manager import AgentManager  # type: ignore[import]
@@ -2427,7 +2427,8 @@ class AgentCycleHandler:
                             # --- START ADMIN FINAL_RESPONSE HARD GATE (mirrors agent_raw_response gate) ---
                             if agent.agent_id == BOOTSTRAP_AGENT_ID and final_content:
                                 lower_fc = final_content.lower()
-                                if ("complete" in lower_fc or "finished" in lower_fc or "done" in lower_fc) and "project" in lower_fc:
+                                # Round 1o: only a strong claim that the WHOLE project is complete is gated (see tool_activity).
+                                if claims_project_complete(lower_fc):
                                     try:
                                         if self._manager.current_project and self._manager.current_session:
                                             from src.tools.project_management import ProjectManagementTool, TASKLIB_AVAILABLE
