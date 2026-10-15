@@ -508,25 +508,14 @@ class AgentWorkflowManager:
                                     break
                         
                         if not visited_test:
-                            # Scan recent message history for evidence of code file operations
-                            produced_code = False
-                            code_files_found = []
-                            for msg in agent.message_history:
-                                content = str(msg.get("content", ""))
-                                # Check tool results for file_system write or code_editor operations
-                                if msg.get("role") in ("assistant", "tool"):
-                                    for ext in CODE_EXTENSIONS:
-                                        if ext in content.lower():
-                                            # Look for patterns like "File written: foo.js" or "path: game.py"
-                                            import re as _re
-                                            file_pattern = _re.findall(r'[\w/\\.-]+' + _re.escape(ext) + r'\b', content, _re.IGNORECASE)
-                                            if file_pattern:
-                                                code_files_found.extend(file_pattern[:3])  # Limit to avoid noise
-                                                produced_code = True
-                            
+                            # Round 1n: only SUCCESSFUL write-type tool calls (file_system write/append/edit, code_editor) count as
+                            # evidence. This used to scan every message for any file name with a code extension, so just READING
+                            # PROJECT_STRUCTURE.md (which lists planned code files) made the framework tell the worker it had written code.
+                            from src.agents.tool_activity import written_code_files
+                            code_files_found = written_code_files(agent.message_history)
+                            produced_code = bool(code_files_found)
+
                             if produced_code:
-                                # Deduplicate file list
-                                code_files_found = list(set(code_files_found))[:5]
                                 nudge_msg = (
                                     f"[Framework Testing Reminder]: You appear to have created/modified code files "
                                     f"({', '.join(code_files_found)}) but are going directly to REPORT without testing. "

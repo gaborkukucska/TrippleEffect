@@ -41,6 +41,7 @@ from src.agents.cycle_components.json_validator import JSONValidator  # type: ig
 from src.agents.cycle_components.context_summarizer import ContextSummarizer  # type: ignore[import]
 
 from src.workflows.base import WorkflowResult  # type: ignore[import]
+from src.agents.tool_activity import is_tool_result_failure  # type: ignore[import]
 
 if TYPE_CHECKING:
     from src.agents.manager import AgentManager  # type: ignore[import]
@@ -1907,20 +1908,10 @@ class AgentCycleHandler:
                                 # NEW: Append tool result to text format for assistant message
                                 tool_results_text += f"\n\n[Tool Result: {tool_name}]\n{result_content_str}"
                                 
-                                tool_was_successful = True # Assume success by default
-                                try:
-                                    # Attempt to parse the content as JSON. This handles tools that
-                                    # return structured results (like file_system will).
-                                    tool_result_data = json.loads(result_content_str)
-                                    if isinstance(tool_result_data, dict) and tool_result_data.get("status") == "error":
-                                        tool_was_successful = False
-                                except (json.JSONDecodeError, TypeError):
-                                    # If it's not valid JSON, fall back to string checks for compatibility.
-                                    # Check for both "error" and "failed" — tool failures return
-                                    # "[Tool Execution Failed]" which doesn't contain "error".
-                                    result_lower = result_content_str.lower()
-                                    if "error" in result_lower or "[tool execution failed]" in result_lower:
-                                        tool_was_successful = False
+                                # Round 1n: classified by tool_activity.is_tool_result_failure(). The old rule (ANY non-JSON result that
+                                # contains the word "error" is a failure) turned successful file reads ("... error handling ...") and empty
+                                # searches ("Check for spelling errors") into failed cycles; three in a row forced the worker into report.
+                                tool_was_successful = not is_tool_result_failure(tool_name, result_content_str)
 
                                 if tool_was_successful:
                                     any_tool_success = True

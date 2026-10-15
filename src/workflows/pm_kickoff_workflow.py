@@ -378,6 +378,8 @@ class PMKickoffWorkflow(BaseWorkflow):
             logger.warning(f"PMKickoffWorkflow: Failed to mark initial project task as decomposed: {e}")
 
         # --- Create Kickoff Sub-tasks ---
+        created_task_ids: set = set()      # plan ids (aliases) of tasks created in THIS attempt
+        created_task_uuids: List[str] = [] # tasks this attempt really created (not skipped duplicates), for rollback
         for i, task_info in enumerate(task_info_list):
             task_desc = task_info["description"]
             task_tool_args = {
@@ -388,9 +390,18 @@ class PMKickoffWorkflow(BaseWorkflow):
                 "tags": ["kickoff", "pm_decomposed", f"task_order_{i+1}"]
             }
             if task_info.get("id"):
-                task_tool_args["task_id"] = task_info["id"]
+                # Always a string: the task tool only registers an alias for string ids, and a numeric "1" would
+                # otherwise be read as a Taskwarrior row number by later dependencies.
+                task_tool_args["task_id"] = str(task_info["id"]).strip()
             if task_info.get("depends_on"):
-                task_tool_args["depends"] = task_info["depends_on"]
+                # Round 1n: keep only dependencies on tasks created earlier in THIS plan. An invented id such as
+                # "temp_structure_init" (observed 2026-10-15 15:17:54) used to make the task tool fail, which failed the
+                # whole kickoff after two tasks already existed; the retry then created a second, different set.
+                kept_deps, dropped_deps = self._sanitize_kickoff_dependencies(task_info["depends_on"], created_task_ids)
+                if dropped_deps:
+                    logger.warning(f"PMKickoffWorkflow: Dropped unknown dependency id(s) {dropped_deps} for task '{task_desc[:60]}' (not tasks created earlier in this plan).")
+                if kept_deps:
+                    task_tool_args["depends"] = ",".join(kept_deps)
             try:
                 logger.debug(f"PMKickoffWorkflow: Attempting to create task via ToolExecutor: {task_tool_args}")
                 task_result = await manager.tool_executor.execute_tool(
@@ -407,6 +418,12 @@ class PMKickoffWorkflow(BaseWorkflow):
                     task_id = task_result.get("task_id", "N/A")
                     task_uuid = task_result.get("task_uuid", "N/A")
                     created_tasks_info.append(f"Task '{task_desc[:30]}...' (ID: {task_id}, UUID: {task_uuid})")
+                    if task_info.get("id"):
+                        created_task_ids.add(str(task_info["id"]).strip())
+                    # The task tool answers "success" for a skipped near-duplicate and returns the EXISTING task's uuid:
+                    # that task is not ours and must never be rolled back.
+                    if "skipped to prevent duplication" not in str(task_result.get("message", "")).lower() and task_uuid != "N/A":
+                        created_task_uuids.append(str(task_uuid))
                     logger.info(f"PMKickoffWorkflow: Successfully created task (ID: {task_id}): {task_desc}")
                 else:
                     all_tasks_created_successfully = False
@@ -566,7 +583,12 @@ class PMKickoffWorkflow(BaseWorkflow):
                 tasks_to_schedule=[(agent, 0)]
             )
         else:
+            # Round 1n: the PM will resubmit the whole plan after a failure. Remove what this attempt created, otherwise
+            # the retry (usually with different task wording) leaves duplicates behind.
+            removed_count = self._rollback_created_tasks(project_context, manager.current_session, created_task_uuids)
             error_summary = f"PM '{agent.agent_id}' failed to create some kick-off tasks. Successfully created: {len(created_tasks_info)}. Failed: {len(failed_tasks_info)} - Details: {'; '.join(failed_tasks_info)}"
+            if removed_count:
+                error_summary += f" The {removed_count} task(s) created during this attempt were removed again; submit the COMPLETE kickoff plan again."
             logger.warning(f"PMKickoffWorkflow: Some tasks failed for PM '{agent.agent_id}'. Preparing failure result with reschedule. Summary: {error_summary}")
             return WorkflowResult(
                 success=False,
@@ -577,6 +599,59 @@ class PMKickoffWorkflow(BaseWorkflow):
                 ui_message_data={"type": "error", "agent_id": agent.agent_id, "content": error_summary},
                 tasks_to_schedule=[(agent, 0)] 
             )
+
+    @staticmethod
+    def _sanitize_kickoff_dependencies(raw: Any, created_ids: set) -> Tuple[List[str], List[str]]:
+        """
+        Splits a kickoff task's depends_on (string, comma list, JSON-ish list) into (kept, dropped). Only ids of tasks
+        created earlier in the same plan are kept; anything else (invented ids, Taskwarrior row numbers, stale
+        aliases) is dropped so the task is still created, just without that dependency.
+        """
+        items = [str(x) for x in raw] if isinstance(raw, (list, tuple, set)) else [str(raw)]
+        tokens: List[str] = []
+        for item in items:
+            cleaned = item.replace("[", "").replace("]", "").replace('"', "").replace("'", "")
+            tokens.extend(t.strip() for t in cleaned.split(",") if t.strip())
+        kept: List[str] = []
+        dropped: List[str] = []
+        for token in tokens:
+            if token.lower() in ("none", "null"):
+                continue
+            (kept if token in created_ids else dropped).append(token)
+        return kept, dropped
+
+    def _rollback_created_tasks(self, project_context: Any, session: Any, uuids: List[str]) -> int:
+        """Deletes tasks created by a failed kickoff attempt and their aliases. Returns how many were removed."""
+        if not uuids or not project_context or not session:
+            return 0
+        removed = 0
+        try:
+            from src.tools.project_management import ProjectManagementTool, TASKLIB_AVAILABLE
+            if not TASKLIB_AVAILABLE:
+                return 0
+            pm_tool = ProjectManagementTool()
+            tw = pm_tool._get_taskwarrior_instance(project_context, session)
+            if not tw:
+                return 0
+            for task_uuid in uuids:
+                try:
+                    tw.tasks.get(uuid=task_uuid).delete()
+                    removed += 1
+                except Exception as e:
+                    logger.warning(f"PMKickoffWorkflow: Rollback could not delete task '{task_uuid}': {e}")
+            try:
+                aliases = pm_tool._load_aliases(project_context, session)
+                stale = [name for name, target in aliases.items() if target in set(uuids)]
+                for name in stale:
+                    aliases.pop(name, None)
+                if stale:
+                    pm_tool._save_aliases(project_context, session, aliases)
+            except Exception as e:
+                logger.warning(f"PMKickoffWorkflow: Rollback could not clean task aliases: {e}")
+            logger.warning(f"PMKickoffWorkflow: Rolled back {removed} of {len(uuids)} task(s) created by the failed kickoff attempt.")
+        except Exception as e:
+            logger.warning(f"PMKickoffWorkflow: Rollback of failed kickoff attempt failed: {e}")
+        return removed
 
     def _create_directory_structure(self, planned_dirs: List[str], workspace_path: Path) -> List[str]:
         """

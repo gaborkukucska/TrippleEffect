@@ -210,6 +210,15 @@ class FileSystemTool(BaseTool):
                 return v
         return None
 
+    @staticmethod
+    def _content_required_error(action: str, received: Dict[str, Any]) -> Dict[str, Any]:
+        """Round 1n: say which parameters arrived, so a model that sent the text under another name can correct itself."""
+        names = ", ".join(sorted(str(k) for k in received.keys())) or "(none)"
+        return {
+            "status": "error",
+            "message": f"'content' parameter is required for '{action}'. Received parameters: {names}. Pass the text to write as 'content'.",
+        }
+
     async def execute(
         self,
         agent_id: str,
@@ -228,7 +237,7 @@ class FileSystemTool(BaseTool):
         _fo = self._first_of # Shorthand — preserves empty strings unlike `or`
         filename = _fo(kwargs.get("filename"), kwargs.get("filepath"), kwargs.get("file"), kwargs.get("path"), kwargs.get("file_path"), kwargs.get("file_name"), kwargs.get("target_file"), kwargs.get("name")) # Used by read, write, find_replace, regex_replace
         if isinstance(filename, str): filename = filename.strip()
-        content = _fo(kwargs.get("content"), kwargs.get("text"), kwargs.get("data"), kwargs.get("body"), kwargs.get("code"), kwargs.get("string"), kwargs.get("content_str")) # Used by write, append, insert_lines
+        content = _fo(kwargs.get("content"), kwargs.get("text"), kwargs.get("data"), kwargs.get("body"), kwargs.get("code"), kwargs.get("string"), kwargs.get("content_str"), kwargs.get("message_content"), kwargs.get("file_content"), kwargs.get("contents")) # Used by write, append, insert_lines
         relative_path = _fo(kwargs.get("path"), kwargs.get("filename"), kwargs.get("filepath"), kwargs.get("dir"), kwargs.get("directory"), kwargs.get("folder"), kwargs.get("target_dir")) # Used by list, mkdir, delete, copy, move
         if isinstance(relative_path, str): relative_path = relative_path.strip()
         destination_path = kwargs.get("destination_path") # Used by copy, move
@@ -419,7 +428,7 @@ class FileSystemTool(BaseTool):
                 if not filename: return {"status": "error", "message": "'filename' (or 'filepath') parameter is required for 'write'."}
                 if filename.endswith('/'):
                     return {"status": "error", "message": f"The path '{filename}' appears to be a directory. Please use the 'mkdir' action to create directories."}
-                if content is None: return {"status": "error", "message": "'content' parameter is required for 'write'."}
+                if content is None: return self._content_required_error("write", kwargs)
                 result = await self._write_file(base_path, filename, content, agent_id, scope_description, force_overwrite=kwargs.get('force_overwrite', False))
             elif action == "list":
                 # relative_path default handled above
@@ -436,11 +445,11 @@ class FileSystemTool(BaseTool):
                 result = await self._regex_replace_in_file(base_path, filename, regex_pattern, replace_text, agent_id, scope_description)
             elif action == "append":
                 if not filename: return {"status": "error", "message": "'filename' parameter is required for 'append'."}
-                if content is None: return {"status": "error", "message": "'content' parameter is required for 'append'."}
+                if content is None: return self._content_required_error("append", kwargs)
                 result = await self._append_to_file(base_path, filename, content, agent_id, scope_description)
             elif action == "insert_lines":
                 if not filename: return {"status": "error", "message": "'filename' parameter is required for 'insert_lines'."}
-                if content is None: return {"status": "error", "message": "'content' parameter is required for 'insert_lines'."}
+                if content is None: return self._content_required_error("insert_lines", kwargs)
                 # Support search-based insertion: if insert_line is missing or non-numeric,
                 # check if search/find_text was provided to locate the insertion point.
                 position_kwarg = kwargs.get("position", "after")  # Semantic hint: 'before' or 'after'
@@ -466,7 +475,7 @@ class FileSystemTool(BaseTool):
                 if replace_end_line is None and end_line is not None:
                     replace_end_line = _safe_int(end_line)
                 if replace_start_line is None or replace_end_line is None: return {"status": "error", "message": "'replace_start_line' and 'replace_end_line' parameters are required for 'replace_lines'."}
-                if content is None: return {"status": "error", "message": "'content' parameter is required for 'replace_lines'."}
+                if content is None: return self._content_required_error("replace_lines", kwargs)
                 result = await self._replace_lines_in_file(base_path, filename, replace_start_line, replace_end_line, content, agent_id, scope_description)
             elif action == "search_replace_block":
                 if not filename: return {"status": "error", "message": "'filename' parameter is required for 'search_replace_block'."}
