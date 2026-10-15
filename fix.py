@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """
-TrippleEffect: Round 1j Surgical Fix  (src/tools/project_management.py)
+TrippleEffect: Round 1k Surgical Fix  (static/js/websocket.js, static/js/handlers.js,
+                                       src/agents/cycle_components/next_step_scheduler.py)
 
-Based on the 2026-10-15 10:46 session (Word_Stats_CLI). Rounds 1g, 1h and 1i are assumed applied
-(this patch only needs the original project_management.py structure, not 1i's helpers).
+Rounds 1g-1j are assumed applied (this patch only needs the original structure of the three files above).
 
-OBSERVED: at 10:59:20 the PM called modify_task with task_id 'c273b749-4992-40d2-9a19-b58a1dc327'. The real
-UUID is 'c273b749-4992-40d2-9a19-b58a121dc327': the 4B model dropped characters from the MIDDLE of a UUID it
-had copied. The tool only tried an exact match and a plain prefix match, so the call failed ("Task ... not
-found"), the PM burned another ~1 minute LLM cycle on the retry, and the assignment was delayed.
-
- 1. modify_task and complete_task: when the exact UUID is not found, the task is now also looked up by the
-    FIRST 8 HEX CHARACTERS (the part models copy reliably). Only a UNIQUE match is accepted, so an ambiguous or
-    unknown id still fails exactly as before. The substitution is logged at INFO.
-    (Before, the prefix fallback only ran for ids shorter than 36 characters and used the full text as prefix.)
- 2. tests/unit/test_round1j.py (new; the integration tests use a real Taskwarrior when installed).
+ 1. RECONNECT NOTICE (UI only, no LLM call).  The Admin AI greeting is generated ONCE, at backend start. When the
+    browser reconnects (laptop unlock, sleep, network blip) the page asks the backend for the chat history and
+    REPLAYS it (chat_history_start clears the chat, then every stored message is re-sent), so the old greeting
+    appears to arrive again. The replay is kept (it restores anything that happened while disconnected), but a
+    reconnect now ends with one small system line in the chat: "Reconnected - chat history restored. Welcome back!".
+    It is shown only for a RECONNECT of an already loaded page, never on first load, and costs no model time.
+ 2. worker_decompose NUDGE.  A worker that answers in prose only (no tool call, no state change) while in
+    worker_decompose used to be re-activated with an unchanged history, wasting a full LLM cycle (11:03 run).
+    Now the framework appends a short notice telling it to call project_management add_task or request_state
+    'worker_work'. At most 2 nudges in a row (reset by any tool call), then behaviour is exactly as before.
+ 3. tests/unit/test_round1k.py (new).
 
 Usage:
     python3 fix.py --dry-run
@@ -28,160 +29,165 @@ import sys
 from pathlib import Path
 
 ROOT = Path.cwd()
-PM = "src/tools/project_management.py"
+WS = "static/js/websocket.js"
+HD = "static/js/handlers.js"
+NS = "src/agents/cycle_components/next_step_scheduler.py"
 
 PATCHES = [
-    # ---- 1a. helper ------------------------------------------------------------------------
+    # ---- 1a. websocket.js: reconnect tracking ------------------------------------------------
     {
-        "file": PM,
-        "find": r'''class ProjectManagementTool(BaseTool):
-    name = "project_management"''',
-        "replace": r'''def match_task_by_uuid_prefix(tasks, text: str) -> list:
-    """
-    Resolves a UUID the model has copied imperfectly. Small models often drop or alter characters in the MIDDLE
-    of a UUID but copy the start correctly, so the lookup tries the text as a prefix and then its first 8 hex
-    characters. Returns the matching tasks: one task = success, several = ambiguous (the caller refuses),
-    none = not found.
-    """
-    needle_full = str(text or "").strip().lower()
-    all_tasks = list(tasks)
-    seen = []
-    for needle in (needle_full, needle_full[:8]):
-        if len(needle) < 8 or needle in seen or not re.match(r"^[0-9a-f-]+$", needle):
-            continue
-        seen.append(needle)
-        matches = [t for t in all_tasks if str(t['uuid']).lower().startswith(needle)]
-        if len(matches) == 1:
-            if needle != needle_full:
-                logger.info(f"ProjectManagementTool: Resolved imperfect task id '{text}' to UUID '{matches[0]['uuid']}' by its first 8 characters.")
-            return matches
-        if len(matches) > 1:
-            return matches
-    return []
+        "file": WS,
+        "find": r"""/**
+ * Establishes and manages the WebSocket connection.
+ */
+export const connectWebSocket = () => {""",
+        "replace": r"""// Round 1k: remember whether this page has connected before, so a later onopen is known to be a RECONNECT.
+let hasConnectedBefore = false;
+let welcomeBackPending = false;
 
+/**
+ * Returns true once after a reconnect (used by the chat-history handler to show a one-line notice).
+ */
+export const consumeWelcomeBack = () => {
+    const pending = welcomeBackPending;
+    welcomeBackPending = false;
+    return pending;
+};
 
-class ProjectManagementTool(BaseTool):
-    name = "project_management"''',
+/**
+ * Establishes and manages the WebSocket connection.
+ */
+export const connectWebSocket = () => {""",
     },
-    # ---- 1b. modify_task + complete_task (identical block in both) ---------------------------
     {
-        "file": PM,
-        "count": 2,
-        "find": r'''                        if "exist" in str(get_err) and len(t_id_str) < 36:
-                            matches = [t for t in tw.tasks.all() if t['uuid'].startswith(t_id_str)]''',
-        "replace": r'''                        if "exist" in str(get_err):
-                            matches = match_task_by_uuid_prefix(tw.tasks.all(), t_id_str)''',
+        "file": WS,
+        "find": r"""            state.setIsConnected(true);
+            state.setReconnectDelay(config.INITIAL_RECONNECT_DELAY); // Reset delay""",
+        "replace": r"""            state.setIsConnected(true);
+            if (hasConnectedBefore) welcomeBackPending = true; // Round 1k: this is a reconnect
+            hasConnectedBefore = true;
+            state.setReconnectDelay(config.INITIAL_RECONNECT_DELAY); // Reset delay""",
+    },
+    # ---- 1b. handlers.js: show the notice after the history replay ----------------------------
+    {
+        "file": HD,
+        "find": r"""                console.log("Handler: chat_history_end — scrolling to bottom.");
+                if (DOM.conversationArea) {""",
+        "replace": r"""                console.log("Handler: chat_history_end — scrolling to bottom.");
+                // Round 1k: after a RECONNECT (not first load) end the replay with one small UI-only notice.
+                if (typeof ws.consumeWelcomeBack === 'function' && ws.consumeWelcomeBack()) {
+                    ui.displayMessage('Reconnected - chat history restored. Welcome back!', 'system_event', 'conversation-area', 'system');
+                }
+                if (DOM.conversationArea) {""",
+    },
+    # ---- 2. scheduler: nudge a prose-only worker_decompose cycle -------------------------------
+    {
+        "file": NS,
+        "find": r"""                logger.info(f"NextStepScheduler: Worker '{agent_id}' in worker_decompose state completed cycle. Reactivating for continued decomposition.")
+                if agent.status != AGENT_STATUS_ERROR:""",
+        "replace": r"""                # Round 1k: a prose-only reply (no tool call at all, no state change) cannot make progress in this
+                # state. Tell the worker what to do instead of re-activating it with an unchanged history.
+                # Capped at 2 nudges in a row; any tool call resets the counter.
+                if context.executed_tool_successfully_this_cycle or context.action_taken_this_cycle:
+                    setattr(agent, '_decompose_prose_nudges', 0)
+                else:
+                    prose_nudges = getattr(agent, '_decompose_prose_nudges', 0)
+                    if prose_nudges < 2:
+                        setattr(agent, '_decompose_prose_nudges', prose_nudges + 1)
+                        agent.message_history.append({
+                            "role": "system",
+                            "content": (
+                                "[Framework Notice]: You replied with text only, but in worker_decompose you must act with a tool call. "
+                                "Either call project_management with action 'add_task' to create each sub-task, or, if the task needs "
+                                f"no decomposition, call request_state with state='{WORKER_STATE_WORK}'. Do not reply with prose only."
+                            ),
+                        })
+                        logger.warning(f"NextStepScheduler: Worker '{agent_id}' replied with prose only in worker_decompose. Added nudge {prose_nudges + 1}/2.")
+                logger.info(f"NextStepScheduler: Worker '{agent_id}' in worker_decompose state completed cycle. Reactivating for continued decomposition.")
+                if agent.status != AGENT_STATUS_ERROR:""",
     },
 ]
 
 NEW_FILES = {
-    "tests/unit/test_round1j.py": r'''"""Round 1j tests: imperfectly copied task UUIDs are resolved by their first 8 characters (unique match only).
+    "tests/unit/test_round1k.py": r'''"""Round 1k tests: a worker in worker_decompose that replies with prose only gets a framework nudge (max 2 in a row).
 
-Observed 2026-10-15 10:59: PM sent 'c273b749-4992-40d2-9a19-b58a1dc327' for 'c273b749-4992-40d2-9a19-b58a121dc327'.
+Observed 2026-10-15 11:03: W1 answered in prose instead of calling request_state in worker_decompose; the scheduler
+only re-activated it with an unchanged history, costing a full extra LLM cycle.
 """
 import asyncio
-import shutil
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
-import src.agents  # noqa: F401 - resolves pre-existing circular import order
-import src.tools.project_management as pm
-
-try:
-    import tasklib  # noqa: F401
-    HAVE_TW = shutil.which("task") is not None
-except ImportError:  # pragma: no cover
-    HAVE_TW = False
-
-needs_tw = pytest.mark.skipif(not HAVE_TW, reason="real Taskwarrior (task + tasklib) not installed")
-
-REAL = "c273b749-4992-40d2-9a19-b58a121dc327"
-MANGLED = "c273b749-4992-40d2-9a19-b58a1dc327"      # characters dropped from the middle (the 10:59 case)
+from src.agents.cycle_components.next_step_scheduler import NextStepScheduler
+from src.agents.constants import AGENT_TYPE_WORKER, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK
 
 
-def fake(*uuids):
-    return [{"uuid": u} for u in uuids]
+def _make(history=None):
+    manager = MagicMock()
+    manager.schedule_cycle = AsyncMock(return_value=MagicMock())
+    manager.send_to_ui = AsyncMock()
+    manager.current_session_db_id = None
+    agent = SimpleNamespace(
+        agent_id="W1", agent_type=AGENT_TYPE_WORKER, state=WORKER_STATE_DECOMPOSE, status="processing",
+        message_history=list(history or []), set_status=lambda s, **k: None,
+    )
+    return NextStepScheduler(manager), manager, agent
 
 
-def test_unique_first_8_chars_resolves_a_mangled_uuid():
-    tasks = fake(REAL, "0eb26480-f9ea-4263-9c41-38401426dee9", "e8c074f3-6af4-478d-b062-16c424cf4fd5")
-    assert pm.match_task_by_uuid_prefix(tasks, MANGLED) == [tasks[0]]
+def _ctx(agent, tool_ok=False, action=False, state_change=False):
+    return SimpleNamespace(
+        agent=agent, all_tool_results=[], trigger_failover=False, needs_reactivation_after_cycle=False,
+        is_retryable_error_type=False, retry_count=0, max_retries_for_cycle=3, cycle_completed_successfully=True,
+        executed_tool_successfully_this_cycle=tool_ok, action_taken_this_cycle=action,
+        state_change_requested_this_cycle=state_change, current_model_key_for_tracking="m",
+        last_error_content="", last_error_obj=None, plan_submitted_this_cycle=False, thought_produced_this_cycle=False,
+    )
 
 
-def test_wrong_character_in_a_full_length_uuid_still_resolves():
-    tasks = fake(REAL, "0eb26480-f9ea-4263-9c41-38401426dee9")
-    assert pm.match_task_by_uuid_prefix(tasks, "c273b749-4992-40d2-9a19-b58a121dc328") == [tasks[0]]
+def _nudges(agent):
+    return [m for m in agent.message_history if m.get("role") == "system" and "worker_decompose" in m.get("content", "")]
 
 
-def test_plain_prefix_still_works():
-    tasks = fake(REAL, "0eb26480-f9ea-4263-9c41-38401426dee9")
-    assert pm.match_task_by_uuid_prefix(tasks, "c273b749-4992") == [tasks[0]]
+def test_prose_only_cycle_adds_nudge_and_reactivates():
+    sched, manager, agent = _make([{"role": "assistant", "content": "I will plan the tasks."}])
+    asyncio.run(sched.schedule_next_step(_ctx(agent)))
+    n = _nudges(agent)
+    assert len(n) == 1
+    assert "request_state" in n[0]["content"] and WORKER_STATE_WORK in n[0]["content"] and "add_task" in n[0]["content"]
+    manager.schedule_cycle.assert_awaited_once()
 
 
-def test_ambiguous_prefix_returns_all_matches_so_the_caller_refuses():
-    tasks = fake("aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-1111-1111-1111-000000000002")
-    assert len(pm.match_task_by_uuid_prefix(tasks, "aaaaaaaa-9999")) == 2
+def test_nudges_are_capped_at_two_in_a_row_but_still_reactivates():
+    sched, manager, agent = _make()
+    for _ in range(5):
+        asyncio.run(sched.schedule_next_step(_ctx(agent)))
+    assert len(_nudges(agent)) == 2
+    assert manager.schedule_cycle.await_count == 5
 
 
-@pytest.mark.parametrize("text", ["", "task_3", "c273", "zzzzzzzz-4992", "ffffffff-4992-40d2-9a19-b58a121dc327", None])
-def test_unknown_or_too_short_ids_do_not_match(text):
-    assert pm.match_task_by_uuid_prefix(fake(REAL), text) == []
+def test_tool_call_resets_counter_and_adds_no_nudge():
+    sched, manager, agent = _make()
+    asyncio.run(sched.schedule_next_step(_ctx(agent)))
+    asyncio.run(sched.schedule_next_step(_ctx(agent, tool_ok=True, action=True)))
+    assert len(_nudges(agent)) == 1
+    assert agent._decompose_prose_nudges == 0
+    asyncio.run(sched.schedule_next_step(_ctx(agent)))
+    assert len(_nudges(agent)) == 2
 
 
-def test_both_lookup_blocks_use_the_helper():
-    src = open(pm.__file__, encoding="utf-8").read()
-    assert src.count("match_task_by_uuid_prefix(tw.tasks.all(), t_id_str)") == 2
-    assert "startswith(t_id_str)" not in src
+def test_failed_tool_call_is_not_treated_as_prose():
+    sched, manager, agent = _make()
+    asyncio.run(sched.schedule_next_step(_ctx(agent, tool_ok=False, action=True)))
+    assert _nudges(agent) == []
+    manager.schedule_cycle.assert_awaited_once()
 
 
-# ---------------------------------------------------------------------------------------------
-# integration with a real Taskwarrior
-# ---------------------------------------------------------------------------------------------
-@pytest.fixture
-def tool(tmp_path, monkeypatch):
-    monkeypatch.setattr(pm, "BASE_DIR", tmp_path)
-
-    async def no_broadcast(_msg):
-        return None
-    monkeypatch.setattr(pm, "broadcast", no_broadcast)
-    return pm.ProjectManagementTool()
-
-
-def call(tool, tmp_path, agent, **kw):
-    return asyncio.run(tool.execute(agent_id=agent, agent_sandbox_path=tmp_path, project_name="P", session_name="S", **kw))
-
-
-def mangle(uuid):
-    return uuid[:24] + uuid[26:]      # drops two characters from the middle, keeps the first 8
-
-
-@needs_tw
-def test_modify_task_accepts_a_mangled_uuid(tool, tmp_path):
-    other = call(tool, tmp_path, "PM1", action="add_task", description="Another unrelated task here")["task_uuid"]
-    uid = call(tool, tmp_path, "PM1", action="add_task", description="Kick-off Task 3: initialise package files")["task_uuid"]
-    r = call(tool, tmp_path, "PM1", action="modify_task", task_id=mangle(uid), assignee_agent_id="W1")
-    assert r["status"] == "success", r
-    assert r["task_uuid"] == uid and r["assignee"] == "W1"
-    assert call(tool, tmp_path, "PM1", action="list_tasks", assignee_filter="W1")["tasks"][0]["uuid"] == uid
-    assert other != uid
-
-
-@needs_tw
-def test_complete_task_accepts_a_mangled_uuid(tool, tmp_path):
-    uid = call(tool, tmp_path, "PM1", action="add_task", description="Kick-off Task 4: implement the core logic")["task_uuid"]
-    r = call(tool, tmp_path, "PM1", action="complete_task", task_id=mangle(uid))
-    assert r["status"] == "success", r
-    assert r["task_uuid"] == uid
-
-
-@needs_tw
-def test_unknown_uuid_still_fails_cleanly(tool, tmp_path):
-    call(tool, tmp_path, "PM1", action="add_task", description="Only task in the database")
-    r = call(tool, tmp_path, "PM1", action="modify_task", task_id="ffffffff-0000-0000-0000-000000000000", task_progress="finished")
-    assert r["status"] == "error" and "not found" in r["message"]
+def test_state_change_cycle_untouched():
+    sched, manager, agent = _make()
+    asyncio.run(sched.schedule_next_step(_ctx(agent, state_change=True)))
+    assert _nudges(agent) == []
 ''',
 }
-
 
 def apply_patches(dry_run: bool) -> int:
     originals = {}
@@ -244,7 +250,7 @@ def apply_patches(dry_run: bool) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Apply TrippleEffect Round 1j fixes.")
+    ap = argparse.ArgumentParser(description="Apply TrippleEffect Round 1k fixes.")
     ap.add_argument("--dry-run", action="store_true", help="Show diffs only; do not write any files.")
     args = ap.parse_args()
     if not (ROOT / "src").is_dir():

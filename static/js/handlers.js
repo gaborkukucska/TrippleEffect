@@ -180,6 +180,10 @@ export const handleWebSocketMessage = (data) => {
                 break;
             case 'chat_history_end':
                 console.log("Handler: chat_history_end — scrolling to bottom.");
+                // Round 1k: after a RECONNECT (not first load) end the replay with one small UI-only notice.
+                if (typeof ws.consumeWelcomeBack === 'function' && ws.consumeWelcomeBack()) {
+                    ui.displayMessage('Reconnected - chat history restored. Welcome back!', 'system_event', 'conversation-area', 'system');
+                }
                 if (DOM.conversationArea) {
                     DOM.conversationArea.scrollTop = DOM.conversationArea.scrollHeight;
                 }

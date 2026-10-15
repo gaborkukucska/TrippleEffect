@@ -5,6 +5,19 @@ import * as state from './state.js';
 import { displayStatusMessage } from './ui.js';
 import { handleWebSocketMessage } from './handlers.js'; // Import the central message handler
 
+// Round 1k: remember whether this page has connected before, so a later onopen is known to be a RECONNECT.
+let hasConnectedBefore = false;
+let welcomeBackPending = false;
+
+/**
+ * Returns true once after a reconnect (used by the chat-history handler to show a one-line notice).
+ */
+export const consumeWelcomeBack = () => {
+    const pending = welcomeBackPending;
+    welcomeBackPending = false;
+    return pending;
+};
+
 /**
  * Establishes and manages the WebSocket connection.
  */
@@ -34,6 +47,8 @@ export const connectWebSocket = () => {
         ws.onopen = (event) => {
             console.log("WebSocket onopen event fired.");
             state.setIsConnected(true);
+            if (hasConnectedBefore) welcomeBackPending = true; // Round 1k: this is a reconnect
+            hasConnectedBefore = true;
             state.setReconnectDelay(config.INITIAL_RECONNECT_DELAY); // Reset delay
             displayStatusMessage("Connected to backend.", false, false, 'internal-comms-area');
             console.log("WebSocket connection established.");

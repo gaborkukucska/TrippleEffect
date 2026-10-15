@@ -327,6 +327,24 @@ class NextStepScheduler:
             # its first tool call and never wakes up.
             elif agent.agent_type == AGENT_TYPE_WORKER and \
                  agent.state == WORKER_STATE_DECOMPOSE and not context.state_change_requested_this_cycle:
+                # Round 1k: a prose-only reply (no tool call at all, no state change) cannot make progress in this
+                # state. Tell the worker what to do instead of re-activating it with an unchanged history.
+                # Capped at 2 nudges in a row; any tool call resets the counter.
+                if context.executed_tool_successfully_this_cycle or context.action_taken_this_cycle:
+                    setattr(agent, '_decompose_prose_nudges', 0)
+                else:
+                    prose_nudges = getattr(agent, '_decompose_prose_nudges', 0)
+                    if prose_nudges < 2:
+                        setattr(agent, '_decompose_prose_nudges', prose_nudges + 1)
+                        agent.message_history.append({
+                            "role": "system",
+                            "content": (
+                                "[Framework Notice]: You replied with text only, but in worker_decompose you must act with a tool call. "
+                                "Either call project_management with action 'add_task' to create each sub-task, or, if the task needs "
+                                f"no decomposition, call request_state with state='{WORKER_STATE_WORK}'. Do not reply with prose only."
+                            ),
+                        })
+                        logger.warning(f"NextStepScheduler: Worker '{agent_id}' replied with prose only in worker_decompose. Added nudge {prose_nudges + 1}/2.")
                 logger.info(f"NextStepScheduler: Worker '{agent_id}' in worker_decompose state completed cycle. Reactivating for continued decomposition.")
                 if agent.status != AGENT_STATUS_ERROR:
                     agent.set_status(AGENT_STATUS_IDLE)
