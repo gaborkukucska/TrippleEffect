@@ -678,15 +678,9 @@ class ProjectManagementTool(BaseTool):
             except Exception as e:
                 logger.debug(f"Could not fetch completed tasks count: {e}")
             
-            has_filters = any([
-                kwargs.get("task_progress_filter"),
-                kwargs.get("status_filter"),
-                kwargs.get("assignee_filter"),
-                kwargs.get("tags_filter")
-            ])
-            if not has_filters and agent_id and not self._is_worker_agent(agent_id):
-                # PM must always specify filtering. List yet unassigned tasks by default when no filter is provided.
-                kwargs["assignee_filter"] = "unassigned"
+            # Round 1l: callers that pass no filter get ALL pending tasks. (Before, the Admin AI and the PM silently
+            # got only UNASSIGNED tasks, so "Found 0 task(s)" hid every task that was already assigned to a worker.)
+            # Workers still default to their own tasks below; explicit filters behave exactly as before.
 
             if "assignee_filter" in kwargs: 
                 a_filter = str(kwargs["assignee_filter"]).strip()
