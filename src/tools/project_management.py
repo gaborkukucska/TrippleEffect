@@ -114,6 +114,30 @@ def repair_taskwarrior_records(lines: List[str]) -> List[str]:
         records.append(partial)
     return [_clean_record(r) if r.startswith("[") else r for r in records]
 
+def match_task_by_uuid_prefix(tasks, text: str) -> list:
+    """
+    Resolves a UUID the model has copied imperfectly. Small models often drop or alter characters in the MIDDLE
+    of a UUID but copy the start correctly, so the lookup tries the text as a prefix and then its first 8 hex
+    characters. Returns the matching tasks: one task = success, several = ambiguous (the caller refuses),
+    none = not found.
+    """
+    needle_full = str(text or "").strip().lower()
+    all_tasks = list(tasks)
+    seen = []
+    for needle in (needle_full, needle_full[:8]):
+        if len(needle) < 8 or needle in seen or not re.match(r"^[0-9a-f-]+$", needle):
+            continue
+        seen.append(needle)
+        matches = [t for t in all_tasks if str(t['uuid']).lower().startswith(needle)]
+        if len(matches) == 1:
+            if needle != needle_full:
+                logger.info(f"ProjectManagementTool: Resolved imperfect task id '{text}' to UUID '{matches[0]['uuid']}' by its first 8 characters.")
+            return matches
+        if len(matches) > 1:
+            return matches
+    return []
+
+
 class ProjectManagementTool(BaseTool):
     name = "project_management"
     auth_level: str = "worker"
@@ -840,8 +864,8 @@ class ProjectManagementTool(BaseTool):
                     try:
                         task = tw.tasks.get(uuid=t_id_str)
                     except Exception as get_err:
-                        if "exist" in str(get_err) and len(t_id_str) < 36:
-                            matches = [t for t in tw.tasks.all() if t['uuid'].startswith(t_id_str)]
+                        if "exist" in str(get_err):
+                            matches = match_task_by_uuid_prefix(tw.tasks.all(), t_id_str)
                             if len(matches) == 1:
                                 task = matches[0]
                             else:
@@ -1025,8 +1049,8 @@ class ProjectManagementTool(BaseTool):
                     try:
                         task = tw.tasks.get(uuid=t_id_str)
                     except Exception as get_err:
-                        if "exist" in str(get_err) and len(t_id_str) < 36:
-                            matches = [t for t in tw.tasks.all() if t['uuid'].startswith(t_id_str)]
+                        if "exist" in str(get_err):
+                            matches = match_task_by_uuid_prefix(tw.tasks.all(), t_id_str)
                             if len(matches) == 1:
                                 task = matches[0]
                             else:
