@@ -46,6 +46,10 @@ class NextStepScheduler:
                 agent.message_history.append(tool_result)
             logger.info(f"NextStepScheduler: Appended {len(context.all_tool_results)} tool result(s) to agent '{agent_id}' history.")
 
+        # Round 1p: the planning-retry budget only applies while Admin stays in the planning state.
+        if getattr(agent, '_planning_retry_count', 0) and agent.state != ADMIN_STATE_PLANNING:
+            agent._planning_retry_count = 0
+
         # --- Diagnostic: Log context at start of schedule_next_step ---
         logger.debug(f"NextStepScheduler (START): Agent '{getattr(agent, 'agent_id', 'N/A')}', "
                      f"History Len: {len(agent.message_history) if agent and hasattr(agent, 'message_history') and agent.message_history is not None else 'N/A'}")
@@ -168,6 +172,30 @@ class NextStepScheduler:
                     self._log_end_of_schedule_next_step(agent, "Path B-Planning-ToolReactivation")
                     return
                 else:
+                    # Round 1p: if the planning cycle produced no plan (no workflow trigger matched), ask again with explicit
+                    # feedback instead of idling forever. Bounded; a reply that asks the user a question is left alone.
+                    from src.agents.tool_activity import (
+                        MAX_PLANNING_RETRIES, PLANNING_RETRY_MESSAGE, last_assistant_text, planning_reply_needs_retry,
+                    )
+                    planning_retries = getattr(agent, '_planning_retry_count', 0)
+                    if (not context.plan_submitted_this_cycle) and planning_reply_needs_retry(last_assistant_text(agent.message_history)):
+                        if planning_retries < MAX_PLANNING_RETRIES:
+                            agent._planning_retry_count = planning_retries + 1
+                            logger.warning(f"NextStepScheduler: Admin AI '{agent_id}' finished planning without a plan. Re-requesting it ({agent._planning_retry_count}/{MAX_PLANNING_RETRIES}).")
+                            agent.message_history.append({"role": "system", "content": PLANNING_RETRY_MESSAGE})
+                            await self._manager.send_to_ui({
+                                "type": "status", "agent_id": agent_id,
+                                "content": f"Admin AI did not write the plan; asking again ({agent._planning_retry_count}/{MAX_PLANNING_RETRIES})..."
+                            })
+                            agent.set_status(AGENT_STATUS_IDLE)
+                            await self._schedule_new_cycle(agent, 0)
+                            self._log_end_of_schedule_next_step(agent, "Path B-Planning-RetryNoPlan")
+                            return
+                        logger.error(f"NextStepScheduler: Admin AI '{agent_id}' still produced no plan after {MAX_PLANNING_RETRIES} retries. Giving up and idling.")
+                        await self._manager.send_to_ui({
+                            "type": "system_event", "agent_id": agent_id,
+                            "content": "[Framework] Admin AI could not produce a project plan. Please send your request again or rephrase it."
+                        })
                     logger.info(f"NextStepScheduler: Admin AI '{agent_id}' finished planning cycle without tool use - allowing natural idle (plan output expected).")
             # BALANCED FIX: Admin AI work state logic - reactivate after tool execution to process results
             # IMPORTANT: Only applies to ADMIN_STATE_WORK - other states (startup, conversation) should NOT loop

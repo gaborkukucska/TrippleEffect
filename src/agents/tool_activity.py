@@ -150,4 +150,45 @@ def claims_project_complete(text: Optional[str]) -> bool:
     return bool(text) and _PROJECT_COMPLETE_CLAIM_RE.search(str(text).lower()) is not None
 
 
+
+# --- Admin planning retry (Round 1p) -------------------------------------------------------------------------------------
+# 2026-10-16 07:06: Admin entered 'planning' and answered with a one-sentence announcement ("Here's the complete workflow
+# we're going to follow, followed by a JSON block ...", 199 chars) but never wrote the plan or the JSON title block. No
+# workflow trigger matched, the scheduler let Admin idle ("plan output expected"), and the user never got a plan.
+MAX_PLANNING_RETRIES = 2
+
+PLANNING_RETRY_MESSAGE = (
+    "[Framework System Message]: Your last reply did NOT contain the project plan, so no project was created. "
+    "Do not describe or announce the plan: write it now. Reply with (1) the complete plan as markdown (a short objective, "
+    "then the numbered tasks), and (2) at the very end a JSON block that contains only the project title, exactly like:\n"
+    "```json\n{\"title\": \"<ProjectName>\"}\n```"
+)
+
+
+def last_assistant_text(history) -> str:
+    """Text of the most recent assistant message in a message history ('' if there is none)."""
+    for msg in reversed(list(history or [])):
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            content = msg.get("content")
+            if isinstance(content, str) and content.strip():
+                return content
+            if content:
+                return str(content)
+    return ""
+
+
+def planning_reply_needs_retry(text: Optional[str]) -> bool:
+    """
+    True if an Admin reply produced in the planning state (that did not trigger project creation) should be re-requested.
+    A reply that ends by asking the user a question is a legitimate clarification and is left alone.
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return True
+    tail = stripped[-300:]
+    if "?" in tail and "```" not in tail:
+        return False
+    return True
+
+
 # END OF FILE src/agents/tool_activity.py
