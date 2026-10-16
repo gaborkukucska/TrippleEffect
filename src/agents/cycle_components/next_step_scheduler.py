@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from src.agents.manager import AgentManager
     from src.agents.cycle_components.cycle_context import CycleContext
 
+from src.agents.tool_activity import is_unhandled_project_request, last_user_text  # Round 1r
+
 logger = logging.getLogger(__name__)
 
 class NextStepScheduler:
@@ -197,6 +199,31 @@ class NextStepScheduler:
                             "content": "[Framework] Admin AI could not produce a project plan. Please send your request again or rephrase it."
                         })
                     logger.info(f"NextStepScheduler: Admin AI '{agent_id}' finished planning cycle without tool use - allowing natural idle (plan output expected).")
+            # Round 1r: the user asked for a project but Admin answered with chat text and no state change (seen in 'startup').
+            # Switch to planning ourselves, once per request, instead of leaving the user without a plan.
+            elif (agent.agent_type == AGENT_TYPE_ADMIN
+                  and agent.state in (ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STANDBY)
+                  and not context.state_change_requested_this_cycle
+                  and not context.executed_tool_successfully_this_cycle
+                  and is_unhandled_project_request(agent)):
+                agent._auto_planning_for = last_user_text(agent.message_history)
+                workflow_manager = getattr(self._manager, 'workflow_manager', None)
+                switched = bool(workflow_manager and workflow_manager.change_state(agent, ADMIN_STATE_PLANNING))
+                if switched:
+                    logger.warning(f"NextStepScheduler: Admin AI '{agent_id}' answered a project request with chat text only. Framework switched it to planning.")
+                    agent.message_history.append({
+                        "role": "user",
+                        "content": f"[System State Change]: State changed to {ADMIN_STATE_PLANNING}. Your instructions have been updated. Please proceed."
+                    })
+                    await self._manager.send_to_ui({
+                        "type": "status", "agent_id": agent_id,
+                        "content": "Project request detected - Admin AI is now planning the project..."
+                    })
+                    agent.set_status(AGENT_STATUS_IDLE)
+                    await self._schedule_new_cycle(agent, 0)
+                    self._log_end_of_schedule_next_step(agent, "Path B-Admin-AutoPlanning")
+                    return
+                logger.error(f"NextStepScheduler: Admin AI '{agent_id}' got a project request but the switch to planning failed. Idling.")
             # BALANCED FIX: Admin AI work state logic - reactivate after tool execution to process results
             # IMPORTANT: Only applies to ADMIN_STATE_WORK - other states (startup, conversation) should NOT loop
             elif (agent.agent_type, agent.state) == (AGENT_TYPE_ADMIN, ADMIN_STATE_WORK):

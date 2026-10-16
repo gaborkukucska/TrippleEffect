@@ -191,4 +191,40 @@ def planning_reply_needs_retry(text: Optional[str]) -> bool:
     return True
 
 
+# --- Unhandled project request (Round 1r) ---------------------------------------------------------------------------------
+# 2026-10-16 07:36: the user sent "Hello :) Please start a small project called ..." while Admin was still in its 'startup'
+# state. Admin replied with chat text ("let's get this thing built!") instead of calling request_state(planning), the cycle
+# ended cleanly, and nothing ever started: no plan, no project. The framework now performs the switch itself.
+_PROJECT_WORD_RE = _re.compile(r"\bproject\b", _re.IGNORECASE)
+_PROJECT_VERB_RE = _re.compile(r"\b(start|create|build|make|develop|write|implement|set\s*up|begin|kick\s*off)\b", _re.IGNORECASE)
+
+
+def last_user_text(history) -> str:
+    """Text of the most recent user-role message in a message history ('' if there is none)."""
+    for msg in reversed(list(history or [])):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            content = msg.get("content")
+            return content if isinstance(content, str) else str(content or "")
+    return ""
+
+
+def looks_like_project_request(text: Optional[str]) -> bool:
+    """
+    Conservative check for a human message that asks to start a project: long enough to contain requirements, mentions
+    'project' and a start/build verb. Framework/PM messages (they start with '[') and short chat or approvals never match.
+    """
+    stripped = (text or "").strip()
+    if len(stripped) < 100 or stripped.startswith("["):
+        return False
+    return bool(_PROJECT_WORD_RE.search(stripped) and _PROJECT_VERB_RE.search(stripped))
+
+
+def is_unhandled_project_request(agent) -> bool:
+    """True if the newest user message is a project request that this agent has not yet been moved to planning for."""
+    text = last_user_text(getattr(agent, "message_history", None))
+    if not looks_like_project_request(text):
+        return False
+    return getattr(agent, "_auto_planning_for", None) != text
+
+
 # END OF FILE src/agents/tool_activity.py
