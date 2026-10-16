@@ -231,6 +231,9 @@ class FileSystemTool(BaseTool):
         Executes the file system operation based on the provided action and scope.
         """
         action = kwargs.get("action")
+        if isinstance(action, str):
+            # Round 1s: the 4B model sometimes emits 'read_with_lines>' (a stray tag character); clean it before validating.
+            action = action.strip().strip("<>/\"' \t").lower()
         # Default to 'shared' if we have project context, else 'private'
         default_scope = "shared" if project_name and session_name else "private"
         scope = kwargs.get("scope", default_scope).lower()

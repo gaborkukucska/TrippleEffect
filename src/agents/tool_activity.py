@@ -227,4 +227,64 @@ def is_unhandled_project_request(agent) -> bool:
     return getattr(agent, "_auto_planning_for", None) != text
 
 
+# --- PM standby guard (Round 1s) -------------------------------------------------------------------------------------------
+# 2026-10-16 09:45: all worker tasks were finished, but PM1 (history just cleared on entering pm_manage) requested pm_standby
+# without listing the tasks. No audit ran, Admin was never told and the user never got a completion report.
+PM_STANDBY_GUARD_TAG = "[Framework Standby Check]"
+
+_PM_STANDBY_NO_LISTING = (
+    PM_STANDBY_GUARD_TAG + " You requested standby without checking the task list. First call `project_management` with "
+    "action=\"list_tasks\". If any task is still 'todo' or 'in_progress', request pm_standby (or assign work). If every task "
+    "is finished, request pm_audit instead."
+)
+_PM_STANDBY_ALL_DONE = (
+    PM_STANDBY_GUARD_TAG + " Your last task list shows NO open tasks, so the project work is finished. Do NOT go to standby: "
+    "request the pm_audit state now so the results are verified and the Admin AI is told the project is complete."
+)
+_DONE_PROGRESS = {"finished", "completed", "complete", "done", "closed", "decomposed", "deleted"}
+
+
+def _last_task_listing(history):
+    """The parsed JSON of the most recent list_tasks-style tool result in a message history, else None."""
+    for msg in reversed(list(history or [])):
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str) or '"tasks"' not in content:
+            continue
+        start = content.find("{")
+        if start < 0:
+            continue
+        try:
+            data = json.loads(content[start:])
+        except ValueError:
+            continue
+        if isinstance(data, dict) and isinstance(data.get("tasks"), list):
+            return data
+    return None
+
+
+def pm_standby_block_message(agent_type, agent_state, requested_state, history, agent_id) -> Optional[str]:
+    """
+    A framework message if a PM in pm_manage should NOT be allowed to go to standby right now, else None.
+    Blocks (once per manage visit - the history is cleared on entering pm_manage) when the PM has not looked at the task
+    list, or when its latest task list shows no open task. Tasks assigned to the PM itself are ignored.
+    """
+    if (agent_type, agent_state, requested_state) != ("pm", "pm_manage", "pm_standby"):
+        return None
+    for msg in history or []:
+        if isinstance(msg, dict) and isinstance(msg.get("content"), str) and msg["content"].startswith(PM_STANDBY_GUARD_TAG):
+            return None
+    listing = _last_task_listing(history)
+    if listing is None:
+        return _PM_STANDBY_NO_LISTING
+    for task in listing["tasks"]:
+        if not isinstance(task, dict) or task.get("assignee") == agent_id:
+            continue
+        progress = str(task.get("task_progress") or task.get("status") or "").strip().lower()
+        if progress and progress not in _DONE_PROGRESS:
+            return None
+    return _PM_STANDBY_ALL_DONE
+
+
 # END OF FILE src/agents/tool_activity.py

@@ -41,7 +41,7 @@ from src.agents.cycle_components.json_validator import JSONValidator  # type: ig
 from src.agents.cycle_components.context_summarizer import ContextSummarizer  # type: ignore[import]
 
 from src.workflows.base import WorkflowResult  # type: ignore[import]
-from src.agents.tool_activity import is_tool_result_failure, claims_project_complete  # type: ignore[import]
+from src.agents.tool_activity import is_tool_result_failure, claims_project_complete, pm_standby_block_message  # type: ignore[import]
 
 if TYPE_CHECKING:
     from src.agents.manager import AgentManager  # type: ignore[import]
@@ -334,7 +334,13 @@ class AgentCycleHandler:
             logger.error(f"Constitutional Guardian agent '{CONSTITUTIONAL_GUARDIAN_AGENT_ID}' has no LLM provider. Failing open (assuming <OK/>).")
             return "<OK/>"
 
-        original_cg_status = cg_agent.status
+        # Round 1s: reviews can overlap. Remember the status from BEFORE the first overlapping review only; otherwise a second
+        # review would "restore" the 'processing' set by the first one and the Guardian would show 'processing' forever.
+        active_cg_reviews = getattr(cg_agent, '_cg_active_reviews', 0)
+        if active_cg_reviews == 0:
+            cg_agent._cg_status_before_reviews = cg_agent.status
+        cg_agent._cg_active_reviews = active_cg_reviews + 1
+        original_cg_status = cg_agent._cg_status_before_reviews
         cg_agent.set_status(AGENT_STATUS_PROCESSING)
         if hasattr(self._manager, 'push_agent_status_update'):
             await self._manager.push_agent_status_update(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
@@ -463,12 +469,14 @@ class AgentCycleHandler:
 
         finally: # Outer finally
             if cg_agent:
-                final_status_to_set = original_cg_status if original_cg_status is not None else AGENT_STATUS_IDLE
-                cg_agent.set_status(final_status_to_set)
-                if hasattr(self._manager, 'push_agent_status_update'):
-                    await self._manager.push_agent_status_update(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
-                else:
-                    logger.error("AgentManager instance not found or lacks push_agent_status_update, cannot revert CG status for UI.")
+                cg_agent._cg_active_reviews = max(0, getattr(cg_agent, '_cg_active_reviews', 1) - 1)
+                if cg_agent._cg_active_reviews == 0:  # only the last overlapping review restores the status
+                    final_status_to_set = original_cg_status if original_cg_status is not None else AGENT_STATUS_IDLE
+                    cg_agent.set_status(final_status_to_set)
+                    if hasattr(self._manager, 'push_agent_status_update'):
+                        await self._manager.push_agent_status_update(CONSTITUTIONAL_GUARDIAN_AGENT_ID)
+                    else:
+                        logger.error("AgentManager instance not found or lacks push_agent_status_update, cannot revert CG status for UI.")
 
         # Ensure verdict_to_return is ALWAYS assigned before returning
         if verdict_to_return is None:
@@ -1285,6 +1293,21 @@ class AgentCycleHandler:
                             agent.message_history.append({"role": "system", "content": err_msg})
                             context.needs_reactivation_after_cycle = True
                             continue # Stop processing this event; do NOT apply state change
+
+                        # Round 1s: a PM must not park itself in standby without checking the tasks, or while nothing is open.
+                        try:
+                            standby_block = pm_standby_block_message(
+                                agent.agent_type, agent.state,
+                                self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state),
+                                agent.message_history, agent.agent_id)
+                        except Exception as standby_guard_error:  # the guard must never break a state change
+                            logger.warning(f"CycleHandler: standby guard failed for '{agent.agent_id}': {standby_guard_error}")
+                            standby_block = None
+                        if standby_block:
+                            logger.warning(f"CycleHandler: PM '{agent.agent_id}' standby request blocked: {standby_block[:120]}")
+                            agent.message_history.append({"role": "system", "content": standby_block})
+                            context.needs_reactivation_after_cycle = True
+                            continue
 
                         # Record the agent's action in its history so it knows it made the request
                         history_content = f"[Action Taken: Transitioned to state '{requested_state}'"
