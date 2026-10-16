@@ -95,7 +95,9 @@ class CodeEditorTool(BaseTool):
             
         if isinstance(chunks, str):
             try:
-                chunks = json.loads(chunks)
+                # Round 1v: strict=False accepts raw line breaks/tabs inside the JSON strings (the 4B model sends code that
+                # way: 6 rejections "Invalid control character" on 2026-10-16). Valid JSON parses exactly as before.
+                chunks = json.loads(chunks, strict=False)
             except Exception as e1:
                 # JSON Resilience Layer
                 try:
@@ -347,9 +349,15 @@ class CodeEditorTool(BaseTool):
                     import ast
                     ast.parse(content)
                 except SyntaxError as syntax_err:
+                    try:  # Round 1v: same code-around-the-error report as file_system writes
+                        from src.tools.python_static_check import syntax_error_report
+                        syntax_report = syntax_error_report(content, syntax_err)
+                    except Exception:
+                        syntax_report = ""
                     return {
                         "status": "error",
                         "message": f"Code edit rejected due to Python SyntaxError in resulting code: {syntax_err.msg} at line {syntax_err.lineno}. No changes were saved. Please check your indentation and brackets."
+                                   + (f"\n{syntax_report}" if syntax_report else "")
                     }
             
             # Save if all success

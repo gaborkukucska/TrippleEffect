@@ -210,6 +210,117 @@ class FileSystemTool(BaseTool):
                 return v
         return None
 
+    # --- Path hygiene (Round 1v) ----------------------------------------------------------------------------------------
+    # 2026-10-16 20:39-21:31: PROJECT_STRUCTURE.md marked files as 'README.md  (planned)' and W3 copied the pattern: it
+    # created a DIRECTORY 'docs/README.md (force)', wrote 'docs/README.md (new)' and ended with 'docs/README_final_v1.txt'.
+    _ANNOTATION_RE = re.compile(r"^(?P<path>.*?[^\s_(])[\s_]+\((?P<note>[^()/]*)\)\s*$")
+    # Extensions that make a name a FILE beyond doubt (used to refuse 'mkdir docs/README.md').
+    FILE_LIKE_EXTENSIONS = frozenset({
+        ".py", ".md", ".txt", ".rst", ".js", ".mjs", ".ts", ".jsx", ".tsx", ".html", ".htm", ".css", ".scss", ".json",
+        ".yaml", ".yml", ".toml", ".cfg", ".ini", ".sh", ".bat", ".csv", ".xml", ".sql", ".java", ".c", ".cpp", ".h",
+        ".go", ".rs", ".rb", ".php", ".lock",
+    })
+
+    @classmethod
+    def _strip_path_annotation(cls, base_path: Path, value: Any):
+        """(path, note): removes a trailing note in brackets such as ' (new)' / '_(force)' from a path that does not exist."""
+        if not isinstance(value, str):
+            return value, None
+        match = cls._ANNOTATION_RE.match(value.strip())
+        if not match:
+            return value, None
+        try:
+            raw = value.strip().lstrip("/")
+            if raw and ((base_path / raw).exists() or (base_path / raw.replace(" ", "_")).exists()):
+                return value, None  # a real file/directory with that name: leave it alone
+        except (OSError, ValueError):
+            pass
+        cleaned = match.group("path").strip()
+        return cleaned, f"'{value.strip()}' was treated as '{cleaned}': a note in brackets is not part of a path."
+
+    @staticmethod
+    def _single_filename(value: Any) -> Optional[str]:
+        """A single path from a 'filenames'-style list (list, JSON list string or plain string); None if not exactly one."""
+        if isinstance(value, str):
+            text = value.strip()
+            if text.startswith("["):
+                try:
+                    import json as _json
+                    value = _json.loads(text)
+                except ValueError:
+                    return None
+            else:
+                return text if text and "," not in text else None
+        if isinstance(value, (list, tuple)) and len(value) == 1 and isinstance(value[0], str) and value[0].strip():
+            return value[0].strip()
+        return None
+
+    @staticmethod
+    def _python_edit_error(filename: str, original: str, new_content: str) -> Optional[Dict[str, Any]]:
+        """Round 1v: an error result if an edit would turn a valid Python file into invalid Python, else None."""
+        if not str(filename).endswith(".py"):
+            return None
+        import ast
+        try:
+            ast.parse(new_content)
+            return None
+        except SyntaxError as syntax_err:
+            try:
+                ast.parse(original)
+            except SyntaxError:
+                return None  # the file was already broken: never block an attempt to repair it
+            try:
+                from src.tools.python_static_check import syntax_error_report
+                report = syntax_error_report(new_content, syntax_err)
+            except Exception:
+                report = ""
+            return {
+                "status": "error",
+                "message": f"Edit rejected: the result would not be valid Python ({syntax_err.msg} at line {syntax_err.lineno}). "
+                           "No changes were saved. Check the indentation of the new text." + (f"\n{report}" if report else ""),
+            }
+
+    @staticmethod
+    def _whitespace_tolerant_span(content: str, needle: str):
+        """
+        (start, end) character span of the whole lines in content that equal needle's lines when leading/trailing whitespace
+        is ignored; 'ambiguous' if several places match; None if none does.
+        """
+        needle_lines = [line.strip() for line in needle.splitlines()]
+        while needle_lines and not needle_lines[0]:
+            needle_lines.pop(0)
+        while needle_lines and not needle_lines[-1]:
+            needle_lines.pop()
+        if not needle_lines:
+            return None
+        file_lines = content.splitlines(keepends=True)
+        stripped = [line.strip() for line in file_lines]
+        size = len(needle_lines)
+        starts = [i for i in range(len(file_lines) - size + 1) if stripped[i:i + size] == needle_lines]
+        if not starts:
+            return None
+        if len(starts) > 1:
+            return "ambiguous"
+        start = sum(len(line) for line in file_lines[:starts[0]])
+        end = start + sum(len(line) for line in file_lines[starts[0]:starts[0] + size])
+        return start, end
+
+    @staticmethod
+    def _closest_lines_hint(content: str, needle: str) -> str:
+        """Numbered file lines around the line most similar to needle's first non-empty line ('' if nothing is close)."""
+        first = next((line.strip() for line in needle.splitlines() if line.strip()), "")
+        lines = content.splitlines()
+        if not first or not lines:
+            return ""
+        scored = [(difflib.SequenceMatcher(None, first, line.strip()).ratio(), index) for index, line in enumerate(lines)]
+        best_ratio, best_index = max(scored)
+        if best_ratio < 0.6:
+            return ""
+        size = max(1, len([line for line in needle.splitlines() if line.strip()]))
+        start, end = max(0, best_index - 1), min(len(lines), best_index + size + 1)
+        shown = "\n".join(f"{number + 1}: {lines[number]}" for number in range(start, end))
+        return f"\nThe most similar lines in the file are:\n{shown}"
+
     @staticmethod
     def _content_required_error(action: str, received: Dict[str, Any]) -> Dict[str, Any]:
         """Round 1n: say which parameters arrived, so a model that sent the text under another name can correct itself."""
@@ -238,6 +349,11 @@ class FileSystemTool(BaseTool):
         default_scope = "shared" if project_name and session_name else "private"
         scope = kwargs.get("scope", default_scope).lower()
         _fo = self._first_of # Shorthand — preserves empty strings unlike `or`
+        if kwargs.get("filename") is None:
+            # Round 1v: W2 sent filenames='["tests/test_temp_convert.py"]' (plus path='.') four times.
+            single_name = self._single_filename(_fo(kwargs.get("filenames"), kwargs.get("file_names"), kwargs.get("paths")))
+            if single_name:
+                kwargs["filename"] = single_name
         filename = _fo(kwargs.get("filename"), kwargs.get("filepath"), kwargs.get("file"), kwargs.get("path"), kwargs.get("file_path"), kwargs.get("file_name"), kwargs.get("target_file"), kwargs.get("name")) # Used by read, write, find_replace, regex_replace
         if isinstance(filename, str): filename = filename.strip()
         content = _fo(kwargs.get("content"), kwargs.get("text"), kwargs.get("data"), kwargs.get("body"), kwargs.get("code"), kwargs.get("string"), kwargs.get("content_str"), kwargs.get("message_content"), kwargs.get("file_content"), kwargs.get("contents")) # Used by write, append, insert_lines
@@ -378,6 +494,15 @@ class FileSystemTool(BaseTool):
         # --- End Scope Handling ---
         if base_path is None: return {"status": "error", "message": "Internal error determining workspace path."}
 
+        # Round 1v: notes in brackets copied into paths ('docs/README.md (new)') are not part of the path
+        path_notes: List[str] = []
+        filename, note_f = self._strip_path_annotation(base_path, filename)
+        relative_path, note_p = self._strip_path_annotation(base_path, relative_path)
+        destination_path, note_d = self._strip_path_annotation(base_path, destination_path)
+        for note in (note_f, note_p, note_d):
+            if note and note not in path_notes:
+                path_notes.append(note)
+
         # Default relative path for list action if not provided
         if action in ("list", "tree") and relative_path is None:
              relative_path = "."
@@ -478,6 +603,9 @@ class FileSystemTool(BaseTool):
                 if replace_end_line is None and end_line is not None:
                     replace_end_line = _safe_int(end_line)
                 if replace_start_line is None or replace_end_line is None: return {"status": "error", "message": "'replace_start_line' and 'replace_end_line' parameters are required for 'replace_lines'."}
+                if content is None:
+                    # Round 1v: W1 sent the new lines as 'replace_text' three times; that IS the content here.
+                    content = _fo(replace_text, replace_block_param)
                 if content is None: return self._content_required_error("replace_lines", kwargs)
                 result = await self._replace_lines_in_file(base_path, filename, replace_start_line, replace_end_line, content, agent_id, scope_description)
             elif action == "search_replace_block":
@@ -546,6 +674,9 @@ class FileSystemTool(BaseTool):
 
         if result is None:
             return {"status": "error", "message": "Unknown state in file system tool."} # Should not be reached
+
+        if path_notes:
+            result["message"] = (result.get("message") or "") + " [Note: " + " ".join(path_notes) + "]"
 
         # Append auto-correction feedback to successful results so the agent learns
         if auto_corrected_from and result.get("status") == "success":
@@ -917,6 +1048,14 @@ Pushes changes to a remote repository.
         """Reads content from a file within the specified base path."""
         validated_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
         if not validated_path: return {"status": "error", "message": f"Invalid or disallowed file path '{filename}' in {scope_description}."}
+        if validated_path.is_dir():
+            # Round 1v: reading '.' used to answer "directory 'startup_.../' exists but contains no files", which was wrong.
+            try:
+                rel_dir = str(validated_path.relative_to(base_path.resolve())) or "."
+            except ValueError:
+                rel_dir = "."
+            listing = await self._list_directory(base_path, rel_dir, agent_id, scope_description)
+            return {"status": "error", "message": f"'{filename}' is a directory, not a file. Pass the path of a file as 'filename'.\n{listing.get('message', '')}"}
         if not validated_path.is_file():
             # Help the agent by listing what files DO exist in the parent dir
             parent = validated_path.parent
@@ -1137,7 +1276,7 @@ Pushes changes to a remote repository.
                 # Round 1o: non-blocking hints about defects the syntax check cannot see (missing imports, docstring-only functions).
                 try:
                     from src.tools.python_static_check import python_code_notes
-                    code_notes = python_code_notes(content)
+                    code_notes = python_code_notes(content, filename)
                 except Exception as note_err:
                     logger.debug(f"Agent {agent_id}: python_code_notes failed for '{filename}': {note_err}")
                     code_notes = []
@@ -1208,21 +1347,42 @@ Pushes changes to a remote repository.
             hint = f" Available files in '{parent.name}/': {', '.join(existing_files)}" if existing_files else ""
             return {"status": "error", "message": f"File not found: '{filename}' in {scope_description}.{hint}"}
 
+        if find_text == "":
+            return {"status": "error", "message": "'find_text' is empty. Provide the exact text to find."}
         try:
-            def find_replace_sync():
-                original_content = validated_path.read_text(encoding='utf-8')
-                new_content = original_content.replace(find_text, replace_text)
-                count = original_content.count(find_text)
-                if original_content == new_content: return 0 # No changes made
-                else: validated_path.write_text(new_content, encoding='utf-8'); return count
-            num_replacements = await asyncio.to_thread(find_replace_sync)
-            message = f"Found 0 occurrences of the text in '{filename}'. No changes made."
+            # Round 1v: 0 occurrences used to be reported as SUCCESS ("No changes made"), so W1 never learned that its edits
+            # did nothing. Now: exact match first; else the same lines ignoring indentation (one place only); else an error.
+            original_content = await asyncio.to_thread(validated_path.read_text, encoding='utf-8')
+            num_replacements = original_content.count(find_text)
+            match_note = ""
             if num_replacements > 0:
-                message = f"Successfully replaced {num_replacements} occurrence(s) in '{filename}'."
-                logger.info(f"Agent {agent_id}: Successfully replaced {num_replacements} occurrence(s) in file '{filename}' in {scope_description}.")
+                new_content = original_content.replace(find_text, replace_text)
             else:
-                 logger.info(f"Agent {agent_id}: find_replace completed for '{filename}' in {scope_description}. No occurrences of '{find_text[:50]}...' found.")
-            return {"status": "success", "message": message, "replacements_made": num_replacements}
+                span = self._whitespace_tolerant_span(original_content, find_text)
+                if span is None:
+                    logger.info(f"Agent {agent_id}: find_replace in '{filename}' ({scope_description}): text not found.")
+                    return {"status": "error", "replacements_made": 0, "message": (
+                        f"find_text was NOT found in '{filename}', so nothing was changed. It must match the file exactly, "
+                        "including indentation." + self._closest_lines_hint(original_content, find_text)
+                        + "\nRead the file with line numbers and use 'replace_lines' (replace_start_line, replace_end_line, "
+                        "content), or copy the text exactly.")}
+                if span == "ambiguous":
+                    return {"status": "error", "replacements_made": 0, "message": (
+                        f"find_text was not found exactly in '{filename}', and ignoring indentation it matches several places. "
+                        "Nothing was changed. Use a longer find_text or 'replace_lines' with line numbers.")}
+                start, end = span
+                replacement = replace_text
+                if original_content[start:end].endswith("\n") and not replacement.endswith("\n"):
+                    replacement += "\n"
+                new_content = original_content[:start] + replacement + original_content[end:]
+                num_replacements = 1
+                match_note = " (matched ignoring differences in indentation/whitespace)"
+            syntax_problem = self._python_edit_error(filename, original_content, new_content)
+            if syntax_problem:
+                return syntax_problem
+            await asyncio.to_thread(validated_path.write_text, new_content, encoding='utf-8')
+            logger.info(f"Agent {agent_id}: Successfully replaced {num_replacements} occurrence(s) in file '{filename}' in {scope_description}{match_note}.")
+            return {"status": "success", "message": f"Successfully replaced {num_replacements} occurrence(s) in '{filename}'{match_note}.", "replacements_made": num_replacements}
         except FileNotFoundError: logger.warning(f"Agent {agent_id} find_replace error (FileNotFound): File not found at '{filename}' in {scope_description}."); return {"status": "error", "message": f"File not found at '{filename}' in {scope_description}."}
         except PermissionError: logger.error(f"Agent {agent_id} find_replace error: Permission denied for '{filename}' in {scope_description}."); return {"status": "error", "message": f"Permission denied when accessing file '{filename}'."}
         except Exception as e: logger.error(f"Agent {agent_id} error during find/replace in file '{filename}' in {scope_description}: {e}", exc_info=True); return {"status": "error", "message": f"Error during find/replace in '{filename}': {type(e).__name__} - {e}"}
@@ -1235,6 +1395,9 @@ Pushes changes to a remote repository.
              
          validated_path = await self._resolve_and_validate_path(base_path, relative_dir, agent_id, scope_description)
          if not validated_path: return {"status": "error", "message": f"Invalid or disallowed directory path '{relative_dir}' in {scope_description}."}
+         if not validated_path.exists() and validated_path.suffix.lower() in self.FILE_LIKE_EXTENSIONS:
+             # Round 1v: 'mkdir docs/README.md (force)' created a directory named like the file that was supposed to be written.
+             return {"status": "error", "message": f"'{relative_dir}' is a FILE name ({validated_path.suffix}), not a directory. Create files with action 'write' (path and content); missing parent directories are created automatically."}
          if validated_path.exists():
              if validated_path.is_dir(): return {"status": "success", "message": f"Directory '{relative_dir}' already exists in {scope_description}."}
              else: return {"status": "error", "message": f"Cannot create directory. '{relative_dir}' points to an existing file."}
@@ -1290,20 +1453,18 @@ Pushes changes to a remote repository.
             hint = f" Available files in '{parent.name}/': {', '.join(existing_files)}" if existing_files else ""
             return {"status": "error", "message": f"File not found: '{filename}' in {scope_description}.{hint}"}
         try:
-            def regex_replace_sync():
-                original_content = validated_path.read_text(encoding='utf-8')
-                new_content, count = re.subn(regex_pattern, replace_text, original_content, flags=re.MULTILINE)
-                if count > 0: validated_path.write_text(new_content, encoding='utf-8')
-                return count
-            
-            num_replacements = await asyncio.to_thread(regex_replace_sync)
-            message = f"Found 0 occurrences matching regex '{regex_pattern}' in '{filename}'. No changes made."
-            if num_replacements > 0:
-                message = f"Successfully replaced {num_replacements} match(es) in '{filename}'."
-                logger.info(f"Agent {agent_id}: Successfully replaced {num_replacements} match(es) in file '{filename}' in {scope_description}.")
-            else:
-                 logger.info(f"Agent {agent_id}: regex_replace completed for '{filename}' in {scope_description}. No matches found.")
-            return {"status": "success", "message": message, "replacements_made": num_replacements}
+            original_content = await asyncio.to_thread(validated_path.read_text, encoding='utf-8')
+            new_content, num_replacements = re.subn(regex_pattern, replace_text, original_content, flags=re.MULTILINE)
+            if num_replacements == 0:
+                # Round 1v: like find_replace, matching nothing is a failure the agent must see, not a success.
+                logger.info(f"Agent {agent_id}: regex_replace in '{filename}' ({scope_description}): no matches.")
+                return {"status": "error", "replacements_made": 0, "message": f"The regex '{regex_pattern}' matched nothing in '{filename}', so nothing was changed."}
+            syntax_problem = self._python_edit_error(filename, original_content, new_content)
+            if syntax_problem:
+                return syntax_problem
+            await asyncio.to_thread(validated_path.write_text, new_content, encoding='utf-8')
+            logger.info(f"Agent {agent_id}: Successfully replaced {num_replacements} match(es) in file '{filename}' in {scope_description}.")
+            return {"status": "success", "message": f"Successfully replaced {num_replacements} match(es) in '{filename}'.", "replacements_made": num_replacements}
         except FileNotFoundError: return {"status": "error", "message": f"File not found at '{filename}' in {scope_description}."}
         except PermissionError: return {"status": "error", "message": f"Permission denied when accessing file '{filename}'."}
         except re.error as e: return {"status": "error", "message": f"Invalid regex pattern '{regex_pattern}': {e}"}
@@ -1545,17 +1706,21 @@ Pushes changes to a remote repository.
         if not val_path: return {"status": "error", "message": f"Invalid path '{filename}'."}
         if not val_path.is_file(): return {"status": "error", "message": f"File '{filename}' does not exist."}
         try:
-            def insert_sync():
-                lines = val_path.read_text(encoding='utf-8').splitlines(True)
-                idx = max(0, insert_line - 1)
-                
-                new_lines = content.splitlines(True)
-                if new_lines and not new_lines[-1].endswith('\\n') and idx < len(lines):
-                    new_lines[-1] += '\\n'
-                    
-                lines = lines[:idx] + new_lines + lines[idx:]
-                val_path.write_text("".join(lines), encoding='utf-8')
-            await asyncio.to_thread(insert_sync)
+            original_content = await asyncio.to_thread(val_path.read_text, encoding='utf-8')
+            lines = original_content.splitlines(True)
+            idx = max(0, insert_line - 1)
+            new_lines = content.splitlines(True)
+            if lines and idx >= len(lines) and not lines[-1].endswith('\n'):
+                lines[-1] += '\n'  # appending after a last line without newline must not glue two lines together
+            # Round 1v: this compared/appended the two characters backslash+n instead of a newline, gluing the inserted text
+            # onto the next line with a literal "\n" in between.
+            if new_lines and not new_lines[-1].endswith('\n') and idx < len(lines):
+                new_lines[-1] += '\n'
+            new_content = "".join(lines[:idx] + new_lines + lines[idx:])
+            syntax_problem = self._python_edit_error(filename, original_content, new_content)
+            if syntax_problem:
+                return syntax_problem
+            await asyncio.to_thread(val_path.write_text, new_content, encoding='utf-8')
             logger.info(f"Agent {agent_id} inserted lines at {insert_line} in '{filename}' ({scope_description})")
             return {"status": "success", "message": f"Successfully inserted content at line {insert_line} in '{filename}'."}
         except Exception as e:
@@ -1569,18 +1734,19 @@ Pushes changes to a remote repository.
         if start_line > end_line or start_line < 1:
             return {"status": "error", "message": f"Invalid line range: {start_line} to {end_line}."}
         try:
-            def replace_sync():
-                lines = val_path.read_text(encoding='utf-8').splitlines(True)
-                start_idx = max(0, start_line - 1)
-                end_idx = max(start_idx, min(end_line, len(lines)))
-                
-                new_lines = content.splitlines(True)
-                if new_lines and not new_lines[-1].endswith('\\n') and end_idx < len(lines):
-                    new_lines[-1] += '\\n'
-                    
-                lines = lines[:start_idx] + new_lines + lines[end_idx:]
-                val_path.write_text("".join(lines), encoding='utf-8')
-            await asyncio.to_thread(replace_sync)
+            original_content = await asyncio.to_thread(val_path.read_text, encoding='utf-8')
+            lines = original_content.splitlines(True)
+            start_idx = max(0, start_line - 1)
+            end_idx = max(start_idx, min(end_line, len(lines)))
+            new_lines = content.splitlines(True)
+            # Round 1v: real newline (was the two characters backslash+n, see insert_lines)
+            if new_lines and not new_lines[-1].endswith('\n') and end_idx < len(lines):
+                new_lines[-1] += '\n'
+            new_content = "".join(lines[:start_idx] + new_lines + lines[end_idx:])
+            syntax_problem = self._python_edit_error(filename, original_content, new_content)
+            if syntax_problem:
+                return syntax_problem
+            await asyncio.to_thread(val_path.write_text, new_content, encoding='utf-8')
             logger.info(f"Agent {agent_id} replaced lines {start_line}-{end_line} in '{filename}' ({scope_description})")
             return {"status": "success", "message": f"Successfully replaced lines {start_line} to {end_line} in '{filename}'."}
         except Exception as e:

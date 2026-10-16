@@ -114,6 +114,21 @@ def repair_taskwarrior_records(lines: List[str]) -> List[str]:
         records.append(partial)
     return [_clean_record(r) if r.startswith("[") else r for r in records]
 
+# Round 1v: W1 sent priority='normal' and the whole modify_task call was rejected.
+_PRIORITY_WORDS = {
+    "H": "H", "HIGH": "H", "URGENT": "H", "CRITICAL": "H", "TOP": "H", "IMPORTANT": "H",
+    "M": "M", "MEDIUM": "M", "MED": "M", "MID": "M", "NORMAL": "M", "MODERATE": "M", "DEFAULT": "M", "STANDARD": "M",
+    "L": "L", "LOW": "L", "MINOR": "L", "TRIVIAL": "L",
+    "": "", "NONE": "", "NULL": "",
+}
+INVALID_PRIORITY_HINT = "Valid priorities are: H (high), M (medium), L (low)."
+
+
+def normalize_priority(value: Any) -> Optional[str]:
+    """'H', 'M', 'L', '' (no priority) or None if the value is not a priority."""
+    return _PRIORITY_WORDS.get(str(value if value is not None else "").strip().upper())
+
+
 def match_task_by_uuid_prefix(tasks, text: str) -> list:
     """
     Resolves a UUID the model has copied imperfectly. Small models often drop or alter characters in the MIDDLE
@@ -483,12 +498,9 @@ class ProjectManagementTool(BaseTool):
             task['status'] = t_status
             
             if kwargs.get("priority"):
-                prio = str(kwargs["priority"]).upper()
-                if prio in ['HIGH', 'H']: prio = 'H'
-                elif prio in ['MEDIUM', 'M']: prio = 'M'
-                elif prio in ['LOW', 'L']: prio = 'L'
-                else: return {"status": "error", "message": f"Invalid priority '{kwargs['priority']}'. Valid priorities are: H (high), M (medium), L (low)."}
-                task['priority'] = prio
+                prio = normalize_priority(kwargs["priority"])
+                if prio is None: return {"status": "error", "message": f"Invalid priority '{kwargs['priority']}'. {INVALID_PRIORITY_HINT}"}
+                if prio: task['priority'] = prio
             if kwargs.get("project_filter"): task['project'] = kwargs["project_filter"]
             
             if kwargs.get("assignee_agent_id"): 
@@ -915,12 +927,8 @@ class ProjectManagementTool(BaseTool):
             if "description" in kwargs: 
                 task['description'] = " ".join(str(kwargs["description"]).splitlines()).strip(); modified_fields.append("description")
             if "priority" in kwargs: 
-                prio = str(kwargs["priority"]).upper()
-                if prio in ['HIGH', 'H']: prio = 'H'
-                elif prio in ['MEDIUM', 'M']: prio = 'M'
-                elif prio in ['LOW', 'L']: prio = 'L'
-                elif prio in ['', 'NONE', 'NULL']: prio = ''
-                else: return {"status": "error", "message": f"Invalid priority '{kwargs['priority']}'. Valid priorities are: H (high), M (medium), L (low)."}
+                prio = normalize_priority(kwargs["priority"])
+                if prio is None: return {"status": "error", "message": f"Invalid priority '{kwargs['priority']}'. {INVALID_PRIORITY_HINT}"}
                 task['priority'] = prio; modified_fields.append("priority")
             if "tags" in kwargs: 
                 tags_arg = kwargs["tags"]

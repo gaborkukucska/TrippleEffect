@@ -21,6 +21,41 @@ from src.tools.error_handler import tool_error_handler, ErrorType
 
 logger = logging.getLogger(__name__)
 
+# --- Action given as a parameter name (Round 1v) ------------------------------------------------------------------------
+# 2026-10-16 22:08-22:45: W3 called project_management five times as {"list_tasks": '{"action": "list"}'} and got
+# "Missing required parameters: action" every time. When 'action' is missing and exactly one argument NAME is a valid
+# action of the tool, that name is the action (a dict / JSON-object value is merged in as further arguments).
+KEYED_ACTIONS: Dict[str, frozenset] = {
+    "project_management": frozenset({"add_task", "list_tasks", "modify_task", "complete_task", "get_dependency_graph"}),
+}
+
+
+def infer_action_from_keys(tool_name: str, tool_args: Dict[str, Any]) -> Optional[str]:
+    """Sets and returns tool_args['action'] when it is missing but given as an argument name; otherwise None."""
+    if not isinstance(tool_args, dict) or tool_args.get("action"):
+        return None
+    actions = KEYED_ACTIONS.get(tool_name)
+    if not actions:
+        return None
+    keyed = [key for key in tool_args if key in actions]
+    if len(keyed) != 1:
+        return None
+    action = keyed[0]
+    value = tool_args.pop(action)
+    extra: Any = value
+    if isinstance(value, str) and value.strip().startswith("{"):
+        try:
+            extra = json.loads(value)
+        except (ValueError, TypeError):
+            extra = None
+    if isinstance(extra, dict):
+        for key, val in extra.items():
+            if key != "action" and key not in tool_args and val not in (None, ""):
+                tool_args[key] = val
+    tool_args["action"] = action
+    return action
+
+
 class ToolExecutor:
     def __init__(self):
         self.tools: Dict[str, BaseTool] = {}
@@ -588,7 +623,11 @@ class ToolExecutor:
             elif tool_name == getattr(ManageTeamTool, 'name', 'manage_team'):
                 if 'agent_id' in tool_args and 'target_agent_id' not in tool_args:
                     tool_args['target_agent_id'] = tool_args['agent_id']
-                    
+
+            inferred_action = infer_action_from_keys(tool_name, tool_args)
+            if inferred_action:
+                logger.info(f"Executor: '{tool_name}' call from '{agent_id}' had no 'action'; using '{inferred_action}', which was given as a parameter name.")
+
             validated_args = tool_args.copy()
             missing_required = []
             if schema.get('parameters'):

@@ -113,7 +113,8 @@ def test_render_handles_dict_definitions_and_marks_planned_files():
     md = render_project_structure_md(dirs, files, REAL_SESSION_DEFINITIONS)
     assert "- **language**: Python 3.x" in md
     assert "type: style_guide; details: PEP8 compliant code formatting" in md
-    assert "__init__.py  (planned)" in md
+    assert "## Files To Create" in md and "(planned)" not in md   # Round 1v: no bracket notes in the layout
+    assert any(line.startswith("- ") and line.endswith("__init__.py") for line in md.splitlines())
     assert "  src/" in md
 
 

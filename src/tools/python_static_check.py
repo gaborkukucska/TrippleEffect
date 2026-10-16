@@ -9,8 +9,10 @@ never produce a false alarm; they are hints appended to a successful write, neve
 """
 import ast
 import builtins
+import re
 import sys
-from typing import List, Set
+from pathlib import PurePosixPath
+from typing import List, Optional, Set
 
 MAX_NOTES = 4
 
@@ -81,7 +83,38 @@ def _functions_outside_classes(tree: ast.AST):
                 stack.append((child, in_class))
 
 
-def python_code_notes(source: str) -> List[str]:
+# --- Round 1v --------------------------------------------------------------------------------------------------------------
+# 2026-10-16 21:04: W2 saved tests/test_temp_convert.py with `def test_celsius_to_fahrenheit_basic()` twice (the second
+# silently replaces the first) and neither test contained an assert, so pytest could never fail. The write said "Successfully".
+_TEST_FILE_RE = re.compile(r"^(test_.+|.+_test)\.py$", re.IGNORECASE)
+
+
+def _duplicate_definitions(tree: ast.AST) -> List[str]:
+    """Functions/classes defined twice in the same module or class body (decorated definitions are skipped)."""
+    notes: List[str] = []
+    bodies = [tree] + [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]
+    for owner in bodies:
+        first_line = {}
+        for node in getattr(owner, "body", []):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) or node.decorator_list:
+                continue
+            if node.name in first_line:
+                notes.append(f"'{node.name}' is defined twice (lines {first_line[node.name]} and {node.lineno}): the second "
+                             "definition silently replaces the first. Give each one a unique name or delete one.")
+            else:
+                first_line[node.name] = node.lineno
+    return notes
+
+
+def _checks_nothing(func: ast.AST) -> bool:
+    """True if a test function contains no assert and calls nothing, so it can never fail."""
+    for node in ast.walk(func):
+        if node is not func and isinstance(node, (ast.Assert, ast.Call, ast.Raise, ast.Await)):
+            return False
+    return True
+
+
+def python_code_notes(source: str, filename: Optional[str] = None) -> List[str]:
     """Hints about a Python source text; [] if it does not parse (the syntax check reports that separately)."""
     try:
         tree = ast.parse(source)
@@ -105,6 +138,15 @@ def python_code_notes(source: str) -> List[str]:
     for func in sorted(_functions_outside_classes(tree), key=lambda n: n.lineno):
         if _is_docstring_only(func) and not {"abstractmethod", "overload"} & set(_decorator_names(func)):
             notes.append(f"function '{func.name}' (line {func.lineno}) contains only a docstring and no code: its body is not implemented yet.")
+
+    notes.extend(_duplicate_definitions(tree))
+
+    is_test_file = filename is None or bool(_TEST_FILE_RE.match(PurePosixPath(str(filename).replace("\\", "/")).name))
+    if is_test_file:
+        for func in sorted(_functions_outside_classes(tree), key=lambda n: n.lineno):
+            if func.name.startswith("test") and not _is_docstring_only(func) and _checks_nothing(func):
+                notes.append(f"test '{func.name}' (line {func.lineno}) has no assert and calls nothing, so it can never fail. "
+                             "Call the function under test and assert the expected result.")
 
     return notes[:MAX_NOTES]
 # --- Syntax error report (Round 1t) -----------------------------------------------------------------------------------------

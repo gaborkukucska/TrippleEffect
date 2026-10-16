@@ -606,7 +606,7 @@ class AgentManager:
                                 agent.message_history.append({"role": "system", "content": "[Framework Watchdog]: You were detected as IDLE while in an active working state. Resuming cycle..."})
                                 await self.schedule_cycle(agent, 0)
                         
-                            elif agent.state == consts.WORKER_STATE_WAIT and self.current_project and self.current_session:
+                            elif agent.state in (consts.WORKER_STATE_WAIT, consts.WORKER_STATE_STARTUP) and self.current_project and self.current_session:
                                 # Workers in WAIT might have pending tasks assigned to them but got pushed here by the CG
                                 # Watchdog will verify if they truly have no pending tasks.
                                 try:
@@ -614,11 +614,21 @@ class AgentManager:
                                     pm_tool = ProjectManagementTool()
                                     tw_instance = pm_tool._get_taskwarrior_instance(self.current_project, self.current_session)
                                     if tw_instance:
-                                        pending_tasks = tw_instance.tasks.pending().filter(assignee=agent.agent_id)
-                                        if len(pending_tasks) > 0:
-                                            target_task = pending_tasks[0]
+                                        # Round 1v: also covers workers whose first task was assigned while its dependencies were
+                                        # still open (they stay in worker_startup); only tasks that are ready may start.
+                                        from src.utils.task_utils import get_task_field, unfinished_dependencies
+                                        pending_tasks = list(tw_instance.tasks.pending().filter(assignee=agent.agent_id))
+                                        ready_tasks = [
+                                            t for t in pending_tasks
+                                            if str(get_task_field(t, 'task_progress', '')).strip().lower() != 'decomposed'
+                                            and not unfinished_dependencies(t)
+                                        ]
+                                        if pending_tasks and not ready_tasks:
+                                            logger.debug(f"Watchdog: Worker '{agent.agent_id}' has {len(pending_tasks)} pending task(s), all waiting for unfinished dependencies.")
+                                        if ready_tasks:
+                                            target_task = ready_tasks[0]
                                             logger.warning(
-                                                f"Watchdog: Worker '{agent.agent_id}' is in 'worker_wait' but has {len(pending_tasks)} pending tasks! "
+                                                f"Watchdog: Worker '{agent.agent_id}' is in '{agent.state}' but has {len(ready_tasks)} pending task(s) ready to start! "
                                                 f"Auto-activating for task '{target_task['uuid']}'."
                                             )
                                             await self.activate_worker_with_task_details(
@@ -809,10 +819,34 @@ class AgentManager:
         logger.info(f"Agent '{agent_id}' set to IDLE and rescheduled for retry with user and CG feedback.")
         return True, f"Agent '{agent_id}' will retry with feedback."
 
-    async def activate_worker_with_task_details(self, worker_agent_id: str, task_id_from_tool: str, task_description_from_tool: str, task_progress_from_tool: str = "todo"):
+    def get_unfinished_dependencies(self, task_id: Any) -> List[Tuple[str, str]]:
+        """
+        Round 1v: (uuid, description) of the tasks that task_id depends on and that are not finished yet.
+        Returns [] when there are none, and also when the task cannot be read (fail open: never blocks by accident).
+        """
+        if not task_id or not self.current_project or not self.current_session:
+            return []
+        try:
+            from src.tools.project_management import ProjectManagementTool, TASKLIB_AVAILABLE
+            from src.utils.task_utils import unfinished_dependencies
+            if not TASKLIB_AVAILABLE:
+                return []
+            tw_instance = ProjectManagementTool()._get_taskwarrior_instance(self.current_project, self.current_session)
+            if not tw_instance:
+                return []
+            text = str(task_id).strip()
+            task = tw_instance.tasks.get(id=int(text)) if text.isdigit() else tw_instance.tasks.get(uuid=text)
+            return unfinished_dependencies(task)
+        except Exception as e:
+            logger.debug(f"AgentManager: Could not check dependencies of task '{task_id}': {e}")
+            return []
+
+    async def activate_worker_with_task_details(self, worker_agent_id: str, task_id_from_tool: str, task_description_from_tool: str, task_progress_from_tool: str = "todo") -> Optional[str]:
         """
         Activates a worker agent with specific task details, ensuring the task description
         is injected for its next cycle.
+        Returns "activated", "deferred_busy" (worker busy; directive queued in its inbox), "blocked" (the task depends on
+        unfinished tasks; the watchdog starts it once they are finished) or None (worker not found / not a worker).
         """
         worker_agent = self.agents.get(worker_agent_id)
         if not worker_agent:
@@ -824,6 +858,15 @@ class AgentManager:
             return
 
         logger.info(f"AgentManager: Activating worker '{worker_agent_id}' for task ID '{task_id_from_tool}' with description: '{task_description_from_tool[:100]}...'")
+
+        # --- Round 1v: a task whose dependencies are not finished must not start yet ---
+        if task_progress_from_tool not in ["finished", "completed"]:
+            blocking_dependencies = self.get_unfinished_dependencies(task_id_from_tool)
+            if blocking_dependencies:
+                logger.info(f"AgentManager: Task '{task_id_from_tool}' for worker '{worker_agent_id}' depends on {len(blocking_dependencies)} "
+                            f"unfinished task(s) {[uuid for uuid, _ in blocking_dependencies]}. Activation deferred; the watchdog starts it "
+                            f"once they are finished.")
+                return "blocked"
 
         # --- BLOCK PREEMPTIVE ACTIVATION IF WORKER IS BUSY ---
         from src.agents.constants import WORKER_STATE_REPORT, WORKER_STATE_WORK, WORKER_STATE_DECOMPOSE
@@ -850,8 +893,8 @@ class AgentManager:
             if not hasattr(worker_agent, 'message_inbox'):
                 worker_agent.message_inbox = []
             worker_agent.message_inbox.append(activation_message)
-            
-            return # Skip immediate state change and scheduling
+
+            return "deferred_busy" # Skip immediate state change and scheduling
         # --- END BLOCK ---
 
         worker_agent._injected_task_description = task_description_from_tool
@@ -939,6 +982,7 @@ class AgentManager:
 
         await self.schedule_cycle(worker_agent, retry_count=0)
         logger.info(f"AgentManager: Worker '{worker_agent_id}' scheduled for task '{task_id_from_tool}' with proper context.")
+        return "activated"
 
     async def _check_pm_completion_status(self, agent: Agent) -> bool:
         """

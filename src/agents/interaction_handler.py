@@ -530,19 +530,18 @@ class AgentInteractionHandler:
                         if assignee_agent and getattr(assignee_agent, 'agent_type', None) == AGENT_TYPE_WORKER:
                             # Skip self-activation: worker creating its own sub-tasks doesn't need re-activation
                             if assignee_id == agent.agent_id:
-                                logger.info(f"InteractionHandler: Worker '{assignee_id}' assigned a task to itself (self-decomposition). Skipping self-activation to avoid directive flooding.")
+                                logger.info(f"InteractionHandler: Worker '{assignee_id}' changed or created a task assigned to itself. Skipping self-activation to avoid directive flooding.")
                             else:
                                 logger.info(f"InteractionHandler: Task '{action_performed}' successful for assignee '{assignee_id}'. Attempting worker activation.")
-                                await self._manager.activate_worker_with_task_details(
+                                activation_outcome = await self._manager.activate_worker_with_task_details(
                                     worker_agent_id=assignee_id,
                                     task_id_from_tool=task_identifier_for_activation,
                                     task_description_from_tool=task_description_for_worker,
                                     task_progress_from_tool=raw_result.get("task_progress", "todo")
                                 )
-                                
-                                # Append confirmation so the PM knows the worker is active
-                                notification = f"\n\n[Framework Notification]: Worker '{assignee_id}' has been automatically activated and is now working on this task. Do not re-assign this task."
-                                result_content += notification
+
+                                # Append confirmation so the PM knows what happened to the assignment (Round 1v: blocked / queued)
+                                result_content += self._activation_notification(assignee_id, task_identifier_for_activation, activation_outcome)
                         else:
                             agent_type_str = getattr(assignee_agent, 'agent_type', 'Unknown') if assignee_agent else 'Not Found'
                             logger.debug(f"InteractionHandler: Task '{action_performed}' successful for assignee '{assignee_id}'. Skipping worker activation because assignee is '{agent_type_str}'.")
@@ -569,6 +568,23 @@ class AgentInteractionHandler:
 
         return {"call_id": call_id, "name": tool_name, "content": result_content, "_raw_result": raw_result} 
 
+
+    def _activation_notification(self, assignee_id: str, task_id: str, outcome: Optional[str]) -> str:
+        """Round 1v: the note appended to the PM's task tool result, matching what really happened to the worker."""
+        if outcome == "blocked":
+            try:
+                blocking = self._manager.get_unfinished_dependencies(task_id)
+            except Exception:
+                blocking = []
+            names = "; ".join(f"'{description[:70]}' ({uuid[:8]})" for uuid, description in blocking[:3]) or "its dependencies"
+            return (f"\n\n[Framework Notification]: The task is assigned to '{assignee_id}', but it depends on task(s) that are not "
+                    f"finished yet: {names}. '{assignee_id}' will be started automatically as soon as they are finished. Do not "
+                    f"message '{assignee_id}' about it and do not assign it again.")
+        if outcome == "deferred_busy":
+            return (f"\n\n[Framework Notification]: Worker '{assignee_id}' is still busy with its current work. The task is queued "
+                    f"and '{assignee_id}' will start it next. Do not assign it again.")
+        return (f"\n\n[Framework Notification]: Worker '{assignee_id}' has been automatically activated and is now working on "
+                f"this task. Do not re-assign this task.")
 
     async def failed_tool_result(self, call_id: Optional[str], tool_name: Optional[str]) -> Optional[ToolResultDict]:
         """
