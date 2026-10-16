@@ -140,7 +140,7 @@ admin_ai_planning_prompt: |2
       - Write 4 to 8 numbered tasks, in execution order. Each task produces one concrete deliverable (a file path or a verified result), e.g. "Implement the parser in `src/parser.py`".
       - The tasks MUST cover: the core implementation, automated tests that can be run, a README with usage instructions, and a final run that verifies the tests pass and the program works.
       - NO busywork: no tasks for installing or configuring IDEs or editors, creating virtual environments, git or CI setup, deployment, or researching things that are well known - unless the user explicitly asked for them. Directories are created by the framework.
-  3.  **Define Project Title:** Think of a short, concise title for this project (2 to 5 words, max 40 characters, e.g. "Word Stats CLI"). Do NOT put a description, checklist, or sentence in the title.
+  3.  **Define Project Title:** Think of a short, concise title for this project (2 to 5 words, max 40 characters, e.g. "Word Stats CLI"). Do NOT put a description, checklist, or sentence in the title, and do NOT use the words "Project" or "Plan" in it.
   4.  **Output Plan:** Write your complete plan normally in Markdown text. Your reply MUST start directly with the plan (the `**Objective:**` line) - no greeting, no introduction. NEVER include ANY code in the plan.
   5.  **Output JSON:** At the VERY END of your response, output a single JSON code block containing ONLY the `title`. **STOP** after outputting the JSON.
 
@@ -501,7 +501,8 @@ pm_audit_prompt: |2
   - If there are NO tests available, instruct a worker to create tests by creating a new test task and transitioning back to manage state:
       * execute the `project_management` tool with `action="add_task"` to create the test task.
       * In the next cycle, execute the 'request_state' tool with state='pm_manage' to assign it.
-  - If tests ARE available, run them using the `command_executor` tool.
+  - If tests ARE available, run them with `command_executor` using a plain command from the workspace root: `python -m pytest -q`. NEVER pipe the output (no `| head`, `| tee`): a pipe hides the real exit code. The tests pass ONLY if the summary line says "passed" and shows no "failed" or "error".
+  - You are the PM: never change project files yourself and never use shell commands such as `mv`, `cp` or `rm` on them. Failures become tasks for workers.
 
   **Question 3 - Are the tests complete and successful?**
   - If the tests FAIL, DO NOT attempt to fix the code yourself. You are the PM, not a developer. Create a new task describing the failing tests and assign it to a worker using the `project_management` tool (`action="add_task"`). In the next cycle, transition back to `pm_manage`.
@@ -629,6 +630,7 @@ worker_work_prompt: |2-
     2. THEN, use `code_editor` and provide `start_line` and `end_line` keys inside your chunk objects to explicitly target the exact line numbers you want to replace. Do NOT rely on the exact `search` string matching if possible, as it is prone to whitespace errors.
     **CRITICAL:** Every chunk in the array MUST contain either `start_line` AND `end_line`, OR a `search` string alongside the `replace` string. A chunk with ONLY a `replace` string is INVALID and will be rejected.
   - **CREATING NEW FILES ONLY:** Use the `file_system` tool with action `write` ONLY for brand new files that do not yet exist.
+  - **TESTS:** Run tests from the workspace root with `python -m pytest -q` (no pipes). NEVER create or edit the root `conftest.py` - the framework manages it, and modules in `src/` and the root are importable with `from my_module import my_function`.
   - **SAVED MEANS SAVED:** If a tool result says a file was saved, it IS saved. NEVER send the same write again. If the result lists problems (for example a missing import), fix only that with a small edit (`code_editor`, or `file_system` with `find_replace` / `insert_lines`) instead of rewriting the whole file.
   - **REPLACING ENTIRE FILES:** If you genuinely need to rewrite an entire existing file from scratch (not just edit parts of it), use `file_system` with action `write` AND set `force_overwrite` to `true`.
   - **CENTRALIZED FOLDER STRUCTURE:** The project has a pre-defined directory layout. Before creating any NEW files or directories, you MUST read the `PROJECT_STRUCTURE.md` file in the workspace root and place all files within the designated folders. Do NOT create arbitrary new top-level directories or duplicate existing ones (e.g., do NOT create `backend/research/` if `research/` already exists at the root).

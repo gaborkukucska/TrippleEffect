@@ -142,6 +142,58 @@ def plan_project_structure(structure: Any) -> Tuple[List[str], List[str], List[s
     return dirs, files, notes
 
 
+# --- Planned layout normalisation + pytest scaffold (Round 1u) --------------------------------------------------------------
+# 2026-10-16 18:05: the PM planned temp_convert.py and test_temp_convert.py at the workspace ROOT but also declared empty src/ and
+# tests/ directories. Workers then moved files around, rewrote conftest.py again and again, and the finished project failed all
+# 15 tests with ModuleNotFoundError. The framework now makes the layout consistent and owns the import path.
+FRAMEWORK_CONFTEST_MARKER = "FRAMEWORK-OWNED conftest"
+FRAMEWORK_CONFTEST = "\n".join([
+    '"""FRAMEWORK-OWNED conftest: makes modules in src/ and in the project root importable from the tests.',
+    '',
+    'Do not edit or recreate this file. In tests simply write `from my_module import my_function`.',
+    '"""',
+    'import sys',
+    'from pathlib import Path',
+    '',
+    '_ROOT = Path(__file__).resolve().parent',
+    'for _path in (_ROOT / "src", _ROOT):',
+    '    if _path.is_dir() and str(_path) not in sys.path:',
+    '        sys.path.insert(0, str(_path))',
+    '',
+])
+_TEST_FILE_RE = re.compile(r"^(test_.+|.+_test)\.py$", re.IGNORECASE)
+_ROOT_PY_KEEP = frozenset({"conftest.py", "setup.py", "manage.py", "noxfile.py", "tasks.py", "wsgi.py", "asgi.py"})
+
+
+def normalize_planned_layout(dirs: List[str], files: List[str]) -> Tuple[List[str], List[str], List[str]]:
+    """
+    Makes a planned layout consistent: Python test files always live in tests/; other Python files planned at the workspace
+    root move to src/ when the plan declares a src/ directory. Returns (dirs, files, notes).
+    """
+    new_dirs = list(dirs)
+    new_files: List[str] = []
+    notes: List[str] = []
+    has_src = "src" in new_dirs or any(d.startswith("src/") for d in new_dirs)
+
+    def add_dir(rel: str) -> None:
+        if rel not in new_dirs:
+            new_dirs.append(rel)
+
+    for rel in files:
+        pure = PurePosixPath(rel)
+        target = rel
+        if _TEST_FILE_RE.match(pure.name) and pure.parts[0] != "tests":
+            target = f"tests/{pure.name}"
+        elif len(pure.parts) == 1 and pure.suffix == ".py" and has_src and pure.name not in _ROOT_PY_KEEP:
+            target = f"src/{pure.name}"
+        if target != rel:
+            notes.append(f"Planned file '{rel}' moved to '{target}' to keep tests/ and src/ consistent.")
+            add_dir(str(PurePosixPath(target).parent))
+        if target not in new_files:
+            new_files.append(target)
+    return new_dirs, new_files, notes
+
+
 _MANAGER_ROLE_RE = re.compile(r"(^|[^a-z0-9])(pm\d*|project[\s_\-]*manager|projectmanager)($|[^a-z0-9])", re.IGNORECASE)
 
 
@@ -211,6 +263,8 @@ def render_project_structure_md(dirs: List[str], planned_files: List[str], code_
         "**All workers MUST place their files within the directories listed below.**",
         "Do NOT create arbitrary new top-level directories without PM approval.",
         "Directories already exist. Entries marked (planned) are files that do NOT exist yet: create them with file_system 'write'.",
+        "Run tests from the workspace root with `python -m pytest -q`. A framework-owned conftest.py already makes src/ importable: write",
+        "`from my_module import my_function` in tests and NEVER create or edit the root conftest.py.",
         "",
     ]
     rendered = _render_definitions(code_base_definitions)
@@ -445,9 +499,12 @@ class PMKickoffWorkflow(BaseWorkflow):
             workspace_path = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, str(project_context), str(manager.current_session))
             try:
                 planned_dirs, planned_files, notes = plan_project_structure(structure_list)
+                planned_dirs, planned_files, layout_notes = normalize_planned_layout(planned_dirs, planned_files)
+                notes = list(notes) + layout_notes
                 for note in notes:
                     logger.warning(f"PMKickoffWorkflow: project_structure from PM '{agent.agent_id}': {note}")
                 created_dirs = self._create_directory_structure(planned_dirs, workspace_path)
+                self._write_test_scaffold(workspace_path, planned_files)
                 if created_dirs or planned_files:
                     # Generate PROJECT_STRUCTURE.md manifest (directories + planned files)
                     self._write_project_structure_md(workspace_path, created_dirs, code_base_definitions, planned_files)
@@ -678,6 +735,20 @@ class PMKickoffWorkflow(BaseWorkflow):
             created.append(rel)
             logger.debug(f"PMKickoffWorkflow: Created directory: {rel}")
         return created
+
+    def _write_test_scaffold(self, workspace_path: Path, planned_files: List[str]) -> None:
+        """Writes the framework-owned root conftest.py when Python files are planned (never over an existing one)."""
+        try:
+            if not any(f.endswith(".py") for f in planned_files):
+                return
+            conftest = workspace_path / "conftest.py"
+            if conftest.exists():
+                return
+            workspace_path.mkdir(parents=True, exist_ok=True)
+            conftest.write_text(FRAMEWORK_CONFTEST, encoding="utf-8")
+            logger.info(f"PMKickoffWorkflow: Wrote framework-owned conftest.py to {conftest}")
+        except OSError as e:
+            logger.warning(f"PMKickoffWorkflow: Could not write conftest.py: {e}")
 
     def _write_project_structure_md(self, workspace_path: Path, created_dirs: List[str],
                                     code_base_definitions: Any = None,

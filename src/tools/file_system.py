@@ -1057,6 +1057,18 @@ Pushes changes to a remote repository.
                 logger.warning(f"Agent {agent_id} attempted to write to directory: {filename} in {scope_description}")
                 return {"status": "error", "message": f"Cannot write file. '{filename}' points to an existing directory that is not empty. To create a file inside it, use a path such as '{filename.rstrip('/')}/<file_name>'."}
         
+        # Round 1u: the root conftest.py written by the framework must not be rewritten by agents (even with force_overwrite)
+        if str(filename).replace("\\", "/").lstrip("./") == "conftest.py" and validated_path.exists():
+            try:
+                if "FRAMEWORK-OWNED conftest" in validated_path.read_text(encoding="utf-8")[:300]:
+                    return {
+                        "status": "error",
+                        "message": "conftest.py is managed by the framework and must not be changed. Modules in src/ and in the project "
+                                   "root are already importable from tests: write `from my_module import my_function`. Run tests with "
+                                   "`python -m pytest -q` from the workspace root."
+                    }
+            except Exception:
+                pass
         # Prevent overwriting existing files unless force_overwrite is explicitly set
         if validated_path.exists() and not force_overwrite and not replace_empty_dir:
             # Check if the content is exactly identical, in which case just return success to avoid looping the agent
