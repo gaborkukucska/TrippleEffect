@@ -1098,9 +1098,15 @@ Pushes changes to a remote repository.
                     import ast
                     ast.parse(content)
                 except SyntaxError as syntax_err:
+                    try:  # Round 1t: show the code around the error and a hint (never lets the report break the rejection)
+                        from src.tools.python_static_check import syntax_error_report
+                        syntax_report = syntax_error_report(content, syntax_err)
+                    except Exception:
+                        syntax_report = ""
                     return {
                         "status": "error",
                         "message": f"Write rejected due to Python SyntaxError in resulting code: {syntax_err.msg} at line {syntax_err.lineno}. No changes were saved. Please check your indentation and brackets."
+                                   + (f"\n{syntax_report}" if syntax_report else "")
                     }
                     
             if replace_empty_dir:

@@ -107,4 +107,69 @@ def python_code_notes(source: str) -> List[str]:
             notes.append(f"function '{func.name}' (line {func.lineno}) contains only a docstring and no code: its body is not implemented yet.")
 
     return notes[:MAX_NOTES]
+# --- Syntax error report (Round 1t) -----------------------------------------------------------------------------------------
+# 2026-10-16 10:45-12:00: W1 sent a whole file with the same fault ("expected 'except' or 'finally' block") 7 times. Every
+# rejection only said "... at line N", so the 4B model never found the fault. The report below shows the code around the
+# error and a concrete hint for the common mistakes.
+def _show_lines(lines: List[str], center: int, before: int = 3, after: int = 1) -> str:
+    first, last = max(1, center - before), min(len(lines), center + after)
+    out = []
+    for number in range(first, last + 1):
+        marker = ">>" if number == center else "  "
+        out.append(f"{marker} {number:>4} | {lines[number - 1].rstrip()[:110]}")
+    return "\n".join(out)
+
+
+def _find_open_try(lines: List[str], error_line: int) -> int:
+    """1-based line of the closest 'try:' above error_line that has no except/finally at its own indentation, or 0."""
+    for index in range(min(error_line, len(lines)) - 1, -1, -1):
+        stripped = lines[index].strip()
+        if not stripped.startswith("try:"):
+            continue
+        indent = len(lines[index]) - len(lines[index].lstrip())
+        has_handler = False
+        for follower in lines[index + 1:error_line]:
+            body = follower.strip()
+            if body and (len(follower) - len(follower.lstrip())) == indent and body.startswith(("except", "finally")):
+                has_handler = True
+                break
+        if not has_handler:
+            return index + 1
+    return 0
+
+
+def syntax_error_report(source: str, err: SyntaxError) -> str:
+    """
+    Human/LLM-friendly description of a SyntaxError: the message, the code around the faulty line and a hint.
+    Never raises; returns '' if nothing useful can be said.
+    """
+    try:
+        lines = str(source).splitlines()
+        lineno = err.lineno if isinstance(err.lineno, int) and 1 <= err.lineno <= max(1, len(lines)) else 0
+        message = str(err.msg or "")
+        parts: List[str] = []
+        if lineno and lines:
+            parts.append("Code around the error:\n" + _show_lines(lines, lineno))
+        low = message.lower()
+        if "expected 'except' or 'finally'" in low and lines:
+            try_line = _find_open_try(lines, lineno or len(lines))
+            where = f"The `try:` on line {try_line}" if try_line else "A `try:` above"
+            parts.append(f"Hint: {where} has no `except` or `finally` at the same indentation as the `try`. Add "
+                         "`except Exception as exc:` (same indentation as `try`) with a body, or remove the `try`. "
+                         "Do not leave code after the try body unindented.")
+        elif "f-string" in low and ("single '}'" in low or "single '{'" in low):
+            parts.append("Hint: inside an f-string write `{{` and `}}` for literal braces, and keep each `{expression}` short.")
+        elif "unterminated triple-quoted" in low:
+            parts.append('Hint: a triple-quoted string is never closed; end it with the same three quotes.')
+        elif "unterminated string" in low:
+            parts.append("Hint: a string is missing its closing quote on that line.")
+        elif "indent" in low:
+            parts.append("Hint: use 4 spaces per indentation level everywhere and no tabs; a block needs at least one indented line.")
+        elif "was never closed" in low:
+            parts.append("Hint: that bracket or parenthesis is never closed.")
+        if parts:
+            parts.append("Send the COMPLETE corrected file. Keep the code simple (no deeply nested try/except) and do not resend the same text.")
+        return "\n".join(parts)
+    except Exception:
+        return ""
 # END OF FILE src/tools/python_static_check.py
