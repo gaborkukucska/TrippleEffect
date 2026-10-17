@@ -13,6 +13,30 @@ from src.agents.constants import (
 
 logger = logging.getLogger(__name__)
 
+
+def log_ollama_finish(data: Any, thinking_chars: Optional[int] = None) -> Optional[str]:
+    """
+    Round 1x: one log line per finished Ollama reply (done_reason, token counts, thinking size). A reply cut off at the
+    output limit (done_reason 'length') is logged as a WARNING. Returns the done_reason, or None. Never raises.
+    """
+    try:
+        if not isinstance(data, dict) or not data.get("done"):
+            return None
+        reason = data.get("done_reason") or "?"
+        msg = data.get("message") if isinstance(data.get("message"), dict) else {}
+        if thinking_chars is None:
+            thinking_chars = len(msg.get("thinking") or "")
+        text = (f"Ollama finished: done_reason={reason}, prompt_tokens={data.get('prompt_eval_count', '?')}, "
+                f"output_tokens={data.get('eval_count', '?')}, content_chars={len(msg.get('content') or '')}, "
+                f"thinking_chars={thinking_chars}, tool_calls={len(msg.get('tool_calls') or [])}")
+        if reason == "length":
+            logger.warning(text + " -> the reply was CUT OFF at the output token limit (num_predict / per-state max_tokens).")
+        else:
+            logger.info(text)
+        return reason
+    except Exception:
+        return None
+
 # --- Concurrency Limiter ---
 _ollama_semaphores = {}
 
@@ -493,6 +517,7 @@ class OllamaProvider(BaseLLMProvider):
                                                  # logger.debug(f"OllamaProvider: Yielding response_chunk: {content_chunk[:100]}...") # Disabled to prevent log spam
                                                  yield {"type": "response_chunk", "content": content_chunk}
                                     if chunk_data.get("done", False):
+                                        log_ollama_finish(chunk_data)
                                         total_duration = chunk_data.get("total_duration")
                                         logger.debug(f"Received done=true. Total duration: {total_duration}ns")
                                         if total_duration: yield {"type": "status", "content": f"Ollama turn finished ({total_duration / 1e9:.2f}s)"}
@@ -549,6 +574,8 @@ class OllamaProvider(BaseLLMProvider):
                                  lines = response_data_text.strip().split("\n")
                                  accumulated_tool_calls = []
                                  accumulated_content = ""
+                                 accumulated_thinking_chars = 0  # Round 1x: finish statistics
+                                 done_stats: Dict[str, Any] = {}
                                  is_done = False
                                  has_error = None
                                  for line in lines:
@@ -562,8 +589,11 @@ class OllamaProvider(BaseLLMProvider):
                                              accumulated_tool_calls.extend(msg["tool_calls"])
                                          if msg.get("content"):
                                              accumulated_content += msg["content"]
+                                         if msg.get("thinking"):
+                                             accumulated_thinking_chars += len(msg["thinking"])
                                          if chunk_data.get("done"):
                                              is_done = True
+                                             done_stats = {k: chunk_data[k] for k in ("done_reason", "eval_count", "prompt_eval_count") if k in chunk_data}
                                      except json.JSONDecodeError:
                                          logger.error(f"Failed to decode NDJSON fallback line: {line[:100]}...")
                                  
@@ -578,6 +608,10 @@ class OllamaProvider(BaseLLMProvider):
                                      response_data["message"]["tool_calls"] = accumulated_tool_calls
                                  if has_error:
                                      response_data["error"] = has_error
+                                 response_data.update(done_stats)
+                                 log_ollama_finish(response_data, thinking_chars=accumulated_thinking_chars)
+                             else:
+                                 log_ollama_finish(response_data)
                              if response_data.get("error"):
                                  error_msg = response_data["error"]
 

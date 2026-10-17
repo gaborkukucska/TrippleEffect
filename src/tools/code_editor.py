@@ -222,7 +222,9 @@ class CodeEditorTool(BaseTool):
                     chunk.get('new_code')
                 )
                 if replace_text is None:
-                    errors.append(f"Chunk {idx} is malformed (missing 'replace' key).")
+                    # Round 1x: say how to delete lines; W1 sent {'start_line': 31} chunks without 'replace' four times.
+                    errors.append(f"Chunk {idx} is malformed (missing 'replace' key). Every chunk needs 'replace' with the new "
+                                  "text; to DELETE lines give start_line, end_line and \"replace\": \"\".")
                     continue
                     
                 start_line = chunk.get('start_line') or chunk.get('from_line') or chunk.get('line_start') or chunk.get('start')
@@ -235,6 +237,9 @@ class CodeEditorTool(BaseTool):
                     chunk.get('old') if 'old' in chunk else
                     chunk.get('old_code')
                 )
+                if isinstance(search_text, str) and not search_text.strip():
+                    # Round 1x: an empty 'search' matched "987 times" and was rejected as ambiguous. It means "no search".
+                    search_text = None
 
                 # Single-line inference if only one bound is provided
                 if start_line is not None and end_line is None and search_text is None:
@@ -259,7 +264,10 @@ class CodeEditorTool(BaseTool):
                         continue
                         
                     replacement = replace_text
-                    if not replacement.endswith('\n') and end_idx < len(lines) and not lines[end_idx].startswith('\n'):
+                    # Round 1x: keep the line break the replaced lines had. "replace": "" now really deletes the lines (it
+                    # used to leave an empty line), and replacing the last line no longer drops the file's final newline.
+                    replaced_ends_with_newline = lines[end_idx - 1].endswith('\n') if end_idx > start_idx else end_idx < len(lines)
+                    if replacement and not replacement.endswith('\n') and replaced_ends_with_newline:
                         replacement += '\n'
                         
                     before = "".join(lines[:start_idx])

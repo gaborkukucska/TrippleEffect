@@ -339,4 +339,28 @@ def plan_title_from_text(plan_text: Optional[str], history=None) -> Optional[str
     return None
 
 
+# --- Work done in worker_decompose (Round 1x) -------------------------------------------------------------------------------
+# 2026-10-17 12:33-13:39: W1 wrote and edited tests/test_temp_convert.py for 66 minutes while still in worker_decompose, where
+# its replies are capped at WORKER_DECOMPOSE_STATE_MAX_TOKENS (1024): incomplete files, empty replies, failed edits.
+def files_written_in_last_turn(history) -> List[str]:
+    """Paths written or edited SUCCESSFULLY by the tool calls of the most recent assistant message that made tool calls."""
+    messages = [m for m in (history or []) if isinstance(m, dict)]
+    for index in range(len(messages) - 1, -1, -1):
+        msg = messages[index]
+        if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+            continue
+        results = {m.get("tool_call_id"): m.get("content", "") for m in messages[index + 1:]
+                   if m.get("role") == "tool" and m.get("tool_call_id") is not None}
+        written: List[str] = []
+        for call in msg.get("tool_calls") or []:
+            if not isinstance(call, dict):
+                continue
+            path = _written_path(call)
+            call_id = call.get("id")
+            if path and call_id in results and not is_tool_result_failure(call.get("name"), results[call_id]) and path not in written:
+                written.append(path)
+        return written
+    return []
+
+
 # END OF FILE src/agents/tool_activity.py

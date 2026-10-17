@@ -387,6 +387,11 @@ class NextStepScheduler:
                 # Capped at 2 nudges in a row; any tool call resets the counter.
                 if context.executed_tool_successfully_this_cycle or context.action_taken_this_cycle:
                     setattr(agent, '_decompose_prose_nudges', 0)
+                    # Round 1x: a worker that writes files in worker_decompose has decided not to decompose: move it to
+                    # worker_work (its real prompt and token budget) exactly as if it had requested the state itself.
+                    if await self._promote_decompose_worker_that_writes(agent):
+                        self._log_end_of_schedule_next_step(agent, "Path Worker-Decompose-PromotedToWork")
+                        return
                 else:
                     prose_nudges = getattr(agent, '_decompose_prose_nudges', 0)
                     if prose_nudges < 2:
@@ -942,6 +947,42 @@ class NextStepScheduler:
                 return True
         
         return False
+
+    async def _promote_decompose_worker_that_writes(self, agent) -> bool:
+        """
+        Round 1x: if the worker's last tool calls wrote files while it is in worker_decompose, move it to worker_work
+        (same task bookkeeping as a request_state call) and reschedule. Returns True when the worker was moved.
+        """
+        try:
+            from src.agents.tool_activity import files_written_in_last_turn
+            written = files_written_in_last_turn(agent.message_history)
+            if not written:
+                return False
+            task_id = getattr(agent, 'current_task_id', None) or getattr(agent, 'active_task_id', None)
+            cycle_handler = getattr(self._manager, 'cycle_handler', None)
+            if cycle_handler is not None and hasattr(cycle_handler, '_handle_worker_task_tracking'):
+                cycle_handler._handle_worker_task_tracking(agent, WORKER_STATE_WORK, task_id)
+            if not self._manager.workflow_manager.change_state(agent, WORKER_STATE_WORK):
+                return False
+        except ValueError as blocked:
+            logger.info(f"NextStepScheduler: Worker '{agent.agent_id}' wrote files in worker_decompose but cannot move to worker_work: {blocked}")
+            return False
+        except Exception as e:
+            logger.warning(f"NextStepScheduler: Could not promote worker '{agent.agent_id}' from worker_decompose: {e}")
+            return False
+        files = ", ".join(written[:5])
+        agent.message_history.append({
+            "role": "system",
+            "content": (
+                f"[Framework Notice]: You already started the task (you wrote: {files}), so it needs no decomposition. "
+                f"You are now in '{WORKER_STATE_WORK}'. Read the file(s) again if you need them, finish the task, run the "
+                "tests, then request 'worker_report'."
+            ),
+        })
+        logger.warning(f"NextStepScheduler: Worker '{agent.agent_id}' wrote {written[:5]} in worker_decompose. Moved it to '{WORKER_STATE_WORK}'.")
+        agent.set_status(AGENT_STATUS_IDLE)
+        await self._schedule_new_cycle(agent, 0)
+        return True
 
     async def _schedule_new_cycle(self, agent: 'Agent', retry_count: int) -> None:
         """Schedules a new cycle for the agent using the AgentManager."""

@@ -605,7 +605,8 @@ class FileSystemTool(BaseTool):
                 if replace_start_line is None or replace_end_line is None: return {"status": "error", "message": "'replace_start_line' and 'replace_end_line' parameters are required for 'replace_lines'."}
                 if content is None:
                     # Round 1v: W1 sent the new lines as 'replace_text' three times; that IS the content here.
-                    content = _fo(replace_text, replace_block_param)
+                    content = _fo(replace_text, replace_block_param, kwargs.get("replacement_content"),
+                                  kwargs.get("new_content"), kwargs.get("new_text"), kwargs.get("new_lines"))
                 if content is None: return self._content_required_error("replace_lines", kwargs)
                 result = await self._replace_lines_in_file(base_path, filename, replace_start_line, replace_end_line, content, agent_id, scope_description)
             elif action == "search_replace_block":
