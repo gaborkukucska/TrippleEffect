@@ -17,6 +17,10 @@ from src.config.settings import settings # For PROJECTS_BASE_DIR
 
 logger = logging.getLogger(__name__)
 
+class _EditRefused(Exception):
+    """Round 1y: raised inside search_replace_block when the result must not be saved (the message says why)."""
+
+
 class FileSystemTool(BaseTool):
     """
     Tool for reading, writing, listing files/directories, creating directories,
@@ -257,7 +261,14 @@ class FileSystemTool(BaseTool):
 
     @staticmethod
     def _python_edit_error(filename: str, original: str, new_content: str) -> Optional[Dict[str, Any]]:
-        """Round 1v: an error result if an edit would turn a valid Python file into invalid Python, else None."""
+        """
+        Round 1v: an error result if an edit would turn a valid Python file into invalid Python, else None.
+        Round 1y: also (for every file type) if the edit would leave a file that had content empty.
+        """
+        from src.tools.code_editor import emptied_file_error
+        emptied = emptied_file_error(filename, original, new_content)
+        if emptied:
+            return {"status": "error", "message": emptied}
         if not str(filename).endswith(".py"):
             return None
         import ast
@@ -424,6 +435,14 @@ class FileSystemTool(BaseTool):
             "save": "write",
             "read_file": "read",
             "read_with_lines": "read",
+            # Round 1y: names W1 used on 2026-10-18 (each was rejected as an invalid action)
+            "read_file_with_lines": "read",
+            "read_with_content": "read",
+            "read_content": "read",
+            "write_with_content": "write",
+            "write_with_lines": "write",
+            "write_content": "write",
+            "list_with_tree": "tree",
             "list_files": "list",
             "list_directory": "list",
             "delete_file": "delete",
@@ -458,8 +477,24 @@ class FileSystemTool(BaseTool):
         if not action:
             return {"status": "error", "message": f"Missing required 'action' parameter. Must be one of: {', '.join(valid_actions)}."}
         
-        if action == "replace_chunks":
-            return {"status": "error", "message": "The 'replace_chunks' action belongs to the 'code_editor' tool, not 'file_system'. Please use the 'code_editor' tool for this action."}
+        if action in ("replace_chunks", "code_editor"):
+            # Round 1y: W1 called file_system with action 'code_editor' (2026-10-17 23:29, 23:37). With chunks, do the edit.
+            chunks_arg = _fo(kwargs.get("chunks"), kwargs.get("replacements"), kwargs.get("edits"))
+            if chunks_arg is not None and filename:
+                from src.tools.code_editor import CodeEditorTool
+                logger.info(f"FileSystemTool: passing action '{action}' from '{agent_id}' to the code_editor tool.")
+                ce_result = await CodeEditorTool().execute(
+                    agent_id, agent_sandbox_path, project_name=project_name, session_name=session_name,
+                    action="replace_chunks", filename=filename, chunks=chunks_arg, scope=scope,
+                )
+                if isinstance(ce_result, dict) and ce_result.get("message"):
+                    ce_result["message"] = ("[Note: 'replace_chunks' belongs to the 'code_editor' tool; the framework ran it "
+                                            "there for you.] " + str(ce_result["message"]))
+                return ce_result
+            return {"status": "error", "message": (
+                "'code_editor' is a separate TOOL and 'replace_chunks' belongs to the 'code_editor' tool, not 'file_system'. "
+                "Call the tool named code_editor with action 'replace_chunks', 'filename' and 'chunks', or use file_system "
+                "actions 'read', 'write' or 'replace_lines'.")}
         
         if action not in valid_actions:
             if action in action_suggestions:
@@ -1105,8 +1140,18 @@ Pushes changes to a remote repository.
             return {"status": "error", "message": f"File not found: '{filename}' in {scope_description}.{hint}"}
         try:
             content = await asyncio.to_thread(validated_path.read_text, encoding='utf-8')
+            if not content.strip():
+                # Round 1y: an empty file used to come back as "Tool execution was successful." (and ranged reads as
+                # "Invalid start_line/end_line range for file with 0 lines"), so W1 never learned that it was empty.
+                if hasattr(self, '_failed_reads') and agent_id in self._failed_reads and filename in self._failed_reads[agent_id]:
+                    self._failed_reads[agent_id][filename] = 0
+                logger.info(f"Agent {agent_id} read file '{filename}' from {scope_description}: the file is EMPTY.")
+                return {"status": "success", "content": "", "message": (
+                    f"File '{filename}' is EMPTY ({len(content)} bytes, no lines of text). There is nothing to read. To give "
+                    "it content, use file_system action 'write' with the complete file as 'content' (no force_overwrite "
+                    "needed for an empty file).")}
             lines = content.splitlines(True)
-            
+
             if show_line_numbers:
                 # Add line numbers preserving original newlines
                 numbered_lines = []
@@ -1209,8 +1254,16 @@ Pushes changes to a remote repository.
                     }
             except Exception:
                 pass
+        # Round 1y: an existing file that is EMPTY (only whitespace) holds nothing to lose. 'write' was refused 38 times on
+        # the emptied src/temp_convert.py (2026-10-17 21:21 - 2026-10-18 05:37) because the agents never set force_overwrite.
+        replace_blank_file = False
+        if validated_path.is_file() and not force_overwrite and not replace_empty_dir:
+            try:
+                replace_blank_file = not validated_path.read_text(encoding='utf-8').strip()
+            except Exception:
+                replace_blank_file = False
         # Prevent overwriting existing files unless force_overwrite is explicitly set
-        if validated_path.exists() and not force_overwrite and not replace_empty_dir:
+        if validated_path.exists() and not force_overwrite and not replace_empty_dir and not replace_blank_file:
             # Check if the content is exactly identical, in which case just return success to avoid looping the agent
             try:
                 if validated_path.read_text(encoding='utf-8') == content:
@@ -1273,6 +1326,9 @@ Pushes changes to a remote repository.
             success_msg = f"Successfully wrote content to '{filename}' in {scope_description}."
             if replace_empty_dir:
                 success_msg += " (Framework note: an empty directory with this name was in the way and has been replaced by your file.)"
+            if replace_blank_file:
+                logger.info(f"Agent {agent_id} wrote '{filename}', which existed but was EMPTY, without force_overwrite.")
+                success_msg += " (Framework note: the file existed but was empty, so it was written without force_overwrite.)"
             if filename.endswith('.py'):
                 # Round 1o: non-blocking hints about defects the syntax check cannot see (missing imports, docstring-only functions).
                 try:
@@ -1762,6 +1818,14 @@ Pushes changes to a remote repository.
             def search_replace_sync():
                 original_content = val_path.read_text(encoding='utf-8')
 
+                def write_checked(new_text: str) -> None:
+                    # Round 1y: never save a result that leaves a file that had content empty
+                    from src.tools.code_editor import emptied_file_error
+                    refusal = emptied_file_error(filename, original_content, new_text)
+                    if refusal:
+                        raise _EditRefused(refusal)
+                    val_path.write_text(new_text, encoding='utf-8')
+
                 if start_marker and end_marker:
                     start_idx = original_content.find(start_marker)
                     if start_idx == -1: return False, f"start_marker '{start_marker}' not found in the file."
@@ -1772,12 +1836,12 @@ Pushes changes to a remote repository.
                     exact_count = original_content.count(old_block)
                     if exact_count == 1:
                         new_content = original_content.replace(old_block, replace_block, 1)
-                        val_path.write_text(new_content, encoding='utf-8')
+                        write_checked(new_content)
                         return True, "Marker block found and replaced successfully."
                     elif exact_count > 1:
                         if expected_replacements is not None and expected_replacements == exact_count:
                             new_content = original_content.replace(old_block, replace_block)
-                            val_path.write_text(new_content, encoding='utf-8')
+                            write_checked(new_content)
                             return True, f"Replaced all {exact_count} identical marker blocks."
                         return False, f"Found {exact_count} identical marker blocks. Re-send with expected_replacements={exact_count} to confirm."
                     return False, "Failed to extract old block using markers."
@@ -1789,13 +1853,13 @@ Pushes changes to a remote repository.
                 exact_count = original_content.count(search_block)
                 if exact_count == 1:
                     new_content = original_content.replace(search_block, replace_block, 1)
-                    val_path.write_text(new_content, encoding='utf-8')
+                    write_checked(new_content)
                     return True, "Exact match found and replaced."
 
                 if exact_count > 1:
                     if expected_replacements is not None and expected_replacements == exact_count:
                         new_content = original_content.replace(search_block, replace_block)
-                        val_path.write_text(new_content, encoding='utf-8')
+                        write_checked(new_content)
                         return True, f"Replaced all {exact_count} exact occurrences (confirmed by expected_replacements)."
                     return False, (
                         f"Found {exact_count} exact matches. To replace ALL {exact_count} occurrences, "
@@ -1836,7 +1900,7 @@ Pushes changes to a remote repository.
                         if not replacement.endswith('\n') and after:
                             replacement += '\n'
                         new_content = before + replacement + after
-                        val_path.write_text(new_content, encoding='utf-8')
+                        write_checked(new_content)
                         return True, (
                             f"First/last line match found (lines {start_idx+1}–{end_idx+1}) and replaced."
                         )
@@ -1851,7 +1915,7 @@ Pushes changes to a remote repository.
                                 if not replacement.endswith('\n'):
                                     replacement += '\n'
                                 file_lines_mut[start_idx:end_idx + 1] = [replacement]
-                            val_path.write_text("".join(file_lines_mut), encoding='utf-8')
+                            write_checked("".join(file_lines_mut))
                             return True, f"Replaced all {n} first/last-line matches (confirmed by expected_replacements)."
                         return False, (
                             f"First/last line anchor matched {n} distinct blocks. "
@@ -1884,10 +1948,14 @@ Pushes changes to a remote repository.
                     )
                     return False, hint
 
-                val_path.write_text(new_content, encoding='utf-8')
+                write_checked(new_content)
                 return True, "Fuzzy match found and replaced."
 
-            success, msg = await asyncio.to_thread(search_replace_sync)
+            try:
+                success, msg = await asyncio.to_thread(search_replace_sync)
+            except _EditRefused as refused:
+                logger.warning(f"Agent {agent_id} search/replace block in '{filename}' ({scope_description}) refused: {refused}")
+                return {"status": "error", "message": str(refused)}
 
             if success:
                 logger.info(f"Agent {agent_id} search/replace block in '{filename}' ({scope_description}): {msg}")

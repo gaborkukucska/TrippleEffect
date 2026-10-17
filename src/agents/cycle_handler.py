@@ -662,6 +662,11 @@ class AgentCycleHandler:
             for tc in msg.get("tool_calls", []):
                 prev_sig = (tc.get("name"), json.dumps(tc.get("arguments", {}), sort_keys=True))
                 if _is_equivalent(prev_sig, current_sig):
+                    # Round 1y: reading a file again after files were written/edited is not a loop, and the cached result
+                    # would show the OLD content. Let it run.
+                    from src.agents.tool_activity import is_file_read_call, files_changed_after
+                    if is_file_read_call(tool_name, tool_args) and files_changed_after(agent.message_history, i):
+                        return None
                     # Found a matching call - now look for its successful tool result
                     tc_id = tc.get("id")
                     for j in range(i + 1, len(agent.message_history)):

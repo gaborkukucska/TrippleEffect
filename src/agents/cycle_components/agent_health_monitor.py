@@ -1575,6 +1575,17 @@ class ConstitutionalGuardianHealthMonitor:
         # Fast-fail for highly excessive loops without LLM overhead
         if duplicate_count > 6:
             return "ESCALATE", "Tool execution loop exceeded maximum safety limit."
+
+        # Round 1y: a repeated READ of an unchanged file needs no LLM verdict (59 calls on 2026-10-17/18, ~35 s each, were
+        # all cut off at max_tokens=150 and fell back to BLOCK_AND_GUIDE). Same verdict, concrete guidance, no LLM call.
+        from src.agents.tool_activity import is_file_read_call, read_call_target
+        if is_file_read_call(tool_name, tool_args):
+            target = read_call_target(tool_args)
+            return "BLOCK_AND_GUIDE", (
+                f"You already read '{target}' and no file was changed since, so the result above is still exact. Do not read "
+                "it again. Next step: change the file (code_editor 'replace_chunks', or file_system 'write' / "
+                "'replace_lines'), work on another file, or use 'request_state' if your work is done."
+            )
             
         history_analysis = await self._analyze_agent_history(agent, "duplicate_tool")
         

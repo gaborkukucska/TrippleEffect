@@ -363,4 +363,54 @@ def files_written_in_last_turn(history) -> List[str]:
     return []
 
 
+# --- Duplicate file reads (Round 1y) -----------------------------------------------------------------------------------------
+# A repeated read of the same file was answered from the cached FIRST result, even when the file had been edited in between
+# (stale content), and every blocked read cost a Guardian LLM call (59 calls of ~35 s on 2026-10-17/18, none gave a verdict).
+FILE_READ_ACTIONS = frozenset({"read", "read_file", "read_with_lines", "read_file_with_lines", "list", "list_directory",
+                               "list_files", "tree", "exists"})
+
+
+def _clean_action(args: Dict[str, Any]) -> str:
+    return str(args.get("action", "")).strip().strip("<>/\"' \t").lower()
+
+
+def is_file_read_call(tool_name: Optional[str], arguments: Any) -> bool:
+    """True for a file_system / code_editor call that only looks at files (read, list, tree, exists)."""
+    args = arguments if isinstance(arguments, dict) else _call_arguments({"arguments": arguments})
+    action = _clean_action(args)
+    if tool_name == "file_system":
+        return action in FILE_READ_ACTIONS
+    if tool_name == "code_editor":
+        return action in CODE_EDITOR_READ_ACTIONS or action in FILE_READ_ACTIONS
+    return False
+
+
+def read_call_target(arguments: Any) -> str:
+    """The path a read call looks at ('.' if none is given)."""
+    args = arguments if isinstance(arguments, dict) else _call_arguments({"arguments": arguments})
+    for key in _PATH_KEYS + ("dir", "directory", "folder"):
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "."
+
+
+def files_changed_after(history, index: int) -> bool:
+    """True if a message after position `index` of history made a SUCCESSFUL file_system / code_editor write or edit."""
+    messages = list(history or [])
+    later = [m for m in messages[index + 1:] if isinstance(m, dict)]
+    results = {m.get("tool_call_id"): m.get("content", "") for m in later
+               if m.get("role") == "tool" and m.get("tool_call_id") is not None}
+    for msg in later:
+        if msg.get("role") != "assistant":
+            continue
+        for call in msg.get("tool_calls") or []:
+            if not isinstance(call, dict) or not _written_path(call):
+                continue
+            call_id = call.get("id")
+            if call_id in results and not is_tool_result_failure(call.get("name"), results[call_id]):
+                return True
+    return False
+
+
 # END OF FILE src/agents/tool_activity.py
