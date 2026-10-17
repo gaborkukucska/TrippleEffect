@@ -620,6 +620,11 @@ class AgentWorkflowManager:
         if xml_result is not None:
             return xml_result
 
+        # --- Strategy 3 (Round 1w): an Admin plan written in Markdown without the JSON title block ---
+        markdown_result = await self._try_markdown_plan_fallback(manager, agent, content, matching_triggers)
+        if markdown_result is not None:
+            return markdown_result
+
         return None
 
     async def _try_json_workflow_trigger(
@@ -882,6 +887,41 @@ class AgentWorkflowManager:
                 logger.error(f"Error during XML fallback workflow trigger check for tag '{trigger_tag}': {e}", exc_info=True)
         return None
 
+
+    async def _try_markdown_plan_fallback(
+        self,
+        manager: 'AgentManager',
+        agent: 'Agent',
+        content: str,
+        matching_triggers: list
+    ) -> Optional[WorkflowResult]:
+        """
+        Round 1w: Admin in 'planning' wrote a real plan (numbered tasks, no question to the user) but no JSON title block.
+        The project is created anyway with a title from the user's request or the plan heading; the user still has to
+        approve it. Returns None (nothing happens) when the text is not a plan or no title can be found.
+        """
+        if agent.agent_type != AGENT_TYPE_ADMIN:
+            return None
+        plan_workflow = next((wf for tag, wf in matching_triggers if tag == "plan" and isinstance(wf, ProjectCreationWorkflow)), None)
+        if plan_workflow is None:
+            return None
+        if hasattr(agent, 'think_pattern'):
+            think_match = agent.think_pattern.search(content)
+            if think_match:
+                content = content.replace(think_match.group(0), '', 1).strip()
+        from src.agents.tool_activity import looks_like_markdown_plan, plan_title_from_text
+        if not looks_like_markdown_plan(content):
+            return None
+        title = plan_title_from_text(content, getattr(agent, 'message_history', None))
+        if not title:
+            logger.info(f"WorkflowManager: Agent '{agent.agent_id}' wrote a Markdown plan without a title block, and no title could be derived. Not creating a project.")
+            return None
+        logger.warning(f"WorkflowManager: Agent '{agent.agent_id}' wrote a Markdown plan without the JSON title block. Creating the project with the derived title '{title}'.")
+        try:
+            return await plan_workflow.execute(manager, agent, {"title": title, "_raw_plan_body_": content})
+        except Exception as e:
+            logger.error(f"Error executing workflow '{plan_workflow.name}' (Markdown plan fallback) for agent '{agent.agent_id}': {e}", exc_info=True)
+            return WorkflowResult(success=False, message=f"Error executing workflow: {e}", workflow_name=plan_workflow.name, next_agent_state=agent.state, next_agent_status=AGENT_STATUS_IDLE)
 
     def _get_agent_project_name(self, agent: 'Agent', manager: 'AgentManager') -> str:
         if agent.agent_type == AGENT_TYPE_PM:

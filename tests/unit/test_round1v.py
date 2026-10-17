@@ -63,6 +63,8 @@ def test_unfinished_dependencies_never_blocks_on_unreadable_data(task):
 @pytest.fixture
 def tw_env(tmp_path, monkeypatch):
     monkeypatch.setattr(pm, "BASE_DIR", tmp_path)
+    import src.agents.manager as manager_module   # activation writes a workspace listing under PROJECTS_BASE_DIR
+    monkeypatch.setattr(manager_module.settings, "PROJECTS_BASE_DIR", tmp_path / "projects")
 
     async def no_broadcast(_msg):
         return None

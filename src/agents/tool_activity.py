@@ -287,4 +287,56 @@ def pm_standby_block_message(agent_type, agent_state, requested_state, history, 
     return _PM_STANDBY_ALL_DONE
 
 
+# --- Markdown plan without a JSON title block (Round 1w) --------------------------------------------------------------------
+# 2026-10-17 00:58-01:34: in 'planning' Admin wrote a complete numbered plan three times ("# Temp Converter CLI Project Plan",
+# then "**Objective:** ...") but never the ```json {"title": ...}``` block. Only that block triggered project creation, so
+# every plan was thrown away (each after a 7-14 minute Guardian review) and the user was told no plan could be produced.
+MIN_MARKDOWN_PLAN_ITEMS = 3
+_PLAN_ITEM_RE = _re.compile(r"^[ \t]*(?:\d{1,2}[.)][ \t]+\S|#{2,4}[ \t]*(?:task|step)[ \t]*\d{1,2}\b)", _re.IGNORECASE | _re.MULTILINE)
+_NAMED_PROJECT_RE = _re.compile(r"\b(?:called|named|titled)[ \t]*[:\-]?[ \t]*[\"\u201c'\u2018`]([^\"\u201d'\u2019`\n]{2,60})[\"\u201d'\u2019`]", _re.IGNORECASE)
+_HEADING_RE = _re.compile(r"^[ ]{0,3}#{1,3}[ \t]+(.+?)[ \t#]*$", _re.MULTILINE)
+_TITLE_NOISE_RE = _re.compile(r"(?:[\s:\-\u2013\u2014]*\b(?:project[ \t]+plan|implementation[ \t]+plan|plan|project|overview))+[ \t]*$", _re.IGNORECASE)
+_GENERIC_HEADINGS = frozenset({"objective", "overview", "tasks", "plan", "project", "summary", "tech stack", "introduction", "goal"})
+
+
+def looks_like_markdown_plan(text: Optional[str]) -> bool:
+    """True for a real plan written as Markdown: long enough, at least 3 numbered items, and not ending with a question."""
+    stripped = (text or "").strip()
+    if len(stripped) < 200 or not planning_reply_needs_retry(stripped):
+        return False
+    return len(_PLAN_ITEM_RE.findall(stripped)) >= MIN_MARKDOWN_PLAN_ITEMS
+
+
+def _clean_title(raw: Any) -> str:
+    text = _re.sub(r"[*_`\[\]]", "", str(raw or "")).strip()
+    text = _TITLE_NOISE_RE.sub("", text).strip(" :-\u2013\u2014")
+    words = text.split()
+    if not words or len(words) > 8:
+        return ""
+    return " ".join(words)[:60].strip()
+
+
+def plan_title_from_text(plan_text: Optional[str], history=None) -> Optional[str]:
+    """
+    A project title for a plan that has no JSON title block: the name the user gave ('called "Temp Converter CLI"') in the
+    most recent user message that names one, else the plan's first non-generic Markdown heading (without 'Project Plan').
+    None if neither exists.
+    """
+    for msg in reversed(list(history or [])):
+        if not (isinstance(msg, dict) and msg.get("role") == "user" and isinstance(msg.get("content"), str)):
+            continue
+        if msg["content"].lstrip().startswith("["):
+            continue  # framework / system notices, not the human
+        match = _NAMED_PROJECT_RE.search(msg["content"])
+        if match:
+            title = _clean_title(match.group(1))
+            if title:
+                return title
+    for match in _HEADING_RE.finditer(plan_text or ""):
+        title = _clean_title(match.group(1))
+        if title and title.lower() not in _GENERIC_HEADINGS:
+            return title
+    return None
+
+
 # END OF FILE src/agents/tool_activity.py
