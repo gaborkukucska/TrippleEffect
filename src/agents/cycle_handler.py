@@ -377,9 +377,12 @@ class AgentCycleHandler:
                     from contextlib import aclosing
                     
                     logger.info(f"Requesting CG verdict via stream_completion for text: '{original_agent_final_text[:100]}...'")
+                    # Round 1z: a verdict needs no thinking (a review took 4 min 48 s thinking before '<OK/>')
+                    from src.llm_providers.ollama_provider import no_thinking_kwargs
                     async with aclosing(cg_agent.llm_provider.stream_completion(
                         messages=cg_history, model=cg_agent.model,
-                        temperature=cg_agent.temperature, max_tokens=max_tokens_for_verdict
+                        temperature=cg_agent.temperature, max_tokens=max_tokens_for_verdict,
+                        **no_thinking_kwargs(cg_agent.llm_provider)
                     )) as stream:
                         full_verdict_text = ""
                         async for event in stream:
@@ -775,7 +778,7 @@ class AgentCycleHandler:
             await self._run_cycle_internal(agent, retry_count)
 
     async def _run_cycle_internal(self, agent: Agent, retry_count: int = 0): # pyright: ignore[reportGeneralTypeIssues]
-        logger.critical(f"!!! CycleHandler: run_cycle TASK STARTED for Agent '{agent.agent_id}' (Retry: {retry_count}) !!!")
+        logger.info(f"!!! CycleHandler: run_cycle TASK STARTED for Agent '{agent.agent_id}' (Retry: {retry_count}) !!!")
         
         # --- NEW: Watchdog for Agent Stalls (cycles without state transitions) ---
         if not hasattr(agent, '_cycles_without_transition'):
@@ -935,7 +938,7 @@ class AgentCycleHandler:
                                 # CRITICAL FIX: Also update the agent's persistent message history with anchors
                                 agent.message_history = list(summarized_context_list)
                                 logger.info(f"CycleHandler: Context successfully summarized for agent '{agent.agent_id}', reduced to {len(summarized_context_list)} messages")
-                                logger.critical(f"CycleHandler: PERSISTENT HISTORY UPDATED for agent '{agent.agent_id}' - new persistent length: {len(agent.message_history)}")
+                                logger.info(f"CycleHandler: PERSISTENT HISTORY UPDATED for agent '{agent.agent_id}' - new persistent length: {len(agent.message_history)}")
                                 
                                 # Notify UI about context summarization
                                 await self._manager.send_to_ui({
@@ -978,7 +981,7 @@ class AgentCycleHandler:
                     elif event_type == "workflow_executed":
                         context.action_taken_this_cycle = True
                         workflow_result_data = event.get("result_data")
-                        logger.critical(f"CycleHandler '{agent.agent_id}': workflow_executed event data: {workflow_result_data}")
+                        logger.info(f"CycleHandler '{agent.agent_id}': workflow_executed event data: {workflow_result_data}")
                         if not workflow_result_data or not isinstance(workflow_result_data, dict):
                             context.last_error_content = "Workflow execution event malformed (result_data missing or not a dict)."; context.last_error_obj = ValueError(context.last_error_content)
                             llm_stream_ended_cleanly = False; break
@@ -1202,7 +1205,7 @@ class AgentCycleHandler:
                                 
                                 if len(cleaned_history) != original_length:
                                     agent.message_history = cleaned_history
-                                    logger.critical(f"CycleHandler: CLEANED JSON error spam - reduced history from {original_length} to {len(cleaned_history)} messages for agent '{agent.agent_id}'")
+                                    logger.info(f"CycleHandler: CLEANED JSON error spam - reduced history from {original_length} to {len(cleaned_history)} messages for agent '{agent.agent_id}'")
                                     
                                     # Force database update
                                     if context.current_db_session_id:
@@ -1967,7 +1970,7 @@ class AgentCycleHandler:
                         # Let the NextStepScheduler decide if reactivation is needed based on agent state and tool results
                         context.executed_tool_successfully_this_cycle = any_tool_success
                         # ROOT CAUSE FIX: Removed automatic reactivation - this was causing the infinite loop
-                        logger.critical(f"CycleHandler: Tool execution completed for agent '{agent.agent_id}': executed_tool_successfully_this_cycle={any_tool_success}, allowing natural processing")
+                        logger.info(f"CycleHandler: Tool execution completed for agent '{agent.agent_id}': executed_tool_successfully_this_cycle={any_tool_success}, allowing natural processing")
                         
                         # ENHANCED: For Admin AI in work state, ensure proper reactivation even after tool execution
                         if agent.agent_type == AGENT_TYPE_ADMIN and agent.state == ADMIN_STATE_WORK:

@@ -36,6 +36,42 @@ def _loads_chunks(text: str):
         raise
 
 
+_JSON_NAMES = {"null": "None", "true": "True", "false": "False"}
+
+
+def _literal_eval_chunks(text: str):
+    """
+    Round 2c: ast.literal_eval for a 'chunks' string that mixes JSON and Python (W1 sent
+    [{"end_line": null, "search": 'if __name__ == "__main__":', ...}] 7 times on 2026-10-18). The JSON names null/true/false
+    are replaced only where they are NAMES (never inside strings), so the strings stay exactly as sent.
+    """
+    import ast
+    try:
+        return ast.literal_eval(text)
+    except (ValueError, SyntaxError):
+        pass
+    import io
+    import tokenize
+    tokens = []
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+            if tok.type == tokenize.NAME and tok.string in _JSON_NAMES:
+                tok = tok._replace(string=_JSON_NAMES[tok.string])   # same length: positions stay valid
+            tokens.append(tok)
+    except tokenize.TokenError as err:   # unclosed bracket or string
+        raise ValueError(f"not a complete literal: {err}") from err
+    return ast.literal_eval(tokenize.untokenize(tokens))
+
+
+WRITE_ACTION_PREFIXES = ("write", "create", "save", "overwrite")
+WRITE_CONTENT_KEYS = ("file_content", "content", "file_contents", "contents", "code", "new_content")
+
+
+def is_write_action(action: Any) -> bool:
+    """Round 2c: 'write', 'write_file', 'write_file_content', 'create_file', 'save_file', ... (whole-file writes)."""
+    return isinstance(action, str) and action.startswith(WRITE_ACTION_PREFIXES)
+
+
 def _line_range_conflict(lines: List[str], start_idx: int, end_idx: int, search_text: str) -> Optional[str]:
     """
     None if 'search' agrees with lines start_idx..end_idx: the range starts with the search lines (whitespace at line ends
@@ -56,6 +92,58 @@ def _line_range_conflict(lines: List[str], start_idx: int, end_idx: int, search_
     return (f"start_line/end_line ({start_idx + 1}-{end_idx}) and the 'search' text point to DIFFERENT code, so nothing was "
             f"changed. Lines {start_idx + 1}-{end_idx} are:\n{shown}{more}\n{where} Send EITHER line numbers (read the "
             "file with line numbers first) OR a 'search' text that matches exactly - not both.")
+
+
+FUZZY_MIN_RATIO = 0.9
+FUZZY_MIN_CHARS = 20
+FUZZY_MAX_LINES = 5000
+
+
+def fuzzy_line_window(content: str, search_text: str):
+    """
+    Round 1z: (start, end, first_line, last_line) of the ONE block of whole lines that is at least 90 % similar to
+    search_text (leading/trailing whitespace and blank lines ignored), or None. Replaces diff_match_patch fallbacks that
+    patched wherever a search text half-fitted and corrupted files. Searches shorter than 20 characters never match fuzzily.
+    """
+    import difflib
+    wanted = [line.strip() for line in str(search_text or "").splitlines() if line.strip()]
+    wanted_text = "\n".join(wanted)
+    if not wanted or len(wanted_text) < FUZZY_MIN_CHARS:
+        return None
+    file_lines = content.splitlines(True)
+    if len(file_lines) > FUZZY_MAX_LINES:
+        return None
+    non_blank = [(index, line.strip()) for index, line in enumerate(file_lines) if line.strip()]
+    size = len(wanted)
+    hits = []
+    for start in range(len(non_blank) - size + 1):
+        window = non_blank[start:start + size]
+        ratio = difflib.SequenceMatcher(None, wanted_text, "\n".join(text for _, text in window)).ratio()
+        if ratio >= FUZZY_MIN_RATIO:
+            hits.append((window[0][0], window[-1][0]))
+    if len(hits) != 1:
+        return None
+    first, last = hits[0]
+    start_char = sum(len(line) for line in file_lines[:first])
+    end_char = start_char + sum(len(line) for line in file_lines[first:last + 1])
+    return start_char, end_char, first + 1, last + 1
+
+
+def replace_fuzzy_window(content: str, window, replacement: str) -> str:
+    """
+    content with the block found by fuzzy_line_window() replaced. Keeps the block's line break at the end, and its
+    indentation when the replacement starts without any (the block is matched ignoring indentation).
+    """
+    start_char, end_char = window[0], window[1]
+    block = content[start_char:end_char]
+    text = replacement or ""
+    block_indent = block[:len(block) - len(block.lstrip(" \t"))]
+    first_text_line = next((line for line in text.splitlines() if line.strip()), "")
+    if block_indent and first_text_line and not first_text_line[:1].isspace():
+        text = "".join(block_indent + line if line.strip() else line for line in text.splitlines(True))
+    if text and block.endswith("\n") and not text.endswith("\n"):
+        text += "\n"
+    return content[:start_char] + text + content[end_char:]
 
 
 def emptied_file_error(filename: str, original: str, new_content: str) -> Optional[str]:
@@ -111,6 +199,15 @@ class CodeEditorTool(BaseTool):
         )
     ]
 
+    WRITE_ALIASES = frozenset({"write_file", "write", "create_file"})
+
+    def params_not_required_for(self, args: Dict[str, Any]) -> set:
+        """Round 1z: required parameters that an action does not use (asked by the executor before it rejects a call)."""
+        action = str((args or {}).get("action", "")).strip().strip("<>/\"' \t").lower()
+        if action in self.WRITE_ALIASES or is_write_action(action) or action in CODE_EDITOR_READ_ALIASES:
+            return {"chunks"}
+        return set()
+
     async def execute(
         self,
         agent_id: str,
@@ -119,7 +216,7 @@ class CodeEditorTool(BaseTool):
         session_name: Optional[str] = None,
         **kwargs: Any
     ) -> Dict[str, Any]:
-        
+
         action = kwargs.get("action")
         if isinstance(action, str):
             # Round 1y: W1 sent 'replace_chunks>' (a stray tag character, 2026-10-17 23:59); file_system cleans this since 1s.
@@ -151,8 +248,9 @@ class CodeEditorTool(BaseTool):
             return read_result
 
         # Gracefully handle write_file called on code_editor
-        if action in ["write_file", "write", "create_file"]:
-            file_content = kwargs.get("file_content") or kwargs.get("content")
+        if action in self.WRITE_ALIASES or is_write_action(action):
+            # Round 2c: also 'write_file_content' with 'file_contents' (2026-10-18 22:01: "Missing required parameters: chunks")
+            file_content = next((kwargs[key] for key in WRITE_CONTENT_KEYS if kwargs.get(key) is not None), None)
             if file_content is not None and filename:
                 logger.info(f"CodeEditorTool: Handled '{action}' alias for '{filename}' directly.")
                 from src.tools.file_system import FileSystemTool
@@ -198,7 +296,7 @@ class CodeEditorTool(BaseTool):
                     try:
                         import ast
                         # AST fallback for single-quote JSON
-                        parsed = ast.literal_eval(chunks.strip())
+                        parsed = _literal_eval_chunks(chunks.strip())  # Round 2c: also JSON null/true/false
                         if isinstance(parsed, list):
                             chunks = parsed
                         else:
@@ -271,6 +369,7 @@ class CodeEditorTool(BaseTool):
             # Apply all chunks
             content = original_content
             successful = 0
+            approximate_matches: List[str] = []  # Round 1z: chunks matched by fuzzy_line_window()
             errors = []
             
             # Sort chunks to prevent line shifting collisions
@@ -397,17 +496,15 @@ class CodeEditorTool(BaseTool):
                             errors.append(f"Chunk {idx}: Search text is ambiguous (found {len(matches)} times ignoring whitespace).")
                             continue
                         else:
-                            # Try robust patch-based mechanism as last resort
-                            try:
-                                dmp = diff_match_patch()
-                                patches = dmp.patch_make(search_text, replace_text)
-                                new_content, results = dmp.patch_apply(patches, content)
-                                if len(results) > 0 and all(results):
-                                    content = new_content
-                                    successful += 1
-                                    continue
-                            except Exception as e:
-                                logger.debug(f"dmp patch failed: {e}")
+                            # Round 1z: last resort = ONE block of whole lines that is >= 90 % similar (was diff_match_patch,
+                            # which patched wherever the text half-fitted and corrupted files).
+                            window = fuzzy_line_window(content, search_text)
+                            if window:
+                                first_line, last_line = window[2], window[3]
+                                content = replace_fuzzy_window(content, window, replace_text)
+                                successful += 1
+                                approximate_matches.append(f"chunk {idx}: lines {first_line}-{last_line}")
+                                continue
                                 
                         # Provide fuzzy match attempt context
                         import difflib
@@ -437,9 +534,14 @@ class CodeEditorTool(BaseTool):
                     continue
             
             if errors:
+                # Round 1z: chunks are applied one after another in memory, so text shown for a later chunk already contains
+                # the earlier chunks' changes - which were NOT saved (2026-10-18 06:54:09 showed lines that were not in the file).
+                earlier_note = ("\nNote: chunks are applied in order (line-number chunks from the bottom up). Text shown above "
+                                "for a failed chunk already includes the changes of the chunks before it in this call, but "
+                                "NOTHING was saved: read the file again before retrying.") if successful else ""
                 return {
                     "status": "error",
-                    "message": f"Code edit failed: {successful} chunks succeeded, but {len(errors)} failed issues occurred.\n" + "\n".join(errors) + "\nNo changes were saved."
+                    "message": f"Code edit failed: {successful} chunks succeeded, but {len(errors)} failed issues occurred.\n" + "\n".join(errors) + "\nNo changes were saved." + earlier_note
                 }
                 
             emptied = emptied_file_error(filename, original_content, content)
@@ -469,6 +571,9 @@ class CodeEditorTool(BaseTool):
             return {
                 "status": "success",
                 "message": f"Successfully applied {successful} edits to '{filename}'."
+                           + (f" Note: the search text was not found exactly; it was matched approximately "
+                              f"({'; '.join(approximate_matches)}). Read those lines to check the result."
+                              if approximate_matches else "")
             }
 
         except Exception as e:

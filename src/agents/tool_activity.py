@@ -241,7 +241,30 @@ _PM_STANDBY_ALL_DONE = (
     PM_STANDBY_GUARD_TAG + " Your last task list shows NO open tasks, so the project work is finished. Do NOT go to standby: "
     "request the pm_audit state now so the results are verified and the Admin AI is told the project is complete."
 )
+_PM_STANDBY_FILTERED = (
+    PM_STANDBY_GUARD_TAG + " Your last task list was FILTERED ({filters}), so it does not show every task. Call "
+    "`project_management` with action=\"list_tasks\" and no filters. If any task is still open, request pm_standby (or "
+    "assign work). If every task is finished, request pm_audit instead."
+)
 _DONE_PROGRESS = {"finished", "completed", "complete", "done", "closed", "decomposed", "deleted"}
+
+
+def _listing_filters(history, tool_message) -> List[str]:
+    """
+    Round 2c: the filters (other than project_filter) of the list_tasks call that produced tool_message. On 2026-10-18 21:53 a
+    listing with task_progress_filter='todo' and tags_filter excluding 'assigned' came back empty although 5 tasks were open.
+    """
+    call_id = tool_message.get("tool_call_id")
+    for msg in reversed(list(history or [])):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for call in msg.get("tool_calls") or []:
+            if isinstance(call, dict) and call.get("id") == call_id:
+                args = _call_arguments(call)
+                return sorted(f"{key}={value!r}" for key, value in args.items()
+                              if (key.endswith("_filter") or key in ("assignee", "status", "task_progress", "tags"))
+                              and key != "project_filter" and value not in (None, "", [], {}))
+    return []
 
 
 def _last_task_listing(history):
@@ -260,6 +283,7 @@ def _last_task_listing(history):
         except ValueError:
             continue
         if isinstance(data, dict) and isinstance(data.get("tasks"), list):
+            data["_filters"] = _listing_filters(history, msg)  # Round 2c
             return data
     return None
 
@@ -284,6 +308,8 @@ def pm_standby_block_message(agent_type, agent_state, requested_state, history, 
         progress = str(task.get("task_progress") or task.get("status") or "").strip().lower()
         if progress and progress not in _DONE_PROGRESS:
             return None
+    if listing.get("_filters"):
+        return _PM_STANDBY_FILTERED.format(filters=", ".join(listing["_filters"]))  # Round 2c: not proof of "finished"
     return _PM_STANDBY_ALL_DONE
 
 
