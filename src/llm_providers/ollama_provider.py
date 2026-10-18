@@ -14,20 +14,54 @@ from src.agents.constants import (
 logger = logging.getLogger(__name__)
 
 
-def log_ollama_finish(data: Any, thinking_chars: Optional[int] = None) -> Optional[str]:
+THINKING_LOG_HEAD = 300
+THINKING_LOG_TAIL = 700
+
+
+def thinking_excerpt(thinking: Any) -> str:
+    """Round 1z: the start and the end of a thinking text on one line ('' if there is none)."""
+    text = " | ".join(line.strip() for line in str(thinking or "").splitlines() if line.strip())
+    if len(text) <= THINKING_LOG_HEAD + THINKING_LOG_TAIL + 20:
+        return text
+    return f"{text[:THINKING_LOG_HEAD]} [... {len(text) - THINKING_LOG_HEAD - THINKING_LOG_TAIL} chars ...] {text[-THINKING_LOG_TAIL:]}"
+
+
+def no_thinking_kwargs(provider: Any) -> Dict[str, Any]:
+    """
+    Round 1z: extra stream_completion() arguments for short framework verdicts (Constitutional Guardian). For Ollama they
+    ask the model not to think: a Guardian review spent 4 min 48 s and 1337 tokens thinking before answering '<OK/>'.
+    Set CG_THINKING=true in .env to let the Guardian think again. Other providers get nothing.
+    """
+    import os
+    if os.getenv("CG_THINKING", "false").strip().lower() in ("1", "true", "yes", "on"):
+        return {}
+    return {"think": False} if isinstance(provider, OllamaProvider) else {}
+
+
+def log_ollama_finish(data: Any, thinking_chars: Optional[int] = None, content_chars: Optional[int] = None,
+                      thinking_text: Optional[str] = None) -> Optional[str]:
     """
     Round 1x: one log line per finished Ollama reply (done_reason, token counts, thinking size). A reply cut off at the
     output limit (done_reason 'length') is logged as a WARNING. Returns the done_reason, or None. Never raises.
+    Round 1z: streamed replies pass the counts of ALL chunks (the 'done' chunk alone has no content), and a line with the
+    start and end of the thinking text is logged first.
     """
     try:
         if not isinstance(data, dict) or not data.get("done"):
             return None
         reason = data.get("done_reason") or "?"
         msg = data.get("message") if isinstance(data.get("message"), dict) else {}
+        if thinking_text is None:
+            thinking_text = msg.get("thinking") or ""
         if thinking_chars is None:
-            thinking_chars = len(msg.get("thinking") or "")
+            thinking_chars = len(thinking_text)
+        if content_chars is None:
+            content_chars = len(msg.get("content") or "")
+        excerpt = thinking_excerpt(thinking_text)
+        if excerpt:
+            logger.info(f"Ollama thinking ({len(thinking_text)} chars): {excerpt}")
         text = (f"Ollama finished: done_reason={reason}, prompt_tokens={data.get('prompt_eval_count', '?')}, "
-                f"output_tokens={data.get('eval_count', '?')}, content_chars={len(msg.get('content') or '')}, "
+                f"output_tokens={data.get('eval_count', '?')}, content_chars={content_chars}, "
                 f"thinking_chars={thinking_chars}, tool_calls={len(msg.get('tool_calls') or [])}")
         if reason == "length":
             logger.warning(text + " -> the reply was CUT OFF at the output token limit (num_predict / per-state max_tokens).")
@@ -164,6 +198,8 @@ class OllamaProvider(BaseLLMProvider):
             logger.debug(f"OllamaProvider: Removing 'project_name' from kwargs before processing options. Value: {kwargs['project_name']}")
             kwargs.pop('project_name')
         # --- End explicit removal ---
+        # Round 1z: 'think' is a top-level /api/chat field, not a model option (see no_thinking_kwargs()).
+        think = kwargs.pop('think', None)
 
         raw_options = {"temperature": temperature, **kwargs}
         valid_options = {k: v for k, v in raw_options.items() if k in KNOWN_OLLAMA_OPTIONS and v is not None}
@@ -297,6 +333,8 @@ class OllamaProvider(BaseLLMProvider):
             messages_for_ollama_payload.append(msg_to_send)
 
         payload = { "model": model, "messages": messages_for_ollama_payload, "stream": self.streaming_mode, "options": valid_options }
+        if think is not None:
+            payload["think"] = bool(think)
         if override_template:
             payload["template"] = override_template
 
@@ -382,6 +420,13 @@ class OllamaProvider(BaseLLMProvider):
                         if response_status >= 400:
                             response_text = await self._read_response_safe(response)
                             logger.debug(f"Ollama API error status {response_status}. Body: {response_text[:500]}...")
+
+                            # Round 1z: an Ollama version or model that does not accept "think" gets the request without it.
+                            if response_status == 400 and "think" in payload and "think" in response_text.lower():
+                                logger.warning(f"Ollama rejected the 'think' field ({response_text[:100]!r}). Sending the request without it.")
+                                del payload["think"]
+                                if response and not response.closed: response.release()
+                                continue
 
                             # --- NATIVE TOOL FALLBACK START ---
                             is_xml_crash = response_status == 500 and "XML syntax error" in response_text
@@ -469,6 +514,8 @@ class OllamaProvider(BaseLLMProvider):
                 processed_lines = 0
                 stream_error_occurred = False
                 stream_error_obj = None
+                streamed_content_chars = 0      # Round 1z: finish statistics over all streamed chunks
+                streamed_thinking: List[str] = []
                 try:
                     if use_streaming_mode:
                         logger.debug("Starting streaming using response.content.iter_any()")
@@ -509,15 +556,20 @@ class OllamaProvider(BaseLLMProvider):
                                         stream_error_obj = ValueError(f"[Ollama Error]: {error_msg}") 
                                         yield {"type": "error", "content": f"[Ollama Error]: {error_msg}", "_exception_obj": stream_error_obj}
                                         stream_error_occurred = True
-                                    if not stream_error_occurred: 
+                                    if not stream_error_occurred:
+                                         if isinstance(chunk_data.get("message"), dict) and chunk_data["message"].get("thinking"):
+                                             streamed_thinking.append(str(chunk_data["message"]["thinking"]))
                                          if "message" in chunk_data and isinstance(chunk_data["message"], dict) and \
                                             "content" in chunk_data["message"]:
                                              content_chunk = chunk_data["message"]["content"]
-                                             if content_chunk: 
+                                             if content_chunk:
+                                                 streamed_content_chars += len(content_chunk)
                                                  # logger.debug(f"OllamaProvider: Yielding response_chunk: {content_chunk[:100]}...") # Disabled to prevent log spam
                                                  yield {"type": "response_chunk", "content": content_chunk}
                                     if chunk_data.get("done", False):
-                                        log_ollama_finish(chunk_data)
+                                        all_thinking = "".join(streamed_thinking)
+                                        log_ollama_finish(chunk_data, thinking_chars=len(all_thinking),
+                                                          content_chars=streamed_content_chars, thinking_text=all_thinking)
                                         total_duration = chunk_data.get("total_duration")
                                         logger.debug(f"Received done=true. Total duration: {total_duration}ns")
                                         if total_duration: yield {"type": "status", "content": f"Ollama turn finished ({total_duration / 1e9:.2f}s)"}
@@ -575,6 +627,7 @@ class OllamaProvider(BaseLLMProvider):
                                  accumulated_tool_calls = []
                                  accumulated_content = ""
                                  accumulated_thinking_chars = 0  # Round 1x: finish statistics
+                                 accumulated_thinking_parts: List[str] = []  # Round 1z: thinking excerpt in the log
                                  done_stats: Dict[str, Any] = {}
                                  is_done = False
                                  has_error = None
@@ -591,6 +644,7 @@ class OllamaProvider(BaseLLMProvider):
                                              accumulated_content += msg["content"]
                                          if msg.get("thinking"):
                                              accumulated_thinking_chars += len(msg["thinking"])
+                                             accumulated_thinking_parts.append(str(msg["thinking"]))
                                          if chunk_data.get("done"):
                                              is_done = True
                                              done_stats = {k: chunk_data[k] for k in ("done_reason", "eval_count", "prompt_eval_count") if k in chunk_data}
@@ -609,7 +663,8 @@ class OllamaProvider(BaseLLMProvider):
                                  if has_error:
                                      response_data["error"] = has_error
                                  response_data.update(done_stats)
-                                 log_ollama_finish(response_data, thinking_chars=accumulated_thinking_chars)
+                                 log_ollama_finish(response_data, thinking_chars=accumulated_thinking_chars,
+                                                   thinking_text="".join(accumulated_thinking_parts))
                              else:
                                  log_ollama_finish(response_data)
                              if response_data.get("error"):

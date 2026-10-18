@@ -630,11 +630,20 @@ class ToolExecutor:
 
             validated_args = tool_args.copy()
             missing_required = []
+            # Round 1z: a tool may say which "required" parameters an action does not need (code_editor 'write' needs no
+            # 'chunks'; W1's call was rejected here on 2026-10-18 06:30:46 although code_editor handles it).
+            not_needed = set()
+            not_needed_for = getattr(tool, 'params_not_required_for', None)
+            if callable(not_needed_for):
+                try:
+                    not_needed = set(not_needed_for(tool_args) or ())
+                except Exception as not_needed_err:
+                    logger.debug(f"Executor: params_not_required_for() of '{tool_name}' failed: {not_needed_err}")
             if schema.get('parameters'):
                 for param_info in schema['parameters']:
                     param_name = param_info['name']
                     is_required = param_info.get('required', True)
-                    if param_name not in tool_args and is_required:
+                    if param_name not in tool_args and is_required and param_name not in not_needed:
                         missing_required.append(param_name)
 
             if missing_required:

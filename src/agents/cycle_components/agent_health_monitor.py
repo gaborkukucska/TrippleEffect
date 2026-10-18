@@ -1606,10 +1606,13 @@ class ConstitutionalGuardianHealthMonitor:
         try:
             from contextlib import aclosing
             full_verdict_text = ""
+            # Round 1z: thinking used the whole 150-token budget, so every verdict came back empty
+            from src.llm_providers.ollama_provider import no_thinking_kwargs
             async with aclosing(cg_agent.llm_provider.stream_completion(
-                messages=[{"role": "system", "content": eval_prompt}], 
+                messages=[{"role": "system", "content": eval_prompt}],
                 model=cg_agent.model,
-                temperature=0.1, max_tokens=150
+                temperature=0.1, max_tokens=150,
+                **no_thinking_kwargs(cg_agent.llm_provider)
             )) as stream:
                 async for event in stream:
                     if event.get("type") == "response_chunk":
