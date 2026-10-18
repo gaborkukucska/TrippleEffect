@@ -471,7 +471,9 @@ class NextStepScheduler:
                 else:
                     logger.info(f"NextStepScheduler: Admin AI '{agent_id}' finished conversation turn cleanly without pending tool results.")
                     if agent.status != AGENT_STATUS_ERROR:
-                        agent.set_status(AGENT_STATUS_IDLE)
+                        # Round 2b: keep a pending CG concern (2026-10-18 17:39 this reset made it unresolvable)
+                        if not (agent.status == AGENT_STATUS_AWAITING_USER_REVIEW_CG and getattr(agent, 'cg_awaiting_user_decision', False)):
+                            agent.set_status(AGENT_STATUS_IDLE)
             else:
                 logger.info(f"NextStepScheduler: Agent '{agent_id}' ({context.current_model_key_for_tracking}) finished cycle cleanly, no specific reactivation needed by this scheduler.")
                 if hasattr(agent, '_failed_models_this_cycle'): agent._failed_models_this_cycle.clear()

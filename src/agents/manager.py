@@ -704,13 +704,26 @@ class AgentManager:
         else:
             logger.info("CG heartbeat timer task not running or already stopped.")
 
+    @staticmethod
+    def _awaiting_cg_decision(agent, action: str) -> bool:
+        """
+        Round 2b: True if the agent has a CG concern waiting for the user. The cg_awaiting_user_decision flag decides: only
+        the CG concern flow sets and clears it, while the status can be overwritten elsewhere (2026-10-18 17:39: the status
+        went back to 'idle', so 'Approve' was refused and the concern could never be resolved).
+        """
+        if not getattr(agent, 'cg_awaiting_user_decision', False):
+            return False
+        if agent.status != AGENT_STATUS_AWAITING_USER_REVIEW_CG:
+            logger.warning(f"{action}: Agent '{agent.agent_id}' has a pending CG concern but status '{agent.status}'. Resolving it anyway.")
+        return True
+
     async def resolve_cg_concern_approve(self, agent_id: str):
         agent = self.agents.get(agent_id)
         if not agent:
             logger.error(f"resolve_cg_concern_approve: Agent '{agent_id}' not found.")
             return False, f"Agent '{agent_id}' not found."
 
-        if not (agent.status == AGENT_STATUS_AWAITING_USER_REVIEW_CG and agent.cg_awaiting_user_decision):
+        if not self._awaiting_cg_decision(agent, "resolve_cg_concern_approve"):  # Round 2b
             logger.warning(f"resolve_cg_concern_approve: Agent '{agent_id}' is not awaiting user decision on a CG concern. Status: {agent.status}, Flag: {agent.cg_awaiting_user_decision}")
             return False, f"Agent '{agent_id}' is not in the correct state for this action."
 
@@ -770,7 +783,7 @@ class AgentManager:
             logger.error(f"resolve_cg_concern_stop: Agent '{agent_id}' not found.")
             return False, f"Agent '{agent_id}' not found."
 
-        if not (agent.status == AGENT_STATUS_AWAITING_USER_REVIEW_CG and agent.cg_awaiting_user_decision):
+        if not self._awaiting_cg_decision(agent, "resolve_cg_concern_stop"):  # Round 2b
             logger.warning(f"resolve_cg_concern_stop: Agent '{agent_id}' is not awaiting user decision on a CG concern. Status: {agent.status}, Flag: {agent.cg_awaiting_user_decision}")
             return False, f"Agent '{agent_id}' is not in the correct state for this action."
 
@@ -791,7 +804,7 @@ class AgentManager:
             logger.error(f"resolve_cg_concern_retry: Agent '{agent_id}' not found.")
             return False, f"Agent '{agent_id}' not found."
 
-        if not (agent.status == AGENT_STATUS_AWAITING_USER_REVIEW_CG and agent.cg_awaiting_user_decision):
+        if not self._awaiting_cg_decision(agent, "resolve_cg_concern_retry"):  # Round 2b
             logger.warning(f"resolve_cg_concern_retry: Agent '{agent_id}' is not awaiting user decision on a CG concern. Status: {agent.status}, Flag: {agent.cg_awaiting_user_decision}")
             return False, f"Agent '{agent_id}' is not in the correct state for this action."
 
