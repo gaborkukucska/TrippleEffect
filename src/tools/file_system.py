@@ -64,7 +64,7 @@ class FileSystemTool(BaseTool):
             type="string",
             description="Text content to write. Required for 'write'.",
             required=False, # Dynamically required
-            aliases=["text", "data", "body", "code", "string", "content_str"]
+            aliases=["text", "data", "body", "code", "string", "content_str", "line_content", "file_contents"]
         ),
          ToolParameter(
             name="path",
@@ -367,7 +367,7 @@ class FileSystemTool(BaseTool):
                 kwargs["filename"] = single_name
         filename = _fo(kwargs.get("filename"), kwargs.get("filepath"), kwargs.get("file"), kwargs.get("path"), kwargs.get("file_path"), kwargs.get("file_name"), kwargs.get("target_file"), kwargs.get("name")) # Used by read, write, find_replace, regex_replace
         if isinstance(filename, str): filename = filename.strip()
-        content = _fo(kwargs.get("content"), kwargs.get("text"), kwargs.get("data"), kwargs.get("body"), kwargs.get("code"), kwargs.get("string"), kwargs.get("content_str"), kwargs.get("message_content"), kwargs.get("file_content"), kwargs.get("contents")) # Used by write, append, insert_lines
+        content = _fo(kwargs.get("content"), kwargs.get("text"), kwargs.get("data"), kwargs.get("body"), kwargs.get("code"), kwargs.get("string"), kwargs.get("content_str"), kwargs.get("message_content"), kwargs.get("file_content"), kwargs.get("contents"), kwargs.get("line_content"), kwargs.get("file_contents")) # Used by write, append, insert_lines (Round 2d: 'line_content', sent by W1 with 'write_with_lines>')
         relative_path = _fo(kwargs.get("path"), kwargs.get("filename"), kwargs.get("filepath"), kwargs.get("dir"), kwargs.get("directory"), kwargs.get("folder"), kwargs.get("target_dir")) # Used by list, mkdir, delete, copy, move
         if isinstance(relative_path, str): relative_path = relative_path.strip()
         destination_path = kwargs.get("destination_path") # Used by copy, move
@@ -637,7 +637,17 @@ class FileSystemTool(BaseTool):
                     replace_start_line = _safe_int(start_line)
                 if replace_end_line is None and end_line is not None:
                     replace_end_line = _safe_int(end_line)
-                if replace_start_line is None or replace_end_line is None: return {"status": "error", "message": "'replace_start_line' and 'replace_end_line' parameters are required for 'replace_lines'."}
+                if replace_start_line is None or replace_end_line is None:
+                    # Round 2d: W1 sent replace_lines with find_text + replace_text and no (or only an end) line number 3 times
+                    # on 2026-10-18 23:29-23:38. Old text + new text is a search/replace: do that instead of refusing.
+                    if find_text is not None and replace_text is not None:
+                        result = await self._search_replace_block_in_file(base_path, filename, find_text, replace_text, agent_id, scope_description)
+                        if isinstance(result, dict) and result.get("status") == "success":
+                            result["message"] = (result.get("message") or "") + (
+                                " [Note: 'replace_lines' had no start and end line numbers, so your find_text/replace_text "
+                                "were applied as 'search_replace_block'.]")
+                        return result
+                    return {"status": "error", "message": "'replace_start_line' and 'replace_end_line' parameters are required for 'replace_lines'."}
                 if content is None:
                     # Round 1v: W1 sent the new lines as 'replace_text' three times; that IS the content here.
                     content = _fo(replace_text, replace_block_param, kwargs.get("replacement_content"),
@@ -1258,19 +1268,31 @@ Pushes changes to a remote repository.
         # the emptied src/temp_convert.py (2026-10-17 21:21 - 2026-10-18 05:37) because the agents never set force_overwrite.
         replace_blank_file = False
         replace_stub_file = False  # Round 2a: a .py file with only docstrings/imports/pass holds no code to lose either
+        replace_keeping_code = False  # Round 2d: a complete new .py version that keeps every function and class
+        defer_to_syntax_check = False  # Round 2d: new .py text that does not parse is rejected by the syntax check below
+        rewrite_problems: List[str] = []
         if validated_path.is_file() and not force_overwrite and not replace_empty_dir:
             try:
                 existing_text = validated_path.read_text(encoding='utf-8')
                 replace_blank_file = not existing_text.strip()
                 if not replace_blank_file and str(filename).endswith('.py'):
-                    from src.tools.python_static_check import is_unimplemented_python
+                    from src.tools.python_static_check import (is_unimplemented_python, parses_as_python,
+                                                               python_rewrite_problems)
                     replace_stub_file = is_unimplemented_python(existing_text)
+                    if not replace_stub_file and existing_text != content and parses_as_python(existing_text):
+                        if not parses_as_python(content):
+                            defer_to_syntax_check = True  # nothing is written; the agent gets the syntax error report
+                        else:
+                            rewrite_problems = python_rewrite_problems(existing_text, content)
+                            replace_keeping_code = not rewrite_problems
             except Exception:
                 replace_blank_file = False
                 replace_stub_file = False
+                replace_keeping_code = False
+                defer_to_syntax_check = False
         # Prevent overwriting existing files unless force_overwrite is explicitly set
         if (validated_path.exists() and not force_overwrite and not replace_empty_dir and not replace_blank_file
-                and not replace_stub_file):
+                and not replace_stub_file and not replace_keeping_code and not defer_to_syntax_check):
             # Check if the content is exactly identical, in which case just return success to avoid looping the agent
             try:
                 if validated_path.read_text(encoding='utf-8') == content:
@@ -1287,8 +1309,13 @@ Pushes changes to a remote repository.
             self._failed_writes[agent_id][filename] = fail_count
             
             hint = ""
+            if rewrite_problems:
+                # Round 2d: say exactly what the complete new version would lose
+                hint += ("\n\nA complete new version of a Python file is saved without force_overwrite only if it keeps every "
+                         "function, class and top-level name of the existing file. Here that is not the case:\n- "
+                         + "\n- ".join(rewrite_problems))
             if fail_count >= 2:
-                hint = f"\n\n[CRITICAL INTERVENTION]: You have failed to overwrite '{filename}' {fail_count} times in a row. You MUST stop trying to use 'write' on this file. EITHER use 'code_editor' (action='replace_chunks') to modify it, OR include '\"force_overwrite\": true' in your JSON if you intentionally want to delete the old content entirely."
+                hint += f"\n\n[CRITICAL INTERVENTION]: You have failed to overwrite '{filename}' {fail_count} times in a row. You MUST stop trying to use 'write' on this file. EITHER use 'code_editor' (action='replace_chunks') to modify it, OR include '\"force_overwrite\": true' in your JSON if you intentionally want to delete the old content entirely."
 
             logger.warning(f"Agent {agent_id} attempted to overwrite existing file '{filename}'. Write rejected to strongly encourage find/replace targeted edits.")
             return {
@@ -1339,6 +1366,10 @@ Pushes changes to a remote repository.
             if replace_stub_file:
                 logger.info(f"Agent {agent_id} rewrote '{filename}', which held no code (only docstrings/imports/pass), without force_overwrite.")
                 success_msg += " (Framework note: the old file held no code, only docstrings/imports, so it was replaced without force_overwrite.)"
+            if replace_keeping_code:
+                logger.info(f"Agent {agent_id} replaced '{filename}' with a complete new version that keeps all its functions and classes (no force_overwrite).")
+                success_msg += (" (Framework note: the file already existed; your complete new version keeps all of its functions, "
+                                "classes and top-level names, so it replaced the old version without force_overwrite.)")
             if filename.endswith('.py'):
                 # Round 1o: non-blocking hints about defects the syntax check cannot see (missing imports, docstring-only functions).
                 try:
@@ -1830,10 +1861,11 @@ Pushes changes to a remote repository.
 
                 def write_checked(new_text: str) -> None:
                     # Round 1y: never save a result that leaves a file that had content empty
-                    from src.tools.code_editor import emptied_file_error
-                    refusal = emptied_file_error(filename, original_content, new_text)
-                    if refusal:
-                        raise _EditRefused(refusal)
+                    # Round 2d: nor one that turns a valid Python file into invalid Python (the other edit actions check this
+                    # since Round 1v; search_replace_block did not)
+                    problem = self._python_edit_error(filename, original_content, new_text)
+                    if problem:
+                        raise _EditRefused(problem["message"])
                     val_path.write_text(new_text, encoding='utf-8')
 
                 if start_marker and end_marker:

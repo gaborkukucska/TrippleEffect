@@ -183,6 +183,82 @@ def is_unimplemented_python(source: str) -> bool:
         return False
     has_definition = any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) for n in tree.body)
     return has_definition and _holds_no_code(tree.body)
+
+
+# --- Round 2d: complete rewrites of an existing Python file ------------------------------------------------------------------
+# 2026-10-18 22:41-23:40: W1 sent the complete, corrected src/temp_convert.py six times with file_system 'write'; every time it
+# was refused ("already exists") although the new version kept both conversion functions and only replaced the broken main().
+# It took 60 minutes until the model added force_overwrite. A rewrite that keeps every function and class loses nothing.
+MAX_REWRITE_PROBLEMS = 6
+
+
+def parses_as_python(source: str) -> bool:
+    """True if source is syntactically valid Python."""
+    try:
+        ast.parse(source)
+        return True
+    except (SyntaxError, ValueError):
+        return False
+
+
+def _definitions(body) -> dict:
+    return {node.name: node for node in body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+
+
+def _top_level_names(body) -> dict:
+    """Names bound by top-level assignments and imports -> line number (definitions are handled separately)."""
+    names: dict = {}
+    for node in body:
+        targets: list = []
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            targets = [node.target]
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.name != "*":
+                    names.setdefault((alias.asname or alias.name).split(".")[0], node.lineno)
+            continue
+        for target in targets:
+            for sub in ast.walk(target):
+                if isinstance(sub, ast.Name):
+                    names.setdefault(sub.id, node.lineno)
+    return names
+
+
+def python_rewrite_problems(old_source: str, new_source: str) -> List[str]:
+    """
+    Why a complete rewrite of a Python file cannot be saved without force_overwrite: the old file defines no function or
+    class (nothing to compare with), or the new version would lose a top-level function, class, method of a kept class,
+    assigned or imported name, or the code of a definition. [] means nothing is lost. Both texts must parse.
+    """
+    try:
+        old_tree, new_tree = ast.parse(old_source), ast.parse(new_source)
+    except (SyntaxError, ValueError):
+        return ["the old or the new version is not valid Python, so the framework cannot check what would be lost"]
+    problems: List[str] = []
+    old_defs, new_defs = _definitions(old_tree.body), _definitions(new_tree.body)
+    if not old_defs:
+        return ["the existing file defines no function or class, so the framework cannot check what a new version would lose"]
+    new_names = _top_level_names(new_tree.body)
+    for name, line in _top_level_names(old_tree.body).items():
+        if name not in new_names and name not in new_defs:
+            problems.append(f"top-level name '{name}' (line {line}) would be removed")
+    for name, old_node in old_defs.items():
+        new_node = new_defs.get(name)
+        kind = "class" if isinstance(old_node, ast.ClassDef) else "function"
+        if new_node is None:
+            problems.append(f"{kind} '{name}' (line {old_node.lineno}) would be removed")
+            continue
+        if not _holds_no_code(old_node.body) and _holds_no_code(new_node.body):
+            problems.append(f"{kind} '{name}' has code now but would hold no code in the new version")
+            continue
+        if isinstance(old_node, ast.ClassDef) and isinstance(new_node, ast.ClassDef):
+            new_methods = _definitions(new_node.body)
+            for method in _definitions(old_node.body):
+                if method not in new_methods:
+                    problems.append(f"method '{name}.{method}' would be removed")
+    return problems[:MAX_REWRITE_PROBLEMS]
 # --- Syntax error report (Round 1t) -----------------------------------------------------------------------------------------
 # 2026-10-16 10:45-12:00: W1 sent a whole file with the same fault ("expected 'except' or 'finally' block") 7 times. Every
 # rejection only said "... at line N", so the 4B model never found the fault. The report below shows the code around the

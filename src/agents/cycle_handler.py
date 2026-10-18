@@ -52,6 +52,29 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+def cut_off_reply_notice(agent) -> str:
+    """
+    Round 2d: the message for a reply that was CUT OFF at the output token limit before its tool call was complete. The
+    old "Your last response was empty" made W1 resend the same complete file four times (2026-10-18 22:55-23:12).
+    """
+    from src.agents.core import boosted_max_tokens
+    used = getattr(agent, '_last_cut_off_max_tokens', None)
+    streak = getattr(agent, '_consecutive_cut_off_replies', 1) or 1
+    limit_text = f"{used} tokens" if used else "the output token limit"
+    base = getattr(agent, '_last_base_max_tokens', None)
+    next_budget = boosted_max_tokens(base, streak) if base else None
+    if next_budget and next_budget > used:
+        budget_text = f"Your next reply may use up to {next_budget} tokens."
+    else:
+        budget_text = "Your next reply has the same limit."
+    return (
+        f"[Framework Notice]: Your last reply was CUT OFF at {limit_text} before your tool call was complete "
+        f"({streak} time(s) in a row), so NOTHING was executed or saved. {budget_text} Think briefly and make the tool call "
+        "smaller: change only the lines that need to change (code_editor 'replace_chunks' with one small chunk, or "
+        "file_system 'replace_lines') instead of sending a whole file again."
+    )
+
+
 class AgentCycleHandler:
     def __init__(self, manager: 'AgentManager', interaction_handler: 'AgentInteractionHandler'):
         self._manager: Any = manager
@@ -691,6 +714,9 @@ class AgentCycleHandler:
                                     "[Tool Execution Failed]" in result_content or 
                                     "[Framework Error]" in result_content or 
                                     "[Error]" in result_content or
+                                    # Round 2d: the executor's missing-parameter answer ("[Tool Error: code_editor] ... missing
+                                    # required parameters") was taken for a success, so the retry cost a Guardian LLM call
+                                    result_content.lstrip().startswith("[Tool Error") or
                                     result_content.strip() == ""
                                 ):
                                     continue # Previous call essentially failed, allow retry
@@ -2840,6 +2866,8 @@ class AgentCycleHandler:
                                     f"You MUST produce output. Review your current state ('{agent.state}') and "
                                     f"take a concrete action: use a tool, provide analysis, or request a state transition."
                                 )
+                                if getattr(agent, '_last_reply_cut_off', False):
+                                    nudge_msg = cut_off_reply_notice(agent)  # Round 2d: it was not empty, it was cut off
                                 agent.message_history.append({"role": "system", "content": nudge_msg})
                                 logger.warning(
                                     f"CycleHandler: Agent '{agent.agent_id}' produced empty response. "

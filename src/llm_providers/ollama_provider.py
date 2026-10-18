@@ -71,6 +71,16 @@ def log_ollama_finish(data: Any, thinking_chars: Optional[int] = None, content_c
     except Exception:
         return None
 
+def finish_info_event(data: Any, reason: Optional[str]) -> Optional[Dict[str, Any]]:
+    """
+    Round 2d: a 'finish_info' event for the agent (done_reason and output token count), or None. The agent uses it to tell
+    the model that a reply was CUT OFF at the output limit instead of calling it "empty" (2026-10-18: 4 complete-file
+    replies of W1 were cut off at 1024 tokens and each time the framework said "Your last response was empty").
+    """
+    if not reason or not isinstance(data, dict):
+        return None
+    return {"type": "finish_info", "done_reason": reason, "output_tokens": data.get("eval_count")}
+
 # --- Concurrency Limiter ---
 _ollama_semaphores = {}
 
@@ -568,8 +578,11 @@ class OllamaProvider(BaseLLMProvider):
                                                  yield {"type": "response_chunk", "content": content_chunk}
                                     if chunk_data.get("done", False):
                                         all_thinking = "".join(streamed_thinking)
-                                        log_ollama_finish(chunk_data, thinking_chars=len(all_thinking),
-                                                          content_chars=streamed_content_chars, thinking_text=all_thinking)
+                                        finish_reason = log_ollama_finish(chunk_data, thinking_chars=len(all_thinking),
+                                                                          content_chars=streamed_content_chars, thinking_text=all_thinking)
+                                        finish_event = finish_info_event(chunk_data, finish_reason)
+                                        if finish_event:
+                                            yield finish_event
                                         total_duration = chunk_data.get("total_duration")
                                         logger.debug(f"Received done=true. Total duration: {total_duration}ns")
                                         if total_duration: yield {"type": "status", "content": f"Ollama turn finished ({total_duration / 1e9:.2f}s)"}
@@ -663,10 +676,13 @@ class OllamaProvider(BaseLLMProvider):
                                  if has_error:
                                      response_data["error"] = has_error
                                  response_data.update(done_stats)
-                                 log_ollama_finish(response_data, thinking_chars=accumulated_thinking_chars,
-                                                   thinking_text="".join(accumulated_thinking_parts))
+                                 finish_reason = log_ollama_finish(response_data, thinking_chars=accumulated_thinking_chars,
+                                                                   thinking_text="".join(accumulated_thinking_parts))
                              else:
-                                 log_ollama_finish(response_data)
+                                 finish_reason = log_ollama_finish(response_data)
+                             finish_event = finish_info_event(response_data, finish_reason)
+                             if finish_event:
+                                 yield finish_event
                              if response_data.get("error"):
                                  error_msg = response_data["error"]
 

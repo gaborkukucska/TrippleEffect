@@ -854,6 +854,31 @@ class AgentManager:
             logger.debug(f"AgentManager: Could not check dependencies of task '{task_id}': {e}")
             return []
 
+    # Round 2d: progress values that mean the assigned worker has already started the task (set when it enters worker_work)
+    STARTED_TASK_PROGRESS = frozenset({"doing", "in_progress"})
+
+    def get_task_progress(self, task_id: Any) -> Optional[str]:
+        """
+        Round 2d: the task_progress of a task (lower-case), or None when it is not set or the task cannot be read.
+        """
+        if not task_id or not self.current_project or not self.current_session:
+            return None
+        try:
+            from src.tools.project_management import ProjectManagementTool, TASKLIB_AVAILABLE
+            from src.utils.task_utils import get_task_field
+            if not TASKLIB_AVAILABLE:
+                return None
+            tw_instance = ProjectManagementTool()._get_taskwarrior_instance(self.current_project, self.current_session)
+            if not tw_instance:
+                return None
+            text = str(task_id).strip()
+            task = tw_instance.tasks.get(id=int(text)) if text.isdigit() else tw_instance.tasks.get(uuid=text)
+            progress = get_task_field(task, 'task_progress')
+            return str(progress).strip().lower() if progress else None
+        except Exception as e:
+            logger.debug(f"AgentManager: Could not read the progress of task '{task_id}': {e}")
+            return None
+
     async def activate_worker_with_task_details(self, worker_agent_id: str, task_id_from_tool: str, task_description_from_tool: str, task_progress_from_tool: str = "todo") -> Optional[str]:
         """
         Activates a worker agent with specific task details, ensuring the task description
@@ -914,9 +939,26 @@ class AgentManager:
         worker_agent._needs_initial_work_context = True
         worker_agent.current_task_id = task_id_from_tool # Store the task ID as well
 
-        # Ensure the agent is in the correct state and status to be scheduled
+        # Round 2d: a task the worker has ALREADY STARTED (progress 'doing') is resumed in worker_work. On 2026-10-18 the
+        # watchdog re-activated W1 twice for its own 'doing' task into worker_decompose, where replies are capped at
+        # WORKER_DECOMPOSE_STATE_MAX_TOKENS (1024): W1 stayed there for 29 cycles and four complete-file replies were cut off.
         from src.agents.constants import WORKER_STATE_DECOMPOSE
-        self.workflow_manager.change_state(worker_agent, WORKER_STATE_DECOMPOSE) # This also sets status to IDLE if state changes
+        target_state = WORKER_STATE_DECOMPOSE
+        resumed_progress = None
+        if task_progress_from_tool not in ["finished", "completed"]:
+            resumed_progress = self.get_task_progress(task_id_from_tool)
+            if resumed_progress in self.STARTED_TASK_PROGRESS:
+                try:
+                    self.cycle_handler._handle_worker_task_tracking(worker_agent, WORKER_STATE_WORK, task_id_from_tool)
+                    target_state = WORKER_STATE_WORK
+                    logger.info(f"AgentManager: Task '{task_id_from_tool}' is already '{resumed_progress}'. Worker '{worker_agent_id}' resumes it in '{WORKER_STATE_WORK}' (no decomposition).")
+                except ValueError as not_resumable:
+                    logger.info(f"AgentManager: Task '{task_id_from_tool}' cannot be resumed in '{WORKER_STATE_WORK}' ({not_resumable}). Using '{WORKER_STATE_DECOMPOSE}'.")
+                except Exception as resume_err:
+                    logger.warning(f"AgentManager: Could not resume task '{task_id_from_tool}' for worker '{worker_agent_id}': {resume_err}. Using '{WORKER_STATE_DECOMPOSE}'.")
+
+        # Ensure the agent is in the correct state and status to be scheduled
+        self.workflow_manager.change_state(worker_agent, target_state) # This also sets status to IDLE if state changes
         if worker_agent.status != AGENT_STATUS_IDLE: # If state didn't change but status was e.g. ERROR
             worker_agent.set_status(AGENT_STATUS_IDLE)
 
@@ -976,6 +1018,13 @@ class AgentManager:
         # Wake up the worker with a system directive and workspace context so it knows what exists
         if task_progress_from_tool in ["finished", "completed"]:
             immediate_directive = f"[Framework Directive]: The PM has marked your task '{task_description_from_tool}' as FINISHED. Please acknowledge this and transition your state to 'worker_report' or 'worker_wait' as appropriate.{workspace_listing}"
+        elif target_state == WORKER_STATE_WORK:
+            immediate_directive = (
+                f"[Framework Directive]: Continue your task (task_id: {task_id_from_tool}), which you already started "
+                f"(progress: '{resumed_progress}'): {task_description_from_tool}\n"
+                f"You are in '{WORKER_STATE_WORK}': there is nothing to decompose. Read the file(s) you need, finish the task, "
+                f"run the tests, then request 'worker_test' or 'worker_report'.{workspace_listing}"
+            )
         else:
             immediate_directive = f"[Framework Directive]: You have been assigned a new task: {task_description_from_tool}\nThe system prompt has been updated with this goal. You MUST now begin executing it.{workspace_listing}"
 

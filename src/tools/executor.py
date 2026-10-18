@@ -56,6 +56,25 @@ def infer_action_from_keys(tool_name: str, tool_args: Dict[str, Any]) -> Optiona
     return action
 
 
+def split_line_range(param_name: str, value: Any, schema: Dict[str, Any], tool_args: Dict[str, Any]) -> Optional[Dict[str, int]]:
+    """
+    Round 2d: {start: a, end: b} for a '*start_line' integer parameter given as a range ('1, 60', '43-52'), else None.
+    The end parameter (same name with 'end') is only set when the call did not give it; it must exist in the tool schema.
+    """
+    if not isinstance(value, str) or not param_name.endswith("start_line"):
+        return None
+    from src.tools.code_editor import parse_line_numbers
+    first, last = parse_line_numbers(value)
+    if first is None or last is None:
+        return None
+    end_name = param_name[:-len("start_line")] + "end_line"
+    known = {p.get("name") for p in (schema.get("parameters") or [])}
+    result = {param_name: first}
+    if end_name in known and tool_args.get(end_name) is None:
+        result[end_name] = last
+    return result
+
+
 class ToolExecutor:
     def __init__(self):
         self.tools: Dict[str, BaseTool] = {}
@@ -667,6 +686,12 @@ class ToolExecutor:
                         if not isinstance(param_value, int):
                             try: validated_args[param_name] = int(param_value)
                             except (ValueError, TypeError):
+                                line_range = split_line_range(param_name, param_value, schema, tool_args)
+                                if line_range:
+                                    # Round 2d: start_line '1, 60' (W1, 2026-10-18 22:34 and 22:36) = lines 1 to 60
+                                    validated_args.update(line_range)
+                                    logger.info(f"Executor: '{tool_name}' parameter '{param_name}'='{param_value}' read as {line_range}.")
+                                    continue
                                 error_msg = f"Error: Tool '{tool_name}' parameter '{param_name}' expects an integer, but received {type(param_value).__name__} ('{param_value}') and could not convert."
                                 logger.error(error_msg); return error_msg
                     elif expected_type == 'boolean':

@@ -72,6 +72,185 @@ def is_write_action(action: Any) -> bool:
     return isinstance(action, str) and action.startswith(WRITE_ACTION_PREFIXES)
 
 
+# --- Round 2d helpers -----------------------------------------------------------------------------------------------------
+# 2026-10-18 22:17-23:59 (Temp_Converter_CLI, qwen3.5:4b): W1 needed 70 minutes and ~30 failed calls to replace one broken
+# main() function. The calls failed on the framework's side, not on the model's: 'chunks' with an invalid JSON escape (\C),
+# one edit given as top-level search_block/replace_block (7x "Missing required parameters: chunks"), start_line given as
+# '43, 52', and line numbers that were one line off from a search text that matched exactly once (6x "DIFFERENT code").
+def _repair_json_escapes(text: str) -> str:
+    r"""Doubles every backslash that does not start a valid JSON escape (\C -> \\C), so json.loads() accepts the text."""
+    out: List[str] = []
+    index, size = 0, len(text)
+    while index < size:
+        char = text[index]
+        if char != "\\":
+            out.append(char)
+            index += 1
+            continue
+        following = text[index + 1] if index + 1 < size else ""
+        if following and following in '"\\/bfnrt':
+            out.append(text[index:index + 2])
+            index += 2
+        elif following == "u" and re.fullmatch(r"[0-9a-fA-F]{4}", text[index + 2:index + 6] or ""):
+            out.append(text[index:index + 6])
+            index += 6
+        else:
+            out.append("\\\\")  # a literal backslash; the following character is kept as it is
+            index += 1
+    return "".join(out)
+
+
+def _close_open_brackets(text: str) -> str:
+    """
+    Round 2d: appends the closing brackets a JSON text is missing at its END ('[{"search": ...}' -> '[{"search": ...}]', W1
+    on 2026-10-18 22:33 and 22:35). The text is returned unchanged if a string is still open or the brackets do not match.
+    """
+    stack: List[str] = []
+    in_string = escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "[{":
+            stack.append(char)
+        elif char in "]}":
+            if not stack or {"[": "]", "{": "}"}[stack.pop()] != char:
+                return text
+    if in_string or not stack:
+        return text
+    return text.rstrip() + "".join("]" if opener == "[" else "}" for opener in reversed(stack))
+
+
+_LINE_RANGE_RE = re.compile(r"^\s*(\d+)\s*(?:,|-|–|:|\.\.|to)\s*(\d+)\s*$", re.IGNORECASE)
+
+
+def parse_line_numbers(value: Any):
+    """
+    (first, last) from a line-number value: 43 -> (43, None); '43' -> (43, None); '43, 52' / '43-52' / '43 to 52' -> (43, 52).
+    (None, None) if the value holds no line number. Booleans are not line numbers.
+    """
+    if value is None or isinstance(value, bool):
+        return None, None
+    if isinstance(value, int):
+        return value, None
+    if isinstance(value, float) and value.is_integer():
+        return int(value), None
+    text = str(value).strip()
+    if text.isdigit():
+        return int(text), None
+    match = _LINE_RANGE_RE.match(text)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    return None, None
+
+
+TOP_LEVEL_SEARCH_KEYS = ("search", "search_block", "search_text", "find", "find_text", "old", "old_code", "old_text")
+TOP_LEVEL_REPLACE_KEYS = ("replace", "replace_block", "replace_text", "replacement", "new", "new_code", "new_text",
+                          "new_content", "line_content", "content")
+TOP_LEVEL_START_KEYS = ("start_line", "from_line", "line_start", "replace_start_line")
+TOP_LEVEL_END_KEYS = ("end_line", "to_line", "line_end", "replace_end_line")
+EDIT_ACTION_ALIASES = frozenset({
+    "replace", "edit", "modify", "replace_chunk", "replace_lines", "replace_line", "search_replace", "search_replace_block",
+    "find_replace", "find_and_replace", "replace_block", "replace_text", "edit_file", "modify_file", "update_file",
+    "apply_chunks", "apply_edits",
+})
+
+
+def _first_present(args: Dict[str, Any], keys) -> Any:
+    for key in keys:
+        if args.get(key) is not None:
+            return args[key]
+    return None
+
+
+def single_chunk_from_args(args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Round 2d: ONE edit given as top-level arguments (search_block/replace_block, search_text/replace_text, start_line/end_line
+    with replace/content ...) as a chunk dict, or None if the arguments do not describe an edit.
+    """
+    if not isinstance(args, dict):
+        return None
+    replace = _first_present(args, TOP_LEVEL_REPLACE_KEYS)
+    if replace is None or isinstance(replace, (list, dict)):
+        return None
+    chunk: Dict[str, Any] = {"replace": str(replace)}
+    search = _first_present(args, TOP_LEVEL_SEARCH_KEYS)
+    if isinstance(search, str) and search.strip():
+        chunk["search"] = search
+    start, range_end = parse_line_numbers(_first_present(args, TOP_LEVEL_START_KEYS))
+    end, _ = parse_line_numbers(_first_present(args, TOP_LEVEL_END_KEYS))
+    if end is None:
+        end = range_end
+    if start is not None:
+        chunk["start_line"] = start
+    if end is not None:
+        chunk["end_line"] = end
+    if "search" not in chunk and start is None and end is None:
+        return None
+    return chunk
+
+
+LINE_HINT_TOLERANCE_BEFORE = 1
+LOCAL_EDIT_EXTRA_LINES = 2
+
+
+def line_hint_edit_allowed(content: str, match_start: int, found_line: int, start_line: int, search_text: str,
+                           replace_text: str) -> bool:
+    """
+    Round 2d: may a search text found by unique_search_near_lines() replace ONLY its match? Yes if it begins a block of whole
+    lines at start_line +-1 (the line numbers were just off by one). A match deeper inside the range, or a fragment of a
+    line, is only a LOCAL fix: the replacement may have at most 2 lines more than the search text. Otherwise a model that
+    meant "replace lines 10-20 with this new block" but searched for one line in the middle would get duplicated code.
+    """
+    line_begin = content.rfind("\n", 0, match_start) + 1
+    starts_a_line = not content[line_begin:match_start].strip()
+    if starts_a_line and abs(found_line - start_line) <= 1:
+        return True
+    search_lines = len(str(search_text).strip("\n").splitlines()) or 1
+    replace_lines = len(str(replace_text).strip("\n").splitlines())
+    return replace_lines <= search_lines + LOCAL_EDIT_EXTRA_LINES
+
+
+def unique_search_near_lines(content: str, search_text: str, start_line: int, end_line: int):
+    """
+    Round 2d: (start_char, end_char, line, exact) of the ONE place where search_text occurs between start_line - 1 and
+    end_line: first exactly, else ignoring whitespace. None if there is no such place or more than one.
+    """
+    if not isinstance(search_text, str) or not search_text.strip():
+        return None
+    first_allowed = max(1, start_line - LINE_HINT_TOLERANCE_BEFORE)
+    last_allowed = max(start_line, end_line)
+
+    def in_window(position: int) -> bool:
+        return first_allowed <= content.count("\n", 0, position) + 1 <= last_allowed
+
+    exact_hits = []
+    position = content.find(search_text)
+    while position != -1:
+        exact_hits.append(position)
+        position = content.find(search_text, position + 1)
+    near = [hit for hit in exact_hits if in_window(hit)]
+    if len(near) == 1:
+        return near[0], near[0] + len(search_text), content.count("\n", 0, near[0]) + 1, True
+    if exact_hits:
+        return None
+    pieces = [re.escape(piece) for piece in search_text.split() if piece]
+    if not pieces:
+        return None
+    matches = [m for m in re.finditer(r"\s*".join(pieces), content) if in_window(m.start())]
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    return match.start(), match.end(), content.count("\n", 0, match.start()) + 1, False
+
+
 def _line_range_conflict(lines: List[str], start_idx: int, end_idx: int, search_text: str) -> Optional[str]:
     """
     None if 'search' agrees with lines start_idx..end_idx: the range starts with the search lines (whitespace at line ends
@@ -206,7 +385,16 @@ class CodeEditorTool(BaseTool):
         action = str((args or {}).get("action", "")).strip().strip("<>/\"' \t").lower()
         if action in self.WRITE_ALIASES or is_write_action(action) or action in CODE_EDITOR_READ_ALIASES:
             return {"chunks"}
-        return set()
+        # Round 2d: one edit given as top-level arguments is turned into 'chunks' by execute(); without an action the tool
+        # can only mean its one edit action, 'replace_chunks'.
+        has_chunks = any((args or {}).get(key) is not None for key in ("chunks", "replacements", "edits"))
+        has_single_chunk = single_chunk_from_args(args or {}) is not None
+        not_needed = set()
+        if not has_chunks and has_single_chunk:
+            not_needed.add("chunks")
+        if not action and (has_chunks or has_single_chunk):
+            not_needed.add("action")
+        return not_needed
 
     async def execute(
         self,
@@ -222,8 +410,10 @@ class CodeEditorTool(BaseTool):
             # Round 1y: W1 sent 'replace_chunks>' (a stray tag character, 2026-10-17 23:59); file_system cleans this since 1s.
             action = action.strip().strip("<>/\"' \t").lower()
         # Handle action aliases
-        if action in ["replace", "edit", "modify", "replace_chunk"]:
+        if action in EDIT_ACTION_ALIASES:
             action = "replace_chunks"
+        if not action and (kwargs.get("chunks") is not None or single_chunk_from_args(kwargs) is not None):
+            action = "replace_chunks"  # Round 2d: W1 called code_editor without an action (2026-10-18 23:14, 23:16)
             
         default_scope = "shared" if project_name and session_name else "private"
         scope = kwargs.get("scope", default_scope).lower()
@@ -264,6 +454,14 @@ class CodeEditorTool(BaseTool):
             return {"status": "error", "message": f"Action '{action}' is not supported. Use 'replace_chunks'."}
 
         chunks = kwargs.get("chunks") or kwargs.get("replacements") or kwargs.get("edits")
+        single_chunk_note = ""
+        if not chunks:
+            # Round 2d: ONE edit sent as top-level arguments (search_block/replace_block + start_line/end_line ...)
+            single_chunk = single_chunk_from_args(kwargs)
+            if single_chunk is not None:
+                chunks = [single_chunk]
+                single_chunk_note = (" [Note: your edit was given as top-level arguments; it was applied as one chunk. "
+                                     "Next time put it in 'chunks': [{\"search\": ..., \"replace\": ...}].]")
         if not filename or not chunks:
             return {"status": "error", "message": "Missing 'filename' or 'chunks' parameter."}
             
@@ -273,37 +471,44 @@ class CodeEditorTool(BaseTool):
                 # way: 6 rejections "Invalid control character" on 2026-10-16). Valid JSON parses exactly as before.
                 chunks = _loads_chunks(chunks)  # Round 1y: also accepts stray ']' / '}' after the array ("Extra data")
             except Exception as e1:
-                # JSON Resilience Layer
+                # Round 2d: a backslash that starts no JSON escape ('\\"\\"\\"\\CLI', 2026-10-18 22:33 and 22:35) is a literal
+                # backslash. Only those backslashes change; everything else is parsed exactly as sent.
                 try:
-                    # Try to fix common JSON errors (single quotes, trailing commas, missing closing brackets)
-                    fixed_str = chunks.strip()
-                    # Remove markdown formatting if present
-                    if fixed_str.startswith("```json"):
-                        fixed_str = fixed_str[7:]
-                    elif fixed_str.startswith("```"):
-                        fixed_str = fixed_str[3:]
-                    if fixed_str.endswith("```"):
-                        fixed_str = fixed_str[:-3]
-                    
-                    # Fix single quotes to double quotes, being careful around escaped quotes
-                    # This is a naive regex but helps with simple LLM errors
-                    fixed_str = re.sub(r"(?<!\\)'", '"', fixed_str)
-                    # Fix trailing commas
-                    fixed_str = re.sub(r',\s*([}\]])', r'\1', fixed_str)
-                    
-                    chunks = json.loads(fixed_str)
-                except Exception as e2:
+                    chunks = _loads_chunks(_close_open_brackets(_repair_json_escapes(chunks)))
+                    logger.info("CodeEditorTool: 'chunks' parsed after repairing invalid backslash escapes / missing closing brackets.")
+                except Exception:
+                    # JSON Resilience Layer
                     try:
-                        import ast
-                        # AST fallback for single-quote JSON
-                        parsed = _literal_eval_chunks(chunks.strip())  # Round 2c: also JSON null/true/false
-                        if isinstance(parsed, list):
-                            chunks = parsed
-                        else:
-                            raise ValueError("AST evaluated to non-list")
-                    except Exception as e3:
-                        return {"status": "error", "message": f"'chunks' was provided as a string but is not valid JSON. Ensure you use an array of objects. Parse error: {e1}. Repair attempt failed: {e3}"}
-                
+                        # Try to fix common JSON errors (single quotes, trailing commas, missing closing brackets)
+                        fixed_str = chunks.strip()
+                        # Remove markdown formatting if present
+                        if fixed_str.startswith("```json"):
+                            fixed_str = fixed_str[7:]
+                        elif fixed_str.startswith("```"):
+                            fixed_str = fixed_str[3:]
+                        if fixed_str.endswith("```"):
+                            fixed_str = fixed_str[:-3]
+
+                        # Fix single quotes to double quotes, being careful around escaped quotes
+                        # This is a naive regex but helps with simple LLM errors
+                        fixed_str = re.sub(r"(?<!\\)'", '"', fixed_str)
+                        # Fix trailing commas
+                        fixed_str = re.sub(r',\s*([}\]])', r'\1', fixed_str)
+
+                        chunks = json.loads(fixed_str)
+                    except Exception as e2:
+                        try:
+                            # AST fallback for single-quote JSON
+                            parsed = _literal_eval_chunks(chunks.strip())  # Round 2c: also JSON null/true/false
+                            if isinstance(parsed, list):
+                                chunks = parsed
+                            else:
+                                raise ValueError("AST evaluated to non-list")
+                        except Exception as e3:
+                            return {"status": "error", "message": f"'chunks' was provided as a string but is not valid JSON. Ensure you use an array of objects. Parse error: {e1}. Repair attempt failed: {e3}"}
+
+        if isinstance(chunks, dict) and any(key in chunks for key in ("replace", "replace_block", "replace_text", "replacement", "new", "new_code")):
+            chunks = [chunks]  # Round 2d: one chunk object without the surrounding list
         if not isinstance(chunks, list):
             return {"status": "error", "message": "'chunks' must be a list of dicts with 'search' and 'replace' keys."}
 
@@ -370,14 +575,15 @@ class CodeEditorTool(BaseTool):
             content = original_content
             successful = 0
             approximate_matches: List[str] = []  # Round 1z: chunks matched by fuzzy_line_window()
+            line_hint_corrections: List[str] = []  # Round 2d: chunks whose line numbers were off but whose search text was not
             errors = []
             
             # Sort chunks to prevent line shifting collisions
             # Process line-based edits from bottom to top
             def get_start_line(c):
                 sl = c.get('start_line') or c.get('from_line') or c.get('line_start')
-                try: return int(sl) if sl is not None else -1
-                except: return -1
+                first, _ = parse_line_numbers(sl)  # Round 2d: also '43, 52'
+                return first if first is not None else -1
             
             # Use stable sort: line-based chunks descending, search chunks stay in relative order
             chunks = sorted(chunks, key=get_start_line, reverse=True)
@@ -404,6 +610,14 @@ class CodeEditorTool(BaseTool):
                     
                 start_line = chunk.get('start_line') or chunk.get('from_line') or chunk.get('line_start') or chunk.get('start')
                 end_line = chunk.get('end_line') or chunk.get('to_line') or chunk.get('line_end') or chunk.get('end')
+                if isinstance(start_line, str):
+                    # Round 2d: W1 sent start_line '43, 52' (with end_line '52'): the first number is the start, the second
+                    # the end when no end_line is given
+                    first, range_last = parse_line_numbers(start_line)
+                    if first is not None:
+                        start_line = first
+                        if end_line is None and range_last is not None:
+                            end_line = range_last
                 search_text = (
                     chunk.get('search') if 'search' in chunk else
                     chunk.get('search_block') if 'search_block' in chunk else
@@ -450,7 +664,22 @@ class CodeEditorTool(BaseTool):
                         # Round 1y: line numbers AND search text: they must point to the same code, or nothing is changed.
                         conflict = _line_range_conflict(lines, start_idx, end_idx, search_text)
                         if conflict:
-                            errors.append(f"Chunk {idx}: {conflict}")
+                            # Round 2d: the line numbers are a hint. If the search text occurs ONCE from one line before
+                            # start_line up to end_line (off by one, or a fragment inside the range), the search text decides.
+                            near = unique_search_near_lines(content, search_text, start_line, end_line)
+                            if near is None or not line_hint_edit_allowed(content, near[0], near[2], start_line,
+                                                                          search_text, replace_text):
+                                errors.append(f"Chunk {idx}: {conflict}")
+                                continue
+                            match_start, match_end, found_line, exact = near
+                            replacement = replace_text
+                            after = content[match_end:]
+                            if not exact and replacement and not replacement.endswith('\n') and after and not after.startswith('\n'):
+                                replacement += '\n'
+                            content = content[:match_start] + replacement + after
+                            successful += 1
+                            line_hint_corrections.append(f"chunk {idx}: lines {start_line}-{end_line} did not start with your "
+                                                         f"search text; it was found at line {found_line} and replaced there")
                             continue
                         
                     replacement = replace_text
@@ -568,12 +797,26 @@ class CodeEditorTool(BaseTool):
             
             # Save if all success
             await asyncio.to_thread(abs_path.write_text, content, encoding="utf-8")
+            code_notes_text = ""
+            if filename.endswith('.py'):
+                # Round 2d: the same non-blocking hints as a file_system 'write' (a docstring-only function, a missing import)
+                try:
+                    from src.tools.python_static_check import python_code_notes
+                    code_notes = python_code_notes(content, filename)
+                except Exception:
+                    code_notes = []
+                if code_notes:
+                    code_notes_text = ("\n[Framework check - the edit WAS saved, but please fix:]\n- " + "\n- ".join(code_notes))
             return {
                 "status": "success",
                 "message": f"Successfully applied {successful} edits to '{filename}'."
                            + (f" Note: the search text was not found exactly; it was matched approximately "
                               f"({'; '.join(approximate_matches)}). Read those lines to check the result."
                               if approximate_matches else "")
+                           + (f" Note: {'; '.join(line_hint_corrections)}. Line numbers may have changed: read the file "
+                              "again before the next line-based edit." if line_hint_corrections else "")
+                           + single_chunk_note
+                           + code_notes_text
             }
 
         except Exception as e:
@@ -614,7 +857,10 @@ class CodeEditorTool(BaseTool):
         - If you encounter a 'Search text not found exactly' error, DO NOT guess the whitespace. Use the `file_system` tool with `action='read'` to view the file contents and copy the EXACT text before retrying.
         - If a search string appears multiple times or zero times, the entire tool call is rejected.
         - Use EITHER 'start_line'/'end_line' OR 'search' in a chunk. If you give both, the lines must start with the search
-          text, otherwise nothing is changed.
+          text, or the search text must occur exactly once inside those lines (or on the line just before them); otherwise
+          nothing is changed.
+        - One edit can also be sent without 'chunks': "search" (or "search_block") and "replace" (or "replace_block") as
+          top-level parameters, optionally with "start_line" and "end_line".
         - To delete lines use "replace": "". An edit that would leave the file empty is refused.
         """
         return usage.strip()

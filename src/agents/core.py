@@ -70,6 +70,16 @@ def detect_autoregressive_loop(text: str, min_pattern_length: int = 20, min_repe
             return True
     return False
 
+MAX_TOKENS_BOOST_FACTOR = 4
+
+
+def boosted_max_tokens(base: Optional[int], consecutive_cut_offs: int) -> Optional[int]:
+    """Round 2d: the output budget after `consecutive_cut_offs` cut-off replies in a row: base x2 per cut-off, at most x4."""
+    if base is None or not consecutive_cut_offs or consecutive_cut_offs < 0:
+        return base
+    return min(base * (2 ** consecutive_cut_offs), base * MAX_TOKENS_BOOST_FACTOR)
+
+
 def build_request_state_schema(agent_type, state, valid_states):
     """
     Builds the native `request_state` pseudo-tool schema for an agent, or None if it must not be offered.
@@ -194,6 +204,11 @@ class Agent:
         self._consecutive_tool_failures: int = 0
         self._all_kickoff_task_uuids: set = set()
         self._consecutive_empty_responses: int = 0
+        # Round 2d: replies cut off at the output token limit (see boosted_max_tokens / the cycle handler's notice)
+        self._last_reply_cut_off: bool = False
+        self._consecutive_cut_off_replies: int = 0
+        self._last_cut_off_max_tokens: Optional[int] = None
+        self._last_base_max_tokens: Optional[int] = None
         self._framework_forced_standby_count: int = 0
         self._manage_cycle_cooldown_until: float = 0.0
         self._last_standby_wake_time: float = 0.0
@@ -294,8 +309,14 @@ class Agent:
                 elif self.state == WORKER_STATE_DECOMPOSE: max_tokens_override = settings.WORKER_DECOMPOSE_STATE_MAX_TOKENS
                 elif self.state in [WORKER_STATE_WORK, WORKER_STATE_TEST]: max_tokens_override = settings.WORKER_WORK_STATE_MAX_TOKENS
                 elif self.state == WORKER_STATE_WAIT: max_tokens_override = settings.WORKER_WAIT_STATE_MAX_TOKENS
+            self._last_base_max_tokens = max_tokens_override  # Round 2d: the configured budget of this call
             if max_tokens_override is not None:
+                # Round 2d: after replies that were CUT OFF at the output limit, the next call gets a larger budget (x2 per
+                # cut-off in a row, at most x4) so a complete tool call fits. The configured value stays the normal budget.
+                max_tokens_override = boosted_max_tokens(max_tokens_override, getattr(self, '_consecutive_cut_off_replies', 0))
                 logger.info(f"Agent {self.agent_id}: Applying max_tokens={max_tokens_override} for state '{self.state}'")
+            self._last_reply_cut_off = False  # Round 2d: set again below if this reply is cut off
+            self._last_cut_off_max_tokens = max_tokens_override
 
             tool_schemas = None
             if settings.NATIVE_TOOL_CALLING_ENABLED and self.manager and getattr(self.manager, 'tool_executor', None):
@@ -340,6 +361,7 @@ class Agent:
                 tool_schemas = None
 
             from contextlib import aclosing
+            finish_reason_received = None  # Round 2d: done_reason reported by the provider ('finish_info' event)
             
             async with aclosing(self.llm_provider.stream_completion(
                 messages=history_to_use, model=self.model, temperature=self.temperature,
@@ -380,6 +402,8 @@ class Agent:
                         yield {"type": "response_chunk", "content": content, "agent_id": self.agent_id}
                     elif event_type == "native_tool_calls":
                         native_tool_calls_received.extend(event.get("tool_calls", []))
+                    elif event_type == "finish_info":
+                        finish_reason_received = event.get("done_reason")
                     elif event_type == "status": event["agent_id"] = self.agent_id; yield event
                     elif event_type == "error":
                         error_content = f"[{self.provider_name} Error] {event.get('content', 'Unknown provider error')}"
@@ -388,6 +412,14 @@ class Agent:
                         event["agent_id"] = self.agent_id; event["content"] = error_content; event["_exception_obj"] = last_error_obj; stream_had_error = True; yield event; break
                     else: logger.warning(f"Agent {self.agent_id}: Received unknown event type '{event_type}' from provider.")
             logger.debug(f"Agent {self.agent_id}: Provider stream finished. Stream error: {stream_had_error}. Processing buffer.")
+            # Round 2d: remember whether this reply was cut off at the output limit before it produced a tool call
+            if finish_reason_received == "length" and not native_tool_calls_received:
+                self._last_reply_cut_off = True
+                self._consecutive_cut_off_replies = getattr(self, '_consecutive_cut_off_replies', 0) + 1
+                logger.warning(f"Agent {self.agent_id}: reply cut off at the output limit ({max_tokens_override} tokens) without a "
+                               f"complete tool call ({self._consecutive_cut_off_replies} in a row).")
+            elif finish_reason_received is not None:
+                self._consecutive_cut_off_replies = 0
 
             if not stream_had_error:
                 logger.debug(f"Agent {self.agent_id}: Raw response before post-processing:\n>>>\n{complete_assistant_response}\n<<<")
