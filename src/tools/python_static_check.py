@@ -149,6 +149,40 @@ def python_code_notes(source: str, filename: Optional[str] = None) -> List[str]:
                              "Call the function under test and assert the expected result.")
 
     return notes[:MAX_NOTES]
+
+
+# --- Round 2a: Python files that hold no code yet ----------------------------------------------------------------------------
+# 2026-10-18 10:19-11:30: W1's complete rewrites of src/main.py were refused 8 times ("already exists") although the file held
+# only docstrings. Overwriting such a file loses nothing.
+def _is_main_guard(node: ast.AST) -> bool:
+    test = getattr(node, "test", None)
+    return (isinstance(node, ast.If) and isinstance(test, ast.Compare) and isinstance(test.left, ast.Name)
+            and test.left.id == "__name__")
+
+
+def _holds_no_code(statements) -> bool:
+    for node in statements:
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+            continue  # docstring, '...'
+        if isinstance(node, (ast.Pass, ast.Import, ast.ImportFrom)) or _is_main_guard(node):
+            continue
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and _holds_no_code(node.body):
+            continue
+        return False
+    return True
+
+
+def is_unimplemented_python(source: str) -> bool:
+    """
+    True if source parses, defines at least one function or class, and nothing in it does anything: only docstrings,
+    imports, pass/..., empty functions/classes and an `if __name__ == "__main__":` block. Imports-only files are False.
+    """
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return False
+    has_definition = any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) for n in tree.body)
+    return has_definition and _holds_no_code(tree.body)
 # --- Syntax error report (Round 1t) -----------------------------------------------------------------------------------------
 # 2026-10-16 10:45-12:00: W1 sent a whole file with the same fault ("expected 'except' or 'finally' block") 7 times. Every
 # rejection only said "... at line N", so the 4B model never found the fault. The report below shows the code around the

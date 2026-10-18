@@ -535,12 +535,21 @@ class PMKickoffWorkflow(BaseWorkflow):
         # --- Create Project Directory Structure ---
         structure_list = data_input.get("project_structure", [])
         code_base_definitions = data_input.get("code_base_definitions")
+        # Round 2a: files the kick-off tasks name with a directory (e.g. 'tests/test_x.py') are planned files too. On
+        # 2026-10-18 the structure listed only 'src/': no tests/ directory and no conftest.py were created.
+        from src.utils.task_files import file_paths_in_text
+        task_named_files: List[str] = []
+        for task_text in task_descriptions:
+            for named_path in file_paths_in_text(task_text, with_directory_only=True):
+                if named_path not in task_named_files:
+                    task_named_files.append(named_path)
         
         created_dirs: List[str] = []
-        if structure_list and project_context and manager.current_session:
+        if (structure_list or task_named_files) and project_context and manager.current_session:
             workspace_path = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, str(project_context), str(manager.current_session))
             try:
-                planned_dirs, planned_files, notes = plan_project_structure(structure_list)
+                structure_items = list(structure_list) if isinstance(structure_list, list) else ([structure_list] if structure_list else [])
+                planned_dirs, planned_files, notes = plan_project_structure(structure_items + task_named_files)
                 planned_dirs, planned_files, layout_notes = normalize_planned_layout(planned_dirs, planned_files)
                 notes = list(notes) + layout_notes
                 for note in notes:

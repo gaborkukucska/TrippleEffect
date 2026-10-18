@@ -807,6 +807,25 @@ class ProjectManagementTool(BaseTool):
             hidden_note += " tasks hidden by default)."
             return {"status": "success", "message": f"Found {len(minimal_task_list)} task(s).{hidden_note}", "tasks": minimal_task_list}
 
+    def _completion_refusal(self, task, project_name, session_name, task_label) -> Optional[Dict[str, Any]]:
+        """
+        Round 2a: an error result if the task may not be marked finished yet because existing Python files named in its
+        description are empty, invalid or have defects (src/utils/task_files.py), else None. Never raises.
+        """
+        try:
+            from src.config.settings import settings
+            from src.tools.sandbox_runner import resolve_shared_workspace
+            from src.utils.task_files import task_completion_problems, completion_refusal_message
+            workspace = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, str(project_name), str(session_name))
+            problems = task_completion_problems(task['description'], workspace)
+        except Exception as gate_err:
+            logger.warning(f"ProjectManagementTool: completion check failed ({gate_err}); not blocking.")
+            return None
+        if not problems:
+            return None
+        logger.warning(f"ProjectManagementTool: refused to mark task '{task_label}' finished: {problems}")
+        return {"status": "error", "message": completion_refusal_message(str(task_label), problems)}
+
     async def _execute_modify_task(self, tw, aliases, project_name, session_name, agent_id, kwargs):
             task_id = kwargs.get("task_id") or kwargs.get("task_uuid")
             if not task_id:
@@ -918,6 +937,11 @@ class ProjectManagementTool(BaseTool):
             if "task_progress" in kwargs or "status" in kwargs:
                 raw_prog = kwargs.get("task_progress") or kwargs.get("status")
                 t_prog, t_status = self._map_task_progress(raw_prog)
+                if t_prog == "finished":
+                    # Round 2a: PM1 marked tasks finished whose files held only docstrings (2026-10-18 15:30, 15:50)
+                    refusal = self._completion_refusal(task, project_name, session_name, task_id)
+                    if refusal:
+                        return refusal
                 task["task_progress"] = t_prog
                 task["status"] = t_status
                 modified_fields = ["task_progress", "status"]
@@ -1094,6 +1118,10 @@ class ProjectManagementTool(BaseTool):
                 }
 
 
+
+            refusal = self._completion_refusal(task, project_name, session_name, task_id)  # Round 2a
+            if refusal:
+                return refusal
 
             try:
                 is_dry_run = str(kwargs.get("dry_run")).lower() == "true"

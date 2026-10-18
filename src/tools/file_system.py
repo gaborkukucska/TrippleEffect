@@ -1257,13 +1257,20 @@ Pushes changes to a remote repository.
         # Round 1y: an existing file that is EMPTY (only whitespace) holds nothing to lose. 'write' was refused 38 times on
         # the emptied src/temp_convert.py (2026-10-17 21:21 - 2026-10-18 05:37) because the agents never set force_overwrite.
         replace_blank_file = False
+        replace_stub_file = False  # Round 2a: a .py file with only docstrings/imports/pass holds no code to lose either
         if validated_path.is_file() and not force_overwrite and not replace_empty_dir:
             try:
-                replace_blank_file = not validated_path.read_text(encoding='utf-8').strip()
+                existing_text = validated_path.read_text(encoding='utf-8')
+                replace_blank_file = not existing_text.strip()
+                if not replace_blank_file and str(filename).endswith('.py'):
+                    from src.tools.python_static_check import is_unimplemented_python
+                    replace_stub_file = is_unimplemented_python(existing_text)
             except Exception:
                 replace_blank_file = False
+                replace_stub_file = False
         # Prevent overwriting existing files unless force_overwrite is explicitly set
-        if validated_path.exists() and not force_overwrite and not replace_empty_dir and not replace_blank_file:
+        if (validated_path.exists() and not force_overwrite and not replace_empty_dir and not replace_blank_file
+                and not replace_stub_file):
             # Check if the content is exactly identical, in which case just return success to avoid looping the agent
             try:
                 if validated_path.read_text(encoding='utf-8') == content:
@@ -1329,6 +1336,9 @@ Pushes changes to a remote repository.
             if replace_blank_file:
                 logger.info(f"Agent {agent_id} wrote '{filename}', which existed but was EMPTY, without force_overwrite.")
                 success_msg += " (Framework note: the file existed but was empty, so it was written without force_overwrite.)"
+            if replace_stub_file:
+                logger.info(f"Agent {agent_id} rewrote '{filename}', which held no code (only docstrings/imports/pass), without force_overwrite.")
+                success_msg += " (Framework note: the old file held no code, only docstrings/imports, so it was replaced without force_overwrite.)"
             if filename.endswith('.py'):
                 # Round 1o: non-blocking hints about defects the syntax check cannot see (missing imports, docstring-only functions).
                 try:
@@ -1923,20 +1933,17 @@ Pushes changes to a remote repository.
                             f"To replace only one, provide a more specific search_block with unique surrounding lines."
                         )
 
-                # ── TIER 3: Fuzzy fallback (diff_match_patch) ─────────────────────
-                dmp = diff_match_patch()
-                dmp.Match_Distance = len(original_content) * 10
-                
-                idx = dmp.match_main(original_content, search_block, 0)
-                patches = dmp.patch_make(search_block, replace_block)
-                if idx != -1:
-                    for p in patches:
-                        p.start1 += idx
-                        p.start2 += idx
+                # ── TIER 3: Fuzzy fallback ─────────────────────────────────────────
+                # Round 1z: ONE block of whole lines that is >= 90 % similar. This was diff_match_patch with an unlimited
+                # match distance that accepted PARTIAL patches: search "c = 3" (absent) + replace "" turned "a = 1" into "1".
+                from src.tools.code_editor import fuzzy_line_window, replace_fuzzy_window
+                window = fuzzy_line_window(original_content, search_block)
+                new_content = None
+                if window:
+                    first_line, last_line = window[2], window[3]
+                    new_content = replace_fuzzy_window(original_content, window, replace_block)
 
-                new_content, results = dmp.patch_apply(patches, original_content)
-
-                if not any(results):
+                if new_content is None:
                     # Provide useful context: show first/last line of search_block
                     preview_first = search_lines[0][:80] if search_lines else "(empty)"
                     preview_last  = search_lines[-1][:80] if len(search_lines) > 1 else ""
@@ -1949,7 +1956,8 @@ Pushes changes to a remote repository.
                     return False, hint
 
                 write_checked(new_content)
-                return True, "Fuzzy match found and replaced."
+                return True, (f"Fuzzy match found and replaced (lines {first_line}-{last_line} were about 90 % or more "
+                              "similar to search_block; read them to check the result).")
 
             try:
                 success, msg = await asyncio.to_thread(search_replace_sync)
