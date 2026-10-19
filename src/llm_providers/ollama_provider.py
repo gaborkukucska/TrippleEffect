@@ -35,7 +35,30 @@ def no_thinking_kwargs(provider: Any) -> Dict[str, Any]:
     import os
     if os.getenv("CG_THINKING", "false").strip().lower() in ("1", "true", "yes", "on"):
         return {}
+    return thinking_off_kwargs(provider)
+
+
+def thinking_off_kwargs(provider: Any) -> Dict[str, Any]:
+    """
+    Round 2h: stream_completion() arguments that switch thinking off for ONE agent reply (Ollama only, {} otherwise).
+    Used to retry after a reply that only thought (2026-10-19 19:17-19:39, qwen3.5:9b: PM1 sent 7 replies whose thinking
+    ended with the next tool call, e.g. "Next action: modify_task for ba793058... with assignee_agent_id='W1'", but that
+    contained no tool call and no text).
+    """
     return {"think": False} if isinstance(provider, OllamaProvider) else {}
+
+
+THINKING_TAIL_CHARS = 600
+
+
+def thinking_tail(thinking: Any, limit: int = THINKING_TAIL_CHARS) -> str:
+    """Round 2h: the end of a thinking text on one line ('' if there is none), cut at a word boundary."""
+    text = " ".join(str(thinking or "").split())
+    if len(text) <= limit:
+        return text
+    tail = text[-limit:]
+    space = tail.find(" ")
+    return tail[space + 1:] if 0 <= space < 40 else tail
 
 
 def log_ollama_finish(data: Any, thinking_chars: Optional[int] = None, content_chars: Optional[int] = None,
@@ -71,15 +94,21 @@ def log_ollama_finish(data: Any, thinking_chars: Optional[int] = None, content_c
     except Exception:
         return None
 
-def finish_info_event(data: Any, reason: Optional[str]) -> Optional[Dict[str, Any]]:
+def finish_info_event(data: Any, reason: Optional[str], thinking_text: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     Round 2d: a 'finish_info' event for the agent (done_reason and output token count), or None. The agent uses it to tell
     the model that a reply was CUT OFF at the output limit instead of calling it "empty" (2026-10-18: 4 complete-file
     replies of W1 were cut off at 1024 tokens and each time the framework said "Your last response was empty").
+    Round 2h: it also carries the size and the end of the reply's thinking, so a reply that only thought can be told so.
     """
     if not reason or not isinstance(data, dict):
         return None
-    return {"type": "finish_info", "done_reason": reason, "output_tokens": data.get("eval_count")}
+    if thinking_text is None:
+        msg = data.get("message")
+        thinking_text = msg.get("thinking") if isinstance(msg, dict) else None
+    thinking_text = str(thinking_text or "")
+    return {"type": "finish_info", "done_reason": reason, "output_tokens": data.get("eval_count"),
+            "thinking_chars": len(thinking_text), "thinking_tail": thinking_tail(thinking_text)}
 
 # --- Concurrency Limiter ---
 _ollama_semaphores = {}
@@ -580,7 +609,7 @@ class OllamaProvider(BaseLLMProvider):
                                         all_thinking = "".join(streamed_thinking)
                                         finish_reason = log_ollama_finish(chunk_data, thinking_chars=len(all_thinking),
                                                                           content_chars=streamed_content_chars, thinking_text=all_thinking)
-                                        finish_event = finish_info_event(chunk_data, finish_reason)
+                                        finish_event = finish_info_event(chunk_data, finish_reason, all_thinking)
                                         if finish_event:
                                             yield finish_event
                                         total_duration = chunk_data.get("total_duration")
@@ -667,7 +696,8 @@ class OllamaProvider(BaseLLMProvider):
                                  response_data = {
                                      "message": {
                                          "role": "assistant",
-                                         "content": accumulated_content
+                                         "content": accumulated_content,
+                                         "thinking": "".join(accumulated_thinking_parts)  # Round 2h: for finish_info
                                      },
                                      "done": is_done
                                  }

@@ -18,6 +18,7 @@ from src.core.database_manager import db_manager, close_db_connection, Project a
 logging.info("manager.py: Imported database_manager.")
 
 logging.info("manager.py: Importing constants...")
+from src.agents.assignable_work import assignment_hint_for  # Round 2h
 from src.agents.constants import (
     AGENT_STATUS_IDLE, AGENT_STATUS_ERROR, BOOTSTRAP_AGENT_ID, ADMIN_STATE_CONVERSATION,
     AGENT_TYPE_PM, AGENT_TYPE_WORKER, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_STARTUP,
@@ -469,8 +470,13 @@ class AgentManager:
                                         break
                                     
                             has_inbox = hasattr(agent, 'message_inbox') and len(agent.message_inbox) > 0
+                            # Round 2h: an idle worker and unassigned ready tasks also need the PM (2026-10-19: W1 idle in
+                            # worker_startup, 5 unassigned tasks, PM never woken)
+                            open_work_hint = None
+                            if not has_waiting_workers and not has_inbox and getattr(agent, '_manage_cycle_cooldown_until', 0) <= current_time:
+                                open_work_hint = assignment_hint_for(self, agent)
                         
-                            if not has_waiting_workers and not has_inbox:
+                            if not has_waiting_workers and not has_inbox and not open_work_hint:
                                 logger.debug(f"PM '{agent.agent_id}' is relaxing in MANAGE because no workers are waiting and no messages are queued.")
                                 continue
 
@@ -484,7 +490,9 @@ class AgentManager:
                             agent._periodic_cycle_count += 1
                             agent._last_periodic_check_time = current_time
                         
-                            logger.info(f"PM '{agent.agent_id}' idle in MANAGE state (Workers waiting: {has_waiting_workers}, Inbox: {has_inbox}). Scheduling cycle by timer. (Count: {agent._periodic_cycle_count})")
+                            logger.info(f"PM '{agent.agent_id}' idle in MANAGE state (Workers waiting: {has_waiting_workers}, Inbox: {has_inbox}, Unassigned work: {bool(open_work_hint)}). Scheduling cycle by timer. (Count: {agent._periodic_cycle_count})")
+                            if open_work_hint:
+                                agent.message_history.append({"role": "system", "content": open_work_hint})
                             await self.schedule_cycle(agent, 0)
                     
                         # --- FIX: Wake PM from pm_standby if workers are waiting or inbox has messages ---
@@ -518,6 +526,7 @@ class AgentManager:
                             current_waiting_ids = {w.agent_id for w in waiting_workers}
                             new_waiting_ids = current_waiting_ids - seen_waiting
                         
+                            open_work_hint = None  # Round 2h
                             if has_inbox:
                                 # Immediate wake
                                 should_wake = True
@@ -530,6 +539,13 @@ class AgentManager:
                                     logger.info(f"PM '{agent.agent_id}' has NEW waiting workers ({new_waiting_ids}) and backoff ({time_since_wake:.1f}s > 60s) cleared. Waking.")
                                 else:
                                     should_wake = False
+                            elif current_time - last_wake > 60:
+                                # Round 2h: unassigned ready tasks and an idle worker (in worker_startup or worker_wait) need the
+                                # PM too; the same 60 s backoff (and the forced-standby cooldown stored in it) applies.
+                                open_work_hint = assignment_hint_for(self, agent)
+                                should_wake = bool(open_work_hint)
+                                if should_wake:
+                                    logger.info(f"PM '{agent.agent_id}' is in standby while unassigned tasks wait for an idle worker. Waking.")
                             else:
                                 should_wake = False
                         
@@ -550,6 +566,8 @@ class AgentManager:
                                     reason.append(f"{len(agent.message_inbox)} inbox message(s)")
                                 if new_waiting_ids:
                                     reason.append(f"{len(new_waiting_ids)} NEW worker(s) in worker_wait")
+                                if open_work_hint:
+                                    reason.append("unassigned tasks and idle worker(s)")
                                 reason_str = " and ".join(reason)
                             
                                 logger.warning(
@@ -570,6 +588,8 @@ class AgentManager:
                                     wake_msg_parts.append(f"\\nCRITICAL INSTRUCTION: Since worker(s) {ids_str} are waiting, you MUST use `list_tasks` filtered to their specific ID to see what work they have completed. Example: {filter_example}")
                                 
                                 wake_msg = " ".join(wake_msg_parts)
+                                if open_work_hint:
+                                    wake_msg += "\n" + open_work_hint
                             
                                 agent.message_history.append({"role": "system", "content": wake_msg})
                                 self.workflow_manager.change_state(agent, PM_STATE_MANAGE)

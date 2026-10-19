@@ -177,6 +177,33 @@ def _uuid_typo_match(tasks, needle: str):
     return close[0] if len(close) == 1 else None
 
 
+MAX_LISTED_OPEN_TASKS = 8
+
+
+def open_tasks_listing(tw, limit: int = MAX_LISTED_OPEN_TASKS) -> str:
+    """
+    Round 2h: the open tasks with their exact UUIDs, for a "task not found" answer. PM1 (2026-10-19 19:36) invented the id
+    'temp_conversion_logic_cli_tool_implementation_and_unit_tests' after a context reset and was only told to list the
+    tasks, which costs another 1-3 minute reply on a 9b model. '' if there are none or the store cannot be read.
+    """
+    try:
+        tasks = [t for t in tw.tasks.pending() if str(t['task_progress'] or '').strip().lower() != 'decomposed']
+    except Exception:
+        return ""
+    if not tasks:
+        return ""
+    lines = ["Open tasks (use one of these exact task_id values):"]
+    for task in tasks[:limit]:
+        description = " ".join(str(task['description'] or '').split())
+        if len(description) > 90:
+            description = description[:87] + "..."
+        assignee = str(task['assignee'] or '').strip() or "unassigned"
+        lines.append(f"- {task['uuid']} [{task['task_progress'] or 'todo'}, {assignee}]: {description}")
+    if len(tasks) > limit:
+        lines.append(f"- ... and {len(tasks) - limit} more (use action='list_tasks').")
+    return "\n".join(lines)
+
+
 class ProjectManagementTool(BaseTool):
     name = "project_management"
     auth_level: str = "worker"
@@ -954,9 +981,10 @@ class ProjectManagementTool(BaseTool):
                             raise ValueError("Task not found by description or ID.")
             except Exception as e:
                 # Provide an actionable error message suggesting they list the tasks
+                listing = open_tasks_listing(tw)  # Round 2h
                 return {
                     "status": "error", 
-                    "message": f"Task '{task_id}' not found. Note that integer IDs shift as tasks are completed, and UUIDs must be exact. Detail: {e}",
+                    "message": f"Task '{task_id}' not found. Note that integer IDs shift as tasks are completed, and UUIDs must be exact. Detail: {e}" + (f"\n{listing}" if listing else ""),
                     "suggestion": "IMPORTANT: You should run the project_management tool with action='list_tasks' to get the current list of tasks and their valid IDs/UUIDs."
                 }
 
@@ -1142,9 +1170,10 @@ class ProjectManagementTool(BaseTool):
                             raise ValueError("Task not found by description or ID.")
             except Exception as e:
                 # Provide an actionable error message suggesting they list the tasks
+                listing = open_tasks_listing(tw)  # Round 2h
                 return {
                     "status": "error", 
-                    "message": f"Task '{task_id}' not found. Note that integer IDs shift as tasks are completed, and UUIDs must be exact. Detail: {e}",
+                    "message": f"Task '{task_id}' not found. Note that integer IDs shift as tasks are completed, and UUIDs must be exact. Detail: {e}" + (f"\n{listing}" if listing else ""),
                     "suggestion": "IMPORTANT: You should run the project_management tool with action='list_tasks' to get the current list of tasks and their valid IDs/UUIDs."
                 }
 

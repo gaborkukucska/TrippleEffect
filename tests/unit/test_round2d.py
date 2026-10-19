@@ -399,7 +399,9 @@ def test_boosted_max_tokens():
 
 def test_finish_info_event():
     from src.llm_providers.ollama_provider import finish_info_event
-    assert finish_info_event({"eval_count": 1024}, "length") == {"type": "finish_info", "done_reason": "length", "output_tokens": 1024}
+    # Round 2h: the event also carries the size and the end of the thinking (none here)
+    assert finish_info_event({"eval_count": 1024}, "length") == {"type": "finish_info", "done_reason": "length", "output_tokens": 1024,
+                                                                  "thinking_chars": 0, "thinking_tail": ""}
     assert finish_info_event({}, None) is None
 
 

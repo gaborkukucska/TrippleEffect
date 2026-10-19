@@ -209,6 +209,10 @@ class Agent:
         self._consecutive_cut_off_replies: int = 0
         self._last_cut_off_max_tokens: Optional[int] = None
         self._last_base_max_tokens: Optional[int] = None
+        # Round 2h: thinking of the last reply (from the provider's 'finish_info'), and a one-reply switch to turn it off
+        self._last_reply_thinking_chars: int = 0
+        self._last_reply_thinking_tail: str = ""
+        self._think_off_next_call: bool = False
         self._framework_forced_standby_count: int = 0
         self._manage_cycle_cooldown_until: float = 0.0
         self._last_standby_wake_time: float = 0.0
@@ -362,10 +366,22 @@ class Agent:
 
             from contextlib import aclosing
             finish_reason_received = None  # Round 2d: done_reason reported by the provider ('finish_info' event)
+            # Round 2h: what this reply thought (from 'finish_info'), and thinking switched off for a retry after a reply
+            # that only thought.
+            self._last_reply_thinking_chars = 0
+            self._last_reply_thinking_tail = ""
+            call_kwargs = dict(self.provider_kwargs or {})
+            if getattr(self, '_think_off_next_call', False):
+                self._think_off_next_call = False
+                from src.llm_providers.ollama_provider import thinking_off_kwargs
+                think_off = thinking_off_kwargs(self.llm_provider)
+                if think_off:
+                    call_kwargs.update(think_off)
+                    logger.info(f"Agent {self.agent_id}: thinking switched off for this reply (the last reply only thought).")
             
             async with aclosing(self.llm_provider.stream_completion(
                 messages=history_to_use, model=self.model, temperature=self.temperature,
-                max_tokens=max_tokens_override, tools=tool_schemas, **self.provider_kwargs
+                max_tokens=max_tokens_override, tools=tool_schemas, **call_kwargs
             )) as provider_stream:
                 
                 native_tool_calls_received = []
@@ -404,6 +420,8 @@ class Agent:
                         native_tool_calls_received.extend(event.get("tool_calls", []))
                     elif event_type == "finish_info":
                         finish_reason_received = event.get("done_reason")
+                        self._last_reply_thinking_chars = int(event.get("thinking_chars") or 0)
+                        self._last_reply_thinking_tail = str(event.get("thinking_tail") or "")
                     elif event_type == "status": event["agent_id"] = self.agent_id; yield event
                     elif event_type == "error":
                         error_content = f"[{self.provider_name} Error] {event.get('content', 'Unknown provider error')}"

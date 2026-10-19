@@ -42,6 +42,8 @@ from src.agents.cycle_components.context_summarizer import ContextSummarizer  # 
 
 from src.workflows.base import WorkflowResult  # type: ignore[import]
 from src.agents.tool_activity import is_tool_result_failure, claims_project_complete, pm_standby_block_message  # type: ignore[import]
+from src.agents.tool_activity import ADMIN_WORK_TO_PLANNING_NOTE, last_user_text, project_request_needs_planning  # type: ignore[import]  # Round 2g
+from src.agents.assignable_work import assignment_hint_for  # type: ignore[import]  # Round 2h
 
 if TYPE_CHECKING:
     from src.agents.manager import AgentManager  # type: ignore[import]
@@ -72,6 +74,32 @@ def cut_off_reply_notice(agent) -> str:
         f"({streak} time(s) in a row), so NOTHING was executed or saved. {budget_text} Think briefly and make the tool call "
         "smaller: change only the lines that need to change (code_editor 'replace_chunks' with one small chunk, or "
         "file_system 'replace_lines') instead of sending a whole file again."
+    )
+
+
+def thinking_only_tail(agent) -> str:
+    """
+    Round 2h: the end of the thinking of the agent's last reply if that reply ONLY thought (it is called for replies
+    without text and without tool calls), else ''.
+    """
+    chars = getattr(agent, '_last_reply_thinking_chars', 0)
+    tail = getattr(agent, '_last_reply_thinking_tail', '')
+    if isinstance(chars, bool) or not isinstance(chars, int) or chars <= 0 or not isinstance(tail, str):
+        return ""
+    return tail.strip()
+
+
+def thinking_only_notice(tail: str, attempt: Optional[int] = None, max_attempts: Optional[int] = None) -> str:
+    """
+    Round 2h: the message for a reply that only thought. PM1 (qwen3.5:9b) thought "Next action: modify_task for
+    ba793058... with assignee_agent_id='W1'" seven times on 2026-10-19 and never made the call; "Your last response was
+    empty" did not tell it what went wrong.
+    """
+    count = f" (attempt {attempt}/{max_attempts})" if attempt and max_attempts else ""
+    return (
+        f"[Framework Notice]: Your last reply contained ONLY thinking{count}: no tool call and no text, so NOTHING was "
+        f"done. Your thinking ended with: \"...{tail}\"\n"
+        "Do it now: make that tool call in this reply (thinking is switched off for this one reply)."
     )
 
 
@@ -1356,6 +1384,23 @@ class AgentCycleHandler:
                             context.needs_reactivation_after_cycle = True
                             continue
 
+                        # Round 2g: a project request goes to 'planning', even when Admin asks for 'work' (2026-10-19 18:16).
+                        redirected_to_planning = False
+                        if (agent.agent_type == AGENT_TYPE_ADMIN
+                                and agent.state in (ADMIN_STATE_STARTUP, ADMIN_STATE_CONVERSATION, ADMIN_STATE_STANDBY)
+                                and self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state) == ADMIN_STATE_WORK):
+                            try:
+                                redirected_to_planning = project_request_needs_planning(
+                                    agent.message_history, task_description, getattr(agent, '_auto_planning_for', None))
+                            except Exception as routing_error:  # the check must never break a state change
+                                logger.warning(f"CycleHandler: project request check failed for '{agent.agent_id}': {routing_error}")
+                                redirected_to_planning = False
+                            if redirected_to_planning:
+                                logger.warning(f"CycleHandler: Admin AI '{agent.agent_id}' requested '{requested_state}' for a project request. Switching to '{ADMIN_STATE_PLANNING}' instead.")
+                                agent._auto_planning_for = last_user_text(agent.message_history)
+                                requested_state = ADMIN_STATE_PLANNING
+                                task_description = None
+
                         # Record the agent's action in its history so it knows it made the request
                         history_content = f"[Action Taken: Transitioned to state '{requested_state}'"
                         if event_task_id:
@@ -1369,6 +1414,12 @@ class AgentCycleHandler:
                             "role": "assistant",
                             "content": history_content
                         })
+                        if redirected_to_planning:
+                            agent.message_history.append({"role": "system", "content": ADMIN_WORK_TO_PLANNING_NOTE})
+                            await self._manager.send_to_ui({
+                                "type": "status", "agent_id": agent.agent_id,
+                                "content": "Project request detected - Admin AI is now planning the project..."
+                            })
 
                         # <<< --- ROBUST FIX START --- >>>
                         # If transitioning to work state with no task, find the last user message.
@@ -2718,6 +2769,11 @@ class AgentCycleHandler:
                             # Set a cooldown to prevent immediate re-triggering by the periodic timer
                             agent._manage_cycle_cooldown_until = time.time() + 30  # 30 second cooldown
                             
+                            # Round 2h: say what is really open instead of "All workers appear to be busy" (2026-10-19 19:28-19:36:
+                            # 5 unassigned tasks, W1 idle), and quote a reply that only thought.
+                            open_work_hint = assignment_hint_for(self._manager, agent)
+                            think_tail = "" if cycle_text_content.strip() else thinking_only_tail(agent)
+
                             # Count consecutive non-productive cycles
                             if not hasattr(agent, '_manage_unproductive_cycles'):
                                 agent._manage_unproductive_cycles = 0
@@ -2739,6 +2795,12 @@ class AgentCycleHandler:
                                     "Your project appears to be in a stable state. You will now transition to standby mode. "
                                     "Call the 'request_state' tool with state='pm_standby'."
                                 )
+                                if open_work_hint:
+                                    standby_message_content = (
+                                        f"[Framework Intervention]: You made no tool call in {agent._manage_unproductive_cycles} management cycles "
+                                        f"in a row, so you were put in standby. The project is NOT finished: the framework wakes you again in about "
+                                        f"{cooldown_seconds}s to assign the open tasks. You may also assign them right now.\n{open_work_hint}"
+                                    )
                                 agent.message_history.append({"role": "system", "content": standby_message_content})
                                 
                                 # Set state immediately to ensure it takes effect if LLM fails
@@ -2767,6 +2829,15 @@ class AgentCycleHandler:
                                     "All workers appear to be busy. You should transition to standby and wait for worker reports. "
                                     "Call the 'request_state' tool with state='pm_standby'."
                                 )
+                                if open_work_hint:
+                                    directive_message_content = (
+                                        (thinking_only_notice(think_tail) + "\n" if think_tail else
+                                         f"[Framework Intervention]: This is your {agent._manage_unproductive_cycles} consecutive management "
+                                         "cycle without concrete action.\n")
+                                        + open_work_hint
+                                    )
+                                    if think_tail:
+                                        agent._think_off_next_call = True
                                 agent.message_history.append({"role": "system", "content": directive_message_content})
                                 
                                 if context.current_db_session_id:
@@ -2886,6 +2957,10 @@ class AgentCycleHandler:
                                 )
                                 if getattr(agent, '_last_reply_cut_off', False):
                                     nudge_msg = cut_off_reply_notice(agent)  # Round 2d: it was not empty, it was cut off
+                                elif thinking_only_tail(agent):
+                                    # Round 2h: it only thought; say so, quote its plan and retry without thinking
+                                    nudge_msg = thinking_only_notice(thinking_only_tail(agent), empty_retry_count, max_empty_retries)
+                                    agent._think_off_next_call = True
                                 agent.message_history.append({"role": "system", "content": nudge_msg})
                                 logger.warning(
                                     f"CycleHandler: Agent '{agent.agent_id}' produced empty response. "
