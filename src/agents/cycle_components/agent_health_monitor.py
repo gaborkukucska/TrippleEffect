@@ -1586,7 +1586,14 @@ class ConstitutionalGuardianHealthMonitor:
                 "it again. Next step: change the file (code_editor 'replace_chunks', or file_system 'write' / "
                 "'replace_lines'), work on another file, or use 'request_state' if your work is done."
             )
-            
+
+        # Round 2e: a repeated file WRITE or EDIT needs no LLM verdict either. On 2026-10-19 05:21 the Guardian answered ALLOW to
+        # W2 re-sending 'replace_lines 48-50' that had already been applied, which would have cut into the next function.
+        from src.agents.tool_activity import duplicate_file_change_verdict
+        file_change_verdict = duplicate_file_change_verdict(tool_name, tool_args)
+        if file_change_verdict is not None:
+            return file_change_verdict
+
         history_analysis = await self._analyze_agent_history(agent, "duplicate_tool")
         
         cg_agent = self._manager.agents.get(CONSTITUTIONAL_GUARDIAN_AGENT_ID)

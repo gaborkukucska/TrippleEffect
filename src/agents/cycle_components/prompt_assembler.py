@@ -14,6 +14,31 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+SHORTENED_FAILURE_TAG = "(earlier failure, details removed)"
+SHORTENED_FAILURE_MAX_CHARS = 240
+
+
+def shorten_failed_tool_result(content) -> Optional[str]:
+    """
+    Round 2e: the one-line form of an older failed tool result: its first line (the reason), so the model still sees that
+    the call FAILED and why, without the long code listings. Already shortened text is returned unchanged; None if empty.
+    """
+    text = str(content or "").strip()
+    if not text:
+        return None
+    if SHORTENED_FAILURE_TAG in text:
+        return text
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    first_line = lines[0]
+    if "failed issues occurred" in first_line and len(lines) > 1:
+        first_line += " " + lines[1]  # code_editor: the reason of the first failed chunk is on the next line
+    if len(first_line) > SHORTENED_FAILURE_MAX_CHARS:
+        first_line = first_line[:SHORTENED_FAILURE_MAX_CHARS].rstrip() + " ..."
+    if "No changes were saved" in text and "No changes were saved" not in first_line:
+        first_line += " No changes were saved."
+    return f"{first_line} {SHORTENED_FAILURE_TAG}"
+
+
 class PromptAssembler:
     """
     Assembles the system prompt and message history for an LLM call within a cycle.
@@ -318,6 +343,16 @@ class PromptAssembler:
         MAX_ERROR_MESSAGES = 1
         if len(error_indices) > MAX_ERROR_MESSAGES:
             indices_to_remove = set(error_indices[:-MAX_ERROR_MESSAGES])  # Remove all but last N
+            # Round 2e: an older FAILED TOOL RESULT is shortened to one line instead of being deleted. Deleting it left the
+            # model's tool call without any result: on 2026-10-19 03:48-03:58 W1 could not see that 5 of its 7 edits had
+            # failed, believed its 03:48 edit was saved, and searched for code that was never written.
+            for idx in sorted(indices_to_remove):
+                msg = agent.message_history[idx]
+                if msg.get("role") == "tool":
+                    shortened = shorten_failed_tool_result(msg.get("content", ""))
+                    if shortened is not None:
+                        agent.message_history[idx] = {**msg, "content": shortened}
+                        indices_to_remove.discard(idx)
             original_len = len(agent.message_history)
             agent.message_history = [
                 msg for i, msg in enumerate(agent.message_history)

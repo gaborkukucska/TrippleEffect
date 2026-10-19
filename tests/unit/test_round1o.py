@@ -92,7 +92,10 @@ def test_no_false_alarms_when_the_name_is_bound(src):
 
 
 def test_only_standard_library_module_names_are_flagged():
-    assert python_code_notes("requests.get('x')\n") == []          # third-party: could be a legit import elsewhere
+    # Round 2e: a name that is never imported is a NameError whatever it is; only a stdlib name gets "missing 'import X'"
+    notes = python_code_notes("requests.get('x')\n")
+    assert len(notes) == 1 and "NameError" in notes[0] and "missing 'import requests'" not in notes[0]
+    assert python_code_notes("import requests\nrequests.get('x')\n") == []
     assert python_code_notes("self.x = 1\n") == []
     assert len(python_code_notes("math.sqrt(4)\n")) == 1
 
@@ -121,7 +124,8 @@ def test_unparseable_and_odd_input_gives_no_notes():
 
 def test_notes_are_capped():
     src = "\n".join(f"def f{i}():\n    \"\"\"d\"\"\"\n" for i in range(10))
-    assert len(python_code_notes(src)) == 4
+    from src.tools.python_static_check import MAX_NOTES
+    assert MAX_NOTES == 6 and len(python_code_notes(src)) == MAX_NOTES  # Round 2e: was 4
 
 # ------------------------------------------------------------------------------------------------ file_system integration
 

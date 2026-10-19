@@ -153,7 +153,12 @@ def parse_line_numbers(value: Any):
 
 TOP_LEVEL_SEARCH_KEYS = ("search", "search_block", "search_text", "find", "find_text", "old", "old_code", "old_text")
 TOP_LEVEL_REPLACE_KEYS = ("replace", "replace_block", "replace_text", "replacement", "new", "new_code", "new_text",
-                          "new_content", "line_content", "content")
+                          "new_content", "line_content", "content",
+                          # Round 2e: W2 sent {path, start_line, end_line, text} five times on 2026-10-19 05:00-05:13
+                          "text", "code", "replace_with", "replacement_text")
+# Keys of the new text inside a chunk; the first six are the historical ones, in their historical order.
+CHUNK_REPLACE_KEYS = ("replace", "replace_block", "replace_text", "replacement", "new", "new_code", "new_text", "new_content",
+                      "content", "line_content", "text", "code", "replace_with", "replacement_text")
 TOP_LEVEL_START_KEYS = ("start_line", "from_line", "line_start", "replace_start_line")
 TOP_LEVEL_END_KEYS = ("end_line", "to_line", "line_end", "replace_end_line")
 EDIT_ACTION_ALIASES = frozenset({
@@ -251,6 +256,13 @@ def unique_search_near_lines(content: str, search_text: str, start_line: int, en
     return match.start(), match.end(), content.count("\n", 0, match.start()) + 1, False
 
 
+def _search_text_in(lines: List[str], wanted: List[str]) -> bool:
+    """True if the non-blank search lines `wanted` occur as consecutive non-blank lines of the file (whitespace ignored)."""
+    actual = [line.strip() for line in lines if line.strip()]
+    size = len(wanted)
+    return any(actual[index:index + size] == wanted for index in range(len(actual) - size + 1))
+
+
 def _line_range_conflict(lines: List[str], start_idx: int, end_idx: int, search_text: str) -> Optional[str]:
     """
     None if 'search' agrees with lines start_idx..end_idx: the range starts with the search lines (whitespace at line ends
@@ -268,9 +280,126 @@ def _line_range_conflict(lines: List[str], start_idx: int, end_idx: int, search_
     found_at = [str(n + 1) for n, line in enumerate(lines) if line.strip() == wanted[0]]
     where = (f"The first line of your search text is at line(s) {', '.join(found_at[:5])}." if found_at
              else "Your search text is not in the file.")
+    if found_at and len(wanted) > 1 and not _search_text_in(lines, wanted):
+        # Round 2e: 2026-10-19 03:54 - W1 searched for 5 lines it believed its failed 03:48 edit had written; only the first
+        # existed. "The first line ... is at line 50" made it look like a line-number problem.
+        where = (f"Only the FIRST line of your search text is in the file (line(s) {', '.join(found_at[:5])}); the rest of it is "
+                 "NOT in the file, so the code you want to replace does not exist (an earlier edit may not have been saved). "
+                 "Read the file again and edit what is really there.")
     return (f"start_line/end_line ({start_idx + 1}-{end_idx}) and the 'search' text point to DIFFERENT code, so nothing was "
             f"changed. Lines {start_idx + 1}-{end_idx} are:\n{shown}{more}\n{where} Send EITHER line numbers (read the "
             "file with line numbers first) OR a 'search' text that matches exactly - not both.")
+
+
+# --- Round 2e: replacement text that repeats the lines next to its range ------------------------------------------------------
+# 2026-10-19 03:56 and 03:58: W1 replaced line 1 (and 1-3) of src/temp_convert.py with new imports FOLLOWED by
+# 'def celsius_to_fahrenheit(...):' and the start of its docstring - lines that come right after the range and were kept. The
+# result had the def line twice ("expected an indented block"), was rejected twice, and W1 was forced into worker_report.
+def _same_lines(first: List[str], second: List[str]) -> bool:
+    return [line.rstrip() for line in first] == [line.rstrip() for line in second]
+
+
+def boundary_overlap(lines: List[str], start_idx: int, end_idx: int, replacement: str):
+    """
+    (lines_before, lines_after): how many lines at the START of the replacement repeat the lines right before the range, and
+    how many at its END repeat the lines right after it (whitespace at line ends ignored; the repeated block must contain a
+    non-blank line). (0, 0) if there is no such overlap.
+    """
+    new_lines = str(replacement or "").splitlines(True)
+    after, before = lines[end_idx:], lines[:start_idx]
+    overlap_after = 0
+    for size in range(min(len(new_lines), len(after)), 0, -1):
+        if any(line.strip() for line in after[:size]) and _same_lines(new_lines[-size:], after[:size]):
+            overlap_after = size
+            break
+    overlap_before = 0
+    for size in range(min(len(new_lines) - overlap_after, len(before)), 0, -1):
+        if any(line.strip() for line in before[-size:]) and _same_lines(new_lines[:size], before[-size:]):
+            overlap_before = size
+            break
+    return overlap_before, overlap_after
+
+
+def whole_line_span(content: str, start: int, end: int):
+    """(first_line_index, end_line_index) if content[start:end] covers whole lines (it may stop just before a line break),
+    else None."""
+    if start < 0 or end <= start or end > len(content):
+        return None
+    if start > 0 and content[start - 1] != "\n":
+        return None
+    first = content.count("\n", 0, start)
+    if content[end - 1] == "\n":
+        return first, content.count("\n", 0, end)
+    if end == len(content) or content[end] == "\n":
+        return first, content.count("\n", 0, end) + 1
+    return None
+
+
+def repair_boundary_overlap(current: str, lines: List[str], start_idx: int, end_idx: int, replacement: str, naive: str):
+    """
+    (new_content, note) when replacing lines start_idx..end_idx of a VALID Python text with `replacement` gives invalid Python
+    (`naive`) only because the replacement repeats the lines right before/after the range, and the replacement without the
+    repeated lines gives valid Python. None in every other case, so a correct edit is never changed.
+    """
+    import ast
+    try:
+        ast.parse(naive)
+        return None  # the edit as sent is valid
+    except (SyntaxError, ValueError):
+        pass
+    try:
+        ast.parse(current)
+    except (SyntaxError, ValueError):
+        return None  # the file is already broken: do not guess
+    overlap_before, overlap_after = boundary_overlap(lines, start_idx, end_idx, replacement)
+    if not overlap_before and not overlap_after:
+        return None
+    new_lines = str(replacement).splitlines(True)
+    # the repeated lines are kept ONCE: the copy in the file before/after the range stays, the copy in the text is dropped
+    text = "".join(new_lines[overlap_before:len(new_lines) - overlap_after])
+    if text and not text.endswith("\n") and end_idx < len(lines):
+        text += "\n"
+    candidate = "".join(lines[:start_idx]) + text + "".join(lines[end_idx:])
+    try:
+        ast.parse(candidate)
+    except (SyntaxError, ValueError):
+        return None
+    parts = []
+    if overlap_before:
+        parts.append(f"its first {overlap_before} line(s) repeated the line(s) before line {start_idx + 1}")
+    if overlap_after:
+        parts.append(f"its last {overlap_after} line(s) repeated the line(s) after line {end_idx}")
+    return candidate, (" and ".join(parts) + ", which are already in the file, so they were not inserted a second time")
+
+
+def replacement_already_in_place(lines: List[str], start_idx: int, end_idx: int, replacement) -> bool:
+    """
+    Round 2e: True if the lines starting at start_idx already ARE the replacement text and the replacement is longer than the
+    range: the same chunk was applied before (its line numbers are the ones from before that edit).
+    """
+    new_lines = str(replacement or "").splitlines()
+    if not any(line.strip() for line in new_lines) or len(new_lines) <= end_idx - start_idx:
+        return False
+    return _same_lines(lines[start_idx:start_idx + len(new_lines)], new_lines)
+
+
+IMPORTANT_STATEMENT_PREFIXES = ("return", "def ", "async def ", "class ", "import ", "from ", "raise", "yield", "assert ",
+                                "if __name__")
+MAX_REMOVED_STATEMENTS = 4
+
+
+def removed_statement_lines(lines: List[str], start_idx: int, end_idx: int, replacement) -> List[str]:
+    """
+    Round 2e: 'line: text' of the return/def/class/import/raise/yield/assert lines inside the replaced range that do not occur
+    in the replacement text (compared without surrounding whitespace). These are the losses a small model does not notice.
+    """
+    kept = {line.strip() for line in str(replacement or "").splitlines() if line.strip()}
+    lost: List[str] = []
+    for number in range(start_idx, min(end_idx, len(lines))):
+        text = lines[number].strip()
+        if text and text not in kept and text.startswith(IMPORTANT_STATEMENT_PREFIXES):
+            lost.append(f"line {number + 1} '{text[:80]}'")
+    return lost[:MAX_REMOVED_STATEMENTS]
 
 
 FUZZY_MIN_RATIO = 0.9
@@ -507,7 +636,7 @@ class CodeEditorTool(BaseTool):
                         except Exception as e3:
                             return {"status": "error", "message": f"'chunks' was provided as a string but is not valid JSON. Ensure you use an array of objects. Parse error: {e1}. Repair attempt failed: {e3}"}
 
-        if isinstance(chunks, dict) and any(key in chunks for key in ("replace", "replace_block", "replace_text", "replacement", "new", "new_code")):
+        if isinstance(chunks, dict) and any(key in chunks for key in CHUNK_REPLACE_KEYS):
             chunks = [chunks]  # Round 2d: one chunk object without the surrounding list
         if not isinstance(chunks, list):
             return {"status": "error", "message": "'chunks' must be a list of dicts with 'search' and 'replace' keys."}
@@ -576,6 +705,10 @@ class CodeEditorTool(BaseTool):
             successful = 0
             approximate_matches: List[str] = []  # Round 1z: chunks matched by fuzzy_line_window()
             line_hint_corrections: List[str] = []  # Round 2d: chunks whose line numbers were off but whose search text was not
+            boundary_overlaps: List[str] = []  # Round 2e: chunks whose new text repeated the lines next to their range
+            already_applied: List[str] = []  # Round 2e: line chunks whose exact text is already at their start line
+            removed_statements: List[str] = []  # Round 2e: return/def/import/... lines a line chunk replaced without keeping
+            used_line_numbers = False  # Round 2e: for the stale-line-number hint of a syntax rejection
             errors = []
             
             # Sort chunks to prevent line shifting collisions
@@ -594,14 +727,8 @@ class CodeEditorTool(BaseTool):
                     continue
                     
                 # Support semantic aliases for replace text
-                replace_text = (
-                    chunk.get('replace') if 'replace' in chunk else
-                    chunk.get('replace_block') if 'replace_block' in chunk else
-                    chunk.get('replace_text') if 'replace_text' in chunk else
-                    chunk.get('replacement') if 'replacement' in chunk else
-                    chunk.get('new') if 'new' in chunk else
-                    chunk.get('new_code')
-                )
+                replace_key = next((key for key in CHUNK_REPLACE_KEYS if key in chunk), None)  # Round 2e: + text, content ...
+                replace_text = chunk.get(replace_key) if replace_key else None
                 if replace_text is None:
                     # Round 1x: say how to delete lines; W1 sent {'start_line': 31} chunks without 'replace' four times.
                     errors.append(f"Chunk {idx} is malformed (missing 'replace' key). Every chunk needs 'replace' with the new "
@@ -644,6 +771,7 @@ class CodeEditorTool(BaseTool):
                         errors.append(f"Chunk {idx}: start_line and end_line must be integers.")
                         continue
                         
+                    used_line_numbers = True
                     lines = content.splitlines(True)
                     start_idx = max(0, start_line - 1)
                     end_idx = min(len(lines), end_line)
@@ -682,6 +810,13 @@ class CodeEditorTool(BaseTool):
                                                          f"search text; it was found at line {found_line} and replaced there")
                             continue
                         
+                    if search_text is None and replacement_already_in_place(lines, start_idx, end_idx, replace_text):
+                        # Round 2e: 03:48 W1 re-sent its 03:47 chunk (lines 24-26 -> 5 lines) inside a new call; applied
+                        # again it would have replaced 3 of the 5 lines it had already written with the same 5 lines.
+                        successful += 1
+                        already_applied.append(f"chunk {idx}: lines {start_line}-{start_idx + len(str(replace_text).splitlines())} "
+                                               "already hold exactly this text (it was applied before), so it was not applied again")
+                        continue
                     replacement = replace_text
                     # Round 1x: keep the line break the replaced lines had. "replace": "" now really deletes the lines (it
                     # used to leave an empty line), and replacing the last line no longer drops the file's final newline.
@@ -691,7 +826,18 @@ class CodeEditorTool(BaseTool):
                         
                     before = "".join(lines[:start_idx])
                     after = "".join(lines[end_idx:])
-                    content = before + replacement + after
+                    new_content = before + replacement + after
+                    lost = removed_statement_lines(lines, start_idx, end_idx, replacement)
+                    if lost:
+                        # Round 2e: 03:47 W1's chunk for lines 24-26 silently removed 'return c * Decimal('1.8') + 32'
+                        removed_statements.append(f"chunk {idx} removed " + "; ".join(lost))
+                    if filename.endswith('.py'):
+                        # Round 2e: the new text repeats the line(s) right after (or before) the range ('def f(...):' twice)
+                        repaired = repair_boundary_overlap(content, lines, start_idx, end_idx, replacement, new_content)
+                        if repaired is not None:
+                            new_content, overlap_note = repaired
+                            boundary_overlaps.append(f"chunk {idx}: {overlap_note}")
+                    content = new_content
                     successful += 1
                     continue
                 elif search_text is not None:
@@ -756,7 +902,20 @@ class CodeEditorTool(BaseTool):
                     elif occurrences > 1:
                         errors.append(f"Chunk {idx}: Search text is ambiguous (found {occurrences} times). Please make the search block larger/more unique, or use start_line and end_line.")
                     else:
-                        content = content.replace(search_text, replace_text)
+                        new_content = content.replace(search_text, replace_text)
+                        if filename.endswith('.py'):
+                            # Round 2e: same repair for a search that covers whole lines (W1 03:56/03:58 searched for the
+                            # module docstring and replaced it with imports + the 'def' line that follows it)
+                            match_at = content.find(search_text)
+                            span = whole_line_span(content, match_at, match_at + len(search_text))
+                            if span is not None:
+                                repl = replace_text if str(replace_text).endswith("\n") else str(replace_text) + "\n"
+                                repaired = repair_boundary_overlap(content, content.splitlines(True), span[0], span[1], repl,
+                                                                   new_content)
+                                if repaired is not None:
+                                    new_content, overlap_note = repaired
+                                    boundary_overlaps.append(f"chunk {idx}: {overlap_note}")
+                        content = new_content
                         successful += 1
                 else:
                     errors.append(f"Chunk {idx} is malformed: Provide either 'start_line'/'end_line' OR 'search'.")
@@ -793,6 +952,10 @@ class CodeEditorTool(BaseTool):
                         "status": "error",
                         "message": f"Code edit rejected due to Python SyntaxError in resulting code: {syntax_err.msg} at line {syntax_err.lineno}. No changes were saved. Please check your indentation and brackets."
                                    + (f"\n{syntax_report}" if syntax_report else "")
+                                   # Round 2e: 03:48 W1's second chunk used line numbers from before its own 03:47 edit
+                                   + ("\nIf you used line numbers: they may be OUT OF DATE - every earlier edit that added or "
+                                      "removed lines moved the lines below it. Read the file again and use its current line "
+                                      "numbers." if used_line_numbers else "")
                     }
             
             # Save if all success
@@ -801,8 +964,8 @@ class CodeEditorTool(BaseTool):
             if filename.endswith('.py'):
                 # Round 2d: the same non-blocking hints as a file_system 'write' (a docstring-only function, a missing import)
                 try:
-                    from src.tools.python_static_check import python_code_notes
-                    code_notes = python_code_notes(content, filename)
+                    from src.tools.python_static_check import python_code_notes_for
+                    code_notes = python_code_notes_for(content, filename, base_path)  # Round 2e: + import suggestions
                 except Exception:
                     code_notes = []
                 if code_notes:
@@ -815,6 +978,11 @@ class CodeEditorTool(BaseTool):
                               if approximate_matches else "")
                            + (f" Note: {'; '.join(line_hint_corrections)}. Line numbers may have changed: read the file "
                               "again before the next line-based edit." if line_hint_corrections else "")
+                           + (f" Note: {'; '.join(boundary_overlaps)}. Read the file again before the next line-based edit."
+                              if boundary_overlaps else "")
+                           + (f" Note: {'; '.join(already_applied)}." if already_applied else "")
+                           + (f" WARNING: {' | '.join(removed_statements)} - these lines are NOT in your new text any more. "
+                              "If they were still needed, add them back." if removed_statements else "")
                            + single_chunk_note
                            + code_notes_text
             }

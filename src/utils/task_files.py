@@ -61,7 +61,7 @@ def find_in_workspace(workspace: Path, rel_path: str) -> Optional[Path]:
         return None
 
 
-def python_file_problems(path: Path, shown_name: str) -> List[str]:
+def python_file_problems(path: Path, shown_name: str, workspace: Optional[Path] = None) -> List[str]:
     """Defects of one Python file: empty, not parseable, or the notes of python_code_notes()."""
     try:
         source = path.read_text(encoding="utf-8")
@@ -74,8 +74,8 @@ def python_file_problems(path: Path, shown_name: str) -> List[str]:
         ast.parse(source)
     except SyntaxError as err:
         return [f"{shown_name} is not valid Python ({err.msg} at line {err.lineno})."]
-    from src.tools.python_static_check import python_code_notes
-    return [f"{shown_name}: {note}" for note in python_code_notes(source, shown_name)]
+    from src.tools.python_static_check import python_code_notes_for
+    return [f"{shown_name}: {note}" for note in python_code_notes_for(source, shown_name, workspace)]
 
 
 def task_completion_problems(description: Optional[str], workspace: Optional[Path]) -> List[str]:
@@ -97,7 +97,7 @@ def task_completion_problems(description: Optional[str], workspace: Optional[Pat
             if path is None:
                 continue
             shown = str(path.relative_to(root)).replace("\\", "/")
-            for problem in python_file_problems(path, shown):
+            for problem in python_file_problems(path, shown, root):
                 if problem not in problems:
                     problems.append(problem)
     except Exception as err:  # the check must never break task updates

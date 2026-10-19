@@ -304,7 +304,7 @@ def test_observed_test_file_gets_duplicate_and_empty_test_notes():
 @pytest.mark.parametrize("source", [
     "def test_a():\n    assert 1 + 1 == 2\n",
     "import pytest\n\n\ndef test_a():\n    with pytest.raises(ValueError):\n        int('x')\n",
-    "def test_a():\n    helper()\n",
+    "def helper():\n    return 1\n\n\ndef test_a():\n    helper()\n",  # Round 2e: helper must exist (else NameError note)
     "class TestX:\n    def test_a(self):\n        self.assertEqual(1, 1)\n",
     "def f():\n    return 1\n\n\ndef g():\n    return 2\n",
     "class A:\n    @property\n    def x(self):\n        return 1\n\n    @x.setter\n    def x(self, v):\n        self._x = v\n",

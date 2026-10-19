@@ -12,9 +12,9 @@ import builtins
 import re
 import sys
 from pathlib import PurePosixPath
-from typing import List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
-MAX_NOTES = 4
+MAX_NOTES = 6  # Round 2e: was 4; a file can have several undefined names AND an unimplemented function
 
 _FALLBACK_STDLIB = frozenset({
     "argparse", "collections", "datetime", "functools", "itertools", "json", "logging", "math", "os", "pathlib", "random",
@@ -114,8 +114,203 @@ def _checks_nothing(func: ast.AST) -> bool:
     return True
 
 
-def python_code_notes(source: str, filename: Optional[str] = None) -> List[str]:
-    """Hints about a Python source text; [] if it does not parse (the syntax check reports that separately)."""
+# --- Round 2e: undefined names, functions that never return their declared value, import-only bodies ------------------------
+# 2026-10-19 (Temp_Converter_CLI, qwen3.5:4b): PM1 marked task 1 finished although src/temp_convert.py called Decimal(...) without
+# importing it, fahrenheit_to_celsius() used a variable 'f' that does not exist, celsius_to_fahrenheit() (declared '-> float')
+# returned nothing, and main() held only a docstring and 'import sys'. W2's tests called celsius_to_fahrenheit() without
+# importing it. Every one of these is a certain runtime failure that none of the checks above saw.
+MODULE_DUNDER_NAMES = frozenset({
+    "__name__", "__file__", "__doc__", "__package__", "__spec__", "__loader__", "__builtins__", "__path__", "__cached__",
+    "__annotations__", "__dict__", "__debug__", "__class__", "__qualname__", "__module__", "__all__", "__version__",
+})
+# Code that can create names the AST cannot see. A file containing any of these is not checked for undefined names.
+_DYNAMIC_NAMES_RE = re.compile(r"\b(?:globals|locals|vars|exec)\s*\(|\bimport\s+\*|__builtins__|\bbuiltins\.")
+_KNOWN_IMPORTS = {
+    "Decimal": "from decimal import Decimal", "ROUND_HALF_UP": "from decimal import ROUND_HALF_UP",
+    "Fraction": "from fractions import Fraction", "Path": "from pathlib import Path",
+    "dataclass": "from dataclasses import dataclass", "field": "from dataclasses import field",
+    "Enum": "from enum import Enum", "namedtuple": "from collections import namedtuple",
+    "defaultdict": "from collections import defaultdict", "Counter": "from collections import Counter",
+    "OrderedDict": "from collections import OrderedDict", "deque": "from collections import deque",
+    "partial": "from functools import partial", "wraps": "from functools import wraps", "reduce": "from functools import reduce",
+    "lru_cache": "from functools import lru_cache", "ArgumentParser": "from argparse import ArgumentParser",
+    "List": "from typing import List", "Dict": "from typing import Dict", "Optional": "from typing import Optional",
+    "Any": "from typing import Any", "Tuple": "from typing import Tuple", "Union": "from typing import Union",
+    "Callable": "from typing import Callable", "Iterable": "from typing import Iterable", "pytest": "import pytest",
+}
+
+
+def _missing_name_hint(name: str, import_hints: Optional[Dict[str, str]] = None, bound: Optional[Set[str]] = None,
+                       local_names: Optional[Set[str]] = None) -> str:
+    if import_hints and name in import_hints:
+        return f"missing 'from {import_hints[name]} import {name}'?"
+    if name in _KNOWN_IMPORTS:
+        return f"missing '{_KNOWN_IMPORTS[name]}'?"
+    if name in STDLIB_MODULES:
+        return f"missing 'import {name}'?"
+    similar = _similar_bound_name(name, local_names or set()) or _similar_bound_name(name, bound or set())
+    if similar:
+        return f"did you mean '{similar}'?"
+    return "missing import, or a typo in the name?"
+
+
+def _enclosing_arguments(tree: ast.AST, line: int) -> Set[str]:
+    """Argument names of the innermost function that contains the given line."""
+    best = None
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.lineno <= line <= (node.end_lineno or node.lineno):
+            if best is None or node.lineno > best.lineno:
+                best = node
+    if best is None:
+        return set()
+    return {arg.arg for arg in ast.walk(best.args) if isinstance(arg, ast.arg)}
+
+
+def _similar_bound_name(name: str, bound: Set[str]) -> Optional[str]:
+    """A defined name the undefined one is probably a typo or an abbreviation of ('f' -> 'fahrenheit'), else None."""
+    import difflib
+    # a longer name that CONTAINS the undefined one is another thing ('test_celsius_to_fahrenheit_zero' for
+    # 'celsius_to_fahrenheit'), not a typo
+    candidates = sorted(b for b in bound if b != name and not b.startswith("_") and (len(name) <= 2 or name not in b))
+    if len(name) <= 2:
+        prefixed = [b for b in candidates if b.startswith(name)]
+        return prefixed[0] if len(prefixed) == 1 else None
+    close = difflib.get_close_matches(name, candidates, n=1, cutoff=0.8)
+    return close[0] if close else None
+
+
+def undefined_names(tree: ast.AST, source: str = "") -> List[Tuple[str, int]]:
+    """
+    (name, first line) of every name that is READ but bound nowhere in the file (no assignment, import, def, class, argument,
+    loop/with/except target ...) and is not a builtin. A binding anywhere counts, so a name is only reported when it cannot
+    exist when the file runs. Files that create names dynamically (globals(), exec, star imports, builtins) are skipped.
+    """
+    if _DYNAMIC_NAMES_RE.search(source or ""):
+        return []
+    bound = _bound_names(tree)
+    for node in ast.walk(tree):
+        for param in getattr(node, "type_params", None) or []:  # Python 3.12 'def f[T]()'
+            if getattr(param, "name", None):
+                bound.add(param.name)
+    first_use: Dict[str, int] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            name = node.id
+            if name in bound or name in MODULE_DUNDER_NAMES or name in ("self", "cls") or hasattr(builtins, name):
+                continue
+            if name not in first_use or node.lineno < first_use[name]:
+                first_use[name] = node.lineno
+    return sorted(first_use.items(), key=lambda item: (item[1], item[0]))
+
+
+def _statements_without_docstring(func: ast.AST) -> list:
+    body = list(getattr(func, "body", []))
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+        body = body[1:]
+    return body
+
+
+def _only_imports(func: ast.AST) -> bool:
+    """True if a function body holds nothing but (a docstring and) import statements."""
+    body = _statements_without_docstring(func)
+    return bool(body) and all(isinstance(node, (ast.Import, ast.ImportFrom)) for node in body)
+
+
+_NO_VALUE_RETURNS = ("None", "Optional", "NoReturn", "Never", "Iterator", "Iterable", "Generator", "AsyncIterator", "AsyncIterable",
+                     "AsyncGenerator", "Any", "object")
+
+
+def _own_nodes(func: ast.AST):
+    """Every node inside a function, without descending into nested functions, lambdas and classes."""
+    nested = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+    stack = [node for node in getattr(func, "body", []) if not isinstance(node, nested)]
+    while stack:
+        node = stack.pop()
+        yield node
+        for child in ast.iter_child_nodes(node):
+            if not isinstance(child, nested):
+                stack.append(child)
+
+
+def _declared_return_without_return(func: ast.AST) -> Optional[str]:
+    """
+    The declared return type (as text) of a function that is annotated to return a value ('-> float') but contains no
+    'return <value>', no yield, does not end with 'raise' and has no endless 'while True' loop; else None.
+    """
+    returns = getattr(func, "returns", None)
+    if returns is None:
+        return None
+    try:
+        declared = ast.unparse(returns)
+    except Exception:
+        return None
+    if any(word in declared for word in _NO_VALUE_RETURNS):
+        return None
+    body = _statements_without_docstring(func)
+    if not body or _holds_no_code(body):
+        return None  # reported as 'not implemented' by the other checks
+    if isinstance(body[-1], ast.Raise):
+        return None
+    for node in _own_nodes(func):
+        if isinstance(node, ast.Return) and node.value is not None:
+            return None
+        if isinstance(node, (ast.Yield, ast.YieldFrom)):
+            return None
+        if isinstance(node, ast.While) and isinstance(node.test, ast.Constant) and node.test.value:
+            return None
+    return declared
+
+
+def workspace_import_hints(workspace, skip_file=None, max_files: int = 200) -> Dict[str, str]:
+    """
+    {name: module} for the top-level functions and classes of the Python files in a workspace, as a test would import them
+    with the framework conftest.py (src/ and the root are on sys.path): src/temp_convert.py -> 'temp_convert'. Test files,
+    conftest.py and names defined in more than one module are left out. Never raises.
+    """
+    from pathlib import Path
+    hints: Dict[str, str] = {}
+    ambiguous: Set[str] = set()
+    try:
+        root = Path(workspace).resolve()
+        skip = Path(skip_file).resolve() if skip_file else None
+        checked = 0
+        for path in sorted(root.rglob("*.py")):
+            relative = path.relative_to(root)
+            parts = relative.parts
+            if set(parts[:-1]) & {".git", "__pycache__", ".pytest_cache", ".venv", "venv", "node_modules", "tests", "test"}:
+                continue
+            if path.name == "conftest.py" or _TEST_FILE_RE.match(path.name) or (skip and path == skip):
+                continue
+            checked += 1
+            if checked > max_files:
+                break
+            module_parts = list(parts[1:] if parts[0] == "src" and len(parts) > 1 else parts)
+            module_parts[-1] = module_parts[-1][:-3]
+            if module_parts[-1] == "__init__":
+                module_parts = module_parts[:-1]
+            if not module_parts:
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, SyntaxError, ValueError):
+                continue
+            module = ".".join(module_parts)
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and not node.name.startswith("_"):
+                    if node.name in hints and hints[node.name] != module:
+                        ambiguous.add(node.name)
+                    hints.setdefault(node.name, module)
+    except Exception:
+        return {}
+    return {name: module for name, module in hints.items() if name not in ambiguous}
+
+
+def python_code_notes(source: str, filename: Optional[str] = None, import_hints: Optional[Dict[str, str]] = None) -> List[str]:
+    """
+    Hints about a Python source text; [] if it does not parse (the syntax check reports that separately).
+    import_hints (Round 2e): {name: module} of functions/classes defined in OTHER files of the workspace, used to suggest the
+    missing import of an undefined name ('from temp_convert import celsius_to_fahrenheit').
+    """
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError):
@@ -135,9 +330,28 @@ def python_code_notes(source: str, filename: Optional[str] = None) -> List[str]:
         reported.add(name)
         notes.append(f"'{name}' is used on line {root.lineno} but is never imported or defined in this file (missing 'import {name}'?).")
 
+    # Round 2e: every other undefined name (Decimal(...), a variable 'f' that does not exist, a test calling a function it never
+    # imported). 2026-10-19 04:03: src/temp_convert.py with both was marked finished because no check saw them.
+    for name, line in undefined_names(tree, source):
+        if name in reported:
+            continue
+        reported.add(name)
+        notes.append(f"'{name}' is used on line {line} but is never imported or defined in this file, so it raises NameError "
+                     f"({_missing_name_hint(name, import_hints, bound, _enclosing_arguments(tree, line))}).")
+
     for func in sorted(_functions_outside_classes(tree), key=lambda n: n.lineno):
-        if _is_docstring_only(func) and not {"abstractmethod", "overload"} & set(_decorator_names(func)):
+        skip = {"abstractmethod", "overload"} & set(_decorator_names(func))
+        if _is_docstring_only(func) and not skip:
             notes.append(f"function '{func.name}' (line {func.lineno}) contains only a docstring and no code: its body is not implemented yet.")
+        elif _only_imports(func) and not skip:
+            # Round 2e: main() of 2026-10-19 held a docstring and 'import sys' only
+            notes.append(f"function '{func.name}' (line {func.lineno}) contains only a docstring and imports, no code: its body "
+                         "is not implemented yet.")
+        elif not skip:
+            declared = _declared_return_without_return(func)
+            if declared:
+                notes.append(f"function '{func.name}' (line {func.lineno}) is declared to return '{declared}' but has no "
+                             "'return <value>' statement, so it returns None.")
 
     notes.extend(_duplicate_definitions(tree))
 
@@ -149,6 +363,33 @@ def python_code_notes(source: str, filename: Optional[str] = None) -> List[str]:
                              "Call the function under test and assert the expected result.")
 
     return notes[:MAX_NOTES]
+
+
+def python_code_notes_for(source: str, filename: Optional[str], workspace=None) -> List[str]:
+    """
+    Round 2e: python_code_notes() of a file in a workspace. Only when a name is undefined are the workspace's other modules
+    scanned, to suggest the import ('from temp_convert import celsius_to_fahrenheit'). Never raises.
+    """
+    try:
+        notes = python_code_notes(source, filename)
+        if workspace is not None and filename and any("NameError" in note for note in notes):
+            from pathlib import Path
+            hints = workspace_import_hints(workspace, skip_file=Path(workspace) / str(filename))
+            if hints:
+                notes = python_code_notes(source, filename, hints)
+        return notes
+    except Exception:
+        return []
+
+
+def saved_edit_notes(source: str, filename: Optional[str], workspace=None) -> str:
+    """Round 2e: the '[Framework check ...]' text appended to a successful edit of a Python file ('' if nothing to say)."""
+    if not str(filename or "").endswith(".py"):
+        return ""
+    notes = python_code_notes_for(source, filename, workspace)
+    if not notes:
+        return ""
+    return "\n[Framework check - the edit WAS saved, but please fix:]\n- " + "\n- ".join(notes)
 
 
 # --- Round 2a: Python files that hold no code yet ----------------------------------------------------------------------------
@@ -319,6 +560,11 @@ def syntax_error_report(source: str, err: SyntaxError) -> str:
             parts.append("Hint: use 4 spaces per indentation level everywhere and no tabs; a block needs at least one indented line.")
         elif "was never closed" in low:
             parts.append("Hint: that bracket or parenthesis is never closed.")
+        elif "invalid character" in low or "invalid decimal literal" in low:
+            # Round 2e: 2026-10-19 05:21 "invalid character '°'" - docstring text had ended up outside its string
+            parts.append('Hint: that line is plain text (from a docstring, comment or message) that ended up OUTSIDE a string. '
+                         'Usually a """ was closed too early, or the edit cut a docstring in half. Replace whole functions '
+                         '(from their def line to their last line) and make sure every """ has its closing """.')
         if parts:
             parts.append("Send the COMPLETE corrected file. Keep the code simple (no deeply nested try/except) and do not resend the same text.")
         return "\n".join(parts)
