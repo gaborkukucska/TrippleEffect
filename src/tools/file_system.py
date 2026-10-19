@@ -496,6 +496,13 @@ class FileSystemTool(BaseTool):
                 "Call the tool named code_editor with action 'replace_chunks', 'filename' and 'chunks', or use file_system "
                 "actions 'read', 'write' or 'replace_lines'.")}
         
+        if action == "list_with_lines":
+            # Round 2f: W1 sent 'list_with_lines' 4x on 2026-10-19 (for 'src/tests/', 'src/' and 'src/temp_convert.py'):
+            # a directory is listed, a file is read
+            target = str(filename or relative_path or "").strip().rstrip("/")
+            auto_corrected_from = action
+            action = "read" if Path(target).suffix else "list"
+            logger.info(f"FileSystemTool: Auto-correcting action 'list_with_lines' to '{action}' for agent '{agent_id}'.")
         if action not in valid_actions:
             if action in action_suggestions:
                 corrected_action = action_suggestions[action]
@@ -1175,6 +1182,12 @@ Pushes changes to a remote repository.
                 if start_idx >= len(lines) or start_idx > end_idx:
                     return {"status": "error", "message": f"Invalid start_line/end_line range for file with {len(lines)} lines."}
                 content = "".join(lines[start_idx:end_idx])
+                if end_idx >= len(lines):
+                    # Round 2e: 2026-10-19 04:26-04:56 W2 read lines 39-100 of a 40-line file six times, looking for the
+                    # rest of a test that was never written. Say where the file ends.
+                    if content and not content.endswith("\n"):
+                        content += "\n"
+                    content += f"[End of file: '{filename}' has {len(lines)} lines; there is nothing after line {len(lines)}.]"
             else:
                 content = "".join(lines)
             
@@ -1373,8 +1386,8 @@ Pushes changes to a remote repository.
             if filename.endswith('.py'):
                 # Round 1o: non-blocking hints about defects the syntax check cannot see (missing imports, docstring-only functions).
                 try:
-                    from src.tools.python_static_check import python_code_notes
-                    code_notes = python_code_notes(content, filename)
+                    from src.tools.python_static_check import python_code_notes_for
+                    code_notes = python_code_notes_for(content, filename, base_path)  # Round 2e: + import suggestions
                 except Exception as note_err:
                     logger.debug(f"Agent {agent_id}: python_code_notes failed for '{filename}': {note_err}")
                     code_notes = []
@@ -1820,7 +1833,9 @@ Pushes changes to a remote repository.
                 return syntax_problem
             await asyncio.to_thread(val_path.write_text, new_content, encoding='utf-8')
             logger.info(f"Agent {agent_id} inserted lines at {insert_line} in '{filename}' ({scope_description})")
-            return {"status": "success", "message": f"Successfully inserted content at line {insert_line} in '{filename}'."}
+            from src.tools.python_static_check import saved_edit_notes  # Round 2e: same hints as 'write' and code_editor
+            return {"status": "success", "message": f"Successfully inserted content at line {insert_line} in '{filename}'."
+                                                    + saved_edit_notes(new_content, filename, base_path)}
         except Exception as e:
             logger.error(f"Agent {agent_id} error inserting lines in '{filename}': {e}", exc_info=True)
             return {"status": "error", "message": f"Error inserting lines in '{filename}': {e}"}
@@ -1846,7 +1861,13 @@ Pushes changes to a remote repository.
                 return syntax_problem
             await asyncio.to_thread(val_path.write_text, new_content, encoding='utf-8')
             logger.info(f"Agent {agent_id} replaced lines {start_line}-{end_line} in '{filename}' ({scope_description})")
-            return {"status": "success", "message": f"Successfully replaced lines {start_line} to {end_line} in '{filename}'."}
+            from src.tools.python_static_check import saved_edit_notes  # Round 2e: same hints as 'write' and code_editor
+            from src.tools.code_editor import removed_statement_lines
+            lost = removed_statement_lines(lines, start_idx, end_idx, content)
+            lost_note = (f" WARNING: this edit removed {'; '.join(lost)} - these lines are NOT in your new text any more. "
+                         "If they were still needed, add them back.") if lost else ""
+            return {"status": "success", "message": f"Successfully replaced lines {start_line} to {end_line} in '{filename}'."
+                                                    + lost_note + saved_edit_notes(new_content, filename, base_path)}
         except Exception as e:
             logger.error(f"Agent {agent_id} error replacing lines in '{filename}': {e}", exc_info=True)
             return {"status": "error", "message": f"Error replacing lines in '{filename}': {e}"}

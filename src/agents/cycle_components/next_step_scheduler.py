@@ -337,8 +337,40 @@ class NextStepScheduler:
                             except Exception as e:
                                 logger.error(f"NextStepScheduler: Failed to apply intervention for looping PM: {e}")
 
+                # Round 2e: a PM that only keeps looking at the task/agent lists goes to standby instead of polling the shared model.
+                # Round 2f: ... but only while work is still OPEN. On 2026-10-19 10:28 every task was finished, the Round 2e rule
+                # put PM1 in standby, and the project was never audited or reported (2.5 idle hours until the run was stopped).
+                if agent.agent_type == AGENT_TYPE_PM and agent.state == PM_STATE_MANAGE:
+                    from src.agents.tool_activity import (
+                        PM_MANAGE_MAX_IDLE_TURNS, PM_IDLE_STANDBY_MESSAGE, PM_ALL_DONE_AUDIT_MESSAGE, PM_LIST_ALL_TASKS_MESSAGE,
+                        pm_listing_status, trailing_monitoring_turns,
+                    )
+                    idle_turns = trailing_monitoring_turns(agent.message_history)
+                    if idle_turns >= PM_MANAGE_MAX_IDLE_TURNS and hasattr(self._manager, 'workflow_manager'):
+                        listing_status = pm_listing_status(agent.message_history, agent_id)
+                        target_state, message = None, None
+                        if listing_status == "open" or idle_turns >= 2 * PM_MANAGE_MAX_IDLE_TURNS:
+                            target_state, message = PM_STATE_STANDBY, PM_IDLE_STANDBY_MESSAGE.format(turns=idle_turns)
+                        elif listing_status == "done":
+                            target_state, message = PM_STATE_AUDIT, PM_ALL_DONE_AUDIT_MESSAGE
+                        elif not any(isinstance(m, dict) and str(m.get("content", "")).startswith(PM_LIST_ALL_TASKS_MESSAGE.split("{turns}")[0])
+                                     for m in agent.message_history):  # once per pm_manage visit (history is cleared on entry)
+                            agent.message_history.append({"role": "system",
+                                                          "content": PM_LIST_ALL_TASKS_MESSAGE.format(turns=idle_turns)})
+                        if target_state and self._manager.workflow_manager.change_state(agent, target_state):
+                            logger.warning(f"NextStepScheduler: PM '{agent_id}' made {idle_turns} monitoring-only turns in a row in "
+                                           f"'{PM_STATE_MANAGE}' (task list: {listing_status}). Moved it to '{target_state}'.")
+                            agent.message_history.append({"role": "system", "content": message})
+                            agent.set_status(AGENT_STATUS_IDLE)
+                            if target_state == PM_STATE_AUDIT:
+                                await self._schedule_new_cycle(agent, 0)
+                                self._log_end_of_schedule_next_step(agent, "Path B-PM-Idle-AllDone-Audit")
+                            else:
+                                self._log_end_of_schedule_next_step(agent, "Path B-PM-Idle-Standby")
+                            return
+
                 logger.info(f"NextStepScheduler: Agent '{agent_id}' is in a persistent state ('{agent.state}'). Reactivating for continuous work.")
-                
+
                 # ENFORCEMENT: PM_AUDIT state cycle limits
                 if getattr(agent, 'agent_type', '') == AGENT_TYPE_PM and getattr(agent, 'state', '') == PM_STATE_AUDIT:
                     current_count = getattr(agent, '_pm_audit_cycle_count', 0)

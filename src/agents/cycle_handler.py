@@ -732,9 +732,16 @@ class AgentCycleHandler:
         """
         if not agent.message_history:
             return None
-        
+        # Round 2f: a failed READ is never answered from the history. The file may have been created since by ANOTHER agent,
+        # which this agent's history cannot show: on 2026-10-19 09:55-10:19 W1's read of src/tests/test_converter.py (missing
+        # at 09:50, written by W2 at 09:52) got the old "File not found" 6 times and W1 was forced into worker_report 3 times.
+        # Reads are cheap and change nothing; file_system escalates repeated failed reads itself.
+        from src.agents.tool_activity import is_file_read_call
+        if is_file_read_call(tool_name, tool_args):
+            return None
+
         current_sig = (tool_name, json.dumps(tool_args, sort_keys=True))
-        
+
         def _is_equivalent(sig1: Tuple[str, str], sig2: Tuple[str, str]) -> bool:
             if sig1 == sig2:
                 return True
@@ -771,6 +778,12 @@ class AgentCycleHandler:
                         prev_sig = (str(prev_name) if prev_name is not None else "", json.dumps(prev_args, sort_keys=True))
                         
                         if _is_equivalent(current_sig, prev_sig):
+                            # Round 2e: a call that failed BEFORE a file was written or edited is not the same situation any
+                            # more. On 2026-10-19 02:49-03:35 W1's read of src/temp_convert.py (which failed at 02:30, before the
+                            # file existed) was answered six times with the old "File not found", so W1 wrote the file 8 times.
+                            from src.agents.tool_activity import files_changed_after
+                            if files_changed_after(agent.message_history, i):
+                                continue
                             tc_id = tc.get("id")
                             if i + 1 < len(agent.message_history):
                                 result_msg = agent.message_history[i + 1]
@@ -1827,6 +1840,11 @@ class AgentCycleHandler:
                                             # We allow the duplicate tool execution to proceed
                                             logger.info(f"Agent {agent.agent_id} allowed to run duplicate tool '{tool_name}' by CG.")
                                             cross_cycle_duplicate_blocked = False
+                                            # Round 2e: the cached earlier result was already queued above; the call now runs
+                                            # and adds its real result. Two results for one call (05:21:54: "Successfully
+                                            # replaced lines 48 to 50" AND the new error) confused the model.
+                                            if history_item in all_tool_results_for_history:
+                                                all_tool_results_for_history.remove(history_item)
                                             if hasattr(agent, '_duplicate_tool_call_count'):
                                                 agent._duplicate_tool_call_count = 0
                                             

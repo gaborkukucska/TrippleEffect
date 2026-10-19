@@ -27,7 +27,25 @@ logger = logging.getLogger(__name__)
 # action of the tool, that name is the action (a dict / JSON-object value is merged in as further arguments).
 KEYED_ACTIONS: Dict[str, frozenset] = {
     "project_management": frozenset({"add_task", "list_tasks", "modify_task", "complete_task", "get_dependency_graph"}),
+    # Round 2e: W2 sent {"path": ..., "read": "true", "start_line": 39, "end_line": 50} (2026-10-19 04:29)
+    "file_system": frozenset({"read", "read_file", "read_with_lines", "list", "tree", "exists", "write", "append",
+                              "insert_lines", "replace_lines", "search_replace_block", "find_replace", "regex_replace",
+                              "mkdir", "delete"}),
 }
+# For these tools the action-named argument must be a FLAG ("read": "true") or an object of further arguments, because an
+# argument such as "write": "<file content>" carries data that must not be thrown away.
+FLAG_KEYED_TOOLS = frozenset({"file_system"})
+_FLAG_VALUES = frozenset({"true", "yes", "1", ""})
+
+
+def _is_flag_value(value: Any) -> bool:
+    if value is True or value is None:
+        return True
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value == 1
+    return isinstance(value, str) and value.strip().lower() in _FLAG_VALUES
 
 
 def infer_action_from_keys(tool_name: str, tool_args: Dict[str, Any]) -> Optional[str]:
@@ -41,7 +59,11 @@ def infer_action_from_keys(tool_name: str, tool_args: Dict[str, Any]) -> Optiona
     if len(keyed) != 1:
         return None
     action = keyed[0]
-    value = tool_args.pop(action)
+    value = tool_args[action]
+    if tool_name in FLAG_KEYED_TOOLS and not (_is_flag_value(value) or isinstance(value, dict)
+                                              or (isinstance(value, str) and value.strip().startswith("{"))):
+        return None
+    tool_args.pop(action)
     extra: Any = value
     if isinstance(value, str) and value.strip().startswith("{"):
         try:
@@ -627,6 +649,15 @@ class ToolExecutor:
                                 tool_args[param_name] = tool_args.pop(alias)
                                 break
                                 
+            # Round 2f: stray tag characters around the action ('run_command>', 'read_with_lines>', 'write>'; W1 sent 60+
+            # such actions on 2026-10-19). file_system and code_editor cleaned them already, command_executor did not.
+            raw_action = tool_args.get('action')
+            if isinstance(raw_action, str):
+                cleaned_action = raw_action.strip().strip("<>/\"' \t")
+                if cleaned_action != raw_action:
+                    logger.info(f"Executor: cleaned action {raw_action!r} -> {cleaned_action!r} for tool '{tool_name}'.")
+                    tool_args['action'] = cleaned_action
+
             # --- Handle tool-specific action corrections ---
             if tool_name == 'file_system':
                 action = tool_args.get('action')

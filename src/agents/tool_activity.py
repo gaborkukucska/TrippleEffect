@@ -393,7 +393,7 @@ def files_written_in_last_turn(history) -> List[str]:
 # A repeated read of the same file was answered from the cached FIRST result, even when the file had been edited in between
 # (stale content), and every blocked read cost a Guardian LLM call (59 calls of ~35 s on 2026-10-17/18, none gave a verdict).
 FILE_READ_ACTIONS = frozenset({"read", "read_file", "read_with_lines", "read_file_with_lines", "list", "list_directory",
-                               "list_files", "tree", "exists"})
+                               "list_files", "tree", "exists", "list_with_lines"})  # Round 2f: + list_with_lines
 
 
 def _clean_action(args: Dict[str, Any]) -> str:
@@ -438,5 +438,110 @@ def files_changed_after(history, index: int) -> bool:
                 return True
     return False
 
+
+# --- Repeated file writes and edits (Round 2e) -------------------------------------------------------------------------------
+# 2026-10-19 05:20:38 W2 replaced lines 48-50 of tests/test_temp_convert.py; at 05:21:50 it sent exactly the same call again and
+# the Guardian (an LLM call) answered ALLOW. Applied twice, an edit by line numbers or an insert changes lines that have moved
+# in the meantime. Writing the same complete content again changes nothing (the tool says so), so that may simply run.
+def _is_whole_file_write(tool_name: Optional[str], args: Dict[str, Any]) -> bool:
+    action = _clean_action(args)
+    if tool_name == "file_system":
+        return action == "write"
+    if tool_name == "code_editor":
+        return action.startswith(("write", "create", "save", "overwrite"))
+    return False
+
+
+def duplicate_file_change_verdict(tool_name: Optional[str], arguments: Any):
+    """
+    (verdict, feedback) for a call that repeats an earlier SUCCESSFUL call with identical arguments, when it writes or edits a
+    file: a complete write may run again ('ALLOW'), any other edit must not ('BLOCK_AND_GUIDE'). None for other calls.
+    """
+    args = arguments if isinstance(arguments, dict) else _call_arguments({"arguments": arguments})
+    path = _written_path({"name": tool_name, "arguments": args})
+    if not path:
+        return None
+    if _is_whole_file_write(tool_name, args):
+        return "ALLOW", ""
+    return "BLOCK_AND_GUIDE", (
+        f"You already made exactly this edit to '{path}' and it succeeded (its result is above), so the change is already in "
+        "the file. It was NOT applied a second time: the line numbers have moved since. Do not send it again. Read "
+        f"'{path}' to see its current content, then make the NEXT change, or move on to your next step if the file is complete."
+    )
+
+
+# --- PM polling in pm_manage (Round 2e) ---------------------------------------------------------------------------------------
+# 2026-10-19 04:08-05:05: while W2 worked on the tests, PM1 spent 57 minutes in pm_manage listing tasks and agents (about 17
+# LLM calls of 1-4 minutes) without assigning, messaging or changing anything. Ollama answers one request at a time, so every
+# poll made the working agent wait. After PM_MANAGE_MAX_IDLE_TURNS turns in a row that only looked at the project, the framework
+# puts the PM in pm_standby; worker messages and waiting workers wake it as before.
+PM_MANAGE_MAX_IDLE_TURNS = 3
+_MONITORING_ACTIONS = {
+    "project_management": frozenset({"list_tasks", "get_dependency_graph", "get_task", "show_task", "view_task", "list"}),
+    "manage_team": frozenset({"list_agents", "list_teams", "get_agent_details", "get_team_details"}),
+}
+_MONITORING_TOOLS = frozenset({"tool_information", "mark_message_read", "knowledge_base", "codebase_search", "system_help"})
+
+PM_IDLE_STANDBY_MESSAGE = (
+    "[Framework System Message]: You looked at the task and team lists {turns} times in a row without assigning, messaging or "
+    "changing anything, so the open tasks are with your workers. To leave the (shared) model to them, the framework has put "
+    "you in 'pm_standby'. You are woken automatically when a worker reports, sends you a message or is waiting for work."
+)
+
+
+def is_monitoring_call(call: Dict[str, Any]) -> bool:
+    """True for a tool call that only LOOKS at the project (task/agent lists, file reads, tool help)."""
+    name = call.get("name")
+    args = _call_arguments(call)
+    if name in _MONITORING_TOOLS:
+        return True
+    if name in _MONITORING_ACTIONS:
+        return _clean_action(args) in _MONITORING_ACTIONS[name]
+    return is_file_read_call(name, args)
+
+
+PM_ALL_DONE_AUDIT_MESSAGE = (
+    "[Framework System Message]: Your task list shows that EVERY task is finished, so the project work is done. Instead of "
+    "listing the tasks again, the framework has moved you to 'pm_audit': verify the result and report the completion to the "
+    "Admin AI."
+)
+PM_LIST_ALL_TASKS_MESSAGE = (
+    "[Framework System Message]: You looked at the project {turns} times in a row without acting, and your last task list "
+    "was filtered or missing, so it does not show whether work is still open. Call `project_management` with "
+    "action=\"list_tasks\" and NO filters now. If every task is finished, request 'pm_audit'; if tasks are still open with "
+    "your workers, request 'pm_standby'."
+)
+
+
+def pm_listing_status(history, agent_id) -> str:
+    """
+    Round 2f: what the PM's most recent task list says - 'none' (no list in the history), 'open' (an open task of another
+    agent is listed), 'done' (an UNFILTERED list without open tasks) or 'filtered' (a filtered list without open tasks: not
+    proof of anything). Tasks assigned to the PM itself (the decomposed kick-off task) are ignored.
+    """
+    listing = _last_task_listing(history)
+    if listing is None:
+        return "none"
+    for task in listing["tasks"]:
+        if not isinstance(task, dict) or task.get("assignee") == agent_id:
+            continue
+        progress = str(task.get("task_progress") or task.get("status") or "").strip().lower()
+        if progress and progress not in _DONE_PROGRESS:
+            return "open"
+    return "filtered" if listing.get("_filters") else "done"
+
+
+def trailing_monitoring_turns(history) -> int:
+    """How many of the most recent assistant turns (counted back from the newest) made only monitoring calls, or no call."""
+    count = 0
+    for msg in reversed(list(history or [])):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        calls = [c for c in (msg.get("tool_calls") or []) if isinstance(c, dict)]
+        if all(is_monitoring_call(call) for call in calls):
+            count += 1
+        else:
+            break
+    return count
 
 # END OF FILE src/agents/tool_activity.py

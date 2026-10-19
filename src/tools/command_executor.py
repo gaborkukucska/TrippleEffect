@@ -72,6 +72,11 @@ def _npm_install_is_current(cwd: Path) -> bool:
         return False
 
 
+# Round 2f: other names small models use for the one action of this tool
+RUN_COMMAND_ALIASES = frozenset({"run", "execute", "exec", "shell", "bash", "run_shell", "execute_command", "run_cmd",
+                                 "command", "cmd", "run_tests", "run_test"})
+
+
 class CommandExecutionTool(BaseTool):
     """
     Executes shell commands for agents through the shared sandbox runner
@@ -116,6 +121,12 @@ class CommandExecutionTool(BaseTool):
         ),
     ]
 
+    def params_not_required_for(self, args: Dict[str, Any]) -> set:
+        """Round 2f: a call with a 'command' but no action can only mean the one action, 'run_command'."""
+        if not (args or {}).get("action") and (args or {}).get("command"):
+            return {"action"}
+        return set()
+
     async def execute(
         self,
         agent_id: str,
@@ -135,6 +146,10 @@ class CommandExecutionTool(BaseTool):
         except (TypeError, ValueError):
             timeout = 60.0
 
+        if isinstance(action, str):
+            action = action.strip().strip("<>/\"' \t").lower()  # Round 2f: 'run_command>' (W1, 6x on 2026-10-19)
+        if action in RUN_COMMAND_ALIASES or (not action and command):
+            action = "run_command"
         if not action or action != "run_command":
             return {"status": "error", "message": "Invalid action. Must be 'run_command'."}
 

@@ -138,6 +138,7 @@ def match_task_by_uuid_prefix(tasks, text: str) -> list:
     """
     needle_full = str(text or "").strip().lower()
     all_tasks = list(tasks)
+    typo = _uuid_typo_match(all_tasks, needle_full)
     seen = []
     for needle in (needle_full, needle_full[:8]):
         if len(needle) < 8 or needle in seen or not re.match(r"^[0-9a-f-]+$", needle):
@@ -150,7 +151,30 @@ def match_task_by_uuid_prefix(tasks, text: str) -> list:
             return matches
         if len(matches) > 1:
             return matches
+    if typo is not None:
+        logger.info(f"ProjectManagementTool: Resolved mistyped task id '{text}' to UUID '{typo['uuid']}' (1-2 characters differ).")
+        return [typo]
     return []
+
+
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+MAX_UUID_TYPOS = 2
+
+
+def _uuid_typo_match(tasks, needle: str):
+    """
+    Round 2f: the ONE task whose UUID differs from a complete, well-formed UUID in at most 2 characters (PM1 wrote
+    '3b7e308d-...' for '2b7e308d-...' on 2026-10-19 10:13, W2 '...-9f1c-...' for '...-9f0c-...' the day before). None if no
+    task or more than one task is that close.
+    """
+    if not UUID_RE.match(needle or ""):
+        return None
+    close = []
+    for task in tasks:
+        uuid = str(task['uuid']).lower()
+        if len(uuid) == len(needle) and sum(a != b for a, b in zip(uuid, needle)) <= MAX_UUID_TYPOS:
+            close.append(task)
+    return close[0] if len(close) == 1 else None
 
 
 class ProjectManagementTool(BaseTool):
@@ -348,6 +372,11 @@ class ProjectManagementTool(BaseTool):
             "progress_update": "modify_task",
             "update_task_progress": "modify_task",
             "set_task_progress": "modify_task",
+            "modify_task_progress": "modify_task",  # Round 2f: PM1 2026-10-19 10:24
+            "modify_task_status": "modify_task",
+            "update_task_status": "modify_task",
+            "set_task_status": "modify_task",
+            "change_task_progress": "modify_task",
             "transition_to": "modify_task",
             "finish_task": "complete_task",
             "done": "complete_task",
@@ -1008,6 +1037,8 @@ class ProjectManagementTool(BaseTool):
                     task['tags'] = set(current_tags)
                     if "tags" not in modified_fields:
                         modified_fields.append("tags")
+            if "depends" in kwargs and str(kwargs["depends"] or "").strip() in ("", "[]", "None", "null"):
+                kwargs.pop("depends")  # Round 2f: 'depends': '' (PM1 2026-10-19 10:14) means no dependency, not task ''
             if "depends" in kwargs:
                 try:
                     dep_id = str(kwargs["depends"]).strip()
