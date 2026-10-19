@@ -205,14 +205,22 @@ class ToolErrorHandler:
         error_response["message"] = (
             f"Tool '{tool_name}' missing required parameters: {', '.join(missing_params)}"
         )
-        
+        # Round 2g: admin_ai called code_editor with {} (2026-10-19 18:19:38), read "Add missing parameters" and then
+        # returned an empty reply. An empty call is said plainly, and the tool's full usage (with real examples) is attached
+        # by the executor as context_help, so no extra call to tool_information is needed.
+        if not provided_params:
+            error_response["message"] += (
+                f"\nYou called '{tool_name}' with NO arguments at all, so nothing was done. Call it again and put the "
+                "arguments INSIDE the tool call. The full usage of the tool is shown below."
+            )
+
         suggestions = [
             f"Add missing parameters: {', '.join(missing_params)}",
-            f"Get detailed usage: {{\"action\": \"get_info\", \"tool_name\": \"{tool_name}\"}}"
+            f"Get detailed usage: call the `tool_information` tool with {{\"action\": \"get_info\", \"tool_name\": \"{tool_name}\"}}"
         ]
-        
-        # Generate example with missing parameters
-        if tool_schema and missing_params:
+
+        # Generate example with missing parameters (an empty call gets the tool's own usage examples instead)
+        if tool_schema and missing_params and provided_params:
             example_parts = [f"{{"]
             if tool_args and 'action' in tool_args:
                 example_parts.append(f"  \"action\": \"{tool_args['action']}\",")

@@ -52,7 +52,7 @@ class TestRunnerTool(BaseTool):
         elif scope == "shared":
             if not project_name or not session_name: return {"status": "error", "message": "Missing project/session context."}
             base_path = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, project_name, session_name)
-            if not base_path.is_dir(): return {"status": "error", "message": "Shared workspace does not exist."}
+            if not base_path.is_dir(): return {"status": "error", "message": f"Shared workspace does not exist yet: no file has been written for project '{project_name}' in this session, so there are no tests to run."}  # Round 2g
         elif scope == "projects":
             base_path = Path(settings.PROJECTS_BASE_DIR)
             if not base_path.is_dir(): return {"status": "error", "message": "Projects dir does not exist."}

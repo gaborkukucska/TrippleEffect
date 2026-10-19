@@ -455,6 +455,9 @@ class ToolExecutor:
                             action_help = specific_help
                     except Exception as help_err:
                         logger.debug(f"Could not fetch action_help for sub_action {attempted_action}: {help_err}")
+                elif not tool_args and error_type == ErrorType.MISSING_PARAMETER and detailed_usage:
+                    # Round 2g: a call with no arguments at all gets the tool's full usage (admin_ai, 2026-10-19 18:19:38)
+                    action_help = detailed_usage
             except Exception:
                 pass
         

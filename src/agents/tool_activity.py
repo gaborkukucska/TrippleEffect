@@ -227,6 +227,57 @@ def is_unhandled_project_request(agent) -> bool:
     return getattr(agent, "_auto_planning_for", None) != text
 
 
+# --- Project request sent to 'work' instead of 'planning' (Round 2g) ------------------------------------------------------
+# 2026-10-19 18:16:03 (qwen3.5:9b): the user sent the Temp Converter CLI project request while Admin was in 'startup'. Admin
+# thought "This is definitely a project creation request" and still called request_state(state='work') with no task. The
+# admin 'work' state is for investigating with tools; it has no project workspace (codebase_search: "Shared workspace does
+# not exist."), so Admin spent 8 minutes on an empty code_editor call, an empty reply and wrong paths. A project request
+# that the framework would otherwise hand to 'work' as the work task now goes to 'planning', like Admin's own choice would.
+ADMIN_WORK_TO_PLANNING_NOTE = (
+    "[Framework Note]: The user asked for a project to be built, so your request for the 'work' state was changed to "
+    "'planning'. Projects are always planned first and then built by a Project Manager and workers; the 'work' state is "
+    "only for answering questions with tools and has no project workspace. Write the project plan now."
+)
+_PLANNED_MARKERS = (
+    "transitioned to state 'planning'",
+    "state changed to planning",
+)
+# A status question about an existing project ("what is the status/progress of the project I asked you to build?") is a
+# legitimate reason for 'work'.
+_STATUS_QUESTION_RE = _re.compile(r"\b(status|progress)\b", _re.IGNORECASE)
+
+
+def project_request_needs_planning(history, task_description: Optional[str], auto_planned_for: Optional[str] = None) -> bool:
+    """
+    True if an Admin request for the 'work' state is really the newest user message's project request, which has not
+    been planned yet. A request that names its own task (e.g. 'Analyze stalled agent report') keeps 'work', unless that
+    task text itself is a project request.
+    """
+    messages = list(history or [])
+    own_task = (task_description or "").strip() if isinstance(task_description, str) else ""
+    if own_task and not looks_like_project_request(own_task):
+        return False
+    request_index = None
+    for index in range(len(messages) - 1, -1, -1):
+        msg = messages[index]
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            request_index = index
+            break
+    if request_index is None:
+        return False
+    content = messages[request_index].get("content")
+    text = content if isinstance(content, str) else str(content or "")
+    if not looks_like_project_request(text) or _STATUS_QUESTION_RE.search(text):
+        return False
+    if auto_planned_for is not None and auto_planned_for == text:
+        return False
+    for msg in messages[request_index + 1:]:
+        later = msg.get("content") if isinstance(msg, dict) else None
+        if isinstance(later, str) and any(marker in later.lower() for marker in _PLANNED_MARKERS):
+            return False
+    return True
+
+
 # --- PM standby guard (Round 1s) -------------------------------------------------------------------------------------------
 # 2026-10-16 09:45: all worker tasks were finished, but PM1 (history just cleared on entering pm_manage) requested pm_standby
 # without listing the tasks. No audit ran, Admin was never told and the user never got a completion report.
