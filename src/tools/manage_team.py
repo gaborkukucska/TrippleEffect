@@ -19,6 +19,36 @@ from src.agents.constants import (
 logger = logging.getLogger(__name__)
 
 # Define valid actions - Added get_agent_details and set_agent_state
+# --- Team id placeholders (Round 2h) --------------------------------------------------------------------------------------
+# 2026-10-19 21:38-21:47 (qwen3.5:9b): PM1 called create_team without team_id (rejected), then create_agent and list_agents
+# with team_id 'None'; the framework created a team literally named 'None'. A missing or placeholder team id now means the
+# project's team 'team_<project>', the id the kick-off directive asks for.
+NULL_TEAM_IDS = frozenset({"", "none", "null", "nil", "n/a", "na", "undefined", "team_none"})
+
+
+def is_placeholder_team_id(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and value.strip().lower() in NULL_TEAM_IDS)
+
+
+def normalize_team_id(action: Optional[str], params: Dict[str, Any], project_name: Optional[str]) -> Optional[str]:
+    """
+    Replaces a placeholder team_id ('None', 'null', 'N/A', '') with 'team_<project>' for team actions, and fills in a
+    missing team_id for create_team. A create_agent / list_agents call without team_id is left alone (the creator's team
+    and "all agents" are used then). Returns a note when something was changed, else None.
+    """
+    if not project_name or action not in ("create_team", "create_agent", "add_agent_to_team", "list_agents"):
+        return None
+    has_key = "team_id" in params
+    if not is_placeholder_team_id(params.get("team_id")):
+        return None
+    if not has_key and action != "create_team":
+        return None
+    default_team = f"team_{project_name}"
+    original = params.get("team_id")
+    params["team_id"] = default_team
+    return f"team_id {original!r} replaced by the project team '{default_team}'"
+
+
 VALID_ACTIONS = [
     "create_agent",
     "delete_agent",
@@ -158,6 +188,10 @@ class ManageTeamTool(BaseTool):
             )
             logger.error(f"'{agent_id}' requested ManageTeamTool but action '{action}' is missing or invalid.")
             return {"status": "error", "action_requested": action, "message": error_msg, "result_data": None}
+
+        team_note = normalize_team_id(action, params, project_name)  # Round 2h
+        if team_note:
+            logger.info(f"ManageTeamTool: {team_note} (agent '{agent_id}', action '{action}')")
 
         error_message = None
         missing = []

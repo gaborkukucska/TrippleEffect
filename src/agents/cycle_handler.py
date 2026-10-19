@@ -2147,7 +2147,21 @@ class AgentCycleHandler:
                             called_tool_args = tool_calls[-1].get("arguments", {})
                             directive_message_content = None
 
+                            team_ready = True
                             if called_tool_name == "manage_team" and called_tool_args.get("action") == "create_team":
+                                # Round 2h: only a team that exists is "complete" (2026-10-19 21:38: create_team without team_id
+                                # failed, the PM was told "Team creation complete" and its workers ended up in a team named 'None')
+                                try:
+                                    team_ready = any_tool_success or bool(self._manager.state_manager.get_agent_team(agent.agent_id))
+                                except Exception:
+                                    team_ready = any_tool_success
+                            if called_tool_name == "manage_team" and called_tool_args.get("action") == "create_team" and not team_ready:
+                                expected_team_id = f"team_{self._manager.current_project}"
+                                directive_message_content = (
+                                    "[Framework System Message]: The team was NOT created (see the error above), so Step 1 is NOT done. "
+                                    f"Call the 'manage_team' tool with action='create_team' and team_id='{expected_team_id}' now."
+                                )
+                            elif called_tool_name == "manage_team" and called_tool_args.get("action") == "create_team":
                                 # Auto-execute tool_information to get create_agent schema
                                 # instead of asking the LLM (small models loop on create_team)
                                 try:

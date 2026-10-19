@@ -438,6 +438,11 @@ class Agent:
                                f"complete tool call ({self._consecutive_cut_off_replies} in a row).")
             elif finish_reason_received is not None:
                 self._consecutive_cut_off_replies = 0
+            # Round 2h: a reply that only thought (no text, no tool call) is retried without thinking on every path - the
+            # pm_startup kick-off retry too (PM1 thought 15,737 chars and wrote nothing, 2026-10-19 21:10-21:25)
+            if (not stream_had_error and not native_tool_calls_received and not complete_assistant_response.strip()
+                    and self._last_reply_thinking_chars > 0):
+                self._think_off_next_call = True
 
             if not stream_had_error:
                 logger.debug(f"Agent {self.agent_id}: Raw response before post-processing:\n>>>\n{complete_assistant_response}\n<<<")
