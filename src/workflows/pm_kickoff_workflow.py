@@ -234,6 +234,33 @@ def normalize_planned_layout(dirs: List[str], files: List[str]) -> Tuple[List[st
 _MANAGER_ROLE_RE = re.compile(r"(^|[^a-z0-9])(pm\d*|project[\s_\-]*manager|projectmanager)($|[^a-z0-9])", re.IGNORECASE)
 
 
+# Round 2i: PM1 (2026-10-20 07:26) wrote roles as objects ({"name": "Coder", "description": "..."}) and tasks with "title"
+# instead of "description".
+_ROLE_NAME_KEYS = ("name", "role", "title", "id")
+TASK_TEXT_KEYS = ("description", "title", "task", "name", "summary")
+
+
+def role_name_of(role: Any) -> Any:
+    """A role given as an object becomes its name; anything else is returned unchanged."""
+    if isinstance(role, dict):
+        for key in _ROLE_NAME_KEYS:
+            value = role.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return role
+
+
+def task_text_of(task_info: Any) -> str:
+    """The text of a kick-off task: 'description', else 'title' / 'task' / 'name' / 'summary' ('' if none)."""
+    if not isinstance(task_info, dict):
+        return ""
+    for key in TASK_TEXT_KEYS:
+        value = task_info.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
 def sanitize_worker_roles(roles: List[Any]) -> Tuple[List[Any], List[str]]:
     """
     Returns (kept_roles, dropped_manager_roles). The PM is already the project manager, so manager-type
@@ -392,6 +419,7 @@ class PMKickoffWorkflow(BaseWorkflow):
         role_names: List[str] = data_input.get("roles", [])
         dropped_roles: List[str] = []
         if isinstance(role_names, list):
+            role_names = [role_name_of(role) for role in role_names]  # Round 2i
             role_names, dropped_roles = sanitize_worker_roles(role_names)
             if dropped_roles:
                 logger.warning(f"PMKickoffWorkflow: Dropped manager-type role(s) {dropped_roles} from kickoff_plan of agent '{agent.agent_id}' (the PM is the project manager).")
@@ -415,8 +443,8 @@ class PMKickoffWorkflow(BaseWorkflow):
         
         if isinstance(tasks_list, list):
             for task_info in tasks_list:
-                if isinstance(task_info, dict) and task_info.get("description"):
-                    raw_desc = " ".join(str(task_info["description"]).splitlines()).strip()
+                if isinstance(task_info, dict) and task_text_of(task_info):  # Round 2i: 'title' etc. count too
+                    raw_desc = " ".join(task_text_of(task_info).splitlines()).strip()
                     dep_val = task_info.get("depends_on") or task_info.get("depends") or task_info.get("dependencies")
                     task_id_val = task_info.get("id") or task_info.get("task_id")
                     task_descriptions.append(raw_desc)

@@ -109,6 +109,46 @@ def _repair_bare_json_values(text: str) -> str:
     return _BARE_JSON_VALUE_RE.sub(_sub, text)
 
 
+# --- Kick-off plan salvage (Round 2i) ------------------------------------------------------------------------------------
+# 2026-10-20 07:19-07:26 (qwen3.5:9b, 6.5 minutes): PM1's kick-off plan had valid "roles" and "tasks" but closed
+# "project_structure" one entry too early ('...]}],\n    {"file": "README.md"}\n]}'). The whole plan was rejected and
+# written again. When a kick-off plan does not parse as a whole, its top-level values are read one by one.
+KICKOFF_PLAN_KEYS = ("roles", "tasks", "code_base_definitions", "project_structure")
+
+
+def salvage_kickoff_plan(text: str) -> Optional[Dict[str, Any]]:
+    """
+    The kick-off plan's top-level values that parse on their own ({'roles': [...], 'tasks': [...], ...}), or None unless
+    both 'roles' and 'tasks' are non-empty lists. Each value is read with JSONDecoder.raw_decode (which stops at the end
+    of the value), after the same syntax repairs as a whole plan gets.
+    """
+    if not isinstance(text, str):
+        return None
+    sources = [text]
+    repaired = _repair_bare_json_values(_repair_json_syntax(text))
+    if repaired != text:
+        sources.append(repaired)
+    if not any('"roles"' in source and '"tasks"' in source for source in sources):
+        return None
+    decoder = json.JSONDecoder(strict=False)
+    salvaged: Dict[str, Any] = {}
+    for key in KICKOFF_PLAN_KEYS:
+        for source in sources:
+            for match in re.finditer(r'"%s"\s*:\s*' % re.escape(key), source):
+                try:
+                    value, _ = decoder.raw_decode(source[match.end():])
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                salvaged[key] = value
+                break
+            if key in salvaged:
+                break
+    roles, tasks = salvaged.get("roles"), salvaged.get("tasks")
+    if isinstance(roles, list) and roles and isinstance(tasks, list) and tasks:
+        return salvaged
+    return None
+
+
 class AgentWorkflowManager:
     def __init__(self):
         self._valid_states: Dict[str, List[str]] = {
@@ -671,6 +711,12 @@ class AgentWorkflowManager:
                         except json.JSONDecodeError as repair_err:
                             last_err = repair_err
                     break
+            # Round 2i: a kick-off plan with one broken part keeps the parts that are valid
+            salvaged = salvage_kickoff_plan(text)
+            if salvaged is not None:
+                logger.warning(f"WorkflowManager: Kick-off plan JSON did not parse as a whole ({last_err}); "
+                               f"using its valid top-level parts {sorted(salvaged)}.")
+                return salvaged, None
             return None, last_err
 
         # Pattern 1: Markdown JSON fence (```json ... ``` or ``` ... ```)
