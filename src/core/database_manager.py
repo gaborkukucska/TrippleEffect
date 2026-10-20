@@ -10,7 +10,7 @@ import datetime # Added for update timestamp
 # SQLAlchemy imports
 from sqlalchemy import create_engine, Column, Integer, String, Text, Float, DateTime, ForeignKey, JSON, Index, select, desc, func, update # Added update
 from sqlalchemy.orm import sessionmaker, relationship
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import declarative_base  # Round 2m: sqlalchemy.ext.declarative is deprecated since SQLAlchemy 2.0
 from sqlalchemy.sql import func as sql_func # Alias sql functions
 from sqlalchemy.sql import text # Added for PRAGMA statements
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession # Use Async Engine

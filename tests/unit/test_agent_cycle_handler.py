@@ -1,208 +1,150 @@
+# START OF FILE tests/unit/test_agent_cycle_handler.py
+"""
+Tests for AgentCycleHandler.run_cycle(): a reply with several tool calls.
+
+Round 2m: the old tests used MagicMock(spec=Agent), which only knows the class attributes - every instance attribute
+(state, llm_provider, needs_priority_recheck, ...) raised AttributeError, so the cycle stopped with "Unhandled
+exception". They also expected the tool results inside the assistant message count of an older design. These tests
+run the real cycle with a real Agent whose process_message() yields the events of one reply.
+
+Rules under test:
+* every call of a 'tool_requests' event is executed in order with (agent, id, name, arguments, project, session);
+* history: one assistant message (the reply text, with 'tool_calls') and then one 'tool' message per result, in order;
+  a failed tool does not stop the others; identical calls in one reply run once;
+* each result goes to the UI as 'tool_result' with tool_sequence 'i_of_n' and to the DB as role 'tool'; the assistant
+  message is logged with its tool_calls;
+* the agent is scheduled again (retry 0) so it reads the results, and ends the cycle idle without an error;
+* send_message together with an action tool is dropped with a "[Tool Execution Blocked]" result, the action tool runs.
+"""
 import asyncio
-import unittest
-from unittest.mock import MagicMock, patch, AsyncMock, call
 import logging
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
-# Modules to be tested
-from src.agents.cycle_handler import AgentCycleHandler
+from src.agents.constants import AGENT_STATUS_IDLE, AGENT_TYPE_WORKER, WORKER_STATE_WORK
 from src.agents.core import Agent
+from src.agents.cycle_handler import AgentCycleHandler
 from src.agents.manager import AgentManager
-from src.agents.interaction_handler import AgentInteractionHandler
-from src.agents.constants import AGENT_STATUS_PROCESSING, AGENT_STATUS_IDLE
-from src.llm_providers.base import ToolResultDict, MessageDict
-from src.config.settings import Settings # To mock settings if needed by CycleHandler directly or context
 
-# Disable most logging output for tests unless specifically testing logging
-logging.disable(logging.CRITICAL)
+DB_SESSION_ID = 12345
 
-class TestAgentCycleHandlerMultiTool(unittest.TestCase):
+
+def make_manager():
+    manager = MagicMock(spec=AgentManager)
+    manager.db_manager = AsyncMock()
+    manager.performance_tracker = AsyncMock()
+    manager.send_to_ui = AsyncMock()
+    manager.push_agent_status_update = AsyncMock()
+    manager.schedule_cycle = AsyncMock(return_value=MagicMock(name="scheduled_task"))
+    manager.current_project = "test_project"
+    manager.current_session = "test_session"
+    manager.current_session_db_id = DB_SESSION_ID
+    manager._agent_cycle_locks = {}
+    manager.tool_executor = MagicMock()
+    manager.tool_executor.tools = {}
+    workflow_manager = MagicMock()
+    workflow_manager.resolve_state_alias.side_effect = lambda agent_type, state: state
+    workflow_manager.get_system_prompt.return_value = "worker prompt"
+    manager.workflow_manager = workflow_manager
+    return manager
+
+
+class TestCycleHandlerMultiTool(unittest.TestCase):
 
     def setUp(self):
-        # Mock Manager and its components
-        self.manager_mock = MagicMock(spec=AgentManager)
-        self.manager_mock.db_manager = AsyncMock()
-        self.manager_mock.performance_tracker = AsyncMock()
-        self.manager_mock.workflow_manager = MagicMock() # WorkflowManager might not need to be async
-        self.manager_mock.settings = MagicMock(spec=Settings) # Settings for CycleContext
-        self.manager_mock.settings.MAX_STREAM_RETRIES = 1 # Simplify retry logic for tests
-        self.manager_mock.settings.RETRY_DELAY_SECONDS = 0.01
-        self.manager_mock.current_session_db_id = 12345 # For CycleContext
-        self.manager_mock.current_project = "test_project"
-        self.manager_mock.current_session = "test_session"
-        self.manager_mock.send_to_ui = AsyncMock()
-        self.manager_mock.key_manager = AsyncMock() # If failover paths were taken
+        logging.disable(logging.CRITICAL)
+        self.addCleanup(logging.disable, logging.NOTSET)
+        self.manager = make_manager()
+        self.agent = Agent(agent_config={"agent_id": "W1", "config": {
+            "provider": "ollama-local", "model": "qwen3.5:9b", "persona": "Coder", "agent_type": AGENT_TYPE_WORKER}},
+            llm_provider=MagicMock(), manager=self.manager)
+        self.agent.state = WORKER_STATE_WORK
+        self.agent.message_history = [{"role": "system", "content": "worker prompt"}]
+        sandbox = tempfile.TemporaryDirectory()
+        self.addCleanup(sandbox.cleanup)
+        self.agent.sandbox_path = Path(sandbox.name) / "agent_W1"
+        self.interaction_handler = MagicMock()
+        self.interaction_handler.execute_single_tool = AsyncMock()
+        self.handler = AgentCycleHandler(self.manager, self.interaction_handler)
 
-        # Mock Agent
-        self.agent_mock = MagicMock(spec=Agent)
-        self.agent_mock.agent_id = "test_multi_tool_agent"
-        self.agent_mock.provider_name = "mock_provider"
-        self.agent_mock.model = "mock_model"
-        self.agent_mock.message_history = []
-        self.agent_mock.process_message = AsyncMock() # This will yield events
-        self.agent_mock.set_status = MagicMock() # To observe status changes
-        # Initialize _failover_state if any error path in CycleHandler might access it
-        self.agent_mock._failover_state = {} 
-        self.agent_mock._failed_models_this_cycle = set()
+    def run_reply(self, calls, results, text="Working on it."):
+        event = {"type": "tool_requests", "calls": calls, "raw_assistant_response": text, "content_for_history": text,
+                 "agent_id": "W1"}
 
+        async def events(*_args, **_kwargs):
+            yield event
 
-        # Mock InteractionHandler
-        self.interaction_handler_mock = MagicMock(spec=AgentInteractionHandler)
-        self.interaction_handler_mock.execute_single_tool = AsyncMock()
+        self.agent.process_message = MagicMock(side_effect=events)
+        self.interaction_handler.execute_single_tool.side_effect = list(results)
+        asyncio.run(self.handler.run_cycle(self.agent, 0))
 
-        # Instantiate CycleHandler
-        self.cycle_handler = AgentCycleHandler(self.manager_mock, self.interaction_handler_mock)
+    def after_prompt(self):
+        return self.agent.message_history[1:]
 
-    async def _async_generator_from_list(self, item_list):
-        for item in item_list:
-            yield item
+    def ui_events(self, event_type):
+        return [c.args[0] for c in self.manager.send_to_ui.call_args_list if c.args[0].get("type") == event_type]
 
-    def test_scenario_1_multiple_successful_tool_calls(self):
-        # --- Setup Mocks ---
-        tool_call_1 = {"id": "call_1", "name": "tool_A", "arguments": {"arg1": "val1"}}
-        tool_call_2 = {"id": "call_2", "name": "tool_B", "arguments": {"arg2": "val2"}}
-        
-        tool_result_1_content = "Result from tool_A"
-        tool_result_2_content = "Result from tool_B"
+    def db_roles(self):
+        return [c.kwargs.get("role") for c in self.manager.db_manager.log_interaction.call_args_list]
 
-        # Mock agent.process_message to yield a tool_requests event
-        tool_requests_event = {
-            "type": "tool_requests",
-            "calls": [tool_call_1, tool_call_2],
-            "raw_assistant_response": "<tool_A>...</tool_A><tool_B>...</tool_B>"
-        }
-        self.agent_mock.process_message.return_value = self._async_generator_from_list([tool_requests_event])
+    def test_multiple_successful_tool_calls(self):
+        call_1 = {"id": "call_1", "name": "file_system", "arguments": {"action": "list"}}
+        call_2 = {"id": "call_2", "name": "codebase_search", "arguments": {"query": "main"}}
+        self.run_reply([call_1, call_2], [{"call_id": "call_1", "name": "file_system", "content": "a.py\nb.py"},
+                                          {"call_id": "call_2", "name": "codebase_search", "content": "a.py:1 def main()"}])
+        self.assertEqual([c.args for c in self.interaction_handler.execute_single_tool.call_args_list], [
+            (self.agent, "call_1", "file_system", {"action": "list"}, "test_project", "test_session"),
+            (self.agent, "call_2", "codebase_search", {"query": "main"}, "test_project", "test_session"),
+        ])
+        self.assertEqual(self.after_prompt(), [
+            {"role": "assistant", "content": "Working on it.", "tool_calls": [call_1, call_2]},
+            {"role": "tool", "tool_call_id": "call_1", "name": "file_system", "content": "a.py\nb.py"},
+            {"role": "tool", "tool_call_id": "call_2", "name": "codebase_search", "content": "a.py:1 def main()"},
+        ])
+        results = self.ui_events("tool_result")
+        self.assertEqual([(r["call_id"], r["tool_sequence"]) for r in results], [("call_1", "1_of_2"), ("call_2", "2_of_2")])
+        self.assertEqual(self.ui_events("error"), [])
+        self.assertEqual(self.db_roles(), ["assistant", "tool", "tool"])
+        self.manager.db_manager.log_interaction.assert_any_call(
+            session_id=DB_SESSION_ID, agent_id="W1", role="assistant", content="Working on it.", tool_calls=[call_1, call_2])
+        self.manager.db_manager.log_interaction.assert_any_call(
+            session_id=DB_SESSION_ID, agent_id="W1", role="tool", content="a.py\nb.py",
+            tool_results=[{"call_id": "call_1", "name": "file_system", "content": "a.py\nb.py"}])
+        self.manager.schedule_cycle.assert_called_with(self.agent, 0)
+        self.assertEqual(self.agent.status, AGENT_STATUS_IDLE)
 
-        # Mock interaction_handler.execute_single_tool to return success for both
-        self.interaction_handler_mock.execute_single_tool.side_effect = [
-            {"call_id": "call_1", "name": "tool_A", "content": tool_result_1_content}, # Result for tool_A
-            {"call_id": "call_2", "name": "tool_B", "content": tool_result_2_content}  # Result for tool_B
-        ]
+    def test_one_tool_fails_the_others_still_run(self):
+        calls = [{"id": "call_s1", "name": "file_system", "arguments": {"action": "list"}},
+                 {"id": "call_f1", "name": "codebase_search", "arguments": {"query": "x"}},
+                 {"id": "call_s2", "name": "file_system", "arguments": {"action": "read", "filepath": "a.py"}}]
+        self.run_reply(calls, [{"call_id": "call_s1", "name": "file_system", "content": "a.py"},
+                               {"call_id": "call_f1", "name": "codebase_search", "content": "[ToolError] Failed tool execution"},
+                               {"call_id": "call_s2", "name": "file_system", "content": "x = 1"}])
+        self.assertEqual(self.interaction_handler.execute_single_tool.call_count, 3)
+        self.assertEqual([m["content"] for m in self.after_prompt()[1:]],
+                         ["a.py", "[ToolError] Failed tool execution", "x = 1"])
+        self.assertEqual(len(self.ui_events("tool_result")), 3)
+        self.assertEqual(self.ui_events("error"), [])
+        self.assertEqual(self.db_roles(), ["assistant", "tool", "tool", "tool"])
+        self.manager.schedule_cycle.assert_called_with(self.agent, 0)
 
-        # --- Run the cycle ---
-        asyncio.run(self.cycle_handler.run_cycle(self.agent_mock, 0))
+    def test_identical_calls_in_one_reply_run_once(self):
+        call = {"id": "call_1", "name": "file_system", "arguments": {"action": "list"}}
+        self.run_reply([call, dict(call, id="call_2")], [{"call_id": "call_1", "name": "file_system", "content": "a.py"}])
+        self.assertEqual(self.interaction_handler.execute_single_tool.call_count, 1)
+        self.assertEqual([m["role"] for m in self.after_prompt()], ["assistant", "tool"])
 
-        # --- Assertions ---
-        # 1. execute_single_tool called for each tool
-        self.assertEqual(self.interaction_handler_mock.execute_single_tool.call_count, 2)
-        self.interaction_handler_mock.execute_single_tool.assert_any_call(
-            self.agent_mock, tool_call_1["id"], tool_call_1["name"], tool_call_1["arguments"], 
-            self.manager_mock.current_project, self.manager_mock.current_session
-        )
-        self.interaction_handler_mock.execute_single_tool.assert_any_call(
-            self.agent_mock, tool_call_2["id"], tool_call_2["name"], tool_call_2["arguments"],
-            self.manager_mock.current_project, self.manager_mock.current_session
-        )
-
-        # 2. agent.message_history updated
-        self.assertEqual(len(self.agent_mock.message_history), 3) # 1 assistant (tool_requests) + 2 tool results
-        self.assertEqual(self.agent_mock.message_history[0]["role"], "assistant")
-        self.assertEqual(self.agent_mock.message_history[0]["content"], tool_requests_event["raw_assistant_response"])
-        self.assertEqual(self.agent_mock.message_history[1]["role"], "tool")
-        self.assertEqual(self.agent_mock.message_history[1]["tool_call_id"], "call_1")
-        self.assertEqual(self.agent_mock.message_history[1]["content"], tool_result_1_content)
-        self.assertEqual(self.agent_mock.message_history[2]["role"], "tool")
-        self.assertEqual(self.agent_mock.message_history[2]["tool_call_id"], "call_2")
-        self.assertEqual(self.agent_mock.message_history[2]["content"], tool_result_2_content)
-
-        # 3. context.needs_reactivation_after_cycle (indirectly via NextStepScheduler)
-        # We check if schedule_cycle was called for the current agent due to needs_reactivation_after_cycle being true
-        self.manager_mock.schedule_cycle.assert_called_with(self.agent_mock, 0) # Assuming retry_count 0 for next cycle
-
-        # 4. UI and DB logging (check for calls with relevant content)
-        self.assertEqual(self.manager_mock.send_to_ui.call_count, 2) # For 2 tool results
-        self.manager_mock.send_to_ui.assert_any_call(unittest.mock.ANY) # Basic check
-        # More specific check for UI calls if needed:
-        ui_call_args_list = self.manager_mock.send_to_ui.call_args_list
-        self.assertIn(tool_result_1_content, str(ui_call_args_list[0]))
-        self.assertIn("tool_sequence", str(ui_call_args_list[0])) # Check for sequence info
-        self.assertIn(tool_result_2_content, str(ui_call_args_list[1]))
-        self.assertIn("tool_sequence", str(ui_call_args_list[1]))
-
-
-        self.assertEqual(self.manager_mock.db_manager.log_interaction.call_count, 3) # 1 assistant, 2 tool results
-        # Example for one DB log call for a tool result:
-        self.manager_mock.db_manager.log_interaction.assert_any_call(
-            session_id=self.manager_mock.current_session_db_id, 
-            agent_id=self.agent_mock.agent_id, 
-            role="tool", 
-            content=tool_result_1_content,
-            tool_results=[{"call_id": "call_1", "name": "tool_A", "content": tool_result_1_content}]
-        )
-
-
-    def test_scenario_2_one_tool_fails_others_succeed(self):
-        tool_call_1 = {"id": "call_s1", "name": "tool_Success1", "arguments": {}}
-        tool_call_fail = {"id": "call_f1", "name": "tool_Fail", "arguments": {}}
-        tool_call_3 = {"id": "call_s2", "name": "tool_Success2", "arguments": {}}
-
-        tool_result_s1_content = "Success 1"
-        tool_result_fail_content = "[ToolError] Failed tool execution"
-        tool_result_s2_content = "Success 2"
-
-        tool_requests_event = {
-            "type": "tool_requests",
-            "calls": [tool_call_1, tool_call_fail, tool_call_3],
-            "raw_assistant_response": "..." 
-        }
-        self.agent_mock.process_message.return_value = self._async_generator_from_list([tool_requests_event])
-
-        self.interaction_handler_mock.execute_single_tool.side_effect = [
-            {"call_id": "call_s1", "name": "tool_Success1", "content": tool_result_s1_content},
-            {"call_id": "call_f1", "name": "tool_Fail", "content": tool_result_fail_content}, # Error result
-            {"call_id": "call_s2", "name": "tool_Success2", "content": tool_result_s2_content}
-        ]
-
-        asyncio.run(self.cycle_handler.run_cycle(self.agent_mock, 0))
-
-        # 1. All tools attempted
-        self.assertEqual(self.interaction_handler_mock.execute_single_tool.call_count, 3)
-
-        # 2. All results in history
-        self.assertEqual(len(self.agent_mock.message_history), 4) # 1 assistant, 3 tool results
-        self.assertEqual(self.agent_mock.message_history[1]["content"], tool_result_s1_content)
-        self.assertEqual(self.agent_mock.message_history[2]["content"], tool_result_fail_content)
-        self.assertEqual(self.agent_mock.message_history[3]["content"], tool_result_s2_content)
-        
-        # 3. Agent should still be reactivated to process results (including the error)
-        self.manager_mock.schedule_cycle.assert_called_with(self.agent_mock, 0)
-
-        # 4. UI and DB logging for all three results
-        self.assertEqual(self.manager_mock.send_to_ui.call_count, 3)
-        self.assertEqual(self.manager_mock.db_manager.log_interaction.call_count, 4) # 1 assistant, 3 tool results
-
-
-    def test_scenario_3_tool_requests_event_empty_calls(self):
-        tool_requests_event_empty = {
-            "type": "tool_requests",
-            "calls": [], # Empty list of calls
-            "raw_assistant_response": "Assistant said something but no tools." 
-        }
-        self.agent_mock.process_message.return_value = self._async_generator_from_list([tool_requests_event_empty])
-
-        asyncio.run(self.cycle_handler.run_cycle(self.agent_mock, 0))
-
-        # 1. execute_single_tool should not be called
-        self.interaction_handler_mock.execute_single_tool.assert_not_called()
-        
-        # 2. Message history should contain assistant's raw response
-        self.assertEqual(len(self.agent_mock.message_history), 1)
-        self.assertEqual(self.agent_mock.message_history[0]["role"], "assistant")
-        self.assertEqual(self.agent_mock.message_history[0]["content"], tool_requests_event_empty["raw_assistant_response"])
-
-        # 3. Needs reactivation? If no tools, agent effectively did nothing actionable this cycle.
-        #    The current logic for context.needs_reactivation_after_cycle = True for tool_requests.
-        #    This might be okay, as the agent might then respond with text.
-        #    Let's assume it's still reactivated to potentially produce a final_response.
-        self.manager_mock.schedule_cycle.assert_called_with(self.agent_mock, 0) 
-        
-        # 4. DB logging for assistant response
-        self.manager_mock.db_manager.log_interaction.assert_called_once_with(
-            session_id=self.manager_mock.current_session_db_id, 
-            agent_id=self.agent_mock.agent_id, 
-            role="assistant", 
-            content=tool_requests_event_empty["raw_assistant_response"],
-            tool_calls=[] # Should log the empty tool_calls list
-        )
+    def test_send_message_with_an_action_tool_is_dropped(self):
+        calls = [{"id": "call_w", "name": "file_system", "arguments": {"action": "write", "filepath": "a.py", "content": "x"}},
+                 {"id": "call_m", "name": "send_message", "arguments": {"target_agent_id": "PM1", "message_content": "Done"}}]
+        self.run_reply(calls, [{"call_id": "call_w", "name": "file_system", "content": "Wrote a.py"}])
+        self.assertEqual([c.args[2] for c in self.interaction_handler.execute_single_tool.call_args_list], ["file_system"])
+        tool_messages = self.after_prompt()[1:]
+        self.assertEqual(tool_messages[0]["content"], "Wrote a.py")
+        self.assertEqual(tool_messages[1]["tool_call_id"], "call_m")
+        self.assertTrue(tool_messages[1]["content"].startswith("[Tool Execution Blocked]"))
 
 
 if __name__ == '__main__':

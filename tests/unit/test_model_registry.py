@@ -1,178 +1,163 @@
-import asyncio
-import unittest
-from unittest.mock import patch, MagicMock, AsyncMock
-import aiohttp # For mocking ClientSession
+# START OF FILE tests/unit/test_model_registry.py
+"""
+Tests for ModelRegistry: parameter-size parsing and model discovery from Ollama and OpenRouter.
 
-# Modules to be tested or used for mocking
-from src.config.model_registry import ModelRegistry, ModelInfo
+Round 2m: the two discovery tests never ran - they were 'async def' methods of a plain unittest.TestCase ("coroutine
+... was never awaited"), awaited the synchronous _apply_filters() and mocked aiohttp in a way the code does not use
+(session.post() as an awaitable instead of an async context manager). They now run against a real local HTTP server
+(aiohttp.web on 127.0.0.1) that answers like Ollama (/api/tags, /api/show) and OpenRouter (/models).
+
+Rules under test:
+* '7B', '13.5b', '70G', '180K', '3M', '0.5B' -> parameter counts; anything else -> None;
+* the parameters block of /api/show gives stop tokens and num_ctx;
+* Ollama: every model of /api/tags is kept; /api/show adds num_parameters, family, template, stop tokens and num_ctx
+  (from the parameters block, else from model_info '<arch>.context_length'); a failed /api/show keeps the model without
+  details; the provider is 'ollama-local-127-0-0-1';
+* OpenRouter: architecture.n_parameters is used only when it is a number; the tier filter keeps ':free' models in FREE.
+"""
+import logging
+import unittest
+from unittest.mock import MagicMock
+
+from aiohttp import web
+
+from src.config.model_registry import ModelRegistry
 from src.config.settings import Settings
 
-# Disable most logging output for tests unless specifically testing logging
-import logging
-logging.disable(logging.CRITICAL)
+OLLAMA_TAGS = {"models": [{"name": "llama3:8b"}, {"name": "codegemma:7b"}, {"name": "phi3:3.8b"},
+                          {"name": "no_details:latest"}, {"name": "broken:latest"}]}
+OLLAMA_SHOW = {
+    "llama3:8b": {"details": {"parameter_size": "8B", "family": "llama"}, "template": "{{ .System }} {{ .Prompt }}",
+                  "parameters": 'num_ctx 8192\nstop "<|eot_id|>"\nstop "<|end|>"\ntemperature 0.7'},
+    "codegemma:7b": {"details": {"parameter_size": "7B", "family": "gemma"},
+                     "model_info": {"gemma.context_length": 8192}},
+    "phi3:3.8b": {"details": {"parameter_size": "3.8B"}},
+    "no_details:latest": {"details": {}},
+}
+OPENROUTER_MODELS = {"data": [
+    {"id": "vendor/model1", "name": "Model One", "architecture": {"n_parameters": 7000000000}},
+    {"id": "vendor/model2:free", "name": "Model Two", "architecture": {"n_parameters": "13B"}},
+    {"id": "vendor/model3", "name": "Model Three", "architecture": {}},
+    {"id": "vendor/model4", "name": "Model Four"},
+    {"id": "vendor/model5", "name": "Model Five", "architecture": {"n_parameters": None}},
+]}
 
 
-class TestModelRegistryParameterDiscovery(unittest.TestCase):
+def make_settings(tier="ALL"):
+    settings = MagicMock(spec=Settings)
+    settings.MODEL_TIER = tier
+    settings.PROVIDER_API_KEYS = {"openrouter": ["fake_or_key_1234"]}
+    settings.is_provider_configured = MagicMock(return_value=True)
+    return settings
+
+
+class TestParameterParsing(unittest.TestCase):
 
     def setUp(self):
-        # Mock Settings object
-        self.mock_settings = MagicMock(spec=Settings)
-        self.mock_settings.MODEL_TIER = "ALL" # Allow all models for discovery tests
-        self.mock_settings.LOCAL_API_SCAN_ENABLED = True # Assume enabled for Ollama tests
-        self.mock_settings.LOCAL_API_SCAN_PORTS = [11434]
-        self.mock_settings.LOCAL_API_SCAN_TIMEOUT = 0.1
-        # Mock API keys if needed by discovery methods (e.g., OpenRouter requires one)
-        self.mock_settings.PROVIDER_API_KEYS = {"openrouter": ["fake_or_key"]}
-        self.mock_settings.OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1" # Ensure it's set
-        self.mock_settings.is_provider_configured = MagicMock(return_value=True) # Assume providers are configured
+        logging.disable(logging.CRITICAL)
+        self.addCleanup(logging.disable, logging.NOTSET)
+        self.registry = ModelRegistry(settings_obj=make_settings())
 
-        # Instantiate ModelRegistry with mocked settings
-        self.model_registry = ModelRegistry(settings_obj=self.mock_settings)
+    def test_parse_parameter_size_valid(self):
+        parse = self.registry._parse_ollama_parameter_string_to_int
+        self.assertEqual(parse("7B"), 7_000_000_000)
+        self.assertEqual(parse("13.5B"), 13_500_000_000)
+        self.assertEqual(parse("13.5b"), 13_500_000_000)
+        self.assertEqual(parse("70G"), 70_000_000_000)
+        self.assertEqual(parse("180K"), 180_000)
+        self.assertEqual(parse("3M"), 3_000_000)
+        self.assertEqual(parse("0.5B"), 500_000_000)
+        self.assertEqual(parse("  7B  "), 7_000_000_000)
 
-    # --- Tests for _parse_ollama_parameter_string_to_int ---
-    def test_parse_ollama_param_string_valid(self):
-        parse_func = self.model_registry._parse_ollama_parameter_string_to_int
-        self.assertEqual(parse_func("7B"), 7_000_000_000)
-        self.assertEqual(parse_func("13.5B"), 13_500_000_000)
-        self.assertEqual(parse_func("13.5b"), 13_500_000_000)
-        self.assertEqual(parse_func("70G"), 70_000_000_000) # G for Gemma
-        self.assertEqual(parse_func("180K"), 180_000)
-        self.assertEqual(parse_func("3M"), 3_000_000)
-        self.assertEqual(parse_func("0.5B"), 500_000_000)
-        self.assertEqual(parse_func("  7B  "), 7_000_000_000) # With spaces
+    def test_parse_parameter_size_invalid(self):
+        parse = self.registry._parse_ollama_parameter_string_to_int
+        for value in ("unknown", "7X", "B7", "", None, "1.2.3B"):
+            with self.subTest(value=value):
+                self.assertIsNone(parse(value))
 
-    def test_parse_ollama_param_string_invalid(self):
-        parse_func = self.model_registry._parse_ollama_parameter_string_to_int
-        self.assertIsNone(parse_func("unknown"))
-        self.assertIsNone(parse_func("7X"))
-        self.assertIsNone(parse_func("B7"))
-        self.assertIsNone(parse_func(""))
-        self.assertIsNone(parse_func(None)) # type: ignore
-        self.assertIsNone(parse_func("1.2.3B"))
+    def test_parse_parameters_block(self):
+        parse = self.registry._parse_ollama_parameters_string
+        self.assertEqual(parse('num_ctx 65536\nstop "<end_of_turn>"\nstop \'<eos>\'\ntemperature 0.7'),
+                         (["<end_of_turn>", "<eos>"], 65536))
+        self.assertEqual(parse("temperature 0.7"), (None, None))
+        self.assertEqual(parse(""), (None, None))
+        self.assertEqual(parse(None), (None, None))
 
 
-    @patch('aiohttp.ClientSession')
-    async def test_discover_openrouter_models_with_parameters(self, mock_client_session_cls):
-        # --- Mock OpenRouter API response ---
-        mock_response_openrouter = AsyncMock()
-        mock_response_openrouter.status = 200
-        mock_response_openrouter.json = AsyncMock(return_value={
-            "data": [
-                {"id": "openrouter/model1", "name": "Model One", "architecture": {"n_parameters": 7000000000}},
-                {"id": "openrouter/model2", "name": "Model Two", "architecture": {"n_parameters": "13B"}}, # Test string parsing if OR did this
-                {"id": "openrouter/model3", "name": "Model Three", "architecture": {}}, # Missing n_parameters
-                {"id": "openrouter/model4", "name": "Model Four"}, # Missing architecture
-                {"id": "openrouter/model5", "name": "Model Five", "architecture": {"n_parameters": None}}, # None value
-            ]
-        })
-        # Configure the session context manager
-        mock_session_instance = AsyncMock()
-        mock_session_instance.__aenter__.return_value.get.return_value = mock_response_openrouter
-        mock_client_session_cls.return_value = mock_session_instance
-        
-        # --- Run discovery ---
-        # Temporarily make openrouter reachable for this test
-        self.model_registry._reachable_providers["openrouter"] = self.mock_settings.OPENROUTER_BASE_URL
-        await self.model_registry._discover_openrouter_models()
-        await self.model_registry._apply_filters() # Apply filters to populate available_models
+class TestDiscovery(unittest.IsolatedAsyncioTestCase):
 
-        # --- Assertions ---
-        openrouter_models = self.model_registry.available_models.get("openrouter", [])
-        self.assertTrue(len(openrouter_models) > 0, "No OpenRouter models found after discovery")
+    async def asyncSetUp(self):
+        logging.disable(logging.CRITICAL)
+        self.addCleanup(logging.disable, logging.NOTSET)
+        self.requests = []
+        app = web.Application()
+        app.router.add_get("/api/tags", self.tags)
+        app.router.add_post("/api/show", self.show)
+        app.router.add_get("/models", self.openrouter_models)
+        self.runner = web.AppRunner(app)
+        await self.runner.setup()
+        site = web.TCPSite(self.runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        self.base_url = f"http://127.0.0.1:{port}"
 
-        model_params = {m["id"]: m.get("num_parameters") for m in openrouter_models}
-        
-        self.assertEqual(model_params.get("openrouter/model1"), 7000000000)
-        # The OpenRouter discovery currently expects int/float, not string "13B" for n_parameters.
-        # If OpenRouter *could* send "13B", the parsing logic would need to be in _discover_openrouter_models.
-        # For now, assuming it sends numeric or is None.
-        self.assertIsNone(model_params.get("openrouter/model2"), "String '13B' should not be parsed by current OR logic, expect None")
-        self.assertIsNone(model_params.get("openrouter/model3"))
-        self.assertIsNone(model_params.get("openrouter/model4"))
-        self.assertIsNone(model_params.get("openrouter/model5"))
+    async def asyncTearDown(self):
+        await self.runner.cleanup()
 
+    async def tags(self, request):
+        self.requests.append(("GET", request.path, None))
+        return web.json_response(OLLAMA_TAGS)
 
-    @patch('aiohttp.ClientSession')
-    async def test_verify_and_fetch_ollama_models_with_parameters(self, mock_client_session_cls):
-        # --- Mock Ollama API responses ---
-        ollama_base_url = "http://localhost:11434"
-        
-        # Mock for /api/tags
-        mock_response_tags = AsyncMock()
-        mock_response_tags.status = 200
-        mock_response_tags.json = AsyncMock(return_value={
-            "models": [
-                {"name": "ollama/llama3:8b", "digest": "abc", "size": 5000000000},
-                {"name": "ollama/codegemma:7b", "digest": "def", "size": 4000000000},
-                {"name": "ollama/phi3:3.8b", "digest": "ghi", "size": 2000000000}, # Will have specific param size from /show
-                {"name": "ollama/no_details_model:latest", "digest": "jkl", "size": 1000000000}, # Will mock /show to fail or miss field
-            ]
-        })
+    async def show(self, request):
+        name = (await request.json()).get("name")
+        self.requests.append(("POST", request.path, name))
+        if name not in OLLAMA_SHOW:
+            return web.json_response({"error": "model not found"}, status=404)
+        return web.json_response(OLLAMA_SHOW[name])
 
-        # Mocks for /api/show (one for each model)
-        mock_response_show_llama3 = AsyncMock(); mock_response_show_llama3.status = 200
-        mock_response_show_llama3.json = AsyncMock(return_value={"details": {"parameter_size": "8B"}})
-        
-        mock_response_show_codegemma = AsyncMock(); mock_response_show_codegemma.status = 200
-        mock_response_show_codegemma.json = AsyncMock(return_value={"details": {"parameter_size": "7B"}})
+    async def openrouter_models(self, request):
+        self.requests.append(("GET", request.path, request.headers.get("Authorization")))
+        return web.json_response(OPENROUTER_MODELS)
 
-        mock_response_show_phi3 = AsyncMock(); mock_response_show_phi3.status = 200
-        mock_response_show_phi3.json = AsyncMock(return_value={"details": {"parameter_size": "3.8B"}}) # Test float parsing
+    async def test_ollama_models_with_details(self):
+        registry = ModelRegistry(settings_obj=make_settings())
+        provider, url, models = await registry._verify_and_fetch_models(self.base_url)
+        self.assertEqual(provider, "ollama-local-127-0-0-1")
+        self.assertEqual(url, self.base_url)
+        by_id = {m["id"]: m for m in models}
+        self.assertEqual(list(by_id), ["llama3:8b", "codegemma:7b", "phi3:3.8b", "no_details:latest", "broken:latest"])
+        self.assertEqual(by_id["llama3:8b"], {
+            "id": "llama3:8b", "provider": provider, "name": "llama3:8b", "num_parameters": 8_000_000_000,
+            "family": "llama", "model_template": "{{ .System }} {{ .Prompt }}",
+            "model_stop_tokens": ["<|eot_id|>", "<|end|>"], "model_num_ctx": 8192})
+        self.assertEqual(by_id["codegemma:7b"]["num_parameters"], 7_000_000_000)
+        self.assertEqual(by_id["codegemma:7b"]["model_num_ctx"], 8192)  # from model_info
+        self.assertEqual(by_id["phi3:3.8b"]["num_parameters"], 3_800_000_000)
+        self.assertNotIn("num_parameters", by_id["no_details:latest"])
+        self.assertEqual(by_id["broken:latest"], {"id": "broken:latest", "provider": provider, "name": "broken:latest"})
+        self.assertEqual(sum(1 for r in self.requests if r[1] == "/api/show"), 5)
 
-        mock_response_show_no_details = AsyncMock(); mock_response_show_no_details.status = 200
-        mock_response_show_no_details.json = AsyncMock(return_value={"details": {}}) # Missing parameter_size
+    async def test_a_url_that_is_not_an_api_is_not_verified(self):
+        registry = ModelRegistry(settings_obj=make_settings())
+        self.assertIsNone(await registry._verify_and_fetch_models(f"{self.base_url}/nothing-here"))
 
-        # Configure the session context manager to return different /api/show responses
-        mock_session_instance = AsyncMock()
-        
-        # This mapping will determine which response is returned based on the URL or POST data
-        def get_side_effect(url, **kwargs):
-            if "/api/tags" in url: return mock_response_tags
-            # For /api/show, it's a POST, so check kwargs['json']['name']
-            if "/api/show" in url and kwargs.get('json'):
-                model_name_requested = kwargs['json']['name']
-                if model_name_requested == "ollama/llama3:8b": return mock_response_show_llama3
-                if model_name_requested == "ollama/codegemma:7b": return mock_response_show_codegemma
-                if model_name_requested == "ollama/phi3:3.8b": return mock_response_show_phi3
-                if model_name_requested == "ollama/no_details_model:latest": return mock_response_show_no_details
-            return AsyncMock(status=404) # Default fallback
+    async def test_openrouter_models_with_parameters(self):
+        registry = ModelRegistry(settings_obj=make_settings())
+        registry._reachable_providers["openrouter"] = self.base_url
+        await registry._discover_openrouter_models()
+        registry._apply_filters()
+        params = {m["id"]: m.get("num_parameters") for m in registry.available_models["openrouter"]}
+        self.assertEqual(params, {"vendor/model1": 7_000_000_000, "vendor/model2:free": None, "vendor/model3": None,
+                                  "vendor/model4": None, "vendor/model5": None})
+        self.assertIn(("GET", "/models", "Bearer fake_or_key_1234"), self.requests)
 
-        mock_session_instance.__aenter__.return_value.get = AsyncMock(side_effect=get_side_effect)
-        mock_session_instance.__aenter__.return_value.post = AsyncMock(side_effect=get_side_effect) # /api/show is POST
-        mock_client_session_cls.return_value = mock_session_instance
-
-        # --- Run discovery (which includes _verify_and_fetch_models) ---
-        # Need to mock scan_for_local_apis to return our test URL
-        with patch('src.config.model_registry.scan_for_local_apis', AsyncMock(return_value=[ollama_base_url])):
-            await self.model_registry.discover_models_and_providers()
-            # _apply_filters is called internally by discover_models_and_providers
-
-        # --- Assertions ---
-        # Provider name will be generated, e.g., "ollama-local-localhost" or "ollama-local-127-0-0-1"
-        # Find the discovered ollama provider
-        discovered_ollama_provider_name = None
-        for prov_name in self.model_registry.available_models.keys():
-            if prov_name.startswith("ollama-local-"):
-                discovered_ollama_provider_name = prov_name
-                break
-        
-        self.assertIsNotNone(discovered_ollama_provider_name, "Ollama provider not found in available models.")
-        
-        ollama_models = self.model_registry.available_models.get(discovered_ollama_provider_name, [])
-        self.assertTrue(len(ollama_models) == 4, f"Expected 4 Ollama models, found {len(ollama_models)}")
-
-        model_params = {m["id"]: m.get("num_parameters") for m in ollama_models}
-
-        self.assertEqual(model_params.get("ollama/llama3:8b"), 8_000_000_000)
-        self.assertEqual(model_params.get("ollama/codegemma:7b"), 7_000_000_000)
-        self.assertEqual(model_params.get("ollama/phi3:3.8b"), 3_800_000_000)
-        self.assertIsNone(model_params.get("ollama/no_details_model:latest"))
+    async def test_free_tier_keeps_only_free_openrouter_models(self):
+        registry = ModelRegistry(settings_obj=make_settings(tier="FREE"))
+        registry._reachable_providers["openrouter"] = self.base_url
+        await registry._discover_openrouter_models()
+        registry._apply_filters()
+        self.assertEqual([m["id"] for m in registry.available_models["openrouter"]], ["vendor/model2:free"])
 
 
 if __name__ == '__main__':
-    # Need to run asyncio tests with an async test runner or asyncio.run
-    # For simplicity if running directly:
-    # loop = asyncio.get_event_loop()
-    # loop.run_until_complete(unittest.main(testRunner=unittest.TextTestRunner()))
-    # However, unittest.main() is usually sufficient if tests are defined with async def and run with asyncio.run in a wrapper
     unittest.main()

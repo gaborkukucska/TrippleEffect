@@ -4,6 +4,7 @@ Observed 2026-10-15 10:59: PM sent 'c273b749-4992-40d2-9a19-b58a1dc327' for 'c27
 """
 import asyncio
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -52,7 +53,7 @@ def test_unknown_or_too_short_ids_do_not_match(text):
 
 
 def test_both_lookup_blocks_use_the_helper():
-    src = open(pm.__file__, encoding="utf-8").read()
+    src = Path(pm.__file__).read_text(encoding="utf-8")  # Round 2m: closes the file (ResourceWarning)
     assert src.count("match_task_by_uuid_prefix(tw.tasks.all(), t_id_str)") == 2
     assert "startswith(t_id_str)" not in src
 

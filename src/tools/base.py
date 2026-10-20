@@ -74,7 +74,8 @@ class BaseTool(ABC):
             "name": self.name,
             "description": self.description,
             "summary": self.summary or self.description, # Fallback to description if summary is None
-            "parameters": [param.dict() for param in self.parameters],
+            # Round 2m: model_dump() on Pydantic v2 (.dict() is deprecated there and warned on every schema build)
+            "parameters": [param.model_dump() if hasattr(param, "model_dump") else param.dict() for param in self.parameters],
             "auth_level": self.auth_level # Include auth_level in schema
         }
 

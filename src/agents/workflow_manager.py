@@ -21,6 +21,7 @@ from src.agents.constants import (
     DEFAULT_STATE, BOOTSTRAP_AGENT_ID, AGENT_STATUS_IDLE
 )
 from src.config.settings import settings, BASE_DIR
+from src.config.model_registry import base_provider_type as provider_base_type  # Round 2m
 from src.workflows.base import BaseWorkflow, WorkflowResult
 from src.workflows.project_creation_workflow import ProjectCreationWorkflow
 from src.workflows.pm_kickoff_workflow import PMKickoffWorkflow
@@ -1293,7 +1294,7 @@ Call the 'request_state' tool with state='worker_wait'"""
             if hasattr(agent, 'agent_config') and 'config' in agent.agent_config and 'model' in agent.agent_config['config']:
                 standard_formatting_context["pm_model"] = agent.agent_config['config']['model'] or "N/A"
             elif agent.model: # Fallback to agent.model (suffix) if full config not available, less ideal
-                standard_formatting_context["pm_model"] = f"{agent.provider_name.split('-local-')[0].split('-proxy')[0]}/{agent.model}" if agent.provider_name else agent.model
+                standard_formatting_context["pm_model"] = f"{provider_base_type(agent.provider_name)}/{agent.model}" if agent.provider_name else agent.model
 
         try: formatted_standard_instructions = standard_instructions_template.format(**standard_formatting_context)
         except Exception as e: logger.error(f"Error formatting standard instructions: {e}"); formatted_standard_instructions = standard_instructions_template
@@ -1302,7 +1303,7 @@ Call the 'request_state' tool with state='worker_wait'"""
         if hasattr(settings, 'GOVERNANCE_PRINCIPLES') and settings.GOVERNANCE_PRINCIPLES:
             relevant_principles = []
             for gp in settings.GOVERNANCE_PRINCIPLES:
-                if not gp.get('enabled', False):
+                if not isinstance(gp, dict) or not gp.get('enabled', False):
                     continue
                 applies_to = gp.get('applies_to', [])
                 if "all_agents" in applies_to or agent.agent_type in applies_to:
@@ -1311,7 +1312,7 @@ Call the 'request_state' tool with state='worker_wait'"""
             if relevant_principles:
                 gp_text = "\n\n--- Governance Principles ---\n"
                 for gp in relevant_principles:
-                    gp_text += f"Principle: {gp['name']} (ID: {gp.get('id', 'N/A')})\n{gp['text']}\n"
+                    gp_text += f"Principle: {gp.get('name', 'N/A')} (ID: {gp.get('id', 'N/A')})\n{gp.get('text', '')}\n"
                 gp_text += "--- End Governance Principles ---\n"
                 formatted_standard_instructions += gp_text
         # Append Admin Memory Context if available

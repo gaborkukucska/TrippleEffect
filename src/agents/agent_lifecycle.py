@@ -12,6 +12,7 @@ from src.agents.core import Agent
 from src.llm_providers.base import BaseLLMProvider
 # Import settings and model_registry, BASE_DIR
 from src.config.settings import settings, model_registry, BASE_DIR
+from src.config.model_registry import base_provider_type as provider_base_type  # Round 2m: 'ollama-local' -> 'ollama'
 # --- Import centralized constants ---
 from src.agents.constants import BOOTSTRAP_AGENT_ID, CONSTITUTIONAL_GUARDIAN_AGENT_ID, KNOWN_OLLAMA_OPTIONS
 # --- End Import ---
@@ -222,7 +223,7 @@ async def _select_best_available_model( # Added current_rr_indices_override to s
     metrics_for_sorter = {}
     for prov, model_list in all_models_from_registry.items():
         metrics_for_sorter[prov] = {}
-        base_prov = prov.split("-local-")[0].split("-proxy")[0]
+        base_prov = provider_base_type(prov)
         for m_info in model_list:
             m_id = m_info.get('id')
             if not m_id:
@@ -247,7 +248,7 @@ async def _select_best_available_model( # Added current_rr_indices_override to s
         num_params = model_info.get("num_parameters_sortable", 0)
         perf_score = model_info.get("performance_score", 0.0)
 
-        base_provider_type_comp = specific_provider_name.split("-local-")[0].split("-proxy")[0]
+        base_provider_type_comp = provider_base_type(specific_provider_name)
         is_provider_local_comp = base_provider_type_comp in ["ollama", "vllm", "litellm"]
 
         if current_model_tier == "LOCAL" and not is_provider_local_comp:
@@ -437,7 +438,7 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
 
             final_provider_for_creation = selected_provider
             # Determine canonical model ID for storage/logging
-            base_provider_type_fallback = selected_provider.split('-local-')[0].split('-proxy')[0]
+            base_provider_type_fallback = provider_base_type(selected_provider)
             if base_provider_type_fallback in ["ollama", "vllm", "litellm"]:
                 final_model_canonical = f"{base_provider_type_fallback}/{selected_model_suffix}"
             else:
@@ -465,7 +466,7 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
              continue
 
         # Check key depletion only for remote providers, using the base name
-        base_provider_name_check = final_provider_for_creation.split('-local-')[0].split('-proxy')[0]
+        base_provider_name_check = provider_base_type(final_provider_for_creation)
         if base_provider_name_check not in ["ollama", "vllm", "litellm"]:
             if await manager.key_manager.is_provider_depleted(base_provider_name_check):
                 logger.error(f"Lifecycle: Cannot initialize '{agent_id}': All keys for selected provider '{base_provider_name_check}' (base for '{final_provider_for_creation}', method: {selection_method}) are quarantined. Skipping.")
@@ -753,7 +754,7 @@ async def _create_agent_internal(
             logger.error(msg); return False, msg, None
         provider_name = selected_provider # This is the specific instance name (e.g., ollama-local-...)
         # Construct canonical ID carefully, avoid double prefix
-        base_provider_type_sel = provider_name.split('-local-')[0].split('-proxy')[0]
+        base_provider_type_sel = provider_base_type(provider_name)
         if base_provider_type_sel in ["ollama", "vllm", "litellm"]:
              if selected_model_suffix.startswith(f"{base_provider_type_sel}/"):
                   model_id_canonical = selected_model_suffix

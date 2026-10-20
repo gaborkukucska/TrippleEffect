@@ -11,10 +11,42 @@ import ast
 import builtins
 import re
 import sys
+import warnings
 from pathlib import PurePosixPath
 from typing import Dict, List, Optional, Set, Tuple
 
 MAX_NOTES = 6  # Round 2e: was 4; a file can have several undefined names AND an unimplemented function
+
+
+# --- Parsing the agents' code (Round 2m) ---------------------------------------------------------------------------------
+# ast.parse() of an agent's file printed Python's SyntaxWarning ("invalid escape sequence '\\T'") to the server's
+# stderr - noise in the framework's output about code the framework did not write - and the agent never heard of it.
+# The framework parses quietly; python_code_notes() reports the warnings to the agent instead.
+_SOURCE_WARNING_CATEGORIES = (SyntaxWarning, DeprecationWarning)  # an invalid escape is a DeprecationWarning before 3.12
+_INVALID_ESCAPE_RE = re.compile(r"\\.")
+
+
+def parse_python(source: str) -> ast.AST:
+    """ast.parse() without printing the SyntaxWarnings of the parsed text. Raises SyntaxError/ValueError like ast.parse."""
+    with warnings.catch_warnings():
+        for category in _SOURCE_WARNING_CATEGORIES:
+            warnings.simplefilter("ignore", category)
+        return ast.parse(source)
+
+
+def python_source_warnings(source: str) -> List[Tuple[int, str]]:
+    """(line, message) of the SyntaxWarnings Python gives for source (sorted, no duplicates); [] if it does not parse."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            compile(source, "<agent file>", "exec", flags=ast.PyCF_ONLY_AST, dont_inherit=True)
+        except (SyntaxError, ValueError):
+            return []
+    found = set()
+    for item in caught:
+        if issubclass(item.category, _SOURCE_WARNING_CATEGORIES) and item.filename == "<agent file>":
+            found.add((int(item.lineno or 0), str(item.message)))
+    return sorted(found)
 
 _FALLBACK_STDLIB = frozenset({
     "argparse", "collections", "datetime", "functools", "itertools", "json", "logging", "math", "os", "pathlib", "random",
@@ -291,7 +323,7 @@ def workspace_import_hints(workspace, skip_file=None, max_files: int = 200) -> D
             if not module_parts:
                 continue
             try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
+                tree = parse_python(path.read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError, SyntaxError, ValueError):
                 continue
             module = ".".join(module_parts)
@@ -312,7 +344,7 @@ def python_code_notes(source: str, filename: Optional[str] = None, import_hints:
     missing import of an undefined name ('from temp_convert import celsius_to_fahrenheit').
     """
     try:
-        tree = ast.parse(source)
+        tree = parse_python(source)
     except (SyntaxError, ValueError):
         return []
 
@@ -354,6 +386,16 @@ def python_code_notes(source: str, filename: Optional[str] = None, import_hints:
                              "'return <value>' statement, so it returns None.")
 
     notes.extend(_duplicate_definitions(tree))
+
+    # Round 2m: what Python itself warns about (an invalid escape such as '\\T' in "C:\\Temp" becomes an error in a
+    # future Python version)
+    for line, message in python_source_warnings(source):
+        escape = _INVALID_ESCAPE_RE.search(message) if "escape sequence" in message else None
+        if escape:  # the wording differs between Python versions; the note does not
+            notes.append(f"line {line}: invalid escape sequence '{escape.group(0)}' in a string (Python warns; it will be an "
+                         "error in a future version) - write the backslash as '\\\\' or use a raw string r'...'.")
+        else:
+            notes.append(f"line {line}: Python warns: {message}.")
 
     is_test_file = filename is None or bool(_TEST_FILE_RE.match(PurePosixPath(str(filename).replace("\\", "/")).name))
     if is_test_file:
@@ -419,7 +461,7 @@ def is_unimplemented_python(source: str) -> bool:
     imports, pass/..., empty functions/classes and an `if __name__ == "__main__":` block. Imports-only files are False.
     """
     try:
-        tree = ast.parse(source)
+        tree = parse_python(source)
     except (SyntaxError, ValueError):
         return False
     has_definition = any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) for n in tree.body)
@@ -436,7 +478,7 @@ MAX_REWRITE_PROBLEMS = 6
 def parses_as_python(source: str) -> bool:
     """True if source is syntactically valid Python."""
     try:
-        ast.parse(source)
+        parse_python(source)
         return True
     except (SyntaxError, ValueError):
         return False
@@ -474,7 +516,7 @@ def python_rewrite_problems(old_source: str, new_source: str) -> List[str]:
     assigned or imported name, or the code of a definition. [] means nothing is lost. Both texts must parse.
     """
     try:
-        old_tree, new_tree = ast.parse(old_source), ast.parse(new_source)
+        old_tree, new_tree = parse_python(old_source), parse_python(new_source)
     except (SyntaxError, ValueError):
         return ["the old or the new version is not valid Python, so the framework cannot check what would be lost"]
     problems: List[str] = []

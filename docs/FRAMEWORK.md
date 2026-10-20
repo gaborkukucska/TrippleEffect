@@ -1,3 +1,4 @@
+<!-- # START OF FILE docs/FRAMEWORK.md -->
 # TrippleEffect Framework: A Technical Explanation
 
 ## 1. Introduction
@@ -191,6 +192,7 @@ The `failover_handler.py` module manages automatic model/provider failover when 
 
 - **Tool Support Blacklist**: A module-level `_models_without_tool_support` set tracks `(provider, model)` pairs that have returned "does not support tools" errors at runtime. Before attempting any failover switch, both Pass 1 (preferred model on alternate APIs) and Pass 2 (alternative model candidates) check this blacklist, preventing cascade failures where agents cycle through multiple models that all lack native tool calling capability.
 - **Health Checks**: Before switching to a local provider, the handler performs HTTP health checks on the target API endpoint.
+- **Provider names (v2.51)**: a local API is `<type>-local-<host>` (`ollama-local-192-168-1-5`, `ollama-local-oli-gaborkukucska-com`), a duplicate gets `-<n>`, the localhost Ollama is `ollama-local` and a proxy `<type>-proxy`. Always use `model_registry.base_provider_type()` (`'ollama'`) and `is_local_provider_name()` instead of splitting names by hand - the hand-written `split('-local-')` missed `ollama-local`, so failover and model selection treated the localhost Ollama as remote until Round 2m. `OLLAMA_API_URLS` replaces the default localhost Ollama unless `OLLAMA_INCLUDE_LOCALHOST=true`.
 
 ### 4.8. Cross-Cycle Duplicate Detection & Result Truncation
 
@@ -209,6 +211,23 @@ Both `ProjectManagementTool` and `FileSystemTool` include `action_suggestions` d
 
 Agents in persistent states (like `worker_work`, `worker_test`, `worker_report`, `pm_manage`) automatically reactivate to process results or wait for new input. However, smaller models occasionally enter autoregressive generation loops, repeating the identical tool call (e.g. `modify_task` or `send_message`) infinitely despite the `CycleHandler`'s duplicate block and `AUTO-ADVANCE` directives.
 To prevent this death spiral, `NextStepScheduler.schedule_next_step` includes a hard framework intervention block. If an agent hits 4 consecutive duplicate cross-cycle failures while in a persistent state, the scheduler intercepts the cycle, skips the LLM generation entirely, and forces a hard state transition (e.g., `worker_work` -> `worker_report`, `worker_test` -> `worker_report`, `worker_report` -> `worker_wait`). This forces the agent into a completely different operational context, breaking the loop.
+
+### 4.11. Small-Model Guard Rails (v2.51, Rounds 2d–2m)
+
+These mechanisms were added after real runs with 4B–9B local models. Each one has regression tests in `tests/unit/test_round2X.py`.
+
+- **One tool list per state** (`tool_activity.state_tool_allowlist()`): the same list builds the native tool schemas offered in `core.py` and is enforced in the executor (`state_tool_block_message`). PMs may not change project files; that is the workers' job. Framework-internal calls (the worker's automatic save of a code block) are marked so they pass.
+- **Think-only replies**: the Ollama provider's `finish_info` event carries `done_reason`, `thinking_chars` and `thinking_tail`. A reply that only thought sets `Agent._think_off_next_call`, and the next call is sent with `think=False`. The cycle handler quotes the end of the thought ("Your thinking ended with: ...") so the model can make that call.
+- **Cut-off replies**: a reply that hit the output limit without a tool call is named as cut off, not "empty", and the next call gets a larger budget (`boosted_max_tokens`, x2 per cut-off in a row, at most x4).
+- **Open work nobody is doing** (`assignable_work.py`): unassigned ready tasks plus idle workers produce an assignment hint with the exact `modify_task` call. The watchdog wakes a PM in standby for it. A worker that asks for `worker_wait` while its own task is open and ready is told to mark it finished first (at most twice per task).
+- **Resuming started tasks**: the watchdog resumes a worker's task that is already in progress in `worker_work` instead of `worker_decompose`.
+- **Plans that are almost right**: `salvage_kickoff_plan()` keeps the valid top-level parts of a kick-off plan, and an Admin plan in Markdown without the JSON title block still creates the project.
+- **Code feedback without blocking**: `python_static_check` reports missing imports, undefined names, stub functions, a declared return without `return`, tests that cannot fail and (since Round 2m) Python's own SyntaxWarnings as notes on every Python write. Hollow files and stubs block `task_progress=finished`. Agents' code is parsed with `parse_python()`, so its warnings never reach the server's stderr.
+- **Governance principles** are validated on load (`settings.usable_governance_principles()`). An entry without `name` or `text` is dropped with a warning instead of breaking every system prompt.
+
+### 4.12. Test Suite
+
+`python -m pytest -q tests` runs the whole suite offline in seconds: 1057 tests at v2.51, 0 failures, and 0 warnings even with `-W error` (Python 3.13 and 3.14). The model-discovery tests talk to a local `aiohttp` server that imitates Ollama and OpenRouter. The cycle-handler tests drive the real `AgentCycleHandler.run_cycle()` with a real `Agent`, because `MagicMock(spec=Agent)` does not know instance attributes. Async tests must use `unittest.IsolatedAsyncioTestCase` or `asyncio.run()`: an `async def` method of a plain `TestCase` is counted as passed without running.
 
 ## 5. State and Communication Model
 

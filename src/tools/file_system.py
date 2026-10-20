@@ -271,13 +271,13 @@ class FileSystemTool(BaseTool):
             return {"status": "error", "message": emptied}
         if not str(filename).endswith(".py"):
             return None
-        import ast
+        from src.tools.python_static_check import parse_python  # Round 2m: no SyntaxWarnings on the server's stderr
         try:
-            ast.parse(new_content)
+            parse_python(new_content)
             return None
         except SyntaxError as syntax_err:
             try:
-                ast.parse(original)
+                parse_python(original)
             except SyntaxError:
                 return None  # the file was already broken: never block an attempt to repair it
             try:
@@ -1359,8 +1359,8 @@ Pushes changes to a remote repository.
             # Perform basic Python syntax validation if modifying a python file
             if filename.endswith('.py'):
                 try:
-                    import ast
-                    ast.parse(content)
+                    from src.tools.python_static_check import parse_python  # Round 2m: quiet parse
+                    parse_python(content)
                 except SyntaxError as syntax_err:
                     try:  # Round 1t: show the code around the error and a hint (never lets the report break the rejection)
                         from src.tools.python_static_check import syntax_error_report

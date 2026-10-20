@@ -1,7 +1,7 @@
 <!-- # IT IS CRITICAL THAT ALL AIs and LLMs FOLLOW THE DEVELOPMENT INSTRUCTIONS IN THE `helperfiles/DEVELOPMENT_RULES.md` FILE WHEN FURTHER DEVELOPING THIS FRAMEWORK!!! -->
 # 🚀 TrippleEffect Multi-Agent Framework
 
-**Version:** 2.49
+**Version:** 2.51
 
 > **⚠️ EXPERIMENTAL SOFTWARE — R&D USE ONLY**
 >
@@ -150,12 +150,31 @@ Ready to dive in? Here's how to get your agents up and running quickly:
     ./run.sh
     ```
 
+    For long unattended runs on a laptop, keep the machine awake so a sleeping host does not freeze the agents for hours:
+
+    ```bash
+    systemd-inhibit --what=sleep:idle --why="TrippleEffect run" ./run.sh
+    ```
+
 5. **Access UI:**
     Open your browser to `http://localhost:8000` 🎉
+
+6. **Run the tests (optional):**
+    The whole suite runs offline in a few seconds and must pass with no failures and no warnings:
+
+    ```bash
+    .venv/bin/python -m pytest -q tests          # add -W error to turn any new warning into a failure
+    ```
 
 ---
 
 ## 🛠️ Troubleshooting
+
+### Agents still use the local Ollama although `OLLAMA_API_URLS` points to another server
+Since v2.51, Ollama URLs given in `OLLAMA_API_URLS` **replace** the default `http://localhost:11434`. If you want the agents spread over your local Ollama **and** the listed servers, set `OLLAMA_INCLUDE_LOCALHOST=true` (or list the localhost URL explicitly). A server given by host name (`https://ollama.example.com`) appears as provider `ollama-local-ollama-example-com`; the local one is `ollama-local`.
+
+### A run seems stuck for hours
+Check whether the host went to sleep (the log stops, then watchdog ticks resume all at once). Start the run with `systemd-inhibit` as shown in the Quick Start. With Ollama started with `-np 1` (one request at a time), agents wait for each other by design - a long wait for the single slot is not a hang.
 
 ### "RAW template" Warnings in Logs (Ollama)
 If you see a warning in your logs that says `Has RAW template '{{ .Prompt }}'` for a downloaded model, it means the model was packaged without a conversational chat template. 
@@ -189,8 +208,9 @@ To keep this README clean and exciting, we've moved all the heavy lifting and de
 
 ## 🚀 Development Status
 
-* **Current Version:** 2.50
-* **Recent Highlights:** Long-Run Stability & JSON Resilience (May 2026) — Finalized the implementation of a 3-tier resource exhaustion limit system (Teams, PMs, Workers). Migrated the entire authentication flow to native bcrypt with robust session heartbeat controls. Implemented an advisory LoopCoordinator layer with an asyncio.Lock based cycle execution queue to entirely eliminate watchdog thrashing. Added robust `scope` resolution logic to `test_runner` and `codebase_search` tools to unlock collaborative codebase interaction. Completely refactored the Admin AI's `ProjectCreationWorkflow` JSON parser to natively intercept and capture Markdown-formatted plans, permanently resolving `JSONDecodeError` workflow stalls.
+* **Current Version:** 2.51
+* **Recent Highlights (v2.51, October 2026):** Small-model reliability rounds (Review Round 1, Rounds 1c–2m) driven by real runs with `qwen3.5:4b` and `qwen3.5:9b`: a deterministic policy gate and a single sandboxed shell runner; a self-healing Taskwarrior store; tool calls accepted in the shapes small models really send (aliases, mixed JSON/Python, off-by-one line ranges, cut-off JSON); per-state tool allowlists enforced in the executor; replies that only "think" are retried with thinking switched off; idle PMs are woken for unassigned work and workers cannot park on their own open task; broken kick-off plans keep their valid parts; explicit `OLLAMA_API_URLS` replace localhost; and a clean, fully running test suite (1057 tests, 0 failures, 0 warnings on Python 3.13/3.14). Details: `helperfiles/PROJECT_PLAN.md`, Phase Z.
+* **Earlier Highlights (v2.50):** Long-Run Stability & JSON Resilience (May 2026) — Finalized the implementation of a 3-tier resource exhaustion limit system (Teams, PMs, Workers). Migrated the entire authentication flow to native bcrypt with robust session heartbeat controls. Implemented an advisory LoopCoordinator layer with an asyncio.Lock based cycle execution queue to entirely eliminate watchdog thrashing. Added robust `scope` resolution logic to `test_runner` and `codebase_search` tools to unlock collaborative codebase interaction. Completely refactored the Admin AI's `ProjectCreationWorkflow` JSON parser to natively intercept and capture Markdown-formatted plans, permanently resolving `JSONDecodeError` workflow stalls.
 * **Current Phase:** Target Phase 28 features Advanced Memory & Learning systems, proactive behaviors, and federated communication foundations.
 
 ## 🤝 Contributing & License

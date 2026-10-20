@@ -1,8 +1,8 @@
 <!-- # START OF FILE helperfiles/PROJECT_PLAN.md -->
 # Project Plan: TrippleEffect
 
-**Version:** 2.50
-**Date:** 2026-04-30
+**Version:** 2.51
+**Date:** 2026-10-20
 
 ## 1. Project Goals
 
@@ -190,8 +190,17 @@
 
 * [X] **JSON Tool Brace Escaping Fix:** Resolved framework-level `KeyError` crashes caused by unescaped literal JSON braces inside f-string tool documentation blocks. Standardized double-brace (`{{ }}`) escaping across all `get_detailed_usage` schemas (`manage_team.py`, `project_management.py`) to ensure flawless prompt assembly.
 
+**Review & Small-Model Reliability Rounds (v2.51, October 2026, Completed)**
+
+* [X] **Review Round 1 (security):** one sandboxed shell runner and a deterministic policy gate for command execution; dependency caps (`httpx`, `SQLAlchemy[asyncio]`); Starlette 1.x template call.
+* [X] **Rounds 1c–2c (task store, tools, prompts):** self-healing Taskwarrior store and file system, sanitised tags/assignees, imperfect task UUIDs resolved, tool calls accepted in the shapes small models send (aliases, keyed actions, mixed JSON/Python chunks, bare-word JSON), Admin plan from Markdown without the JSON title block, tasks wait for unfinished dependencies, non-blocking Python code notes (missing imports, stubs, empty tests), edits can never empty a file, no 'finished' task with hollow files, a Guardian concern can always be resolved.
+* [X] **Rounds 2d–2l (driven by `qwen3.5:4b` / `qwen3.5:9b` runs, see Phase Z below):** started tasks resume in `worker_work`; cut-off replies get a larger budget instead of "empty response"; replies that only think are retried with thinking off; idle PMs are woken for unassigned work; per-state tool allowlists enforced in the executor (PMs no longer edit workers' files); broken kick-off plans keep their valid parts; explicit `OLLAMA_API_URLS` replace localhost; workers cannot park on their own open task.
+* [X] **Round 2m (tests):** all stale tests repaired, none skipped; `pytest tests` needs no `--ignore`; 7 never-run async tests run; real defects found and fixed (localhost Ollama treated as remote in failover/selection, one malformed governance principle broke every prompt, SyntaxWarnings from agents' code on stderr).
+* [X] **Unit Test Suite — 1057/1057 passing, 0 warnings** (`python -m pytest -q -W error tests`, Python 3.13 and 3.14).
 
 **Future Goals:**
+
+* **Next (small-model reliability):** check a task's stated requirements when it is marked finished (2026-10-20: a CLI task was finished without its `main()`); an evaluation harness of fixed scenarios to measure each guard rail (see `helperfiles/REVIEW_REPORT.md` §9).
 
 * **Phase 28: Advanced Memory & Learning.** (Feedback Loop, Learned Principles, Advanced Context Management, Long-term Memory Systems).
 * **Phase 29: Proactive Behavior.** (Scheduling, Goal Management, Autonomous Planning, Predictive Actions).
@@ -633,6 +642,45 @@ This entirely breaks the LLM's autoregressive death spiral by physically moving 
 - Modified `src/agents/workflow_manager.py`'s `ProjectCreationWorkflow` JSON parser to dynamically capture the Markdown text preceding the JSON block and inject it into the `_raw_plan_body_` field behind the scenes. This eliminates the need for the LLM to escape complex strings, ensuring 100% reliable JSON parsing.
 
 **Files:** `src/tools/test_runner.py`, `src/tools/codebase_search.py`, `prompts.yaml`, `src/agents/workflow_manager.py`
+
+---
+
+#### Phase Z: Review Rounds & Small-Model Reliability (October 2026)
+
+Every round was driven by a real run with a small local model (`qwen3.5:4b`, later `qwen3.5:9b`, Ollama with `-np 1`) and the logs collected from it. Each round ships a regression test file `tests/unit/test_roundXX.py` built from the run's own fixtures. Rounds 1c–2c are summarised in Section 4 and in their commit messages; the detail below covers Rounds 2d–2m.
+
+**Round 2d (run 2026-10-18, 4b):** W1 needed 70 minutes to replace one broken `main()`.
+- The watchdog restarted a worker's own started task in `worker_decompose` (1024-token replies) - it now resumes in `worker_work`.
+- Replies cut off at the output limit were reported as "empty" - they are now named as cut off and the next call gets a larger budget (x2 per cut-off, max x4); the provider's `finish_info` event carries `done_reason`.
+- `code_editor`/`file_system` accept a top-level search/replace pair, repair invalid JSON escapes and a missing closing bracket, tolerate line numbers one off from a uniquely matching search text, accept `'1, 60'` ranges and `line_content`; a complete rewrite that keeps every function is no longer refused.
+
+**Round 2e (run 2026-10-19, 4b):** stale "File not found" answers to reads after a successful write are no longer replayed; undefined names, a declared return without `return`, and stub `main()` are reported (and block 'finished'); PM polling while workers wait for the single Ollama slot is limited; many more edit shapes handled (top-level `text`, `{'read': 'true'}`, stale chunks, reads past the end of the file).
+
+**Round 2f (run 2026-10-19, 4b):** a finished project is audited and reported instead of the PM idling in standby; stray tag characters in action names (`run_command>`) are cleaned; `list_with_lines`, `modify_task_progress` and `"depends": ""` are accepted.
+
+**Round 2g (first 9b run):** a project request that Admin answers with `request_state('work')` goes to planning; an empty tool call (`{}`) gets the tool's full usage; tools explain a workspace that has no files yet.
+
+**Round 2h:** a reply that only thought switches thinking off for the next call (`think=False`, `Agent._think_off_next_call`); new `src/agents/assignable_work.py` finds unassigned ready tasks and idle workers, writes the exact `modify_task` call into the PM's prompt and lets the watchdog wake a PM in standby for it; "task not found" lists the open tasks.
+
+**Round 2i:** placeholder team ids (`None`, `team_id`) become `team_<project>`; a failed `create_team` is no longer reported as done; every think-only reply (also the kick-off) is retried without thinking.
+
+**Round 2j:** `salvage_kickoff_plan()` keeps the valid `roles`/`tasks` of a kick-off plan whose `project_structure` is broken; roles as objects and tasks with `title` are accepted.
+
+**Round 2k:** `tool_activity.state_tool_allowlist()` is the single list of tools per state, used for the offered schemas AND enforced in the executor (`state_tool_block_message`); PMs may not change project files (workers own them); the worker's automatic code-block save is marked as a framework call; `write_with_lines` accepts `lines` as content.
+
+**Round 2l (Browser Snake Game, completed end to end):** `OLLAMA_API_URLS` replaces the default localhost Ollama unless `OLLAMA_INCLUDE_LOCALHOST=true`; host names give readable provider names (`ollama-local-oli-gaborkukucska-com`) and the duplicate check parses ports correctly; a worker asking for `worker_wait` while its own task is open and ready is told to finish it first (at most twice per task); `node_modules` and similar folders are left out of the activation file listing.
+
+**Round 2m (tests):** the unit suite ran with 32 failures and needed `--ignore=tests/unit/test_agent_lifecycle.py`. All stale tests were rewritten against the current code (none skipped or deleted); seven `async def` tests that pytest had counted as passed without running them now run (the discovery tests against a local `aiohttp` server). The repaired tests found real defects:
+- `ollama-local` (the canonical localhost name) was treated as remote: failover never tried it, a failure on it took the remote path, canonical model ids lost the `ollama/` prefix and the comprehensive selection skipped it in the LOCAL tier. New `model_registry.base_provider_type()` / `is_local_provider_name()` replace every `split('-local-')` / `'-local-' in` test.
+- A governance principle without `name`/`text` raised `KeyError` in every system prompt; a non-dict entry emptied the whole list. `settings.usable_governance_principles()` drops unusable entries with a warning.
+- Parsing agents' code printed Python's SyntaxWarnings (invalid escapes) to the server's stderr. `python_static_check.parse_python()` parses quietly everywhere; the warning becomes a code note for the agent.
+- `this/that/these/those` are keyword stop words; Pydantic `model_dump()` and `sqlalchemy.orm.declarative_base` replace deprecated calls.
+
+**Files (Round 2m):** `src/config/model_registry.py`, `src/config/settings.py`, `src/agents/agent_lifecycle.py`, `src/agents/failover_handler.py`, `src/agents/workflow_manager.py`, `src/agents/core.py`, `src/tools/python_static_check.py`, `src/tools/code_editor.py`, `src/tools/file_system.py`, `src/tools/base.py`, `src/core/database_manager.py`, `src/utils/task_files.py`, `src/utils/text_utils.py`, `tests/`.
+
+**Test status:** `python -m pytest -q -W error tests` - 1057 passed, 0 failed, 0 warnings (Python 3.13 and 3.14).
+
+**Open:** requirement checks when a task is marked finished; throughput with a single Ollama slot (`-np 1`) - agents queue for it by design.
 
 ---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

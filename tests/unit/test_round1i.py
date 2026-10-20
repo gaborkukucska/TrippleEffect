@@ -6,6 +6,7 @@ Integration tests use a real Taskwarrior (skipped when `task` or tasklib is not 
 """
 import asyncio
 import shutil
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -200,6 +201,6 @@ def test_unreadable_file_returns_clear_data_corruption_error(tool, tmp_path, mon
 
 
 def test_no_task_in_membership_left_in_assignee_and_tag_code():
-    src = open(pm.__file__, encoding="utf-8").read()
+    src = Path(pm.__file__).read_text(encoding="utf-8")  # Round 2m: closes the file (ResourceWarning)
     assert "'assignee' in task" not in src
     assert "'tags' in task" not in src

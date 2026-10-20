@@ -1,3 +1,4 @@
+# START OF FILE src/utils/text_utils.py
 import re
 from collections import Counter
 
@@ -23,7 +24,9 @@ STOP_WORDS = set([
     "meanwhile", "subsequently", "subsequently", "namely", "specifically",
     "generally", "particularly", "especially", "example", "eg", "ie", "etc",
     "other", "another", "such", "several", "many", "few", "some", "any", "all",
-    "most", "much", "less", "least", "more", "own", "same", "different", "various"
+    "most", "much", "less", "least", "more", "own", "same", "different", "various",
+    # Round 2m: demonstratives ("This is a test ..." gave the keyword 'this')
+    "this", "that", "these", "those"
 ])
 
 MIN_KEYWORD_LENGTH = 3

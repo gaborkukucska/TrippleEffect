@@ -69,9 +69,9 @@ def python_file_problems(path: Path, shown_name: str, workspace: Optional[Path] 
         return [f"{shown_name}: cannot be read ({err})."]
     if not source.strip():
         return [f"{shown_name} is EMPTY."]
-    import ast
+    from src.tools.python_static_check import parse_python  # Round 2m: quiet parse
     try:
-        ast.parse(source)
+        parse_python(source)
     except SyntaxError as err:
         return [f"{shown_name} is not valid Python ({err.msg} at line {err.lineno})."]
     from src.tools.python_static_check import python_code_notes_for

@@ -1,3 +1,4 @@
+# START OF FILE src/tools/code_editor.py
 import logging
 import asyncio
 from pathlib import Path
@@ -45,9 +46,8 @@ def _literal_eval_chunks(text: str):
     [{"end_line": null, "search": 'if __name__ == "__main__":', ...}] 7 times on 2026-10-18). The JSON names null/true/false
     are replaced only where they are NAMES (never inside strings), so the strings stay exactly as sent.
     """
-    import ast
     try:
-        return ast.literal_eval(text)
+        return _quiet_literal_eval(text)
     except (ValueError, SyntaxError):
         pass
     import io
@@ -60,7 +60,20 @@ def _literal_eval_chunks(text: str):
             tokens.append(tok)
     except tokenize.TokenError as err:   # unclosed bracket or string
         raise ValueError(f"not a complete literal: {err}") from err
-    return ast.literal_eval(tokenize.untokenize(tokens))
+    return _quiet_literal_eval(tokenize.untokenize(tokens))
+
+
+def _quiet_literal_eval(text: str):
+    """
+    ast.literal_eval without the SyntaxWarning (DeprecationWarning before Python 3.12) that Python prints for an invalid
+    escape such as '\\T' in the agent's text (Round 2m). The text is data from the agent, not code of the framework.
+    """
+    import ast
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return ast.literal_eval(text)
 
 
 WRITE_ACTION_PREFIXES = ("write", "create", "save", "overwrite")
@@ -341,14 +354,14 @@ def repair_boundary_overlap(current: str, lines: List[str], start_idx: int, end_
     (`naive`) only because the replacement repeats the lines right before/after the range, and the replacement without the
     repeated lines gives valid Python. None in every other case, so a correct edit is never changed.
     """
-    import ast
+    from src.tools.python_static_check import parse_python  # Round 2m: quiet parse
     try:
-        ast.parse(naive)
+        parse_python(naive)
         return None  # the edit as sent is valid
     except (SyntaxError, ValueError):
         pass
     try:
-        ast.parse(current)
+        parse_python(current)
     except (SyntaxError, ValueError):
         return None  # the file is already broken: do not guess
     overlap_before, overlap_after = boundary_overlap(lines, start_idx, end_idx, replacement)
@@ -361,7 +374,7 @@ def repair_boundary_overlap(current: str, lines: List[str], start_idx: int, end_
         text += "\n"
     candidate = "".join(lines[:start_idx]) + text + "".join(lines[end_idx:])
     try:
-        ast.parse(candidate)
+        parse_python(candidate)
     except (SyntaxError, ValueError):
         return None
     parts = []
@@ -940,8 +953,8 @@ class CodeEditorTool(BaseTool):
             # Perform basic Python syntax validation if modifying a python file
             if filename.endswith('.py'):
                 try:
-                    import ast
-                    ast.parse(content)
+                    from src.tools.python_static_check import parse_python  # Round 2m: quiet parse
+                    parse_python(content)
                 except SyntaxError as syntax_err:
                     try:  # Round 1v: same code-around-the-error report as file_system writes
                         from src.tools.python_static_check import syntax_error_report

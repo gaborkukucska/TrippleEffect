@@ -1,171 +1,114 @@
-import unittest
-from unittest.mock import patch, mock_open, MagicMock
-import yaml # For YAMLError simulation
+# START OF FILE tests/unit/test_settings.py
+"""
+Tests for Settings._load_governance_principles() and usable_governance_principles().
+
+Round 2m: the old tests patched builtins.open and yaml.safe_load for a whole Settings() construction, so prompts.yaml
+was "read" through the same mocks (open was called twice), and they started module-level patches of config_manager and
+ModelRegistryClass at import time, which leaked into every test module collected after them. These tests write a real
+governance file into a temporary directory, point GOVERNANCE_FILE_PATH at it and run only the loader.
+
+Rules under test:
+* missing file -> [] and a "not found" warning; invalid YAML -> [] and an "Error decoding YAML" error;
+  no 'principles' list -> [] and a "has incorrect structure" error;
+* entries that are not dicts or lack 'name' or 'text' are dropped with a warning (they used to make every system prompt
+  fail, and a non-dict entry used to empty the whole list); entries lacking only 'id', 'applies_to' or 'enabled' are
+  kept with a warning;
+* the real governance.yaml loads completely.
+"""
 import logging
+import tempfile
+import types
+import unittest
+from pathlib import Path
+from unittest.mock import patch
 
-# We need to import Settings from the module where it's defined.
-# Since Settings instantiates ModelRegistry and calls its own methods upon __init__,
-# we need to be careful about what we patch *before* importing Settings or instantiating it.
+import yaml
 
-# To prevent `config_manager` and `ModelRegistry` from running their actual __init__ logic
-# during the import of `src.config.settings` or when Settings is instantiated,
-# we patch them at the module level where they are defined or imported.
+from src.config import settings as settings_module
+from src.config.settings import GOVERNANCE_FILE_PATH, Settings, usable_governance_principles
 
-# Patch config_manager where it's imported by settings.py
-patch_config_manager = patch('src.config.settings.config_manager', MagicMock())
-# Patch ModelRegistryClass where it's imported by settings.py
-patch_model_registry_class = patch('src.config.settings.ModelRegistryClass', MagicMock())
-
-# Start the patches before importing Settings
-patch_config_manager.start()
-patch_model_registry_class.start()
-
-from src.config.settings import Settings, BASE_DIR, GOVERNANCE_FILE_PATH
-
-# Disable logging for most tests, enable specifically if testing log messages
-logging.disable(logging.CRITICAL)
+VALID = [
+    {"id": "GP001", "name": "Test Principle 1", "text": "Text 1", "applies_to": ["all_agents"], "enabled": True},
+    {"id": "GP002", "name": "Test Principle 2", "text": "Text 2", "applies_to": ["worker"], "enabled": False},
+]
 
 
-class TestSettingsGovernanceLoading(unittest.TestCase):
+class TestGovernanceLoading(unittest.TestCase):
 
-    def tearDown(self):
-        # Ensure patches are stopped after each test if they were started in setUp or test methods
-        # However, for module-level patches like these, it's often better to manage them outside
-        # if they are meant to affect all tests in the class/module.
-        # For class-level or method-level, setUp/tearDown or with statement is better.
-        pass
+    def setUp(self):
+        # other test modules disable logging globally; assertLogs needs it on
+        self._previous_disable = logging.root.manager.disable
+        logging.disable(logging.NOTSET)
+        self.addCleanup(logging.disable, self._previous_disable)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name) / "governance.yaml"
+        patcher = patch.object(settings_module, "GOVERNANCE_FILE_PATH", self.path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
-    @classmethod
-    def tearDownClass(cls):
-        # Stop module-level patches after all tests in the class have run
-        patch_config_manager.stop()
-        patch_model_registry_class.stop()
+    def load(self, text=None):
+        if text is not None:
+            self.path.write_text(text, encoding="utf-8")
+        holder = types.SimpleNamespace()
+        Settings._load_governance_principles(holder)
+        return holder.GOVERNANCE_PRINCIPLES
 
-    def get_settings_instance(self):
-        # Helper to get a Settings instance, ensuring patches are active.
-        # This re-imports or re-uses the already patched environment for Settings.
-        # For these tests, Settings() is called, which triggers _load_governance_principles.
-        return Settings()
+    def test_valid_file(self):
+        self.assertEqual(self.load(yaml.safe_dump({"principles": VALID})), VALID)
 
-    @patch('src.config.settings.Path.exists')
-    @patch('builtins.open', new_callable=mock_open)
-    @patch('yaml.safe_load')
-    def test_scenario_1_valid_governance_yaml(self, mock_yaml_load, mock_file_open, mock_path_exists):
-        mock_path_exists.return_value = True # governance.yaml exists
-        valid_principles_data = {
-            "principles": [
-                {"id": "GP001", "name": "Test Principle 1", "text": "Text 1", "applies_to": ["all_agents"], "enabled": True},
-                {"id": "GP002", "name": "Test Principle 2", "text": "Text 2", "applies_to": ["worker"], "enabled": False},
-            ]
-        }
-        mock_yaml_load.return_value = valid_principles_data
-        
-        # Instantiate Settings, which calls _load_governance_principles in its __init__
-        settings_instance = self.get_settings_instance()
+    def test_file_not_found(self):
+        with self.assertLogs("src.config.settings", level="WARNING") as logs:
+            self.assertEqual(self.load(), [])
+        self.assertTrue(any("not found" in line for line in logs.output))
 
-        self.assertEqual(settings_instance.GOVERNANCE_PRINCIPLES, valid_principles_data["principles"])
-        mock_file_open.assert_called_once_with(GOVERNANCE_FILE_PATH, 'r', encoding='utf-8')
-        mock_yaml_load.assert_called_once()
+    def test_invalid_yaml(self):
+        with self.assertLogs("src.config.settings", level="ERROR") as logs:
+            self.assertEqual(self.load("principles: [unclosed"), [])
+        self.assertTrue(any("Error decoding YAML" in line for line in logs.output))
 
-    @patch('src.config.settings.Path.exists')
-    @patch('logging.Logger.warning') # Patch the logger used in settings.py
-    def test_scenario_2_governance_yaml_not_found(self, mock_logger_warning, mock_path_exists):
-        mock_path_exists.return_value = False # governance.yaml does NOT exist
-        
-        settings_instance = self.get_settings_instance()
+    def test_missing_principles_key(self):
+        with self.assertLogs("src.config.settings", level="ERROR") as logs:
+            self.assertEqual(self.load(yaml.safe_dump({"not_principles": []})), [])
+        self.assertTrue(any("has incorrect structure" in line for line in logs.output))
 
-        self.assertEqual(settings_instance.GOVERNANCE_PRINCIPLES, [])
-        # Check if logger.warning was called with a message containing "not found"
-        found_log = False
-        for call_args in mock_logger_warning.call_args_list:
-            if "not found" in call_args[0][0]:
-                found_log = True
-                break
-        self.assertTrue(found_log, "Warning log for file not found was not emitted.")
+    def test_principles_not_a_list(self):
+        with self.assertLogs("src.config.settings", level="ERROR") as logs:
+            self.assertEqual(self.load(yaml.safe_dump({"principles": "this is not a list"})), [])
+        self.assertTrue(any("has incorrect structure" in line for line in logs.output))
 
+    def test_malformed_entries(self):
+        entries = [
+            {"id": "GP001", "name": "Valid Principle", "text": "Valid text.", "applies_to": ["all_agents"], "enabled": True},
+            {"id": "GP002", "name": "Missing Text Key", "applies_to": ["worker"], "enabled": True},
+            {"id": "GP003", "text": "Missing Name Key", "applies_to": ["pm"], "enabled": True},
+            "just a string",
+            {"id": "GP005", "name": "No Flag", "text": "Kept, disabled by default.", "applies_to": ["pm"]},
+        ]
+        with self.assertLogs("src.config.settings", level="WARNING") as logs:
+            loaded = self.load(yaml.safe_dump({"principles": entries}))
+        self.assertEqual([p["id"] for p in loaded], ["GP001", "GP005"])
+        output = "\n".join(logs.output)
+        self.assertIn("Governance principle GP002 is missing required keys: text. It is ignored.", output)
+        self.assertIn("Governance principle GP003 is missing required keys: name. It is ignored.", output)
+        self.assertIn("Governance principle at index 3 is not a dictionary", output)
+        self.assertIn("Governance principle GP005 is missing required keys: enabled. It is kept.", output)
 
-    @patch('src.config.settings.Path.exists')
-    @patch('builtins.open', new_callable=mock_open)
-    @patch('yaml.safe_load')
-    @patch('logging.Logger.error') # Patch the logger
-    def test_scenario_3_invalid_yaml_format(self, mock_logger_error, mock_yaml_load, mock_file_open, mock_path_exists):
-        mock_path_exists.return_value = True
-        mock_yaml_load.side_effect = yaml.YAMLError("Simulated YAML parsing error")
-        
-        settings_instance = self.get_settings_instance()
-
-        self.assertEqual(settings_instance.GOVERNANCE_PRINCIPLES, [])
-        # Check if logger.error was called with a message containing "Error decoding YAML"
-        found_log = False
-        for call_args in mock_logger_error.call_args_list:
-            if "Error decoding YAML" in call_args[0][0]:
-                found_log = True
-                break
-        self.assertTrue(found_log, "Error log for YAML decoding error was not emitted.")
-
-    @patch('src.config.settings.Path.exists')
-    @patch('builtins.open', new_callable=mock_open)
-    @patch('yaml.safe_load')
-    @patch('logging.Logger.error')
-    def test_scenario_4a_missing_principles_key(self, mock_logger_error, mock_yaml_load, mock_file_open, mock_path_exists):
-        mock_path_exists.return_value = True
-        mock_yaml_load.return_value = {"not_principles": []} # Missing 'principles' key
-        
-        settings_instance = self.get_settings_instance()
-
-        self.assertEqual(settings_instance.GOVERNANCE_PRINCIPLES, [])
-        found_log = False
-        for call_args in mock_logger_error.call_args_list:
-            if "has incorrect structure" in call_args[0][0]:
-                found_log = True
-                break
-        self.assertTrue(found_log, "Error log for incorrect structure (missing 'principles' key) not emitted.")
-
-    @patch('src.config.settings.Path.exists')
-    @patch('builtins.open', new_callable=mock_open)
-    @patch('yaml.safe_load')
-    @patch('logging.Logger.error')
-    def test_scenario_4b_principles_not_a_list(self, mock_logger_error, mock_yaml_load, mock_file_open, mock_path_exists):
-        mock_path_exists.return_value = True
-        mock_yaml_load.return_value = {"principles": "this is not a list"}
-        
-        settings_instance = self.get_settings_instance()
-
-        self.assertEqual(settings_instance.GOVERNANCE_PRINCIPLES, [])
-        found_log = False
-        for call_args in mock_logger_error.call_args_list:
-            if "has incorrect structure" in call_args[0][0]: # Same error message as 4a
-                found_log = True
-                break
-        self.assertTrue(found_log, "Error log for incorrect structure ('principles' not a list) not emitted.")
+    def test_usable_principles_without_logging_setup(self):
+        logging.disable(logging.CRITICAL)
+        self.assertEqual(usable_governance_principles([]), [])
+        self.assertEqual(usable_governance_principles([None, {"name": "N"}, VALID[0]]), [VALID[0]])
 
 
-    @patch('src.config.settings.Path.exists')
-    @patch('builtins.open', new_callable=mock_open)
-    @patch('yaml.safe_load')
-    @patch('logging.Logger.warning') # Check for warnings about malformed entries
-    def test_scenario_5_malformed_principle_entries(self, mock_logger_warning, mock_yaml_load, mock_file_open, mock_path_exists):
-        mock_path_exists.return_value = True
-        principles_data_malformed = {
-            "principles": [
-                {"id": "GP001", "name": "Valid Principle", "text": "Valid text.", "applies_to": ["all_agents"], "enabled": True},
-                {"id": "GP002", "name": "Missing Text Key", "applies_to": ["worker"], "enabled": True}, # Missing 'text'
-                {"id": "GP003", "text": "Missing Name Key", "applies_to": ["pm"], "enabled": True} # Missing 'name'
-            ]
-        }
-        mock_yaml_load.return_value = principles_data_malformed
-        
-        settings_instance = self.get_settings_instance()
+class TestRealGovernanceFile(unittest.TestCase):
 
-        # The current implementation of _load_governance_principles logs a warning but still includes malformed dicts.
-        # Let's verify that all dicts are loaded, and that warnings were logged.
-        self.assertEqual(len(settings_instance.GOVERNANCE_PRINCIPLES), 3) 
-        self.assertEqual(settings_instance.GOVERNANCE_PRINCIPLES[0]["name"], "Valid Principle")
-        
-        # Check for specific warnings for GP002 and GP003
-        warning_logs = [call_args[0][0] for call_args in mock_logger_warning.call_args_list]
-        self.assertTrue(any("missing required keys: GP002" in log for log in warning_logs))
-        self.assertTrue(any("missing required keys: GP003" in log for log in warning_logs))
+    def test_real_governance_yaml_loads_completely(self):
+        self.assertTrue(GOVERNANCE_FILE_PATH.exists())
+        raw = yaml.safe_load(GOVERNANCE_FILE_PATH.read_text(encoding="utf-8"))["principles"]
+        holder = types.SimpleNamespace()
+        Settings._load_governance_principles(holder)
+        self.assertEqual(holder.GOVERNANCE_PRINCIPLES, raw)
+        self.assertTrue(raw)
 
 
 if __name__ == '__main__':

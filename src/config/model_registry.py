@@ -43,6 +43,29 @@ def url_host_port(url: str) -> Tuple[str, int]:
     return host, port or (443 if parsed.scheme == "https" else 80)
 
 
+# --- Provider names (Round 2m) ----------------------------------------------------------------------------------------------
+# A discovered local API is named '<type>-local-<host>' ('ollama-local-192-168-1-5'), '<type>-local-<host>-<n>' for a
+# duplicate, and the localhost Ollama gets the canonical name 'ollama-local' (no suffix). The old rule
+# name.split('-local-')[0] and the test '"-local-" in name' missed that canonical name, so the localhost Ollama counted
+# as a REMOTE provider: failover never tried it, models chosen on it were stored without the 'ollama/' prefix, and the
+# comprehensive model selection skipped it in the LOCAL tier.
+LOCAL_PROVIDER_TYPES = ("ollama", "vllm", "litellm")
+_PROVIDER_INSTANCE_RE = re.compile(r"^(?P<base>.+?)-(?:local|proxy)(?:-.*)?$")
+
+
+def base_provider_type(provider_name: Optional[str]) -> str:
+    """'ollama' for 'ollama-local', 'ollama-local-10-0-0-5', 'ollama-proxy'; other names ('openrouter') unchanged."""
+    name = provider_name or ""
+    match = _PROVIDER_INSTANCE_RE.match(name)
+    return match.group("base") if match else name
+
+
+def is_local_provider_name(provider_name: Optional[str]) -> bool:
+    """True for a local API instance or proxy of Ollama, vLLM or LiteLLM ('ollama-local', 'vllm-local-...', 'ollama-proxy')."""
+    name = provider_name or ""
+    return bool(_PROVIDER_INSTANCE_RE.match(name)) and base_provider_type(name) in LOCAL_PROVIDER_TYPES
+
+
 def provider_suffix_for_host(host: str) -> str:
     """The name suffix of a discovered provider: '127-0-0-1' for localhost, the dashed IP, or the dashed host name."""
     host = (host or "").lower()
@@ -514,9 +537,9 @@ class ModelRegistry:
                      if model_names:
                          tag = ""; prefix = ""
                          if provider == "ollama-proxy": tag = " (Local Proxy)" # Keep proxy tag if it appears
-                         elif "-local-" in provider: tag = " (Local Discovered)"
+                         elif is_local_provider_name(provider): tag = " (Local Discovered)"
                          elif provider in ["openrouter", "openai"]: tag = " (Remote)"
-                         if provider.startswith("ollama") or provider.startswith("litellm") or provider.startswith("vllm"): prefix = provider.split('-local-')[0].split('-proxy')[0] + "/"
+                         if provider.startswith("ollama") or provider.startswith("litellm") or provider.startswith("vllm"): prefix = base_provider_type(provider) + "/"
                          display_names = [f"{prefix}{name}" for name in model_names]
                          if include_header: lines.append(f"- **{provider}{tag}**: `{', '.join(display_names)}`")
                          else: lines.append(f"  {provider}{tag}: {len(display_names)} models -> {display_names}")
@@ -679,8 +702,7 @@ class ModelRegistry:
         for provider_name, models in self.available_models.items():
             if any(m.get("id") == target_model_name for m in models):
                 if provider_prefix_search:
-                    base_provider_type = provider_name.split('-local-')[0].split('-proxy')[0]
-                    if base_provider_type == provider_prefix_search: return provider_name
+                    if base_provider_type(provider_name) == provider_prefix_search: return provider_name
                 else: return provider_name
         if provider_prefix_search and provider_prefix_search in self.available_models:
              if any(m.get("id") == target_model_name for m in self.available_models[provider_prefix_search]): return provider_prefix_search

@@ -66,6 +66,34 @@ except ImportError as e:
 
 logger = logging.getLogger(__name__)
 
+# --- Governance principle validation (Round 2m) ---
+# Before Round 2m a principle without 'name' or 'text' was kept and made every system prompt fail with a KeyError, and a
+# list entry that was not a dict raised AttributeError in the validation itself, which emptied the whole list.
+GOVERNANCE_PRINCIPLE_KEYS = ("id", "name", "text", "applies_to", "enabled")
+GOVERNANCE_PRINCIPLE_DISPLAY_KEYS = ("name", "text")
+
+
+def usable_governance_principles(entries: list) -> list:
+    """
+    The principles that can be shown to agents. Entries that are not dicts or lack 'name' or 'text' are dropped with a
+    warning; entries that only lack 'id', 'applies_to' or 'enabled' are kept with a warning (a missing 'enabled' means
+    disabled, a missing 'applies_to' means it applies to nobody).
+    """
+    usable = []
+    for index, principle in enumerate(entries):
+        if not isinstance(principle, dict):
+            logger.warning(f"Governance principle at index {index} is not a dictionary and is ignored: {principle!r}")
+            continue
+        missing = [key for key in GOVERNANCE_PRINCIPLE_KEYS if key not in principle]
+        label = principle.get("id", f"index {index}")
+        if any(key in missing for key in GOVERNANCE_PRINCIPLE_DISPLAY_KEYS):
+            logger.warning(f"Governance principle {label} is missing required keys: {', '.join(missing)}. It is ignored.")
+            continue
+        if missing:
+            logger.warning(f"Governance principle {label} is missing required keys: {', '.join(missing)}. It is kept.")
+        usable.append(principle)
+    return usable
+
 
 class Settings:
     """
@@ -343,13 +371,8 @@ class Settings:
                 with open(GOVERNANCE_FILE_PATH, 'r', encoding='utf-8') as f:
                     data = yaml.safe_load(f) # Use safe_load for security
                     if isinstance(data, dict) and "principles" in data and isinstance(data["principles"], list):
-                        self.GOVERNANCE_PRINCIPLES = data["principles"]
+                        self.GOVERNANCE_PRINCIPLES = usable_governance_principles(data["principles"])
                         logger.info(f"Successfully loaded {len(self.GOVERNANCE_PRINCIPLES)} governance principles from {GOVERNANCE_FILE_PATH}.")
-                        # Optional: Validate structure of each principle if needed
-                        for i, principle in enumerate(self.GOVERNANCE_PRINCIPLES):
-                            if not isinstance(principle, dict) or not all(k in principle for k in ["id", "name", "text", "applies_to", "enabled"]):
-                                logger.warning(f"Governance principle at index {i} is missing required keys or is not a dict: {principle.get('id', 'Unknown ID')}")
-                                # Optionally remove or skip invalid principles
                     else:
                         logger.error(f"Governance file {GOVERNANCE_FILE_PATH} has incorrect structure. Expected a dictionary with a 'principles' list. Using empty list.")
                         self.GOVERNANCE_PRINCIPLES = []

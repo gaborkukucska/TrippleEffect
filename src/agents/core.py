@@ -461,7 +461,7 @@ class Agent:
                     )
                     if workflow_result:
                         logger.info(f"Agent {self.agent_id}: Workflow '{workflow_result.workflow_name}' executed. Success: {workflow_result.success}. Message: {workflow_result.message}")
-                        yield {"type": "workflow_executed", "workflow_name": workflow_result.workflow_name, "result_data": workflow_result.dict(), "agent_id": self.agent_id}
+                        yield {"type": "workflow_executed", "workflow_name": workflow_result.workflow_name, "result_data": workflow_result.model_dump() if hasattr(workflow_result, "model_dump") else workflow_result.dict(), "agent_id": self.agent_id}
                         # If a workflow was triggered and executed, its result dictates the next steps.
                         # The Agent.process_message should return here, and CycleHandler will use the WorkflowResult.
                         return

@@ -1,11 +1,50 @@
+<!-- # START OF FILE helperfiles/CURRENT_ISSUES.md -->
 # TrippleEffect - Current Issues
 
-**Last Updated:** 2026-04-30
-**Based on log:** `app_20260430_161149_974450.log` (long-duration stability audit)
+**Last Updated:** 2026-10-20 (v2.51, after Round 2m)
+**Based on runs:** Temp_Converter_CLI and Browser_Snake_Game, 2026-10-18 to 2026-10-20, `qwen3.5:4b` / `qwen3.5:9b` on Ollama (`-np 1`)
+**Previous audit:** `app_20260430_161149_974450.log` (long-duration stability audit)
 
 ---
 
-## Active Issues
+## Active Issues (October 2026)
+
+### +42. Task requirements are not checked when a task is marked finished
+- **Severity:** Medium (P2)
+- **Description:** 2026-10-20: a CLI task was marked finished although the file had no working `main()`. The framework blocks 'finished' for hollow files, stubs and undefined names (Rounds 2a/2e), but it does not compare the task's stated requirements with what was written.
+- **Next step:** derive checkable requirements from the task description (entry points, files, functions, "tests pass") and check them on `task_progress=finished`, like the existing hollow-file check.
+- **Files:** `src/tools/project_management.py`, `src/utils/task_files.py`
+
+### +41. Throughput with a single Ollama slot
+- **Severity:** Low (by design)
+- **Description:** With Ollama started with `-np 1`, Admin, PM, workers and the Guardian queue for one slot; long waits look like a hang. Round 2e limited PM polling during such waits.
+- **Workaround:** more Ollama slots or servers (`OLLAMA_API_URLS`, `OLLAMA_INCLUDE_LOCALHOST=true` to add the local one).
+
+### +40. Host sleep freezes long runs
+- **Severity:** Low (environment)
+- **Description:** 2026-10-19: a run "stuck for hours" was a laptop that went to sleep (about 77 watchdog ticks at once after wake-up, Ollama timeouts never fired).
+- **Workaround:** `systemd-inhibit --what=sleep:idle --why="TrippleEffect run" ./run.sh` (README, Quick Start).
+
+---
+
+## Resolved in Rounds 2d–2m (October 2026)
+
+Full detail: `helperfiles/PROJECT_PLAN.md`, Phase Z. Each item has regression tests in `tests/unit/test_round2X.py`.
+
+- **Started tasks restarted in `worker_decompose`** (1024-token budget) - resumed in `worker_work` (2d).
+- **Cut-off replies reported as "empty"** - named as cut off, next call gets a larger budget (2d).
+- **Edits refused for shapes small models send** (top-level search/replace, broken JSON escapes, off-by-one lines, `'1, 60'` ranges, `lines`/`line_content`/`text` as content) - accepted or repaired (2d, 2e, 2k).
+- **Stale "File not found" replayed after a successful write** (2e); **finished tasks with undefined names and stubs** (2e); **finished project never audited** (2f); **`run_command>` stray characters** (2f).
+- **Project request answered with `request_state('work')`** - switched to planning (2g); **empty tool calls** get the full usage (2g).
+- **Think-only replies** - retried with thinking off (2h, 2i); **PM in standby with unassigned tasks and idle workers** - woken with the exact assignment call (2h).
+- **Placeholder team ids and a falsely reported `create_team`** (2i); **whole kick-off plan rejected for one broken section** (2j).
+- **Tools used outside their state, PM editing workers' files** - per-state allowlist enforced in the executor (2k).
+- **`OLLAMA_API_URLS` ignored in favour of localhost, `ollama-local-unknown-host` names, port parsing** (2l); **workers parking on their own open task** (2l); **`node_modules` in the activation listing** (2l).
+- **Unit tests: 32 failures, one module not importable, 7 tests never ran** - 1057 passed, 0 warnings (2m). Defects found by the repaired tests: localhost Ollama (`ollama-local`) treated as remote in failover/selection; one malformed governance principle broke every system prompt; SyntaxWarnings from agents' code on the server's stderr (2m).
+
+---
+
+## Earlier Active Issues
 
 ### ~~+20. Missing `get_task` / `start_task` / `task_list` / `list_sub_tasks` Action Aliases~~ (RESOLVED)
 

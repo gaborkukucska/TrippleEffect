@@ -25,6 +25,7 @@ from src.config.settings import settings, model_registry # Import settings and r
 from src.agents.agent_lifecycle import PROVIDER_CLASS_MAP # Import map ONLY
 from src.agents.agent_utils import sort_models_by_size_performance_id # Import the new sorter
 from src.config.model_registry import ModelInfo # For type hinting
+from src.config.model_registry import base_provider_type as provider_base_type, is_local_provider_name  # Round 2m: 'ollama-local' is local
 
 # Type hint AgentManager
 if TYPE_CHECKING:
@@ -179,7 +180,7 @@ async def _select_alternate_models(
     # PerformanceTracker stores by "base_provider/model_id"
     # We need to prepare metrics for the sorter for the *specific provider instance*.
     provider_metrics = {}
-    base_provider_name = provider.split("-local-")[0].split("-proxy")[0] # Get base name like "ollama"
+    base_provider_name = provider_base_type(provider) # Get base name like "ollama"
     
     provider_specific_metrics_for_sorter = {}
 
@@ -310,9 +311,9 @@ async def _try_switch_agent(
             delattr(agent, '_last_api_key_used') # Clear if switching to local
 
         # Update agent's stored config (use canonical ID if local)
-        is_local = "-local-" in target_provider or "-proxy" in target_provider
+        is_local = is_local_provider_name(target_provider)
         # Construct canonical ID ONLY for config storage
-        config_model_id = f"{target_provider.split('-local-')[0].split('-proxy')[0]}/{target_model}" if is_local else target_model
+        config_model_id = f"{provider_base_type(target_provider)}/{target_model}" if is_local else target_model
         if hasattr(agent, 'agent_config') and isinstance(agent.agent_config, dict) and "config" in agent.agent_config and isinstance(agent.agent_config["config"], dict):
             agent.agent_config["config"].update({"provider": target_provider, "model": config_model_id}) # Store canonical ID in config
             logger.debug(f"Updated agent config dict: provider='{target_provider}', model='{config_model_id}'") # Log the config update
@@ -396,7 +397,7 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
     # --- NEW: Mark the FAILED provider/model as tried BEFORE searching ---
     failed_provider = agent.provider_name # Provider that just failed
     failed_model = agent.model          # Model that just failed
-    is_failed_local = "-local-" in failed_provider or "-proxy" in failed_provider
+    is_failed_local = is_local_provider_name(failed_provider)
 
     if is_failed_local:
         if failed_provider not in failover_state["tried_models_per_local_provider"]:
@@ -477,7 +478,7 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
     logger.info("Failover Step 1: Trying available local providers...")
     all_available = model_registry.get_available_models_dict()
     # Get unique provider names that indicate local instances
-    local_provider_names = sorted([p for p in all_available if "-local-" in p or "-proxy" in p])
+    local_provider_names = sorted([p for p in all_available if is_local_provider_name(p)])
 
     # --- PASS 1: Try the SAME (original/preferred) model on a DIFFERENT healthy local API ---
     # This is the cheapest failover path as it avoids model reloads on Ollama instances.
@@ -596,7 +597,7 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
             logger.warning(f"No untried models found for local provider '{local_provider}'.")
         else:
             local_provider_metrics_for_sorter = {}
-            base_local_provider_name = local_provider.split("-local-")[0].split("-proxy")[0]
+            base_local_provider_name = provider_base_type(local_provider)
             
             for m_info_dict in candidate_local_model_infos:
                 m_id_suffix = m_info_dict["id"]

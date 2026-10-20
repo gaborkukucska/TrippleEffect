@@ -196,6 +196,8 @@ Archive supplied: 10 files, 63 test functions. Run against the current code:
 
 The tests are an **older snapshot**: either the "76/76" run used a newer set, or the number refers to a different count. Either way, the suite does not reflect the current code and `tests/` is gitignored, so it can never protect it. There is **no** coverage of the scheduler, health monitor, `project_management`, `file_system`, `code_editor`, executor, auth, or the PM kickoff workflow.
 
+**Status after Round 2m (2026-10-20):** all stale tests repaired against the current code (none skipped or deleted), `test_agent_lifecycle.py` imports again, and seven `async def` tests that had never run (plain `unittest.TestCase`) now run. `python -m pytest -q -W error tests`: 1057 passed, 0 failed, 0 warnings on Python 3.13 and 3.14. The repaired tests found real defects, fixed in the same round: the localhost Ollama (`ollama-local`) counted as a remote provider in failover and model selection; one malformed governance principle broke every system prompt; agents' code with an invalid escape printed SyntaxWarnings to the server's stderr.
+
 **Plan:** un-ignore `tests/`; repair/retire stale tests; add characterization tests for the highest-risk modules first (policy gate, command env scrubbing, task store, state-transition table, loop-breaker decisions).
 
 ---
