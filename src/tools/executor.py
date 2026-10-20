@@ -17,6 +17,7 @@ from src.agents.constants import AGENT_TYPE_ADMIN, AGENT_TYPE_PM, AGENT_TYPE_WOR
 from src.tools.project_management import ProjectManagementTool
 from src.api.websocket_manager import broadcast
 from src.tools.error_handler import tool_error_handler, ErrorType
+from src.agents.tool_activity import FRAMEWORK_INTERNAL_ARG, state_tool_block_message  # Round 2k
 
 
 logger = logging.getLogger(__name__)
@@ -680,6 +681,19 @@ class ToolExecutor:
             inferred_action = infer_action_from_keys(tool_name, tool_args)
             if inferred_action:
                 logger.info(f"Executor: '{tool_name}' call from '{agent_id}' had no 'action'; using '{inferred_action}', which was given as a parameter name.")
+
+            # Round 2k: tools the agent's state does not allow, and project file changes by a PM, are refused here
+            # (offering only some tool schemas did not stop W1 editing code in worker_report, 2026-10-20 10:19-11:03)
+            framework_internal = bool(tool_args.pop(FRAMEWORK_INTERNAL_ARG, False))
+            block_reason = None if framework_internal else state_tool_block_message(agent_type_for_auth, original_state, tool_name, tool_args)
+            if block_reason:
+                logger.warning(f"[TOOL_EXEC_ERROR] ID:{execution_id} | Refused '{tool_name}' for '{agent_id}' "
+                               f"(type {agent_type_for_auth}, state {original_state}): {block_reason[:120]}")
+                self._update_execution_stats(success=False)
+                refusal = f"[Tool Error: {tool_name}] {block_reason}"
+                if tool_name == ManageTeamTool.name:
+                    return {"status": "error", "action": tool_args.get("action"), "message": refusal}
+                return refusal
 
             validated_args = tool_args.copy()
             missing_required = []

@@ -333,6 +333,18 @@ class FileSystemTool(BaseTool):
         return f"\nThe most similar lines in the file are:\n{shown}"
 
     @staticmethod
+    def _lines_as_text(value: Any) -> Optional[str]:
+        """
+        Round 2k: W1 sent the whole file as 'lines' with 'write_with_lines' (2026-10-20 10:31 and 11:12) and was told
+        'content' is required. Text (or a list of text lines) given as 'lines' is the content; anything else is not.
+        """
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list) and value and all(isinstance(line, str) for line in value):
+            return "\n".join(line.rstrip("\n") for line in value) + "\n"
+        return None
+
+    @staticmethod
     def _content_required_error(action: str, received: Dict[str, Any]) -> Dict[str, Any]:
         """Round 1n: say which parameters arrived, so a model that sent the text under another name can correct itself."""
         names = ", ".join(sorted(str(k) for k in received.keys())) or "(none)"
@@ -367,7 +379,7 @@ class FileSystemTool(BaseTool):
                 kwargs["filename"] = single_name
         filename = _fo(kwargs.get("filename"), kwargs.get("filepath"), kwargs.get("file"), kwargs.get("path"), kwargs.get("file_path"), kwargs.get("file_name"), kwargs.get("target_file"), kwargs.get("name")) # Used by read, write, find_replace, regex_replace
         if isinstance(filename, str): filename = filename.strip()
-        content = _fo(kwargs.get("content"), kwargs.get("text"), kwargs.get("data"), kwargs.get("body"), kwargs.get("code"), kwargs.get("string"), kwargs.get("content_str"), kwargs.get("message_content"), kwargs.get("file_content"), kwargs.get("contents"), kwargs.get("line_content"), kwargs.get("file_contents")) # Used by write, append, insert_lines (Round 2d: 'line_content', sent by W1 with 'write_with_lines>')
+        content = _fo(kwargs.get("content"), kwargs.get("text"), kwargs.get("data"), kwargs.get("body"), kwargs.get("code"), kwargs.get("string"), kwargs.get("content_str"), kwargs.get("message_content"), kwargs.get("file_content"), kwargs.get("contents"), kwargs.get("line_content"), kwargs.get("file_contents"), self._lines_as_text(kwargs.get("lines"))) # Used by write, append, insert_lines (Round 2d: 'line_content', sent by W1 with 'write_with_lines>')
         relative_path = _fo(kwargs.get("path"), kwargs.get("filename"), kwargs.get("filepath"), kwargs.get("dir"), kwargs.get("directory"), kwargs.get("folder"), kwargs.get("target_dir")) # Used by list, mkdir, delete, copy, move
         if isinstance(relative_path, str): relative_path = relative_path.strip()
         destination_path = kwargs.get("destination_path") # Used by copy, move

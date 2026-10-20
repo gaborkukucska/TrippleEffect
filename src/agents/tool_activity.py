@@ -595,4 +595,67 @@ def trailing_monitoring_turns(history) -> int:
             break
     return count
 
+
+# --- Tools an agent may use in its state (Round 2k) ---------------------------------------------------------------------
+# 2026-10-20 10:19-11:03 (qwen3.5:9b): W1 was moved to worker_report and went on calling code_editor / file_system edits
+# there for 17 cycles. Only send_message, mark_message_read and project_management are OFFERED in worker_report and
+# worker_wait, but a call to another tool was still executed. PM1 (in pm_report_check) edited src/temp_convert.py itself
+# 6 times while W1 edited the same lines, so every edit of both was made against line numbers the other had just shifted.
+# A call the framework makes on an agent's behalf (e.g. the worker auto-save of code blocks) carries this argument; it is
+# removed before the tool runs and the state rules do not apply to it.
+FRAMEWORK_INTERNAL_ARG = "_framework_internal"
+REPORT_AND_WAIT_TOOLS = frozenset({"send_message", "mark_message_read", "project_management"})
+_STATE_TOOLS = {
+    ("worker", "worker_report"): REPORT_AND_WAIT_TOOLS,
+    ("worker", "worker_wait"): REPORT_AND_WAIT_TOOLS,
+}
+# file_system actions (and the aliases file_system accepts for them) that change, move or delete files
+FILE_CHANGE_ACTIONS = FILE_WRITE_ACTIONS | frozenset({
+    "write_file", "write_with_lines", "write_with_content", "write_content", "create_file", "create", "new_file",
+    "save_file", "save", "add_lines", "add_line", "insert_line", "replace_line", "delete", "delete_file", "remove_file",
+    "remove", "move", "move_file", "rename", "rename_file", "copy", "replace_chunks", "code_editor",
+})
+_CODE_EDITOR_LOOK_ACTIONS = CODE_EDITOR_READ_ACTIONS | FILE_READ_ACTIONS | frozenset({"read_file_content", "get_info"})
+
+
+def state_tool_allowlist(agent_type: Optional[str], state: Optional[str]) -> Optional[frozenset]:
+    """The only tools an agent of this type may call in this state, or None if the state does not restrict tools."""
+    return _STATE_TOOLS.get((str(agent_type or ""), str(state or "")))
+
+
+def is_file_change_call(tool_name: Optional[str], arguments: Any) -> bool:
+    """True for a file_system or code_editor call that writes, edits, moves or deletes a file."""
+    args = arguments if isinstance(arguments, dict) else _call_arguments({"arguments": arguments})
+    action = _clean_action(args)
+    if tool_name == "file_system":
+        return action in FILE_CHANGE_ACTIONS
+    if tool_name == "code_editor":
+        return action not in _CODE_EDITOR_LOOK_ACTIONS
+    return False
+
+
+def state_tool_block_message(agent_type: Optional[str], state: Optional[str], tool_name: Optional[str],
+                             arguments: Any) -> Optional[str]:
+    """
+    The reason a tool call must not run for this agent type and state (None if it may run):
+    * a worker in worker_report / worker_wait may only report (send_message, mark_message_read, project_management);
+    * a Project Manager never changes project files - the worker who owns the task does.
+    """
+    allowed = state_tool_allowlist(agent_type, state)
+    if allowed is not None and tool_name not in allowed:
+        return (
+            f"'{tool_name}' cannot be used in the '{state}' state, so NOTHING was done. Here you can only use: "
+            f"{', '.join(sorted(allowed))}. To keep working on your task, call the 'request_state' tool with "
+            "state='worker_work' and your task_id; to report, use send_message to your PM."
+        )
+    if str(agent_type or "") == "pm" and is_file_change_call(tool_name, arguments):
+        args = arguments if isinstance(arguments, dict) else _call_arguments({"arguments": arguments})
+        target = next((str(args[k]) for k in _PATH_KEYS if isinstance(args.get(k), str) and args.get(k).strip()), "a file")
+        return (
+            f"A Project Manager does not change project files, so this '{_clean_action(args) or tool_name}' on '{target}' "
+            "was NOT done. The worker who owns the task makes the change: use send_message to tell that worker exactly "
+            "what must change (or create/assign a task for it) and let the worker edit the file."
+        )
+    return None
+
 # END OF FILE src/agents/tool_activity.py

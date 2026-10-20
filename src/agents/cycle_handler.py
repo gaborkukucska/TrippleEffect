@@ -44,6 +44,7 @@ from src.workflows.base import WorkflowResult  # type: ignore[import]
 from src.agents.tool_activity import is_tool_result_failure, claims_project_complete, pm_standby_block_message  # type: ignore[import]
 from src.agents.tool_activity import ADMIN_WORK_TO_PLANNING_NOTE, last_user_text, project_request_needs_planning  # type: ignore[import]  # Round 2g
 from src.agents.assignable_work import assignment_hint_for  # type: ignore[import]  # Round 2h
+from src.agents.tool_activity import FRAMEWORK_INTERNAL_ARG  # type: ignore[import]  # Round 2k
 
 if TYPE_CHECKING:
     from src.agents.manager import AgentManager  # type: ignore[import]
@@ -2620,7 +2621,8 @@ class AgentCycleHandler:
                                                 agent=agent, # Pass the original agent for context
                                                 call_id="internal_auto_save",
                                                 tool_name="file_system",
-                                                tool_args={"action": "write_file", "filepath": filepath, "content": file_content},
+                                                tool_args={"action": "write_file", "filepath": filepath, "content": file_content,
+                                                           FRAMEWORK_INTERNAL_ARG: True},  # Round 2k: not the agent's own call
                                                 project_name=self._manager.current_project,
                                                 session_name=self._manager.current_session
                                             )

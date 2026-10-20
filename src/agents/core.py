@@ -19,6 +19,7 @@ from src.llm_providers.base import BaseLLMProvider, MessageDict, ToolResultDict
 
 # Import the parser function
 from src.agents.agent_tool_parser import find_and_parse_xml_tool_calls
+from src.agents.tool_activity import state_tool_allowlist  # Round 2k
 
 # --- Import status and state constants ---
 from src.agents.constants import (
@@ -330,9 +331,9 @@ class Agent:
                     if self.agent_type == AGENT_TYPE_WORKER:
                         if self.state == WORKER_STATE_DECOMPOSE and tool_name not in ['project_management', 'file_system', 'codebase_search', 'mark_message_read', 'send_message']:
                             continue
-                        if self.state == WORKER_STATE_REPORT and tool_name not in ['send_message', 'mark_message_read', 'project_management']:
-                            continue
-                        if self.state == WORKER_STATE_WAIT and tool_name not in ['send_message', 'mark_message_read', 'project_management']:
+                        # Round 2k: the same list the executor enforces (tool_activity.state_tool_allowlist)
+                        allowed_here = state_tool_allowlist(self.agent_type, self.state)
+                        if allowed_here is not None and tool_name not in allowed_here:
                             continue
                     elif self.agent_type == AGENT_TYPE_PM:
                         if self.state == PM_STATE_STARTUP:
