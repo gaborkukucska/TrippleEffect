@@ -22,6 +22,55 @@ DEFAULT_OLLAMA_PORT = 11434
 DEFAULT_VLLM_PORT = 8000
 DEFAULT_LITELLM_PORT = 4000 # Adjust if your LiteLLM default is different
 
+# --- Explicit Ollama URLs (Round 2l) -------------------------------------------------------------------------------------
+# 2026-10-20 13:08: the user set OLLAMA_API_URLS="https://oli.gaborkukucska.com" to run on a bigger machine, but the default
+# localhost:11434 was still checked and registered as 'ollama-local', and agents were spread round-robin over both
+# (Admin AI and PM1 on the slow local machine). Explicit Ollama URLs now REPLACE the default localhost Ollama, unless
+# OLLAMA_INCLUDE_LOCALHOST=true (or a localhost URL is listed explicitly).
+from urllib.parse import urlparse
+
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1"})
+
+
+def url_host_port(url: str) -> Tuple[str, int]:
+    """(lower-case host, port) of an http(s) URL; the port defaults to 443 for https and 80 for http."""
+    parsed = urlparse(url if "//" in url else f"http://{url}")
+    host = (parsed.hostname or "").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    return host, port or (443 if parsed.scheme == "https" else 80)
+
+
+def provider_suffix_for_host(host: str) -> str:
+    """The name suffix of a discovered provider: '127-0-0-1' for localhost, the dashed IP, or the dashed host name."""
+    host = (host or "").lower()
+    if host == "localhost":
+        return "127-0-0-1"
+    try:
+        return str(ipaddress.ip_address(host)).replace('.', '-').replace(':', '-')
+    except ValueError:
+        return re.sub(r"[^a-z0-9]+", "-", host).strip("-") or "unknown-host"
+
+
+def drop_default_localhost_ollama(urls: Set[str], explicit_ollama_urls: List[str], include_localhost: bool) -> Set[str]:
+    """
+    The URLs to verify without the default localhost Ollama (port 11434) when Ollama URLs are given explicitly and
+    localhost is not wanted. Localhost URLs that are themselves in the explicit list are kept.
+    """
+    if not explicit_ollama_urls or include_localhost:
+        return set(urls)
+    explicit = {url_host_port(url) for url in explicit_ollama_urls}
+    kept = set()
+    for url in urls:
+        host, port = url_host_port(url)
+        if host in _LOOPBACK_HOSTS and port == DEFAULT_OLLAMA_PORT and (host, port) not in explicit:
+            continue
+        kept.add(url)
+    return kept
+
+
 # --- NEW: TypedDict for ModelInfo ---
 from typing import TypedDict
 
@@ -148,14 +197,10 @@ class ModelRegistry:
         ip_suffix = "unknown-host" # Default
         host = "unknown"
         try:
-            if not base_url.startswith(('http://', 'https://')):
-                base_url_for_parse = f"http://{base_url}"
-            else:
-                base_url_for_parse = base_url
-            host = base_url_for_parse.split('//')[1].split('/')[0].split(':')[0]
-            if host.lower() == "localhost": ip_suffix = "127-0-0-1"
-            else: ip_obj = ipaddress.ip_address(host); ip_suffix = str(ip_obj).replace('.', '-')
-        except Exception as e: logger.warning(f"Could not parse IP from host '{host}' in base_url {base_url} for naming: {e}")
+            # Round 2l: a host name (https://oli.gaborkukucska.com) gives 'ollama-local-oli-gaborkukucska-com'
+            host = url_host_port(base_url)[0] or "unknown"
+            ip_suffix = provider_suffix_for_host(host)
+        except Exception as e: logger.warning(f"Could not parse the host in base_url {base_url} for naming: {e}")
 
         # 1. Try Ollama check first (/api/tags)
         ollama_check_url = f"{base_url}/api/tags"
@@ -351,6 +396,14 @@ class ModelRegistry:
                 urls_to_verify.add(f"http://localhost:{port}")
                 urls_to_verify.add(f"http://127.0.0.1:{port}")
 
+        # Round 2l: explicit Ollama URLs replace the default localhost Ollama unless OLLAMA_INCLUDE_LOCALHOST=true
+        include_localhost = bool(getattr(self.settings, "OLLAMA_INCLUDE_LOCALHOST", False))
+        before_drop = set(urls_to_verify)
+        urls_to_verify = drop_default_localhost_ollama(urls_to_verify, list(self.settings.OLLAMA_API_URLS), include_localhost)
+        if before_drop != urls_to_verify:
+            logger.info(f"OLLAMA_API_URLS is set, so the default localhost Ollama is not used ({sorted(before_drop - urls_to_verify)} "
+                        "skipped). Set OLLAMA_INCLUDE_LOCALHOST=true to use it as well.")
+
         network_scan_urls = set()
         if self.settings.LOCAL_API_SCAN_ENABLED:
             logger.info("Local API network scan is ENABLED. If you are on a large, restricted, or unreliable network (e.g., public WiFi), this scan may take a very long time or fail. Consider setting LOCAL_API_SCAN_ENABLED: false in your config.yaml and relying on direct localhost checks or manually specified provider URLs if issues occur.")
@@ -380,9 +433,7 @@ class ModelRegistry:
                         port_part = 0
                         canonical_service_id = ("unknown", 0)
                         try:
-                            host_part = verified_url.split('//')[1].split('/')[0].split(':')[0]
-                            port_part_str = verified_url.split(':')[-1].split('/')[0]
-                            port_part = int(port_part_str)
+                            host_part, port_part = url_host_port(verified_url)  # Round 2l: URLs without a port
                             is_loopback = host_part == "localhost" or host_part == "127.0.0.1"
                             if is_loopback:
                                 service_type = "unknown"

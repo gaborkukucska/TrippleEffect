@@ -103,6 +103,8 @@ class Settings:
         # --- Custom Local API URLs ---
         self.OLLAMA_API_URLS: List[str] = [url.strip() for url in os.getenv("OLLAMA_API_URLS", "").split(",") if url.strip()]
         self.VLLM_API_URLS: List[str] = [url.strip() for url in os.getenv("VLLM_API_URLS", "").split(",") if url.strip()]
+        # Round 2l: with OLLAMA_API_URLS set, the default localhost Ollama is only used when this is true
+        self.OLLAMA_INCLUDE_LOCALHOST: bool = os.getenv("OLLAMA_INCLUDE_LOCALHOST", "false").strip().lower() in ("1", "true", "yes", "on")
         # --- Load Multiple API Keys ---
         self.PROVIDER_API_KEYS: Dict[str, List[str]] = {}
         provider_key_pattern = re.compile(r"^([A-Z_]+)_API_KEY(?:_(\d+))?$")

@@ -44,6 +44,7 @@ from src.workflows.base import WorkflowResult  # type: ignore[import]
 from src.agents.tool_activity import is_tool_result_failure, claims_project_complete, pm_standby_block_message  # type: ignore[import]
 from src.agents.tool_activity import ADMIN_WORK_TO_PLANNING_NOTE, last_user_text, project_request_needs_planning  # type: ignore[import]  # Round 2g
 from src.agents.assignable_work import assignment_hint_for  # type: ignore[import]  # Round 2h
+from src.agents.assignable_work import worker_wait_block_message  # type: ignore[import]  # Round 2l
 from src.agents.tool_activity import FRAMEWORK_INTERNAL_ARG  # type: ignore[import]  # Round 2k
 
 if TYPE_CHECKING:
@@ -1382,6 +1383,20 @@ class AgentCycleHandler:
                         if standby_block:
                             logger.warning(f"CycleHandler: PM '{agent.agent_id}' standby request blocked: {standby_block[:120]}")
                             agent.message_history.append({"role": "system", "content": standby_block})
+                            context.needs_reactivation_after_cycle = True
+                            continue
+
+                        # Round 2l: a worker does not park in worker_wait while its own task is still open (2026-10-20 16:30-16:40)
+                        try:
+                            wait_block = worker_wait_block_message(
+                                self._manager, agent,
+                                self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state))
+                        except Exception as wait_guard_error:  # the guard must never break a state change
+                            logger.warning(f"CycleHandler: wait guard failed for '{agent.agent_id}': {wait_guard_error}")
+                            wait_block = None
+                        if wait_block:
+                            logger.warning(f"CycleHandler: Worker '{agent.agent_id}' wait request blocked: {wait_block[:120]}")
+                            agent.message_history.append({"role": "system", "content": wait_block})
                             context.needs_reactivation_after_cycle = True
                             continue
 

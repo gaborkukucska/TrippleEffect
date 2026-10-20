@@ -19,6 +19,9 @@ logging.info("manager.py: Imported database_manager.")
 
 logging.info("manager.py: Importing constants...")
 from src.agents.assignable_work import assignment_hint_for  # Round 2h
+# Round 2l: folders left out of the workspace file listing a worker gets when it is activated
+WORKSPACE_LISTING_SKIP_DIRS = frozenset({".git", "node_modules", "__pycache__", ".pytest_cache", ".venv", "venv",
+                                         ".mypy_cache", ".te_background", "dist", "build"})
 from src.agents.constants import (
     AGENT_STATUS_IDLE, AGENT_STATUS_ERROR, BOOTSTRAP_AGENT_ID, ADMIN_STATE_CONVERSATION,
     AGENT_TYPE_PM, AGENT_TYPE_WORKER, PM_STATE_WORK, PM_STATE_MANAGE, PM_STATE_STARTUP,
@@ -995,6 +998,10 @@ class AgentManager:
                 for item in sorted(workspace_path.rglob("*")):
                     if item.is_file():
                         rel = item.relative_to(workspace_path)
+                        # Round 2l: dependency, cache and framework folders are not the team's files (2026-10-20 16:29:
+                        # 2502 files, the 50 shown were node_modules and the project's own files were cut off)
+                        if set(rel.parts[:-1]) & WORKSPACE_LISTING_SKIP_DIRS:
+                            continue
                         file_list.append(str(rel))
                 if file_list:
                     workspace_listing = "\n\n[SHARED WORKSPACE FILES - already created by your team]\n" + "\n".join(f"  - {f}" for f in file_list[:50])

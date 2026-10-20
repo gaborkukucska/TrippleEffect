@@ -147,3 +147,73 @@ def assignment_hint_for(manager: Any, pm_agent: Any) -> Optional[str]:
     if tasks and worker_ids:
         return assignment_hint(tasks, worker_ids)
     return None
+
+
+# --- A worker that parks with its own open task (Round 2l) ----------------------------------------------------------------
+# 2026-10-20 16:30-16:40 (Browser_Snake_Game): W1 wrote README.md for Kick-off Task 6, reported "COMPLETED" to PM1 and
+# requested worker_wait 8 times without marking the task finished. Each time the watchdog saw its open task and started
+# it again a minute later, until PM1 marked the task finished itself. A worker that asks for worker_wait while one of its
+# own tasks is open and ready is now told to mark it finished first (twice per task at most, then the request is allowed).
+WORKER_WAIT_GUARD_TAG = "[Framework Wait Check]"
+MAX_WAIT_REFUSALS_PER_TASK = 2
+
+
+def own_open_ready_tasks(pending_tasks: Iterable[Any], worker_id: str) -> List[Any]:
+    """Pending tasks of this worker that are not finished/decomposed and do not wait for an unfinished dependency."""
+    result = []
+    for task in pending_tasks or []:
+        if str(get_task_field(task, "assignee", "") or "").strip() != worker_id:
+            continue
+        if str(get_task_field(task, "status", "pending")).strip().lower() != "pending":
+            continue
+        if str(get_task_field(task, "task_progress", "todo")).strip().lower() in _NOT_ASSIGNABLE_PROGRESS:
+            continue
+        if unfinished_dependencies(task):
+            continue
+        result.append(task)
+    return sorted(result, key=_order_key)
+
+
+def worker_wait_block_message(manager: Any, agent: Any, requested_state: Optional[str]) -> Optional[str]:
+    """
+    The message that refuses a worker's request for worker_wait while one of its own tasks is still open and ready, or
+    None (other agents and states, no such task, task store unreadable, or this task was refused twice already).
+    """
+    if getattr(agent, "agent_type", None) != AGENT_TYPE_WORKER or requested_state != WORKER_STATE_WAIT:
+        return None
+    try:
+        project = getattr(manager, "current_project", None)
+        session = getattr(manager, "current_session", None)
+        if not project or not session:
+            return None
+        from src.tools.project_management import ProjectManagementTool
+        tw = ProjectManagementTool()._get_taskwarrior_instance(project, session)
+        if tw is None:
+            return None
+        tasks = own_open_ready_tasks(list(tw.tasks.pending()), agent.agent_id)
+    except Exception as error:
+        logger.debug(f"worker_wait_block_message failed for '{getattr(agent, 'agent_id', '?')}': {error}")
+        return None
+    if not tasks:
+        return None
+    task = tasks[0]
+    uuid = str(get_task_field(task, "uuid", ""))
+    refusals = getattr(agent, "_wait_refusals", None)
+    if not isinstance(refusals, dict):
+        refusals = {}
+    if refusals.get(uuid, 0) >= MAX_WAIT_REFUSALS_PER_TASK:
+        return None
+    refusals[uuid] = refusals.get(uuid, 0) + 1
+    agent._wait_refusals = refusals
+    description = " ".join(str(get_task_field(task, "description", "")).split())
+    if len(description) > 100:
+        description = description[:97] + "..."
+    progress = str(get_task_field(task, "task_progress", "todo"))
+    finish_call = json.dumps({"action": "modify_task", "task_id": uuid, "task_progress": "finished"})
+    return (
+        f"{WORKER_WAIT_GUARD_TAG} You did NOT go to worker_wait: your task {uuid} ('{description}') is still '{progress}', "
+        "so it is not finished and you would be started on it again right away.\n"
+        f"- If the work is done: first call the `project_management` tool with exactly {finish_call} (the framework "
+        "checks your files), then request worker_wait.\n"
+        f"- If work remains: call the 'request_state' tool with state='worker_work' and task_id='{uuid}'."
+    )
