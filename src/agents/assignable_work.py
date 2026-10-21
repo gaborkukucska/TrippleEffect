@@ -217,3 +217,71 @@ def worker_wait_block_message(manager: Any, agent: Any, requested_state: Optiona
         "checks your files), then request worker_wait.\n"
         f"- If work remains: call the 'request_state' tool with state='worker_work' and task_id='{uuid}'."
     )
+
+
+# --- A PM that asks for the audit while work is open (Round 2p) -----------------------------------------------------------
+# 2026-10-21 18:10:09 (WiFi_Snake_Game_Multiplayer): PM1 requested pm_audit with 6 of 7 kick-off tasks open. Entering pm_audit
+# cleared its history; it listed the tasks, found nothing to audit and went back to pm_manage 3.5 minutes later. pm_audit is
+# for a finished project: the request is refused (twice per open-task count, then allowed) with the open tasks listed.
+PM_AUDIT_GUARD_TAG = "[Framework Audit Check]"
+MAX_AUDIT_REFUSALS = 2
+
+
+def open_project_tasks(pending_tasks: Iterable[Any], pm_id: Optional[str] = None) -> List[Any]:
+    """Pending tasks that are not finished or decomposed, without the kick-off task and tasks of the PM itself."""
+    result = []
+    for task in pending_tasks or []:
+        if str(get_task_field(task, "status", "pending")).strip().lower() != "pending":
+            continue
+        if str(get_task_field(task, "task_progress", "todo")).strip().lower() in _NOT_ASSIGNABLE_PROGRESS:
+            continue
+        if "project_kickoff" in _tags(task):
+            continue
+        if pm_id and str(get_task_field(task, "assignee", "") or "").strip() == pm_id:
+            continue
+        result.append(task)
+    return sorted(result, key=_order_key)
+
+
+def pm_audit_block_message(manager: Any, agent: Any, requested_state: Optional[str]) -> Optional[str]:
+    """The message refusing a PM's request for pm_audit while project tasks are open, or None."""
+    if getattr(agent, "agent_type", None) != "pm" or requested_state != "pm_audit":
+        return None
+    try:
+        project = getattr(manager, "current_project", None)
+        session = getattr(manager, "current_session", None)
+        if not project or not session:
+            return None
+        from src.tools.project_management import ProjectManagementTool
+        tw = ProjectManagementTool()._get_taskwarrior_instance(project, session)
+        if tw is None:
+            return None
+        tasks = open_project_tasks(list(tw.tasks.pending()), agent.agent_id)
+    except Exception as error:
+        logger.debug(f"pm_audit_block_message failed for '{getattr(agent, 'agent_id', '?')}': {error}")
+        return None
+    if not tasks:
+        return None
+    refusals = getattr(agent, "_audit_refusals", None)
+    if not isinstance(refusals, dict):
+        refusals = {}
+    if refusals.get(len(tasks), 0) >= MAX_AUDIT_REFUSALS:
+        return None
+    refusals[len(tasks)] = refusals.get(len(tasks), 0) + 1
+    agent._audit_refusals = refusals
+    lines = [f"{PM_AUDIT_GUARD_TAG} You did NOT go to pm_audit: {len(tasks)} project task(s) are still open, so the project is not "
+             "finished. pm_audit is only for verifying a FINISHED project. Stay in pm_manage: assign the ready tasks to idle "
+             "workers and wait for the workers' reports. Open tasks:"]
+    for task in tasks[:MAX_LISTED_TASKS]:
+        description = " ".join(str(get_task_field(task, "description", "")).split())
+        if len(description) > 90:
+            description = description[:87] + "..."
+        assignee = str(get_task_field(task, "assignee", "") or "").strip() or "nobody"
+        progress = str(get_task_field(task, "task_progress", "todo"))
+        lines.append(f"- {get_task_field(task, 'uuid', '')} ({progress}, assigned to {assignee}): {description}")
+    if len(tasks) > MAX_LISTED_TASKS:
+        lines.append(f"- ... and {len(tasks) - MAX_LISTED_TASKS} more.")
+    hint = assignment_hint_for(manager, agent)
+    if hint:
+        lines.append(hint)
+    return "\n".join(lines)

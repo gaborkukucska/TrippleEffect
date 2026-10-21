@@ -429,6 +429,12 @@ class AgentManager:
                 agents_snapshot = list(self.agents.values()) 
                 for agent in agents_snapshot:
                     try:
+                        # Round 2p: an agent whose cycle is running (e.g. while its history is summarized, status 'idle') is
+                        # not stalled. 2026-10-21 18:15-18:33: W1 got "[Framework Watchdog]: You were detected as IDLE..."
+                        # 5 times during summarization and 8 extra cycles were refused as "already running".
+                        cycle_lock = getattr(self, '_agent_cycle_locks', {}).get(agent.agent_id)
+                        if cycle_lock is not None and cycle_lock.locked():
+                            continue
                         if (agent.agent_type == AGENT_TYPE_PM and
                             agent.status == AGENT_STATUS_IDLE and
                             agent.state == PM_STATE_MANAGE and 

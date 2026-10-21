@@ -150,6 +150,20 @@ def effective_ollama_num_ctx(native_num_ctx: Any) -> int:
     return min(native, cap) if native > 0 else cap
 
 
+CONTINUE_AFTER_OWN_REPLY_NOTE = (
+    "[Framework Note]: It is your turn again. Continue with your next step now. If your last reply above described an "
+    "action, do it with a real tool call - text alone does not run anything."
+)
+
+
+def ends_with_assistant_message(messages: Any) -> bool:
+    """
+    Round 2p: True if a chat payload ends with an assistant message. Ollama then renders it as a prefill (qwen3.5 renderer:
+    prefill := lastMessage && role == 'assistant') and the model only continues it - usually with a single end token.
+    """
+    return bool(messages) and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant"
+
+
 RAW_TEMPLATES = ('{{ .Prompt }}', '{{ .Response }}', '{{ .System }}{{ .Prompt }}')
 _RAW_TEMPLATE_WARNED: set = set()
 
@@ -427,6 +441,14 @@ class OllamaProvider(BaseLLMProvider):
                 msg_to_send["tool_calls"] = ollama_tool_calls
                 
             messages_for_ollama_payload.append(msg_to_send)
+
+        # Round 2p: a history that ENDS with an assistant message is a "prefill" for Ollama - the model continues that
+        # finished message instead of starting a new reply and stops at once (2026-10-21 18:24:29: PM1 got 1 output token
+        # after its own text "...I should assign them immediately", counted as an empty reply 8 times in that run).
+        if ends_with_assistant_message(messages_for_ollama_payload):
+            messages_for_ollama_payload.append({"role": "user", "content": CONTINUE_AFTER_OWN_REPLY_NOTE})
+            logger.info(f"OllamaProvider: the history for '{model}' ended with an assistant message; added a continue note "
+                        "so the model starts a new reply instead of continuing its last one.")
 
         payload = { "model": model, "messages": messages_for_ollama_payload, "stream": self.streaming_mode, "options": valid_options }
         if think is not None:

@@ -709,7 +709,12 @@ class CodeEditorTool(BaseTool):
                 return {"status": "error", "message": f"Security restriction: The file at {abs_path} is outside the allowed {scope} path."}
 
             if not abs_path.is_file():
-                return {"status": "error", "message": f"File '{filename}' does not exist or is a directory."}
+                # Round 2p: 2026-10-21 18:19:03 W1 tried to create src/server.py with replace_chunks (start_line 1, end_line -1)
+                if abs_path.is_dir():
+                    return {"status": "error", "message": f"'{filename}' is a directory, not a file: code_editor edits files."}
+                return {"status": "error", "message": (
+                    f"File '{filename}' does not exist yet, so it cannot be edited. To CREATE it, call the file_system tool "
+                    f"with action='write', filename='{filename}' and the COMPLETE file content.")}
                 
             original_content = await asyncio.to_thread(abs_path.read_text, encoding="utf-8")
             

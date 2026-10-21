@@ -580,6 +580,42 @@ def _find_open_try(lines: List[str], error_line: int) -> int:
     return 0
 
 
+GENERIC_INDENT_HINT = "Hint: use 4 spaces per indentation level everywhere and no tabs; a block needs at least one indented line."
+
+
+def _leading_spaces(line: str) -> int:
+    return len(line) - len(line.lstrip(" \t"))
+
+
+def indentation_hint(lines: List[str], lineno: int, message: str) -> str:
+    """
+    Round 2p: a concrete hint for 'unexpected indent'. 2026-10-21 18:07-18:08 W1 sent src/server.py twice with
+        @app.route("/health")
+            return jsonify(...)
+    (the 'def health():' line was missing) and got only "use 4 spaces per indentation level"; it resent the same text.
+    """
+    try:
+        if "unexpected indent" not in str(message).lower() or not lineno or lineno > len(lines):
+            return GENERIC_INDENT_HINT
+        prev = lineno - 1
+        while prev >= 1 and (not lines[prev - 1].strip() or lines[prev - 1].strip().startswith("#")):
+            prev -= 1
+        if prev < 1:
+            return GENERIC_INDENT_HINT
+        prev_text = lines[prev - 1].strip()
+        if prev_text.startswith("@"):
+            return (f"Hint: line {prev} is a decorator (`{prev_text[:60]}`) but the `def ...:` line that must come right after "
+                    f"it is missing, so line {lineno} has no function to belong to. Write the def line (for example "
+                    f"`def health():`) directly below line {prev} and indent its body by 4 spaces.")
+        if not prev_text.rstrip().endswith(":") and _leading_spaces(lines[lineno - 1]) > _leading_spaces(lines[prev - 1]):
+            return (f"Hint: line {lineno} is indented more than line {prev}, but line {prev} does not end with ':' (it does not "
+                    f"open a block). Either a `def`/`if`/`for`/`with` line is missing above line {lineno}, or line {lineno} "
+                    f"must be indented like line {prev}.")
+        return GENERIC_INDENT_HINT
+    except Exception:
+        return GENERIC_INDENT_HINT
+
+
 def syntax_error_report(source: str, err: SyntaxError) -> str:
     """
     Human/LLM-friendly description of a SyntaxError: the message, the code around the faulty line and a hint.
@@ -606,7 +642,7 @@ def syntax_error_report(source: str, err: SyntaxError) -> str:
         elif "unterminated string" in low:
             parts.append("Hint: a string is missing its closing quote on that line.")
         elif "indent" in low:
-            parts.append("Hint: use 4 spaces per indentation level everywhere and no tabs; a block needs at least one indented line.")
+            parts.append(indentation_hint(lines, lineno, message))  # Round 2p: name the line that opens (or misses) the block
         elif "was never closed" in low:
             parts.append("Hint: that bracket or parenthesis is never closed.")
         elif "invalid character" in low or "invalid decimal literal" in low:

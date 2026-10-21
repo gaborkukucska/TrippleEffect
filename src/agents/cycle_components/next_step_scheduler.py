@@ -22,6 +22,28 @@ if TYPE_CHECKING:
     from src.agents.cycle_components.cycle_context import CycleContext
 
 from src.agents.tool_activity import is_unhandled_project_request, last_user_text  # Round 1r
+from src.agents.assignable_work import ASSIGNMENT_CHECK_TAG, assignment_hint_for  # Round 2p
+
+
+def forced_report_details(agent) -> str:
+    """
+    Round 2p: what a worker forced into worker_report after 3 failed cycles needs to know. 2026-10-21 18:08:45: W1's two
+    complete src/server.py versions were rejected for a syntax error; in worker_report it sent the write twice more (refused:
+    file_system is not allowed there) and only went back to work 7 minutes later.
+    """
+    from src.agents.tool_activity import is_tool_result_failure
+    last_error = ""
+    for msg in reversed(list(getattr(agent, "message_history", None) or [])):
+        if isinstance(msg, dict) and msg.get("role") == "tool" and is_tool_result_failure(msg.get("name"), msg.get("content")):
+            last_error = " ".join(str(msg.get("content") or "").split())[:400]
+            break
+    task_id = getattr(agent, "active_task_id", None) or getattr(agent, "current_task_id", None)
+    back = (f"call the 'request_state' tool with state='worker_work' and task_id='{task_id}'" if task_id
+            else "call the 'request_state' tool with state='worker_work' and your task_id")
+    details = f" In this state you can NOT change files: send your report with send_message, then {back} to continue the fix."
+    if last_error:
+        details += f" Your last error was: {last_error}"
+    return details
 
 logger = logging.getLogger(__name__)
 
@@ -266,6 +288,7 @@ class NextStepScheduler:
                             self._manager.workflow_manager.change_state(agent, WORKER_STATE_REPORT)
                             setattr(agent, '_consecutive_failed_cycles', 0)
                             override_msg = "[EMERGENCY SYSTEM OVERRIDE]: You have failed to execute tools successfully for 3 consecutive cycles. The framework has automatically transitioned you to the 'worker_report' state. You MUST now summarize the issues you encountered and report back to the PM."
+                            override_msg += forced_report_details(agent)  # Round 2p: the last error and the way back to work
                             agent.message_history.append({"role": "system", "content": override_msg})
                             if self._manager and hasattr(self._manager, 'db_manager') and self._manager.current_session_db_id:
                                 asyncio.create_task(self._manager.db_manager.log_interaction(session_id=self._manager.current_session_db_id, agent_id=agent.agent_id, role="system_emergency_override", content=override_msg))
@@ -349,7 +372,18 @@ class NextStepScheduler:
                     if idle_turns >= PM_MANAGE_MAX_IDLE_TURNS and hasattr(self._manager, 'workflow_manager'):
                         listing_status = pm_listing_status(agent.message_history, agent_id)
                         target_state, message = None, None
-                        if listing_status == "open" or idle_turns >= 2 * PM_MANAGE_MAX_IDLE_TURNS:
+                        # Round 2p: not to standby while a ready task waits for an idle worker (2026-10-21 18:20-18:31: PM1 was
+                        # parked 4 times although Kick-off Task 3 was ready and W2 idle; it was assigned 10 minutes late). The
+                        # PM is told the exact call once per pm_manage visit; after that the old rule applies.
+                        assignment_hint = None
+                        if listing_status == "open" and idle_turns < 2 * PM_MANAGE_MAX_IDLE_TURNS and not any(
+                                isinstance(m, dict) and ASSIGNMENT_CHECK_TAG in str(m.get("content", "")) for m in agent.message_history):
+                            assignment_hint = assignment_hint_for(self._manager, agent)
+                        if assignment_hint:
+                            agent.message_history.append({"role": "system", "content": assignment_hint})
+                            logger.warning(f"NextStepScheduler: PM '{agent_id}' made {idle_turns} monitoring-only turns, but a ready "
+                                           "task waits for an idle worker: NOT moved to standby; told which call assigns it.")
+                        elif listing_status == "open" or idle_turns >= 2 * PM_MANAGE_MAX_IDLE_TURNS:
                             target_state, message = PM_STATE_STANDBY, PM_IDLE_STANDBY_MESSAGE.format(turns=idle_turns)
                         elif listing_status == "done":
                             target_state, message = PM_STATE_AUDIT, PM_ALL_DONE_AUDIT_MESSAGE

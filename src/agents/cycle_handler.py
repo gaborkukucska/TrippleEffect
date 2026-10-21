@@ -45,6 +45,7 @@ from src.agents.tool_activity import is_tool_result_failure, claims_project_comp
 from src.agents.tool_activity import ADMIN_WORK_TO_PLANNING_NOTE, last_user_text, project_request_needs_planning  # type: ignore[import]  # Round 2g
 from src.agents.assignable_work import assignment_hint_for  # type: ignore[import]  # Round 2h
 from src.agents.assignable_work import worker_wait_block_message  # type: ignore[import]  # Round 2l
+from src.agents.assignable_work import pm_audit_block_message  # type: ignore[import]  # Round 2p
 from src.agents.tool_activity import FRAMEWORK_INTERNAL_ARG  # type: ignore[import]  # Round 2k
 from src.agents.tool_activity import call_imitation_notice  # type: ignore[import]  # Round 2o
 from src.agents.cg_escalation import KIND_REPLY, is_reviewed_reply, review_context  # type: ignore[import]  # Round 2o
@@ -1433,6 +1434,20 @@ class AgentCycleHandler:
                         if standby_block:
                             logger.warning(f"CycleHandler: PM '{agent.agent_id}' standby request blocked: {standby_block[:120]}")
                             agent.message_history.append({"role": "system", "content": standby_block})
+                            context.needs_reactivation_after_cycle = True
+                            continue
+
+                        # Round 2p: a PM does not go to pm_audit while project tasks are open (2026-10-21 18:10:09)
+                        try:
+                            audit_block = pm_audit_block_message(
+                                self._manager, agent,
+                                self._manager.workflow_manager.resolve_state_alias(agent.agent_type, requested_state))
+                        except Exception as audit_guard_error:  # the guard must never break a state change
+                            logger.warning(f"CycleHandler: audit guard failed for '{agent.agent_id}': {audit_guard_error}")
+                            audit_block = None
+                        if audit_block:
+                            logger.warning(f"CycleHandler: PM '{agent.agent_id}' audit request blocked: {audit_block[:120]}")
+                            agent.message_history.append({"role": "system", "content": audit_block})
                             context.needs_reactivation_after_cycle = True
                             continue
 

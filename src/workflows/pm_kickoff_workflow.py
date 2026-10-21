@@ -318,6 +318,27 @@ def _render_definitions(value: Any, indent: int = 0) -> List[str]:
     return [pad + str(value)]
 
 
+# Round 2p: 2026-10-21 18:01:07 the kickoff plan said "depends_on": ["task_1..6"] for the README task; the id was dropped as
+# unknown, so W2 wrote a 14 KB README for code that did not exist yet. A range of task ids is expanded.
+_TASK_RANGE_RE = re.compile(r"^(?P<prefix>[A-Za-z_]*?)(?P<start>\d+)\s*(?:\.\.\.?|-|\u2013|\bto\b|through)\s*(?P<prefix2>[A-Za-z_]*?)(?P<end>\d+)$",
+                            re.IGNORECASE)
+MAX_TASK_RANGE = 50
+
+
+def expand_task_range(token: str) -> List[str]:
+    """'task_1..6', 'task_1-task_6', 'task_1 to 6' -> ['task_1', ..., 'task_6']; anything else is returned unchanged."""
+    match = _TASK_RANGE_RE.match(str(token).strip())
+    if not match:
+        return [token]
+    prefix, prefix2 = match.group("prefix"), match.group("prefix2")
+    start, end = int(match.group("start")), int(match.group("end"))
+    if prefix2 and prefix2.lower() != prefix.lower():
+        return [token]
+    if end < start or end - start > MAX_TASK_RANGE:
+        return [token]
+    return [f"{prefix}{number}" for number in range(start, end + 1)]
+
+
 def render_project_structure_md(dirs: List[str], planned_files: List[str], code_base_definitions: Any = None,
                                 existing_files: Optional[List[str]] = None) -> str:
     """
@@ -761,8 +782,10 @@ class PMKickoffWorkflow(BaseWorkflow):
             tokens.extend(t.strip() for t in cleaned.split(",") if t.strip())
         kept: List[str] = []
         dropped: List[str] = []
-        for token in tokens:
+        for token in [t for raw_token in tokens for t in expand_task_range(raw_token)]:
             if token.lower() in ("none", "null"):
+                continue
+            if token in kept:
                 continue
             (kept if token in created_ids else dropped).append(token)
         return kept, dropped

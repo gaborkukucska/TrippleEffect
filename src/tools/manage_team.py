@@ -18,6 +18,30 @@ from src.agents.constants import (
 
 logger = logging.getLogger(__name__)
 
+# --- No Project Managers through create_agent (Round 2p) ------------------------------------------------------------------
+# 2026-10-21 18:32:13: after two Guardian stall reports about PM1, Admin AI called create_agent with target_agent_id 'PM2' and
+# role 'Project Manager (WiFi_Snake_Game_Multiplayer)'. create_agent only makes workers, so this became worker W3 with a PM
+# persona - one more agent on the single shared model, and nobody to give it work. PMs are created by project approval.
+import re as _re
+_PM_ROLE_RE = _re.compile(r"\bproject[\s_-]*manag(?:er|ement)\b|^\s*pm\s*\d*\s*$|\(@?pm_agent\)", _re.IGNORECASE)
+_PM_ID_RE = _re.compile(r"^\s*pm\d*\s*$", _re.IGNORECASE)
+PM_CREATE_REFUSAL = (
+    "Error: create_agent makes WORKER agents only, so NO agent was created. A Project Manager is created by the framework "
+    "when the user approves a project plan, and this project already has one. To help a stalled Project Manager, send it ONE "
+    "message with send_message that names the concrete next step (for example which task_id to assign to which idle worker)."
+)
+
+
+def looks_like_project_manager_request(params: Dict[str, Any]) -> bool:
+    """True if a create_agent call asks for a Project Manager (by role, persona or requested agent id)."""
+    for key in ("role", "persona", "agent_role", "name"):
+        value = params.get(key)
+        if isinstance(value, str) and _PM_ROLE_RE.search(value):
+            return True
+    target = params.get("target_agent_id") or params.get("agent_id")
+    return isinstance(target, str) and bool(_PM_ID_RE.match(target))
+
+
 # Define valid actions - Added get_agent_details and set_agent_state
 # --- Team id placeholders (Round 2h) --------------------------------------------------------------------------------------
 # 2026-10-19 21:38-21:47 (qwen3.5:9b): PM1 called create_team without team_id (rejected), then create_agent and list_agents
@@ -235,7 +259,9 @@ class ManageTeamTool(BaseTool):
             if not params.get("role"): missing.append("'role'")
             if not params.get("system_prompt"): missing.append("'system_prompt'")
             if not params.get("persona"): missing.append("'persona'")
-            if missing: 
+            if looks_like_project_manager_request(params):  # Round 2p
+                error_message = PM_CREATE_REFUSAL
+            elif missing: 
                 error_message = (
                     f"Error: Missing required parameter(s) for 'create_agent': {', '.join(missing)}.\n"
                     f"You MUST provide the 'role' explicitly based on your kickoff plan. Do not omit these required JSON fields.\n"

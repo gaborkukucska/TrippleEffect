@@ -20,6 +20,58 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+SUMMARY_MAX_TOKENS = 1000
+FALLBACK_SUMMARY_MAX_LINES = 30
+FALLBACK_TEXT_CHARS = 160
+
+
+def _short(text: Any, limit: int = FALLBACK_TEXT_CHARS) -> str:
+    flat = " ".join(str(text or "").split())
+    return flat if len(flat) <= limit else flat[:limit - 3] + "..."
+
+
+def fallback_chunk_summary(chunk: List[Dict[str, Any]]) -> str:
+    """
+    Round 2p: a summary of a history chunk without an LLM - what the agent called (tool, action, file) and what came back
+    (first line of each result), plus the last instruction it was given. Never empty.
+    """
+    lines: List[str] = []
+    for msg in chunk or []:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "assistant":
+            for call in msg.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                func = call.get("function") if isinstance(call.get("function"), dict) else call
+                args = func.get("arguments", call.get("arguments", {}))
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except (ValueError, TypeError):
+                        args = {}
+                details = []
+                if isinstance(args, dict):
+                    for key in ("action", "filename", "path", "task_id", "target_agent_id", "state", "command"):
+                        if args.get(key):
+                            details.append(f"{key}={_short(args[key], 60)}")
+                lines.append(f"- called {func.get('name') or call.get('name') or 'a tool'}({', '.join(details)})")
+            if not msg.get("tool_calls") and msg.get("content"):
+                lines.append(f"- said: {_short(msg.get('content'))}")
+        elif role == "tool":
+            first = next((line for line in str(msg.get("content") or "").splitlines() if line.strip()), "")
+            lines.append(f"  result: {_short(first)}")
+    instructions = [m for m in chunk or [] if isinstance(m, dict) and m.get("role") in ("user", "system")
+                    and isinstance(m.get("content"), str) and m["content"].strip()][1:]
+    if instructions:
+        lines.append(f"- last instruction: {_short(instructions[-1]['content'], 240)}")
+    if len(lines) > FALLBACK_SUMMARY_MAX_LINES:
+        tail = FALLBACK_SUMMARY_MAX_LINES - 6
+        lines = lines[:5] + [f"- ... ({len(lines) - 5 - tail} steps left out) ..."] + lines[-tail:]
+    return "Summary of earlier steps (made by the framework):\n" + ("\n".join(lines) if lines else "- no tool calls in this part")
+
+
 class ContextSummarizer:
     """Handles context summarization when token limits are exceeded."""
     
@@ -145,16 +197,18 @@ class ContextSummarizer:
             # Split context into two manageable chunks
             chunk1, chunk2 = self._split_context_into_chunks(message_history)
             
-            # Summarize each chunk separately using Constitutional Guardian
+            # Summarize each chunk separately using Constitutional Guardian. Round 2p: a chunk the model returns no summary
+            # for gets a summary built from its tool calls and results, so the history is still condensed (an empty
+            # summary used to abort the whole summarization, which was then retried - and failed again - every cycle).
             summary1 = await self._summarize_chunk(chunk1, 1, agent_id)
             if not summary1:
-                logger.error("Failed to summarize first context chunk")
-                return False, None
-                
-            summary2 = await self._summarize_chunk(chunk2, 2, agent_id) 
+                logger.warning("Failed to summarize first context chunk with the LLM; using the framework's summary of it.")
+                summary1 = fallback_chunk_summary(chunk1)
+
+            summary2 = await self._summarize_chunk(chunk2, 2, agent_id)
             if not summary2:
-                logger.error("Failed to summarize second context chunk")
-                return False, None
+                logger.warning("Failed to summarize second context chunk with the LLM; using the framework's summary of it.")
+                summary2 = fallback_chunk_summary(chunk2)
             
             # Create new condensed history
             condensed_history = self._create_condensed_history(
@@ -239,11 +293,15 @@ Please provide your summary as plain text (no XML tags needed for this summariza
             
             # Use the CG's LLM provider directly for summarization
             summary_chunks = []
+            # Round 2p: thinking off - with thinking on, qwen3.5 spent all 800 tokens thinking and returned no summary 14 times
+            # on 2026-10-21 (18:13-18:33), so W1 dragged a 20-26k token history through every cycle.
+            from src.llm_providers.ollama_provider import thinking_off_kwargs
             async with aclosing(cg_agent.llm_provider.stream_completion(
                 model=cg_agent.model,
                 messages=temp_history,
                 temperature=0.3,  # Lower temperature for more focused summaries
-                max_tokens=800    # Limit summary length
+                max_tokens=SUMMARY_MAX_TOKENS,
+                **thinking_off_kwargs(cg_agent.llm_provider)
             )) as stream:
                 async for response_chunk in stream:
                     if isinstance(response_chunk, dict) and response_chunk.get("type") == "response_chunk" and response_chunk.get("content"):
