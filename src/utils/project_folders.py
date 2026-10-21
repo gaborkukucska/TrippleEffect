@@ -206,4 +206,24 @@ def carry_over_note(project_name: str, from_session: str, copied: List[str]) -> 
         + "Plan the work ON TOP of these files: tasks change or extend them instead of creating them again."
     )
 
+
+# --- Round 2s: the choice typed in the chat ------------------------------------------------------------------------------------
+# 2026-10-21 20:15:26 the approval click reached the server without a choice (the browser still ran an old cached copy of the
+# page scripts); the chat said "choose 'continue' ... or 'new'", the user TYPED "continue", and that went to Admin AI as an
+# ordinary message: Admin started "investigating" an empty workspace, wrote a second plan, and a second PM was created.
+_CHOICE_RE = re.compile(
+    r"^(?:please[\s,]+)?"
+    r"(?:(?P<cont>continue(?:\s+(?:it|the\s+project|project|existing(?:\s+project)?|the\s+existing(?:\s+one|\s+project)?))?)"
+    r"|(?P<new>(?:start\s+(?:a\s+|it\s+as\s+a\s+)?)?new(?:\s+(?:project|one))?))"
+    r"(?:[\s,]+(?:please|thanks|thank\s+you))?[\s.!]*$",
+    re.IGNORECASE)
+
+
+def approval_choice_from_text(text: Optional[str]) -> Optional[str]:
+    """'continue' or 'new' if the whole text is that choice ("continue", "Start new project!", "new please"), else None."""
+    match = _CHOICE_RE.match(str(text or "").strip())
+    if not match:
+        return None
+    return "continue" if match.group("cont") else "new"
+
 # END OF FILE src/utils/project_folders.py

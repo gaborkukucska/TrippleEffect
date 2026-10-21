@@ -404,6 +404,20 @@ async def load_specific_session(
         raise HTTPException(status_code=500, detail=f"Unexpected error loading session: {e}")
 
 
+async def tell_user_in_chat(manager: Any, text: str, note_for_admin: bool = True) -> None:
+    """
+    Round 2p: an Admin AI line in the main chat (no LLM call), and optionally a note in Admin AI's history so it knows what
+    happened. Used for the outcome of a project approval.
+    """
+    try:
+        await manager.send_to_ui({"type": "final_response", "agent_id": BOOTSTRAP_AGENT_ID, "content": text})
+        admin_agent = getattr(manager, "agents", {}).get(BOOTSTRAP_AGENT_ID)
+        if note_for_admin and admin_agent is not None:
+            admin_agent.message_history.append({"role": "system", "content": f"[Framework Note]: {text}"})
+    except Exception as err:  # telling the user must never break the approval
+        logger.warning(f"Could not tell the user about the approval: {err}")
+
+
 # --- NEW: Project Approval Endpoint ---
 @router.post("/api/projects/approve/{pm_agent_id}", response_model=GeneralResponse)
 async def approve_project_start(
@@ -437,9 +451,20 @@ async def approve_project_start(
         existing_project = getattr(agent_to_start, '_existing_project_info', None)
         approval_mode = str(mode or "").strip().lower()
         if existing_project and approval_mode not in ("continue", "new"):
-            raise HTTPException(status_code=409, detail=(
-                f"A project named '{existing_project.get('name')}' already exists: choose 'continue' (carry its latest files over) "
-                f"or 'new' (start it as '{existing_project.get('suggested_new_name')}')."))
+            choice_text = (f"A project named '{existing_project.get('name')}' already exists: choose 'continue' (carry its latest files over) "
+                           f"or 'new' (start it as '{existing_project.get('suggested_new_name')}').")
+            # Round 2p: say it in the chat and show the card with both choices again (2026-10-21 18:57:57 the refusal only
+            # reached Internal Comms, so the user could not decide)
+            card = getattr(agent_to_start, '_approval_card', None)
+            if isinstance(card, dict):
+                await manager.send_to_ui(dict(card))
+            # Round 2s: the card has a button for each choice, so a click without one came from an old cached copy of the
+            # page; and a typed "continue" / "new" is taken as the choice (AgentManager._apply_typed_approval_choice)
+            await tell_user_in_chat(manager, (
+                f"{choice_text} Use the 'Continue existing project' or 'Start new project' button on the approval card, or "
+                "type continue or new here. If the card shows only one button, your browser is still running an old copy "
+                "of the page: reload it once with Ctrl+Shift+R."), note_for_admin=False)
+            raise HTTPException(status_code=409, detail=choice_text)
 
         # Clear the approval flag before scheduling
         agent_to_start._awaiting_project_approval = False
@@ -511,12 +536,14 @@ async def approve_project_start(
         asyncio.create_task(manager.schedule_cycle(agent_to_start))
 
         # Send confirmation to UI
+        approved_text = (f"Project '{pm_project_name}' managed by '{pm_agent_id}' approved and started"
+                         + (" (continuing the existing project)." if carry_over else " (as a new project)." if approval_mode == "new" and existing_project else "."))
         await manager.send_to_ui({
             "type": "project_approved",
             "pm_agent_id": pm_agent_id,
-            "message": (f"Project '{pm_project_name}' managed by '{pm_agent_id}' approved and started"
-                        + (" (continuing the existing project)." if carry_over else " (as a new project)." if approval_mode == "new" and existing_project else "."))
+            "message": approved_text
         })
+        await tell_user_in_chat(manager, approved_text)  # Round 2p: the real outcome, in the chat and in Admin AI's history
 
         return GeneralResponse(success=True, message=f"Project managed by '{pm_agent_id}' approved and started.")
 

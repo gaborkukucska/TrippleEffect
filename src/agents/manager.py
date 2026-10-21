@@ -324,6 +324,10 @@ class AgentManager:
                 logger.warning(f"Manager: Approval message referenced PM '{pm_agent_id_from_message}' but no such agent exists. Passing to Admin AI for normal handling.")
                 # Fall through to default handling below
 
+        # Round 2s: "continue" / "new" typed while a plan waits for the existing-project choice is that choice
+        if await self._apply_typed_approval_choice(message):
+            return
+
         # Default message handling for Admin AI
         if admin_agent.status == AGENT_STATUS_IDLE:
             admin_agent.message_history.append({"role": "user", "content": message})
@@ -337,6 +341,44 @@ class AgentManager:
                 "agent_id": admin_agent.agent_id,
                 "content": f"Admin AI is currently {admin_agent.status}. Your message ('{message[:50]}...') has been queued."
             })
+
+    def pending_approval_pms(self, project_name: Optional[str] = None) -> List[Agent]:
+        """Round 2s: PMs whose project plan was never approved (still idle in pm_startup), optionally of one project."""
+        pending = []
+        for agent in list(self.agents.values()):
+            if (getattr(agent, 'agent_type', None) == AGENT_TYPE_PM and getattr(agent, '_awaiting_project_approval', False)
+                    and getattr(agent, 'state', None) == PM_STATE_STARTUP and getattr(agent, 'status', None) == AGENT_STATUS_IDLE):
+                config = (getattr(agent, 'agent_config', None) or {}).get("config", {})
+                if project_name is None or config.get("project_name_context") == project_name:
+                    pending.append(agent)
+        return pending
+
+    async def _apply_typed_approval_choice(self, message: str) -> bool:
+        """
+        Round 2s: 2026-10-21 20:15:59 the user typed "continue" after the chat asked "choose 'continue' ... or 'new'"; it went
+        to Admin AI, which then worked in an empty workspace and planned the project a second time. When exactly one plan
+        waits for the existing-project choice, a message that is only that choice approves it. Returns True if it did.
+        """
+        from src.utils.project_folders import approval_choice_from_text
+        choice = approval_choice_from_text(message)
+        if not choice:
+            return False
+        waiting = [pm for pm in self.pending_approval_pms() if getattr(pm, '_existing_project_info', None)]
+        if len(waiting) != 1:
+            return False  # nothing to choose for (an ordinary "continue"), or ambiguous: Admin AI answers
+        pm_agent = waiting[0]
+        logger.info(f"Manager: the user typed '{message.strip()}': approving the plan of '{pm_agent.agent_id}' with choice '{choice}'.")
+        # imported here: the API module imports this module
+        from fastapi import HTTPException
+        from src.api.http_routes import approve_project_start, tell_user_in_chat
+        try:
+            await approve_project_start(pm_agent.agent_id, mode=choice, manager=self)
+        except HTTPException as err:
+            await tell_user_in_chat(self, f"The project of {pm_agent.agent_id} was not started: {err.detail}", note_for_admin=False)
+        except Exception as err:  # the user must hear about it, the chat must go on
+            logger.error(f"Manager: approving '{pm_agent.agent_id}' with the typed choice failed: {err}", exc_info=True)
+            await tell_user_in_chat(self, f"The project of {pm_agent.agent_id} was not started: {err}", note_for_admin=False)
+        return True
 
     async def handle_agent_model_failover(self, agent_id: str, last_error_obj: Exception) -> bool:
         return await handle_agent_model_failover(self, agent_id, last_error_obj)

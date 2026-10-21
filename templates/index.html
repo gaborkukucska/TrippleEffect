@@ -245,7 +245,29 @@
         </div>
     </div>
 
-    <!-- *** UPDATED SCRIPT TAG *** -->
-    <script type="module" src="/static/js/main.js?v=2"></script>
+    <!-- Round 2s: every page script is loaded under a versioned URL. The modules import each other as './api.js' etc.;
+         this map turns those into '?v=4' URLs, so a browser can never mix new modules with old cached copies (2026-10-21
+         20:15:26 the approval click came from an old cached script and sent no 'continue' / 'new' choice).
+         Raise the version here (all entries and main.js) whenever the scripts change. -->
+    <script type="importmap">
+    {
+        "imports": {
+            "/static/js/api.js": "/static/js/api.js?v=4",
+            "/static/js/auth.js": "/static/js/auth.js?v=4",
+            "/static/js/chatPersistence.js": "/static/js/chatPersistence.js?v=4",
+            "/static/js/config.js": "/static/js/config.js?v=4",
+            "/static/js/configView.js": "/static/js/configView.js?v=4",
+            "/static/js/domElements.js": "/static/js/domElements.js?v=4",
+            "/static/js/handlers.js": "/static/js/handlers.js?v=4",
+            "/static/js/main.js": "/static/js/main.js?v=4",
+            "/static/js/session.js": "/static/js/session.js?v=4",
+            "/static/js/state.js": "/static/js/state.js?v=4",
+            "/static/js/ui.js": "/static/js/ui.js?v=4",
+            "/static/js/utils.js": "/static/js/utils.js?v=4",
+            "/static/js/websocket.js": "/static/js/websocket.js?v=4"
+        }
+    }
+    </script>
+    <script type="module" src="/static/js/main.js?v=4"></script>
 </body>
 </html>

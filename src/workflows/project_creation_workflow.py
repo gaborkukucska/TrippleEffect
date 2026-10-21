@@ -231,8 +231,9 @@ class ProjectCreationWorkflow(BaseWorkflow):
             )
 
             if isinstance(task_result, dict) and task_result.get("status") == "success":
-                task_id_val = task_result.get("task_id", "N/A") 
+                task_id_val = task_result.get("task_id", "N/A")
                 task_uuid_val = task_result.get("task_uuid", "N/A")
+                pm_agent_for_sandbox._kickoff_task_uuid = task_result.get("task_uuid")  # Round 2s: removed if the plan is replaced
                 task_creation_success = True
                 task_creation_details = f"Initial 'Project Kick-off' task (ID: {task_id_val}, UUID: {task_uuid_val}) created and assigned to PM '{pm_agent_id}'."
                 logger.info(f"ProjectCreationWorkflow Task Create (Success): {task_creation_details}")
@@ -259,6 +260,12 @@ class ProjectCreationWorkflow(BaseWorkflow):
             final_message = f"Project creation failed for '{project_title}'. PM agent creation status: {pm_creation_message}. Task creation status: {task_creation_details}"
 
 
+        # Round 2s: a new plan for the same project replaces an earlier plan the user never approved (2026-10-21 20:18:54 the
+        # second plan made PM2 next to the unapproved PM1)
+        replaced = await self._replace_unapproved_plans(manager, project_title, pm_agent_id) if pm_creation_success else []
+        if replaced:
+            final_message += f" It replaces the earlier plan of {', '.join(replaced)} (never approved; removed)."
+
         if existing_project:
             final_message += (
                 f" NOTE: a project named '{project_title}' already exists ({len(existing_project['sessions'])} earlier "
@@ -267,10 +274,14 @@ class ProjectCreationWorkflow(BaseWorkflow):
                 f"'{existing_project['suggested_new_name']}'. Tell the user about this choice."
             )
             # Admin AI gets no workflow result message in its history, so it is told here (it may be asked about it)
+            # Round 2s: + that the choice is the user's and the framework applies it (20:15:59 Admin AI took the user's
+            # "continue" as an order to continue the project ITSELF)
             agent.message_history.append({"role": "system", "content": (
                 f"[Framework Note]: A project named '{project_title}' already existed (latest session "
                 f"'{existing_project['latest_session']}'). The user's approval card asks whether to CONTINUE it (its latest "
-                f"files are carried over) or to start this plan as the NEW project '{existing_project['suggested_new_name']}'.")})
+                f"files are carried over) or to start this plan as the NEW project '{existing_project['suggested_new_name']}'. "
+                "The user answers with the card's buttons (or by typing continue or new); the framework then starts the "
+                "project. You do NOT start, investigate or plan it again yourself.")})
 
         ui_message_data = {
             "type": "project_pending_approval", "project_title": project_title,
@@ -278,6 +289,9 @@ class ProjectCreationWorkflow(BaseWorkflow):
             "message": f"Project '{project_title}' (PM: {pm_agent_id}) has been planned. {task_creation_details} Please approve to start.",
             "existing_project": existing_project,  # Round 2o: None, or the earlier sessions of a project with this name
         }
+        pending_pm = manager.agents.get(pm_agent_id) if pm_agent_id else None
+        if pending_pm is not None:
+            pending_pm._approval_card = ui_message_data  # Round 2p: shown again if the approval needs the user's choice
         
         logger.info(f"ProjectCreationWorkflow result: Success={overall_success}, Message: {final_message}")
         
@@ -289,3 +303,43 @@ class ProjectCreationWorkflow(BaseWorkflow):
             next_agent_status=AGENT_STATUS_IDLE,
             ui_message_data=ui_message_data
         )
+
+
+    async def _replace_unapproved_plans(self, manager: 'AgentManager', project_title: str, new_pm_id: Optional[str]) -> list:
+        """
+        Round 2s: removes the PMs of earlier plans for the same project that the user never approved (and their kick-off
+        tasks), so one project has one waiting plan. Returns the removed PM ids. Never raises.
+        """
+        pending_of = getattr(manager, "pending_approval_pms", None)
+        if not callable(pending_of):
+            return []
+        replaced = []
+        for old_pm in pending_of(project_title):
+            if old_pm.agent_id == new_pm_id:
+                continue
+            kickoff_uuid = getattr(old_pm, "_kickoff_task_uuid", None)
+            if kickoff_uuid:
+                try:
+                    await manager.tool_executor.execute_tool(
+                        agent_id="framework", agent_sandbox_path=old_pm.sandbox_path, tool_name="project_management",
+                        tool_args={"action": "modify_task", "task_id": kickoff_uuid, "task_progress": "deleted"},
+                        project_name=project_title, session_name=manager.current_session, manager=manager)
+                except Exception as err:
+                    logger.warning(f"ProjectCreationWorkflow: could not remove the kick-off task of replaced plan '{old_pm.agent_id}': {err}")
+            try:
+                deleted, detail = await manager.delete_agent_instance(old_pm.agent_id)
+            except Exception as err:
+                deleted, detail = False, str(err)
+            if deleted:
+                replaced.append(old_pm.agent_id)
+                logger.info(f"ProjectCreationWorkflow: the new plan for '{project_title}' replaces the unapproved plan of '{old_pm.agent_id}'.")
+            else:
+                logger.warning(f"ProjectCreationWorkflow: could not remove the replaced PM '{old_pm.agent_id}': {detail}")
+        if replaced:
+            text = (f"The new plan for '{project_title}' replaces the earlier plan of {', '.join(replaced)}, which was never "
+                    "approved: use the approval card of the new plan.")
+            try:
+                await manager.send_to_ui({"type": "system_event", "agent_id": "system", "message": text, "content": text})
+            except Exception as err:
+                logger.debug(f"ProjectCreationWorkflow: UI notice failed: {err}")
+        return replaced

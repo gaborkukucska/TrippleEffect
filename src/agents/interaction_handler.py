@@ -311,6 +311,16 @@ class AgentInteractionHandler:
             logger.warning(f"InteractionHandler: {error_msg}")
             return {"status": "error", "message": f"[Manager Feedback for SendMessage]: {error_msg}"}, None
 
+        # Round 2s: a PM whose plan the user has not approved yet must not start. 2026-10-21 20:17:26 Admin AI's question to the
+        # unapproved PM1 moved it to pm_report_check and then pm_manage: it "managed" a project that did not exist yet.
+        if target_agent.agent_type == AGENT_TYPE_PM and getattr(target_agent, '_awaiting_project_approval', False):
+            refusal = (f"[Manager Feedback for SendMessage]: NOTHING was delivered: '{resolved_target_id}' has not started yet, "
+                       "because its project plan is waiting for the user's approval on the approval card. The framework "
+                       "starts it when the user approves. Do not message it, do not start the work yourself and do not "
+                       "plan the project again; tell the user that the plan waits for their approval if they ask.")
+            logger.info(f"InteractionHandler: message from '{sender_id}' to '{resolved_target_id}' refused: the PM awaits project approval.")
+            return {"status": "error", "message": refusal}, None
+
         import time
         message_id = f"msg_{int(time.time() * 1000)}_{sender_id}"
         formatted_message: MessageDict = { 

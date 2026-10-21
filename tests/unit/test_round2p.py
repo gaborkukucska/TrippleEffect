@@ -402,4 +402,135 @@ def test_code_editor_on_a_missing_file_says_how_to_create_it(tmp_path):
                                           chunks=[{"start_line": 1, "end_line": 1, "search": "", "replace": "x"}]))
     assert result["message"] == "'src' is a directory, not a file: code_editor edits files."
 
+# ======================================================================================== 8. the approval card (18:57 run)
+# 2026-10-21 18:57:57: the browser still ran the old handlers.js (one "Approve Project Start" button), the approval was
+# refused with 409 "choose 'continue' or 'new'" - shown only in Internal Comms - while the chat said "Project approved. PM PM1
+# will proceed."
+def test_static_files_are_revalidated(tmp_path):
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+    from src.main import RevalidatingStaticFiles
+    (tmp_path / "js").mkdir()
+    (tmp_path / "js" / "handlers.js").write_text("export const x = 1;\n")
+    app = Starlette()
+    app.mount("/static", RevalidatingStaticFiles(directory=tmp_path), name="static")
+    client = TestClient(app)
+    first = client.get("/static/js/handlers.js")
+    assert first.status_code == 200 and first.headers["cache-control"] == "no-cache"
+    again = client.get("/static/js/handlers.js", headers={"if-none-match": first.headers["etag"]})
+    assert again.status_code == 304 and again.headers["cache-control"] == "no-cache"
+
+
+def test_the_echoed_approve_command_no_longer_claims_approval():
+    from unittest.mock import AsyncMock
+    from src.agents.manager import AgentManager
+    admin = types.SimpleNamespace(agent_id="admin_ai", status="idle", message_history=[{"role": "system", "content": "p"}])
+    pm = types.SimpleNamespace(agent_id="PM1", _awaiting_project_approval=True)
+    manager = object.__new__(AgentManager)
+    manager.agents = {"admin_ai": admin, "PM1": pm}
+    manager.current_project, manager.current_session_db_id = "DefaultProject", None
+    manager.set_project_session_context = AsyncMock()
+    manager.send_to_ui = AsyncMock()
+    manager.schedule_cycle = AsyncMock()
+    run(manager.handle_user_message("approve project PM1"))
+    manager.send_to_ui.assert_not_awaited()
+    manager.schedule_cycle.assert_not_awaited()
+    assert admin.message_history == [{"role": "system", "content": "p"}]
+
+
+def _approval_setup(tmp_path, monkeypatch, existing):
+    from src.config.settings import settings
+    monkeypatch.setattr(settings, "PROJECTS_BASE_DIR", tmp_path / "projects")
+    card = {"type": "project_pending_approval", "project_title": "WiFi_Snake_Game_Multiplayer", "pm_agent_id": "PM1",
+            "plan_content": "Build it.", "existing_project": existing}
+    pm = types.SimpleNamespace(
+        agent_id="PM1", status="idle", state="pm_startup", _awaiting_project_approval=True, _existing_project_info=existing,
+        _approval_card=card, message_history=[], persona="Project Manager (WiFi_Snake_Game_Multiplayer)",
+        agent_config={"config": {"project_name_context": "WiFi_Snake_Game_Multiplayer", "session_name": "startup_1792580217",
+                                 "persona": "Project Manager (WiFi_Snake_Game_Multiplayer)", "initial_plan_description": "Build it."}})
+    admin = types.SimpleNamespace(agent_id="admin_ai", message_history=[])
+    ui, scheduled = [], []
+
+    async def set_context(project, session, loading=False):
+        return None
+
+    async def send_to_ui(payload):
+        ui.append(payload)
+
+    async def schedule_cycle(agent, retry_count=0):
+        scheduled.append(agent.agent_id)
+    manager = types.SimpleNamespace(agents={"PM1": pm, "admin_ai": admin}, current_session="startup_1792580217",
+                                    set_project_session_context=set_context, send_to_ui=send_to_ui, schedule_cycle=schedule_cycle)
+    return manager, pm, admin, ui, scheduled, card
+
+
+def _approve(manager, mode):
+    from src.api.http_routes import approve_project_start
+
+    async def go():
+        result = await approve_project_start("PM1", mode, manager)
+        await asyncio.sleep(0)
+        return result
+    return run(go())
+
+
+EXISTING = {"name": "WiFi_Snake_Game_Multiplayer", "latest_session": "startup_1792576742",
+            "suggested_new_name": "WiFi_Snake_Game_Multiplayer_2",
+            "sessions": [{"name": "startup_1792576742", "files": 7, "last_changed": "2026-10-21T18:33"}]}
+
+
+def test_a_missing_choice_is_asked_in_the_chat_with_the_card_again(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+    manager, pm, admin, ui, scheduled, card = _approval_setup(tmp_path, monkeypatch, EXISTING)
+    with pytest.raises(HTTPException) as refused:
+        _approve(manager, None)
+    assert refused.value.status_code == 409 and pm._awaiting_project_approval is True and scheduled == []
+    assert ui[0] == card and ui[0] is not card                                        # the card with both choices again
+    assert ui[1]["type"] == "final_response" and ui[1]["agent_id"] == "admin_ai"
+    assert ui[1]["content"].startswith("A project named 'WiFi_Snake_Game_Multiplayer' already exists: choose 'continue'")
+    # Round 2s: + typing the choice, and the hint about an old cached copy of the page
+    assert ui[1]["content"].endswith("Use the 'Continue existing project' or 'Start new project' button on the approval card, "
+                                     "or type continue or new here. If the card shows only one button, your browser is still "
+                                     "running an old copy of the page: reload it once with Ctrl+Shift+R.")
+    assert admin.message_history == []
+
+
+def test_the_real_outcome_is_told_in_the_chat_and_noted_for_admin(tmp_path, monkeypatch):
+    manager, pm, admin, ui, scheduled, card = _approval_setup(tmp_path, monkeypatch, EXISTING)
+    _approve(manager, "new")
+    text = "Project 'WiFi_Snake_Game_Multiplayer_2' managed by 'PM1' approved and started (as a new project)."
+    assert ui[-1] == {"type": "final_response", "agent_id": "admin_ai", "content": text}
+    assert ui[-2]["type"] == "project_approved" and ui[-2]["message"] == text and scheduled == ["PM1"]
+    assert admin.message_history == [{"role": "system", "content": f"[Framework Note]: {text}"}]
+
+
+def test_the_creation_workflow_keeps_the_card_on_the_pm(tmp_path, monkeypatch):
+    from src.config.settings import settings
+    from src.workflows.project_creation_workflow import ProjectCreationWorkflow
+    base = tmp_path / "projects"
+    (base / "WiFi_Snake_Game_Multiplayer" / "startup_1792576742" / "shared_workspace").mkdir(parents=True)
+    (base / "WiFi_Snake_Game_Multiplayer" / "startup_1792576742" / "shared_workspace" / "README.md").write_text("# old\n")
+    monkeypatch.setattr(settings, "PROJECTS_BASE_DIR", base)
+    admin = types.SimpleNamespace(agent_id="admin_ai", agent_type="admin", state="planning", message_history=[])
+
+    async def create_agent_instance(agent_id_requested, **kwargs):
+        pm = types.SimpleNamespace(agent_id=agent_id_requested, status="idle", state=None, message_history=[],
+                                   sandbox_path=tmp_path / "sandbox", **kwargs)
+        manager.agents[agent_id_requested] = pm
+        return True, "created", agent_id_requested
+
+    async def execute_tool(**kwargs):
+        return {"status": "success", "task_id": 1, "task_uuid": "21bdc9a9-2f7b-4984-abd3-e87522d4bd30"}
+    manager = types.SimpleNamespace(
+        agents={"admin_ai": admin}, current_project="DefaultProject", current_session="startup_1792580217",
+        current_session_db_id=None, create_agent_instance=create_agent_instance,
+        workflow_manager=types.SimpleNamespace(change_state=lambda agent, state: setattr(agent, "state", state)),
+        tool_executor=types.SimpleNamespace(execute_tool=execute_tool))
+    result = run(ProjectCreationWorkflow().execute(manager, admin, {"title": "WiFi Snake Game Multiplayer",
+                                                                     "_raw_plan_body_": "**Objective:** a WiFi snake game"}))
+    pm = manager.agents["PM1"]
+    assert result.success and pm._approval_card == result.ui_message_data
+    assert pm._approval_card["existing_project"]["suggested_new_name"] == "WiFi_Snake_Game_Multiplayer_2"
+    assert pm._existing_project_info["latest_session"] == "startup_1792576742"
+
 # END OF FILE tests/unit/test_round2p.py
