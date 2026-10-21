@@ -38,7 +38,8 @@ class AgentStateManager:
             logger.error("Create team failed: Team ID cannot be empty.")
             return False, "Team ID cannot be empty."
         if team_id in self.teams:
-            logger.warning(f"Create team request: Team '{team_id}' already exists.")
+            # Round 2r: info, not a warning - creating an agent confirms its creator's team this way every time
+            logger.info(f"Create team request: Team '{team_id}' already exists; nothing to do.")
             return True, f"Team '{team_id}' already exists."
             # --- END MODIFICATION ---
 

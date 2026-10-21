@@ -126,7 +126,10 @@ class AgentManager:
         # Round 2o: Constitutional Guardian concerns climb worker -> PM -> Admin AI -> user (full pause only at the user)
         from src.agents.cg_escalation import CGEscalation
         self.cg_escalation = CGEscalation(self)
-        
+        # Round 2r: the watchdog resumes agents left in the 'error' status (src/agents/error_recovery.py)
+        from src.agents.error_recovery import ErrorRecovery
+        self.error_recovery = ErrorRecovery(self)
+
         logger.info("AgentManager __init__: Instantiating LoopCoordinator...")
         self.loop_coordinator = LoopCoordinator()
         
@@ -313,25 +316,9 @@ class AgentManager:
                             f"PM activation is handled by the HTTP /approve endpoint. "
                             f"Admin AI will NOT be scheduled with this raw message.")
 
-                # Record the approval exchange in Admin AI's history without triggering an LLM call.
-                # This prevents the LLM from seeing the raw "approve project" command and
-                # generating redundant acknowledgments on every subsequent cycle.
-                admin_agent.message_history.append({"role": "user", "content": message})
-                synthetic_ack = f"Project approved. PM {pm_agent_id_from_message} will proceed."
-                admin_agent.message_history.append({"role": "assistant", "content": synthetic_ack})
-
-                # Send the acknowledgment directly to the UI so the user sees it immediately
-                await self.send_to_ui({
-                    "type": "agent_raw_response",
-                    "agent_id": admin_agent.agent_id,
-                    "content": synthetic_ack
-                })
-                await self.send_to_ui({
-                    "type": "final_response",
-                    "agent_id": admin_agent.agent_id,
-                    "content": synthetic_ack
-                })
-                logger.info(f"Manager: Synthetic approval acknowledgment sent to UI for PM '{pm_agent_id_from_message}'. No LLM cycle scheduled.")
+                # Round 2p: no acknowledgement here. This message only echoes the button; the HTTP /approve endpoint decides,
+                # tells the user the real outcome in the chat and notes it in Admin AI's history. (2026-10-21 18:57:57 this
+                # said "Project approved. PM PM1 will proceed." while the approval had been refused.)
                 return  # <<< CRITICAL: Return early to prevent fall-through to default handling
             else:
                 logger.warning(f"Manager: Approval message referenced PM '{pm_agent_id_from_message}' but no such agent exists. Passing to Admin AI for normal handling.")
@@ -434,6 +421,11 @@ class AgentManager:
                         # 5 times during summarization and 8 extra cycles were refused as "already running".
                         cycle_lock = getattr(self, '_agent_cycle_locks', {}).get(agent.agent_id)
                         if cycle_lock is not None and cycle_lock.locked():
+                            continue
+                        # Round 2r: 2026-10-21 19:31:44 PM1 was set to 'error' after 3 failed tool calls and nothing ever
+                        # resumed it; the run stood still. An agent in 'error' is resumed after a delay (limited per hour).
+                        error_recovery = getattr(self, 'error_recovery', None)
+                        if error_recovery is not None and await error_recovery.consider(agent):
                             continue
                         if (agent.agent_type == AGENT_TYPE_PM and
                             agent.status == AGENT_STATUS_IDLE and
@@ -849,8 +841,9 @@ class AgentManager:
             return False, f"Agent '{agent_id}' is not in the correct state for this action."
 
         logger.info(f"User stopped agent '{agent_id}' due to CG concern: {agent.cg_concern_details}")
-        
-        agent.set_status(AGENT_STATUS_ERROR) 
+
+        agent.set_status(AGENT_STATUS_ERROR)
+        agent._stopped_by_user = True  # Round 2r: the watchdog's error recovery must not resume an agent the user stopped
         
         agent.cg_original_text = None
         agent.cg_concern_details = None

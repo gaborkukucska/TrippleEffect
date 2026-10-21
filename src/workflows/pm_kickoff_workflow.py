@@ -339,15 +339,29 @@ def expand_task_range(token: str) -> List[str]:
     return [f"{prefix}{number}" for number in range(start, end + 1)]
 
 
+PYTHON_TEST_LINES = [
+    "Run tests from the workspace root with `python -m pytest -q`. A framework-owned conftest.py already makes src/ importable: write",
+    "`from my_module import my_function` in tests and NEVER create or edit the root conftest.py.",
+]
+# Round 2r: 2026-10-21 the Node.js project (WiFi_Snake_Multiplayer_Game) was told to use pytest and a framework conftest.py
+# that was never written (the conftest is only written when Python files are planned, see _write_test_scaffold).
+OTHER_STACK_TEST_LINES = [
+    "Run tests and other commands from the workspace root, with the tools of the project's tech stack.",
+]
+
+
 def render_project_structure_md(dirs: List[str], planned_files: List[str], code_base_definitions: Any = None,
-                                existing_files: Optional[List[str]] = None) -> str:
+                                existing_files: Optional[List[str]] = None, python_project: Optional[bool] = None) -> str:
     """
     Builds PROJECT_STRUCTURE.md: standards, then a tree of directories and planned files. Round 2o: planned files that
     already exist (a continued project's files carried over from its earlier session) are listed as existing, not as
-    files to create.
+    files to create. Round 2r: the pytest / conftest.py note only for a Python project (default: Python files are
+    planned - the same rule that writes the framework conftest.py).
     """
     existing = [f for f in planned_files if f in set(existing_files or [])]
     to_create = [f for f in planned_files if f not in existing]
+    if python_project is None:
+        python_project = any(str(f).endswith(".py") for f in planned_files)
     lines = [
         "# Project Directory Structure",
         "",
@@ -356,8 +370,7 @@ def render_project_structure_md(dirs: List[str], planned_files: List[str], code_
         "Do NOT create arbitrary new top-level directories without PM approval.",
         "Directories already exist. Files listed under 'Files To Create' do NOT exist yet: create each one with file_system 'write'",
         "at exactly that path. Paths never contain notes in brackets.",
-        "Run tests from the workspace root with `python -m pytest -q`. A framework-owned conftest.py already makes src/ importable: write",
-        "`from my_module import my_function` in tests and NEVER create or edit the root conftest.py.",
+        *(PYTHON_TEST_LINES if python_project else OTHER_STACK_TEST_LINES),
         "",
     ]
     rendered = _render_definitions(code_base_definitions)
@@ -518,6 +531,7 @@ class PMKickoffWorkflow(BaseWorkflow):
             )
 
         # --- Mark Initial Project Task as Decomposed ---
+        decomposed_kickoff_uuids: List[str] = []  # Round 2r
         try:
             from src.tools.project_management import ProjectManagementTool, TASKLIB_AVAILABLE
             if TASKLIB_AVAILABLE and project_context and manager.current_session:
@@ -529,6 +543,7 @@ class PMKickoffWorkflow(BaseWorkflow):
                     for task in initial_tasks:
                         task['task_progress'] = 'decomposed'
                         task.save()
+                        decomposed_kickoff_uuids.append(str(task['uuid']))
                         logger.info(f"PMKickoffWorkflow: Marked initial project task '{task['uuid']}' as decomposed.")
         except Exception as e:
             logger.warning(f"PMKickoffWorkflow: Failed to mark initial project task as decomposed: {e}")
@@ -642,47 +657,53 @@ class PMKickoffWorkflow(BaseWorkflow):
             logger.info(f"PMKickoffWorkflow: Stored {len(role_names)} roles, {len(task_descriptions)} tasks, and set target agent count to {len(role_names)} on agent '{agent.agent_id}'.")
 
             # --- BEGIN MODIFICATION: Mark initial Admin AI task as done ---
-            logger.info(f"PMKickoffWorkflow: Attempting to find and complete the initial project plan task for project '{project_context}' assigned to PM '{agent.agent_id}'.")
             initial_project_task_uuid_to_complete = None
-            try:
-                list_tasks_args = {
-                    "action": "list_tasks",
-                    "project_filter": project_context,
-                    "tags_filter": "project_kickoff,auto_created_by_framework"
-                }
-                logger.debug(f"PMKickoffWorkflow: Listing tasks with args: {list_tasks_args}")
-                list_result = await manager.tool_executor.execute_tool(
-                    agent_id="framework", # System action
-                    agent_sandbox_path=agent.sandbox_path, # PM's sandbox for context
-                    tool_name="project_management",
-                    tool_args=list_tasks_args,
-                    project_name=project_context,
-                    session_name=manager.current_session,
-                    manager=manager
-                )
+            # Round 2r: a kick-off task marked 'decomposed' above stays open as the parent of the kick-off tasks; the lookup
+            # below hides decomposed tasks and only logged "No suitable non-completed initial task found" (every run).
+            if decomposed_kickoff_uuids:
+                logger.info(f"PMKickoffWorkflow: Initial project task(s) {decomposed_kickoff_uuids} are marked 'decomposed' and "
+                            "stay open as the parent of the kick-off tasks; nothing to complete.")
+            else:
+                logger.info(f"PMKickoffWorkflow: Attempting to find and complete the initial project plan task for project '{project_context}' assigned to PM '{agent.agent_id}'.")
+                try:
+                    list_tasks_args = {
+                        "action": "list_tasks",
+                        "project_filter": project_context,
+                        "tags_filter": "project_kickoff,auto_created_by_framework"
+                    }
+                    logger.debug(f"PMKickoffWorkflow: Listing tasks with args: {list_tasks_args}")
+                    list_result = await manager.tool_executor.execute_tool(
+                        agent_id="framework", # System action
+                        agent_sandbox_path=agent.sandbox_path, # PM's sandbox for context
+                        tool_name="project_management",
+                        tool_args=list_tasks_args,
+                        project_name=project_context,
+                        session_name=manager.current_session,
+                        manager=manager
+                    )
 
-                if isinstance(list_result, dict) and list_result.get("status") == "success":
-                    tasks = list_result.get("tasks", [])
-                    logger.debug(f"PMKickoffWorkflow: Found {len(tasks)} candidate tasks for initial project plan task.")
-                    found_matching_tasks = []
-                    for task_item in tasks:
-                        if task_item.get("status") != "completed":
-                            found_matching_tasks.append(task_item)
+                    if isinstance(list_result, dict) and list_result.get("status") == "success":
+                        tasks = list_result.get("tasks", [])
+                        logger.debug(f"PMKickoffWorkflow: Found {len(tasks)} candidate tasks for initial project plan task.")
+                        found_matching_tasks = []
+                        for task_item in tasks:
+                            if task_item.get("status") != "completed":
+                                found_matching_tasks.append(task_item)
 
-                    if len(found_matching_tasks) > 1:
-                        logger.warning(f"PMKickoffWorkflow: Multiple ({len(found_matching_tasks)}) non-completed initial tasks found for PM '{agent.agent_id}' in project '{project_context}'. Will attempt to complete the first one found: {found_matching_tasks[0].get('uuid')}")
+                        if len(found_matching_tasks) > 1:
+                            logger.warning(f"PMKickoffWorkflow: Multiple ({len(found_matching_tasks)}) non-completed initial tasks found for PM '{agent.agent_id}' in project '{project_context}'. Will attempt to complete the first one found: {found_matching_tasks[0].get('uuid')}")
 
-                    if found_matching_tasks:
-                        initial_project_task_uuid_to_complete = found_matching_tasks[0].get("uuid")
-                        logger.info(f"PMKickoffWorkflow: Identified initial project plan task to complete. UUID: {initial_project_task_uuid_to_complete}, Description: '{found_matching_tasks[0].get('description', '')[:50]}...'")
+                        if found_matching_tasks:
+                            initial_project_task_uuid_to_complete = found_matching_tasks[0].get("uuid")
+                            logger.info(f"PMKickoffWorkflow: Identified initial project plan task to complete. UUID: {initial_project_task_uuid_to_complete}, Description: '{found_matching_tasks[0].get('description', '')[:50]}...'")
+                        else:
+                            logger.warning(f"PMKickoffWorkflow: No suitable non-completed initial task found for PM '{agent.agent_id}' in project '{project_context}'. It might have been completed manually or does not exist.")
                     else:
-                        logger.warning(f"PMKickoffWorkflow: No suitable non-completed initial task found for PM '{agent.agent_id}' in project '{project_context}'. It might have been completed manually or does not exist.")
-                else:
-                    error_msg = list_result.get("message", "Unknown error") if isinstance(list_result, dict) else str(list_result)
-                    logger.error(f"PMKickoffWorkflow: Failed to list tasks to find initial project plan task: {error_msg}")
+                        error_msg = list_result.get("message", "Unknown error") if isinstance(list_result, dict) else str(list_result)
+                        logger.error(f"PMKickoffWorkflow: Failed to list tasks to find initial project plan task: {error_msg}")
 
-            except Exception as e_list:
-                logger.error(f"PMKickoffWorkflow: Exception while trying to list tasks for initial project plan task: {e_list}", exc_info=True)
+                except Exception as e_list:
+                    logger.error(f"PMKickoffWorkflow: Exception while trying to list tasks for initial project plan task: {e_list}", exc_info=True)
 
             if initial_project_task_uuid_to_complete:
                 try:
@@ -872,7 +893,11 @@ class PMKickoffWorkflow(BaseWorkflow):
         to read this file before creating any new files or directories.
         """
         existing_files = [f for f in (planned_files or []) if (workspace_path / f).is_file()]  # Round 2o: a continued project
-        content = render_project_structure_md(created_dirs, planned_files or [], code_base_definitions, existing_files)
+        # Round 2r: the pytest / conftest.py note only when that conftest.py is there or Python files are planned
+        python_project = (any(str(f).endswith(".py") for f in (planned_files or []))
+                          or (workspace_path / "conftest.py").is_file())
+        content = render_project_structure_md(created_dirs, planned_files or [], code_base_definitions, existing_files,
+                                              python_project=python_project)
         workspace_path.mkdir(parents=True, exist_ok=True)
         md_path = workspace_path / "PROJECT_STRUCTURE.md"
         md_path.write_text(content, encoding="utf-8")

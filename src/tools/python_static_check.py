@@ -425,9 +425,14 @@ def python_code_notes_for(source: str, filename: Optional[str], workspace=None) 
 
 
 def saved_edit_notes(source: str, filename: Optional[str], workspace=None) -> str:
-    """Round 2e: the '[Framework check ...]' text appended to a successful edit of a Python file ('' if nothing to say)."""
+    """
+    Round 2e: the '[Framework check ...]' text appended to a successful edit of a Python file ('' if nothing to say).
+    Round 2r: for a JavaScript / JSON / shell file, its syntax error (src/tools/source_check.py; runs a checker program, so
+    async callers run this in a thread).
+    """
     if not str(filename or "").endswith(".py"):
-        return ""
+        from src.tools.source_check import edit_note
+        return edit_note(source, filename)
     notes = python_code_notes_for(source, filename, workspace)
     if not notes:
         return ""

@@ -379,6 +379,10 @@ MIN_MARKDOWN_PLAN_ITEMS = 3
 _PLAN_ITEM_RE = _re.compile(r"^[ \t]*(?:\d{1,2}[.)][ \t]+\S|#{2,4}[ \t]*(?:task|step)[ \t]*\d{1,2}\b)", _re.IGNORECASE | _re.MULTILINE)
 _NAMED_PROJECT_RE = _re.compile(r"\b(?:called|named|titled)[ \t]*[:\-]?[ \t]*[\"\u201c'\u2018`]([^\"\u201d'\u2019`\n]{2,60})[\"\u201d'\u2019`]", _re.IGNORECASE)
 _HEADING_RE = _re.compile(r"^[ ]{0,3}#{1,3}[ \t]+(.+?)[ \t#]*$", _re.MULTILINE)
+# Round 2r: 2026-10-21 19:16:04 Admin's plan ended with "**Title:** WiFi Snake Multiplayer Game" (no JSON block, no heading):
+# "no title could be derived", and planning was requested again.
+_TITLE_LINE_RE = _re.compile(r"^[ \t]*(?:[-*>][ \t]+)?\**[ \t]*(?:project[ \t]+)?(?:title|name)[ \t]*\**[ \t]*:[ \t]*\**[ \t]*(\S.*?)[ \t]*$",
+                             _re.IGNORECASE | _re.MULTILINE)
 _TITLE_NOISE_RE = _re.compile(r"(?:[\s:\-\u2013\u2014]*\b(?:project[ \t]+plan|implementation[ \t]+plan|plan|project|overview))+[ \t]*$", _re.IGNORECASE)
 _GENERIC_HEADINGS = frozenset({"objective", "overview", "tasks", "plan", "project", "summary", "tech stack", "introduction", "goal"})
 
@@ -403,8 +407,8 @@ def _clean_title(raw: Any) -> str:
 def plan_title_from_text(plan_text: Optional[str], history=None) -> Optional[str]:
     """
     A project title for a plan that has no JSON title block: the name the user gave ('called "Temp Converter CLI"') in the
-    most recent user message that names one, else the plan's first non-generic Markdown heading (without 'Project Plan').
-    None if neither exists.
+    most recent user message that names one, else (Round 2r) a 'Title: ...' / '**Project Name:** ...' line of the plan, else
+    the plan's first non-generic Markdown heading (without 'Project Plan'). None if none exists.
     """
     for msg in reversed(list(history or [])):
         if not (isinstance(msg, dict) and msg.get("role") == "user" and isinstance(msg.get("content"), str)):
@@ -416,6 +420,10 @@ def plan_title_from_text(plan_text: Optional[str], history=None) -> Optional[str
             title = _clean_title(match.group(1))
             if title:
                 return title
+    for match in _TITLE_LINE_RE.finditer(plan_text or ""):
+        title = _clean_title(match.group(1))
+        if title and title.lower() not in _GENERIC_HEADINGS:
+            return title
     for match in _HEADING_RE.finditer(plan_text or ""):
         title = _clean_title(match.group(1))
         if title and title.lower() not in _GENERIC_HEADINGS:

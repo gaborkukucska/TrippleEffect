@@ -1816,7 +1816,9 @@ class AgentCycleHandler:
                                     logger.warning(
                                         f"CycleHandler: CROSS-CYCLE DUPLICATE DETECTED for '{agent.agent_id}' - "
                                         f"tool '{tool_name}' with same args already succeeded. "
-                                        f"Duplicate count: {agent._duplicate_tool_call_count}. Skipping re-execution."
+                                        # Round 2r: no longer says the call is skipped - the Guardian may allow the re-run
+                                        f"Duplicate count: {agent._duplicate_tool_call_count}. The earlier result is reused "
+                                        f"unless the Guardian allows running it again."
                                     )
                                     
                                     # Use a TRUNCATED cached result to save context tokens
@@ -2181,6 +2183,12 @@ class AgentCycleHandler:
                                     logger.error(f"CycleHandler: PM '{agent.agent_id}' had {agent._consecutive_tool_failures} consecutive tool failures. Forcing error state to prevent loop.")
                                     agent.set_status(AGENT_STATUS_ERROR)
                                     error_message = f"Agent '{agent.agent_id}' had {agent._consecutive_tool_failures} consecutive tool execution failures. Stopped to prevent infinite loop."
+                                    # Round 2r: name the last failure - the watchdog resumes the agent later
+                                    # (src/agents/error_recovery.py) and repeats this text to it
+                                    last_failure = next((str(r.get("content", "")) for r in reversed(all_tool_results_for_history)
+                                                         if isinstance(r, dict) and r.get("role") == "tool"), "")
+                                    if last_failure:
+                                        error_message += f" Last error ({called_tool_name}): {last_failure[:400]}"
                                     agent.message_history.append({"role": "system", "content": f"[Framework Error]: {error_message}"})
                                     
                                     if context.current_db_session_id:

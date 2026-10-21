@@ -216,6 +216,13 @@ class Settings:
         # revised versions that still raise a concern before it passes to the next decider
         self.CG_MAX_REVISIONS_PER_LEVEL: int = int(_positive_float("CG_MAX_REVISIONS_PER_LEVEL", 2))
 
+        # --- Round 2r: agents left in the 'error' status are resumed by the watchdog (src/agents/error_recovery.py) ---
+        # an agent still in 'error' this long after the watchdog first saw it is resumed (checked every
+        # PM_MANAGE_CHECK_INTERVAL_SECONDS)
+        self.ERROR_RECOVERY_DELAY_SECONDS: float = _positive_float("ERROR_RECOVERY_DELAY_SECONDS", 60.0)
+        # resumptions per agent and hour; after that its supervisor (worker -> PM, PM -> Admin AI) gets one report
+        self.ERROR_RECOVERY_MAX_PER_HOUR: int = int(_positive_float("ERROR_RECOVERY_MAX_PER_HOUR", 3))
+
         # --- Project/Session Configuration ---
         self.PROJECTS_BASE_DIR: Path = Path(os.getenv("PROJECTS_BASE_DIR", str(BASE_DIR / "projects")))
 

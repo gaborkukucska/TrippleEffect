@@ -330,7 +330,8 @@ class AgentWorkflowManager:
                     
                     # Check for completion state transition
                     if requested_state == PM_STATE_STANDBY:
-                        logger.info(f"WorkflowManager: PM agent '{agent.agent_id}' transitioning to standby state - project likely complete.")
+                        # Round 2r: standby also means "waiting for workers" (19:20:00 four tasks were still open)
+                        logger.info(f"WorkflowManager: PM agent '{agent.agent_id}' transitioning to standby state (waiting for workers, or the project is complete).")
                         
                         # Mark project as complete in agent context
                         agent._project_completed = True

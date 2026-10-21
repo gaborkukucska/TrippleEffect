@@ -17,6 +17,9 @@ docstring and no code"), but nothing stopped the tasks from being closed.
 * The kick-off also uses file_paths_in_text(): when the PM's project_structure lists no files, the files named in the
   kick-off tasks are the planned files (that run had no tests/ directory and no conftest.py, while PROJECT_STRUCTURE.md
   said a framework conftest.py existed).
+* Round 2r: JavaScript (.js/.mjs/.cjs), JSON and shell (.sh/.bash) files are checked too (src/tools/source_check.py).
+  2026-10-21 19:31:22 Kick-off Task 2 ("Implement WebSocket handlers in game-server/game-engine.js ...") was marked
+  finished although game-engine.js failed `node --check` with "SyntaxError: Unexpected token 'default'".
 """
 import logging
 import re
@@ -89,16 +92,24 @@ def task_completion_problems(description: Optional[str], workspace: Optional[Pat
     description names with a directory ('src/main.py'). Files that do not exist are not checked (a description may name
     files of other tasks), and bare names are skipped: they are usually usage examples ('python temp_convert.py 100 C')
     of another task's file. Round 2n: changed_files are Python files the assignee changed while working on this task;
-    they are checked as well (the framework root conftest.py excepted).
+    they are checked as well (the framework root conftest.py excepted). Round 2r: the same for JavaScript, JSON and shell
+    files (syntax only, src/tools/source_check.py).
     """
     if not workspace or (not description and not changed_files):
         return []
+    from src.tools.source_check import check_kind, file_problem
     problems: List[str] = []
     try:
         root = Path(workspace).resolve()
+
+        def checked(rel_or_name: str) -> bool:
+            if rel_or_name.endswith(".py"):
+                return PurePosixPath(rel_or_name).name != "conftest.py"
+            return check_kind(rel_or_name) is not None
+
         to_check: List[Path] = []
         for rel_path in file_paths_in_text(description or "", with_directory_only=True):
-            if not rel_path.endswith(".py") or PurePosixPath(rel_path).name == "conftest.py":
+            if not checked(rel_path):
                 continue
             path = find_in_workspace(root, rel_path)
             if path is not None and path not in to_check:
@@ -106,7 +117,7 @@ def task_completion_problems(description: Optional[str], workspace: Optional[Pat
         for changed in changed_files or []:
             try:
                 path = Path(changed).resolve()
-                if (path.suffix != ".py" or not path.is_file() or not path.is_relative_to(root)
+                if (not checked(str(path).replace("\\", "/")) or not path.is_file() or not path.is_relative_to(root)
                         or path.relative_to(root) == Path("conftest.py")):
                     continue
             except (OSError, ValueError):
@@ -115,7 +126,12 @@ def task_completion_problems(description: Optional[str], workspace: Optional[Pat
                 to_check.append(path)
         for path in to_check:
             shown = str(path.relative_to(root)).replace("\\", "/")
-            for problem in python_file_problems(path, shown, root):
+            if path.suffix == ".py":
+                found = python_file_problems(path, shown, root)
+            else:
+                other = file_problem(path, shown)
+                found = [other] if other else []
+            for problem in found:
                 if problem not in problems:
                     problems.append(problem)
     except Exception as err:  # the check must never break task updates

@@ -1374,6 +1374,11 @@ Pushes changes to a remote repository.
                             same_msg += ("\n[Framework check - the file is unchanged and STILL has these defects:]\n- "
                                          + "\n- ".join(same_notes)
                                          + "\nSending the same text again changes nothing: fix the lines named above.")
+                    else:
+                        # Round 2r: W1 rewrote game-server/game-engine.js 5 times with the same syntax error and was
+                        # only told "considered successful" (JavaScript / JSON / shell files, src/tools/source_check.py)
+                        from src.tools.source_check import unchanged_note
+                        same_msg += await asyncio.to_thread(unchanged_note, content, filename)
                     return {"status": "success", "message": same_msg}
             except Exception:
                 pass
@@ -1467,6 +1472,10 @@ Pushes changes to a remote repository.
                         "\n[Framework check - the file WAS saved, but please fix:]\n- " + "\n- ".join(code_notes)
                         + "\nUse 'find_replace' or 'insert_lines' for small fixes; do not resend the whole file."
                     )
+            else:
+                # Round 2r: syntax check of JavaScript / JSON / shell files (src/tools/source_check.py)
+                from src.tools.source_check import write_note
+                success_msg += await asyncio.to_thread(write_note, content, filename)
             return {"status": "success", "message": success_msg}
         except FileExistsError:
             logger.warning(f"Agent {agent_id} attempted to write file '{filename}' but a parent path exists as a file."); return {"status": "error", "message": f"Cannot write to '{filename}': A parent path already exists but is a FILE, not a directory. Did you previously use 'write' instead of 'mkdir' to create a directory?"}
@@ -1564,7 +1573,9 @@ Pushes changes to a remote repository.
                 return syntax_problem
             await asyncio.to_thread(validated_path.write_text, new_content, encoding='utf-8')
             logger.info(f"Agent {agent_id}: Successfully replaced {num_replacements} occurrence(s) in file '{filename}' in {scope_description}{match_note}.")
-            return {"status": "success", "message": f"Successfully replaced {num_replacements} occurrence(s) in '{filename}'{match_note}.", "replacements_made": num_replacements}
+            from src.tools.source_check import edit_note  # Round 2r: JavaScript / JSON / shell syntax ('' for other files)
+            check_note = await asyncio.to_thread(edit_note, new_content, filename)
+            return {"status": "success", "message": f"Successfully replaced {num_replacements} occurrence(s) in '{filename}'{match_note}." + check_note, "replacements_made": num_replacements}
         except FileNotFoundError: logger.warning(f"Agent {agent_id} find_replace error (FileNotFound): File not found at '{filename}' in {scope_description}."); return {"status": "error", "message": f"File not found at '{filename}' in {scope_description}."}
         except PermissionError: logger.error(f"Agent {agent_id} find_replace error: Permission denied for '{filename}' in {scope_description}."); return {"status": "error", "message": f"Permission denied when accessing file '{filename}'."}
         except Exception as e: logger.error(f"Agent {agent_id} error during find/replace in file '{filename}' in {scope_description}: {e}", exc_info=True); return {"status": "error", "message": f"Error during find/replace in '{filename}': {type(e).__name__} - {e}"}
@@ -1646,7 +1657,9 @@ Pushes changes to a remote repository.
                 return syntax_problem
             await asyncio.to_thread(validated_path.write_text, new_content, encoding='utf-8')
             logger.info(f"Agent {agent_id}: Successfully replaced {num_replacements} match(es) in file '{filename}' in {scope_description}.")
-            return {"status": "success", "message": f"Successfully replaced {num_replacements} match(es) in '{filename}'.", "replacements_made": num_replacements}
+            from src.tools.source_check import edit_note  # Round 2r: JavaScript / JSON / shell syntax ('' for other files)
+            check_note = await asyncio.to_thread(edit_note, new_content, filename)
+            return {"status": "success", "message": f"Successfully replaced {num_replacements} match(es) in '{filename}'." + check_note, "replacements_made": num_replacements}
         except FileNotFoundError: return {"status": "error", "message": f"File not found at '{filename}' in {scope_description}."}
         except PermissionError: return {"status": "error", "message": f"Permission denied when accessing file '{filename}'."}
         except re.error as e: return {"status": "error", "message": f"Invalid regex pattern '{regex_pattern}': {e}"}
@@ -1857,7 +1870,15 @@ Pushes changes to a remote repository.
                     f.write(content)
             await asyncio.to_thread(append_sync)
             logger.info(f"Agent {agent_id} appended to '{filename}' in {scope_description}")
-            return {"status": "success", "message": f"Successfully appended content to '{filename}'."}
+            check_note = ""
+            from src.tools.source_check import check_kind, edit_note  # Round 2r: JavaScript / JSON / shell syntax
+            if check_kind(filename):
+                try:
+                    new_text = await asyncio.to_thread(val_path.read_text, encoding='utf-8')
+                    check_note = await asyncio.to_thread(edit_note, new_text, filename)
+                except (OSError, UnicodeDecodeError):
+                    check_note = ""
+            return {"status": "success", "message": f"Successfully appended content to '{filename}'." + check_note}
         except Exception as e:
             logger.error(f"Agent {agent_id} error appending to '{filename}': {e}", exc_info=True)
             return {"status": "error", "message": f"Error appending to '{filename}': {e}"}
@@ -1905,8 +1926,9 @@ Pushes changes to a remote repository.
             await asyncio.to_thread(val_path.write_text, new_content, encoding='utf-8')
             logger.info(f"Agent {agent_id} inserted lines at {insert_line} in '{filename}' ({scope_description})")
             from src.tools.python_static_check import saved_edit_notes  # Round 2e: same hints as 'write' and code_editor
+            edit_notes = await asyncio.to_thread(saved_edit_notes, new_content, filename, base_path)  # Round 2r: + JS/JSON/sh
             return {"status": "success", "message": f"Successfully inserted content at line {insert_line} in '{filename}'."
-                                                    + saved_edit_notes(new_content, filename, base_path)}
+                                                    + edit_notes}
         except Exception as e:
             logger.error(f"Agent {agent_id} error inserting lines in '{filename}': {e}", exc_info=True)
             return {"status": "error", "message": f"Error inserting lines in '{filename}': {e}"}
@@ -1937,8 +1959,9 @@ Pushes changes to a remote repository.
             lost = removed_statement_lines(lines, start_idx, end_idx, content)
             lost_note = (f" WARNING: this edit removed {'; '.join(lost)} - these lines are NOT in your new text any more. "
                          "If they were still needed, add them back.") if lost else ""
+            edit_notes = await asyncio.to_thread(saved_edit_notes, new_content, filename, base_path)  # Round 2r: + JS/JSON/sh
             return {"status": "success", "message": f"Successfully replaced lines {start_line} to {end_line} in '{filename}'."
-                                                    + lost_note + saved_edit_notes(new_content, filename, base_path)}
+                                                    + lost_note + edit_notes}
         except Exception as e:
             logger.error(f"Agent {agent_id} error replacing lines in '{filename}': {e}", exc_info=True)
             return {"status": "error", "message": f"Error replacing lines in '{filename}': {e}"}
@@ -2091,7 +2114,15 @@ Pushes changes to a remote repository.
 
             if success:
                 logger.info(f"Agent {agent_id} search/replace block in '{filename}' ({scope_description}): {msg}")
-                return {"status": "success", "message": f"Successfully replaced block in '{filename}'. ({msg})"}
+                check_note = ""
+                from src.tools.source_check import check_kind, edit_note  # Round 2r: JavaScript / JSON / shell syntax
+                if check_kind(filename):
+                    try:
+                        new_text = await asyncio.to_thread(val_path.read_text, encoding='utf-8')
+                        check_note = await asyncio.to_thread(edit_note, new_text, filename)
+                    except (OSError, UnicodeDecodeError):
+                        check_note = ""
+                return {"status": "success", "message": f"Successfully replaced block in '{filename}'. ({msg})" + check_note}
             else:
                 logger.warning(f"Agent {agent_id} failed search/replace block in '{filename}' ({scope_description}): {msg}")
                 return {"status": "error", "message": msg}

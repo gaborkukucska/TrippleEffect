@@ -988,6 +988,10 @@ class CodeEditorTool(BaseTool):
                     code_notes = []
                 if code_notes:
                     code_notes_text = ("\n[Framework check - the edit WAS saved, but please fix:]\n- " + "\n- ".join(code_notes))
+            else:
+                # Round 2r: syntax check of JavaScript / JSON / shell files (src/tools/source_check.py)
+                from src.tools.source_check import edit_note
+                code_notes_text = await asyncio.to_thread(edit_note, content, filename)
             return {
                 "status": "success",
                 "message": f"Successfully applied {successful} edits to '{filename}'."

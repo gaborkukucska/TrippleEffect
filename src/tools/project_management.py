@@ -114,6 +114,41 @@ def repair_taskwarrior_records(lines: List[str]) -> List[str]:
         records.append(partial)
     return [_clean_record(r) if r.startswith("[") else r for r in records]
 
+# Round 2r: with native tool calling the model fills EVERY optional parameter of the schema. 2026-10-21 19:31:18 PM1 sent
+# modify_task {'task_progress': 'finished', 'priority': '', 'description': '', 'assignee_agent_id': '', ...}: the empty
+# description reached Taskwarrior ("Cannot add a task that is blank"), the call failed 3 times and PM1 was set to 'error'
+# for good. An empty value of an optional field means "not given" (an empty task_progress even reset a task to 'todo').
+MODIFY_OPTIONAL_FIELDS = ("task_progress", "status", "description", "priority", "tags", "depends",
+                          "assignee_agent_id", "assignee", "title")
+
+
+def _is_blank(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, set, dict)):
+        return len(value) == 0
+    return False
+
+
+def drop_blank_fields(kwargs: Dict[str, Any], keys=MODIFY_OPTIONAL_FIELDS) -> List[str]:
+    """Removes the given keys whose value is None, '' (or only spaces) or empty; returns the removed keys."""
+    dropped = []
+    for key in keys:
+        if key in kwargs and _is_blank(kwargs[key]):
+            kwargs.pop(key)
+            dropped.append(key)
+    return dropped
+
+
+def taskwarrior_error_summary(err: Any) -> str:
+    """The error lines of a Taskwarrior/tasklib exception without the 'Command used: task rc...' line."""
+    lines = [line.strip() for line in str(err).splitlines() if line.strip()]
+    kept = [line for line in lines if not line.lower().startswith("command used")]
+    errors = [line for line in kept if not line.lower().startswith("note:")]
+    return " ".join(errors or kept) or type(err).__name__
+
 # Round 1v: W1 sent priority='normal' and the whole modify_task call was rejected.
 _PRIORITY_WORDS = {
     "H": "H", "HIGH": "H", "URGENT": "H", "CRITICAL": "H", "TOP": "H", "IMPORTANT": "H",
@@ -486,7 +521,7 @@ class ProjectManagementTool(BaseTool):
 
         except Exception as e:
             logger.error(f"Error executing ProjectManagementTool action '{action}': {e}", exc_info=True)
-            return {"status": "error", "message": f"An unexpected error occurred: {e}"}
+            return {"status": "error", "message": f"An unexpected error occurred: {taskwarrior_error_summary(e)}"}  # Round 2r
 
 
     async def _execute_add_task(self, tw, aliases, project_name, session_name, agent_id, kwargs):
@@ -948,6 +983,10 @@ class ProjectManagementTool(BaseTool):
                                 logger.info(f"ProjectManagementTool: Auto-extracted field '{fk}'='{fv}' from 'fields' string")
                             break
 
+            blank_fields = drop_blank_fields(kwargs)  # Round 2r: '' means "not given", never "make it empty"
+            if blank_fields:
+                logger.debug(f"ProjectManagementTool: modify_task ignored empty value(s) of {blank_fields}.")
+
             try:
                 if '-' in t_id_str and len(t_id_str) > 10:
                     try:
@@ -1094,11 +1133,19 @@ class ProjectManagementTool(BaseTool):
                     "You must provide at least one of these as a DIRECT parameter (not inside a 'fields' wrapper): "
                     "task_progress, status, description, priority, tags, depends, assignee_agent_id. "
                     "CORRECT example: {\"action\": \"modify_task\", \"task_id\": \"UUID\", \"task_progress\": \"finished\"}"
+                    + (f" Empty values ('') are ignored; they were sent for: {', '.join(blank_fields)}." if blank_fields else "")
                 )}
 
             is_dry_run = str(kwargs.get("dry_run")).lower() == "true"
             if not is_dry_run:
-                task.save()
+                try:
+                    task.save()
+                except Exception as save_err:  # Round 2r: say what was refused, without the internal command line
+                    summary = taskwarrior_error_summary(save_err)
+                    logger.warning(f"ProjectManagementTool: Taskwarrior refused modify_task of '{task_id}' ({modified_fields}): {summary}")
+                    return {"status": "error", "message": (
+                        f"Task '{task_id}' was NOT changed: Taskwarrior refused the change of "
+                        f"{', '.join(modified_fields)}: {summary.rstrip('.')}. Send only the fields you want to change.")}
                 asyncio.create_task(broadcast(json.dumps({"type": "project_tasks_updated", "project_name": project_name, "session_name": session_name})))
             else:
                 logger.info("ProjectManagementTool: 'modify_task' dry_run succeeded. Database not modified.")
@@ -1331,6 +1378,7 @@ Modifies an existing task.
 *   `<tags>` (string, optional): New comma-separated list of tags. Use `+tag` to add and `-tag` to remove.
 *   `<assignee_agent_id>` (string, optional): Reassign the task to a new agent. **REMEMBER to also update the tag.**
 *   `<depends>` (string, optional): Add a dependency by providing the task ID or UUID it depends on.
+*   Send ONLY the fields you change. An empty value ('') means "not given" and is ignored.
 *   Example:
     ```json
     {{
