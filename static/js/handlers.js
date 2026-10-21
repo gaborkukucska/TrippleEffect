@@ -261,7 +261,8 @@ export const handleWebSocketMessage = (data) => {
                         `last changed ${escapeHTML(latest.last_changed || '?')}). Continue it, or start this plan as a new project?</p>`;
                     approvalButtons =
                         `<button class="approve-project-btn" data-pm-id="${safePmId}" data-mode="continue">Continue existing project</button> ` +
-                        `<button class="approve-project-btn" data-pm-id="${safePmId}" data-mode="new">Start new project '${safeNewName}'</button>`;
+                        `<button class="approve-project-btn" data-pm-id="${safePmId}" data-mode="new">Start new project</button>` +
+                        `<p>A new project is named <code>${safeNewName}</code>.</p>`;
                 }
                 displayContent = `
                     <strong>Project Approval Required</strong><br>

@@ -806,6 +806,10 @@ def _approval_manager(pm):
     return manager, contexts, ui, scheduled
 
 
+def _approved(ui):
+    return [u for u in ui if u.get("type") == "project_approved"][-1]
+
+
 def _approve(manager, mode):
     from src.api.http_routes import approve_project_start
 
@@ -833,7 +837,7 @@ def test_approval_asks_and_continues_the_existing_project(projects, monkeypatch)
     assert (workspace / "PROJECT_PLAN.md").read_text().startswith("# Project Plan: WiFi_Snake_Game\n\nBuild it.")
     assert (workspace / "src" / "game_logic.py").exists() and (workspace / "PREVIOUS_PROJECT_PLAN.md").exists()
     assert "CONTINUE the existing project" in pm.message_history[-1]["content"]
-    assert "(continuing the existing project)" in ui[-1]["message"]
+    assert "(continuing the existing project)" in _approved(ui)["message"]   # Round 2p: a chat line follows the event
 
 
 def test_approval_starts_a_new_project(projects, monkeypatch):
@@ -851,7 +855,7 @@ def test_approval_starts_a_new_project(projects, monkeypatch):
     assert (projects / "WiFi_Snake_Game_2" / "startup_1792568609" / "task_data").is_dir()
     assert (projects / "WiFi_Snake_Game_2" / "startup_1792568609" / "shared_workspace" / "PROJECT_PLAN.md").exists()
     assert not (projects / "WiFi_Snake_Game" / "startup_1792568609").exists()
-    assert "(as a new project)" in ui[-1]["message"] and pm.message_history == []
+    assert "(as a new project)" in _approved(ui)["message"] and pm.message_history == []
 
 
 def test_approval_without_an_existing_project_is_unchanged(projects, monkeypatch):
@@ -862,6 +866,6 @@ def test_approval_without_an_existing_project_is_unchanged(projects, monkeypatch
     manager, contexts, ui, scheduled = _approval_manager(pm)
     _approve(manager, None)
     assert contexts == [("Snake_Arena", "startup_1792568609")] and scheduled == ["PM1"]
-    assert ui[-1]["message"] == "Project 'Snake_Arena' managed by 'PM1' approved and started."
+    assert _approved(ui)["message"] == "Project 'Snake_Arena' managed by 'PM1' approved and started."
 
 # END OF FILE tests/unit/test_round2o.py

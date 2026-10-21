@@ -191,12 +191,26 @@ app = FastAPI(
 )
 logger.info("FastAPI app instance created with lifespan handler.")
 
+class RevalidatingStaticFiles(StaticFiles):
+    """
+    Round 2p: static files with 'Cache-Control: no-cache'. The page loads main.js?v=N, but the modules it imports
+    (handlers.js, api.js, ...) have no version, and without a Cache-Control header browsers keep them "fresh" for hours: on
+    2026-10-21 18:57 the browser still ran the old handlers.js after an update, showed the old one-button approval card, and
+    the approval failed. With no-cache the browser asks every time and gets a cheap 304 when nothing changed.
+    """
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 # Mount the static files directory
 static_files_path = BASE_DIR / "static"
 logger.info(f"Looking for static files directory at: {static_files_path}")
 if static_files_path.exists() and static_files_path.is_dir():
     try:
-        app.mount("/static", StaticFiles(directory=static_files_path), name="static")
+        app.mount("/static", RevalidatingStaticFiles(directory=static_files_path), name="static")
         logger.info(f"Mounted static files directory: {static_files_path}")
     except Exception as e:
          logger.error(f"Error mounting static files directory {static_files_path}: {e}", exc_info=True)

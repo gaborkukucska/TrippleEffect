@@ -177,10 +177,17 @@ const handleApproveButtonClick = async (event) => {
             button.textContent = 'Approved'; // Update button text
         } catch (error) {
             console.error(`Handler: Error approving project for PM ${pmAgentId}:`, error);
-            // Error message should be displayed by makeApiCall, but add a fallback
-            ui.displayMessage(`Error approving project: ${error.message || 'Unknown error'}`, 'error', 'internal-comms-area', 'frontend');
-            button.disabled = false; // Re-enable button on error
-            button.textContent = 'Approve Project Start';
+            // Round 2p: the user has to see this in the main chat (it went to Internal Comms only), and every choice of the
+            // card is usable again
+            ui.displayMessage(`Error approving project: ${error.message || 'Unknown error'}`, 'error', 'conversation-area', 'frontend');
+            const labels = { continue: 'Continue existing project', new: 'Start new project' };
+            const group = button.closest('.approval-buttons');
+            const buttons = group ? Array.from(group.querySelectorAll('button.approve-project-btn')) : [button];
+            buttons.forEach(choice => {
+                choice.disabled = false;
+                choice.style.backgroundColor = '';
+                choice.textContent = labels[choice.dataset.mode] || 'Approve Project Start';
+            });
         }
     }
 };
