@@ -1,9 +1,12 @@
+# Round 2o: 'critical: true' marks principles whose concerns must be settled by a revised text the Guardian accepts
+# (or by the user): a Project Manager's or Admin AI's approval passes such a concern up the ladder instead.
 principles:
   - id: "GP001"
     name: "Respect for User Privacy"
     text: "All agent actions and data handling must prioritize user privacy and comply with relevant data protection regulations. Avoid collecting or storing personally identifiable information (PII) unless explicitly necessary and consented to."
     applies_to: ["all_agents"] # Can be specific agent types like ["worker_ai", "pm_ai"] or roles
     enabled: true
+    critical: true # Round 2o: a concern about it is not settled by a PM's or Admin AI's approval
 
   - id: "GP002"
     name: "Ethical Data Use"
@@ -22,6 +25,7 @@ principles:
     text: "Agents must be designed to avoid causing harm, whether physical, psychological, financial, or reputational, to humans or other systems. This includes preventing the generation of harmful, biased, or misleading content."
     applies_to: ["all_agents"]
     enabled: true
+    critical: true # Round 2o: a concern about it is not settled by a PM's or Admin AI's approval
     
   - id: "GP005"
     name: "Accountability and Oversight"
@@ -46,3 +50,4 @@ principles:
     text: "Agents MUST be extremely cautious when executing terminal commands via the 'command_executor' tool. Any commands that mutate the file system outside of allowed boundaries, attempt to communicate with unauthorized external networks, run potentially malicious or unknown binaries, or attempt privilege escalation must be strictly blocked and flagged for user review. When in doubt about the safety of a command, flag it for confirmation."
     applies_to: ["worker_ai"]
     enabled: true
+    critical: true # Round 2o: a concern about it is not settled by a PM's or Admin AI's approval

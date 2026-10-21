@@ -1031,6 +1031,12 @@ class NextStepScheduler:
             if task:
                  logger.info(f"NextStepScheduler: Successfully created asyncio task {getattr(task, 'get_name', lambda: 'N/A')()} for next cycle of '{agent.agent_id}'.")
             else:
-                 logger.error(f"NextStepScheduler: Manager.schedule_cycle did not return a task for agent '{agent.agent_id}'. Next cycle might not run.")
+                 escalation = getattr(self._manager, 'cg_escalation', None)
+                 reason = escalation.cycle_block_reason(agent) if escalation is not None and hasattr(escalation, 'cycle_block_reason') else None
+                 if isinstance(reason, str) and reason:
+                     # Round 2o: deliberately not started (Constitutional Guardian hold / system pause); it starts afterwards
+                     logger.info(f"NextStepScheduler: next cycle of '{agent.agent_id}' waits: {reason}.")
+                 else:
+                     logger.error(f"NextStepScheduler: Manager.schedule_cycle did not return a task for agent '{agent.agent_id}'. Next cycle might not run.")
         except Exception as schedule_err:
             logger.error(f"NextStepScheduler: FAILED to create/schedule asyncio task for next cycle of '{agent.agent_id}': {schedule_err}", exc_info=True)

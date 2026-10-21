@@ -161,9 +161,19 @@ async def websocket_endpoint(websocket: WebSocket):
                                     "type": "error",
                                     "content": "Backend cannot process CG concern approval at this time."
                                 }))
+                        elif action == "stop_cg_concern":  # Round 2o: the card's 'Stop agent' button
+                            if agent_manager_instance and hasattr(agent_manager_instance, 'resolve_cg_concern_stop'):
+                                asyncio.create_task(agent_manager_instance.resolve_cg_concern_stop(agent_id=agent_id_for_cg_response))
+                            else:
+                                logger.error(f"AgentManager not available or missing 'resolve_cg_concern_stop' method for cg_concern_response from {client_host}.")
+                                await websocket.send_text(json.dumps({
+                                    "type": "error",
+                                    "content": "Backend cannot stop the agent at this time."
+                                }))
                         elif action in ["revise_plan_cg_concern", "feedback_cg_concern"]:
                             if agent_manager_instance and hasattr(agent_manager_instance, 'resolve_cg_concern_retry'):
-                                feedback_for_retry = user_feedback if user_feedback is not None else original_text
+                                # Round 2o: no typed feedback -> a default instruction (it used to send the agent its own text)
+                                feedback_for_retry = user_feedback if isinstance(user_feedback, str) and user_feedback.strip() else None
                                 logger.debug(f"Forwarding 'retry/feedback' for CG concern for agent '{agent_id_for_cg_response}' to AgentManager with feedback.")
                                 asyncio.create_task(
                                     agent_manager_instance.resolve_cg_concern_retry(agent_id=agent_id_for_cg_response, user_feedback=feedback_for_retry)

@@ -1011,6 +1011,24 @@ body {
     overflow-y: auto; /* Allow scrolling for long original text */
 }
 
+/* Round 2o: feedback box for 'Revise with feedback' */
+.cg_concern_message .message-content .cg-feedback-input {
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: 10px;
+    padding: 6px 8px;
+    font: inherit;
+    color: var(--text-color-primary);
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    resize: vertical;
+}
+.cg_concern_message .message-content .message-button:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
 /* Options Container */
 .cg_concern_message .message-content .options-container {
     display: flex;

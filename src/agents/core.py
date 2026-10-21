@@ -19,7 +19,7 @@ from src.llm_providers.base import BaseLLMProvider, MessageDict, ToolResultDict
 
 # Import the parser function
 from src.agents.agent_tool_parser import find_and_parse_xml_tool_calls
-from src.agents.tool_activity import state_tool_allowlist  # Round 2k
+from src.agents.tool_activity import state_tool_allowlist, is_call_imitation_text  # Round 2k, 2o
 
 # --- Import status and state constants ---
 from src.agents.constants import (
@@ -232,6 +232,7 @@ class Agent:
         self._last_output_tokens: int = 0
         self._last_num_ctx: Optional[int] = None
         self._context_window_full: bool = False
+        self._call_imitation_text: Optional[str] = None  # Round 2o: a reply that only imitated a tool call in text
         # Round 2h: thinking of the last reply (from the provider's 'finish_info'), and a one-reply switch to turn it off
         self._last_reply_thinking_chars: int = 0
         self._last_reply_thinking_tail: str = ""
@@ -349,6 +350,11 @@ class Agent:
             if settings.NATIVE_TOOL_CALLING_ENABLED and self.manager and getattr(self.manager, 'tool_executor', None):
                 tool_schemas = []
                 for tool_name, tool in self.manager.tool_executor.tools.items():
+                    # Round 2o: 'resolve_concern' only while a Constitutional Guardian concern waits for this agent's decision
+                    if tool_name == "resolve_concern":
+                        escalation = getattr(self.manager, "cg_escalation", None)
+                        if escalation is None or not escalation.pending_for_decider(self.agent_id):
+                            continue
                     # Restrict specific states to only the tools they actually need
                     if self.agent_type == AGENT_TYPE_WORKER:
                         if self.state == WORKER_STATE_DECOMPOSE and tool_name not in ['project_management', 'file_system', 'codebase_search', 'mark_message_read', 'send_message']:
@@ -391,6 +397,7 @@ class Agent:
             finish_reason_received = None  # Round 2d: done_reason reported by the provider ('finish_info' event)
             finish_event_data: Dict[str, Any] = {}  # Round 2n
             self._context_window_full = False
+            self._call_imitation_text = None  # Round 2o
             # Round 2h: what this reply thought (from 'finish_info'), and thinking switched off for a retry after a reply
             # that only thought.
             self._last_reply_thinking_chars = 0
@@ -802,6 +809,13 @@ class Agent:
                     if state_change_to_yield:
                         # Only a state change (no tools)
                         yield state_change_to_yield
+                        return
+                    elif final_cleaned_response_for_tools_or_text and is_call_imitation_text(final_cleaned_response_for_tools_or_text):
+                        # Round 2o: the reply only imitated a tool call in text ("[Action Taken: called ...]"): nothing ran.
+                        # It is not shown, not reviewed and not kept; the empty-reply retry tells the agent to really call.
+                        self._call_imitation_text = final_cleaned_response_for_tools_or_text
+                        logger.warning(f"Agent {self.agent_id}: reply only imitated a tool call in text, nothing was executed: "
+                                       f"'{final_cleaned_response_for_tools_or_text[:150]}'")
                         return
                     elif final_cleaned_response_for_tools_or_text:
                         # Only a final textual response

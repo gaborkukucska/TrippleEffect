@@ -109,6 +109,8 @@ class ModelInfo(TypedDict, total=False):
     model_num_ctx: Optional[int] # Native num_ctx from model's Modelfile parameters
     model_template: Optional[str] # Template string for raw-template detection
     model_capabilities: Optional[List[str]] # Round 2n: Ollama /api/show 'capabilities' (e.g. ['completion', 'tools'])
+    model_renderer: Optional[str] # Round 2o: Ollama /api/show 'renderer' (built-in chat formatter, e.g. 'qwen3.5')
+    model_parser: Optional[str] # Round 2o: Ollama /api/show 'parser' (built-in output/tool-call parser)
 # --- END NEW ---
 
 class ModelRegistry:
@@ -279,6 +281,12 @@ class ModelRegistry:
                                             if isinstance(capabilities, list):
                                                 model_info_dict["model_capabilities"] = [str(c) for c in capabilities]
                                                 logger.debug(f"Ollama model '{model_name}': capabilities={capabilities}")
+                                            # --- Round 2o: built-in renderer/parser (newer Ollama). With one, '{{ .Prompt }}' is not a RAW template ---
+                                            for show_key, info_key in (("renderer", "model_renderer"), ("parser", "model_parser")):
+                                                value = details_data.get(show_key)
+                                                if isinstance(value, str) and value.strip():
+                                                    model_info_dict[info_key] = value.strip()
+                                                    logger.debug(f"Ollama model '{model_name}': {show_key}='{value.strip()}'")
 
                                             # --- Extract template (for raw-template detection) ---
                                             template = details_data.get("template")
@@ -286,7 +294,14 @@ class ModelRegistry:
                                                 model_info_dict["model_template"] = template
                                                 # Warn about raw templates that won't work well with /api/chat
                                                 stripped_template = template.strip()
-                                                if stripped_template in ('{{ .Prompt }}', '{{ .Response }}', '{{ .System }}{{ .Prompt }}'):
+                                                # Round 2o: Ollama formats models with a built-in renderer itself (qwen3.5, gemma4 show
+                                                # '{{ .Prompt }}'); only warn when it reports neither a renderer nor capabilities.
+                                                formatted_by_ollama = bool(model_info_dict.get("model_renderer")) or "completion" in (model_info_dict.get("model_capabilities") or [])
+                                                if stripped_template in ('{{ .Prompt }}', '{{ .Response }}', '{{ .System }}{{ .Prompt }}') and formatted_by_ollama:
+                                                    logger.info(f"Ollama model '{model_name}': template '{stripped_template}' - Ollama formats its chat "
+                                                                f"with a built-in renderer (renderer={model_info_dict.get('model_renderer')}, "
+                                                                f"capabilities={model_info_dict.get('model_capabilities')}).")
+                                                elif stripped_template in ('{{ .Prompt }}', '{{ .Response }}', '{{ .System }}{{ .Prompt }}'):
                                                     logger.warning(f"Ollama model '{model_name}': Has RAW template '{stripped_template}'. "
                                                                    f"This model may not work correctly with /api/chat for multi-turn conversations. "
                                                                    f"Consider updating its Modelfile with a proper chat template.")

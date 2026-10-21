@@ -170,7 +170,7 @@ const handleApproveButtonClick = async (event) => {
 
         try {
             // Use the directly imported approveProject function (available in this scope)
-            const result = await approveProject(pmAgentId);
+            const result = await approveProject(pmAgentId, button.dataset.mode || null);  // Round 2o: continue / new
             console.log("Handler: Project approval API call successful.", result);
             // Backend sends 'project_approved' message via WebSocket,
             // which handleWebSocketMessage will process to show confirmation.

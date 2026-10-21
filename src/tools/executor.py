@@ -859,7 +859,7 @@ class ToolExecutor:
                 **kwargs_for_tool 
             }
 
-            if tool_name == "system_help" or tool_name == "tool_information" or tool_name == "project_management":
+            if tool_name in ("system_help", "tool_information", "project_management", "resolve_concern"):  # Round 2o: + resolve_concern
                 if manager: execute_args["manager"] = manager
                 else:
                     error_msg = f"Error: Internal configuration error - manager instance missing for '{tool_name}' tool."

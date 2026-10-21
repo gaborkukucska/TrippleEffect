@@ -660,18 +660,8 @@ def test_the_context_full_notice():
 
 
 # ======================================================================================== 8. what the model sees of its calls
-def test_tool_calls_as_text():
-    from src.llm_providers.ollama_provider import tool_calls_as_text
-    text = tool_calls_as_text([
-        {"id": "call_1", "name": "file_system", "arguments": {"action": "read", "filename": "src/game_logic.py"}},
-        {"function": {"name": "file_system", "arguments": json.dumps({"action": "write", "filename": "src/game_logic.py",
-                                                                      "content": GAME_STATE_REWRITE})}},
-    ])
-    lines = text.splitlines()
-    assert lines[0] == "[Action Taken: called file_system(action='read', filename='src/game_logic.py')]"
-    assert lines[1].startswith("[Action Taken: called file_system(action='write', filename='src/game_logic.py', content=")
-    assert f"({len(GAME_STATE_REWRITE)} chars)')]" in lines[1]
-    assert tool_calls_as_text([]) == "" and tool_calls_as_text(None) == ""
+# Round 2o: the "[Action Taken: called ...]" text of Round 2n was removed - Ollama's /api/chat ignores a 'template' field and
+# its built-in qwen3.5 renderer already shows earlier calls as <tool_call> blocks; the model copied the text instead of calling.
 
 
 def _serve_ollama_chat(payloads, reply):
@@ -692,7 +682,7 @@ def _serve_ollama_chat(payloads, reply):
     return start
 
 
-def test_the_chatml_override_shows_earlier_tool_calls_and_finish_info_has_the_window(monkeypatch):
+def test_earlier_tool_calls_are_sent_as_tool_calls_and_finish_info_has_the_window(monkeypatch):
     from src.config.settings import settings
     from src.llm_providers.ollama_provider import OllamaProvider
     monkeypatch.setattr(settings, "NATIVE_TOOL_CALLING_ENABLED", True)
@@ -721,9 +711,9 @@ def test_the_chatml_override_shows_earlier_tool_calls_and_finish_info_has_the_wi
             await runner.cleanup()
     events = run(go())
     sent = payloads[0]
-    assert sent["options"]["num_ctx"] == 32768 and "template" in sent
+    assert sent["options"]["num_ctx"] == 32768 and "template" not in sent       # Round 2o: Ollama ignores it
     assistant = [m for m in sent["messages"] if m["role"] == "assistant"][0]
-    assert assistant["content"] == "[Action Taken: called file_system(action='read', filename='src/game_logic.py')]"
+    assert assistant["content"] == ""                                              # Round 2o: no imitable call text
     assert assistant["tool_calls"][0]["function"]["name"] == "file_system"
     finish = [e for e in events if e.get("type") == "finish_info"][0]
     assert (finish["prompt_tokens"], finish["output_tokens"], finish["num_ctx"], finish["num_predict"]) == (32675, 93, 32768, 4096)

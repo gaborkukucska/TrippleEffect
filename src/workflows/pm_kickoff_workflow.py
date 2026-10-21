@@ -318,8 +318,15 @@ def _render_definitions(value: Any, indent: int = 0) -> List[str]:
     return [pad + str(value)]
 
 
-def render_project_structure_md(dirs: List[str], planned_files: List[str], code_base_definitions: Any = None) -> str:
-    """Builds PROJECT_STRUCTURE.md: standards, then a tree of directories and planned files."""
+def render_project_structure_md(dirs: List[str], planned_files: List[str], code_base_definitions: Any = None,
+                                existing_files: Optional[List[str]] = None) -> str:
+    """
+    Builds PROJECT_STRUCTURE.md: standards, then a tree of directories and planned files. Round 2o: planned files that
+    already exist (a continued project's files carried over from its earlier session) are listed as existing, not as
+    files to create.
+    """
+    existing = [f for f in planned_files if f in set(existing_files or [])]
+    to_create = [f for f in planned_files if f not in existing]
     lines = [
         "# Project Directory Structure",
         "",
@@ -357,10 +364,14 @@ def render_project_structure_md(dirs: List[str], planned_files: List[str], code_
     lines += ["## Directory Layout", "", "```", "./  (workspace root)"]
     emit(tree, 0)
     lines += ["```", ""]
-    if planned_files:
+    if to_create:
         # Round 1v: a separate list instead of 'name  (planned)' in the tree (W3 copied the bracket note into real paths)
         lines += ["## Files To Create", "", "These files are planned but do NOT exist yet:", ""]
-        lines += [f"- {f}" for f in planned_files] + [""]
+        lines += [f"- {f}" for f in to_create] + [""]
+    if existing:
+        lines += ["## Existing Files", "", "These planned files ALREADY EXIST (carried over from the project's earlier session): "
+                  "read them first and change them; do not create them again:", ""]
+        lines += [f"- {f}" for f in existing] + [""]
     return "\n".join(lines)
 
 
@@ -837,7 +848,8 @@ class PMKickoffWorkflow(BaseWorkflow):
         the pre-defined directory layout and planned files. Workers are instructed
         to read this file before creating any new files or directories.
         """
-        content = render_project_structure_md(created_dirs, planned_files or [], code_base_definitions)
+        existing_files = [f for f in (planned_files or []) if (workspace_path / f).is_file()]  # Round 2o: a continued project
+        content = render_project_structure_md(created_dirs, planned_files or [], code_base_definitions, existing_files)
         workspace_path.mkdir(parents=True, exist_ok=True)
         md_path = workspace_path / "PROJECT_STRUCTURE.md"
         md_path.write_text(content, encoding="utf-8")

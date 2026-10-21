@@ -723,4 +723,39 @@ def state_tool_block_message(agent_type: Optional[str], state: Optional[str], to
         )
     return None
 
+
+# --- Tool calls written as text (Round 2o) ------------------------------------------------------------------------------------
+# 2026-10-21 15:50-16:06 (qwen3.5:9b): 27 of 153 replies were ONLY text like "[Action Taken: called file_system(action='write',
+# filename='models/score_manager.py')]" with no real tool call, so nothing ran: W1 "requested" worker_work 13 times and stayed
+# in worker_report, and its "writes" saved nothing. Round 2n had added such lines to every assistant message that made calls;
+# the model copied them. A reply that only imitates a call is not shown, not reviewed and not kept as the agent's reply.
+CALL_IMITATION_PREFIX = "[Action Taken:"
+_IMITATED_TOOL_RE = _re.compile(r"\[Action Taken:\s*called\s+([A-Za-z_][\w.-]*)\s*\(")
+
+
+def is_call_imitation_text(text: Any) -> bool:
+    """True if a reply (without real tool calls) starts with the framework's '[Action Taken: ...]' note."""
+    return isinstance(text, str) and text.strip().startswith(CALL_IMITATION_PREFIX)
+
+
+def call_imitation_notice(text: Any) -> str:
+    """What the framework tells an agent whose reply only imitated a tool call or a state change in text."""
+    shown = str(text or "").strip()
+    if len(shown) > 160:
+        shown = shown[:160].rstrip() + "..."
+    match = _IMITATED_TOOL_RE.search(str(text or ""))
+    tool = match.group(1) if match else None
+    if tool == "request_state" or (not tool and "Transitioned" in str(text or "")):
+        how = "To change your state, call the 'request_state' tool with the state (and your task_id)."
+    elif tool:
+        how = (f"To use '{tool}', make a real call of the '{tool}' tool with ALL its parameters (for a file write: "
+               "'filename' and the complete 'content').")
+    else:
+        how = "To use a tool, make a real tool call with all its parameters."
+    return (
+        f"[Framework Notice]: Your last reply was only the text \"{shown}\". Writing that text does NOT run anything, so "
+        f"NOTHING was executed or saved. Lines starting with '[Action Taken:' are notes the framework writes, not a way to "
+        f"call tools. {how}"
+    )
+
 # END OF FILE src/agents/tool_activity.py

@@ -20,7 +20,8 @@ from src.agents.constants import (  # type: ignore[import]
     AGENT_TYPE_WORKER, AGENT_TYPE_PM, WORKER_STATE_WORK, BOOTSTRAP_AGENT_ID, AGENT_STATUS_ERROR,
     AGENT_STATUS_AWAITING_CG_REVIEW, AGENT_STATUS_AWAITING_USER_REVIEW_CG, # Added CG states
     PM_STATE_REPORT_CHECK, PM_STATE_STARTUP, PM_STATE_BUILD_TEAM_TASKS,
-    PM_STATE_ACTIVATE_WORKERS, PM_STATE_WORK, WORKER_STATE_WAIT
+    PM_STATE_ACTIVATE_WORKERS, PM_STATE_WORK, WORKER_STATE_WAIT,
+    CONSTITUTIONAL_GUARDIAN_AGENT_ID,  # Round 2o
 )
 
 # Import helper for prompt update
@@ -395,6 +396,36 @@ class AgentInteractionHandler:
         return delivery_status, activation_task
 
 
+    async def _cg_hold_message(self, agent: 'Agent', target_id: str, message_content: str) -> Optional[Dict[str, Any]]:
+        """
+        Round 2o: the Guardian's review of an agent's outgoing message. None = send it. Otherwise the message is held, the
+        concern goes to the first decider of the ladder, and the returned result tells the sender (no 'error' wording: the
+        call itself worked, the sender just waits).
+        """
+        escalation = getattr(self._manager, 'cg_escalation', None)
+        cycle_handler = getattr(self._manager, 'cycle_handler', None)
+        if escalation is None or cycle_handler is None or not message_content.strip():
+            return None
+        if agent.agent_id == CONSTITUTIONAL_GUARDIAN_AGENT_ID or CONSTITUTIONAL_GUARDIAN_AGENT_ID not in self._manager.agents:
+            return None
+        from src.agents.cg_escalation import KIND_MESSAGE, review_context
+        try:
+            verdict = await cycle_handler._get_cg_verdict(agent, message_content, review_context=review_context(agent, KIND_MESSAGE, target_id))
+        except Exception as review_error:  # fail open, like the reply review
+            logger.error(f"InteractionHandler: Guardian review of {agent.agent_id}'s message failed: {review_error}", exc_info=True)
+            return None
+        if not verdict or verdict.strip() == "<OK/>":
+            await escalation.note_outgoing_ok(agent)
+            return None
+        concern = await escalation.raise_concern(agent, KIND_MESSAGE, message_content, verdict, target_id=target_id)
+        decider = "the user" if concern.decider == "user" else f"'{concern.decider}'"
+        message = (
+            f"[Constitutional Guardian]: Your message to '{target_id}' was HELD and NOT delivered (concern "
+            f"'{concern.concern_id}': {concern.concern}). {decider} decides whether it is delivered as it is or you must "
+            "revise it. You wait until then and will be told the decision. Do not send it again."
+        )
+        return {"status": "held", "message": message, "concern_id": concern.concern_id}
+
     async def execute_single_tool(
         self,
         agent: 'Agent',
@@ -427,6 +458,13 @@ class AgentInteractionHandler:
                 result_content = "[ToolExec Error: `target_agent_id` and `message_content` are required for send_message.]"
                 raw_result = {"status": "error", "message": result_content}
             else:
+                # Round 2o: the Constitutional Guardian reviews what an agent sends to another agent. A concern HOLDS the
+                # message and climbs the ladder (worker -> PM -> Admin AI -> user); only the sender waits.
+                held_result = await self._cg_hold_message(agent, str(target_id), str(message_content))
+                if held_result is not None:
+                    if agent.status == AGENT_STATUS_EXECUTING_TOOL:
+                        agent.set_status(AGENT_STATUS_PROCESSING)
+                    return {"call_id": call_id, "name": tool_name, "content": held_result["message"], "_raw_result": held_result}
                 route_status, activation_task = await self.route_and_activate_agent_message(
                     sender_id=agent.agent_id,
                     target_identifier=str(target_id),

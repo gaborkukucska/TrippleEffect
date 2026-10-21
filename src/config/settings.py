@@ -201,6 +201,21 @@ class Settings:
             self.CG_HEARTBEAT_INTERVAL_SECONDS = 60.0
             self.CG_STALLED_THRESHOLD_SECONDS = 300.0
 
+        # --- Round 2o: Constitutional Guardian escalation ladder (src/agents/cg_escalation.py) ---
+        def _positive_float(name: str, default: float) -> float:
+            try:
+                value = float(os.getenv(name, str(default)))
+                return value if value > 0 else default
+            except ValueError:
+                logger.warning(f"Invalid {name} in .env, using {default}.")
+                return default
+        # an undecided concern passes to the next decider after this long
+        self.CG_DECISION_TIMEOUT_SECONDS: float = _positive_float("CG_DECISION_TIMEOUT_SECONDS", 300.0)
+        # a concern whose author was asked to revise is closed if no revised version comes within this long
+        self.CG_REVISION_TIMEOUT_SECONDS: float = _positive_float("CG_REVISION_TIMEOUT_SECONDS", 900.0)
+        # revised versions that still raise a concern before it passes to the next decider
+        self.CG_MAX_REVISIONS_PER_LEVEL: int = int(_positive_float("CG_MAX_REVISIONS_PER_LEVEL", 2))
+
         # --- Project/Session Configuration ---
         self.PROJECTS_BASE_DIR: Path = Path(os.getenv("PROJECTS_BASE_DIR", str(BASE_DIR / "projects")))
 

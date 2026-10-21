@@ -84,6 +84,14 @@ class ProjectCreationWorkflow(BaseWorkflow):
 
         logger.info(f"ProjectCreationWorkflow: Final Extracted Title='{project_title}'. Plan Description (excerpt): '{plan_description[:150]}...'")
 
+        # Round 2o: a project with this name may exist already (2026-10-21: a second "WiFi Snake Game" silently became one
+        # more session of the old project). The approval card then asks the user: continue it, or start a new project.
+        from src.utils.project_folders import existing_project_info
+        existing_project = existing_project_info(settings.PROJECTS_BASE_DIR, project_title, manager.current_session)
+        if existing_project:
+            logger.info(f"ProjectCreationWorkflow: project '{project_title}' already exists ({len(existing_project['sessions'])} "
+                        f"earlier session(s)); the user chooses at approval: continue it or start '{existing_project['suggested_new_name']}'.")
+
         if manager.current_session_db_id:
             logged_plan_content = f"<plan>\n  <title>{html.escape(project_title)}</title>\n  <description_body_for_log>\n{html.escape(plan_description)}\n  </description_body_for_log>\n</plan>"
             await manager.db_manager.log_interaction(
@@ -129,6 +137,7 @@ class ProjectCreationWorkflow(BaseWorkflow):
                 existing_pm_agent = manager.agents.get(pm_agent_id)
                 if existing_pm_agent:
                     existing_pm_agent._awaiting_project_approval = True
+                    existing_pm_agent._existing_project_info = existing_project  # Round 2o
             else:
                 pm_config_base = settings.get_agent_config_by_id(pm_bootstrap_config_id)
                 if not pm_config_base:
@@ -168,6 +177,7 @@ class ProjectCreationWorkflow(BaseWorkflow):
                     new_pm_agent = manager.agents.get(pm_agent_id)
                     if new_pm_agent:
                         new_pm_agent._awaiting_project_approval = True 
+                        new_pm_agent._existing_project_info = existing_project  # Round 2o: the approval asks continue / new
                         # AgentWorkflowManager will be called to set the *actual* startup prompt during the PM's first cycle
                         # Here we just ensure its initial state is PM_STATE_STARTUP
                         if hasattr(manager, 'workflow_manager'):
@@ -249,10 +259,24 @@ class ProjectCreationWorkflow(BaseWorkflow):
             final_message = f"Project creation failed for '{project_title}'. PM agent creation status: {pm_creation_message}. Task creation status: {task_creation_details}"
 
 
+        if existing_project:
+            final_message += (
+                f" NOTE: a project named '{project_title}' already exists ({len(existing_project['sessions'])} earlier "
+                f"session(s), latest: '{existing_project['latest_session']}'). The approval card asks the user whether to "
+                f"CONTINUE that project (its latest files are carried over) or to start it as the NEW project "
+                f"'{existing_project['suggested_new_name']}'. Tell the user about this choice."
+            )
+            # Admin AI gets no workflow result message in its history, so it is told here (it may be asked about it)
+            agent.message_history.append({"role": "system", "content": (
+                f"[Framework Note]: A project named '{project_title}' already existed (latest session "
+                f"'{existing_project['latest_session']}'). The user's approval card asks whether to CONTINUE it (its latest "
+                f"files are carried over) or to start this plan as the NEW project '{existing_project['suggested_new_name']}'.")})
+
         ui_message_data = {
             "type": "project_pending_approval", "project_title": project_title,
             "plan_content": plan_description, "pm_agent_id": pm_agent_id, 
-            "message": f"Project '{project_title}' (PM: {pm_agent_id}) has been planned. {task_creation_details} Please approve to start."
+            "message": f"Project '{project_title}' (PM: {pm_agent_id}) has been planned. {task_creation_details} Please approve to start.",
+            "existing_project": existing_project,  # Round 2o: None, or the earlier sessions of a project with this name
         }
         
         logger.info(f"ProjectCreationWorkflow result: Success={overall_success}, Message: {final_message}")

@@ -123,6 +123,9 @@ class AgentManager:
         self.interaction_handler = AgentInteractionHandler(self)
         logger.info("AgentManager __init__: Instantiating AgentCycleHandler...")
         self.cycle_handler = AgentCycleHandler(self, self.interaction_handler) 
+        # Round 2o: Constitutional Guardian concerns climb worker -> PM -> Admin AI -> user (full pause only at the user)
+        from src.agents.cg_escalation import CGEscalation
+        self.cg_escalation = CGEscalation(self)
         
         logger.info("AgentManager __init__: Instantiating LoopCoordinator...")
         self.loop_coordinator = LoopCoordinator()
@@ -243,6 +246,14 @@ class AgentManager:
     async def schedule_cycle(self, agent: Agent, retry_count: int = 0) -> Optional[asyncio.Task]:
         if not agent:
             logger.error("Schedule cycle called with invalid Agent object.")
+            return None
+        # Round 2o: an agent whose message is held by a Constitutional Guardian concern waits for the decision, and no agent
+        # starts a cycle while the user decides a concern (system pause). The cycle is started when the agent may run again.
+        escalation = getattr(self, 'cg_escalation', None)
+        block_reason = escalation.cycle_block_reason(agent) if escalation is not None else None
+        if isinstance(block_reason, str) and block_reason:
+            escalation.defer(agent, retry_count)
+            logger.info(f"Manager: cycle for agent '{agent.agent_id}' not started now: {block_reason}. It starts when this ends.")
             return None
         logger.info(f"Manager: schedule_cycle ASYNC called for agent '{agent.agent_id}' (Retry: {retry_count}). Creating asyncio task...")
         try:
@@ -687,6 +698,12 @@ class AgentManager:
             await asyncio.sleep(interval)
             logger.debug("Running periodic CG check...")
             try:
+                # Round 2o: the Guardian's oversight - undecided concerns climb the ladder, abandoned revisions are closed
+                escalation = getattr(self, 'cg_escalation', None)
+                if escalation is not None:
+                    await escalation.check_timeouts()
+                    if escalation.is_system_paused():
+                        continue  # the user decides; Admin AI is paused too, so there is nobody else to tell
                 agents_snapshot = list(self.agents.values())
                 for agent in agents_snapshot:
                     if agent.status == AGENT_STATUS_AWAITING_USER_REVIEW_CG and agent.cg_review_start_time is not None:
@@ -751,7 +768,19 @@ class AgentManager:
             return False, f"Agent '{agent_id}' is not in the correct state for this action."
 
         logger.info(f"User approved original output for agent '{agent_id}' despite CG concern.")
-        
+
+        # Round 2o: a held MESSAGE (escalated up the ladder) is delivered to its recipient; then the system resumes
+        escalation = getattr(self, 'cg_escalation', None)
+        concern = escalation.user_concern_for(agent_id) if escalation is not None else None
+        if concern is not None and concern.kind == "message":
+            agent.cg_original_text = None
+            agent.cg_concern_details = None
+            agent.cg_original_event_data = None
+            agent.cg_awaiting_user_decision = False
+            await escalation.release(concern, decided_by="user")
+            await escalation.finish_user_review(agent_id, "approve")
+            return True, f"Agent '{agent_id}''s held message was approved and delivered. Agents resumed."
+
         original_text = agent.cg_original_text
         original_event_data = agent.cg_original_event_data
 
@@ -795,6 +824,9 @@ class AgentManager:
         else:
             logger.warning(f"Original text for agent '{agent_id}' was empty/None after CG concern approval; cannot process for workflows.")
 
+        if escalation is not None:
+            await escalation.finish_user_review(agent_id, "approve")  # Round 2o: settle the concern and resume all agents
+
         # Websocket updates would typically be here if this method directly sent them,
         # but status updates are pushed via agent.set_status and other UI messages directly.
         # The final return indicates success of this resolution step.
@@ -818,6 +850,10 @@ class AgentManager:
         agent.cg_concern_details = None
         agent.cg_original_event_data = None
         agent.cg_awaiting_user_decision = False
+
+        escalation = getattr(self, 'cg_escalation', None)
+        if escalation is not None:
+            await escalation.finish_user_review(agent_id, "stop")  # Round 2o: the other agents resume
         
         return True, f"Agent '{agent_id}' stopped by user due to CG concern."
 
@@ -832,6 +868,20 @@ class AgentManager:
             return False, f"Agent '{agent_id}' is not in the correct state for this action."
 
         logger.info(f"User requested retry for agent '{agent_id}' with feedback, following CG concern.")
+        user_feedback = (user_feedback or "").strip() or "Rewrite it so that it no longer raises the Guardian's concern."
+
+        # Round 2o: through the escalation ladder - the author revises (the new version is reviewed again), all agents resume
+        escalation = getattr(self, 'cg_escalation', None)
+        concern = escalation.user_concern_for(agent_id) if escalation is not None else None
+        if concern is not None:
+            agent.cg_original_text = None
+            agent.cg_concern_details = None
+            agent.cg_original_event_data = None
+            agent.cg_awaiting_user_decision = False
+            await escalation.request_revision(concern, decided_by="user", feedback=user_feedback)
+            await escalation.finish_user_review(agent_id, "revise")
+            logger.info(f"Agent '{agent_id}' will revise its held {concern.kind} with the user's feedback. Agents resumed.")
+            return True, f"Agent '{agent_id}' will retry with feedback."
 
         feedback_message_content = (
             f"[Framework Feedback for Retry]\n"

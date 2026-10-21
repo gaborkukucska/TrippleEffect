@@ -150,37 +150,23 @@ def effective_ollama_num_ctx(native_num_ctx: Any) -> int:
     return min(native, cap) if native > 0 else cap
 
 
-TOOL_CALL_TEXT_VALUE_LIMIT = 80
+RAW_TEMPLATES = ('{{ .Prompt }}', '{{ .Response }}', '{{ .System }}{{ .Prompt }}')
+_RAW_TEMPLATE_WARNED: set = set()
 
 
-def tool_calls_as_text(tool_calls: Any) -> str:
+def uses_builtin_renderer(model_info: Any) -> bool:
     """
-    Round 2n: "[Action Taken: called file_system(action='read', filename='src/game_logic.py')]" for the tool calls of an
-    assistant message. The ChatML template that replaces a model's RAW '{{ .Prompt }}' template renders only message
-    CONTENT, so the model never saw which calls it had made, only their results (2026-10-20: W1 re-read the same file and
-    re-sent the same complete file many times). Long values (file contents) are shortened.
+    Round 2o: True if Ollama formats this model's chat itself (a built-in Go renderer, e.g. 'qwen3.5'), so a template of
+    '{{ .Prompt }}' is NOT a missing chat template. /api/show reports 'renderer' (newer Ollama) and 'capabilities'.
+    Ollama's /api/chat has no 'template' field: the ChatML override the provider used to send was ignored, and the renderer
+    already shows the model its earlier calls as <tool_call> blocks.
     """
-    parts: List[str] = []
-    for call in tool_calls or []:
-        if not isinstance(call, dict):
-            continue
-        func = call.get("function") if isinstance(call.get("function"), dict) else call
-        name = func.get("name") or call.get("name") or "unknown_tool"
-        args = func.get("arguments", call.get("arguments", {}))
-        if isinstance(args, str):
-            try:
-                args = json.loads(args)
-            except (ValueError, TypeError):
-                args = {"arguments": args}
-        shown: List[str] = []
-        if isinstance(args, dict):
-            for key, value in args.items():
-                text = value if isinstance(value, str) else json.dumps(value, default=str)
-                if len(text) > TOOL_CALL_TEXT_VALUE_LIMIT:
-                    text = f"{text[:TOOL_CALL_TEXT_VALUE_LIMIT].rstrip()}... ({len(text)} chars)"
-                shown.append(f"{key}={text!r}")
-        parts.append(f"[Action Taken: called {name}({', '.join(shown)})]")
-    return "\n".join(parts)
+    if not isinstance(model_info, dict):
+        return False
+    if model_info.get("model_renderer"):
+        return True
+    capabilities = model_info.get("model_capabilities")
+    return isinstance(capabilities, list) and "completion" in capabilities
 
 # --- Concurrency Limiter ---
 _ollama_semaphores = {}
@@ -359,15 +345,14 @@ class OllamaProvider(BaseLLMProvider):
                 logger.debug(f"OllamaProvider: No model-specific stop tokens found for '{model}'. "
                              f"Relying on Ollama's built-in template stop handling (no stop token injected).")
         
-        # --- Warn about raw templates and inject ChatML override ---
-        override_template = None
-        if model_info and model_info.get('model_template'):
-            stripped_template = model_info['model_template'].strip()
-            if stripped_template in ('{{ .Prompt }}', '{{ .Response }}', '{{ .System }}{{ .Prompt }}'):
-                logger.info(f"OllamaProvider: Model '{model}' has a RAW template ('{stripped_template}'). "
-                               f"Multi-turn /api/chat conversations may not be formatted correctly. "
-                               f"Forcing ChatML template override for /api/chat.")
-                override_template = '{{ range .Messages }}{{ if eq .Role "system" }}<|im_start|>system\n{{ .Content }}<|im_end|>\n{{ else if eq .Role "user" }}<|im_start|>user\n{{ .Content }}<|im_end|>\n{{ else if eq .Role "assistant" }}<|im_start|>assistant\n{{ .Content }}<|im_end|>\n{{ end }}{{ end }}<|im_start|>assistant\n'
+        # --- RAW templates (Round 2o) ---
+        # Ollama's /api/chat takes no 'template' field (api.ChatRequest), so the ChatML override sent here until Round 2n was
+        # silently ignored. A '{{ .Prompt }}' template usually means a built-in renderer formats the chat (qwen3.5, gemma4).
+        if (model_info and model not in _RAW_TEMPLATE_WARNED and not uses_builtin_renderer(model_info)
+                and str(model_info.get('model_template') or '').strip() in RAW_TEMPLATES):
+            _RAW_TEMPLATE_WARNED.add(model)
+            logger.warning(f"OllamaProvider: Model '{model}' has a RAW template and Ollama reports no renderer or capabilities "
+                           f"for it: multi-turn /api/chat conversations may not be formatted correctly.")
 
         ignored_options = {k: v for k, v in raw_options.items() if k not in KNOWN_OLLAMA_OPTIONS and k != "stop"}
         if ignored_options: logger.warning(f"OllamaProvider ignoring unknown options: {ignored_options}")
@@ -425,12 +410,6 @@ class OllamaProvider(BaseLLMProvider):
                 if not processed_content.lstrip().startswith("["):
                     processed_content = f"[System Notification]:\n{processed_content}"
 
-            # Round 2n: the ChatML override renders only the content, so the calls an assistant message made are written into it
-            if override_template and msg.get("role") == "assistant" and msg.get("tool_calls"):
-                calls_text = tool_calls_as_text(msg.get("tool_calls"))
-                if calls_text and calls_text not in processed_content:
-                    processed_content = f"{processed_content}\n{calls_text}".strip() if processed_content.strip() else calls_text
-
             msg_to_send: Dict[str, Any] = {"role": role, "content": processed_content}
             # We explicitly DO NOT send `tool_calls` because TrippleEffect relies on XML-in-content 
             # and sending native tool_calls without the tools parameter confuses Ollama.
@@ -452,8 +431,6 @@ class OllamaProvider(BaseLLMProvider):
         payload = { "model": model, "messages": messages_for_ollama_payload, "stream": self.streaming_mode, "options": valid_options }
         if think is not None:
             payload["think"] = bool(think)
-        if override_template:
-            payload["template"] = override_template
 
         use_streaming_mode = self.streaming_mode
         if settings.NATIVE_TOOL_CALLING_ENABLED and tools:

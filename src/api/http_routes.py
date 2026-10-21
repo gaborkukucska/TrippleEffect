@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Request, HTTPException, status as http_status, Depends # Added Request, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
 from pathlib import Path
 import logging
@@ -96,7 +96,7 @@ class AgentConfigInput(BaseModel):
     system_prompt: Optional[str] = Field(settings.DEFAULT_SYSTEM_PROMPT, description="The system prompt for the agent.")
     temperature: Optional[float] = Field(settings.DEFAULT_TEMPERATURE, description="Sampling temperature (e.g., 0.7).")
     persona: Optional[str] = Field(settings.DEFAULT_PERSONA, description="Display name for the agent.")
-    class Config: extra = "allow"
+    model_config = ConfigDict(extra="allow")  # Round 2o: Pydantic v2 form (class Config is deprecated)
 
 class AgentConfigCreate(BaseModel):
     agent_id: str = Field(..., description="Unique identifier for the agent (e.g., 'coder_v2'). Cannot contain spaces or special characters.", pattern=r"^[a-zA-Z0-9_-]+$")
@@ -408,9 +408,14 @@ async def load_specific_session(
 @router.post("/api/projects/approve/{pm_agent_id}", response_model=GeneralResponse)
 async def approve_project_start(
     pm_agent_id: str,
+    mode: Optional[str] = None,
     manager: AgentManager = Depends(get_agent_manager_dependency)
 ):
-    """ Approves the start of a project managed by the specified PM agent. """
+    """
+    Approves the start of a project managed by the specified PM agent. Round 2o: if a project with the same name already
+    existed, 'mode' is the user's choice: 'continue' (same project; the latest session's files are carried over) or 'new'
+    (the plan becomes a new project with a free name).
+    """
     logger.info(f"Received approval request for project managed by PM: {pm_agent_id}")
     try:
         agent_to_start = manager.agents.get(pm_agent_id)
@@ -428,6 +433,14 @@ async def approve_project_start(
             logger.warning(f"Approval failed: PM Agent '{pm_agent_id}' was not awaiting project approval.")
             raise HTTPException(status_code=409, detail=f"Project Manager agent '{pm_agent_id}' was not awaiting approval.")
 
+        # Round 2o: an existing project with the same name needs the user's choice before anything starts
+        existing_project = getattr(agent_to_start, '_existing_project_info', None)
+        approval_mode = str(mode or "").strip().lower()
+        if existing_project and approval_mode not in ("continue", "new"):
+            raise HTTPException(status_code=409, detail=(
+                f"A project named '{existing_project.get('name')}' already exists: choose 'continue' (carry its latest files over) "
+                f"or 'new' (start it as '{existing_project.get('suggested_new_name')}')."))
+
         # Clear the approval flag before scheduling
         agent_to_start._awaiting_project_approval = False
         logger.info(f"Cleared _awaiting_project_approval flag for PM agent '{pm_agent_id}'.")
@@ -435,6 +448,29 @@ async def approve_project_start(
         # Set AgentManager's current project/session context for the PM
         pm_project_name = agent_to_start.agent_config.get("config", {}).get("project_name_context")
         pm_session_name = agent_to_start.agent_config.get("config", {}).get("session_name", manager.current_session)
+
+        carry_over: Optional[tuple] = None
+        if existing_project and pm_project_name and pm_session_name:
+            from src.utils.project_folders import unique_project_name, move_pending_project
+            if approval_mode == "new":
+                new_name = unique_project_name(settings.PROJECTS_BASE_DIR, pm_project_name)
+                move_pending_project(settings.PROJECTS_BASE_DIR, pm_project_name, new_name, pm_session_name)
+                agent_config_inner = agent_to_start.agent_config.setdefault("config", {})
+                agent_config_inner["project_name_context"] = new_name
+                for holder in (agent_config_inner, agent_to_start):
+                    persona = holder.get("persona") if isinstance(holder, dict) else getattr(holder, "persona", None)
+                    if isinstance(persona, str) and f"({pm_project_name[:50]})" in persona:
+                        new_persona = persona.replace(f"({pm_project_name[:50]})", f"({new_name[:50]})")
+                        if isinstance(holder, dict):
+                            holder["persona"] = new_persona
+                        else:
+                            holder.persona = new_persona
+                logger.info(f"Approval: the user started '{pm_project_name}' as the NEW project '{new_name}'.")
+                pm_project_name = new_name
+            else:
+                carry_over = (pm_project_name, existing_project.get("latest_session"))
+                logger.info(f"Approval: the user CONTINUES the existing project '{pm_project_name}'.")
+            agent_to_start._existing_project_info = None
 
         if pm_project_name and pm_session_name:
             logger.info(f"Setting AgentManager context to Project: '{pm_project_name}', Session: '{pm_session_name}' for PM '{pm_agent_id}' activation.")
@@ -455,6 +491,12 @@ async def approve_project_start(
                 except Exception as e:
                     logger.error(f"Failed to save initial project plan to shared_workspace: {e}", exc_info=True)
             # --- END NEW ---
+            if carry_over:
+                # Round 2o: continue the existing project - its latest session's files are the starting point
+                from src.utils.project_folders import carry_over_workspace, carry_over_note
+                from_session, copied = carry_over_workspace(settings.PROJECTS_BASE_DIR, carry_over[0], carry_over[1], pm_session_name)
+                if from_session:
+                    agent_to_start.message_history.append({"role": "system", "content": carry_over_note(carry_over[0], from_session, copied)})
         else:
             logger.warning(f"PM Agent '{pm_agent_id}' missing 'project_name_context' or 'session_name' in config. AgentManager context not explicitly set for this PM activation. Using manager's current context: {manager.current_project}/{manager.current_session}")
 
@@ -472,7 +514,8 @@ async def approve_project_start(
         await manager.send_to_ui({
             "type": "project_approved",
             "pm_agent_id": pm_agent_id,
-            "message": f"Project managed by '{pm_agent_id}' approved and started."
+            "message": (f"Project '{pm_project_name}' managed by '{pm_agent_id}' approved and started"
+                        + (" (continuing the existing project)." if carry_over else " (as a new project)." if approval_mode == "new" and existing_project else "."))
         })
 
         return GeneralResponse(success=True, message=f"Project managed by '{pm_agent_id}' approved and started.")

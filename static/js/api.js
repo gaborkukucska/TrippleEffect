@@ -91,9 +91,10 @@ export const makeApiCall = async (endpoint, method = 'GET', body = null) => {
  * @returns {Promise<object>} The JSON response from the backend.
  * @throws {Error} If the API call fails or returns an error status.
  */
-export const approveProject = async (pmAgentId) => {
-    console.log(`API: Sending approval request for PM Agent ID: ${pmAgentId}`);
-    const endpoint = `/api/projects/approve/${pmAgentId}`;
+export const approveProject = async (pmAgentId, mode = null) => {
+    console.log(`API: Sending approval request for PM Agent ID: ${pmAgentId}${mode ? ` (mode: ${mode})` : ''}`);
+    // Round 2o: mode = 'continue' | 'new' when a project with the same name already exists
+    const endpoint = `/api/projects/approve/${pmAgentId}${mode ? `?mode=${encodeURIComponent(mode)}` : ''}`;
     // No body needed for this POST request, the ID is in the URL
     return makeApiCall(endpoint, 'POST');
 };

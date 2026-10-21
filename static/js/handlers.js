@@ -249,15 +249,30 @@ export const handleWebSocketMessage = (data) => {
                 const safeTitle = escapeHTML(data.project_title);
                 const safePlan = escapeHTML(data.plan_content);
                 const safePmId = escapeHTML(data.pm_agent_id);
+                // Round 2o: a project with this name exists already - the user continues it or starts a new one
+                const existingProject = data.existing_project;
+                let approvalButtons = `<button class="approve-project-btn" data-pm-id="${safePmId}">Approve Project Start</button>`;
+                let existingNote = '';
+                if (existingProject && Array.isArray(existingProject.sessions)) {
+                    const latest = existingProject.sessions[existingProject.sessions.length - 1] || {};
+                    const safeNewName = escapeHTML(existingProject.suggested_new_name || 'a new name');
+                    existingNote = `<p><strong>A project named ${safeTitle} already exists</strong> (${existingProject.sessions.length} earlier session(s); ` +
+                        `latest: <code>${escapeHTML(latest.name || '?')}</code> with ${escapeHTML(String(latest.files ?? 0))} file(s), ` +
+                        `last changed ${escapeHTML(latest.last_changed || '?')}). Continue it, or start this plan as a new project?</p>`;
+                    approvalButtons =
+                        `<button class="approve-project-btn" data-pm-id="${safePmId}" data-mode="continue">Continue existing project</button> ` +
+                        `<button class="approve-project-btn" data-pm-id="${safePmId}" data-mode="new">Start new project '${safeNewName}'</button>`;
+                }
                 displayContent = `
                     <strong>Project Approval Required</strong><br>
                     Project Title: <strong>${safeTitle}</strong><br>
                     PM Agent ID: <code>${safePmId}</code><br>
+                    ${existingNote}
                     <details>
                         <summary>View Plan</summary>
                         <pre>${safePlan}</pre>
                     </details>
-                    <button class="approve-project-btn" data-pm-id="${safePmId}">Approve Project Start</button>
+                    <div class="approval-buttons">${approvalButtons}</div>
                 `;
                 targetAreaId = 'conversation-area'; // Route to main chat
                 displayType = 'system_request'; // Use a specific class for styling
@@ -291,11 +306,16 @@ export const handleWebSocketMessage = (data) => {
                 const guardianReportDetails = escapeHTML(data.concern_details || "No details provided.");
                 const originalReviewedText = data.original_text ? escapeHTML(data.original_text) : ''; // Already escaped if not empty
 
+                // Round 2o: the concern reached the user after the escalation ladder (PM -> Admin AI); all agents are paused
                 const defaultOptions = [
-                    { text: "Acknowledge", command: "acknowledge_cg_concern" },
-                    { text: "Revise Plan", command: "revise_plan_cg_concern" },
-                    { text: "Provide Feedback", command: "feedback_cg_concern" }
+                    { text: "Approve", command: "acknowledge_cg_concern" },
+                    { text: "Revise with feedback", command: "feedback_cg_concern" },
+                    { text: "Stop agent", command: "stop_cg_concern" }
                 ];
+                const concernWhat = data.kind === 'message'
+                    ? `${escapeHTML(data.agent_id || 'agent')}'s message to ${escapeHTML(data.target_id || 'another agent')}`
+                    : `${escapeHTML(data.agent_id || 'agent')}'s reply`;
+                const trailItems = Array.isArray(data.trail) ? data.trail.map(step => `<li>${escapeHTML(String(step))}</li>`).join('') : '';
 
                 let buttonsHTML = '';
                 defaultOptions.forEach(option => {
@@ -303,15 +323,19 @@ export const handleWebSocketMessage = (data) => {
                 });
 
                 displayContent = `
-                    <div>
-                        <p><strong>${displayPersonaForUI} says:</strong></p>
+                    <div class="cg-concern-card">
+                        <p><strong>${displayPersonaForUI} held ${concernWhat}:</strong></p>
                         <p>${guardianReportDetails}</p>
+                        ${data.critical ? `<p><strong>Critical principle(s): ${escapeHTML((data.principles || []).join(', '))}</strong></p>` : ''}
+                        ${data.system_paused ? '<p><em>All agents are paused until you decide.</em></p>' : ''}
+                        ${trailItems ? `<details><summary>How it got here</summary><ul>${trailItems}</ul></details>` : ''}
                         ${originalReviewedText ? `
                         <details>
                             <summary>View Original Text Reviewed</summary>
                             <pre>${originalReviewedText}</pre> {/* originalReviewedText is already escaped */}
                         </details>
                         ` : ''}
+                        <textarea class="cg-feedback-input" rows="2" placeholder="Feedback for 'Revise with feedback' (what must change)"></textarea>
                         <div class="options-container">${buttonsHTML}</div>
                     </div>
                 `;
@@ -512,6 +536,15 @@ export const handleWebSocketMessage = (data) => {
                 break;
 
             // Additional message types that may appear in logs but don't have explicit handlers yet
+            case 'cg_escalation': // Round 2o: a Guardian concern moving along the ladder (worker -> PM -> Admin AI -> user)
+                displayContent = `⚖️ ${escapeHTML(data.content || 'Constitutional Guardian concern')}` +
+                    (data.concern ? ` - ${escapeHTML(data.concern)}` : '');
+                displayAgentId = data.agent_id || 'system';
+                displayType = 'constitutional_concern';
+                targetAreaId = 'internal-comms-area';
+                shouldDisplay = true;
+                break;
+
             case 'cg_concern_raised': // Alternative name for constitutional concerns
                 console.log("Handler: Explicitly handling cg_concern_raised for", data.agent_id);
                 displayContent = `⚖️ Constitutional Concern Raised (${escapeHTML(data.agent_id || 'Unknown Agent')}): ${escapeHTML(data.content || data.concern_details || 'No details')}`;
@@ -685,13 +718,20 @@ export const handleMessageButtonClick = (event) => {
                     // Potentially send without agent_id or handle as an error, depending on backend strictness
                 }
 
+                // Round 2o: 'Revise with feedback' sends the text typed into the card's feedback box
+                const concernCard = actualMessageButton.closest('.cg-concern-card');
+                const feedbackBox = concernCard ? concernCard.querySelector('textarea.cg-feedback-input') : null;
+                const typedFeedback = feedbackBox ? feedbackBox.value.trim() : '';
                 messageObject = {
                     type: "cg_concern_response",
                     action: command,
                     original_text: originalText,
-                    user_feedback: null,
+                    user_feedback: (command === "feedback_cg_concern" && typedFeedback) ? typedFeedback : null,
                     agent_id: agentIdForConcern // Add the agent_id to the message
                 };
+                if (concernCard) {
+                    concernCard.querySelectorAll('button.message-button').forEach(button => { button.disabled = true; });
+                }
                 messageToSend = JSON.stringify(messageObject);
                 ui.displayMessage(escapeHTML(`You chose to: ${buttonText}`), 'user', 'conversation-area', 'human_user');
 
@@ -750,6 +790,11 @@ export const handleMessageButtonClick = (event) => {
         actualApproveButton.disabled = true;
         actualApproveButton.textContent = 'Approval Sent';
         actualApproveButton.style.backgroundColor = '#ccc';
+        // Round 2o: with two choices (continue / new), the other button is disabled too
+        const approvalGroup = actualApproveButton.closest('.approval-buttons');
+        if (approvalGroup) {
+            approvalGroup.querySelectorAll('button.approve-project-btn').forEach(button => { button.disabled = true; });
+        }
 
     } else {
         console.log("Handler: Clicked element is not a recognized button type (message-button or approve-project-btn):", clickedElement);

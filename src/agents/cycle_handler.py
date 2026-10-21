@@ -46,6 +46,8 @@ from src.agents.tool_activity import ADMIN_WORK_TO_PLANNING_NOTE, last_user_text
 from src.agents.assignable_work import assignment_hint_for  # type: ignore[import]  # Round 2h
 from src.agents.assignable_work import worker_wait_block_message  # type: ignore[import]  # Round 2l
 from src.agents.tool_activity import FRAMEWORK_INTERNAL_ARG  # type: ignore[import]  # Round 2k
+from src.agents.tool_activity import call_imitation_notice  # type: ignore[import]  # Round 2o
+from src.agents.cg_escalation import KIND_REPLY, is_reviewed_reply, review_context  # type: ignore[import]  # Round 2o
 
 if TYPE_CHECKING:
     from src.agents.manager import AgentManager  # type: ignore[import]
@@ -402,7 +404,7 @@ class AgentCycleHandler:
             
         return False
 
-    async def _get_cg_verdict(self, agent, original_agent_final_text: str) -> Optional[str]:
+    async def _get_cg_verdict(self, agent, original_agent_final_text: str, review_context: Optional[str] = None) -> Optional[str]:
         if not original_agent_final_text or original_agent_final_text.isspace():
             logger.warning("CG review requested for empty or whitespace-only text. Skipping LLM call and returning <OK/>.")
             return "<OK/>"
@@ -453,7 +455,7 @@ class AgentCycleHandler:
                 )
                 cg_history: List[MessageDict] = [
                     {"role": "system", "content": formatted_cg_system_prompt},
-                    {"role": "system", "content": f"---\nText for Constitutional Review:\n---\n{original_agent_final_text}"}
+                    {"role": "system", "content": (f"{review_context}\n" if review_context else "") + f"---\nText for Constitutional Review:\n---\n{original_agent_final_text}"}  # Round 2o: + who wrote it, where it goes
                 ]
                 max_tokens_for_verdict = getattr(settings, 'CG_MAX_TOKENS', 4000)
 
@@ -869,6 +871,14 @@ class AgentCycleHandler:
         if agent.agent_id not in self._manager._agent_cycle_locks:
             self._manager._agent_cycle_locks[agent.agent_id] = asyncio.Lock()
             
+        # Round 2o: held by a Constitutional Guardian concern, or the system is paused while the user decides one
+        escalation = getattr(self._manager, 'cg_escalation', None)
+        block_reason = escalation.cycle_block_reason(agent) if escalation is not None else None
+        if isinstance(block_reason, str) and block_reason:
+            escalation.defer(agent, retry_count)
+            logger.info(f"CycleHandler: run_cycle for '{agent.agent_id}' not started: {block_reason}.")
+            return
+
         lock = self._manager._agent_cycle_locks[agent.agent_id]
         if lock.locked():
             logger.warning(f"CycleHandler: Skipping run_cycle for Agent '{agent.agent_id}' - already running.")
@@ -2718,19 +2728,28 @@ class AgentCycleHandler:
                                 if re.match(r'^\s*(<tool_call>.*?</tool_call>\s*)+$', final_content, re.DOTALL):
                                     logger.info(f"CycleHandler: Skipping CG review for non-command tool-call-only response from '{agent.agent_id}'")
                                     cg_verdict = "<OK/>"
+                                elif not is_reviewed_reply(agent):
+                                    # Round 2o: a PM's or worker's text stays inside the framework (their messages are reviewed in send_message)
+                                    cg_verdict = "<OK/>"
                                 elif agent.agent_id == "admin_ai" and len(agent.message_history) <= 3:
                                     logger.info(f"CycleHandler: Skipping CG review for Admin AI's initial startup greeting to prevent UI race conditions.")
                                     cg_verdict = "<OK/>"
                                 else:
-                                    cg_verdict = await self._get_cg_verdict(agent, final_content)
+                                    cg_verdict = await self._get_cg_verdict(agent, final_content, review_context=review_context(agent, KIND_REPLY))
+                                    if cg_verdict == "<OK/>" and getattr(self._manager, 'cg_escalation', None) is not None:
+                                        await self._manager.cg_escalation.note_outgoing_ok(agent)
                                 if cg_verdict == "<OK/>":
                                     if context.current_db_session_id and (not agent.message_history or not agent.message_history[-1].get("tool_calls")): await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content)
                                     agent.message_history.append({"role": "assistant", "content": final_content})
                                     await self._manager.send_to_ui(original_event_data)
                                 else: # CG Concern
-                                    agent.cg_original_text = final_content; agent.cg_concern_details = cg_verdict; agent.cg_original_event_data = original_event_data
-                                    agent.cg_awaiting_user_decision = True; agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG); agent.cg_review_start_time = time.time()
-                                    await self._manager.send_to_ui({"type": "cg_concern", "agent_id": agent.agent_id, "original_text": final_content, "concern_details": cg_verdict})
+                                    if getattr(self._manager, 'cg_escalation', None) is not None:
+                                        # Round 2o: Admin AI's reply goes to the user, who decides while all agents are paused
+                                        await self._manager.cg_escalation.raise_concern(agent, KIND_REPLY, final_content, cg_verdict, event_data=original_event_data)
+                                    else:
+                                        agent.cg_original_text = final_content; agent.cg_concern_details = cg_verdict; agent.cg_original_event_data = original_event_data
+                                        agent.cg_awaiting_user_decision = True; agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG); agent.cg_review_start_time = time.time()
+                                        await self._manager.send_to_ui({"type": "cg_concern", "agent_id": agent.agent_id, "original_text": final_content, "concern_details": cg_verdict})
                                     context.action_taken_this_cycle = True; context.needs_reactivation_after_cycle = False
                                     llm_stream_ended_cleanly = False; break
                             else: # No content or CG agent itself
@@ -3001,7 +3020,12 @@ class AgentCycleHandler:
                             cycle_text_content = ""; mock_event_data = {"type": "final_response", "content": final_content_from_buffer, "agent_id": agent.agent_id}
                             context.action_taken_this_cycle = True
                             if agent.agent_id != CONSTITUTIONAL_GUARDIAN_AGENT_ID:
-                                cg_verdict = await self._get_cg_verdict(agent, final_content_from_buffer)
+                                if is_reviewed_reply(agent):  # Round 2o: only Admin AI's replies (to the user) are reviewed
+                                    cg_verdict = await self._get_cg_verdict(agent, final_content_from_buffer, review_context=review_context(agent, KIND_REPLY))
+                                    if cg_verdict == "<OK/>" and getattr(self._manager, 'cg_escalation', None) is not None:
+                                        await self._manager.cg_escalation.note_outgoing_ok(agent)
+                                else:
+                                    cg_verdict = "<OK/>"
                                 if cg_verdict == "<OK/>":
                                     if context.current_db_session_id: await self._manager.db_manager.log_interaction(session_id=context.current_db_session_id, agent_id=agent.agent_id, role="assistant", content=final_content_from_buffer)
                                     await self._manager.send_to_ui(mock_event_data)
@@ -3014,9 +3038,12 @@ class AgentCycleHandler:
                                             self._manager.workflow_manager.change_state(agent, ADMIN_STATE_STANDBY)
                                             context.needs_reactivation_after_cycle = False
                                 else:
-                                    agent.cg_original_text = final_content_from_buffer; agent.cg_concern_details = cg_verdict; agent.cg_original_event_data = mock_event_data
-                                    agent.cg_awaiting_user_decision = True; agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG)
-                                    await self._manager.send_to_ui({"type": "cg_concern", "agent_id": agent.agent_id, "original_text": final_content_from_buffer, "concern_details": cg_verdict})
+                                    if getattr(self._manager, 'cg_escalation', None) is not None:
+                                        await self._manager.cg_escalation.raise_concern(agent, KIND_REPLY, final_content_from_buffer, cg_verdict, event_data=mock_event_data)  # Round 2o
+                                    else:
+                                        agent.cg_original_text = final_content_from_buffer; agent.cg_concern_details = cg_verdict; agent.cg_original_event_data = mock_event_data
+                                        agent.cg_awaiting_user_decision = True; agent.set_status(AGENT_STATUS_AWAITING_USER_REVIEW_CG)
+                                        await self._manager.send_to_ui({"type": "cg_concern", "agent_id": agent.agent_id, "original_text": final_content_from_buffer, "concern_details": cg_verdict})
                                     context.needs_reactivation_after_cycle = False
                                     context.cycle_completed_successfully = False
                             else:
@@ -3038,7 +3065,10 @@ class AgentCycleHandler:
                                     f"You MUST produce output. Review your current state ('{agent.state}') and "
                                     f"take a concrete action: use a tool, provide analysis, or request a state transition."
                                 )
-                                if getattr(agent, '_context_window_full', False):
+                                if getattr(agent, '_call_imitation_text', None):
+                                    nudge_msg = call_imitation_notice(agent._call_imitation_text)  # Round 2o: a call written as text
+                                    agent._call_imitation_text = None
+                                elif getattr(agent, '_context_window_full', False):
                                     nudge_msg = context_full_notice(agent)  # Round 2n: the window was full; history is condensed next
                                 elif getattr(agent, '_last_reply_cut_off', False):
                                     nudge_msg = cut_off_reply_notice(agent)  # Round 2d: it was not empty, it was cut off
