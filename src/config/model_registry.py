@@ -108,6 +108,7 @@ class ModelInfo(TypedDict, total=False):
     model_stop_tokens: Optional[List[str]] # Stop tokens from model's Modelfile parameters
     model_num_ctx: Optional[int] # Native num_ctx from model's Modelfile parameters
     model_template: Optional[str] # Template string for raw-template detection
+    model_capabilities: Optional[List[str]] # Round 2n: Ollama /api/show 'capabilities' (e.g. ['completion', 'tools'])
 # --- END NEW ---
 
 class ModelRegistry:
@@ -270,6 +271,15 @@ class ModelRegistry:
                                                 model_info_dict["family"] = family
                                                 logger.debug(f"Ollama model '{model_name}': family='{family}'")
                                             
+                                            # --- Round 2n: capabilities ('tools', 'thinking', ...) ---
+                                            # 2026-10-21 00:02 failover gave W1 codellama:34b, which "does not support tools",
+                                            # and skipped gemma4:12b (tools supported) for its RAW template. Ollama says which
+                                            # models support tools; that beats guessing from the template.
+                                            capabilities = details_data.get("capabilities")
+                                            if isinstance(capabilities, list):
+                                                model_info_dict["model_capabilities"] = [str(c) for c in capabilities]
+                                                logger.debug(f"Ollama model '{model_name}': capabilities={capabilities}")
+
                                             # --- Extract template (for raw-template detection) ---
                                             template = details_data.get("template")
                                             if template:

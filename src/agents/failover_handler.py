@@ -67,6 +67,30 @@ def _is_model_raw_template(model_id: str) -> bool:
             return True
     return False
 
+
+def model_supports_tools(model_id: str) -> Optional[bool]:
+    """
+    Round 2n: True/False from the model's Ollama 'capabilities' ('tools' in the list), or None when they are unknown
+    (older Ollama, other providers).
+    """
+    model_info = model_registry.get_model_info(model_id)
+    capabilities = model_info.get("model_capabilities") if model_info else None
+    if isinstance(capabilities, list) and capabilities:
+        return "tools" in capabilities
+    return None
+
+
+def _lacks_tool_support(model_id: str) -> bool:
+    """
+    Round 2n: True if the model cannot call tools. Its capabilities decide when known: on 2026-10-21 00:02 the RAW-template
+    guess skipped gemma4:12b and qwen3.5:9b (both support tools) and chose codellama:34b, which does not. Without
+    capabilities, a RAW template is still taken as 'no tool support'.
+    """
+    known = model_supports_tools(model_id)
+    if known is not None:
+        return not known
+    return _is_model_raw_template(model_id)
+
 # Define provider-level errors (connection, timeout, etc.)
 PROVIDER_LEVEL_ERRORS = (
     aiohttp.ClientConnectorError,
@@ -140,9 +164,9 @@ async def _select_alternate_models(
         if is_model_blacklisted(provider, model_id):
             logger.debug(f"Skipping '{model_id}' for alternates: known to lack tool support.")
             continue
-        # Pre-filter models with RAW templates (they can't do tool calling)
-        if _is_model_raw_template(model_id):
-            logger.info(f"Skipping '{model_id}' for alternates: has RAW template (no tool support). Blacklisting.")
+        # Pre-filter models that cannot call tools (Round 2n: by capabilities; RAW template if they are unknown)
+        if _lacks_tool_support(model_id):
+            logger.info(f"Skipping '{model_id}' for alternates: no tool support (capabilities / RAW template). Blacklisting.")
             add_model_to_blacklist(provider, model_id)
             continue
             
@@ -626,9 +650,9 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
                     logger.info(f"Failover: Skipping '{local_model_id_to_try}' on '{local_provider}': blacklisted (no tool support).")
                     failover_state["tried_models_per_local_provider"][local_provider].add(local_model_id_to_try)
                     continue
-                # Pre-filter models with RAW templates (they can't do tool calling)
-                if _is_model_raw_template(local_model_id_to_try):
-                    logger.info(f"Failover: Skipping '{local_model_id_to_try}' on '{local_provider}': has RAW template (no tool support). Blacklisting.")
+                # Pre-filter models that cannot call tools (Round 2n: by capabilities; RAW template if they are unknown)
+                if _lacks_tool_support(local_model_id_to_try):
+                    logger.info(f"Failover: Skipping '{local_model_id_to_try}' on '{local_provider}': no tool support (capabilities / RAW template). Blacklisting.")
                     add_model_to_blacklist(local_provider, local_model_id_to_try)
                     failover_state["tried_models_per_local_provider"][local_provider].add(local_model_id_to_try)
                     continue

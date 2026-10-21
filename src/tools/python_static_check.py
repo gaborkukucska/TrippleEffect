@@ -488,8 +488,13 @@ def _definitions(body) -> dict:
     return {node.name: node for node in body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
 
 
-def _top_level_names(body) -> dict:
-    """Names bound by top-level assignments and imports -> line number (definitions are handled separately)."""
+def _top_level_names(body, include_imports: bool = False) -> dict:
+    """
+    Names bound by top-level assignments (and imports, if include_imports) -> line number (definitions are handled
+    separately). Round 2n: imports are not content. W1's corrected src/app.py (2026-10-20 23:25:24) was refused because it
+    no longer imported 'Session' and 'sessionmaker' from a module that does not exist; a name that is still USED without its
+    import is reported as an undefined name by the write notes instead.
+    """
     names: dict = {}
     for node in body:
         targets: list = []
@@ -498,9 +503,10 @@ def _top_level_names(body) -> dict:
         elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
             targets = [node.target]
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            for alias in node.names:
-                if alias.name != "*":
-                    names.setdefault((alias.asname or alias.name).split(".")[0], node.lineno)
+            if include_imports:
+                for alias in node.names:
+                    if alias.name != "*":
+                        names.setdefault((alias.asname or alias.name).split(".")[0], node.lineno)
             continue
         for target in targets:
             for sub in ast.walk(target):
@@ -513,7 +519,8 @@ def python_rewrite_problems(old_source: str, new_source: str) -> List[str]:
     """
     Why a complete rewrite of a Python file cannot be saved without force_overwrite: the old file defines no function or
     class (nothing to compare with), or the new version would lose a top-level function, class, method of a kept class,
-    assigned or imported name, or the code of a definition. [] means nothing is lost. Both texts must parse.
+    assigned name, or the code of a definition. [] means nothing is lost. Both texts must parse. Round 2n: dropped imports
+    are not a loss.
     """
     try:
         old_tree, new_tree = parse_python(old_source), parse_python(new_source)
@@ -523,7 +530,7 @@ def python_rewrite_problems(old_source: str, new_source: str) -> List[str]:
     old_defs, new_defs = _definitions(old_tree.body), _definitions(new_tree.body)
     if not old_defs:
         return ["the existing file defines no function or class, so the framework cannot check what a new version would lose"]
-    new_names = _top_level_names(new_tree.body)
+    new_names = _top_level_names(new_tree.body, include_imports=True)
     for name, line in _top_level_names(old_tree.body).items():
         if name not in new_names and name not in new_defs:
             problems.append(f"top-level name '{name}' (line {line}) would be removed")

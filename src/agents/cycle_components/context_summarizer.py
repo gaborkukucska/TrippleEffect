@@ -29,9 +29,13 @@ class ContextSummarizer:
         self.max_chunk_size = 8000  # Conservative chunk size for small local LLMs
         self.overlap_size = 200     # Small overlap between chunks
         
+    REAL_PROMPT_TRIGGER_RATIO = 0.75  # Round 2n: share of the window the last REAL prompt may fill
+
     async def should_summarize_context(self, agent_id: str, context_length: int, max_tokens: int,
                                         message_history: Optional[List[Dict[str, Any]]] = None,
-                                        model_num_ctx: Optional[int] = None) -> bool:
+                                        model_num_ctx: Optional[int] = None,
+                                        real_prompt_tokens: Optional[int] = None,
+                                        force: bool = False) -> bool:
         """
         Determine if context should be summarized based on token limits.
         
@@ -40,12 +44,25 @@ class ContextSummarizer:
             context_length: Current estimated context length in tokens
             max_tokens: Maximum tokens allowed for the model
             message_history: Optional message history to check for existing summaries
-            model_num_ctx: Optional model-specific context window size for dynamic threshold
-            
+            model_num_ctx: Optional model-specific context window size for dynamic threshold (the window the provider
+                really uses, e.g. the capped Ollama num_ctx)
+            real_prompt_tokens: Round 2n - the prompt size the provider reported for the agent's last call. It includes the
+                system prompt and the tool schemas, which the estimate does not count (about 5k tokens for a worker).
+            force: Round 2n - the last reply stopped because the context window was FULL.
+
         Returns:
             True if summarization should be triggered
         """
         from src.config.settings import settings
+        if force:
+            logger.warning(f"Context summarization FORCED for agent {agent_id}: its last reply found the context window full.")
+            return True
+        if real_prompt_tokens and model_num_ctx and model_num_ctx > 0 and \
+                real_prompt_tokens > int(model_num_ctx * self.REAL_PROMPT_TRIGGER_RATIO):
+            # the real prompt is near the window: compare the real size with the limits below
+            context_length = max(int(context_length or 0), int(real_prompt_tokens))
+            logger.info(f"Context summarizer: last real prompt of agent {agent_id} had {real_prompt_tokens} tokens "
+                        f"(> {int(self.REAL_PROMPT_TRIGGER_RATIO * 100)}% of num_ctx={model_num_ctx}).")
         # Dynamic threshold: use 50% of model's context window if available
         if model_num_ctx and model_num_ctx > 0:
             threshold = int(model_num_ctx * 0.5)

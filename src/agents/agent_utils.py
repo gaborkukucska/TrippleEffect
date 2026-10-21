@@ -68,11 +68,19 @@ def sort_models_by_size_performance_id(
                 logger.debug(f"Filtering out likely embedding/non-chat model '{model_id}' from failover candidates.")
                 continue
             
-            # Also filter out models that we know have a raw template, as they likely aren't chat models
-            model_template = str(enriched_model.get("model_template", "")).strip()
-            if model_template in ('{{ .Prompt }}', '{{ .Response }}', '{{ .System }}{{ .Prompt }}'):
-                logger.debug(f"Filtering out model '{model_id}' with RAW template '{model_template}' from failover candidates.")
-                continue
+            # Round 2n: Ollama's capabilities say what a model can do; a RAW template alone does not mean "not a chat
+            # model" (qwen3.5:9b and gemma4:12b had RAW templates and worked, 2026-10-20)
+            capabilities = enriched_model.get("model_capabilities")
+            if isinstance(capabilities, list) and capabilities:
+                if "completion" not in capabilities:
+                    logger.debug(f"Filtering out model '{model_id}' without 'completion' capability {capabilities} from failover candidates.")
+                    continue
+            else:
+                # Also filter out models that we know have a raw template, as they likely aren't chat models
+                model_template = str(enriched_model.get("model_template", "")).strip()
+                if model_template in ('{{ .Prompt }}', '{{ .Response }}', '{{ .System }}{{ .Prompt }}'):
+                    logger.debug(f"Filtering out model '{model_id}' with RAW template '{model_template}' from failover candidates.")
+                    continue
         
         # Get num_parameters, ensure it's comparable
         num_params = enriched_model.get("num_parameters")

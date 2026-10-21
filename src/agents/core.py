@@ -81,6 +81,20 @@ def boosted_max_tokens(base: Optional[int], consecutive_cut_offs: int) -> Option
     return min(base * (2 ** consecutive_cut_offs), base * MAX_TOKENS_BOOST_FACTOR)
 
 
+def cut_off_boost_level(agent: Any) -> int:
+    """
+    Round 2n: how many doublings the output budget of the agent's next call gets: the cut-offs in a row, or - while the
+    agent stays in the state where a reply was cut off - the highest level reached there. 2026-10-20 23:21-23:24 W1's
+    complete src/app.py was cut off at 4096 tokens three times (about 85 s each): after each cut-off the retry made a
+    small call (list a directory, pip install), the budget fell back to 4096 and the next complete file was cut off again.
+    """
+    streak = int(getattr(agent, '_consecutive_cut_off_replies', 0) or 0)
+    sticky = int(getattr(agent, '_cut_off_boost_level', 0) or 0)
+    if sticky and getattr(agent, '_cut_off_boost_state', None) != getattr(agent, 'state', None):
+        sticky = 0
+    return max(streak, sticky)
+
+
 def build_request_state_schema(agent_type, state, valid_states):
     """
     Builds the native `request_state` pseudo-tool schema for an agent, or None if it must not be offered.
@@ -210,6 +224,14 @@ class Agent:
         self._consecutive_cut_off_replies: int = 0
         self._last_cut_off_max_tokens: Optional[int] = None
         self._last_base_max_tokens: Optional[int] = None
+        # Round 2n: a cut-off keeps the larger budget while the agent stays in that state (see cut_off_boost_level)
+        self._cut_off_boost_level: int = 0
+        self._cut_off_boost_state: Optional[str] = None
+        # Round 2n: token counts of the last reply (from 'finish_info') and whether the context window was full
+        self._last_prompt_tokens: int = 0
+        self._last_output_tokens: int = 0
+        self._last_num_ctx: Optional[int] = None
+        self._context_window_full: bool = False
         # Round 2h: thinking of the last reply (from the provider's 'finish_info'), and a one-reply switch to turn it off
         self._last_reply_thinking_chars: int = 0
         self._last_reply_thinking_tail: str = ""
@@ -318,7 +340,7 @@ class Agent:
             if max_tokens_override is not None:
                 # Round 2d: after replies that were CUT OFF at the output limit, the next call gets a larger budget (x2 per
                 # cut-off in a row, at most x4) so a complete tool call fits. The configured value stays the normal budget.
-                max_tokens_override = boosted_max_tokens(max_tokens_override, getattr(self, '_consecutive_cut_off_replies', 0))
+                max_tokens_override = boosted_max_tokens(max_tokens_override, cut_off_boost_level(self))  # Round 2n: sticky
                 logger.info(f"Agent {self.agent_id}: Applying max_tokens={max_tokens_override} for state '{self.state}'")
             self._last_reply_cut_off = False  # Round 2d: set again below if this reply is cut off
             self._last_cut_off_max_tokens = max_tokens_override
@@ -367,6 +389,8 @@ class Agent:
 
             from contextlib import aclosing
             finish_reason_received = None  # Round 2d: done_reason reported by the provider ('finish_info' event)
+            finish_event_data: Dict[str, Any] = {}  # Round 2n
+            self._context_window_full = False
             # Round 2h: what this reply thought (from 'finish_info'), and thinking switched off for a retry after a reply
             # that only thought.
             self._last_reply_thinking_chars = 0
@@ -423,6 +447,7 @@ class Agent:
                         finish_reason_received = event.get("done_reason")
                         self._last_reply_thinking_chars = int(event.get("thinking_chars") or 0)
                         self._last_reply_thinking_tail = str(event.get("thinking_tail") or "")
+                        finish_event_data = event  # Round 2n: token counts for the context-window check below
                     elif event_type == "status": event["agent_id"] = self.agent_id; yield event
                     elif event_type == "error":
                         error_content = f"[{self.provider_name} Error] {event.get('content', 'Unknown provider error')}"
@@ -431,10 +456,35 @@ class Agent:
                         event["agent_id"] = self.agent_id; event["content"] = error_content; event["_exception_obj"] = last_error_obj; stream_had_error = True; yield event; break
                     else: logger.warning(f"Agent {self.agent_id}: Received unknown event type '{event_type}' from provider.")
             logger.debug(f"Agent {self.agent_id}: Provider stream finished. Stream error: {stream_had_error}. Processing buffer.")
+            # Round 2n: the real token counts of this reply, and whether it stopped because the CONTEXT WINDOW was full
+            if finish_event_data:
+                try:
+                    self._last_prompt_tokens = int(finish_event_data.get("prompt_tokens") or 0)
+                    self._last_output_tokens = int(finish_event_data.get("output_tokens") or 0)
+                    self._last_num_ctx = int(finish_event_data["num_ctx"]) if finish_event_data.get("num_ctx") else None
+                except (TypeError, ValueError):
+                    pass
+            context_full = False
+            if finish_reason_received == "length" and not native_tool_calls_received and finish_event_data:
+                from src.llm_providers.ollama_provider import is_context_window_full
+                context_full = is_context_window_full(
+                    finish_reason_received, finish_event_data.get("prompt_tokens"), finish_event_data.get("output_tokens"),
+                    finish_event_data.get("num_ctx"), finish_event_data.get("num_predict"))
             # Round 2d: remember whether this reply was cut off at the output limit before it produced a tool call
-            if finish_reason_received == "length" and not native_tool_calls_received:
+            if context_full:
+                # Round 2n: 2026-10-20 23:59 W1 (147 messages) filled the 32,768-token window; the framework took that for
+                # an output cut-off, doubled the output budget and the Guardian blocked W1 for 2 "empty" replies. A full
+                # window needs a shorter history (the cycle handler condenses it), not a larger output budget.
+                self._context_window_full = True
+                logger.warning(f"Agent {self.agent_id}: the CONTEXT WINDOW is full ({finish_event_data.get('prompt_tokens')} "
+                               f"prompt + {finish_event_data.get('output_tokens')} output tokens of num_ctx "
+                               f"{finish_event_data.get('num_ctx')}); the history must be condensed.")
+            elif finish_reason_received == "length" and not native_tool_calls_received:
                 self._last_reply_cut_off = True
                 self._consecutive_cut_off_replies = getattr(self, '_consecutive_cut_off_replies', 0) + 1
+                # Round 2n: keep the larger budget for the rest of this state
+                self._cut_off_boost_level = max(cut_off_boost_level(self), self._consecutive_cut_off_replies)
+                self._cut_off_boost_state = self.state
                 logger.warning(f"Agent {self.agent_id}: reply cut off at the output limit ({max_tokens_override} tokens) without a "
                                f"complete tool call ({self._consecutive_cut_off_replies} in a row).")
             elif finish_reason_received is not None:
@@ -570,6 +620,7 @@ class Agent:
                 valid_calls: List[Any] = []
                 parsing_errors: List[Any] = []
 
+                unknown_tool_requests: List[Dict[str, Any]] = []  # Round 2n
                 if native_tool_calls_received:
                     logger.info(f"Agent {self.agent_id} received {len(native_tool_calls_received)} native tool calls. Bypassing XML parsing.")
                     for call_data in native_tool_calls_received:
@@ -601,10 +652,24 @@ class Agent:
                                         logger.warning(f"Agent {self.agent_id}: Invalid native state request '{requested_state}'.")
                                         parsing_errors.append({"tool_name": tool_name, "error_message": f"Invalid state requested: {requested_state}", "xml_block": str(call_data)})
                             else:
-                                logger.warning(f"Agent {self.agent_id}: Native Tool name '{tool_name}' not found in ToolExecutor.")
+                                # Round 2n: an unknown name ('manage_tool', 2026-10-20 23:16:39) was dropped silently and the
+                                # model was told its reply was EMPTY. A name the executor can resolve (resolve_tool_name) is
+                                # passed on; an unresolvable one is passed on only when the reply has no other call, so the
+                                # model hears that the tool does not exist.
+                                from src.tools.executor import resolve_tool_name
+                                if resolve_tool_name(tool_name, self.manager.tool_executor.tools.keys()):
+                                    logger.warning(f"Agent {self.agent_id}: Native Tool name '{tool_name}' not found; passing it "
+                                                   "to the executor, which runs it as the tool it means.")
+                                    tool_requests_to_yield.append({"id": call_id, "name": tool_name, "arguments": arguments})
+                                else:
+                                    logger.warning(f"Agent {self.agent_id}: Native Tool name '{tool_name}' not found in ToolExecutor.")
+                                    unknown_tool_requests.append({"id": call_id, "name": tool_name, "arguments": arguments})
                         except Exception as e:
                             logger.error(f"Failed to parse native tool call arguments for {tool_name}: {e}")
                             parsing_errors.append({"tool_name": tool_name, "error_message": f"Native JSON Args Error: {str(e)}", "xml_block": str(call_data)})
+
+                    if unknown_tool_requests and not tool_requests_to_yield and not state_change_to_yield:
+                        tool_requests_to_yield.extend(unknown_tool_requests)  # Round 2n: the executor reports them
 
                 elif self.manager.tool_executor and self.raw_xml_tool_call_pattern:
                     parsed_tool_calls_info = find_and_parse_xml_tool_calls(
@@ -778,6 +843,11 @@ class Agent:
                         num_ctx = model_info.get("model_num_ctx")
                         if num_ctx:
                             max_tokens = num_ctx
+                            # Round 2n: an Ollama model really gets the capped window
+                            from src.config.model_registry import base_provider_type
+                            if base_provider_type(self.provider_name) == "ollama":
+                                from src.llm_providers.ollama_provider import effective_ollama_num_ctx
+                                max_tokens = effective_ollama_num_ctx(num_ctx)
             except Exception:
                 pass
                 

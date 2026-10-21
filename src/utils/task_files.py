@@ -10,6 +10,10 @@ docstring and no code"), but nothing stopped the tasks from being closed.
 * file_paths_in_text(): paths such as 'src/main.py' or 'tests/test_x.py' in a task description.
 * task_completion_problems(): defects of the existing Python files a task names; a task with problems must not be
   marked finished.
+* Round 2n: task_completion_problems() also checks the Python files the assignee changed while working on the task
+  (src/utils/file_authorship.py). 2026-10-20 23:26:25 PM1 marked "Kick-off Task 1: Setup Flask backend, SQLite schema
+  ... in data/scores.db" finished: the description named no .py file, so src/app.py, which W1 had written for it and which
+  used the undefined name 'current_direction', was never checked.
 * The kick-off also uses file_paths_in_text(): when the PM's project_structure lists no files, the files named in the
   kick-off tasks are the planned files (that run had no tests/ directory and no conftest.py, while PROJECT_STRUCTURE.md
   said a framework conftest.py existed).
@@ -78,24 +82,38 @@ def python_file_problems(path: Path, shown_name: str, workspace: Optional[Path] 
     return [f"{shown_name}: {note}" for note in python_code_notes_for(source, shown_name, workspace)]
 
 
-def task_completion_problems(description: Optional[str], workspace: Optional[Path]) -> List[str]:
+def task_completion_problems(description: Optional[str], workspace: Optional[Path],
+                             changed_files: Optional[Iterable[Path]] = None) -> List[str]:
     """
     Problems that must be fixed before a task may be marked finished: defects in the EXISTING Python files the task
     description names with a directory ('src/main.py'). Files that do not exist are not checked (a description may name
     files of other tasks), and bare names are skipped: they are usually usage examples ('python temp_convert.py 100 C')
-    of another task's file.
+    of another task's file. Round 2n: changed_files are Python files the assignee changed while working on this task;
+    they are checked as well (the framework root conftest.py excepted).
     """
-    if not workspace or not description:
+    if not workspace or (not description and not changed_files):
         return []
     problems: List[str] = []
     try:
         root = Path(workspace).resolve()
-        for rel_path in file_paths_in_text(description, with_directory_only=True):
+        to_check: List[Path] = []
+        for rel_path in file_paths_in_text(description or "", with_directory_only=True):
             if not rel_path.endswith(".py") or PurePosixPath(rel_path).name == "conftest.py":
                 continue
             path = find_in_workspace(root, rel_path)
-            if path is None:
+            if path is not None and path not in to_check:
+                to_check.append(path)
+        for changed in changed_files or []:
+            try:
+                path = Path(changed).resolve()
+                if (path.suffix != ".py" or not path.is_file() or not path.is_relative_to(root)
+                        or path.relative_to(root) == Path("conftest.py")):
+                    continue
+            except (OSError, ValueError):
                 continue
+            if path not in to_check:
+                to_check.append(path)
+        for path in to_check:
             shown = str(path.relative_to(root)).replace("\\", "/")
             for problem in python_file_problems(path, shown, root):
                 if problem not in problems:

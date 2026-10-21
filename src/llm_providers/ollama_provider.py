@@ -94,12 +94,15 @@ def log_ollama_finish(data: Any, thinking_chars: Optional[int] = None, content_c
     except Exception:
         return None
 
-def finish_info_event(data: Any, reason: Optional[str], thinking_text: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def finish_info_event(data: Any, reason: Optional[str], thinking_text: Optional[str] = None,
+                      num_ctx: Optional[int] = None, num_predict: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """
     Round 2d: a 'finish_info' event for the agent (done_reason and output token count), or None. The agent uses it to tell
     the model that a reply was CUT OFF at the output limit instead of calling it "empty" (2026-10-18: 4 complete-file
     replies of W1 were cut off at 1024 tokens and each time the framework said "Your last response was empty").
     Round 2h: it also carries the size and the end of the reply's thinking, so a reply that only thought can be told so.
+    Round 2n: and the prompt size with the num_ctx / num_predict the request used, so the agent can tell a FULL CONTEXT
+    WINDOW from an output cut-off (2026-10-20 23:59: W1 had 32,675 prompt tokens + 93 output tokens = num_ctx 32,768).
     """
     if not reason or not isinstance(data, dict):
         return None
@@ -108,7 +111,76 @@ def finish_info_event(data: Any, reason: Optional[str], thinking_text: Optional[
         thinking_text = msg.get("thinking") if isinstance(msg, dict) else None
     thinking_text = str(thinking_text or "")
     return {"type": "finish_info", "done_reason": reason, "output_tokens": data.get("eval_count"),
-            "thinking_chars": len(thinking_text), "thinking_tail": thinking_tail(thinking_text)}
+            "thinking_chars": len(thinking_text), "thinking_tail": thinking_tail(thinking_text),
+            "prompt_tokens": data.get("prompt_eval_count"), "num_ctx": num_ctx, "num_predict": num_predict}
+
+
+CONTEXT_FULL_MARGIN = 16  # tokens
+
+
+def is_context_window_full(done_reason: Any, prompt_tokens: Any, output_tokens: Any, num_ctx: Any,
+                           num_predict: Any = None) -> bool:
+    """
+    Round 2n: True if a reply stopped because the CONTEXT WINDOW was full (prompt + output reached num_ctx) rather than
+    because it reached its output limit (num_predict). A full window is not helped by a larger output budget: the history
+    has to shrink.
+    """
+    try:
+        if done_reason != "length" or not num_ctx or prompt_tokens is None:
+            return False
+        prompt, output, window = int(prompt_tokens), int(output_tokens or 0), int(num_ctx)
+        if num_predict and output >= int(num_predict):
+            return False  # it used its whole output budget: an ordinary cut-off
+        return prompt + output >= window - CONTEXT_FULL_MARGIN
+    except (TypeError, ValueError):
+        return False
+
+
+def effective_ollama_num_ctx(native_num_ctx: Any) -> int:
+    """
+    Round 2n: the num_ctx the provider really sends for a model: its native context length capped at OLLAMA_MAX_CTX_CAP
+    (default 32768), or the cap when the native value is unknown. The context summarizer must use the same number: it used
+    the native 262,144 of qwen3.5:9b (threshold 131,072 tokens), so it never ran before the 32,768-token window was full.
+    """
+    cap = int(getattr(settings, 'OLLAMA_MAX_CTX_CAP', 32768) or 32768)
+    try:
+        native = int(native_num_ctx) if native_num_ctx else 0
+    except (TypeError, ValueError):
+        native = 0
+    return min(native, cap) if native > 0 else cap
+
+
+TOOL_CALL_TEXT_VALUE_LIMIT = 80
+
+
+def tool_calls_as_text(tool_calls: Any) -> str:
+    """
+    Round 2n: "[Action Taken: called file_system(action='read', filename='src/game_logic.py')]" for the tool calls of an
+    assistant message. The ChatML template that replaces a model's RAW '{{ .Prompt }}' template renders only message
+    CONTENT, so the model never saw which calls it had made, only their results (2026-10-20: W1 re-read the same file and
+    re-sent the same complete file many times). Long values (file contents) are shortened.
+    """
+    parts: List[str] = []
+    for call in tool_calls or []:
+        if not isinstance(call, dict):
+            continue
+        func = call.get("function") if isinstance(call.get("function"), dict) else call
+        name = func.get("name") or call.get("name") or "unknown_tool"
+        args = func.get("arguments", call.get("arguments", {}))
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (ValueError, TypeError):
+                args = {"arguments": args}
+        shown: List[str] = []
+        if isinstance(args, dict):
+            for key, value in args.items():
+                text = value if isinstance(value, str) else json.dumps(value, default=str)
+                if len(text) > TOOL_CALL_TEXT_VALUE_LIMIT:
+                    text = f"{text[:TOOL_CALL_TEXT_VALUE_LIMIT].rstrip()}... ({len(text)} chars)"
+                shown.append(f"{key}={text!r}")
+        parts.append(f"[Action Taken: called {name}({', '.join(shown)})]")
+    return "\n".join(parts)
 
 # --- Concurrency Limiter ---
 _ollama_semaphores = {}
@@ -269,7 +341,7 @@ class OllamaProvider(BaseLLMProvider):
         if "num_ctx" not in valid_options and "num_ctx" not in kwargs:
             if model_info and model_info.get('model_num_ctx'):
                 native_num_ctx = model_info['model_num_ctx']
-                capped_num_ctx = min(native_num_ctx, getattr(settings, 'OLLAMA_MAX_CTX_CAP', 32768))
+                capped_num_ctx = effective_ollama_num_ctx(native_num_ctx)  # Round 2n: shared with the context summarizer
                 valid_options["num_ctx"] = capped_num_ctx
                 logger.info(f"OllamaProvider: Using model-native num_ctx={native_num_ctx} (capped to {capped_num_ctx}) for '{model}'.")
             else:
@@ -352,6 +424,12 @@ class OllamaProvider(BaseLLMProvider):
             if msg.get("role") == "system" and role == "user":
                 if not processed_content.lstrip().startswith("["):
                     processed_content = f"[System Notification]:\n{processed_content}"
+
+            # Round 2n: the ChatML override renders only the content, so the calls an assistant message made are written into it
+            if override_template and msg.get("role") == "assistant" and msg.get("tool_calls"):
+                calls_text = tool_calls_as_text(msg.get("tool_calls"))
+                if calls_text and calls_text not in processed_content:
+                    processed_content = f"{processed_content}\n{calls_text}".strip() if processed_content.strip() else calls_text
 
             msg_to_send: Dict[str, Any] = {"role": role, "content": processed_content}
             # We explicitly DO NOT send `tool_calls` because TrippleEffect relies on XML-in-content 
@@ -609,7 +687,9 @@ class OllamaProvider(BaseLLMProvider):
                                         all_thinking = "".join(streamed_thinking)
                                         finish_reason = log_ollama_finish(chunk_data, thinking_chars=len(all_thinking),
                                                                           content_chars=streamed_content_chars, thinking_text=all_thinking)
-                                        finish_event = finish_info_event(chunk_data, finish_reason, all_thinking)
+                                        finish_event = finish_info_event(chunk_data, finish_reason, all_thinking,
+                                                                         num_ctx=valid_options.get("num_ctx"),
+                                                                         num_predict=valid_options.get("num_predict"))
                                         if finish_event:
                                             yield finish_event
                                         total_duration = chunk_data.get("total_duration")
@@ -710,7 +790,9 @@ class OllamaProvider(BaseLLMProvider):
                                                                    thinking_text="".join(accumulated_thinking_parts))
                              else:
                                  finish_reason = log_ollama_finish(response_data)
-                             finish_event = finish_info_event(response_data, finish_reason)
+                             finish_event = finish_info_event(response_data, finish_reason,
+                                                              num_ctx=valid_options.get("num_ctx"),
+                                                              num_predict=valid_options.get("num_predict"))
                              if finish_event:
                                  yield finish_event
                              if response_data.get("error"):

@@ -383,8 +383,8 @@ def test_python_rewrite_problems_helper():
         "the existing file defines no function or class, so the framework cannot check what a new version would lose"]
     old = "import os\n\nclass A:\n    def m(self):\n        return 1\n    def n(self):\n        return 2\n"
     assert python_rewrite_problems(old, "import os\n\nclass A:\n    def m(self):\n        return 3\n") == ["method 'A.n' would be removed"]
-    assert python_rewrite_problems(old, "class A:\n    def m(self):\n        return 1\n    def n(self):\n        return 2\n") == [
-        "top-level name 'os' (line 1) would be removed"]
+    # Round 2n: a dropped import is not a loss (a name still used without its import is reported as undefined instead)
+    assert python_rewrite_problems(old, "class A:\n    def m(self):\n        return 1\n    def n(self):\n        return 2\n") == []
 
 
 # ======================================================================================== 4. replies cut off at the limit
@@ -400,8 +400,10 @@ def test_boosted_max_tokens():
 def test_finish_info_event():
     from src.llm_providers.ollama_provider import finish_info_event
     # Round 2h: the event also carries the size and the end of the thinking (none here)
+    # Round 2n: and the prompt size with the num_ctx / num_predict of the request (None when not given)
     assert finish_info_event({"eval_count": 1024}, "length") == {"type": "finish_info", "done_reason": "length", "output_tokens": 1024,
-                                                                  "thinking_chars": 0, "thinking_tail": ""}
+                                                                  "thinking_chars": 0, "thinking_tail": "",
+                                                                  "prompt_tokens": None, "num_ctx": None, "num_predict": None}
     assert finish_info_event({}, None) is None
 
 
@@ -440,6 +442,7 @@ def _consume(agent):
 
 
 def test_a_cut_off_reply_is_recorded_and_the_next_call_gets_more_tokens(monkeypatch):
+    import src.agents.core as core_module
     provider = _FakeProvider([{"type": "finish_info", "done_reason": "length", "output_tokens": 1024}])
     agent = _worker(provider, monkeypatch)
     _consume(agent)
@@ -450,8 +453,14 @@ def test_a_cut_off_reply_is_recorded_and_the_next_call_gets_more_tokens(monkeypa
     _consume(agent)
     assert provider.max_tokens_seen[-1] == 4096
     assert agent._last_reply_cut_off is False and agent._consecutive_cut_off_replies == 0
+    # Round 2n: the larger budget stays while the agent is in the state where it was cut off ...
     _consume(agent)
-    assert provider.max_tokens_seen[-1] == 1024
+    assert provider.max_tokens_seen[-1] == 4096
+    # ... and the configured budget applies again in another state
+    monkeypatch.setattr(core_module.settings, "WORKER_WAIT_STATE_MAX_TOKENS", 512)
+    agent.state = "worker_wait"
+    _consume(agent)
+    assert provider.max_tokens_seen[-1] == 512
 
 
 def test_a_reply_without_finish_info_changes_nothing(monkeypatch):

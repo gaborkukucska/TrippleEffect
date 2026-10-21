@@ -61,21 +61,52 @@ def cut_off_reply_notice(agent) -> str:
     Round 2d: the message for a reply that was CUT OFF at the output token limit before its tool call was complete. The
     old "Your last response was empty" made W1 resend the same complete file four times (2026-10-18 22:55-23:12).
     """
-    from src.agents.core import boosted_max_tokens
+    from src.agents.core import boosted_max_tokens, cut_off_boost_level
     used = getattr(agent, '_last_cut_off_max_tokens', None)
     streak = getattr(agent, '_consecutive_cut_off_replies', 1) or 1
     limit_text = f"{used} tokens" if used else "the output token limit"
     base = getattr(agent, '_last_base_max_tokens', None)
-    next_budget = boosted_max_tokens(base, streak) if base else None
-    if next_budget and next_budget > used:
-        budget_text = f"Your next reply may use up to {next_budget} tokens."
+    next_budget = boosted_max_tokens(base, max(streak, cut_off_boost_level(agent))) if base else None  # Round 2n
+    if next_budget and used and next_budget > used:
+        budget_text = f"Your next replies in this state may use up to {next_budget} tokens."
     else:
         budget_text = "Your next reply has the same limit."
     return (
         f"[Framework Notice]: Your last reply was CUT OFF at {limit_text} before your tool call was complete "
         f"({streak} time(s) in a row), so NOTHING was executed or saved. {budget_text} Think briefly and make the tool call "
         "smaller: change only the lines that need to change (code_editor 'replace_chunks' with one small chunk, or "
-        "file_system 'replace_lines') instead of sending a whole file again."
+        "file_system 'replace_lines') instead of sending a whole file again. A NEW file that is too long for one reply: "
+        "write its first part with file_system 'write', then add the rest with 'append' (one function or class per call)."
+    )
+
+
+def effective_context_window(agent, model_num_ctx: Optional[int]) -> Optional[int]:
+    """
+    Round 2n: the context window an agent's calls really have: for Ollama the num_ctx of its last call (what the provider
+    sent), else the model's native context capped at OLLAMA_MAX_CTX_CAP; for other providers model_num_ctx unchanged.
+    """
+    try:
+        from src.config.model_registry import base_provider_type
+        if base_provider_type(getattr(agent, 'provider_name', '')) != "ollama":
+            return model_num_ctx
+        last = getattr(agent, '_last_num_ctx', None)
+        if isinstance(last, int) and not isinstance(last, bool) and last > 0:
+            return last
+        from src.llm_providers.ollama_provider import effective_ollama_num_ctx
+        return effective_ollama_num_ctx(model_num_ctx)
+    except Exception:
+        return model_num_ctx
+
+
+def context_full_notice(agent) -> str:
+    """Round 2n: the message for a reply that stopped because the context window was full."""
+    window = getattr(agent, '_last_num_ctx', None)
+    used = getattr(agent, '_last_prompt_tokens', 0)
+    size = f" ({used} of {window} tokens)" if window and used else ""
+    return (
+        f"[Framework Notice]: Your context window was FULL{size}, so your last reply stopped before it could do anything "
+        "and NOTHING was executed or saved. The framework shortens your history to a summary before your next reply. Continue with the next "
+        "concrete step of your task: re-read only the file you need now, and keep tool calls small."
     )
 
 
@@ -974,8 +1005,14 @@ class AgentCycleHandler:
                         _model_info = self._manager.model_registry.get_model_info(agent.model)
                         if _model_info:
                             model_num_ctx = _model_info.get('model_num_ctx')
+                    # Round 2n: the window the provider really uses (Ollama: capped at OLLAMA_MAX_CTX_CAP; the last call's
+                    # num_ctx when known), not the model's native 262,144 tokens
+                    model_num_ctx = effective_context_window(agent, model_num_ctx)
+                    force_condense = bool(getattr(agent, '_context_window_full', False))
+                    real_prompt_tokens = getattr(agent, '_last_prompt_tokens', 0) or 0
                     
-                    if await self._context_summarizer.should_summarize_context(agent.agent_id, estimated_tokens, max_tokens, message_history=context.history_for_call, model_num_ctx=model_num_ctx):
+                    if await self._context_summarizer.should_summarize_context(agent.agent_id, estimated_tokens, max_tokens, message_history=context.history_for_call, model_num_ctx=model_num_ctx,
+                                                                               real_prompt_tokens=real_prompt_tokens, force=force_condense):
                         logger.info(f"CycleHandler: Context summarization needed for agent '{agent.agent_id}' due to token limits")
                         try:
                             # CRITICAL FIX: Preserve context anchors for Admin AI work state
@@ -1006,6 +1043,9 @@ class AgentCycleHandler:
                                 context.history_for_call = summarized_context_list
                                 # CRITICAL FIX: Also update the agent's persistent message history with anchors
                                 agent.message_history = list(summarized_context_list)
+                                # Round 2n: the old prompt size no longer applies
+                                agent._last_prompt_tokens = 0
+                                agent._context_window_full = False
                                 logger.info(f"CycleHandler: Context successfully summarized for agent '{agent.agent_id}', reduced to {len(summarized_context_list)} messages")
                                 logger.info(f"CycleHandler: PERSISTENT HISTORY UPDATED for agent '{agent.agent_id}' - new persistent length: {len(agent.message_history)}")
                                 
@@ -1703,6 +1743,18 @@ class AgentCycleHandler:
                         send_message_blocked_by_multi_tool = False
                         for i, call_data in enumerate(deduplicated_tool_calls):
                             tool_name = call_data.get("name"); tool_id = call_data.get("id"); tool_args = call_data.get("arguments", {})
+
+                            # Round 2n: a message that is already marked read is answered at once (no duplicate check, no
+                            # Guardian LLM call) with the ids that are still unread
+                            if tool_name == "mark_message_read":
+                                from src.agents.tool_activity import mark_read_repeat_notice
+                                repeat_notice = mark_read_repeat_notice(agent, tool_args)
+                                if repeat_notice:
+                                    logger.info(f"CycleHandler: '{agent.agent_id}' marked an already-read message again; answered directly.")
+                                    all_tool_results_for_history.append({"role": "tool", "tool_call_id": tool_id or f"unknown_id_{i}",
+                                                                         "name": tool_name, "content": repeat_notice})
+                                    any_tool_success = True
+                                    continue
                             
                             # --- CROSS-CYCLE DUPLICATE DETECTION ---
                             # Check if this exact tool call already succeeded in a previous cycle.
@@ -2986,7 +3038,9 @@ class AgentCycleHandler:
                                     f"You MUST produce output. Review your current state ('{agent.state}') and "
                                     f"take a concrete action: use a tool, provide analysis, or request a state transition."
                                 )
-                                if getattr(agent, '_last_reply_cut_off', False):
+                                if getattr(agent, '_context_window_full', False):
+                                    nudge_msg = context_full_notice(agent)  # Round 2n: the window was full; history is condensed next
+                                elif getattr(agent, '_last_reply_cut_off', False):
                                     nudge_msg = cut_off_reply_notice(agent)  # Round 2d: it was not empty, it was cut off
                                 elif thinking_only_tail(agent):
                                     # Round 2h: it only thought; say so, quote its plan and retry without thinking

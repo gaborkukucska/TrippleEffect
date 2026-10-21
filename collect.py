@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TrippleEffect: Session & Log Collector  (v2: smart log reduction)
+TrippleEffect: Session & Log Collector  (v2: smart log reduction; v2.2: the session of the log)
 
 Run from the TrippleEffect repository root:   python3 collect.py
 Output directory: ~/Desktop/te_session_data     (change with --dest)
@@ -26,6 +26,11 @@ How the log is reduced (nothing is cut by position, so the middle of a long run 
   * identical repeated one-line entries are shown a few times, then counted in a footer;
   * very long lines and long continuation blocks are capped.
 Only if the result is still > 1 MB is it trimmed (first 250 KB + last 750 KB, with a visible marker).
+
+Which session (v2.2, Round 2n): the project session the log itself worked in (its last "Setting context. Project: X,
+Session: Y" line that is not DefaultProject); --session picks one by hand. Without either, the session with the most
+recently changed file. (v2 took the newest shared_workspace FOLDER date, which only changes when a file is created
+directly in it: on 2026-10-21 it exported Temp_Converter_CLI instead of the WiFi_Snake_Game run of the log.)
 
 The script only writes files it generates into the destination folder (earlier exports of the same
 names are replaced). It never touches your repository.
@@ -283,7 +288,37 @@ def copy_capped(src: Path, dest: Path) -> int:
     return src.stat().st_size
 
 
+CONTEXT_RE = re.compile(r"Setting context\. Project: (?P<project>[^,\n]+), Session: (?P<session>[^\s,]+)")
+
+
+def session_dir_from_log(root: Path, text: str) -> Optional[Path]:
+    """The project session folder the log worked in: its LAST 'Setting context' line that is not DefaultProject."""
+    projects_dir = root / "projects"
+    for match in reversed(list(CONTEXT_RE.finditer(text or ""))):
+        project, session = match.group("project").strip(), match.group("session").strip().rstrip(".")
+        if not project or project == "DefaultProject":
+            continue
+        for name in (project, project.replace(" ", "_").strip()[:50].rstrip("_")):
+            candidate = projects_dir / name / session
+            if candidate.is_dir():
+                return candidate
+    return None
+
+
+def _newest_file_mtime(folder: Path) -> float:
+    newest = 0.0
+    for walk_root, dirs, files in os.walk(folder):
+        dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+        for name in files:
+            try:
+                newest = max(newest, (Path(walk_root) / name).stat().st_mtime)
+            except OSError:
+                continue
+    return newest
+
+
 def get_latest_session_dir(root: Path) -> Optional[Path]:
+    """The session folder with the most recently changed FILE (a folder's own date changes only for direct entries)."""
     projects_dir = root / "projects"
     if not projects_dir.is_dir():
         return None
@@ -291,11 +326,12 @@ def get_latest_session_dir(root: Path) -> Optional[Path]:
     for ws in projects_dir.rglob("shared_workspace"):
         try:
             if ws.is_dir():
-                sessions.append((ws.stat().st_mtime, ws.parent))
+                session = ws.parent
+                sessions.append((max(_newest_file_mtime(session), session.stat().st_mtime), str(session), session))
         except OSError:
             continue
     sessions.sort()
-    return sessions[-1][1] if sessions else None
+    return sessions[-1][2] if sessions else None
 
 
 def get_latest_log_file(root: Path) -> Optional[Path]:
@@ -332,6 +368,8 @@ def main() -> int:
     ap.add_argument("--root", default=".", help="TrippleEffect repository root (default: current directory)")
     ap.add_argument("--dest", default=str(Path.home() / "Desktop" / "te_session_data"))
     ap.add_argument("--log", default=None, help="Specific log file (default: newest *.log under logs/)")
+    ap.add_argument("--session", default=None, help="Specific session folder, e.g. projects/My_Project/startup_123 "
+                                                     "(default: the session the log worked in)")
     ap.add_argument("--raw", action="store_true", help="Also write zz_raw_log_head_tail.txt (old behaviour: 400 KB head + 600 KB tail)")
     args = ap.parse_args()
 
@@ -345,7 +383,23 @@ def main() -> int:
     summary = ["# TrippleEffect Latest Session Summary\n"]
 
     # 1. Session files --------------------------------------------------------------
-    session_dir = get_latest_session_dir(root)
+    log_file = Path(args.log) if args.log else get_latest_log_file(root)
+    raw_text: Optional[str] = None
+    if log_file and log_file.is_file():
+        raw_text = log_file.read_text(encoding="utf-8", errors="replace")
+    if args.session:
+        session_dir = Path(args.session)
+        if not session_dir.is_absolute():
+            session_dir = root / session_dir
+        if not session_dir.is_dir():
+            sys.exit(f"ERROR: --session folder not found: {session_dir}")
+        how = "given with --session"
+    else:
+        session_dir = session_dir_from_log(root, raw_text or "")
+        how = "the session the log worked in"
+        if session_dir is None:
+            session_dir = get_latest_session_dir(root)
+            how = "most recently changed session (the log names no project session)"
     if not session_dir:
         summary.append("No project sessions found under projects/.")
         print("WARNING: No project sessions found under projects/.")
@@ -354,8 +408,8 @@ def main() -> int:
             rel_sess = session_dir.relative_to(root)
         except ValueError:
             rel_sess = session_dir
-        summary.append(f"Latest Session: {rel_sess}\n")
-        print(f"Collecting from session: {rel_sess}")
+        summary.append(f"Latest Session: {rel_sess}  ({how})\n")
+        print(f"Collecting from session: {rel_sess} ({how})")
 
         ws_dir = session_dir / "shared_workspace"
         summary.append("## Shared Workspace Files:")
@@ -394,13 +448,11 @@ def main() -> int:
             summary.append(f"\nCopied agent_session_data.json ({size} bytes)")
 
     # 2. Log ------------------------------------------------------------------------
-    log_file = Path(args.log) if args.log else get_latest_log_file(root)
-    if log_file and log_file.is_file():
+    if log_file and log_file.is_file() and raw_text is not None:
         try:
             rel_log = log_file.relative_to(root)
         except ValueError:
             rel_log = log_file
-        raw_text = log_file.read_text(encoding="utf-8", errors="replace")
         raw_size = len(raw_text.encode("utf-8", errors="replace"))
         print(f"Reading log: {log_file.name} ({kb(raw_size)})")
         entries = parse_entries(raw_text)

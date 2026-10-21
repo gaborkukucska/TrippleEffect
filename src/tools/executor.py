@@ -18,6 +18,7 @@ from src.tools.project_management import ProjectManagementTool
 from src.api.websocket_manager import broadcast
 from src.tools.error_handler import tool_error_handler, ErrorType
 from src.agents.tool_activity import FRAMEWORK_INTERNAL_ARG, state_tool_block_message  # Round 2k
+from src.agents.tool_activity import is_file_change_call, last_file_target  # Round 2n
 
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,58 @@ def infer_action_from_keys(tool_name: str, tool_args: Dict[str, Any]) -> Optiona
                 tool_args[key] = val
     tool_args["action"] = action
     return action
+
+
+# --- Tool names that do not exist (Round 2n) ---------------------------------------------------------------------------------
+# Names models use for real tools (the extra arguments are added when the call does not set them).
+HALLUCINATED_TOOL_NAMES: Dict[str, Tuple[str, Dict[str, Any]]] = {
+    "read_file": ("file_system", {"action": "read"}),
+    "write_file": ("file_system", {"action": "write"}),
+    "edit_file": ("code_editor", {}),
+    "create_task": ("project_management", {"action": "add_task"}),
+    "update_task": ("project_management", {"action": "modify_task"}),
+    "finish_task": ("project_management", {"action": "complete_task"}),
+    "message": ("send_message", {}),
+    "search": ("web_search", {}),
+    "execute_command": ("command_executor", {}),
+    "run_command": ("command_executor", {}),
+    "terminal": ("command_executor", {}),
+}
+_TOOL_NAME_FUZZY_CUTOFF = 0.8
+
+
+def resolve_tool_name(tool_name: Any, available: Any) -> Optional[str]:
+    """
+    Round 2n: the real tool meant by a tool name that does not exist, or None. 2026-10-20 23:16:39 PM1 called 'manage_tool'
+    (create_team); the call was dropped silently and PM1 was told its reply was EMPTY. Rules, in order: exact name;
+    HALLUCINATED_TOOL_NAMES; case, '-' and spaces; a close spelling (difflib ratio >= 0.8); the only tool whose first word
+    (4+ letters) is the same ('manage_tool' -> 'manage_team'). Ambiguous names resolve to None.
+    """
+    if not isinstance(tool_name, str) or not tool_name.strip():
+        return None
+    names = [str(n) for n in (available or [])]
+    if tool_name in names:
+        return tool_name
+    mapped = HALLUCINATED_TOOL_NAMES.get(tool_name)
+    if mapped and mapped[0] in names:
+        return mapped[0]
+    cleaned = tool_name.strip().strip("<>/\"' \t").lower().replace("-", "_").replace(" ", "_")
+    if cleaned in names:
+        return cleaned
+    mapped = HALLUCINATED_TOOL_NAMES.get(cleaned)
+    if mapped and mapped[0] in names:
+        return mapped[0]
+    import difflib
+    close = difflib.get_close_matches(cleaned, names, n=2, cutoff=_TOOL_NAME_FUZZY_CUTOFF)
+    if len(close) == 1 or (len(close) == 2 and difflib.SequenceMatcher(None, cleaned, close[0]).ratio()
+                           > difflib.SequenceMatcher(None, cleaned, close[1]).ratio()):
+        return close[0]
+    first_word = cleaned.split("_")[0]
+    if len(first_word) >= 4:
+        same_word = [n for n in names if n.split("_")[0] == first_word]
+        if len(same_word) == 1:
+            return same_word[0]
+    return None
 
 
 def split_line_range(param_name: str, value: Any, schema: Dict[str, Any], tool_args: Dict[str, Any]) -> Optional[Dict[str, int]]:
@@ -399,6 +452,36 @@ class ToolExecutor:
         logger.error(f"[TOOL_EXEC_FAILED] ID:{execution_id} | {final_error}")
         return None, False, final_error
 
+    @staticmethod
+    def _infer_missing_read_filename(tool_args: Dict[str, Any], agent: Any) -> Optional[str]:
+        """Round 2n: the file of the agent's last file call for a file_system 'read' that names no file, else None."""
+        if not isinstance(tool_args, dict):
+            return None
+        action = str(tool_args.get("action") or "").strip().strip("<>/\"' \t").lower()
+        if action not in ("read", "read_file", "read_with_lines", "read_file_with_lines"):
+            return None
+        path_keys = ("filename", "filepath", "file", "path", "file_path", "file_name", "target_file", "name", "filenames",
+                     "file_names", "paths")
+        if any(tool_args.get(key) not in (None, "") for key in path_keys):
+            return None
+        try:
+            return last_file_target(getattr(agent, "message_history", None) or [])
+        except Exception:
+            return None
+
+    @staticmethod
+    def _record_file_changes(tool_name: str, tool_args: Dict[str, Any], agent_id: str, agent: Any,
+                             agent_sandbox_path: Path, project_name: Optional[str], session_name: Optional[str]) -> None:
+        """Round 2n: record the files a successful change call touched (never raises)."""
+        try:
+            from src.utils.file_authorship import record_tool_call_changes
+            task_id = None
+            if agent is not None:
+                task_id = getattr(agent, "active_task_id", None) or getattr(agent, "current_task_id", None)
+            record_tool_call_changes(tool_name, tool_args, agent_id, task_id, agent_sandbox_path, project_name, session_name)
+        except Exception as record_err:
+            logger.debug(f"Executor: could not record file changes for '{agent_id}': {record_err}")
+
     def _is_recoverable_error(self, error_msg: str, tool_name: str) -> bool:
         """Determine if an error is recoverable and worth retrying"""
         # Deterministic tools should never be retried internally with the exact same arguments
@@ -519,29 +602,20 @@ class ToolExecutor:
         logger.info(f"[TOOL_EXEC_START] ID:{execution_id} | Tool:'{tool_name}' | Agent:'{agent_id}' | Args:{tool_args}")
         
         # --- Handle Hallucinated Tool Names (Fuzzy Matching) ---
-        tool_name_mapping = {
-            "read_file": ("file_system", {"action": "read"}),
-            "write_file": ("file_system", {"action": "write"}),
-            "edit_file": ("code_editor", {}),
-            "create_task": ("project_management", {"action": "add_task"}),
-            "update_task": ("project_management", {"action": "modify_task"}),
-            "finish_task": ("project_management", {"action": "complete_task"}),
-            "message": ("send_message", {}),
-            "search": ("web_search", {}),
-            "execute_command": ("command_executor", {}),
-            "run_command": ("command_executor", {}),
-            "terminal": ("command_executor", {})
-        }
-        
         fuzzy_warning = ""
-        if tool_name not in self.tools and tool_name in tool_name_mapping:
-            correct_name, extra_args = tool_name_mapping[tool_name]
-            fuzzy_warning = f"[System Warning: '<{tool_name}>' is an invalid tool schema. Auto-mapped to '<{correct_name}>'. Please use the correct schema next time.]\n\n"
-            logger.info(f"Auto-mapped hallucinated tool '{tool_name}' to '{correct_name}' for agent '{agent_id}'")
-            tool_name = correct_name
-            for k,v in extra_args.items():
-                if k not in tool_args:
-                    tool_args[k] = v
+        if tool_name not in self.tools:
+            # Round 2n: a known wrong name, a different spelling, or the only tool with the same first word
+            correct_name = resolve_tool_name(tool_name, self.tools.keys())
+            if correct_name:
+                extra_args = HALLUCINATED_TOOL_NAMES.get(tool_name, (correct_name, {}))[1]
+                fuzzy_warning = (f"[System Warning: there is no tool named '{tool_name}'. The call was run as the tool "
+                                 f"'{correct_name}'. Use the name '{correct_name}' next time.]\n\n")
+                logger.info(f"Auto-mapped hallucinated tool '{tool_name}' to '{correct_name}' for agent '{agent_id}'")
+                tool_name = correct_name
+                if isinstance(tool_args, dict):
+                    for k, v in extra_args.items():
+                        if k not in tool_args:
+                            tool_args[k] = v
         # -----------------------------------------------------
 
         # Emit WebSocket event for tool execution start
@@ -681,6 +755,18 @@ class ToolExecutor:
             inferred_action = infer_action_from_keys(tool_name, tool_args)
             if inferred_action:
                 logger.info(f"Executor: '{tool_name}' call from '{agent_id}' had no 'action'; using '{inferred_action}', which was given as a parameter name.")
+
+            # Round 2n: a file_system 'read' without any file name reads the file of the agent's last file call. W1 sent
+            # {"action": "read", "start_line": 15, "end_line": 47} 9 times (2026-10-20 23:50-23:55) right after reading
+            # and editing src/game_logic.py, and was moved to worker_report twice for "3 failed cycles".
+            if tool_name == "file_system" and current_agent_instance_for_tool_call is not None:
+                inferred_file = self._infer_missing_read_filename(tool_args, current_agent_instance_for_tool_call)
+                if inferred_file:
+                    tool_args["filename"] = inferred_file
+                    fuzzy_warning += (f"[Framework note: the call had no 'filename', so the file of your last file call, "
+                                      f"'{inferred_file}', was read. Always pass 'filename'.]\n")
+                    logger.info(f"Executor: file_system read from '{agent_id}' had no filename; using '{inferred_file}' "
+                                "from its last file call.")
 
             # Round 2k: tools the agent's state does not allow, and project file changes by a PM, are refused here
             # (offering only some tool schemas did not stop W1 editing code in worker_report, 2026-10-20 10:19-11:03)
@@ -826,6 +912,11 @@ class ToolExecutor:
                 agent_id=agent_id,
                 execution_id=execution_id
             )
+
+            # Round 2n: remember who changed which file for which task (src/utils/file_authorship.py)
+            if success and agent_id != "framework" and is_file_change_call(tool_name, kwargs_for_tool):
+                self._record_file_changes(tool_name, kwargs_for_tool, agent_id, current_agent_instance_for_tool_call,
+                                          agent_sandbox_path, project_name, session_name)
             
             # --- PATH SANITIZATION ---
             # Scrub absolute paths from result and error_message before any further processing

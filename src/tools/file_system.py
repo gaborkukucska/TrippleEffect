@@ -345,6 +345,15 @@ class FileSystemTool(BaseTool):
         return None
 
     @staticmethod
+    def _is_true(value: Any) -> bool:
+        """Round 2n: a boolean flag as models send it (True, 'true', 'yes', 1); the string 'false' is False."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value == 1
+        return isinstance(value, str) and value.strip().lower() in ("true", "yes", "1", "on")
+
+    @staticmethod
     def _content_required_error(action: str, received: Dict[str, Any]) -> Dict[str, Any]:
         """Round 1n: say which parameters arrived, so a model that sent the text under another name can correct itself."""
         names = ", ".join(sorted(str(k) for k in received.keys())) or "(none)"
@@ -425,6 +434,15 @@ class FileSystemTool(BaseTool):
 
         if action == "write_file":
             action = "write"
+        # Round 2n: 'force_overwrite_file_write', 'overwrite', 'rewrite_file' ... = 'write' with force_overwrite
+        force_overwrite_requested = any(self._is_true(kwargs.get(key)) for key in ("force_overwrite", "overwrite", "force"))
+        auto_corrected_from: Optional[str] = None
+        from src.agents.tool_activity import FORCE_WRITE_ACTIONS
+        if action in FORCE_WRITE_ACTIONS:
+            logger.info(f"FileSystemTool: action '{action}' from '{agent_id}' is a 'write' with force_overwrite.")
+            auto_corrected_from = action
+            action = "write"
+            force_overwrite_requested = True
         valid_actions = [
             "read", "write", "append", "insert_lines", "replace_lines", "search_replace_block", 
             "list", "tree", "mkdir", "delete", "find_replace", "regex_replace", "copy", "move", "rename", "exists",
@@ -482,9 +500,6 @@ class FileSystemTool(BaseTool):
             "add": "git_add",
             "init": "git_init"
         }
-        
-        # Track whether an auto-correction was applied for feedback
-        auto_corrected_from: Optional[str] = None
         
         if not action:
             return {"status": "error", "message": f"Missing required 'action' parameter. Must be one of: {', '.join(valid_actions)}."}
@@ -611,7 +626,7 @@ class FileSystemTool(BaseTool):
                 if filename.endswith('/'):
                     return {"status": "error", "message": f"The path '{filename}' appears to be a directory. Please use the 'mkdir' action to create directories."}
                 if content is None: return self._content_required_error("write", kwargs)
-                result = await self._write_file(base_path, filename, content, agent_id, scope_description, force_overwrite=kwargs.get('force_overwrite', False))
+                result = await self._write_file(base_path, filename, content, agent_id, scope_description, force_overwrite=force_overwrite_requested)
             elif action == "list":
                 # relative_path default handled above
                 result = await self._list_directory(base_path, relative_path if isinstance(relative_path, str) else ".", agent_id, scope_description)
@@ -749,6 +764,11 @@ class FileSystemTool(BaseTool):
                 f" [Note: The action '{auto_corrected_from}' was auto-corrected to '{action}'. "
                 f"Please use '{action}' directly in future calls.]"
             )
+            if auto_corrected_from in FORCE_WRITE_ACTIONS:  # Round 2n
+                correction_note = (
+                    f" [Note: the action '{auto_corrected_from}' was run as 'write' with force_overwrite=true. Next time use "
+                    "action 'write'; add \"force_overwrite\": true only to replace a file that another agent wrote.]"
+                )
             result["message"] = result.get("message", "") + correction_note
 
         return result
@@ -1295,12 +1315,28 @@ Pushes changes to a remote repository.
         replace_stub_file = False  # Round 2a: a .py file with only docstrings/imports/pass holds no code to lose either
         replace_keeping_code = False  # Round 2d: a complete new .py version that keeps every function and class
         defer_to_syntax_check = False  # Round 2d: new .py text that does not parse is rejected by the syntax check below
+        replace_own_file = False  # Round 2n: the same agent wrote this file earlier in this server run (its own work)
         rewrite_problems: List[str] = []
+        previous_writer: Optional[str] = None
         if validated_path.is_file() and not force_overwrite and not replace_empty_dir:
+            try:
+                from src.utils.file_authorship import last_writer
+                previous_writer = last_writer(validated_path)
+            except Exception:
+                previous_writer = None
             try:
                 existing_text = validated_path.read_text(encoding='utf-8')
                 replace_blank_file = not existing_text.strip()
-                if not replace_blank_file and str(filename).endswith('.py'):
+                if not replace_blank_file and previous_writer == agent_id and existing_text != content:
+                    # Round 2n: W1's corrected versions of its OWN src/game_logic.py and src/app.py were refused 20+ times
+                    # on 2026-10-20 23:25-23:55 because they renamed a class or dropped imports. The agent replaces its
+                    # own work; the result says what the new version no longer has.
+                    replace_own_file = True
+                    if str(filename).endswith('.py'):
+                        from src.tools.python_static_check import parses_as_python, python_rewrite_problems
+                        if parses_as_python(existing_text) and parses_as_python(content):
+                            rewrite_problems = python_rewrite_problems(existing_text, content)
+                elif not replace_blank_file and str(filename).endswith('.py'):
                     from src.tools.python_static_check import (is_unimplemented_python, parses_as_python,
                                                                python_rewrite_problems)
                     replace_stub_file = is_unimplemented_python(existing_text)
@@ -1315,17 +1351,30 @@ Pushes changes to a remote repository.
                 replace_stub_file = False
                 replace_keeping_code = False
                 defer_to_syntax_check = False
+                replace_own_file = False
         # Prevent overwriting existing files unless force_overwrite is explicitly set
         if (validated_path.exists() and not force_overwrite and not replace_empty_dir and not replace_blank_file
-                and not replace_stub_file and not replace_keeping_code and not defer_to_syntax_check):
+                and not replace_stub_file and not replace_keeping_code and not defer_to_syntax_check
+                and not replace_own_file):
             # Check if the content is exactly identical, in which case just return success to avoid looping the agent
             try:
                 if validated_path.read_text(encoding='utf-8') == content:
                     logger.info(f"Agent {agent_id} attempted to rewrite existing file '{filename}' with identical content. Marking as success.")
-                    return {
-                        "status": "success",
-                        "message": f"File '{filename}' already exists and contains the exact same content. No changes were made, but your action is considered successful."
-                    }
+                    same_msg = (f"File '{filename}' already exists and contains the exact same content. No changes were made, "
+                                "but your action is considered successful.")
+                    if str(filename).endswith('.py'):
+                        # Round 2n: W1 rewrote src/game_logic.py 4 times with the same broken text (undefined 'i' and
+                        # 'half_grid') and was only told "success"
+                        try:
+                            from src.tools.python_static_check import python_code_notes_for
+                            same_notes = python_code_notes_for(content, filename, base_path)
+                        except Exception:
+                            same_notes = []
+                        if same_notes:
+                            same_msg += ("\n[Framework check - the file is unchanged and STILL has these defects:]\n- "
+                                         + "\n- ".join(same_notes)
+                                         + "\nSending the same text again changes nothing: fix the lines named above.")
+                    return {"status": "success", "message": same_msg}
             except Exception:
                 pass
             if not hasattr(self, '_failed_writes'): self._failed_writes = {}
@@ -1334,6 +1383,8 @@ Pushes changes to a remote repository.
             self._failed_writes[agent_id][filename] = fail_count
             
             hint = ""
+            if previous_writer and previous_writer != agent_id:
+                hint += f"\n\nThis file was last changed by agent '{previous_writer}', not by you."
             if rewrite_problems:
                 # Round 2d: say exactly what the complete new version would lose
                 hint += ("\n\nA complete new version of a Python file is saved without force_overwrite only if it keeps every "
@@ -1395,6 +1446,14 @@ Pushes changes to a remote repository.
                 logger.info(f"Agent {agent_id} replaced '{filename}' with a complete new version that keeps all its functions and classes (no force_overwrite).")
                 success_msg += (" (Framework note: the file already existed; your complete new version keeps all of its functions, "
                                 "classes and top-level names, so it replaced the old version without force_overwrite.)")
+            if replace_own_file:
+                logger.info(f"Agent {agent_id} replaced its own file '{filename}' with a complete new version (no force_overwrite).")
+                success_msg += (" (Framework note: you wrote this file yourself earlier, so your complete new version replaced "
+                                "it without force_overwrite.")
+                if rewrite_problems:
+                    success_msg += (" The new version no longer has: " + "; ".join(rewrite_problems)
+                                    + ". If that was not intended, add them back.")
+                success_msg += ")"
             if filename.endswith('.py'):
                 # Round 1o: non-blocking hints about defects the syntax check cannot see (missing imports, docstring-only functions).
                 try:

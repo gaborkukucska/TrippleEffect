@@ -68,6 +68,13 @@ CODE_EXTENSIONS = frozenset({
 FILE_WRITE_ACTIONS = frozenset({
     "write", "append", "insert_lines", "replace_lines", "find_replace", "regex_replace", "search_replace_block",
 })
+# Round 2n: file_system actions that mean "write this complete file, replacing the old one" (force_overwrite). W1 sent
+# 'force_overwrite_file_write' 5 times on 2026-10-20 23:39-23:45 and got "Invalid action" each time.
+FORCE_WRITE_ACTIONS = frozenset({
+    "force_overwrite_file_write", "force_overwrite_write", "force_write", "force_write_file", "force_overwrite",
+    "overwrite", "overwrite_file", "overwrite_write", "write_force", "write_overwrite", "rewrite", "rewrite_file",
+    "replace_file", "write_file_force", "force_rewrite",
+})
 # code_editor actions that only look at a file.
 CODE_EDITOR_READ_ACTIONS = frozenset({"view", "read", "show", "list", "search", "find", "get", "open", "cat"})
 
@@ -90,7 +97,7 @@ def _written_path(call: Dict[str, Any]) -> Optional[str]:
     args = _call_arguments(call)
     action = str(args.get("action", "")).strip().lower()
     if name == "file_system":
-        if action not in FILE_WRITE_ACTIONS:
+        if action not in FILE_WRITE_ACTIONS and action not in FORCE_WRITE_ACTIONS:  # Round 2n: force writes are writes
             return None
     elif name == "code_editor":
         if action in CODE_EDITOR_READ_ACTIONS:
@@ -472,6 +479,64 @@ def read_call_target(arguments: Any) -> str:
     return "."
 
 
+def last_file_target(history) -> Optional[str]:
+    """
+    Round 2n: the FILE (a path with an extension) of the agent's most recent file_system / code_editor call in history, or
+    None. Used when a 'read' names no file at all (W1, 2026-10-20 23:50-23:55: 9 reads with only start_line/end_line).
+    """
+    for msg in reversed(list(history or [])):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for call in reversed(msg.get("tool_calls") or []):
+            if not isinstance(call, dict) or call.get("name") not in ("file_system", "code_editor"):
+                continue
+            args = _call_arguments(call)
+            for key in _PATH_KEYS:
+                value = args.get(key)
+                if isinstance(value, str) and value.strip():
+                    candidate = value.strip()
+                    name = candidate.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+                    if "." in name.strip(".") and not candidate.endswith("/"):
+                        return candidate
+                    break
+    return None
+
+
+def unread_message_ids(agent, history=None) -> List[str]:
+    """Round 2n: ids of the messages in the agent's history that it has not marked read, in order."""
+    read_ids = getattr(agent, "read_message_ids", None) or {}
+    found: List[str] = []
+    for msg in (history if history is not None else getattr(agent, "message_history", None)) or []:
+        msg_id = msg.get("message_id") if isinstance(msg, dict) else None
+        if msg_id and msg_id not in read_ids and msg_id not in found:
+            found.append(msg_id)
+    return found
+
+
+def mark_read_repeat_notice(agent, tool_args: Any) -> Optional[str]:
+    """
+    Round 2n: the answer to a mark_message_read call for a message the agent ALREADY marked read, or None for a new id.
+    2026-10-20 23:32-23:37 W1 (worker_report) marked 'msg_1792509985381_9d8ee4' read 6 times while two OTHER messages stayed
+    unread; every repeat was "successful", went through the duplicate check and a Guardian LLM call, and ended in a forced
+    worker_wait.
+    """
+    args = tool_args if isinstance(tool_args, dict) else _call_arguments({"arguments": tool_args})
+    msg_id = args.get("message_id")
+    if not isinstance(msg_id, str) or not msg_id.strip():
+        return None
+    read_ids = getattr(agent, "read_message_ids", None) or {}
+    if msg_id.strip() not in read_ids:
+        return None
+    unread = unread_message_ids(agent)
+    text = f"Message '{msg_id.strip()}' was ALREADY marked as read earlier, so nothing changed. Do not mark it again."
+    if unread:
+        text += (f" Messages still unread: {', '.join(unread[:5])}. Mark one of THOSE after you have acted on it, or "
+                 "continue with your task.")
+    else:
+        text += " You have no unread messages: continue with your task."
+    return text
+
+
 def files_changed_after(history, index: int) -> bool:
     """True if a message after position `index` of history made a SUCCESSFUL file_system / code_editor write or edit."""
     messages = list(history or [])
@@ -497,7 +562,7 @@ def files_changed_after(history, index: int) -> bool:
 def _is_whole_file_write(tool_name: Optional[str], args: Dict[str, Any]) -> bool:
     action = _clean_action(args)
     if tool_name == "file_system":
-        return action == "write"
+        return action == "write" or action in FORCE_WRITE_ACTIONS  # Round 2n
     if tool_name == "code_editor":
         return action.startswith(("write", "create", "save", "overwrite"))
     return False
@@ -610,7 +675,7 @@ _STATE_TOOLS = {
     ("worker", "worker_wait"): REPORT_AND_WAIT_TOOLS,
 }
 # file_system actions (and the aliases file_system accepts for them) that change, move or delete files
-FILE_CHANGE_ACTIONS = FILE_WRITE_ACTIONS | frozenset({
+FILE_CHANGE_ACTIONS = FILE_WRITE_ACTIONS | FORCE_WRITE_ACTIONS | frozenset({
     "write_file", "write_with_lines", "write_with_content", "write_content", "create_file", "create", "new_file",
     "save_file", "save", "add_lines", "add_line", "insert_line", "replace_line", "delete", "delete_file", "remove_file",
     "remove", "move", "move_file", "rename", "rename_file", "copy", "replace_chunks", "code_editor",

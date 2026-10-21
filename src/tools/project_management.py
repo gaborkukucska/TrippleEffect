@@ -866,14 +866,22 @@ class ProjectManagementTool(BaseTool):
     def _completion_refusal(self, task, project_name, session_name, task_label) -> Optional[Dict[str, Any]]:
         """
         Round 2a: an error result if the task may not be marked finished yet because existing Python files named in its
-        description are empty, invalid or have defects (src/utils/task_files.py), else None. Never raises.
+        description (Round 2n: or changed for it by its worker) are empty, invalid or have defects
+        (src/utils/task_files.py), else None. Never raises.
         """
         try:
             from src.config.settings import settings
             from src.tools.sandbox_runner import resolve_shared_workspace
             from src.utils.task_files import task_completion_problems, completion_refusal_message
             workspace = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, str(project_name), str(session_name))
-            problems = task_completion_problems(task['description'], workspace)
+            # Round 2n: + the Python files the assignee changed while working on this task
+            from src.utils.file_authorship import files_changed_for_task
+            try:
+                task_uuid = task['uuid']
+            except Exception:
+                task_uuid = None
+            changed = files_changed_for_task(str(task_uuid), workspace) if task_uuid else []
+            problems = task_completion_problems(task['description'], workspace, changed)
         except Exception as gate_err:
             logger.warning(f"ProjectManagementTool: completion check failed ({gate_err}); not blocking.")
             return None
