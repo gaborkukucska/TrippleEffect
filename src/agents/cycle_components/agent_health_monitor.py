@@ -54,8 +54,14 @@ class AgentHealthRecord:
         self.tool_execution_loop_detected: bool = False
         self.tool_execution_loop_count: int = 0
         
-    def record_response(self, content: str, has_action: bool, has_thought: bool, current_state: str):
-        """Record a new response and update health metrics."""
+    def record_response(self, content: str, has_action: bool, has_thought: bool, current_state: str,
+                        attempted_action: bool = False):
+        """
+        Record a new response and update health metrics.
+        Round 2x: attempted_action - the reply tried to act but delivered nothing usable for a reason that is not the
+        agent going silent (cut off at the output limit, output lost, context window full). It does not count as an
+        empty, minimal or identical response; the counters keep their values.
+        """
         current_time = time.time()
         
         # A "meaningful" response has substantive content. It's not just whitespace or punctuation.
@@ -72,6 +78,9 @@ class AgentHealthRecord:
             self.consecutive_minimal_responses = 0
             self.consecutive_identical_responses = 0
             self.last_meaningful_action_time = current_time
+        elif attempted_action:
+            logger.info(f"ConstitutionalGuardian: '{self.agent_id}' reply tried to act but was unusable (cut off, output "
+                        f"lost or context full) - not counted as empty (empty: {self.consecutive_empty_responses}).")
         else:
             # Analyze response patterns only when NO action was taken
             is_empty = not content or content.isspace()
@@ -110,6 +119,8 @@ class AgentHealthRecord:
         elif has_action:
             # Agent is making progress in the same state (successful tool calls) - reset counter
             self.cycle_count_in_current_state = 1
+        elif attempted_action:
+            pass  # Round 2x: a retried unusable reply neither counts as progress nor as being stuck
         else:
             self.cycle_count_in_current_state += 1
             
@@ -248,8 +259,11 @@ class ConstitutionalGuardianHealthMonitor:
         logger.info("ConstitutionalGuardianHealthMonitor initialized - enforcing strict empty/identical response blocking and automatic contaminated history cleanup")
         
     def record_agent_cycle(self, agent: 'Agent', content: str, has_action: bool, 
-                          has_thought: bool, took_meaningful_action: bool) -> None:
-        """Record the results of an agent cycle for health monitoring."""
+                          has_thought: bool, took_meaningful_action: bool, attempted_action: bool = False) -> None:
+        """
+        Record the results of an agent cycle for health monitoring.
+        Round 2x: attempted_action - see AgentHealthRecord.record_response.
+        """
         if not self._monitoring_active:
             return
             
@@ -324,7 +338,8 @@ class ConstitutionalGuardianHealthMonitor:
         # The generic 'has_action' is too broad and counts any final text response as an action.
         meaningful_action_occurred = took_meaningful_action
         
-        record.record_response(content, meaningful_action_occurred, has_thought, agent.state or 'unknown')
+        record.record_response(content, meaningful_action_occurred, has_thought, agent.state or 'unknown',
+                               attempted_action=bool(attempted_action) and not meaningful_action_occurred)
         record.total_reactivations += 1
         
         # Log critical health metrics

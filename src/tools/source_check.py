@@ -11,9 +11,17 @@ were checked (src/tools/python_static_check.py, src/utils/task_files.py).
 * check_source(source, filename): the syntax error of a .js/.mjs/.cjs file (`node --check`), a .json file (json module) or a
   .sh/.bash file (`bash -n`), or None. None also when the checker is not installed or cannot judge the file (JSX; JSON
   with comments such as tsconfig.json; a script for another shell): a check must never block valid work.
-* write_note / edit_note / unchanged_note: the '[Framework check ...]' text for a tool result (the file IS saved: unlike a
-  Python SyntaxError, the external check does not reject the write).
+* write_note / edit_note / unchanged_note: the '[Framework check ...]' text for a tool result whose file IS saved.
 * file_problem(path, shown): a one-line defect for the task completion check (src/utils/task_files.py).
+
+Round 2x: the check BLOCKS like a Python SyntaxError (2026-10-22 11:44-12:19 W2 saved src/js/main_game_controller.js six
+times with "SyntaxError: Unexpected token '{'" at line 52 - each save only got a note - and the completion check refused
+the task at the end):
+* blocking_issue(source, filename): the issue that rejects a 'write' or an edit (None for blank text: an empty file is
+  not refused here; the completion check reports it).
+* edit_rejection(filename, original, new_text): the refusal of an edit that turns a valid file into an invalid one, else
+  None (a file that was already broken is never blocked: the edit may be its repair).
+* write_rejection_text / issue_report: the texts of a rejected write.
 
 `node --check` on a .js file that uses import/export reports success even for broken code (Node 22 module detection), so
 such a file is checked as an ES module (.mjs copy).
@@ -37,7 +45,9 @@ SHELL = "shell script"
 _JS_SUFFIXES = {".js": ".js", ".mjs": ".mjs", ".cjs": ".cjs"}
 _SHELL_SUFFIXES = (".sh", ".bash")
 _SHELLS = frozenset({"sh", "bash", "dash"})
-_JSONC_NAME_RE = re.compile(r"^(?:tsconfig|jsconfig)(?:\..+)?\.json$", re.IGNORECASE)
+# JSON files that by convention may hold comments (Round 2x: + ESLint, TSLint and dev container configs)
+_JSONC_NAME_RE = re.compile(r"^(?:tsconfig|jsconfig)(?:\..+)?\.json$|^\.eslintrc\.json$|^tslint\.json$|"
+                            r"^\.?devcontainer\.json$", re.IGNORECASE)
 _ESM_RE = re.compile(r"^[ \t]*(?:import[ \t]*[\w{*'\"]|export[ \t]*[\w{*])", re.MULTILINE)
 _MODULE_ONLY_ERRORS = ("cannot use import statement outside a module", "unexpected token 'export'",
                        "await is only valid in async functions and the top level bodies of modules",
@@ -45,6 +55,7 @@ _MODULE_ONLY_ERRORS = ("cannot use import statement outside a module", "unexpect
 MAX_CHECK_BYTES = 1_000_000
 CHECK_TIMEOUT_SECONDS = 15
 CONTEXT_LINES_BEFORE = 2
+REPORT_LINES_BEFORE = 6  # Round 2x: a rejection shows more: the cause of "Unexpected token" is usually above the line
 _missing_checker_logged = set()
 
 
@@ -60,13 +71,37 @@ class SyntaxIssue:
         where = f" at line {self.line}" if self.line else ""
         return f"{shown_name} is not valid {self.kind} ({self.message}{where})."
 
-    def detailed(self, source: str) -> str:
+    def summary(self) -> str:
+        """Round 2x: 'SyntaxError: Unexpected token '{' at line 52'."""
+        return f"{self.message} at line {self.line}" if self.line else self.message
+
+    def hint(self) -> str:
+        """Round 2x: a hint for the commonest JavaScript / JSON mistakes, or ''."""
+        low = self.message.lower()
+        if self.kind == JAVASCRIPT:
+            if "unexpected end of input" in low:
+                return "Hint: a '{', '(' or '[' is never closed - usually a function, class or block misses its last '}'."
+            if "unexpected token" in low or "missing ) after argument list" in low:
+                return ("Hint: the error is usually just ABOVE that line: a function, method or block that is not closed "
+                        "(a missing '}' or ')'), one '}' too many, or a missing ',' between object members.")
+            if "unexpected identifier" in low:
+                return "Hint: a ',' or ';' is probably missing before that word, or a string is not closed."
+            if "invalid or unexpected token" in low:
+                return "Hint: a string is not closed on that line, or the line holds a character that is not JavaScript."
+        elif self.kind == JSON_KIND:
+            return ("Hint: JSON allows no comments and no trailing commas, and every name and string needs double "
+                    "quotes.")
+        elif self.kind == SHELL and ("unexpected end of file" in low or "unexpected token" in low):
+            return "Hint: an 'if', 'for', 'while', 'case' or '{' is not closed ('fi', 'done', 'esac', '}'), or a quote is missing."
+        return ""
+
+    def detailed(self, source: str, before: int = CONTEXT_LINES_BEFORE) -> str:
         where = f" (line {self.line})" if self.line else ""
         text = f"{self.message}{where}"
         lines = source.splitlines()
         if self.line and 1 <= self.line <= len(lines):
             width = len(str(self.line))
-            for number in range(max(1, self.line - CONTEXT_LINES_BEFORE), self.line + 1):
+            for number in range(max(1, self.line - before), self.line + 1):
                 text += f"\n  {number:>{width}} | {lines[number - 1]}"
             if self.column is not None:
                 text += "\n" + " " * (2 + width + 3 + self.column) + "^" * max(1, self.width)
@@ -82,7 +117,7 @@ def check_kind(filename: Optional[str]) -> Optional[str]:
         return JAVASCRIPT
     if suffix == ".json":
         base = PurePosixPath(name).name
-        if _JSONC_NAME_RE.match(base) or "/.vscode/" in f"/{lower}":
+        if _JSONC_NAME_RE.match(base) or "/.vscode/" in f"/{lower}" or "/.devcontainer/" in f"/{lower}":
             return None  # JSON with comments
         return JSON_KIND
     if lower.endswith(_SHELL_SUFFIXES):
@@ -232,8 +267,12 @@ def write_note(source: str, filename: Optional[str]) -> str:
 
 
 def edit_note(source: str, filename: Optional[str]) -> str:
-    """Text appended to a successful edit of a checked file whose new text has a syntax error ('' otherwise)."""
-    return _note(source, filename, "the edit WAS saved, but the file is now",
+    """
+    Text appended to a successful edit of a checked file whose new text has a syntax error ('' otherwise).
+    Round 2x: an edit that breaks a valid file is rejected (edit_rejection), so this is only said after an edit of a file
+    that was already invalid.
+    """
+    return _note(source, filename, "the edit WAS saved (the file was already invalid before it), but the file is STILL",
                  "Fix the line named above before you go on (read the file again first: line numbers may have changed).")
 
 
@@ -241,6 +280,46 @@ def unchanged_note(source: str, filename: Optional[str]) -> str:
     """Text appended to an 'identical content' write of a checked file that still has a syntax error."""
     return _note(source, filename, "the file is unchanged and STILL",
                  "Sending the same text again changes nothing: fix the line named above.")
+
+
+def blocking_issue(source: str, filename: Optional[str]) -> Optional[SyntaxIssue]:
+    """
+    Round 2x: the syntax issue that rejects a 'write' or an edit of a checked file, or None. Blank text is never refused
+    here (the completion check reports an EMPTY file); neither is a file the checker cannot judge (see check_source).
+    """
+    if source is None or not str(source).strip():
+        return None
+    return check_source(source, filename)
+
+
+def issue_report(issue: SyntaxIssue, source: str, closing: Optional[str] = None) -> str:
+    """Round 2x: the code around the error, a hint and a closing line - the counterpart of python_static_check.syntax_error_report."""
+    parts = ["Code around the error:\n" + issue.detailed(source, REPORT_LINES_BEFORE)]
+    hint = issue.hint()
+    if hint:
+        parts.append(hint)
+    parts.append(closing or "Fix the line(s) named above and send the corrected text; do not resend the same text.")
+    return "\n".join(parts)
+
+
+def edit_rejection(filename: str, original: str, new_text: str) -> Optional[str]:
+    """
+    Round 2x: the message that refuses an edit (find_replace, replace_lines, insert_lines, append, code_editor, ...) whose
+    result is not valid JavaScript / JSON / shell although the file was valid before, else None.
+    """
+    issue = blocking_issue(new_text, filename)
+    if issue is None:
+        return None
+    if original and original.strip() and check_source(original, filename) is not None:
+        return None  # the file was already broken: never block an attempt to repair it
+    return (f"Edit rejected: the result would not be valid {issue.kind} ({issue.summary()}). No changes were saved; "
+            f"'{filename}' is unchanged.\n" + issue_report(issue, new_text, "Change your new text so the file stays valid "
+            "(read the file again if you used line numbers), and do not resend the same text."))
+
+
+def write_rejection_text(filename: str, issue: SyntaxIssue) -> str:
+    """Round 2x: the first sentence of a rejected 'write' of a checked file."""
+    return (f"Write rejected: '{filename}' is not valid {issue.kind} ({issue.summary()}). No changes were saved.")
 
 
 def file_problem(path: Path, shown_name: str) -> Optional[str]:

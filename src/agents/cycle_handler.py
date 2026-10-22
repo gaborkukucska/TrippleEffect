@@ -86,6 +86,55 @@ def cut_off_reply_notice(agent) -> str:
     )
 
 
+def lost_output_notice(agent) -> str:
+    """
+    Round 2x: the message for a reply whose output was LOST: it finished normally and used output tokens, but no text and
+    no tool call arrived (ollama_provider.is_output_lost). "Your last response was empty" and the thinking-only notice
+    were both wrong for W2's dropped file writes (2026-10-22 11:44:07 / 11:44:30).
+    """
+    tokens = getattr(agent, '_last_output_tokens', 0)
+    streak = getattr(agent, '_consecutive_output_lost_replies', 1) or 1
+    token_text = f"{tokens} output tokens" if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens > 0 else "output"
+    return (
+        f"[Framework Notice]: Your last reply produced {token_text} but NOTHING arrived - no text and no complete tool "
+        f"call ({streak} time(s) in a row) - so NOTHING was executed or saved. Most likely the tool call was malformed "
+        "and dropped: usually a very long 'content' (a whole file) whose quotes, backslashes or line breaks broke the "
+        "call. Make the tool call smaller: change only the lines that need to change (code_editor 'replace_chunks' with "
+        "one small chunk, or file_system 'replace_lines'). A NEW file: write its first part (about 80 lines) with "
+        "file_system 'write', then add the rest with 'append' (one function or class per call), always to the file's own "
+        "path (e.g. 'src/app.js', never 'src/app.js.part1')."
+    )
+
+
+# Round 2x: where an agent that stays in one state too long should go - states of its OWN role. The watchdog told PM1 (in
+# pm_report_check) to request 'worker_wait', a worker state; PM1 thought "as PM1 my valid states are ..." (2026-10-22 12:11).
+WATCHDOG_EXIT_STATES = {
+    "worker": "'worker_report' (your task is done) or 'worker_wait' (you are blocked)",
+    "pm": "'pm_manage' (to assign or review tasks) or 'pm_standby' (to wait for your workers)",
+    "admin": "'admin_standby'",
+}
+
+
+def watchdog_intervention_text(agent) -> str:
+    """Round 2x: the cycles-in-one-state watchdog's message, naming states of the agent's own role."""
+    states = WATCHDOG_EXIT_STATES.get(str(getattr(agent, 'agent_type', '') or ''), "the appropriate state for your role")
+    return (f"[Framework Watchdog Intervention]: You have been in the '{agent.state}' state for "
+            f"{getattr(agent, '_cycles_without_transition', 0)} cycles without transitioning. If you are stuck or have "
+            f"completed your work here, call the 'request_state' tool with {states}.")
+
+
+def excused_unusable_reply_for_guardian(agent) -> bool:
+    """
+    Round 2x: True if the Constitutional Guardian must not count the agent's last reply as "empty": it was cut off, its
+    output was lost or the context window was full, at most core.UNUSABLE_REPLY_RETRY_CAP times in a row. Never raises.
+    """
+    try:
+        from src.agents.core import excused_unusable_reply
+        return excused_unusable_reply(agent)
+    except Exception:
+        return False
+
+
 def find_task_by_uuid_text(tw, text: str):
     """
     Round 2v: the task a UUID text names: the exact UUID, else the one task it was meant for (a prefix, or 1-2 characters
@@ -969,7 +1018,7 @@ class AgentCycleHandler:
                     if removed > 0:
                         logger.info(f"Watchdog: Cleaned {removed} stale watchdog messages from '{agent.agent_id}' history before injecting fresh one.")
                 
-                intervention_msg = f"[Framework Watchdog Intervention]: You have been in the '{agent.state}' state for {agent._cycles_without_transition} cycles without transitioning. If you are stuck or have completed your work, please forcefully transition your state by calling the 'request_state' tool with state='worker_wait' or the appropriate state for your role."
+                intervention_msg = watchdog_intervention_text(agent)  # Round 2x: the states of the agent's own role
                 agent.message_history.append({"role": "system", "content": intervention_msg})
         # -------------------------------------------------------------------------
         
@@ -1533,18 +1582,13 @@ class AgentCycleHandler:
                                 requested_state = ADMIN_STATE_PLANNING
                                 task_description = None
 
-                        # Record the agent's action in its history so it knows it made the request
-                        history_content = f"[Action Taken: Transitioned to state '{requested_state}'"
-                        if event_task_id:
-                            history_content += f", task_id='{event_task_id}'"
-                        if task_description:
-                            # optional if needed, usually not logged but good to keep it exact
-                            history_content += f", task_description='{task_description}'"
-                        history_content += "]"
-                        
+                        # Record the agent's action in its history so it knows it made the request.
+                        # Round 2x: as a framework (system) note - written as the agent's own reply ("[Action Taken:
+                        # Transitioned to state ...]") it was copied by the model as text that runs nothing.
+                        from src.agents.tool_activity import state_change_record
                         agent.message_history.append({
-                            "role": "assistant",
-                            "content": history_content
+                            "role": "system",
+                            "content": state_change_record(requested_state, event_task_id)
                         })
                         if redirected_to_planning:
                             agent.message_history.append({"role": "system", "content": ADMIN_WORK_TO_PLANNING_NOTE})
@@ -1747,14 +1791,9 @@ class AgentCycleHandler:
                         if content_for_history:
                             final_content_for_history += content_for_history
 
-                        if deferred_state_change:
-                            history_state_tag = f"\n[Action Taken: Transitioned to state '{deferred_state_change}'"
-                            if deferred_task_id:
-                                history_state_tag += f", task_id='{deferred_task_id}'"
-                            if deferred_task_desc:
-                                history_state_tag += f", task_description='{deferred_task_desc}'"
-                            history_state_tag += "]"
-                            final_content_for_history += history_state_tag
+                        # Round 2x: a state change requested with the tool calls is no longer appended to the agent's own
+                        # reply as "[Action Taken: Transitioned to state ...]" (the model copied that text); when the change
+                        # is made after the tools ran, the "[System State Change]" message records it.
 
                         # CRITICAL FIX: Changed `... or None` to `... or ""` to prevent null content,
                         # which causes the agent to lose context and loop. An empty string is valid.
@@ -3131,11 +3170,16 @@ class AgentCycleHandler:
                             # Instead of silently accepting, inject a nudge and immediately retry
                             empty_retry_count = getattr(agent, '_empty_response_retry_count', 0)
                             max_empty_retries = 2
-                            
-                            if empty_retry_count < max_empty_retries:
-                                empty_retry_count += 1
-                                setattr(agent, '_empty_response_retry_count', empty_retry_count)
-                                
+                            # Round 2x: a cut-off / lost / context-full reply tried to act: it is retried with its own
+                            # notice without using up the empty-response retries (up to UNUSABLE_REPLY_RETRY_CAP in a row)
+                            from src.agents.core import excused_unusable_reply
+                            excused_reply = excused_unusable_reply(agent)
+
+                            if excused_reply or empty_retry_count < max_empty_retries:
+                                if not excused_reply:
+                                    empty_retry_count += 1
+                                    setattr(agent, '_empty_response_retry_count', empty_retry_count)
+
                                 nudge_msg = (
                                     f"[Framework Nudge]: Your last response was empty (attempt {empty_retry_count}/{max_empty_retries}). "
                                     f"You MUST produce output. Review your current state ('{agent.state}') and "
@@ -3148,15 +3192,24 @@ class AgentCycleHandler:
                                     nudge_msg = context_full_notice(agent)  # Round 2n: the window was full; history is condensed next
                                 elif getattr(agent, '_last_reply_cut_off', False):
                                     nudge_msg = cut_off_reply_notice(agent)  # Round 2d: it was not empty, it was cut off
+                                elif getattr(agent, '_last_reply_output_lost', False):
+                                    nudge_msg = lost_output_notice(agent)  # Round 2x: its tool call was dropped
                                 elif thinking_only_tail(agent):
                                     # Round 2h: it only thought; say so, quote its plan and retry without thinking
                                     nudge_msg = thinking_only_notice(thinking_only_tail(agent), empty_retry_count, max_empty_retries)
                                     agent._think_off_next_call = True
                                 agent.message_history.append({"role": "system", "content": nudge_msg})
-                                logger.warning(
-                                    f"CycleHandler: Agent '{agent.agent_id}' produced empty response. "
-                                    f"Injecting nudge and scheduling immediate retry ({empty_retry_count}/{max_empty_retries})."
-                                )
+                                if excused_reply:
+                                    from src.agents.core import unusable_reply_kind, UNUSABLE_REPLY_RETRY_CAP
+                                    logger.warning(
+                                        f"CycleHandler: Agent '{agent.agent_id}' reply was unusable "
+                                        f"({unusable_reply_kind(agent)}, {getattr(agent, '_consecutive_unusable_replies', 0)}/"
+                                        f"{UNUSABLE_REPLY_RETRY_CAP} in a row). Injecting its notice and scheduling an immediate retry.")
+                                else:
+                                    logger.warning(
+                                        f"CycleHandler: Agent '{agent.agent_id}' produced empty response. "
+                                        f"Injecting nudge and scheduling immediate retry ({empty_retry_count}/{max_empty_retries})."
+                                    )
                                 
                                 context.needs_reactivation_after_cycle = True
                                 context.action_taken_this_cycle = True
@@ -3230,7 +3283,8 @@ class AgentCycleHandler:
                 content=final_output_content,
                 has_action=context.action_taken_this_cycle,
                 has_thought=context.thought_produced_this_cycle,
-                took_meaningful_action=context.executed_tool_successfully_this_cycle or context.state_change_requested_this_cycle or bool(context.all_tool_results)
+                took_meaningful_action=context.executed_tool_successfully_this_cycle or context.state_change_requested_this_cycle or bool(context.all_tool_results),
+                attempted_action=excused_unusable_reply_for_guardian(agent)  # Round 2x
             )
     
             # Constitutional Guardian Health Intervention Check

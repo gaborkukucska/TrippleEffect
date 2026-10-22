@@ -512,7 +512,8 @@ class CodeEditorTool(BaseTool):
     description: str = (
         "Advanced code editing capabilities for precise modifications. "
         "Allows modifying multiple non-contiguous segments of code in a single file safely. "
-        "Actions: 'replace_chunks'. Note: Each chunk's 'search' + 'replace' text is strictly limited to a combined 32768 characters. If editing massive files, split into multiple chunks or calls."
+        "Actions: 'replace_chunks'. Note: Each chunk's 'search' + 'replace' text is strictly limited to a combined 32768 characters. If editing massive files, split into multiple chunks or calls. "
+        "An edit that would break a valid Python, JavaScript, JSON or shell file is rejected and nothing is saved."
     )
     parameters: List[ToolParameter] = [
         ToolParameter(
@@ -757,8 +758,9 @@ class CodeEditorTool(BaseTool):
                     return {"status": "error", "message": (
                         f"File '{filename}' does not exist yet: your 'write' of it was rejected, so code_editor cannot edit "
                         f"it. Your rejected text is kept: fix the faulty line with file_system action 'find_replace' "
-                        f"(filename '{filename}', find_text, replace_text) or 'replace_lines'; '{filename}' is created as "
-                        "soon as the text is valid Python.")}
+                        f"(filename '{filename}', find_text, replace_text) or 'replace_lines', or add a missing end with "
+                        f"'append'; '{filename}' is created as soon as the text is valid "
+                        f"{rejected_drafts.language_of(filename)}.")}
                 return {"status": "error", "message": (
                     f"File '{filename}' does not exist yet, so it cannot be edited. To CREATE it, call the file_system tool "
                     f"with action='write', filename='{filename}' and the COMPLETE file content.")}
@@ -1022,6 +1024,17 @@ class CodeEditorTool(BaseTool):
                                       "removed lines moved the lines below it. Read the file again and use its current line "
                                       "numbers." if used_line_numbers else "")
                     }
+            else:
+                # Round 2x: an edit that turns a valid JavaScript / JSON / shell file into an invalid one is rejected too
+                # (src/tools/source_check.py; a file that was already invalid may still be edited - it may be the repair)
+                from src.tools.source_check import edit_rejection
+                refused = await asyncio.to_thread(edit_rejection, filename, original_content, content)
+                if refused:
+                    logger.info(f"CodeEditorTool: edit of '{filename}' by '{agent_id}' rejected: the result is not valid.")
+                    return {"status": "error", "message": refused.replace("Edit rejected:", "Code edit rejected:", 1)
+                            + ("\nIf you used line numbers: they may be OUT OF DATE - every earlier edit that added or "
+                               "removed lines moved the lines below it. Read the file again and use its current line "
+                               "numbers." if used_line_numbers else "")}
             
             # Save if all success
             await asyncio.to_thread(abs_path.write_text, content, encoding="utf-8")
@@ -1099,9 +1112,11 @@ class CodeEditorTool(BaseTool):
         - One edit can also be sent without 'chunks': "search" (or "search_block") and "replace" (or "replace_block") as
           top-level parameters, optionally with "start_line" and "end_line".
         - To delete lines use "replace": "". An edit that would leave the file empty is refused.
-        - Python files must stay valid Python: an edit that breaks one is rejected and nothing is saved.
+        - Python files must stay valid Python, and valid JavaScript (.js/.mjs/.cjs), JSON and shell (.sh/.bash) files must
+          stay valid: an edit that breaks one is rejected and nothing is saved.
         - code_editor edits EXISTING files. To create a file use file_system 'write'. (One chunk without search text that
-          starts at line 1 - the complete new file - also creates a missing file.) If your 'write' of a new Python file
-          was rejected, fix it with file_system 'find_replace' or 'replace_lines' on that file: your rejected text is kept.
+          starts at line 1 - the complete new file - also creates a missing file.) If your 'write' of a new Python,
+          JavaScript, JSON or shell file was rejected, fix it with file_system 'find_replace' or 'replace_lines' (or add
+          its rest with 'append') on that file: your rejected text is kept.
         """
         return usage.strip()

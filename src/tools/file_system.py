@@ -79,6 +79,31 @@ def python_append_error(filename: str, original: str, new_content: str) -> Optio
             "class ends." + (f"\n{report}" if report else ""))}
 
 
+def checked_append_error(filename: str, original: str, new_content: str) -> Optional[Dict[str, Any]]:
+    """
+    Round 2x: python_append_error for a JavaScript / JSON / shell file (src/tools/source_check.py): the refusal of an
+    'append' that turns a valid file into an invalid one, else None. Runs a checker program (call it in a thread).
+    """
+    from src.tools.source_check import blocking_issue, check_source, issue_report
+    issue = blocking_issue(new_content, filename)
+    if issue is None:
+        return None
+    if original and original.strip() and check_source(original, filename) is not None:
+        return None  # the file was already broken: never block an attempt to repair it
+    state = (f"'{filename}' is unchanged." if original else f"'{filename}' was NOT created.")
+    return {"status": "error", "message": (
+        f"Append rejected: '{filename}' would not be valid {issue.kind} after it ({issue.summary()}). Nothing was appended; "
+        f"{state} Append whole functions, classes or statements: every part must end where one ends."
+        + "\n" + issue_report(issue, new_content))}
+
+
+def append_text(original: str, content: str) -> str:
+    """Round 2x: what an 'append' adds to original - content, on a new line if original does not end with one."""
+    if original and not original.endswith("\n") and not content.startswith("\n"):
+        return "\n" + content
+    return content
+
+
 def replace_line_range(text: str, start_line: int, end_line: int, content: str) -> str:
     """Round 2v: text with lines start_line..end_line (1-based, inclusive) replaced - exactly as 'replace_lines' does it."""
     lines = text.splitlines(True)
@@ -148,10 +173,11 @@ class FileSystemTool(BaseTool):
         "'list', 'tree' (recursive listing), 'mkdir', 'delete', 'find_replace', 'regex_replace', 'copy', 'move', 'rename', "
         "'exists' (check file/dir existence and metadata), 'search_replace_block', 'git_init', 'git_add', 'git_commit', "
         "'git_status', 'git_diff', 'git_log', 'git_branch', 'git_checkout', 'git_pull', 'git_push'. "
-        "All paths are relative to the selected scope. Python files must stay valid Python: a change that breaks one is "
-        "rejected and nothing is saved. When the 'write' of a NEW Python file is rejected, its text is kept: fix the faulty "
-        "line with 'find_replace' or 'replace_lines' on that file instead of sending the whole file again. Write code into "
-        "the real file (never part files such as 'app.py.part1')."
+        "All paths are relative to the selected scope. Python, JavaScript (.js/.mjs/.cjs), JSON and shell (.sh/.bash) files "
+        "must stay valid: a write or change that breaks one is rejected and nothing is saved. When the 'write' of a NEW "
+        "such file is rejected, its text is kept: fix the faulty line with 'find_replace' or 'replace_lines' on that file, "
+        "or add the rest with 'append', instead of sending the whole file again. Write code into the real file (never part "
+        "files such as 'app.py.part1')."
     )
     parameters: List[ToolParameter] = [
         ToolParameter(
@@ -378,13 +404,17 @@ class FileSystemTool(BaseTool):
         """
         Round 1v: an error result if an edit would turn a valid Python file into invalid Python, else None.
         Round 1y: also (for every file type) if the edit would leave a file that had content empty.
+        Round 2x: also if it would turn a valid JavaScript / JSON / shell file into an invalid one (source_check.edit_rejection;
+        runs a checker program, so async callers run this in a thread).
         """
         from src.tools.code_editor import emptied_file_error
         emptied = emptied_file_error(filename, original, new_content)
         if emptied:
             return {"status": "error", "message": emptied}
         if not str(filename).endswith(".py"):
-            return None
+            from src.tools.source_check import edit_rejection
+            refused = edit_rejection(filename, original, new_content)
+            return {"status": "error", "message": refused} if refused else None
         from src.tools.python_static_check import parse_python  # Round 2m: no SyntaxWarnings on the server's stderr
         try:
             parse_python(new_content)
@@ -448,13 +478,13 @@ class FileSystemTool(BaseTool):
         return text[:start] + replacement + text[end:], None
 
     async def _edit_rejected_draft(self, base_path: Path, filename: str, validated_path: Path, agent_id: str,
-                                   scope_description: str, edit) -> Optional[Dict[str, Any]]:
+                                   scope_description: str, edit, change: str = "change") -> Optional[Dict[str, Any]]:
         """
         Round 2v: apply an edit to the kept text of agent_id's rejected 'write' of the missing file (src/tools/rejected_drafts.py).
         None if there is no kept text. Valid Python is written with the normal 'write' checks; invalid text stays kept.
+        Round 2x: JavaScript / JSON / shell files too (rejected_drafts.draft_problem); `change` names the edit.
         """
         from src.tools import rejected_drafts
-        from src.tools.python_static_check import parse_python, syntax_error_report
         draft = rejected_drafts.get(validated_path, agent_id)
         if draft is None:
             return None
@@ -464,22 +494,23 @@ class FileSystemTool(BaseTool):
         if new_text == draft:
             return {"status": "error", "message": (f"Your change does not change the kept (rejected) text of '{filename}', so "
                                                    f"'{filename}' still does not exist. Fix the line named in the error.")}
-        try:
-            parse_python(new_text)
-        except SyntaxError as err:
+        language = rejected_drafts.language_of(filename)
+        invalid = await asyncio.to_thread(rejected_drafts.draft_problem, new_text, filename)
+        if invalid:
+            summary, report = invalid
             rejected_drafts.keep(validated_path, agent_id, new_text)
-            report = syntax_error_report(new_text, err, closing=rejected_drafts.DRAFT_CLOSING)
-            logger.info(f"Agent {agent_id}: edit applied to the kept text of '{filename}'; still invalid ({err.msg} at line {err.lineno}).")
+            logger.info(f"Agent {agent_id}: {change} applied to the kept text of '{filename}'; still invalid ({summary}).")
             return {"status": "error", "message": (
-                f"Your change was applied to your kept (rejected) text of '{filename}', but it is still not valid Python "
-                f"({err.msg} at line {err.lineno}), so '{filename}' still does not exist. Fix that line the same way."
+                f"Your {change} was applied to your kept (rejected) text of '{filename}', but it is still not valid "
+                f"{language} ({summary}), so '{filename}' still does not exist. Fix that line the same way."
                 + (f"\n{report}" if report else ""))}
         result = await self._write_file(base_path, filename, new_text, agent_id, scope_description)
         if isinstance(result, dict) and result.get("status") == "success":
             rejected_drafts.forget(validated_path)
-            logger.info(f"Agent {agent_id}: '{filename}' created from its kept rejected text after a fix.")
-            result["message"] = (f"[Framework: '{filename}' did not exist; your change was applied to your rejected text of it, "
-                                 f"which is now valid Python, so '{filename}' was created.] " + str(result.get("message") or ""))
+            logger.info(f"Agent {agent_id}: '{filename}' created from its kept rejected text after a {change}.")
+            result["message"] = (f"[Framework: '{filename}' did not exist; your {change} was applied to your rejected text of "
+                                 f"it, which is now valid {language}, so '{filename}' was created.] "
+                                 + str(result.get("message") or ""))
         return result
 
     @staticmethod
@@ -961,8 +992,9 @@ read, write, append, insert_lines, replace_lines, list, tree, mkdir, delete, fin
 *   `private`: Agent's own sandbox directory (the default without a project).
 *   `projects`: Top-level projects directory (ONLY use with `list` action).
 
-**Python files** are checked on every change: a write or edit that would leave invalid Python is rejected and NOTHING is
-saved (the error shows the faulty lines and a hint).
+**Python, JavaScript (.js/.mjs/.cjs), JSON and shell (.sh/.bash) files** are syntax-checked on every change: a write,
+or an edit of a valid file, that would leave invalid code is rejected and NOTHING is saved (the error shows the faulty
+lines and a hint). A file that is already invalid can still be edited to repair it.
 """
         
         if sub_action == "read":
@@ -986,7 +1018,7 @@ Writes content to a NEW file. For targeted edits on existing files, use `replace
 
 Rules:
 *   An existing file is replaced without `force_overwrite` only if it is empty, holds no code yet, you wrote it yourself, or (Python) your new version keeps all its functions, classes and top-level names.
-*   Python content must be valid Python. If the write of a NEW Python file is rejected, the file is NOT created, but your text is kept: fix only the faulty line with `find_replace` (find_text = the wrong text) or `replace_lines` (the line numbers shown in the error) on that filename. The file is created as soon as the text is valid.
+*   Python, JavaScript, JSON and shell content must be valid. If the write of a NEW such file is rejected, the file is NOT created, but your text is kept: fix only the faulty line with `find_replace` (find_text = the wrong text) or `replace_lines` (the line numbers shown in the error) on that filename, or add its missing rest with `append`. The file is created as soon as the text is valid.
 *   A file too long for one reply: `write` its first part (whole functions or classes only), then add each further part with `append` to the SAME file.
 """
         elif sub_action == "append":
@@ -997,7 +1029,8 @@ Appends text to the end of a file (a missing file is created).
 *   `<content>` (string, required): Text to append.
 *   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 
-For a Python file the result must be valid Python: append whole functions or classes (every part must end where a function or class ends). The appended text always starts on a new line.
+For a Python, JavaScript, JSON or shell file the result must be valid: append whole functions or classes (every part must end where a function or class ends). The appended text always starts on a new line.
+If the `write` (or first `append`) of a NEW such file was rejected, the appended text is added to your kept (rejected) text instead; the file is created as soon as that text is valid.
 """
         elif sub_action == "insert_lines":
             return common_header + """
@@ -1041,7 +1074,7 @@ Replaces a specific block of existing lines with new content. STRONGLY RECOMMEND
 *   `<content>` (string, required): The new text to replace the removed lines with.
 *   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 
-On a NEW Python file whose `write` was rejected, the lines of your kept (rejected) text are replaced; the file is created as soon as that text is valid Python.
+On a NEW Python, JavaScript, JSON or shell file whose `write` was rejected, the lines of your kept (rejected) text are replaced; the file is created as soon as that text is valid.
 """
         elif sub_action == "list":
             return common_header + """
@@ -1074,7 +1107,7 @@ Finds and replaces all occurrences of an EXACT string.
 *   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 
 If find_text is not found exactly, the same lines ignoring indentation are used (one place only); otherwise nothing is changed.
-On a NEW Python file whose `write` was rejected, the change is made in your kept (rejected) text; the file is created as soon as that text is valid Python.
+On a NEW Python, JavaScript, JSON or shell file whose `write` was rejected, the change is made in your kept (rejected) text; the file is created as soon as that text is valid.
 """
         elif sub_action == "regex_replace":
             return common_header + """
@@ -1623,6 +1656,22 @@ Pushes changes to a remote repository.
                                    + rejected_write_state_note(filename, file_existed)  # Round 2t
                                    + (f"\n{syntax_report}" if syntax_report else "")
                     }
+            else:
+                # Round 2x: a JavaScript / JSON / shell syntax error rejects the write too (src/tools/source_check.py)
+                from src.tools.source_check import blocking_issue, issue_report, write_rejection_text
+                issue = await asyncio.to_thread(blocking_issue, content, filename)
+                if issue is not None:
+                    file_existed = validated_path.is_file()
+                    closing = None
+                    if not file_existed:
+                        from src.tools import rejected_drafts
+                        rejected_drafts.keep(validated_path, agent_id, content)
+                        closing = rejected_drafts.DRAFT_CLOSING
+                    logger.info(f"Agent {agent_id}: write of '{filename}' rejected - not valid {issue.kind} ({issue.summary()}).")
+                    return {"status": "error",
+                            "message": write_rejection_text(filename, issue)
+                                       + rejected_write_state_note(filename, file_existed)
+                                       + "\n" + issue_report(issue, content, closing)}
                     
             if replace_empty_dir:
                 await asyncio.to_thread(validated_path.rmdir)  # still empty: rmdir fails safely otherwise
@@ -1669,8 +1718,9 @@ Pushes changes to a remote repository.
                         "\n[Framework check - the file WAS saved, but please fix:]\n- " + "\n- ".join(code_notes)
                         + "\nUse 'find_replace' or 'insert_lines' for small fixes; do not resend the whole file."
                     )
-            else:
-                # Round 2r: syntax check of JavaScript / JSON / shell files (src/tools/source_check.py)
+            elif not content.strip():
+                # Round 2r: syntax check of JavaScript / JSON / shell files (src/tools/source_check.py). Round 2x: text
+                # with a syntax error was rejected above, so only a blank file (e.g. an empty .json) still gets a note.
                 from src.tools.source_check import write_note
                 success_msg += await asyncio.to_thread(write_note, content, filename)
             return {"status": "success", "message": success_msg}
@@ -1771,7 +1821,7 @@ Pushes changes to a remote repository.
                 new_content = original_content[:start] + replacement + original_content[end:]
                 num_replacements = 1
                 match_note = " (matched ignoring differences in indentation/whitespace)"
-            syntax_problem = self._python_edit_error(filename, original_content, new_content)
+            syntax_problem = await asyncio.to_thread(self._python_edit_error, filename, original_content, new_content)
             if syntax_problem:
                 return syntax_problem
             await asyncio.to_thread(validated_path.write_text, new_content, encoding='utf-8')
@@ -1855,7 +1905,7 @@ Pushes changes to a remote repository.
                 # Round 1v: like find_replace, matching nothing is a failure the agent must see, not a success.
                 logger.info(f"Agent {agent_id}: regex_replace in '{filename}' ({scope_description}): no matches.")
                 return {"status": "error", "replacements_made": 0, "message": f"The regex '{regex_pattern}' matched nothing in '{filename}', so nothing was changed."}
-            syntax_problem = self._python_edit_error(filename, original_content, new_content)
+            syntax_problem = await asyncio.to_thread(self._python_edit_error, filename, original_content, new_content)
             if syntax_problem:
                 return syntax_problem
             await asyncio.to_thread(validated_path.write_text, new_content, encoding='utf-8')
@@ -2066,16 +2116,33 @@ Pushes changes to a remote repository.
         val_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
         if not val_path: return {"status": "error", "message": f"Invalid path '{filename}'."}
         if val_path.is_dir(): return {"status": "error", "message": f"Cannot append. '{filename}' is a directory."}
+        if not val_path.is_file() and content:
+            # Round 2x: the file's rejected 'write' text is kept - the appended part is added to it ("write the first
+            # part, then append the rest" works even when the first part alone is not valid yet)
+            drafted = await self._edit_rejected_draft(base_path, filename, val_path, agent_id, scope_description,
+                                                      lambda text: (text + append_text(text, content), None),
+                                                      change="append")
+            if drafted is not None:
+                return drafted
         try:
             is_python = str(filename).endswith(".py")
-            if is_python:
+            from src.tools.source_check import check_kind
+            is_checked = not is_python and check_kind(filename) is not None
+            if is_python or is_checked:
                 # Round 2t: a Python file is checked like every other edit: appending must not turn valid code into
-                # invalid code, and the appended text starts on a new line
+                # invalid code, and the appended text starts on a new line. Round 2x: JavaScript / JSON / shell too.
                 original = await asyncio.to_thread(val_path.read_text, encoding='utf-8') if val_path.is_file() else ""
-                if original and not original.endswith("\n") and not content.startswith("\n"):
-                    content = "\n" + content
-                refused = python_append_error(filename, original, original + content)
+                content = append_text(original, content)
+                if is_python:
+                    refused = python_append_error(filename, original, original + content)
+                else:
+                    refused = await asyncio.to_thread(checked_append_error, filename, original, original + content)
                 if refused:
+                    if not original and not val_path.exists():
+                        # Round 2x: the first part of a NEW file is kept like a rejected 'write'
+                        from src.tools import rejected_drafts
+                        rejected_drafts.keep(val_path, agent_id, content)
+                        refused["message"] += ("\n" + rejected_drafts.kept_note(filename).strip())
                     return refused
             await asyncio.to_thread(val_path.parent.mkdir, parents=True, exist_ok=True)
             def append_sync():
@@ -2084,7 +2151,7 @@ Pushes changes to a remote repository.
             await asyncio.to_thread(append_sync)
             logger.info(f"Agent {agent_id} appended to '{filename}' in {scope_description}")
             check_note = ""
-            from src.tools.source_check import check_kind, edit_note  # Round 2r: JavaScript / JSON / shell syntax
+            from src.tools.source_check import edit_note  # Round 2r: JavaScript / JSON / shell syntax
             if is_python:
                 from src.tools.python_static_check import saved_edit_notes  # Round 2t: same hints as the other edits
                 try:
@@ -2092,7 +2159,7 @@ Pushes changes to a remote repository.
                     check_note = await asyncio.to_thread(saved_edit_notes, new_text, filename, base_path)
                 except (OSError, UnicodeDecodeError):
                     check_note = ""
-            elif check_kind(filename):
+            elif is_checked:
                 try:
                     new_text = await asyncio.to_thread(val_path.read_text, encoding='utf-8')
                     check_note = await asyncio.to_thread(edit_note, new_text, filename)
@@ -2140,7 +2207,7 @@ Pushes changes to a remote repository.
             if new_lines and not new_lines[-1].endswith('\n') and idx < len(lines):
                 new_lines[-1] += '\n'
             new_content = "".join(lines[:idx] + new_lines + lines[idx:])
-            syntax_problem = self._python_edit_error(filename, original_content, new_content)
+            syntax_problem = await asyncio.to_thread(self._python_edit_error, filename, original_content, new_content)
             if syntax_problem:
                 return syntax_problem
             await asyncio.to_thread(val_path.write_text, new_content, encoding='utf-8')
@@ -2175,7 +2242,7 @@ Pushes changes to a remote repository.
             if new_lines and not new_lines[-1].endswith('\n') and end_idx < len(lines):
                 new_lines[-1] += '\n'
             new_content = "".join(lines[:start_idx] + new_lines + lines[end_idx:])
-            syntax_problem = self._python_edit_error(filename, original_content, new_content)
+            syntax_problem = await asyncio.to_thread(self._python_edit_error, filename, original_content, new_content)
             if syntax_problem:
                 return syntax_problem
             await asyncio.to_thread(val_path.write_text, new_content, encoding='utf-8')

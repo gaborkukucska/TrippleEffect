@@ -112,7 +112,9 @@ def test_find_replace_fixes_the_rejected_text_and_creates_the_file(tmp_path):
     assert ("'server.py' was NOT created and still does not exist. You do NOT have to send the whole file again: your "
             "rejected text of 'server.py' is kept. Fix only the faulty line(s) with file_system 'find_replace' (filename "
             "'server.py', find_text = the wrong text, replace_text = the corrected text) or 'replace_lines' (the line "
-            "numbers shown below); 'server.py' is created as soon as the text is valid Python.") in first_line
+            "numbers shown below), or add a missing end with 'append'; 'server.py' is created as soon as the text is "
+            "valid Python.") in first_line  # Round 2x: + 'append'
+
     assert rejected["message"].endswith("Fix the faulty line(s) with find_replace or replace_lines (the rejected text is "
                                         "kept), or send the COMPLETE corrected file with 'write'. Do not resend the same text.")
     fixed = _fs(tmp_path, action="find_replace", filename="server.py", find_text="'tick_interval_ms': 67 ",
@@ -189,7 +191,8 @@ def test_code_editor_points_to_the_kept_text(tmp_path):
     assert result["status"] == "error" and result["message"] == (
         "File 'server.py' does not exist yet: your 'write' of it was rejected, so code_editor cannot edit it. Your rejected "
         "text is kept: fix the faulty line with file_system action 'find_replace' (filename 'server.py', find_text, "
-        "replace_text) or 'replace_lines'; 'server.py' is created as soon as the text is valid Python.")
+        "replace_text) or 'replace_lines', or add a missing end with 'append'; 'server.py' is created as soon as the text "
+        "is valid Python.")  # Round 2x: + 'append'
 
 
 def test_the_kept_text_in_the_shared_workspace(tmp_path, monkeypatch):
@@ -326,7 +329,7 @@ def test_the_file_system_help_describes_what_the_actions_do():
     assert "append whole functions or classes" in tool.get_detailed_usage(sub_action="append")
     assert "kept (rejected) text" in tool.get_detailed_usage(sub_action="find_replace")
     assert "kept (rejected) text" in tool.get_detailed_usage(sub_action="replace_lines")
-    assert "When the 'write' of a NEW Python file is rejected, its text is kept" in tool.description
+    assert "When the 'write' of a NEW such file is rejected, its text is kept" in tool.description  # Round 2x wording
     action = next(p for p in tool.parameters if p.name == "action")
     for name in ("append", "insert_lines", "replace_lines", "find_replace"):
         assert f"'{name}'" in action.description

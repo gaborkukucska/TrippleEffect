@@ -136,6 +136,27 @@ def is_context_window_full(done_reason: Any, prompt_tokens: Any, output_tokens: 
         return False
 
 
+LOST_OUTPUT_MIN_TOKENS = 200  # output tokens beyond the thinking that must have gone somewhere
+THINKING_CHARS_PER_TOKEN = 3  # a generous estimate of the thinking's token count (real text: about 4 chars per token)
+
+
+def is_output_lost(done_reason: Any, output_tokens: Any, thinking_chars: Any, content_chars: Any,
+                   tool_call_count: Any) -> bool:
+    """
+    Round 2x: True if a reply that finished NORMALLY (done_reason 'stop') produced output tokens but delivered nothing: no
+    text, no tool call, and far more tokens than its thinking explains. The server dropped that output - in practice a
+    tool call it could not parse (2026-10-22 11:44:07 W2: 1,392 output tokens, 410 thinking chars, no text, no tool call;
+    11:44:30: 981 output tokens, nothing at all). Such a reply is not "empty": the model tried to act.
+    """
+    try:
+        if done_reason != "stop" or int(content_chars or 0) > 0 or int(tool_call_count or 0) > 0:
+            return False
+        thinking_tokens = -(-int(thinking_chars or 0) // THINKING_CHARS_PER_TOKEN)  # rounded up
+        return int(output_tokens or 0) - thinking_tokens >= LOST_OUTPUT_MIN_TOKENS
+    except (TypeError, ValueError):
+        return False
+
+
 def effective_ollama_num_ctx(native_num_ctx: Any) -> int:
     """
     Round 2n: the num_ctx the provider really sends for a model: its native context length capped at OLLAMA_MAX_CTX_CAP

@@ -422,12 +422,15 @@ def fs(tmp_path, **kwargs):
 
 @needs_node
 def test_write_and_identical_rewrite_name_the_syntax_error(tmp_path):
+    # Round 2x: a write with a syntax error is REJECTED (it used to be saved with a note)
     first = fs(tmp_path, action="write", path="game-server/game-engine.js", content=ENGINE_BROKEN)
-    assert first["status"] == "success"
-    assert ("\n[Framework check - the file WAS saved, but it is NOT valid JavaScript:]\n"
-            "SyntaxError: Unexpected token 'default' (line 6)\n") in first["message"]
-    assert first["message"].endswith("Fix the line named above (code_editor or file_system 'replace_lines'); do not resend "
-                                     "the whole file unchanged.")
+    assert first["status"] == "error" and not (tmp_path / "game-server/game-engine.js").exists()
+    assert first["message"].startswith("Write rejected: 'game-server/game-engine.js' is not valid JavaScript (SyntaxError: "
+                                       "Unexpected token 'default' at line 6). No changes were saved.")
+    assert "SyntaxError: Unexpected token 'default' (line 6)\n" in first["message"]
+    # a broken file that is already on disk (saved before Round 2x): an identical rewrite still names the error
+    (tmp_path / "game-server").mkdir()
+    (tmp_path / "game-server/game-engine.js").write_text(ENGINE_BROKEN, encoding="utf-8")
     again = fs(tmp_path, action="write", path="game-server/game-engine.js", content=ENGINE_BROKEN)
     assert again["status"] == "success" and "contains the exact same content" in again["message"]
     assert "[Framework check - the file is unchanged and STILL NOT valid JavaScript:]" in again["message"]
@@ -439,22 +442,30 @@ def test_write_and_identical_rewrite_name_the_syntax_error(tmp_path):
 
 @needs_node
 def test_edits_name_the_syntax_error(tmp_path):
+    # Round 2x: an edit that breaks a VALID file is rejected; a file that is already broken can still be edited
     from src.tools.code_editor import CodeEditorTool
+    engine = tmp_path / "game-server/game-engine.js"
     fs(tmp_path, action="write", path="game-server/game-engine.js", content=ENGINE_FIXED)
     edited = run(CodeEditorTool().execute("W1", tmp_path, scope="private", action="replace_chunks",
                                           filename="game-server/game-engine.js",
                                           chunks=[{"search": "break;default:break}", "replace": "break}default:break"}]))
-    assert edited["status"] == "success"
-    assert "[Framework check - the edit WAS saved, but the file is now NOT valid JavaScript:]" in edited["message"]
+    assert edited["status"] == "error" and edited["message"].startswith(
+        "Code edit rejected: the result would not be valid JavaScript (SyntaxError: Unexpected token 'default' at line 6).")
+    assert engine.read_text(encoding="utf-8") == ENGINE_FIXED
+    engine.write_text(ENGINE_BROKEN, encoding="utf-8")  # broken before Round 2x
+    found = fs(tmp_path, action="find_replace", path="game-server/game-engine.js", find_text="const DEBUG = true;",
+               replace_text="const DEBUG = false;")
+    assert found["status"] == "success"
+    assert "[Framework check - the edit WAS saved (the file was already invalid before it), but the file is STILL NOT " \
+           "valid JavaScript:]" in found["message"]
     replaced = fs(tmp_path, action="replace_lines", path="game-server/game-engine.js", start_line=6, end_line=6,
                   content="switch(direction){case 'right':newX=1;break;default:break}")
     assert replaced["status"] == "success" and "Framework check" not in replaced["message"]
-    found = fs(tmp_path, action="find_replace", path="game-server/game-engine.js", find_text="break;default:break}",
-               replace_text="break}default:break")
-    assert found["status"] == "success" and "NOT valid JavaScript" in found["message"]
     fs(tmp_path, action="write", path="game-server/package.json", content='{"name": "x"}\n')
     appended = fs(tmp_path, action="append", path="game-server/package.json", content="{")
-    assert appended["status"] == "success" and "NOT valid JSON" in appended["message"]
+    assert appended["status"] == "error" and appended["message"].startswith(
+        "Append rejected: 'game-server/package.json' would not be valid JSON after it")
+    assert (tmp_path / "game-server/package.json").read_text(encoding="utf-8") == '{"name": "x"}\n'
 
 
 def test_python_edits_keep_their_own_notes(tmp_path):

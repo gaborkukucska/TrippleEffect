@@ -143,7 +143,9 @@ def test_the_observed_work_request_goes_to_planning(state):
     changes, agent, manager = _run_state_change(state, "work")
     assert changes and changes[0] == (ADMIN_STATE_PLANNING, None)
     contents = [m.get("content") for m in agent.message_history]
-    assert "[Action Taken: Transitioned to state 'planning']" in contents
+    # Round 2x: the state change is recorded as a framework note, not as the agent's own "[Action Taken: ...]" reply
+    assert "[Framework Record]: request_state received - transitioning to state 'planning'." in contents
+    assert not any(str(c).startswith("[Action Taken:") for c in contents)
     assert ADMIN_WORK_TO_PLANNING_NOTE in contents
     assert agent._auto_planning_for == REQUEST
     assert any("now planning" in str(c) for c in manager.send_to_ui.call_args_list)

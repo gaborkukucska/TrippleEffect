@@ -246,7 +246,8 @@ ADMIN_WORK_TO_PLANNING_NOTE = (
     "only for answering questions with tools and has no project workspace. Write the project plan now."
 )
 _PLANNED_MARKERS = (
-    "transitioned to state 'planning'",
+    "transitioned to state 'planning'",  # the agent-history note before Round 2x
+    "transitioning to state 'planning'",  # Round 2x: state_change_record
     "state changed to planning",
 )
 # A status question about an existing project ("what is the status/progress of the project I asked you to build?") is a
@@ -741,9 +742,26 @@ CALL_IMITATION_PREFIX = "[Action Taken:"
 _IMITATED_TOOL_RE = _re.compile(r"\[Action Taken:\s*called\s+([A-Za-z_][\w.-]*)\s*\(")
 
 
+STATE_CHANGE_RECORD_PREFIX = "[Framework Record]:"
+
+
+def state_change_record(state: Any, task_id: Any = None) -> str:
+    """
+    Round 2x: the note the framework keeps in an agent's history when it accepts its request_state call - a SYSTEM note.
+    It used to be an assistant message "[Action Taken: Transitioned to state 'worker_report', task_id=..., ...]" written
+    as if the agent had said it, and the model copied it: 2026-10-22 12:18-12:19 W2's replies were four such texts (nothing
+    ran) and PM1 wrote "[Action Taken: Transitioned to state 'pm_manage']" (Round 2o had removed only the "called ..." form).
+    """
+    task = f" for task {task_id}" if task_id else ""
+    return f"{STATE_CHANGE_RECORD_PREFIX} request_state received - transitioning to state '{state}'{task}."
+
+
 def is_call_imitation_text(text: Any) -> bool:
-    """True if a reply (without real tool calls) starts with the framework's '[Action Taken: ...]' note."""
-    return isinstance(text, str) and text.strip().startswith(CALL_IMITATION_PREFIX)
+    """
+    True if a reply (without real tool calls) starts with the framework's '[Action Taken: ...]' note (Round 2x: or with
+    its '[Framework Record]:' state change note).
+    """
+    return isinstance(text, str) and text.strip().startswith((CALL_IMITATION_PREFIX, STATE_CHANGE_RECORD_PREFIX))
 
 
 def call_imitation_notice(text: Any) -> str:
@@ -753,7 +771,7 @@ def call_imitation_notice(text: Any) -> str:
         shown = shown[:160].rstrip() + "..."
     match = _IMITATED_TOOL_RE.search(str(text or ""))
     tool = match.group(1) if match else None
-    if tool == "request_state" or (not tool and "Transitioned" in str(text or "")):
+    if tool == "request_state" or (not tool and ("Transitioned" in str(text or "") or "transitioning to state" in str(text or ""))):
         how = "To change your state, call the 'request_state' tool with the state (and your task_id)."
     elif tool:
         how = (f"To use '{tool}', make a real call of the '{tool}' tool with ALL its parameters (for a file write: "
@@ -762,8 +780,8 @@ def call_imitation_notice(text: Any) -> str:
         how = "To use a tool, make a real tool call with all its parameters."
     return (
         f"[Framework Notice]: Your last reply was only the text \"{shown}\". Writing that text does NOT run anything, so "
-        f"NOTHING was executed or saved. Lines starting with '[Action Taken:' are notes the framework writes, not a way to "
-        f"call tools. {how}"
+        f"NOTHING was executed or saved. Lines starting with '[Action Taken:' or '[Framework Record]:' are notes the "
+        f"framework writes, not a way to call tools. {how}"
     )
 
 # END OF FILE src/agents/tool_activity.py

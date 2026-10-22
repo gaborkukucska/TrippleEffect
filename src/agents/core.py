@@ -95,6 +95,35 @@ def cut_off_boost_level(agent: Any) -> int:
     return max(streak, sticky)
 
 
+# Round 2x: replies that tried to act but delivered nothing usable (cut off at the output limit, output lost, context
+# window full) are retried and NOT counted as "empty" by the Constitutional Guardian - up to this many in a row.
+UNUSABLE_REPLY_RETRY_CAP = 4
+
+
+def unusable_reply_kind(agent: Any) -> Optional[str]:
+    """Round 2x: 'context_full', 'cut_off' or 'output_lost' for the agent's last reply, else None."""
+    if getattr(agent, '_context_window_full', False) is True:
+        return "context_full"
+    if getattr(agent, '_last_reply_cut_off', False) is True:
+        return "cut_off"
+    if getattr(agent, '_last_reply_output_lost', False) is True:
+        return "output_lost"
+    return None
+
+
+def excused_unusable_reply(agent: Any) -> bool:
+    """
+    Round 2x: True if the agent's last reply was unusable for a reason that is not the agent going silent, and it is at
+    most the UNUSABLE_REPLY_RETRY_CAP-th such reply in a row. 2026-10-22 11:44-12:19: the Guardian blocked W2 six times for
+    "2 consecutive empty responses" that were dropped tool calls and cut-off file writes, and each block moved it to
+    worker_wait (512 output tokens), where its next file write was cut off again.
+    """
+    streak = getattr(agent, '_consecutive_unusable_replies', 0)
+    if isinstance(streak, bool) or not isinstance(streak, int):
+        return False
+    return unusable_reply_kind(agent) is not None and 0 < streak <= UNUSABLE_REPLY_RETRY_CAP
+
+
 def build_request_state_schema(agent_type, state, valid_states):
     """
     Builds the native `request_state` pseudo-tool schema for an agent, or None if it must not be offered.
@@ -232,6 +261,11 @@ class Agent:
         self._last_output_tokens: int = 0
         self._last_num_ctx: Optional[int] = None
         self._context_window_full: bool = False
+        # Round 2x: a reply whose output the server dropped (see ollama_provider.is_output_lost), and how many replies in a
+        # row were unusable (cut off, output lost or context window full - see excused_unusable_reply)
+        self._last_reply_output_lost: bool = False
+        self._consecutive_output_lost_replies: int = 0
+        self._consecutive_unusable_replies: int = 0
         self._call_imitation_text: Optional[str] = None  # Round 2o: a reply that only imitated a tool call in text
         # Round 2h: thinking of the last reply (from the provider's 'finish_info'), and a one-reply switch to turn it off
         self._last_reply_thinking_chars: int = 0
@@ -285,6 +319,11 @@ class Agent:
     def set_state(self, new_state: str):
         if self.state != new_state: 
             logger.info(f"Agent {self.agent_id}: Workflow State changed from '{self.state}' to '{new_state}'")
+            # Round 2x: every state change restarts the cycle handler's cycles-in-one-state watchdog. It only noticed a
+            # change at the start of a cycle, so PM1's separate visits to pm_report_check (with pm_standby in between and
+            # no cycle there) were counted as one: "18 cycles without changing from state 'pm_report_check'" (2026-10-22).
+            self._cycles_without_transition = 0
+            self._last_state_for_watchdog = None
             # Track state transitions for Admin AI work state loop detection
             if not hasattr(self, '_state_transition_history'):
                 self._state_transition_history = []
@@ -397,6 +436,7 @@ class Agent:
             finish_reason_received = None  # Round 2d: done_reason reported by the provider ('finish_info' event)
             finish_event_data: Dict[str, Any] = {}  # Round 2n
             self._context_window_full = False
+            self._last_reply_output_lost = False  # Round 2x: set again below if this reply's output is lost
             self._call_imitation_text = None  # Round 2o
             # Round 2h: what this reply thought (from 'finish_info'), and thinking switched off for a retry after a reply
             # that only thought.
@@ -496,10 +536,29 @@ class Agent:
                                f"complete tool call ({self._consecutive_cut_off_replies} in a row).")
             elif finish_reason_received is not None:
                 self._consecutive_cut_off_replies = 0
+            # Round 2x: a reply that finished normally with output tokens but delivered nothing - its tool call was dropped
+            if (not stream_had_error and finish_event_data and not context_full and not self._last_reply_cut_off):
+                from src.llm_providers.ollama_provider import is_output_lost
+                if is_output_lost(finish_reason_received, finish_event_data.get("output_tokens"),
+                                  self._last_reply_thinking_chars, len(complete_assistant_response.strip()),
+                                  len(native_tool_calls_received)):
+                    self._last_reply_output_lost = True
+                    self._consecutive_output_lost_replies = getattr(self, '_consecutive_output_lost_replies', 0) + 1
+                    logger.warning(f"Agent {self.agent_id}: reply finished with {finish_event_data.get('output_tokens')} "
+                                   f"output tokens but delivered no text and no tool call (output lost, "
+                                   f"{self._consecutive_output_lost_replies} in a row) - most likely a malformed tool call.")
+            if finish_reason_received is not None and not stream_had_error:
+                if not self._last_reply_output_lost:
+                    self._consecutive_output_lost_replies = 0
+                if context_full or self._last_reply_cut_off or self._last_reply_output_lost:
+                    self._consecutive_unusable_replies = getattr(self, '_consecutive_unusable_replies', 0) + 1
+                else:
+                    self._consecutive_unusable_replies = 0
             # Round 2h: a reply that only thought (no text, no tool call) is retried without thinking on every path - the
             # pm_startup kick-off retry too (PM1 thought 15,737 chars and wrote nothing, 2026-10-19 21:10-21:25)
+            # Round 2x: not a reply whose output was lost - it did more than think; its tool call was dropped
             if (not stream_had_error and not native_tool_calls_received and not complete_assistant_response.strip()
-                    and self._last_reply_thinking_chars > 0):
+                    and self._last_reply_thinking_chars > 0 and not self._last_reply_output_lost):
                 self._think_off_next_call = True
 
             if not stream_had_error:

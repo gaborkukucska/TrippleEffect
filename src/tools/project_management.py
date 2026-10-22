@@ -97,6 +97,28 @@ def team_worker_ids(manager: Any, agent_id: Optional[str]) -> List[str]:
         return []
 
 
+STARTED_PROGRESS = ("doing", "in_progress")
+
+
+def blocked_start_note(task, task_ref: str) -> str:
+    """
+    Round 2x: the note for a request to set a task to 'doing' / 'in_progress' while it depends on unfinished tasks ('' if
+    it does not). Such a task cannot be started: its worker is started automatically once they are finished. 2026-10-22
+    11:34:52 PM1 assigned Kick-off Task 2 to W1 with task_progress 'doing' while Task 1 was unfinished; for 45 minutes
+    the task list showed it 'doing' and PM1 took W1 for busy although it never started.
+    """
+    from src.utils.task_utils import unfinished_dependencies
+    try:
+        blocking = unfinished_dependencies(task)
+    except Exception:
+        return ""
+    if not blocking:
+        return ""
+    names = "; ".join(f"'{' '.join(description.split())[:60]}' ({uuid[:8]})" for uuid, description in blocking[:3])
+    return (f" Note: task_progress was NOT set to started: {task_ref} depends on unfinished task(s) {names}, so it cannot "
+            "start yet. It stays waiting; its assignee is started automatically as soon as they are finished.")
+
+
 def non_worker_assignment_error(assignee: str, caller_id: Optional[str], manager: Any, task_ref: str,
                                 outcome: str = "was NOT changed") -> Optional[Dict[str, Any]]:
     """Round 2t: the refusal for an agent assigning a task to a PM / Admin AI / the Guardian, or None (framework calls pass)."""
@@ -383,7 +405,7 @@ class ProjectManagementTool(BaseTool):
         ToolParameter(name="title", type="str", required=False, description="Short task title (used as description if description is omitted)."),
         ToolParameter(name="description", type="str", required=False, description="Task description."),
         ToolParameter(name="task_id", type="str", required=False, description="For add_task: an optional alias for the new task (e.g. 'task_1'). For the other actions: the task's UUID (exactly as listed), ID or alias."),
-        ToolParameter(name="task_progress", type="str", required=False, description="Progress of the task: 'todo', 'doing', 'in_progress', 'waiting', 'stuck', 'decomposed', 'finished' or 'deleted'."),
+        ToolParameter(name="task_progress", type="str", required=False, description="Progress of the task: 'todo', 'doing', 'in_progress', 'waiting', 'stuck', 'decomposed', 'finished' or 'deleted'. A task that depends on unfinished tasks is never set to 'doing'/'in_progress' (its assignee starts it automatically once they are finished)."),
         ToolParameter(name="priority", type="str", required=False, description="Task priority: 'H' (high), 'M' (medium) or 'L' (low)."),
         ToolParameter(name="project_filter", type="str", required=False, description="Filter tasks by project."),
         ToolParameter(name="assignee_filter", type="str", required=False, description="For 'list_tasks': only tasks of this agent ('unassigned' for tasks without one)."),
@@ -825,6 +847,14 @@ class ProjectManagementTool(BaseTool):
                     task['depends'] = resolved_deps
                     logger.info(f"ProjectManagementTool: Set {len(resolved_deps)} dependencies for task.")
 
+            add_blocked_note = ""
+            if task['task_progress'] in STARTED_PROGRESS:
+                # Round 2x: a new task that waits for unfinished dependencies does not start as 'doing'
+                add_blocked_note = blocked_start_note(task, "The new task")
+                if add_blocked_note:
+                    task['task_progress'] = "todo"
+                    task['status'] = "pending"
+
             # --- DECOMPOSE STATE: Tag parent as decomposed (keep pending) ---
             manager = kwargs.get("manager")
             if manager:
@@ -911,7 +941,7 @@ class ProjectManagementTool(BaseTool):
             depends_list = [t['uuid'] for t in (task['depends'] if task['depends'] is not None else [])]
             return {
                 "status": "success", 
-                "message": f"Task added successfully{'. (DRY RUN)' if is_dry_run else '.'}", 
+                "message": f"Task added successfully{'. (DRY RUN)' if is_dry_run else '.'}" + add_blocked_note, 
                 "task_uuid": simulated_uuid if is_dry_run else task['uuid'], 
                 "task_id": simulated_id if is_dry_run else task['id'], 
                 "description": task['description'], 
@@ -1204,9 +1234,12 @@ class ProjectManagementTool(BaseTool):
 
 
             # Validate task_progress or legacy status if provided
+            previous_progress = str(task['task_progress'] or 'todo')  # Round 2x: kept if a blocked task may not start
+            requested_start = False
             if "task_progress" in kwargs or "status" in kwargs:
                 raw_prog = kwargs.get("task_progress") or kwargs.get("status")
                 t_prog, t_status = self._map_task_progress(raw_prog)
+                requested_start = t_prog in STARTED_PROGRESS and previous_progress not in STARTED_PROGRESS
                 if t_prog == "finished":
                     # Round 2a: PM1 marked tasks finished whose files held only docstrings (2026-10-18 15:30, 15:50)
                     refusal = self._completion_refusal(task, project_name, session_name, task_id)
@@ -1296,6 +1329,19 @@ class ProjectManagementTool(BaseTool):
                 if dep_ids:
                     modified_fields.append("depends")
 
+            blocked_note = ""
+            if requested_start:
+                # Round 2x: a task that waits for unfinished dependencies is not 'doing'
+                blocked_note = blocked_start_note(task, f"Task '{task_id}'")
+                if blocked_note:
+                    task["task_progress"] = previous_progress if previous_progress not in STARTED_PROGRESS else "todo"
+                    task["status"] = "pending"
+                    modified_fields = [f for f in modified_fields if f not in ("task_progress", "status")]
+                    logger.info(f"ProjectManagementTool: modify_task '{task_id}': task_progress not set to started - "
+                                "unfinished dependencies.")
+                    if not modified_fields:
+                        return {"status": "error", "message": f"Task '{task_id}' was NOT changed." + blocked_note}
+
             if not modified_fields:
                 return {"status": "error", "message": (
                     "No valid fields provided for modification. "
@@ -1324,7 +1370,7 @@ class ProjectManagementTool(BaseTool):
             depends_list = [t['uuid'] for t in (task['depends'] if task['depends'] is not None else [])]
             return {
                 "status": "success", 
-                "message": f"Task '{task_id}' modified successfully{'. (DRY RUN - No changes saved)' if is_dry_run else '.'}", 
+                "message": f"Task '{task_id}' modified successfully{'. (DRY RUN - No changes saved)' if is_dry_run else '.'}" + blocked_note, 
                 "task_uuid": task['uuid'], 
                 "task_id": task['id'], 
                 "modified_fields": modified_fields, 
@@ -1510,7 +1556,7 @@ Creates a new task.
 *   `<description>` (string, required): A clear and concise description of the task.
 *   `<project_filter>` (string, optional): The project name to associate the task with. Defaults to current project.
 *   `<task_id>` (string, optional): An alias for the new task (e.g. `task_1`) that later calls can use instead of the UUID.
-*   `<task_progress>` (string, optional): Initial progress state: 'todo' (default), 'doing', 'in_progress', 'waiting', 'stuck', 'finished'.
+*   `<task_progress>` (string, optional): Initial progress state: 'todo' (default), 'doing', 'in_progress', 'waiting', 'stuck', 'finished'. A task with unfinished dependencies starts as 'todo'.
 *   `<priority>` (string, optional): 'H' (high), 'M' (medium) or 'L' (low).
 *   `<tags>` (list or comma-separated string, optional): Tags to add (e.g., `["bug", "urgent"]`).
 *   `<assignee_agent_id>` (string, optional): The ID of the WORKER to assign this task to (e.g. `W1`). Only workers carry out tasks: a Project Manager, the Admin AI or the Guardian is refused and the task is NOT created.
@@ -1550,7 +1596,7 @@ Lists existing tasks. Note that we use a granular 'task_progress' system to trac
 Modifies an existing task.
 *   `<task_id>` (string, required): The UUID (exactly as listed), alias or integer ID of the task to modify.
 *   `<description>` (string, optional): New description for the task.
-*   `<task_progress>` (string, optional): Update task progress: 'todo', 'doing', 'in_progress', 'waiting', 'stuck', 'decomposed', 'finished' or 'deleted'. (This also updates the underlying system status; 'finished' is refused while the task's files have problems.)
+*   `<task_progress>` (string, optional): Update task progress: 'todo', 'doing', 'in_progress', 'waiting', 'stuck', 'decomposed', 'finished' or 'deleted'. (This also updates the underlying system status; 'finished' is refused while the task's files have problems; 'doing'/'in_progress' is not set while the task depends on unfinished tasks - its assignee starts it automatically once they are finished.)
 *   `<priority>` (string, optional): New priority: 'H', 'M' or 'L'.
 *   `<tags>` (string, optional): New comma-separated list of tags. Use `+tag` to add and `-tag` to remove.
 *   `<assignee_agent_id>` (string, optional): Assign or reassign the task to a WORKER (e.g. `W1`); a Project Manager, the Admin AI or the Guardian is refused and nothing is changed. The worker's tag is added automatically.
