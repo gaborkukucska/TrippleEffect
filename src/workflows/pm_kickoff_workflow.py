@@ -202,6 +202,38 @@ _TEST_FILE_RE = re.compile(r"^(test_.+|.+_test)\.py$", re.IGNORECASE)
 _ROOT_PY_KEEP = frozenset({"conftest.py", "setup.py", "manage.py", "noxfile.py", "tasks.py", "wsgi.py", "asgi.py"})
 
 
+# Round 2y: names that legitimately exist in several directories of one project; never treated as the same file
+_SHARED_FILE_NAMES = frozenset({
+    "__init__.py", "conftest.py", "setup.py", "main.py", "app.py", "utils.py", "config.py", "models.py", "views.py",
+    "index.js", "index.mjs", "index.ts", "index.tsx", "index.jsx", "index.html", "main.js", "main.ts", "app.js", "app.ts",
+    "utils.js", "config.js", "package.json", "tsconfig.json", "README.md", "readme.md", "styles.css", "style.css",
+    "Makefile", "Dockerfile", ".gitignore", ".env",
+})
+
+
+def duplicate_structure_files(structure_files: List[str], task_files: List[str]) -> Tuple[List[str], List[str]]:
+    """
+    Round 2y: (structure files to drop, notes). A file a kick-off task names with its directory is the same file as a
+    project_structure file with that name in another directory - when the structure has exactly one file of that name
+    and no task names it. The task's path is kept: the worker builds from the task text and the completion check reads
+    it. 2026-10-22 14:46: the structure had src/game/game.js and src/storage/player_manager.js, Kick-off Task 1 said
+    src/game.js and storage/player_manager.js, and PROJECT_STRUCTURE.md listed all four files to create.
+    """
+    drop: List[str] = []
+    notes: List[str] = []
+    structure_set, task_set = set(structure_files), set(task_files)
+    for named in task_files:
+        name = PurePosixPath(named).name
+        if named in structure_set or name in _SHARED_FILE_NAMES:
+            continue
+        same_name = [f for f in structure_files if PurePosixPath(f).name == name]
+        if len(same_name) == 1 and same_name[0] not in task_set and same_name[0] not in drop:
+            drop.append(same_name[0])
+            notes.append(f"Planned file '{same_name[0]}' dropped: the kick-off task names this file '{named}', so that is "
+                         "the one path to create.")
+    return drop, notes
+
+
 def with_root_files(planned_files: List[str], root_names: List[str]) -> List[str]:
     """
     Round 2v: the planned files plus the root files the tasks say to create ("Create server.py ..."), unless a planned file
@@ -645,6 +677,12 @@ class PMKickoffWorkflow(BaseWorkflow):
                 planned_dirs, planned_files, notes = plan_project_structure(structure_items + task_named_files)
                 planned_dirs, planned_files, layout_notes = normalize_planned_layout(planned_dirs, planned_files)
                 notes = list(notes) + layout_notes
+                # Round 2y: one file, two paths (structure vs. task text): keep the task's path
+                structure_only = normalize_planned_layout(*plan_project_structure(structure_items)[:2])[1]
+                task_only = normalize_planned_layout(*plan_project_structure(task_named_files)[:2])[1]
+                dropped_files, duplicate_notes = duplicate_structure_files(structure_only, task_only)
+                planned_files = [f for f in planned_files if f not in dropped_files]
+                notes += duplicate_notes
                 planned_files = with_root_files(planned_files, root_files_to_create)  # Round 2v
                 for note in notes:
                     logger.warning(f"PMKickoffWorkflow: project_structure from PM '{agent.agent_id}': {note}")

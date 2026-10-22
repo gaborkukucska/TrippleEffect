@@ -497,8 +497,9 @@ class FileSystemTool(BaseTool):
         language = rejected_drafts.language_of(filename)
         invalid = await asyncio.to_thread(rejected_drafts.draft_problem, new_text, filename)
         if invalid:
-            summary, report = invalid
+            summary, report, error_line = invalid
             rejected_drafts.keep(validated_path, agent_id, new_text)
+            rejected_drafts.note_rejection(validated_path, agent_id, error_line)  # Round 2y: progress if it moved down
             logger.info(f"Agent {agent_id}: {change} applied to the kept text of '{filename}'; still invalid ({summary}).")
             return {"status": "error", "message": (
                 f"Your {change} was applied to your kept (rejected) text of '{filename}', but it is still not valid "
@@ -1640,11 +1641,15 @@ Pushes changes to a remote repository.
                 except SyntaxError as syntax_err:
                     file_existed = validated_path.is_file()
                     closing = None
+                    repeat_note = ""
                     if not file_existed:
                         # Round 2v: keep the rejected text of a NEW file; find_replace / replace_lines fix it in place
                         from src.tools import rejected_drafts
                         rejected_drafts.keep(validated_path, agent_id, content)
                         closing = rejected_drafts.DRAFT_CLOSING
+                        # Round 2y: a later error than last time is progress; a repeated complete rewrite is told to stop
+                        repeat_note = rejected_drafts.repeated_write_note(
+                            filename, rejected_drafts.note_rejection(validated_path, agent_id, syntax_err.lineno))
                     try:  # Round 1t: show the code around the error and a hint (never lets the report break the rejection)
                         from src.tools.python_static_check import syntax_error_report
                         syntax_report = syntax_error_report(content, syntax_err, closing=closing)
@@ -1654,6 +1659,7 @@ Pushes changes to a remote repository.
                         "status": "error",
                         "message": f"Write rejected due to Python SyntaxError in resulting code: {syntax_err.msg} at line {syntax_err.lineno}. No changes were saved. Please check your indentation and brackets."
                                    + rejected_write_state_note(filename, file_existed)  # Round 2t
+                                   + repeat_note
                                    + (f"\n{syntax_report}" if syntax_report else "")
                     }
             else:
@@ -1663,14 +1669,17 @@ Pushes changes to a remote repository.
                 if issue is not None:
                     file_existed = validated_path.is_file()
                     closing = None
+                    repeat_note = ""
                     if not file_existed:
                         from src.tools import rejected_drafts
                         rejected_drafts.keep(validated_path, agent_id, content)
                         closing = rejected_drafts.DRAFT_CLOSING
+                        repeat_note = rejected_drafts.repeated_write_note(  # Round 2y
+                            filename, rejected_drafts.note_rejection(validated_path, agent_id, issue.line))
                     logger.info(f"Agent {agent_id}: write of '{filename}' rejected - not valid {issue.kind} ({issue.summary()}).")
                     return {"status": "error",
                             "message": write_rejection_text(filename, issue)
-                                       + rejected_write_state_note(filename, file_existed)
+                                       + rejected_write_state_note(filename, file_existed) + repeat_note
                                        + "\n" + issue_report(issue, content, closing)}
                     
             if replace_empty_dir:

@@ -86,18 +86,30 @@ def cut_off_reply_notice(agent) -> str:
     )
 
 
+SMALL_LOST_CALL_TOKENS = 400  # Round 2y: below this a lost tool call was a small one (no file content)
+
+
 def lost_output_notice(agent) -> str:
     """
     Round 2x: the message for a reply whose output was LOST: it finished normally and used output tokens, but no text and
     no tool call arrived (ollama_provider.is_output_lost). "Your last response was empty" and the thinking-only notice
     were both wrong for W2's dropped file writes (2026-10-22 11:44:07 / 11:44:30).
+    Round 2y: a small lost call (PM1's modify_task, 85-106 tokens, five times 14:48:08-14:48:31) is told to resend the
+    call with only the parameters it needs; a large one to split the file.
     """
     tokens = getattr(agent, '_last_output_tokens', 0)
     streak = getattr(agent, '_consecutive_output_lost_replies', 1) or 1
+    lost = getattr(agent, '_last_reply_lost_tokens', 0)
     token_text = f"{tokens} output tokens" if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens > 0 else "output"
-    return (
-        f"[Framework Notice]: Your last reply produced {token_text} but NOTHING arrived - no text and no complete tool "
-        f"call ({streak} time(s) in a row) - so NOTHING was executed or saved. Most likely the tool call was malformed "
+    head = (f"[Framework Notice]: Your last reply produced {token_text} but NOTHING arrived - no text and no complete tool "
+            f"call ({streak} time(s) in a row) - so NOTHING was executed or saved. ")
+    if isinstance(lost, int) and not isinstance(lost, bool) and 0 < lost < SMALL_LOST_CALL_TOKENS:
+        return head + (
+            "Most likely your tool call was malformed and dropped. Make the same call again as ONE plain native tool call "
+            "with ONLY the parameters it needs (e.g. project_management with just action, task_id and "
+            "assignee_agent_id) - no empty, placeholder or extra parameters, and no tool call written as text.")
+    return head + (
+        "Most likely the tool call was malformed "
         "and dropped: usually a very long 'content' (a whole file) whose quotes, backslashes or line breaks broke the "
         "call. Make the tool call smaller: change only the lines that need to change (code_editor 'replace_chunks' with "
         "one small chunk, or file_system 'replace_lines'). A NEW file: write its first part (about 80 lines) with "

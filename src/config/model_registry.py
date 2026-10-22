@@ -113,6 +113,28 @@ class ModelInfo(TypedDict, total=False):
     model_parser: Optional[str] # Round 2o: Ollama /api/show 'parser' (built-in output/tool-call parser)
 # --- END NEW ---
 
+async def log_ollama_server_version(session: Any, base_url: str) -> Optional[str]:
+    """
+    Round 2y: log the Ollama server's version (GET /api/version) and return it, or None. Tool calls that the server cannot
+    parse are dropped without a word in the reply (2026-10-22: PM1's modify_task five times, W2's file writes); the
+    server's version is the first thing to know when that happens - the same endpoint served an older Ollama once
+    (Round 2u). Never raises.
+    """
+    try:
+        async with session.get(f"{base_url}/api/version", timeout=aiohttp.ClientTimeout(total=5)) as response:
+            if response.status != 200:
+                logger.info(f"Ollama endpoint {base_url}: /api/version answered HTTP {response.status}.")
+                return None
+            data = await response.json(content_type=None)
+        version = str(data.get("version") or "").strip() if isinstance(data, dict) else ""
+        if version:
+            logger.info(f"Ollama endpoint {base_url}: server version {version}.")
+            return version
+    except Exception as version_err:
+        logger.info(f"Ollama endpoint {base_url}: could not read /api/version ({type(version_err).__name__}).")
+    return None
+
+
 class ModelRegistry:
     """
     Handles discovery, filtering, and storage of available LLM models
@@ -241,6 +263,7 @@ class ModelRegistry:
                             # Store raw data to fetch details later
                             raw_models_list = [m for m in raw_models_data if m.get("name")] 
                             logger.info(f"Verified Ollama endpoint at {base_url} ({unique_provider_name}). Found {len(raw_models_list)} models from /api/tags.")
+                            await log_ollama_server_version(session, base_url)  # Round 2y
                             verified_provider_name = unique_provider_name # Mark as Ollama for detailed fetching
 
                             # Now fetch details for each model using /api/show

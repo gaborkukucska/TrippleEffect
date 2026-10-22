@@ -264,6 +264,7 @@ class Agent:
         # Round 2x: a reply whose output the server dropped (see ollama_provider.is_output_lost), and how many replies in a
         # row were unusable (cut off, output lost or context window full - see excused_unusable_reply)
         self._last_reply_output_lost: bool = False
+        self._last_reply_lost_tokens: int = 0  # Round 2y: the output tokens that never arrived (lost_output_tokens)
         self._consecutive_output_lost_replies: int = 0
         self._consecutive_unusable_replies: int = 0
         self._call_imitation_text: Optional[str] = None  # Round 2o: a reply that only imitated a tool call in text
@@ -437,6 +438,7 @@ class Agent:
             finish_event_data: Dict[str, Any] = {}  # Round 2n
             self._context_window_full = False
             self._last_reply_output_lost = False  # Round 2x: set again below if this reply's output is lost
+            self._last_reply_lost_tokens = 0
             self._call_imitation_text = None  # Round 2o
             # Round 2h: what this reply thought (from 'finish_info'), and thinking switched off for a retry after a reply
             # that only thought.
@@ -538,11 +540,13 @@ class Agent:
                 self._consecutive_cut_off_replies = 0
             # Round 2x: a reply that finished normally with output tokens but delivered nothing - its tool call was dropped
             if (not stream_had_error and finish_event_data and not context_full and not self._last_reply_cut_off):
-                from src.llm_providers.ollama_provider import is_output_lost
-                if is_output_lost(finish_reason_received, finish_event_data.get("output_tokens"),
-                                  self._last_reply_thinking_chars, len(complete_assistant_response.strip()),
-                                  len(native_tool_calls_received)):
+                from src.llm_providers.ollama_provider import lost_output_tokens
+                lost_tokens = lost_output_tokens(finish_reason_received, finish_event_data.get("output_tokens"),
+                                                 self._last_reply_thinking_chars, len(complete_assistant_response.strip()),
+                                                 len(native_tool_calls_received))
+                if lost_tokens:
                     self._last_reply_output_lost = True
+                    self._last_reply_lost_tokens = lost_tokens
                     self._consecutive_output_lost_replies = getattr(self, '_consecutive_output_lost_replies', 0) + 1
                     logger.warning(f"Agent {self.agent_id}: reply finished with {finish_event_data.get('output_tokens')} "
                                    f"output tokens but delivered no text and no tool call (output lost, "

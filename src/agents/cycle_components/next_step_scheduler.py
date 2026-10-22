@@ -2,7 +2,7 @@
 import logging
 import asyncio
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional
 import json # <<< --- ADDED IMPORT ---
 
 from src.agents.constants import (
@@ -46,6 +46,31 @@ def forced_report_details(agent) -> str:
     return details
 
 logger = logging.getLogger(__name__)
+
+def failed_cycle_excuse(agent: Any) -> Optional[str]:
+    """
+    Round 2y: why a worker cycle without a successful tool call is NOT a failed cycle (None if it is one). Three failed
+    cycles in a row force the worker to report. 2026-10-22 14:53:33 W1 was forced to report after three rejected
+    complete writes of src/game.js whose error moved from line 102 to 117 to 134; a reply that was cut off or whose tool
+    call was dropped (Round 2x: retried, not counted by the Guardian) counted as failed too.
+    * the reply was unusable but tried to act (core.excused_unusable_reply), or
+    * a rejected text of a new file got its error further down (rejected_drafts.take_progress).
+    """
+    try:
+        from src.tools import rejected_drafts
+        progressed = rejected_drafts.take_progress(getattr(agent, 'agent_id', ''))
+    except Exception:
+        progressed = False
+    try:
+        from src.agents.core import excused_unusable_reply
+        if excused_unusable_reply(agent):
+            return "its reply was cut off, lost or hit the full context window (it is retried)"
+    except Exception:
+        pass
+    if progressed:
+        return "its rejected new file now fails further down (the repair is progressing)"
+    return None
+
 
 class NextStepScheduler:
     """
@@ -268,8 +293,13 @@ class NextStepScheduler:
                 # Track consecutive failed cycles            # 1. Worker needs explicit state transition attribute
                 if agent.agent_type == AGENT_TYPE_WORKER and agent.state in [WORKER_STATE_WORK, WORKER_STATE_TEST]:
                     if not context.executed_tool_successfully_this_cycle and context.action_taken_this_cycle:
-                        current_failures = getattr(agent, '_consecutive_failed_cycles', 0)
-                        setattr(agent, '_consecutive_failed_cycles', current_failures + 1)
+                        excused = failed_cycle_excuse(agent)  # Round 2y
+                        if excused:
+                            logger.info(f"NextStepScheduler: Worker '{agent_id}' cycle had no successful tool call, but {excused} - "
+                                        f"not counted as a failed cycle ({getattr(agent, '_consecutive_failed_cycles', 0)} so far).")
+                        else:
+                            current_failures = getattr(agent, '_consecutive_failed_cycles', 0)
+                            setattr(agent, '_consecutive_failed_cycles', current_failures + 1)
                     elif context.executed_tool_successfully_this_cycle:
                         setattr(agent, '_consecutive_failed_cycles', 0)
                         
