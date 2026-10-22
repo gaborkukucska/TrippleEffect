@@ -73,6 +73,22 @@ GOVERNANCE_PRINCIPLE_KEYS = ("id", "name", "text", "applies_to", "enabled")
 GOVERNANCE_PRINCIPLE_DISPLAY_KEYS = ("name", "text")
 
 
+def optional_float_setting(name: str, default: str) -> Optional[float]:
+    """
+    Round 2y: an optional number from the environment: `default` when the variable is not set, None when it is set to an
+    empty value (or 'none' / 'default'), and `default` (with a warning) when it is not a number.
+    """
+    raw = os.getenv(name)
+    text = default if raw is None else raw.strip()
+    if text.lower() in ("", "none", "default"):
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        logger.warning(f"Invalid {name} {raw!r}, using {default}.")
+        return float(default) if default.strip() else None
+
+
 def usable_governance_principles(entries: list) -> list:
     """
     The principles that can be shown to agents. Entries that are not dicts or lack 'name' or 'text' are dropped with a
@@ -335,6 +351,17 @@ class Settings:
         # --- Ollama Max Context Cap ---
         try: self.OLLAMA_MAX_CTX_CAP: int = int(os.getenv("OLLAMA_MAX_CTX_CAP", "32768")); logger.info(f"Loaded OLLAMA_MAX_CTX_CAP: {self.OLLAMA_MAX_CTX_CAP}")
         except ValueError: logger.warning("Invalid OLLAMA_MAX_CTX_CAP, using 32768."); self.OLLAMA_MAX_CTX_CAP = 32768
+
+        # --- Ollama sampling penalties (Round 2y) ---
+        # 2026-10-22 15:29 the Ollama server log showed every request sampled with repeat_penalty 1.15 (the framework's
+        # old default) and presence_penalty 1.5 (the model's own default); both push the model away from tokens it has
+        # just written - the repeated '<parameter=...>' / '</parameter>' tags of a tool call. Qwen3.5 is meant to run
+        # coding / tool calling with presence_penalty 0 and repetition penalty 1.0. An empty value sends nothing (the
+        # model's own default then applies).
+        self.OLLAMA_REPEAT_PENALTY: Optional[float] = optional_float_setting("OLLAMA_REPEAT_PENALTY", "1.0")
+        self.OLLAMA_PRESENCE_PENALTY: Optional[float] = optional_float_setting("OLLAMA_PRESENCE_PENALTY", "0.0")
+        logger.info(f"Loaded OLLAMA_REPEAT_PENALTY: {self.OLLAMA_REPEAT_PENALTY}, "
+                    f"OLLAMA_PRESENCE_PENALTY: {self.OLLAMA_PRESENCE_PENALTY} (None = the model's own default)")
 
         # --- Ollama Concurrency Limit ---
         try: self.OLLAMA_CONCURRENCY_LIMIT: int = int(os.getenv("OLLAMA_CONCURRENCY_LIMIT", "2")); logger.info(f"Loaded OLLAMA_CONCURRENCY_LIMIT: {self.OLLAMA_CONCURRENCY_LIMIT}")

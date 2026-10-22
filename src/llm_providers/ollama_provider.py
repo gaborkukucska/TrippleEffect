@@ -1,6 +1,7 @@
 # START OF FILE src/llm_providers/ollama_provider.py
 import aiohttp
 import json
+import math
 import asyncio
 import logging
 import random
@@ -136,25 +137,75 @@ def is_context_window_full(done_reason: Any, prompt_tokens: Any, output_tokens: 
         return False
 
 
-LOST_OUTPUT_MIN_TOKENS = 200  # output tokens beyond the thinking that must have gone somewhere
-THINKING_CHARS_PER_TOKEN = 3  # a generous estimate of the thinking's token count (real text: about 4 chars per token)
+# Round 2y: calibrated on every reply of the 2026-10-22 runs (11:24-12:29 and 14:43-14:53): with the thinking counted as
+# 3.5 characters per token, replies that only thought had at most 35 tokens left over; replies whose tool call was
+# dropped had 78 or more (PM1's modify_task calls 14:48:08-14:48:31: 85-106; W2's file writes: 433-1,944).
+LOST_OUTPUT_MIN_TOKENS = 50   # output tokens beyond the thinking that must have gone somewhere
+THINKING_CHARS_PER_TOKEN = 3.5
+
+
+def lost_output_tokens(done_reason: Any, output_tokens: Any, thinking_chars: Any, content_chars: Any,
+                       tool_call_count: Any) -> int:
+    """
+    Round 2y: how many output tokens of a reply that finished NORMALLY (done_reason 'stop') delivered nothing - no text,
+    no tool call and more tokens than its thinking explains - or 0. The server dropped that output: in practice a tool
+    call it could not parse.
+    """
+    try:
+        if done_reason != "stop" or int(content_chars or 0) > 0 or int(tool_call_count or 0) > 0:
+            return 0
+        thinking_tokens = math.ceil(int(thinking_chars or 0) / THINKING_CHARS_PER_TOKEN)
+        unexplained = int(output_tokens or 0) - thinking_tokens
+        return unexplained if unexplained >= LOST_OUTPUT_MIN_TOKENS else 0
+    except (TypeError, ValueError):
+        return 0
 
 
 def is_output_lost(done_reason: Any, output_tokens: Any, thinking_chars: Any, content_chars: Any,
                    tool_call_count: Any) -> bool:
     """
     Round 2x: True if a reply that finished NORMALLY (done_reason 'stop') produced output tokens but delivered nothing: no
-    text, no tool call, and far more tokens than its thinking explains. The server dropped that output - in practice a
-    tool call it could not parse (2026-10-22 11:44:07 W2: 1,392 output tokens, 410 thinking chars, no text, no tool call;
-    11:44:30: 981 output tokens, nothing at all). Such a reply is not "empty": the model tried to act.
+    text, no tool call, and far more tokens than its thinking explains (see lost_output_tokens). The server dropped that
+    output - in practice a tool call it could not parse (2026-10-22 11:44:07 W2: 1,392 output tokens, 410 thinking chars,
+    no text, no tool call; 11:44:30: 981 output tokens, nothing at all). Such a reply is not "empty": the model tried to act.
     """
-    try:
-        if done_reason != "stop" or int(content_chars or 0) > 0 or int(tool_call_count or 0) > 0:
-            return False
-        thinking_tokens = -(-int(thinking_chars or 0) // THINKING_CHARS_PER_TOKEN)  # rounded up
-        return int(output_tokens or 0) - thinking_tokens >= LOST_OUTPUT_MIN_TOKENS
-    except (TypeError, ValueError):
-        return False
+    return lost_output_tokens(done_reason, output_tokens, thinking_chars, content_chars, tool_call_count) > 0
+
+
+def sampling_penalty_options(options: Dict[str, Any], kwargs: Optional[Dict[str, Any]] = None) -> Dict[str, float]:
+    """
+    Round 2y: the penalty options to add to a request: repeat_penalty = OLLAMA_REPEAT_PENALTY (default 1.0, i.e. off) and
+    presence_penalty = OLLAMA_PRESENCE_PENALTY (default 0.0) - unless the call or the agent config sets them, or the
+    setting is empty (then the model's own default applies).
+    The provider used to add repeat_penalty 1.15 to every request, and qwen3.5's own default adds presence_penalty 1.5
+    (Ollama server log, 2026-10-22 15:29: "repeat_penalty = 1.150 ... presence_penalty = 1.500"). Both penalise tokens
+    the model has just written, and a tool call repeats '<parameter=...>' and '</parameter>' for every argument: PM1's
+    three-argument modify_task was dropped five times in a row while one-argument request_state calls always arrived.
+    """
+    given = dict(kwargs or {})
+    added: Dict[str, float] = {}
+    for option, setting in (("repeat_penalty", "OLLAMA_REPEAT_PENALTY"), ("presence_penalty", "OLLAMA_PRESENCE_PENALTY")):
+        if option in options or option in given:
+            continue
+        value = getattr(settings, setting, None)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            added[option] = float(value)
+    return added
+
+
+_sampling_logged: set = set()
+
+
+def log_sampling_once(model: Any, options: Dict[str, Any]) -> None:
+    """Round 2y: one INFO line per model with the sampling options the framework sends (the rest are the model's)."""
+    key = str(model)
+    if key in _sampling_logged:
+        return
+    _sampling_logged.add(key)
+    shown = {k: options[k] for k in ("temperature", "repeat_penalty", "presence_penalty", "frequency_penalty", "top_k",
+                                     "top_p", "min_p") if k in options}
+    logger.info(f"OllamaProvider: sampling options sent for '{model}': {shown} (options not listed use the model's own "
+                "defaults).")
 
 
 def effective_ollama_num_ctx(native_num_ctx: Any) -> int:
@@ -336,10 +387,10 @@ class OllamaProvider(BaseLLMProvider):
         raw_options = {"temperature": temperature, **kwargs}
         valid_options = {k: v for k, v in raw_options.items() if k in KNOWN_OLLAMA_OPTIONS and v is not None}
         
-        # --- Add repeat_penalty if not specified ---
-        if "repeat_penalty" not in valid_options and "repeat_penalty" not in kwargs:
-            valid_options["repeat_penalty"] = 1.15
-            logger.debug(f"Setting Ollama default repeat_penalty to: 1.15 to prevent repetitive loops")
+        # --- Sampling penalties (Round 2y: OLLAMA_REPEAT_PENALTY / OLLAMA_PRESENCE_PENALTY, see sampling_penalty_options) ---
+        for option, value in sampling_penalty_options(valid_options, kwargs).items():
+            valid_options[option] = value
+        log_sampling_once(model, valid_options)
             
         if max_tokens is not None:
             valid_options["num_predict"] = max_tokens 
