@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-TrippleEffect: Session & Log Collector  (v2: smart log reduction; v2.2: the session of the log)
+TrippleEffect: Session & Log Collector  (v2: smart log reduction; v2.2: the session of the log;
+v2.3: configuration and environment, with secrets redacted)
 
 Run from the TrippleEffect repository root:   python3 collect.py
 Output directory: ~/Desktop/te_session_data     (change with --dest)
@@ -18,6 +19,13 @@ What it collects (same names as before, plus the new zz_ files):
   zz_log_error_scan.txt         WARNING/ERROR/CRITICAL entries, GROUPED: each distinct problem once with
                                 its count, first/last time and (for errors) the traceback.
   zz_tool_errors_scan.txt       Tool execution failures, grouped the same way.
+  zz_config_yaml.txt            NEW (v2.3). config.yaml (secret values redacted).
+  zz_env_redacted.txt           NEW (v2.3). .env line by line; values of keys, tokens, passwords and anything that
+                                looks like a secret are replaced by [REDACTED: set, N chars].
+  zz_environment.txt            NEW (v2.3). Every setting the framework reads (os.getenv in src/) with the value it
+                                really gets: .env first (src/main.py loads it with override=True), else this shell's
+                                environment, else the code default. Plus Python / node / bash / Taskwarrior versions.
+  zz_git_state.txt              NEW (v2.3). Branch, last commits, changed files and the local diff (redacted).
 
 How the log is reduced (nothing is cut by position, so the middle of a long run is never lost):
   * database/Taskwarrior debug chatter (aiosqlite, tasklib.backends, database_manager DEBUG) is dropped;
@@ -32,13 +40,20 @@ Session: Y" line that is not DefaultProject); --session picks one by hand. Witho
 recently changed file. (v2 took the newest shared_workspace FOLDER date, which only changes when a file is created
 directly in it: on 2026-10-21 it exported Temp_Converter_CLI instead of the WiFi_Snake_Game run of the log.)
 
+Secrets (v2.3): a value is redacted when its NAME is a key/token/secret/password (e.g. OPENROUTER_API_KEY_1,
+GITHUB_ACCESS_TOKEN, SECRET_KEY - not WORKER_WORK_STATE_MAX_TOKENS) or when the VALUE looks like one (sk-..., ghp_...,
+github_pat_..., xox?-..., AIza..., JWTs, long random strings, the password in user:password@host URLs). Check the files
+before you share them if your .env holds secrets under unusual names.
+
 The script only writes files it generates into the destination folder (earlier exports of the same
 names are replaced). It never touches your repository.
 """
 import argparse
 import os
+import platform
 import re
 import shutil
+import subprocess
 import sys
 from collections import OrderedDict
 from pathlib import Path
@@ -363,6 +378,256 @@ def kb(n: int) -> str:
 
 
 # --------------------------------------------------------------------------------------
+# configuration and environment (v2.3)
+# --------------------------------------------------------------------------------------
+SECRET_NAME_RE = re.compile(
+    r"(?:^|[_.-])(?:API_?KEY|KEY|TOKEN|ACCESS_?KEY|SECRET(?:_?KEY)?|PASSWORD|PASSWD|PASS|PWD|AUTH|CREDENTIALS?|"
+    r"PRIVATE_?KEY|COOKIE|SALT|BEARER)(?:_?\d+)?$|PASSWORD|SECRET", re.IGNORECASE)
+SECRET_VALUE_RE = re.compile(
+    r"^(?:sk-|sk_|rk_|pk_live|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xox[abprs]-|AIza|ya29\.|hf_|r8_|eyJ[\w-]{10,}\.)")
+URL_PASSWORD_RE = re.compile(r"(?P<scheme>[a-z][a-z0-9+.-]*://)(?P<user>[^/@:\s]*):(?P<password>[^/@\s]+)@", re.IGNORECASE)
+ENV_LINE_RE = re.compile(r"^(?P<lead>\s*(?:export\s+)?)(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?P<eq>\s*=\s*)(?P<rest>.*)$")
+YAML_LINE_RE = re.compile(r"^(?P<lead>\s*-?\s*)(?P<name>[A-Za-z_][\w.-]*)(?P<eq>\s*:\s+)(?P<rest>.+)$")
+# settings the framework finds by prefix (src/config/settings.py: provider keys and URLs such as OPENROUTER_API_KEY_1)
+DYNAMIC_SETTING_PREFIXES = ("OPENAI", "OPENROUTER", "LITELLM", "ANTHROPIC", "GOOGLE", "DEEPSEEK", "VLLM", "OLLAMA")
+GETENV_RE = re.compile(r"os\.(?:getenv|environ\.get)\(\s*[\"'](?P<name>[A-Z][A-Z0-9_]*)[\"']|"
+                       r"os\.environ\[\s*[\"'](?P<name2>[A-Z][A-Z0-9_]*)[\"']\s*\]")
+
+
+def looks_secret_value(value: str) -> bool:
+    """A value that is a secret by its shape: a known key prefix, or a long random string without spaces or paths."""
+    v = value.strip().strip("'\"")
+    if not v:
+        return False
+    if SECRET_VALUE_RE.match(v):
+        return True
+    if len(v) >= 32 and re.fullmatch(r"[A-Za-z0-9_\-+=/.]+", v) and not re.search(r"[/\\]", v.strip("=")):
+        classes = sum(bool(re.search(p, v)) for p in (r"[a-z]", r"[A-Z]", r"\d"))
+        return classes >= 2
+    return False
+
+
+def split_value(rest: str) -> Tuple[str, str]:
+    """(value, trailing comment) of an env/yaml value: quotes respected; ' # ...' after the value is a comment."""
+    text = rest.rstrip("\n")
+    stripped = text.lstrip()
+    if stripped[:1] in ("'", '"'):
+        quote = stripped[0]
+        end = stripped.find(quote, 1)
+        if end > 0:
+            return stripped[:end + 1], stripped[end + 1:]
+    match = re.search(r"\s+#", text)
+    if match:
+        return text[:match.start()], text[match.start():]
+    if text.lstrip().startswith("#"):
+        return "", text
+    return text, ""
+
+
+def with_comment(shown: str, comment: str) -> str:
+    """The shown value and its trailing comment, separated by a space."""
+    if comment and not comment[:1].isspace():
+        return f"{shown} {comment}"
+    return f"{shown}{comment}"
+
+
+def redact_value(name: str, value: str) -> Tuple[str, bool]:
+    """(shown value, redacted?) for one setting."""
+    bare = value.strip()
+    unquoted = bare.strip("'\"")
+    if SECRET_NAME_RE.search(name) or looks_secret_value(unquoted):
+        if not unquoted:
+            return "[empty]", False
+        return f"[REDACTED: set, {len(unquoted)} chars]", True
+    cleaned, count = URL_PASSWORD_RE.subn(r"\g<scheme>\g<user>:[REDACTED]@", value)
+    return cleaned, bool(count)
+
+
+def redact_text_line(line: str) -> Tuple[str, int]:
+    """Redacts secret-looking tokens and URL passwords anywhere in a free text line (diffs). Returns (line, count)."""
+    count = 0
+    line, n = URL_PASSWORD_RE.subn(r"\g<scheme>\g<user>:[REDACTED]@", line)
+    count += n
+
+    def token(match: "re.Match") -> str:
+        nonlocal count
+        if looks_secret_value(match.group(0)):
+            count += 1
+            return f"[REDACTED: {len(match.group(0))} chars]"
+        return match.group(0)
+    line = re.sub(r"[A-Za-z0-9_\-+=/.]{20,}", token, line)
+    assignment = ENV_LINE_RE.match(line.lstrip("+- ")) or YAML_LINE_RE.match(line.lstrip("+- "))
+    if assignment and SECRET_NAME_RE.search(assignment.group("name")):
+        value, comment = split_value(assignment.group("rest"))
+        shown, hidden = redact_value(assignment.group("name"), value)
+        if hidden:
+            count += 1
+            prefix = line[:len(line) - len(line.lstrip("+- "))]
+            line = f"{prefix}{assignment.group('lead')}{assignment.group('name')}{assignment.group('eq')}{with_comment(shown, comment)}"
+    return line, count
+
+
+def redact_env_file(text: str) -> Tuple[str, Dict[str, str], int]:
+    """(.env with secrets redacted, {name: shown value}, number of redactions)."""
+    out, values, hidden_count = [], {}, 0
+    for line in text.splitlines():
+        match = ENV_LINE_RE.match(line)
+        if not match or line.lstrip().startswith("#"):
+            shown_line, n = redact_text_line(line) if not line.lstrip().startswith("#") else (line, 0)
+            out.append(shown_line)
+            hidden_count += n
+            continue
+        value, comment = split_value(match.group("rest"))
+        shown, hidden = redact_value(match.group("name"), value)
+        hidden_count += int(hidden)
+        values[match.group("name")] = shown
+        out.append(f"{match.group('lead')}{match.group('name')}{match.group('eq')}{with_comment(shown, comment)}")
+    return "\n".join(out) + "\n", values, hidden_count
+
+
+def redact_yaml(text: str) -> Tuple[str, int]:
+    """config.yaml with secret values redacted (line by line: 'name: value' pairs and free text)."""
+    out, hidden_count = [], 0
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            out.append(line)
+            continue
+        match = YAML_LINE_RE.match(line)
+        if match:
+            value, comment = split_value(match.group("rest"))
+            if value.strip() in ("|", ">", "|-", ">-"):
+                out.append(line)
+                continue
+            shown, hidden = redact_value(match.group("name"), value)
+            if hidden:
+                hidden_count += 1
+                out.append(f"{match.group('lead')}{match.group('name')}{match.group('eq')}{with_comment(shown, comment)}")
+                continue
+        shown_line, n = redact_text_line(line)
+        hidden_count += n
+        out.append(shown_line)
+    return "\n".join(out) + "\n", hidden_count
+
+
+def framework_setting_names(root: Path) -> List[str]:
+    """Names of environment variables the framework reads (os.getenv / os.environ.get / os.environ[...] in src/)."""
+    names = set()
+    for path in (root / "src").rglob("*.py"):
+        if any(part in EXCLUDE_DIRS for part in path.parts):
+            continue
+        try:
+            for match in GETENV_RE.finditer(path.read_text(encoding="utf-8", errors="replace")):
+                names.add(match.group("name") or match.group("name2"))
+        except OSError:
+            continue
+    return sorted(names)
+
+
+def env_example_values(root: Path) -> Dict[str, str]:
+    """{name: value} of the uncommented settings in .env.example (the documented suggestions)."""
+    path = root / ".env.example"
+    values: Dict[str, str] = {}
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            match = ENV_LINE_RE.match(line)
+            if match and not line.lstrip().startswith("#"):
+                values[match.group("name")] = split_value(match.group("rest"))[0].strip()
+    return values
+
+
+def command_output(command: List[str], cwd: Optional[Path] = None, limit: int = 4000) -> str:
+    try:
+        result = subprocess.run(command, cwd=str(cwd) if cwd else None, capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError) as err:
+        return f"(not available: {type(err).__name__})"
+    text = (result.stdout or "") + (("\n" + result.stderr) if result.returncode and result.stderr else "")
+    return clip(text.strip(), limit) if text.strip() else f"(no output, exit {result.returncode})"
+
+
+def build_environment_report(root: Path, env_values: Dict[str, str], env_found: bool) -> Tuple[str, int]:
+    """zz_environment.txt: the effective value of every setting the framework reads, plus tool versions."""
+    names = framework_setting_names(root)
+    example = env_example_values(root)
+    for name in list(env_values) + [n for n in os.environ if n.startswith(DYNAMIC_SETTING_PREFIXES)]:
+        if name not in names:
+            names.append(name)
+    rows, hidden = [], 0
+    width = max((len(n) for n in names), default=10)
+    for name in sorted(names):
+        if name in env_values:
+            shown, source = env_values[name], ".env"
+        elif name in os.environ:
+            shown, was_hidden = redact_value(name, os.environ[name])
+            hidden += int(was_hidden)
+            source = "shell"
+        else:
+            suggestion = example.get(name)
+            shown = "(not set - the code default applies" + (f"; .env.example suggests {suggestion!r})" if suggestion is not None else ")")
+            source = "-"
+        rows.append(f"  {name:<{width}}  [{source:<5}]  {shown}")
+    tools = [
+        ("python", sys.version.split()[0] + f" ({platform.platform()})"),
+        ("venv python", command_output([str(root / ".venv" / "bin" / "python"), "--version"]) if (root / ".venv" / "bin" / "python").exists() else "(no .venv)"),
+        ("node", command_output(["node", "--version"]) if shutil.which("node") else "NOT INSTALLED (JavaScript files are not syntax-checked)"),
+        ("bash", command_output(["bash", "--version"]).splitlines()[0] if shutil.which("bash") else "not installed"),
+        ("task (Taskwarrior)", command_output(["task", "--version"]) if shutil.which("task") else "NOT INSTALLED"),
+        ("git", command_output(["git", "--version"]) if shutil.which("git") else "not installed"),
+    ]
+    text = ["# TrippleEffect environment", "",
+            "Effective value of every setting the framework reads. Source: [.env] = your .env (src/main.py loads it with",
+            "override=True, so it wins), [shell] = this shell's environment (only used when .env does not set it; the",
+            "shell that starts the framework may differ), [-] = not set. Secret values are redacted.", ""]
+    if not env_found:
+        text.append("NOTE: no .env file found in the repository root.\n")
+    text += [f"## Settings ({len(names)})"] + rows + ["", "## Tools"] + [f"  {k:<20} {v}" for k, v in tools]
+    return "\n".join(text) + "\n", hidden
+
+
+def build_git_state(root: Path) -> Tuple[str, int]:
+    """zz_git_state.txt: branch, last commits, status and the local diff (redacted, capped)."""
+    if not shutil.which("git") or not (root / ".git").exists():
+        return "No git repository (or git not installed).\n", 0
+    parts = ["# git state", "", "## Branch", command_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], root),
+             "", "## Last commits", command_output(["git", "log", "--oneline", "-12"], root),
+             "", "## Status (changed / untracked files)", command_output(["git", "status", "--short"], root, 20000),
+             "", "## Diff of tracked files (git diff HEAD)"]
+    diff = command_output(["git", "diff", "HEAD", "--", ".", ":(exclude)*.db", ":(exclude)*.log"], root, 150_000)
+    hidden = 0
+    lines = []
+    for line in diff.splitlines():
+        shown, n = redact_text_line(line)
+        hidden += n
+        lines.append(shown)
+    return "\n".join(parts + lines) + "\n", hidden
+
+
+def collect_configuration(root: Path, dest: Path, summary: List[str]) -> None:
+    """v2.3: config.yaml, .env (redacted), the effective environment and the git state."""
+    summary.append("\n## Configuration & environment (secrets redacted)")
+    config = root / "config.yaml"
+    if config.is_file():
+        text, hidden = redact_yaml(config.read_text(encoding="utf-8", errors="replace"))
+        (dest / "zz_config_yaml.txt").write_text(text, encoding="utf-8")
+        summary.append(f"Generated: zz_config_yaml.txt ({kb(len(text.encode()))}, {hidden} value(s) redacted)")
+    else:
+        summary.append("config.yaml: not found in the repository root")
+    env_path = root / ".env"
+    env_values: Dict[str, str] = {}
+    if env_path.is_file():
+        text, env_values, hidden = redact_env_file(env_path.read_text(encoding="utf-8", errors="replace"))
+        (dest / "zz_env_redacted.txt").write_text(text, encoding="utf-8")
+        summary.append(f"Generated: zz_env_redacted.txt ({len(env_values)} setting(s), {hidden} value(s) redacted)")
+    else:
+        summary.append(".env: not found in the repository root")
+    report, hidden = build_environment_report(root, env_values, env_path.is_file())
+    (dest / "zz_environment.txt").write_text(report, encoding="utf-8")
+    summary.append(f"Generated: zz_environment.txt ({hidden} shell value(s) redacted)")
+    git_text, hidden = build_git_state(root)
+    (dest / "zz_git_state.txt").write_text(git_text, encoding="utf-8")
+    summary.append(f"Generated: zz_git_state.txt ({kb(len(git_text.encode()))}, {hidden} value(s) redacted)")
+
+
+# --------------------------------------------------------------------------------------
 def main() -> int:
     ap = argparse.ArgumentParser(description="Collect TrippleEffect session data with a reduced log.")
     ap.add_argument("--root", default=".", help="TrippleEffect repository root (default: current directory)")
@@ -371,6 +636,7 @@ def main() -> int:
     ap.add_argument("--session", default=None, help="Specific session folder, e.g. projects/My_Project/startup_123 "
                                                      "(default: the session the log worked in)")
     ap.add_argument("--raw", action="store_true", help="Also write zz_raw_log_head_tail.txt (old behaviour: 400 KB head + 600 KB tail)")
+    ap.add_argument("--no-config", action="store_true", help="Do not collect config.yaml, .env, environment and git state")
     args = ap.parse_args()
 
     root = Path(args.root).resolve()
@@ -495,6 +761,14 @@ def main() -> int:
     else:
         summary.append("\nNo log file found under logs/ (and no --log given).")
         print("WARNING: no log file found.")
+
+    # 3. Configuration & environment (v2.3) -------------------------------------------
+    if not args.no_config:
+        try:
+            collect_configuration(root, dest, summary)
+        except Exception as exc:  # the session data above is still exported
+            summary.append(f"\nConfiguration collection failed: {type(exc).__name__}: {exc}")
+            print(f"WARNING: configuration collection failed: {exc}")
 
     (dest / "zz_session_summary.txt").write_text("\n".join(summary) + "\n", encoding="utf-8")
 
