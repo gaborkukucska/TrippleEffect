@@ -47,9 +47,11 @@ def rejected_write_state_note(filename: str, existed: bool) -> str:
     """
     if existed:
         return f" The existing '{filename}' is unchanged."
-    return (f" '{filename}' was NOT created and still does not exist: send the COMPLETE corrected file with 'write' again. "
-            f"If it is too long for one reply, write its first part to '{filename}' (whole functions or classes only) and "
-            f"add the rest with 'append' to '{filename}'.")
+    # Round 2v: the rejected text is kept, so only the faulty line has to be sent (src/tools/rejected_drafts.py)
+    from src.tools.rejected_drafts import kept_note
+    return (f" '{filename}' was NOT created and still does not exist." + kept_note(filename)
+            + f" Or send the COMPLETE corrected file with 'write' (if it is too long for one reply: its first part, whole "
+            f"functions or classes only, then the rest with 'append' to '{filename}').")
 
 
 def python_append_error(filename: str, original: str, new_content: str) -> Optional[Dict[str, Any]]:
@@ -77,6 +79,44 @@ def python_append_error(filename: str, original: str, new_content: str) -> Optio
             "class ends." + (f"\n{report}" if report else ""))}
 
 
+def replace_line_range(text: str, start_line: int, end_line: int, content: str) -> str:
+    """Round 2v: text with lines start_line..end_line (1-based, inclusive) replaced - exactly as 'replace_lines' does it."""
+    lines = text.splitlines(True)
+    start_idx = max(0, start_line - 1)
+    end_idx = max(start_idx, min(end_line, len(lines)))
+    new_lines = content.splitlines(True)
+    if new_lines and not new_lines[-1].endswith('\n') and end_idx < len(lines):
+        new_lines[-1] += '\n'
+    return "".join(lines[:start_idx] + new_lines + lines[end_idx:])
+
+
+def bloat_refusal(rel_target: Path, allowed_entries, structure_text: str) -> str:
+    """
+    Round 2v: the Workspace Bloat Protection refusal with the real directories and, when PROJECT_STRUCTURE.md plans a file
+    of that name, its planned path. 2026-10-22 10:33:02 W1 wrote 'backend/server.py' and was given a list that mixed the
+    project's files with a dozen generic folder names, but not that server.py belongs in the workspace root.
+    """
+    directories = sorted(entry for entry in allowed_entries if not _EXTENSION_LIKE_RE.search(entry))
+    planned = []
+    in_files = False
+    for line in str(structure_text or "").splitlines():
+        if line.startswith("## "):
+            in_files = line.strip().lower() == "## files to create"
+            continue
+        if in_files and line.startswith("- "):
+            planned.append(line[2:].strip())
+    same_name = [path for path in planned if Path(path).name == rel_target.name]
+    message = (f"Workspace Bloat Protection: '{rel_target.parts[0]}/' is not a directory of this project's layout "
+               f"(PROJECT_STRUCTURE.md), so NOTHING was written. Use the workspace root or one of these directories: "
+               f"{', '.join(directories)}.")
+    if same_name:
+        message += f" PROJECT_STRUCTURE.md plans this file as '{same_name[0]}': write it at exactly that path."
+    return message
+
+
+_EXTENSION_LIKE_RE = re.compile(r"\.[A-Za-z0-9]{1,10}$")
+
+
 def part_file_refusal(filename: str, real: str, real_exists: bool) -> Dict[str, Any]:
     """Round 2t: the refusal of a write / append to a part file of `real`."""
     if real_exists:
@@ -100,19 +140,23 @@ class FileSystemTool(BaseTool):
     name: str = "file_system"
     auth_level: str = "worker" # Accessible by all
     summary: Optional[str] = "Performs file system operations (read, write, append, insert_lines, replace_lines, list, tree, mkdir, delete, find_replace, regex_replace, copy, move, rename, exists) within allowed scopes. Use tool_information with sub_action for per-action help."
-    description: str = ( # Updated description
+    description: str = ( # Round 2v: kept in line with what the actions really do
         "Reads, writes, appends, inserts, or replaces lines in files. Also lists, creates, moves, or renames files/directories. "
-        "Use 'scope' ('private', 'shared', or 'projects') to specify the target area. Default: 'private'. "
-        "Actions: 'read', 'write' (for NEW files only), 'append' (add to end), 'insert_lines', 'replace_lines', "
+        "Use 'scope' ('private', 'shared', or 'projects') to specify the target area. Default: 'shared' when you work on a "
+        "project, else 'private'. "
+        "Actions: 'read', 'write' (for NEW files), 'append' (add to end), 'insert_lines', 'replace_lines', "
         "'list', 'tree' (recursive listing), 'mkdir', 'delete', 'find_replace', 'regex_replace', 'copy', 'move', 'rename', "
         "'exists' (check file/dir existence and metadata), 'search_replace_block', 'git_commit', 'git_status', 'git_diff', 'git_init'. "
-        "All paths are relative to the selected scope."
+        "All paths are relative to the selected scope. Python files must stay valid Python: a change that breaks one is "
+        "rejected and nothing is saved. When the 'write' of a NEW Python file is rejected, its text is kept: fix the faulty "
+        "line with 'find_replace' or 'replace_lines' on that file instead of sending the whole file again. Write code into "
+        "the real file (never part files such as 'app.py.part1')."
     )
     parameters: List[ToolParameter] = [
         ToolParameter(
             name="action",
             type="string",
-            description="The operation: 'read', 'write', 'list', 'tree', 'mkdir', 'delete', 'find_replace', 'regex_replace', 'copy', 'move', 'rename', 'exists', 'search_replace_block', 'git_commit', 'git_status', 'git_diff'.",
+            description="The operation: 'read', 'write', 'append', 'insert_lines', 'replace_lines', 'find_replace', 'regex_replace', 'search_replace_block', 'list', 'tree', 'mkdir', 'delete', 'copy', 'move', 'rename', 'exists', 'git_commit', 'git_status', 'git_diff'.",
             required=True,
         ),
         ToolParameter(
@@ -131,7 +175,7 @@ class FileSystemTool(BaseTool):
         ToolParameter(
             name="content",
             type="string",
-            description="Text content to write. Required for 'write'.",
+            description="Text content. Required for 'write' (the COMPLETE file), 'append', 'insert_lines' and 'replace_lines'.",
             required=False, # Dynamically required
             aliases=["text", "data", "body", "code", "string", "content_str", "line_content", "file_contents"]
         ),
@@ -384,6 +428,58 @@ class FileSystemTool(BaseTool):
         start = sum(len(line) for line in file_lines[:starts[0]])
         end = start + sum(len(line) for line in file_lines[starts[0]:starts[0] + size])
         return start, end
+
+    def _find_replace_text(self, text: str, find_text: str, replace_text: str, filename: str):
+        """Round 2v: (new text, None) for find_replace on a text, or (None, error message) - same matching as find_replace."""
+        if find_text in text:
+            return text.replace(find_text, replace_text), None
+        span = self._whitespace_tolerant_span(text, find_text)
+        if span is None:
+            return None, (f"find_text was NOT found in your kept (rejected) text of '{filename}', so nothing was changed. "
+                          "It must match that text exactly, including indentation." + self._closest_lines_hint(text, find_text))
+        if span == "ambiguous":
+            return None, (f"find_text was not found exactly in your kept text of '{filename}', and ignoring indentation it "
+                          "matches several places. Nothing was changed. Use a longer find_text or 'replace_lines'.")
+        start, end = span
+        replacement = replace_text
+        if text[start:end].endswith("\n") and not replacement.endswith("\n"):
+            replacement += "\n"
+        return text[:start] + replacement + text[end:], None
+
+    async def _edit_rejected_draft(self, base_path: Path, filename: str, validated_path: Path, agent_id: str,
+                                   scope_description: str, edit) -> Optional[Dict[str, Any]]:
+        """
+        Round 2v: apply an edit to the kept text of agent_id's rejected 'write' of the missing file (src/tools/rejected_drafts.py).
+        None if there is no kept text. Valid Python is written with the normal 'write' checks; invalid text stays kept.
+        """
+        from src.tools import rejected_drafts
+        from src.tools.python_static_check import parse_python, syntax_error_report
+        draft = rejected_drafts.get(validated_path, agent_id)
+        if draft is None:
+            return None
+        new_text, problem = edit(draft)
+        if problem:
+            return {"status": "error", "message": problem}
+        if new_text == draft:
+            return {"status": "error", "message": (f"Your change does not change the kept (rejected) text of '{filename}', so "
+                                                   f"'{filename}' still does not exist. Fix the line named in the error.")}
+        try:
+            parse_python(new_text)
+        except SyntaxError as err:
+            rejected_drafts.keep(validated_path, agent_id, new_text)
+            report = syntax_error_report(new_text, err, closing=rejected_drafts.DRAFT_CLOSING)
+            logger.info(f"Agent {agent_id}: edit applied to the kept text of '{filename}'; still invalid ({err.msg} at line {err.lineno}).")
+            return {"status": "error", "message": (
+                f"Your change was applied to your kept (rejected) text of '{filename}', but it is still not valid Python "
+                f"({err.msg} at line {err.lineno}), so '{filename}' still does not exist. Fix that line the same way."
+                + (f"\n{report}" if report else ""))}
+        result = await self._write_file(base_path, filename, new_text, agent_id, scope_description)
+        if isinstance(result, dict) and result.get("status") == "success":
+            rejected_drafts.forget(validated_path)
+            logger.info(f"Agent {agent_id}: '{filename}' created from its kept rejected text after a fix.")
+            result["message"] = (f"[Framework: '{filename}' did not exist; your change was applied to your rejected text of it, "
+                                 f"which is now valid Python, so '{filename}' was created.] " + str(result.get("message") or ""))
+        return result
 
     @staticmethod
     def _closest_lines_hint(content: str, needle: str) -> str:
@@ -680,7 +776,7 @@ class FileSystemTool(BaseTool):
 
                                     if allowed_top_dirs and target_top_dir not in allowed_top_dirs:
                                         logger.warning(f"Agent {agent_id} attempted to create unauthorized root folder '{target_top_dir}' in shared workspace.")
-                                        return {"status": "error", "message": f"Workspace Bloat Protection: You are attempting to place a file or directory inside a new root directory '{rel_target_path.parts[0]}/' which is NOT defined in PROJECT_STRUCTURE.md. Expected root directories are: {', '.join(allowed_top_dirs)}. Please strictly adhere to the defined layout."}
+                                        return {"status": "error", "message": bloat_refusal(rel_target_path, allowed_top_dirs, structure_content)}
                         except Exception as e:
                             logger.error(f"Error checking Workspace Bloat Protection for agent {agent_id}: {e}", exc_info=True)
 
@@ -860,9 +956,12 @@ class FileSystemTool(BaseTool):
 read, write, append, insert_lines, replace_lines, list, tree, mkdir, delete, find_replace, regex_replace, copy, move, rename, exists
 
 **Scopes:**
-*   `private`: Agent's own sandbox directory (Default).
-*   `shared`: Current session's shared workspace. Requires project/session context.
+*   `shared`: Current session's shared workspace (the default when you work on a project).
+*   `private`: Agent's own sandbox directory (the default without a project).
 *   `projects`: Top-level projects directory (ONLY use with `list` action).
+
+**Python files** are checked on every change: a write or edit that would leave invalid Python is rejected and NOTHING is
+saved (the error shows the faulty lines and a hint).
 """
         
         if sub_action == "read":
@@ -873,24 +972,31 @@ Reads the content of a file.
 *   `<start_line>` (integer, optional): Line number to start reading from (1-indexed).
 *   `<end_line>` (integer, optional): Line number to stop reading at (inclusive).
 *   `<show_line_numbers>` (boolean, optional): Whether to prefix each line with its line number. Default: true.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 """
         elif sub_action == "write":
             return common_header + """
 **Action: write**
-Writes content to a NEW file (Forbidden on existing files to save tokens/prevent data loss). For targeted edits on existing files, use `replace_lines`, `find_replace`, `regex_replace`, or `append`! DO NOT use `write` to create directories — use `mkdir` instead!
-*   `<filename>` (string, required): Relative path to the file.
+Writes content to a NEW file. For targeted edits on existing files, use `replace_lines`, `find_replace`, `regex_replace`, or `append`! DO NOT use `write` to create directories — use `mkdir` instead!
+*   `<filename>` (string, required): Relative path to the file - its real path (e.g. `src/app.py`). Part files such as `src/app.py.part1` are refused.
 *   `<content>` (string, required): The complete file content to write.
 *   `<force_overwrite>` (boolean, optional): Set to `true` ONLY when you intentionally want to **replace the entire contents** of an existing file. Default: `false`. **Use this sparingly** — prefer `code_editor` or `find_replace` for partial edits.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
+
+Rules:
+*   An existing file is replaced without `force_overwrite` only if it is empty, holds no code yet, you wrote it yourself, or (Python) your new version keeps all its functions, classes and top-level names.
+*   Python content must be valid Python. If the write of a NEW Python file is rejected, the file is NOT created, but your text is kept: fix only the faulty line with `find_replace` (find_text = the wrong text) or `replace_lines` (the line numbers shown in the error) on that filename. The file is created as soon as the text is valid.
+*   A file too long for one reply: `write` its first part (whole functions or classes only), then add each further part with `append` to the SAME file.
 """
         elif sub_action == "append":
             return common_header + """
 **Action: append**
-Appends text to the end of an existing file.
-*   `<filename>` (string, required): Relative path to the file.
+Appends text to the end of a file (a missing file is created).
+*   `<filename>` (string, required): Relative path to the file - its real path, never a part file such as `app.py.part2`.
 *   `<content>` (string, required): Text to append.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
+
+For a Python file the result must be valid Python: append whole functions or classes (every part must end where a function or class ends). The appended text always starts on a new line.
 """
         elif sub_action == "insert_lines":
             return common_header + """
@@ -901,7 +1007,7 @@ Inserts a block of text at a specific line number, shifting subsequent lines dow
 *   `<search>` (string): Instead of a line number, provide a text string to search for in the file. The new content will be inserted relative to the first matching line.
 *   `<position>` (string, optional): 'after' (default) or 'before'. Controls whether content is inserted after or before the `<search>` match.
 *   `<content>` (string, required): Text to insert.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 *   Example (by line number):
     ```json
     {
@@ -932,28 +1038,30 @@ Replaces a specific block of existing lines with new content. STRONGLY RECOMMEND
 *   `<replace_start_line>` (integer, required): The first line number (1-indexed) to remove. Also accepts `<start_line>`.
 *   `<replace_end_line>` (integer, required): The last line number (1-indexed) to remove (inclusive). Also accepts `<end_line>`.
 *   `<content>` (string, required): The new text to replace the removed lines with.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
+
+On a NEW Python file whose `write` was rejected, the lines of your kept (rejected) text are replaced; the file is created as soon as that text is valid Python.
 """
         elif sub_action == "list":
             return common_header + """
 **Action: list**
 Lists files and directories within a single directory (non-recursive). For a full recursive view, use `tree` instead.
 *   `<path>` (string, optional): Relative directory path. Defaults to root of scope.
-*   `<scope>` (string, optional): 'private', 'shared', 'projects'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared', 'private' or 'projects'. Default: 'shared' when you work on a project, else 'private'.
 """
         elif sub_action == "mkdir":
             return common_header + """
 **Action: mkdir**
 Creates a directory, including parent directories.
 *   `<path>` (string, required): Relative directory path.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 """
         elif sub_action == "delete":
             return common_header + """
 **Action: delete**
 Deletes a file or an *empty* directory.
 *   `<path>` (string, required): Relative target path.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 """
         elif sub_action == "find_replace":
             return common_header + """
@@ -962,7 +1070,10 @@ Finds and replaces all occurrences of an EXACT string.
 *   `<filename>` (string, required): Relative path.
 *   `<find_text>` (string, required): Exact string to find. (Can also use `<find>` or `<search>`)
 *   `<replace_text>` (string, required): Replacement string. (Can also use `<replace>`)
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
+
+If find_text is not found exactly, the same lines ignoring indentation are used (one place only); otherwise nothing is changed.
+On a NEW Python file whose `write` was rejected, the change is made in your kept (rejected) text; the file is created as soon as that text is valid Python.
 """
         elif sub_action == "regex_replace":
             return common_header + """
@@ -971,7 +1082,7 @@ Finds and replaces using regex.
 *   `<filename>` (string, required): Relative path.
 *   `<regex_pattern>` (string, required): Regex pattern.
 *   `<replace_text>` (string, required): Replacement string.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 """
         elif sub_action == "copy":
             return common_header + """
@@ -979,7 +1090,7 @@ Finds and replaces using regex.
 Copies a file/directory.
 *   `<path>` (string, required): Source path.
 *   `<destination_path>` (string, required): Target path.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 """
         elif sub_action == "move":
             return common_header + """
@@ -987,7 +1098,7 @@ Copies a file/directory.
 Moves/renames a file/directory. (Tip: use `rename` as a more readable alias.)
 *   `<path>` (string, required): Source path.
 *   `<destination_path>` (string, required): Target path.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 """
         elif sub_action == "rename":
             return common_header + """
@@ -995,7 +1106,7 @@ Moves/renames a file/directory. (Tip: use `rename` as a more readable alias.)
 Renames a file or directory (alias for `move`).
 *   `<path>` (string, required): Current path of the file/directory.
 *   `<destination_path>` (string, required): New path/name for the file/directory.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 """
         elif sub_action == "tree":
             return common_header + """
@@ -1003,14 +1114,14 @@ Renames a file or directory (alias for `move`).
 Recursively lists all files and directories in a tree format, showing the full workspace structure at a glance.
 *   `<path>` (string, optional): Relative directory path. Defaults to root of scope.
 *   `<max_depth>` (integer, optional): Maximum depth of recursion. Default: 5. Set lower for large workspaces.
-*   `<scope>` (string, optional): 'private', 'shared', 'projects'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared', 'private' or 'projects'. Default: 'shared' when you work on a project, else 'private'.
 """
         elif sub_action == "exists":
             return common_header + """
 **Action: exists**
 Checks if a file or directory exists and returns metadata (type, size, last modified). Much faster than `read` when you only need to check existence.
 *   `<path>` (string, required): Relative path to check.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 """
         elif sub_action == "search_replace_block":
             return common_header + """
@@ -1025,14 +1136,14 @@ Finds a specific block of code/text and replaces it with new content. Uses a 3-t
 *   `<search_block>` (string, required): The block of text to find. Provide at minimum the **first and last unique lines** of the block. (Can also use `<search>` or `<find>`)
 *   `<replace_block>` (string, required): The new content to replace the found block with. (Can also use `<replace_text>`)
 *   `<expected_replacements>` (integer, optional): **Required for multi-match cases.** If the tool reports it found N matches, re-send with `<expected_replacements>N</expected_replacements>` to confirm replacing all N occurrences.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 """
         elif sub_action == "git_init":
             return common_header + """
 **Action: git_init**
 Initializes a new git repository in the specified path.
 *   `<path>` (string, optional): The directory to run git init in. Defaults to root of scope.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 """
         elif sub_action == "git_commit":
             return common_header + """
@@ -1040,21 +1151,21 @@ Initializes a new git repository in the specified path.
 Commits changes in the specified scope (if it is a git repository).
 *   `<commit_message>` (string, required): The message for the commit.
 *   `<path>` (string, optional): The directory to run the commit in. Defaults to root of scope.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 """
         elif sub_action == "git_status":
             return common_header + """
 **Action: git_status**
 Gets the git status for the specified scope (if it is a git repository).
 *   `<path>` (string, optional): The directory to run git status in. Defaults to root of scope.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 """
         elif sub_action == "git_diff":
             return common_header + """
 **Action: git_diff**
 Gets the git diff for the specified scope (if it is a git repository).
 *   `<path>` (string, optional): The directory to run git diff in. Defaults to root of scope.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 """
 
         elif sub_action == "git_log":
@@ -1062,7 +1173,7 @@ Gets the git diff for the specified scope (if it is a git repository).
 **Action: git_log**
 Gets the git commit history for the specified scope.
 *   `<path>` (string, optional): The directory to run git log in. Defaults to root of scope.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 """
         elif sub_action == "git_branch":
             return common_header + """
@@ -1070,7 +1181,7 @@ Gets the git commit history for the specified scope.
 Lists branches or creates a new one if `<branch>` is provided.
 *   `<branch>` (string, optional): Name of the new branch to create.
 *   `<path>` (string, optional): The directory to run git branch in. Defaults to root of scope.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 """
         elif sub_action == "git_checkout":
             return common_header + """
@@ -1078,7 +1189,7 @@ Lists branches or creates a new one if `<branch>` is provided.
 Switches to a specified branch.
 *   `<branch>` (string, required): Name of the branch to checkout.
 *   `<path>` (string, optional): The directory to run git checkout in. Defaults to root of scope.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 """
         elif sub_action == "git_add":
             return common_header + """
@@ -1086,7 +1197,7 @@ Switches to a specified branch.
 Stages files for commit.
 *   `<files>` (string, required): Comma-separated list of files, or '.' for all.
 *   `<path>` (string, optional): The directory to run git add in. Defaults to root of scope.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 """
         elif sub_action == "git_pull":
             return common_header + """
@@ -1094,7 +1205,7 @@ Stages files for commit.
 Pulls changes from a remote repository.
 *   `<remote>` (string, optional): The remote to pull from (default: 'origin').
 *   `<path>` (string, optional): The directory to run git pull in. Defaults to root of scope.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 """
         elif sub_action == "git_push":
             return common_header + """
@@ -1102,15 +1213,15 @@ Pulls changes from a remote repository.
 Pushes changes to a remote repository.
 *   `<remote>` (string, optional): The remote to push to (default: 'origin').
 *   `<path>` (string, optional): The directory to run git push in. Defaults to root of scope.
-*   `<scope>` (string, optional): 'private' or 'shared'. Default: 'private'.
+*   `<scope>` (string, optional): 'shared' or 'private'. Default: 'shared' when you work on a project, else 'private'.
 """
 
         # Return directory of commands
         return common_header + """
 **Available Actions Summary:**
 1.  **read:** Reads file content. (Use start_line and end_line for large files).
-2.  **write:** Creates a new file (use `force_overwrite=true` for existing files).
-3.  **append:** Adds text to the end of a file.
+2.  **write:** Creates a new file (use `force_overwrite=true` for existing files). A rejected new Python file is fixed with find_replace / replace_lines (its text is kept).
+3.  **append:** Adds text to the end of a file (whole functions/classes for Python).
 4.  **insert_lines:** Inserts a block of text at a specific line number, or relative to a search anchor.
 5.  **replace_lines:** Replaces a block of lines with new text.
 6.  **list:** Lists files in a single directory.
@@ -1493,15 +1604,22 @@ Pushes changes to a remote repository.
                     from src.tools.python_static_check import parse_python  # Round 2m: quiet parse
                     parse_python(content)
                 except SyntaxError as syntax_err:
+                    file_existed = validated_path.is_file()
+                    closing = None
+                    if not file_existed:
+                        # Round 2v: keep the rejected text of a NEW file; find_replace / replace_lines fix it in place
+                        from src.tools import rejected_drafts
+                        rejected_drafts.keep(validated_path, agent_id, content)
+                        closing = rejected_drafts.DRAFT_CLOSING
                     try:  # Round 1t: show the code around the error and a hint (never lets the report break the rejection)
                         from src.tools.python_static_check import syntax_error_report
-                        syntax_report = syntax_error_report(content, syntax_err)
+                        syntax_report = syntax_error_report(content, syntax_err, closing=closing)
                     except Exception:
                         syntax_report = ""
                     return {
                         "status": "error",
                         "message": f"Write rejected due to Python SyntaxError in resulting code: {syntax_err.msg} at line {syntax_err.lineno}. No changes were saved. Please check your indentation and brackets."
-                                   + rejected_write_state_note(filename, validated_path.is_file())  # Round 2t
+                                   + rejected_write_state_note(filename, file_existed)  # Round 2t
                                    + (f"\n{syntax_report}" if syntax_report else "")
                     }
                     
@@ -1509,6 +1627,8 @@ Pushes changes to a remote repository.
                 await asyncio.to_thread(validated_path.rmdir)  # still empty: rmdir fails safely otherwise
             await asyncio.to_thread(validated_path.parent.mkdir, parents=True, exist_ok=True)
             await asyncio.to_thread(validated_path.write_text, content, encoding='utf-8')
+            from src.tools import rejected_drafts  # Round 2v: a written file needs no kept rejected text any more
+            rejected_drafts.forget(validated_path)
             
             if hasattr(self, '_failed_writes') and agent_id in self._failed_writes and filename in self._failed_writes[agent_id]:
                 self._failed_writes[agent_id][filename] = 0
@@ -1603,6 +1723,12 @@ Pushes changes to a remote repository.
         """Finds and replaces all occurrences of text in a file within the specified scope."""
         validated_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
         if not validated_path: return {"status": "error", "message": f"Invalid or disallowed file path '{filename}' in {scope_description}."}
+        if not validated_path.is_file() and find_text != "":
+            # Round 2v: the file's rejected 'write' text is kept - the fix is applied to it
+            drafted = await self._edit_rejected_draft(base_path, filename, validated_path, agent_id, scope_description,
+                                                      lambda text: self._find_replace_text(text, find_text, replace_text, filename))
+            if drafted is not None:
+                return drafted
         if not validated_path.is_file():
             parent = validated_path.parent
             existing_files = []
@@ -2029,6 +2155,12 @@ Pushes changes to a remote repository.
     async def _replace_lines_in_file(self, base_path: Path, filename: str, start_line: int, end_line: int, content: str, agent_id: str, scope_description: str) -> Dict[str, Any]:
         val_path = await self._resolve_and_validate_path(base_path, filename, agent_id, scope_description)
         if not val_path: return {"status": "error", "message": f"Invalid path '{filename}'."}
+        if not val_path.is_file() and not (start_line > end_line or start_line < 1):
+            # Round 2v: the file's rejected 'write' text is kept - the line range is replaced in it
+            drafted = await self._edit_rejected_draft(base_path, filename, val_path, agent_id, scope_description,
+                                                      lambda text: (replace_line_range(text, start_line, end_line, content), None))
+            if drafted is not None:
+                return drafted
         if not val_path.is_file(): return {"status": "error", "message": f"File '{filename}' does not exist."}
         if start_line > end_line or start_line < 1:
             return {"status": "error", "message": f"Invalid line range: {start_line} to {end_line}."}

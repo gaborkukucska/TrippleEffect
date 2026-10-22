@@ -621,20 +621,77 @@ def indentation_hint(lines: List[str], lineno: int, message: str) -> str:
         return GENERIC_INDENT_HINT
 
 
-def syntax_error_report(source: str, err: SyntaxError) -> str:
+def _code_part(line: str) -> str:
+    """Round 2v: a line without its trailing '# comment' (a '#' inside a string is kept)."""
+    import io
+    import tokenize
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(line + "\n").readline):
+            if token.type == tokenize.COMMENT:
+                return line[:token.start[1]].rstrip()
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        pass
+    return line.rstrip() if "'" in line or '"' in line else line.split("#", 1)[0].rstrip()
+
+
+def missing_comma_hint(lines: List[str], err: SyntaxError) -> str:
+    """
+    Round 2v: where the comma is missing. 2026-10-22 10:34-10:38 W1 sent server.py three times with
+        GAME_CONFIG = {
+            'board_size': {'width': 15, 'height': 20},   # Grid ...
+            'tick_interval_ms': 67                        # ~14.9 ticks/sec ...
+
+            'max_players': ...
+    and was shown only lines 12-16 ("Perhaps you forgot a comma? at line 15") - the next item was never in view.
+    """
+    start = err.lineno if isinstance(err.lineno, int) else 0
+    end = getattr(err, "end_lineno", None)
+    end = end if isinstance(end, int) and start <= end <= len(lines) else start
+    if not start or start > len(lines):
+        return "Hint: a comma is missing between two items (in a dict, list, tuple or call every item but the last ends with ',')."
+    if end > start:
+        item_line = start
+        for number in range(end - 1, start - 1, -1):
+            if _code_part(lines[number - 1]).strip():
+                item_line = number
+                break
+        item_end = _code_part(lines[item_line - 1]).strip()[-40:]
+        next_item = lines[end - 1].strip()[:60]
+        return (f"Hint: a comma is missing at the END of line {item_line} (after `{item_end}`, before any # comment): the "
+                f"next item starts on line {end} (`{next_item}`). In a dict, list, tuple or call every item except the last "
+                "must end with ','.")
+    offset = getattr(err, "offset", None) or 0
+    end_offset = getattr(err, "end_offset", None) or 0
+    near = lines[start - 1][max(0, offset - 1):max(offset, end_offset - 1)].strip()[:60] if offset else ""
+    return (f"Hint: two items on line {start} are not separated by a comma" + (f" (`{near}`)" if near else "") + ". Add "
+            "',' between them.")
+
+
+DEFAULT_SYNTAX_CLOSING = ("Send the COMPLETE corrected file. Keep the code simple (no deeply nested try/except) and do not "
+                          "resend the same text.")
+
+
+def syntax_error_report(source: str, err: SyntaxError, closing: Optional[str] = None) -> str:
     """
     Human/LLM-friendly description of a SyntaxError: the message, the code around the faulty line and a hint.
     Never raises; returns '' if nothing useful can be said.
+    Round 2v: `closing` replaces the last line (a rejected write of a new file is fixed with find_replace / replace_lines).
     """
     try:
         lines = str(source).splitlines()
         lineno = err.lineno if isinstance(err.lineno, int) and 1 <= err.lineno <= max(1, len(lines)) else 0
         message = str(err.msg or "")
         parts: List[str] = []
-        if lineno and lines:
-            parts.append("Code around the error:\n" + _show_lines(lines, lineno))
         low = message.lower()
-        if "expected 'except' or 'finally'" in low and lines:
+        if lineno and lines:
+            after = 1
+            end_lineno = getattr(err, "end_lineno", None)
+            if "forgot a comma" in low and isinstance(end_lineno, int) and end_lineno > lineno:
+                after = min(end_lineno - lineno, 6)  # Round 2v: show the item that follows the missing comma
+            parts.append("Code around the error:\n" + _show_lines(lines, lineno, after=after))
+        if "forgot a comma" in low and lines:
+            parts.append(missing_comma_hint(lines, err))  # Round 2v
+        elif "expected 'except' or 'finally'" in low and lines:
             try_line = _find_open_try(lines, lineno or len(lines))
             where = f"The `try:` on line {try_line}" if try_line else "A `try:` above"
             parts.append(f"Hint: {where} has no `except` or `finally` at the same indentation as the `try`. Add "
@@ -656,7 +713,7 @@ def syntax_error_report(source: str, err: SyntaxError) -> str:
                          'Usually a """ was closed too early, or the edit cut a docstring in half. Replace whole functions '
                          '(from their def line to their last line) and make sure every """ has its closing """.')
         if parts:
-            parts.append("Send the COMPLETE corrected file. Keep the code simple (no deeply nested try/except) and do not resend the same text.")
+            parts.append(closing or DEFAULT_SYNTAX_CLOSING)
         return "\n".join(parts)
     except Exception:
         return ""

@@ -258,6 +258,7 @@ def match_task_by_uuid_prefix(tasks, text: str) -> list:
 
 
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+UUID_LIKE_RE = re.compile(r"^(?=.{34,38}$)[0-9a-f]+(?:-[0-9a-f]+){3,5}$")  # Round 2v: a UUID with a character too few/many
 MAX_UUID_TYPOS = 2
 
 
@@ -266,15 +267,32 @@ def _uuid_typo_match(tasks, needle: str):
     Round 2f: the ONE task whose UUID differs from a complete, well-formed UUID in at most 2 characters (PM1 wrote
     '3b7e308d-...' for '2b7e308d-...' on 2026-10-19 10:13, W2 '...-9f1c-...' for '...-9f0c-...' the day before). None if no
     task or more than one task is that close.
+    Round 2v: also a UUID with a character too few or too many (W1 wrote 'c73067a-df34-...' for 'c73067a6-df34-...' on
+    2026-10-22 10:36:56; Taskwarrior read it as a subtraction: "Cannot subtract strings").
     """
-    if not UUID_RE.match(needle or ""):
+    if not UUID_RE.match(needle or "") and not UUID_LIKE_RE.match(needle or ""):
         return None
     close = []
     for task in tasks:
         uuid = str(task['uuid']).lower()
-        if len(uuid) == len(needle) and sum(a != b for a, b in zip(uuid, needle)) <= MAX_UUID_TYPOS:
+        if edit_distance_at_most(uuid, needle, MAX_UUID_TYPOS):
             close.append(task)
     return close[0] if len(close) == 1 else None
+
+
+def edit_distance_at_most(a: str, b: str, limit: int) -> bool:
+    """Round 2v: True if a can be turned into b with at most `limit` inserted, deleted or changed characters."""
+    if abs(len(a) - len(b)) > limit:
+        return False
+    previous = list(range(len(b) + 1))
+    for i, char_a in enumerate(a, 1):
+        current = [i] + [0] * len(b)
+        for j, char_b in enumerate(b, 1):
+            current[j] = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (char_a != char_b))
+        if min(current) > limit:
+            return False
+        previous = current
+    return previous[-1] <= limit
 
 
 MAX_LISTED_OPEN_TASKS = 8
@@ -321,7 +339,7 @@ class ProjectManagementTool(BaseTool):
         ToolParameter(name="task_progress_filter", type="str", required=False, description="Filter tasks by granuler progress state."),
         ToolParameter(name="tags", type="list", required=False, description="List of tags."),
         ToolParameter(name="depends", type="str", required=False, description="Dependency task UUID."),
-        ToolParameter(name="assignee_agent_id", type="str", required=False, description="Agent ID for assignment."),
+        ToolParameter(name="assignee_agent_id", type="str", required=False, description="Agent ID for assignment: a WORKER (e.g. 'W1'); a Project Manager, the Admin AI or the Guardian is refused."),
         ToolParameter(name="dry_run", type="boolean", required=False, description="If true, simulates the action without saving to the database. Useful to verify complex state changes."),
     ]
 
@@ -1059,6 +1077,9 @@ class ProjectManagementTool(BaseTool):
             try:
                 if '-' in t_id_str and len(t_id_str) > 10:
                     try:
+                        if not UUID_RE.match(t_id_str.lower()):
+                            # Round 2v: never hand a malformed UUID to Taskwarrior ("Cannot subtract strings")
+                            raise LookupError(f"'{t_id_str}' is not a complete UUID; matching task does not exist")
                         task = tw.tasks.get(uuid=t_id_str)
                     except Exception as get_err:
                         if "exist" in str(get_err):
@@ -1258,6 +1279,9 @@ class ProjectManagementTool(BaseTool):
             try:
                 if '-' in t_id_str and len(t_id_str) > 10:
                     try:
+                        if not UUID_RE.match(t_id_str.lower()):
+                            # Round 2v: never hand a malformed UUID to Taskwarrior ("Cannot subtract strings")
+                            raise LookupError(f"'{t_id_str}' is not a complete UUID; matching task does not exist")
                         task = tw.tasks.get(uuid=t_id_str)
                     except Exception as get_err:
                         if "exist" in str(get_err):
@@ -1406,7 +1430,7 @@ Creates a new task.
 *   `<task_progress>` (string, optional): Initial progress state. Valid options: 'todo', 'in_progress', 'waiting', 'stuck', 'failed', 'finished'. Defaults to 'todo'.
 *   `<priority>` (string, optional): Task priority (e.g., 'H', 'M', 'L').
 *   `<tags>` (string, optional): Comma-separated list of tags to add (e.g., `+bug,+urgent`).
-*   `<assignee_agent_id>` (string, optional): The ID of the agent to assign this task to.
+*   `<assignee_agent_id>` (string, optional): The ID of the WORKER to assign this task to (e.g. `W1`). Only workers carry out tasks: a Project Manager, the Admin AI or the Guardian is refused and the task is NOT created.
 *   `<depends>` (string, optional): The UUID of a task that this new task depends on.
 *   Example:
     ```json
@@ -1447,7 +1471,7 @@ Modifies an existing task.
 *   `<task_progress>` (string, optional): Update task progress. Use detailed states: 'todo', 'in_progress', 'waiting', 'stuck', 'failed', 'finished'. (Calling this automatically updates underlying system status).
 *   `<priority>` (string, optional): New priority.
 *   `<tags>` (string, optional): New comma-separated list of tags. Use `+tag` to add and `-tag` to remove.
-*   `<assignee_agent_id>` (string, optional): Reassign the task to a new agent. **REMEMBER to also update the tag.**
+*   `<assignee_agent_id>` (string, optional): Reassign the task to a new WORKER (e.g. `W1`); a Project Manager, the Admin AI or the Guardian is refused and nothing is changed. **REMEMBER to also update the tag.**
 *   `<depends>` (string, optional): Add a dependency by providing the task ID or UUID it depends on.
 *   Send ONLY the fields you change. An empty value ('') means "not given" and is ignored.
 *   Example:

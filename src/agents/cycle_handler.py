@@ -86,6 +86,31 @@ def cut_off_reply_notice(agent) -> str:
     )
 
 
+def find_task_by_uuid_text(tw, text: str):
+    """
+    Round 2v: the task a UUID text names: the exact UUID, else the one task it was meant for (a prefix, or 1-2 characters
+    changed, missing or extra - project_management.match_task_by_uuid_prefix). None if there is no such single task.
+    A malformed UUID is never handed to Taskwarrior.
+    """
+    from src.tools.project_management import UUID_RE, match_task_by_uuid_prefix
+    text = str(text or "").strip()
+    if UUID_RE.match(text.lower()):
+        try:
+            return tw.tasks.get(uuid=text)
+        except Exception as get_err:
+            if "exist" not in str(get_err).lower():
+                raise
+    matches = match_task_by_uuid_prefix(tw.tasks.all(), text)
+    return matches[0] if len(matches) == 1 else None
+
+
+def task_listing_text(tw) -> str:
+    """Round 2v: '\n' + the open tasks with their exact UUIDs (project_management.open_tasks_listing), or ''."""
+    from src.tools.project_management import open_tasks_listing
+    listing = open_tasks_listing(tw)
+    return f"\n{listing}" if listing else ""
+
+
 def worker_choice_text(manager, pm_agent_id: str) -> str:
     """
     Round 2t: who a PM assigns tasks to - its workers by name. "assign ... to a suitable agent" made PM1 assign
@@ -202,6 +227,7 @@ class AgentCycleHandler:
             if hasattr(self, '_missing_task_id_counts'):
                 self._missing_task_id_counts[agent.agent_id] = 0
 
+        previous_active_task_id = getattr(agent, 'active_task_id', None)  # Round 2v: restored if the task does not exist
         agent.active_task_id = task_id
         logger.info(f"CycleHandler: Worker '{agent.agent_id}' set active_task_id='{task_id}' for '{resolved}' state transition.")
 
@@ -222,7 +248,15 @@ class AgentCycleHandler:
 
                             # Look up task by UUID or numeric ID
                             if '-' in resolved_id and len(resolved_id) > 10:
-                                task = tw.tasks.get(uuid=resolved_id)
+                                # Round 2v: a mistyped UUID ('c73067a-df34-...' for 'c73067a6-df34-...', 2026-10-22
+                                # 10:36:56) is resolved to the one task it was meant for; it used to reach Taskwarrior
+                                # ("Cannot subtract strings") and stay the worker's active task id.
+                                task = find_task_by_uuid_text(tw, resolved_id)
+                                if task is not None and str(task['uuid']) != resolved_id:
+                                    logger.info(f"CycleHandler: Worker '{agent.agent_id}' gave task id '{task_id}'; using "
+                                                f"the task it names, '{task['uuid']}'.")
+                                    task_id = resolved_id = str(task['uuid'])
+                                    agent.active_task_id = task_id
                             elif resolved_id.isdigit():
                                 task = tw.tasks.get(id=int(resolved_id))
                             else:
@@ -272,9 +306,11 @@ class AgentCycleHandler:
                                     logger.warning(f"CycleHandler: Failed to trigger UI task refresh: {e}")
                             else:
                                 logger.warning(f"CycleHandler: Could not find task '{task_id}' (resolved: '{resolved_id}') in Taskwarrior for auto-update.")
+                                agent.active_task_id = previous_active_task_id  # Round 2v: never keep an id that names no task
                                 raise ValueError(
                                     f"Task '{task_id}' could not be found in the task database. "
                                     f"If you have no active tasks, you MUST call the 'request_state' tool with state='worker_wait'."
+                                    + task_listing_text(tw)  # Round 2v: the exact ids to use
                                 )
                         except ValueError:
                             raise  # Re-raise our validation error

@@ -751,6 +751,14 @@ class CodeEditorTool(BaseTool):
                         created["message"] = (f"[Note: '{filename}' did not exist, so your one whole-file chunk was saved as the "
                                               f"new file. To create a file, use file_system 'write'.] {created.get('message') or ''}").strip()
                     return created
+                from src.tools import rejected_drafts
+                if rejected_drafts.get(abs_path, agent_id) is not None:
+                    # Round 2v: the agent's rejected write of this file is kept; file_system edits fix it in place
+                    return {"status": "error", "message": (
+                        f"File '{filename}' does not exist yet: your 'write' of it was rejected, so code_editor cannot edit "
+                        f"it. Your rejected text is kept: fix the faulty line with file_system action 'find_replace' "
+                        f"(filename '{filename}', find_text, replace_text) or 'replace_lines'; '{filename}' is created as "
+                        "soon as the text is valid Python.")}
                 return {"status": "error", "message": (
                     f"File '{filename}' does not exist yet, so it cannot be edited. To CREATE it, call the file_system tool "
                     f"with action='write', filename='{filename}' and the COMPLETE file content.")}
@@ -1091,5 +1099,9 @@ class CodeEditorTool(BaseTool):
         - One edit can also be sent without 'chunks': "search" (or "search_block") and "replace" (or "replace_block") as
           top-level parameters, optionally with "start_line" and "end_line".
         - To delete lines use "replace": "". An edit that would leave the file empty is refused.
+        - Python files must stay valid Python: an edit that breaks one is rejected and nothing is saved.
+        - code_editor edits EXISTING files. To create a file use file_system 'write'. (One chunk without search text that
+          starts at line 1 - the complete new file - also creates a missing file.) If your 'write' of a new Python file
+          was rejected, fix it with file_system 'find_replace' or 'replace_lines' on that file: your rejected text is kept.
         """
         return usage.strip()

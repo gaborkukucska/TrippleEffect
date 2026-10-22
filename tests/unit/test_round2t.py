@@ -386,11 +386,14 @@ def test_a_rejected_write_says_the_file_was_not_created(tmp_path):
     result = _fs(tmp_path, action="write", filename="src/app.py", content=APP_WITH_OPEN_TRY)
     assert result["status"] == "error" and not (tmp_path / "src" / "app.py").exists()
     first_line = result["message"].splitlines()[0]
-    assert first_line == (
+    # Round 2v: + the rejected text is kept and fixed with find_replace / replace_lines (tests/unit/test_round2v.py)
+    assert first_line.startswith(
         "Write rejected due to Python SyntaxError in resulting code: expected 'except' or 'finally' block at line 11. No "
         "changes were saved. Please check your indentation and brackets. 'src/app.py' was NOT created and still does not "
-        "exist: send the COMPLETE corrected file with 'write' again. If it is too long for one reply, write its first part "
-        "to 'src/app.py' (whole functions or classes only) and add the rest with 'append' to 'src/app.py'.")
+        "exist.")
+    assert first_line.endswith(
+        "Or send the COMPLETE corrected file with 'write' (if it is too long for one reply: its first part, whole functions "
+        "or classes only, then the rest with 'append' to 'src/app.py').")
     assert "Code around the error:" in result["message"]                              # the Round 1t report stays
     (tmp_path / "src").mkdir(exist_ok=True)
     (tmp_path / "src" / "app.py").write_text(APP_PART_1)

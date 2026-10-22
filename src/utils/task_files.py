@@ -52,6 +52,27 @@ def file_paths_in_text(text: Optional[str], with_directory_only: bool = False) -
     return found
 
 
+# Round 2v: a file in the workspace ROOT that a task says to create. 2026-10-22 10:29 the kick-off tasks said "Create server.py
+# ...", "Create index.html file ..." and "Create README.md ...", but only tests/test_game.py (a path with a directory) became
+# a planned file: PROJECT_STRUCTURE.md listed no server.py, and W1 first tried 'backend/server.py'.
+_CREATED_ROOT_FILE_RE = re.compile(
+    r"\b(?:create|write|build|implement|add|generate|make|develop)\s+"
+    r"(?:(?:a|an|the|new|single|one|simple|basic|concise|minimal|small)\s+)*(?:file\s+)?[`'\"]?"
+    r"(?P<name>[A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:" + "|".join(PATH_EXTENSIONS) + r"))[`'\"]?(?![\w/.-])",
+    re.IGNORECASE)
+
+
+def created_root_files(text: Optional[str]) -> List[str]:
+    """Round 2v: file names WITHOUT a directory that the text says to create/write/build ... ("Create server.py ...")."""
+    found: List[str] = []
+    for match in _CREATED_ROOT_FILE_RE.finditer(str(text or "")):
+        name = match.group("name")
+        if name.startswith(".") or name in found:
+            continue
+        found.append(name)
+    return found
+
+
 def find_in_workspace(workspace: Path, rel_path: str) -> Optional[Path]:
     """The file rel_path in workspace; a bare file name is also found in a sub-directory when exactly one file has it."""
     try:

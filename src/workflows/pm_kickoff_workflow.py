@@ -202,6 +202,20 @@ _TEST_FILE_RE = re.compile(r"^(test_.+|.+_test)\.py$", re.IGNORECASE)
 _ROOT_PY_KEEP = frozenset({"conftest.py", "setup.py", "manage.py", "noxfile.py", "tasks.py", "wsgi.py", "asgi.py"})
 
 
+def with_root_files(planned_files: List[str], root_names: List[str]) -> List[str]:
+    """
+    Round 2v: the planned files plus the root files the tasks say to create ("Create server.py ..."), unless a planned file
+    already has that name in some directory (the structure put it there, e.g. 'src/server.py').
+    """
+    planned = list(planned_files)
+    names = {PurePosixPath(path).name for path in planned}
+    for name in root_names:
+        if name not in names:
+            planned.append(name)
+            names.add(name)
+    return planned
+
+
 def normalize_planned_layout(dirs: List[str], files: List[str]) -> Tuple[List[str], List[str], List[str]]:
     """
     Makes a planned layout consistent: Python test files always live in tests/; other Python files planned at the workspace
@@ -612,21 +626,26 @@ class PMKickoffWorkflow(BaseWorkflow):
         code_base_definitions = data_input.get("code_base_definitions")
         # Round 2a: files the kick-off tasks name with a directory (e.g. 'tests/test_x.py') are planned files too. On
         # 2026-10-18 the structure listed only 'src/': no tests/ directory and no conftest.py were created.
-        from src.utils.task_files import file_paths_in_text
+        from src.utils.task_files import created_root_files, file_paths_in_text
         task_named_files: List[str] = []
+        root_files_to_create: List[str] = []  # Round 2v: "Create server.py ..." - a file in the workspace root
         for task_text in task_descriptions:
             for named_path in file_paths_in_text(task_text, with_directory_only=True):
                 if named_path not in task_named_files:
                     task_named_files.append(named_path)
+            for root_name in created_root_files(task_text):
+                if root_name not in root_files_to_create:
+                    root_files_to_create.append(root_name)
         
         created_dirs: List[str] = []
-        if (structure_list or task_named_files) and project_context and manager.current_session:
+        if (structure_list or task_named_files or root_files_to_create) and project_context and manager.current_session:
             workspace_path = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, str(project_context), str(manager.current_session))
             try:
                 structure_items = list(structure_list) if isinstance(structure_list, list) else ([structure_list] if structure_list else [])
                 planned_dirs, planned_files, notes = plan_project_structure(structure_items + task_named_files)
                 planned_dirs, planned_files, layout_notes = normalize_planned_layout(planned_dirs, planned_files)
                 notes = list(notes) + layout_notes
+                planned_files = with_root_files(planned_files, root_files_to_create)  # Round 2v
                 for note in notes:
                     logger.warning(f"PMKickoffWorkflow: project_structure from PM '{agent.agent_id}': {note}")
                 created_dirs = self._create_directory_structure(planned_dirs, workspace_path)
