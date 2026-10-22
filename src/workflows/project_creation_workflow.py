@@ -50,18 +50,13 @@ class ProjectCreationWorkflow(BaseWorkflow):
             )
 
         title_value = data_input.get("title")
+        raw_title = ""
         if title_value and isinstance(title_value, str):
             raw_title = html.unescape(title_value.strip())
-            # Sanitize project title: replace spaces and non-alphanumeric characters with underscores
-            sanitized_title = re.sub(r'[^\w]', '_', raw_title)
-            # Compress multiple underscores into one
-            project_title = re.sub(r'_+', '_', sanitized_title).strip('_')
-            # Hard cap length to 50 characters to strictly adhere to filesystem NAME_MAX (255)
-            # and allow room for subdirectories, team prefixes, and session names.
-            MAX_PROJECT_TITLE_LEN = 50
-            if len(project_title) > MAX_PROJECT_TITLE_LEN:
-                logger.warning(f"ProjectCreationWorkflow: Project title '{project_title}' exceeded {MAX_PROJECT_TITLE_LEN} chars ({len(project_title)}). Truncating.")
-                project_title = project_title[:MAX_PROJECT_TITLE_LEN].rstrip('_')
+            # Sanitize project title: letters, digits and single '_' only, at most 50 characters (filesystem NAME_MAX, room
+            # for subdirectories, team prefixes and session names). Round 3b: shared with the update matching.
+            from src.utils.project_folders import sanitize_project_title
+            project_title = sanitize_project_title(raw_title)
             if not project_title:
                 import time
                 project_title = f"Project_{int(time.time())}"
@@ -82,7 +77,22 @@ class ProjectCreationWorkflow(BaseWorkflow):
             plan_description = f"Initial project plan for '{project_title}' (Description body was missing from processed plan data)."
 
 
+        # Round 3b: no "Now I have a thorough understanding of the codebase. Let me create the project plan." in the plan
+        from .project_update import strip_plan_preamble, find_update_target, plan_project_update
+        plan_description, preamble = strip_plan_preamble(plan_description)
+        if preamble:
+            logger.info(f"ProjectCreationWorkflow: removed the text before the plan: '{preamble[:200]}'")
+
         logger.info(f"ProjectCreationWorkflow: Final Extracted Title='{project_title}'. Plan Description (excerpt): '{plan_description[:150]}...'")
+
+        # Round 3b: a plan for a project that already runs in this session is an UPDATE of it (its PM and team, its workspace).
+        # 2026-10-22 20:13:34 "Multiplayer Snake Game Enhancements" became a second, empty project next to the finished game.
+        if not data_input.get("_force_new"):
+            update_target = find_update_target(manager, data_input, project_title)
+            if update_target:
+                target_project, target_pm, why = update_target
+                return await plan_project_update(manager, agent, target_pm, target_project, raw_title or project_title,
+                                                 plan_description, why, workflow_name=self.name)
 
         # Round 2o: a project with this name may exist already (2026-10-21: a second "WiFi Snake Game" silently became one
         # more session of the old project). The approval card then asks the user: continue it, or start a new project.

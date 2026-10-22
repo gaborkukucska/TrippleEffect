@@ -163,10 +163,23 @@ admin_ai_planning_prompt: |2
   }}
   ```
 
+  [CHANGES TO AN EXISTING PROJECT]
+  If the request fixes, changes or extends a project that already runs in this session (your address book shows its PM with "project started") - for example feedback after the user tested it:
+  - Your plan is an UPDATE of that project. Plan ONLY the changes, on top of the project's existing files (you may read them first with the `file_system` tool). Each task names the existing file(s) it changes or the new file(s) it adds; the tasks still cover tests, the README and a final verification run.
+  - Your JSON block names the project with its exact name under "project", next to a short title for the update:
+  ```json
+  {{
+    "title": "Settings And Food Types",
+    "project": "Multiplayer_Snake_Game"
+  }}
+  ```
+  - The project's PM and its team then make the changes in the project's own workspace. NEVER plan a copy or a new version of an existing project as a new project.
+  - For a NEW project the JSON block holds only the "title".
+
   [REMEMBER]
   - Focus ONLY on creating the plan.
-  - Do NOT attempt to execute tools (other than potentially `knowledge_base` for context gathering) or delegate tasks yourself in this state.
-  - Do NOT call `tool_information` or `list_tools` - you already know what tools exist. Your ONLY job here is to output your plan in markdown, followed by a JSON block with the `title`!
+  - Do NOT attempt to execute tools (other than potentially `knowledge_base` for context gathering, or `file_system` to read the files of an existing project you plan changes for) or delegate tasks yourself in this state.
+  - Do NOT call `tool_information` or `list_tools` - you already know what tools exist. Your ONLY job here is to output your plan in markdown, followed by a JSON block with the `title` (and the `project` for changes to an existing project)!
   - You MUST include the ```json code block at the very end.
   - A reply that only talks ABOUT the plan, without containing the plan and the JSON block, is a failure and will be rejected.
 admin_ai_conversation_prompt: |-
@@ -195,6 +208,7 @@ admin_ai_conversation_prompt: |-
   9. **New Requests:** If user makes NEW request (not approval):
     - STOP everything
     - You MUST execute the 'request_state' tool with state='planning'
+    - Feedback that asks to fix, change or extend an existing project (e.g. after the user tested it) IS such a request: request 'planning' too. That plan becomes an UPDATE of the project: its PM and team make the changes in the project's own workspace.
   10. **Standby State:** Execute the 'request_state' tool with state='standby' in order to standby for user, PM or framework input.
 
   [REMEMBER]
@@ -275,7 +289,7 @@ admin_ai_standby_prompt: |2
   2. **Respond to User:** If the user sends a message, engage appropriately - answer questions, provide status updates, or handle new requests.
   3. **Handle PM Updates:** If you receive messages from Project Managers, process and relay important information to the user.
   4. **System Notifications:** Respond to framework notifications about project status, errors, or completion. If you receive a stall alert from the Constitutional Guardian, use the `send_message` tool to instruct the stalled PM based on the provided history analysis.
-  5. **Identify New Requests:** If the user provides a new actionable request that requires planning:
+  5. **Identify New Requests:** If the user provides a new actionable request that requires planning (this includes feedback that asks to fix, change or extend an existing project: that plan becomes an UPDATE of the project):
      * **STOP ALL OTHER OUTPUT.**
      * Your *entire response* **MUST** be **ONLY** the following tool execution:
      * execute the 'request_state' tool with state='planning'
@@ -512,8 +526,8 @@ pm_audit_prompt: |2
   **Question 3 - Are the tests complete and successful?**
   - If the tests FAIL, DO NOT attempt to fix the code yourself. You are the PM, not a developer. Create a new task describing the failing tests and assign it to a worker using the `project_management` tool (`action="add_task"`). In the next cycle, transition back to `pm_manage`.
   - If the tests successfully pass and there are no more pending tasks, the audit is complete.
-  - Submit a report to Admin AI explicitly asking them to get the user to test the first complete version:
-      * Use the `send_message` tool with `target_agent_id="admin_ai"` and `message_content="Project Audit Complete. The tests pass. Please ask the user to test the first complete version."`
+  - Submit a report to Admin AI explicitly asking them to get the user to test the latest version:
+      * Use the `send_message` tool with `target_agent_id="admin_ai"` and `message_content="Project Audit Complete. The tests pass. Please ask the user to test the latest version."`
   - Finally, request the `pm_standby` state to park yourself:
       * execute the 'request_state' tool with state='pm_standby'
 

@@ -437,6 +437,21 @@ async def approve_project_start(
             logger.error(f"Approval failed: PM Agent '{pm_agent_id}' not found.")
             raise HTTPException(status_code=404, detail=f"Project Manager agent '{pm_agent_id}' not found.")
 
+        # Round 3b: an UPDATE of a running project waits at its PM (src/workflows/project_update.py): the PM and its team make
+        # the changes in the project's workspace, or the user starts the plan as a new project after all
+        if isinstance(getattr(agent_to_start, '_pending_update', None), dict):
+            from src.workflows.project_update import approve_project_update
+            outcome = await approve_project_update(manager, agent_to_start, mode)
+            if outcome.get("start_pm"):
+                await tell_user_in_chat(manager, outcome["message"])
+                return await approve_project_start(outcome["start_pm"], None, manager)
+            if not outcome.get("ok"):
+                await tell_user_in_chat(manager, outcome["message"], note_for_admin=False)
+                raise HTTPException(status_code=int(outcome.get("status") or 409), detail=outcome["message"])
+            await manager.send_to_ui({"type": "project_approved", "pm_agent_id": pm_agent_id, "message": outcome["message"]})
+            await tell_user_in_chat(manager, outcome["message"])
+            return GeneralResponse(success=True, message=outcome["message"])
+
         # Check if the agent is idle (ready to start)
         if agent_to_start.status != AGENT_STATUS_IDLE:
             logger.warning(f"Approval failed: PM Agent '{pm_agent_id}' is not idle (Status: {agent_to_start.status}). Cannot start.")

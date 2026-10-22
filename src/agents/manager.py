@@ -364,6 +364,12 @@ class AgentManager:
         if not choice:
             return False
         waiting = [pm for pm in self.pending_approval_pms() if getattr(pm, '_existing_project_info', None)]
+        if not waiting:
+            # Round 3b: an update of a running project waits at its PM: "continue" approves it, "new" starts it as a new project
+            updates = [agent for agent in list(self.agents.values())
+                       if getattr(agent, 'agent_type', None) == AGENT_TYPE_PM and isinstance(getattr(agent, '_pending_update', None), dict)]
+            if len(updates) == 1:
+                waiting, choice = updates, ("update" if choice == "continue" else choice)
         if len(waiting) != 1:
             return False  # nothing to choose for (an ordinary "continue"), or ambiguous: Admin AI answers
         pm_agent = waiting[0]

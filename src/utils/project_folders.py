@@ -28,6 +28,8 @@ EARLIER_PLAN_NAME = "PREVIOUS_PROJECT_PLAN.md"
 NON_WORK_FILES = FRAMEWORK_WORKSPACE_FILES | {"PROJECT_PLAN.md", EARLIER_PLAN_NAME}  # Round 2t
 MAX_SHOWN_WORK_FILES = 8  # Round 2t: work files named on the approval card
 SKIPPED_DIRS = {"__pycache__", ".pytest_cache", ".git", "node_modules", ".venv", "venv", ".te_background", ".mypy_cache"}
+# Round 3b: test coverage reports in the workspace root are generated, not work (2026-10-22: 13 files of coverage/)
+SKIPPED_TOP_DIRS = {"coverage", "htmlcov", ".nyc_output"}
 MAX_LISTED_FILES = 40
 
 
@@ -37,7 +39,7 @@ def _workspace_files(workspace: Path) -> List[Path]:
         return files
     for path in sorted(workspace.rglob("*")):
         rel_parts = path.relative_to(workspace).parts
-        if any(part in SKIPPED_DIRS for part in rel_parts):
+        if any(part in SKIPPED_DIRS for part in rel_parts) or (len(rel_parts) > 1 and rel_parts[0] in SKIPPED_TOP_DIRS):
             continue
         if path.is_file():
             files.append(path)
@@ -51,6 +53,32 @@ def _work_files(workspace: Path) -> List[str]:
     """
     return [path.relative_to(workspace).as_posix() for path in _workspace_files(workspace)
             if path.relative_to(workspace).as_posix() not in NON_WORK_FILES]
+
+
+def work_files(workspace: Path) -> List[str]:
+    """Round 3b: the work files of a workspace (relative paths) - the project's current files an update builds on."""
+    try:
+        return _work_files(Path(workspace))
+    except OSError as err:
+        logger.warning(f"project_folders: could not list the work files of '{workspace}': {err}")
+        return []
+
+
+MAX_PROJECT_TITLE_LEN = 50
+
+
+def sanitize_project_title(raw_title: Optional[str]) -> str:
+    """
+    Round 3b (moved here from ProjectCreationWorkflow, unchanged): a plan title as a project name - every character that is
+    not a letter, digit or '_' becomes '_', runs of '_' become one, no '_' at the ends, at most MAX_PROJECT_TITLE_LEN
+    characters (folder names stay short). '' if nothing is left.
+    """
+    title = str(raw_title or "").strip()
+    title = re.sub(r"_+", "_", re.sub(r"[^\w]", "_", title)).strip("_")
+    if len(title) > MAX_PROJECT_TITLE_LEN:
+        logger.warning(f"project_folders: project title '{title}' exceeded {MAX_PROJECT_TITLE_LEN} chars ({len(title)}). Truncating.")
+        title = title[:MAX_PROJECT_TITLE_LEN].rstrip("_")
+    return title
 
 
 def _session_dirs(project_dir: Path) -> List[Path]:

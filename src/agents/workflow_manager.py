@@ -150,6 +150,24 @@ def salvage_kickoff_plan(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def admin_pm_project_note(pm: Any) -> str:
+    """
+    Round 3b: what Admin AI's address book says about a PM's project. 2026-10-22 20:13 Admin AI planned changes to the
+    finished Multiplayer_Snake_Game as a new project: it saw PM1 in its address book, but not that its project ran and that
+    changes to it are an update of it.
+    """
+    config = (getattr(pm, "agent_config", None) or {}).get("config", {}) or {}
+    if not config.get("project_name_context"):
+        return ""  # a PM without a project (e.g. the bootstrap PM)
+    update = getattr(pm, "_pending_update", None)
+    if getattr(pm, "_awaiting_project_approval", False):
+        return " | its plan waits for the user's approval"
+    if isinstance(update, dict):
+        return f" | update {update.get('number')} of this project waits for the user's approval"
+    return (f" | project started (PM state: {getattr(pm, 'state', None) or 'unknown'}); plan changes or new work for this "
+            "project as an UPDATE of it")
+
+
 class AgentWorkflowManager:
     def __init__(self):
         self._valid_states: Dict[str, List[str]] = {
@@ -1083,7 +1101,7 @@ class AgentWorkflowManager:
                 content_lines.append("- Project Managers (PMs):")
                 for pm in pms:
                     pm_proj_name = self._get_agent_project_name(pm, manager)
-                    content_lines.append(f"  - PM for '{pm_proj_name}': {pm.agent_id} (Persona: {pm.persona})")
+                    content_lines.append(f"  - PM for '{pm_proj_name}': {pm.agent_id} (Persona: {pm.persona}){admin_pm_project_note(pm)}")
             else:
                 content_lines.append("- Project Managers (PMs): (None active currently)")
         elif agent_type == AGENT_TYPE_PM:

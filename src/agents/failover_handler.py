@@ -22,7 +22,7 @@ from src.agents.core import Agent
 # Import necessary components from other modules
 from src.llm_providers.base import BaseLLMProvider
 from src.config.settings import settings, model_registry # Import settings and registry
-from src.agents.agent_lifecycle import PROVIDER_CLASS_MAP # Import map ONLY
+from src.agents.agent_lifecycle import PROVIDER_CLASS_MAP, _get_base_provider_type_for_class_lookup  # Round 3b: + the base type
 from src.agents.agent_utils import sort_models_by_size_performance_id # Import the new sorter
 from src.config.model_registry import ModelInfo # For type hinting
 from src.config.model_registry import base_provider_type as provider_base_type, is_local_provider_name  # Round 2m: 'ollama-local' is local
@@ -275,11 +275,10 @@ async def _try_switch_agent(
         # Use the imported PROVIDER_CLASS_MAP directly
         ProviderClass = PROVIDER_CLASS_MAP.get(target_provider)
         if not ProviderClass:
-            # Handle dynamically discovered local providers
-            if target_provider.startswith("ollama-local-") or target_provider == "ollama-proxy":
-                ProviderClass = PROVIDER_CLASS_MAP.get("ollama")
-            elif target_provider.startswith("litellm-local-"):
-                 ProviderClass = PROVIDER_CLASS_MAP.get("litellm") # Assuming litellm provider exists in map
+            # Handle dynamically discovered local providers. Round 3b: the same mapping agent creation uses - 2026-10-22
+            # 20:14:31 every local model failed with "Provider class not found for 'ollama-local'": only 'ollama-local-<ip>'
+            # was mapped here, not the plain 'ollama-local' (nor 'vllm-local').
+            ProviderClass = PROVIDER_CLASS_MAP.get(_get_base_provider_type_for_class_lookup(target_provider))
 
             if not ProviderClass: # Check again after handling dynamic names
                  raise ValueError(f"Provider class not found for '{target_provider}' in PROVIDER_CLASS_MAP")
@@ -366,6 +365,31 @@ async def _try_switch_agent(
 
 
 # --- Main Failover Handler ---
+async def _try_same_model_next_key(manager: 'AgentManager', agent: Agent, failover_state: Dict[str, Any],
+                                   provider: str, model: str) -> bool:
+    """
+    Round 3b: switches the agent to the next key of 'provider' that this failover sequence has not tried, keeping its model.
+    False when every key was tried (or none could be set).
+    """
+    tried_keys = failover_state["tried_keys_per_external_provider"].setdefault(provider, set())
+    last_key = getattr(agent, '_last_api_key_used', None)
+    if last_key:
+        tried_keys.add(last_key)
+    for _ in range(len(settings.PROVIDER_API_KEYS.get(provider) or [])):
+        key_config = await manager.key_manager.get_active_key_config(provider)
+        key = (key_config or {}).get('api_key')
+        if not key:
+            break
+        if key in tried_keys:
+            continue
+        tried_keys.add(key)
+        logger.info(f"Failover Step 0: trying the same model '{model}' with the next key ending '...{key[-4:]}' of '{provider}'.")
+        if await _try_switch_agent(manager, agent, provider, model, key_config):
+            return True
+    logger.info(f"Failover Step 0: every key of '{provider}' was tried for '{model}'.")
+    return False
+
+
 async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, last_error_obj: Exception) -> bool:
     """
     Handles failover with refined logic:
@@ -497,6 +521,14 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
          # Keep state for debugging? Or clear it? Let's clear it for now.
          if hasattr(agent, '_failover_state'): del agent._failover_state
          return False # Indicate failover exhausted
+
+    # --- 0. Round 3b: a key error (rate limit, auth) of an EXTERNAL provider: the SAME model with that provider's next key ---
+    # The local providers came first even for a 429 of one key. Until Round 3b that step always failed ("Provider class not
+    # found for 'ollama-local'", see _try_switch_agent), so the agent went on with its own model on the next key; now that
+    # local models can be reached, the next key of the same model is still tried first, local models when the keys are used up.
+    if not is_failed_local and is_key_related_error and settings.PROVIDER_API_KEYS.get(failed_provider):
+        if await _try_same_model_next_key(manager, agent, failover_state, failed_provider, failed_model):
+            return True
 
     # --- 1. Try Local Providers ---
     logger.info("Failover Step 1: Trying available local providers...")

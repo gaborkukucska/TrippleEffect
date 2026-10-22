@@ -277,8 +277,24 @@ export const handleWebSocketMessage = (data) => {
                         `<button class="approve-project-btn" data-pm-id="${safePmId}" data-mode="new">Start new project</button>` +
                         `<p>A new project is named <code>${safeNewName}</code>.</p>`;
                 }
+                // Round 3b: an UPDATE of a project that already runs in this session - its PM and team make the changes
+                const projectUpdate = data.update;
+                let cardHeading = 'Project Approval Required';
+                if (projectUpdate && typeof projectUpdate === 'object') {
+                    const updateNumber = escapeHTML(String(projectUpdate.number ?? '?'));
+                    const updateTitle = escapeHTML(projectUpdate.title || '');
+                    const workers = Array.isArray(projectUpdate.workers) ? projectUpdate.workers : [];
+                    const teamText = workers.length ? ` and its team (${workers.map(w => escapeHTML(String(w))).join(', ')})` : '';
+                    cardHeading = `Project Update Approval Required`;
+                    existingNote = `<p>This plan is <strong>Update ${updateNumber}</strong> of the existing project <strong>${safeTitle}</strong>` +
+                        (updateTitle ? ` (${updateTitle})` : '') + `: <code>${safePmId}</code>${teamText} make the changes in the ` +
+                        `project's own workspace.</p>`;
+                    approvalButtons =
+                        `<button class="approve-project-btn" data-pm-id="${safePmId}" data-mode="update" data-label="Approve update">Approve update</button> ` +
+                        `<button class="approve-project-btn" data-pm-id="${safePmId}" data-mode="new" data-label="Start as a new project instead">Start as a new project instead</button>`;
+                }
                 displayContent = `
-                    <strong>Project Approval Required</strong><br>
+                    <strong>${cardHeading}</strong><br>
                     Project Title: <strong>${safeTitle}</strong><br>
                     PM Agent ID: <code>${safePmId}</code><br>
                     ${existingNote}

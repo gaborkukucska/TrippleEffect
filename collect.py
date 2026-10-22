@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 TrippleEffect: Session & Log Collector  (v2: smart log reduction; v2.2: the session of the log;
-v2.3: configuration and environment, with secrets redacted)
+v2.3: configuration and environment, with secrets redacted; v2.4: every project session of the log)
 
 Run from the TrippleEffect repository root:   python3 collect.py
 Output directory: ~/Desktop/te_session_data     (change with --dest)
@@ -26,6 +26,9 @@ What it collects (same names as before, plus the new zz_ files):
                                 really gets: .env first (src/main.py loads it with override=True), else this shell's
                                 environment, else the code default. Plus Python / node / bash / Taskwarrior versions.
   zz_git_state.txt              NEW (v2.3). Branch, last commits, changed files and the local diff (redacted).
+  other__<Project>__*           NEW (v2.4). The workspace and task data of every OTHER project session the log worked
+                                in (e.g. a second project the run created), named other__<Project>__workspace__... and
+                                other__<Project>__task_data__...; --primary-only leaves them out.
 
 How the log is reduced (nothing is cut by position, so the middle of a long run is never lost):
   * database/Taskwarrior debug chatter (aiosqlite, tasklib.backends, database_manager DEBUG) is dropped;
@@ -60,7 +63,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 EXCLUDE_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".idea", ".vscode"}
-GENERATED_PREFIXES = ("workspace__", "task_data__", "zz_")
+GENERATED_PREFIXES = ("workspace__", "task_data__", "zz_", "other__")
 GENERATED_NAMES = {"agent_session_data.json.txt"}
 
 HEADER_RE = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+ - ([\w.]+) - (\w+) - (.*)$")
@@ -306,18 +309,62 @@ def copy_capped(src: Path, dest: Path) -> int:
 CONTEXT_RE = re.compile(r"Setting context\. Project: (?P<project>[^,\n]+), Session: (?P<session>[^\s,]+)")
 
 
-def session_dir_from_log(root: Path, text: str) -> Optional[Path]:
-    """The project session folder the log worked in: its LAST 'Setting context' line that is not DefaultProject."""
+def session_dirs_from_log(root: Path, text: str) -> List[Path]:
+    """
+    v2.4: every project session folder the log worked in ('Setting context' lines that are not DefaultProject), each once,
+    ordered by its LAST context line - the last one is the session the run ended in.
+    """
     projects_dir = root / "projects"
-    for match in reversed(list(CONTEXT_RE.finditer(text or ""))):
+    found: List[Path] = []
+    for match in CONTEXT_RE.finditer(text or ""):
         project, session = match.group("project").strip(), match.group("session").strip().rstrip(".")
         if not project or project == "DefaultProject":
             continue
         for name in (project, project.replace(" ", "_").strip()[:50].rstrip("_")):
             candidate = projects_dir / name / session
             if candidate.is_dir():
-                return candidate
-    return None
+                if candidate in found:
+                    found.remove(candidate)
+                found.append(candidate)
+                break
+    return found
+
+
+def session_dir_from_log(root: Path, text: str) -> Optional[Path]:
+    """The project session folder the log worked in: its LAST 'Setting context' line that is not DefaultProject."""
+    sessions = session_dirs_from_log(root, text)
+    return sessions[-1] if sessions else None
+
+
+def copy_session_files(session_dir: Path, dest: Path, prefix: str, summary: List[str]) -> int:
+    """v2.4: the workspace files and task data of one more session, as <prefix>workspace__... / <prefix>task_data__..."""
+    copied = 0
+    ws_dir = session_dir / "shared_workspace"
+    if ws_dir.is_dir():
+        for walk_root, dirs, files in os.walk(ws_dir):
+            dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+            for f in sorted(files):
+                src_f = Path(walk_root) / f
+                rel = src_f.relative_to(ws_dir)
+                try:
+                    size = copy_capped(src_f, dest / flat_name(f"{prefix}workspace", rel))
+                    summary.append(f"  - {rel} ({size} bytes)")
+                    copied += 1
+                except Exception as exc:
+                    summary.append(f"  - {rel} (copy failed: {exc})")
+    task_dir = session_dir / "task_data"
+    if task_dir.is_dir():
+        for item in sorted(task_dir.iterdir()):
+            if item.is_file():
+                try:
+                    size = copy_capped(item, dest / f"{prefix}task_data__{item.name}.txt")
+                    summary.append(f"  - task_data/{item.name} ({size} bytes)")
+                    copied += 1
+                except Exception as exc:
+                    summary.append(f"  - task_data/{item.name}: copy failed ({exc})")
+    if not copied:
+        summary.append("  (no files)")
+    return copied
 
 
 def _newest_file_mtime(folder: Path) -> float:
@@ -637,6 +684,8 @@ def main() -> int:
                                                      "(default: the session the log worked in)")
     ap.add_argument("--raw", action="store_true", help="Also write zz_raw_log_head_tail.txt (old behaviour: 400 KB head + 600 KB tail)")
     ap.add_argument("--no-config", action="store_true", help="Do not collect config.yaml, .env, environment and git state")
+    ap.add_argument("--primary-only", action="store_true",
+                    help="Only the session the run ended in, not the other project sessions of the log (v2.4)")
     args = ap.parse_args()
 
     root = Path(args.root).resolve()
@@ -712,6 +761,23 @@ def main() -> int:
         if sess_json.is_file():
             size = copy_capped(sess_json, dest / "agent_session_data.json.txt")
             summary.append(f"\nCopied agent_session_data.json ({size} bytes)")
+
+        # v2.4: the other project sessions the log worked in (2026-10-22 the run ended in the copy
+        # 'Multiplayer_Snake_Game_Enhancements' and the export missed the game itself)
+        if not args.session and not args.primary_only:
+            others = [other for other in session_dirs_from_log(root, raw_text or "") if other != session_dir]
+            for other in others:
+                try:
+                    rel_other = other.relative_to(root)
+                except ValueError:
+                    rel_other = other
+                label = other.parent.name
+                if sum(1 for o in others if o.parent.name == label) > 1:
+                    label = f"{label}_{other.name}"  # two sessions of one project: the session tells them apart
+                project_label = re.sub(r"[^\w.-]", "_", label)
+                summary.append(f"\n## Other session of the log: {rel_other}  (files: other__{project_label}__*)")
+                print(f"Also collecting the other session of the log: {rel_other}")
+                copy_session_files(other, dest, f"other__{project_label}__", summary)
 
     # 2. Log ------------------------------------------------------------------------
     if log_file and log_file.is_file() and raw_text is not None:

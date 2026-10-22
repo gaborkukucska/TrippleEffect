@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from .base import BaseWorkflow, WorkflowResult
 from src.agents.constants import (
     AGENT_TYPE_PM,
-    PM_STATE_STARTUP, PM_STATE_BUILD_TEAM_TASKS,
+    PM_STATE_STARTUP, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS,
     AGENT_STATUS_IDLE
 )
 from src.config.settings import settings
@@ -396,8 +396,16 @@ OTHER_STACK_TEST_LINES = [
 ]
 
 
+EXISTING_FILES_NOTE_CARRIED = ("These planned files ALREADY EXIST (carried over from the project's earlier session): read them "
+                               "first and change them; do not create them again:")
+# Round 3b: an update of a running project lists the project's current files
+EXISTING_FILES_NOTE_UPDATE = ("These files ALREADY EXIST (the project's current files): read a file before you change it; never "
+                              "create one of them again or make a copy of it:")
+
+
 def render_project_structure_md(dirs: List[str], planned_files: List[str], code_base_definitions: Any = None,
-                                existing_files: Optional[List[str]] = None, python_project: Optional[bool] = None) -> str:
+                                existing_files: Optional[List[str]] = None, python_project: Optional[bool] = None,
+                                existing_note: str = EXISTING_FILES_NOTE_CARRIED) -> str:
     """
     Builds PROJECT_STRUCTURE.md: standards, then a tree of directories and planned files. Round 2o: planned files that
     already exist (a continued project's files carried over from its earlier session) are listed as existing, not as
@@ -449,8 +457,7 @@ def render_project_structure_md(dirs: List[str], planned_files: List[str], code_
         lines += ["## Files To Create", "", "These files are planned but do NOT exist yet:", ""]
         lines += [f"- {f}" for f in to_create] + [""]
     if existing:
-        lines += ["## Existing Files", "", "These planned files ALREADY EXIST (carried over from the project's earlier session): "
-                  "read them first and change them; do not create them again:", ""]
+        lines += ["## Existing Files", "", existing_note, ""]
         lines += [f"- {f}" for f in existing] + [""]
     return "\n".join(lines)
 
@@ -515,7 +522,21 @@ class PMKickoffWorkflow(BaseWorkflow):
             if dropped_roles:
                 logger.warning(f"PMKickoffWorkflow: Dropped manager-type role(s) {dropped_roles} from kickoff_plan of agent '{agent.agent_id}' (the PM is the project manager).")
 
-        if not role_names or not isinstance(role_names, list):
+        # Round 3b: the kickoff of an UPDATE of a running project (src/workflows/project_update.py): the PM's existing team
+        # does the work, so the plan needs no roles then
+        project_update = getattr(agent, "_project_update", None)
+        if not isinstance(project_update, dict):
+            project_update = None
+        existing_workers: List[Any] = []
+        if project_update:
+            from .project_update import team_workers
+            existing_workers = team_workers(manager, agent)
+            if existing_workers and not isinstance(role_names, list):
+                role_names = []
+            logger.info(f"PMKickoffWorkflow: kickoff of update {project_update.get('number')} for '{agent.agent_id}'; its team "
+                        f"has {len(existing_workers)} worker(s).")
+
+        if (not role_names or not isinstance(role_names, list)) and not existing_workers:
             logger.warning(f"PMKickoffWorkflow: No roles found in kickoff_plan from agent '{agent.agent_id}'.")
             return WorkflowResult(
                 success=False,
@@ -595,16 +616,17 @@ class PMKickoffWorkflow(BaseWorkflow):
             logger.warning(f"PMKickoffWorkflow: Failed to mark initial project task as decomposed: {e}")
 
         # --- Create Kickoff Sub-tasks ---
+        task_label = f"Update {project_update.get('number')} Task" if project_update else "Kick-off Task"  # Round 3b
         created_task_ids: set = set()      # plan ids (aliases) of tasks created in THIS attempt
         created_task_uuids: List[str] = [] # tasks this attempt really created (not skipped duplicates), for rollback
         for i, task_info in enumerate(task_info_list):
             task_desc = task_info["description"]
             task_tool_args = {
                 "action": "add_task",
-                "description": f"Kick-off Task {i+1}: {task_desc}",
+                "description": f"{task_label} {i+1}: {task_desc}",
                 "priority": "H",
                 "project_filter": project_context,
-                "tags": ["kickoff", "pm_decomposed", f"task_order_{i+1}"]
+                "tags": ["kickoff", "pm_decomposed", f"task_order_{i+1}"] + ([f"update_{project_update.get('number')}"] if project_update else [])
             }
             if task_info.get("id"):
                 # Always a string: the task tool only registers an alias for string ids, and a numeric "1" would
@@ -670,7 +692,7 @@ class PMKickoffWorkflow(BaseWorkflow):
                     root_files_to_create.append(root_name)
         
         created_dirs: List[str] = []
-        if (structure_list or task_named_files or root_files_to_create) and project_context and manager.current_session:
+        if (structure_list or task_named_files or root_files_to_create or project_update) and project_context and manager.current_session:
             workspace_path = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, str(project_context), str(manager.current_session))
             try:
                 structure_items = list(structure_list) if isinstance(structure_list, list) else ([structure_list] if structure_list else [])
@@ -688,9 +710,16 @@ class PMKickoffWorkflow(BaseWorkflow):
                     logger.warning(f"PMKickoffWorkflow: project_structure from PM '{agent.agent_id}': {note}")
                 created_dirs = self._create_directory_structure(planned_dirs, workspace_path)
                 self._write_test_scaffold(workspace_path, planned_files)
-                if created_dirs or planned_files:
+                listed_files, existing_note = planned_files, EXISTING_FILES_NOTE_CARRIED
+                if project_update:
+                    # Round 3b: the manifest of an update lists the project's current files too (as existing files)
+                    from src.utils.project_folders import work_files
+                    listed_files = planned_files + [f for f in work_files(workspace_path) if f not in planned_files]
+                    existing_note = EXISTING_FILES_NOTE_UPDATE
+                if created_dirs or listed_files:
                     # Generate PROJECT_STRUCTURE.md manifest (directories + planned files)
-                    self._write_project_structure_md(workspace_path, created_dirs, code_base_definitions, planned_files)
+                    self._write_project_structure_md(workspace_path, created_dirs, code_base_definitions, listed_files,
+                                                     existing_note=existing_note)
                     logger.info(f"PMKickoffWorkflow: Auto-created {len(created_dirs)} directories, recorded {len(planned_files)} planned files and wrote PROJECT_STRUCTURE.md for project '{project_context}'.")
                 else:
                     logger.info("PMKickoffWorkflow: project_structure was present but contained no directories or files.")
@@ -786,6 +815,34 @@ class PMKickoffWorkflow(BaseWorkflow):
                 except Exception as e_complete:
                     logger.error(f"PMKickoffWorkflow: Exception while trying to complete initial project plan task '{initial_project_task_uuid_to_complete}': {e_complete}", exc_info=True)
             # --- END MODIFICATION ---
+
+            if project_update:
+                # Round 3b: the update's tasks go to the PM's EXISTING team: straight to pm_activate_workers (which starts
+                # with a fresh history and lists the unassigned tasks and the team itself). A team without workers is built
+                # first, as for a new project.
+                agent._project_update = None
+                agent._last_project_update = project_update
+                if existing_workers:
+                    from .project_update import worker_labels
+                    labels = ", ".join(worker_labels(existing_workers))
+                    agent.target_worker_agents_for_build = len(existing_workers)
+                    logger.info(f"PMKickoffWorkflow: update {project_update.get('number')} of '{project_context}': "
+                                f"{len(task_descriptions)} task(s) created; the existing team ({labels}) does them.")
+                    return WorkflowResult(
+                        success=True,
+                        message=(f"Update {project_update.get('number')}: all {len(task_descriptions)} tasks created by PM "
+                                 f"'{agent.agent_id}'; its team ({labels}) carries them out. Details: {'; '.join(created_tasks_info)}"),
+                        workflow_name=self.name,
+                        next_agent_state=PM_STATE_ACTIVATE_WORKERS,
+                        next_agent_status=AGENT_STATUS_IDLE,
+                        ui_message_data={
+                            "type": "info",
+                            "agent_id": agent.agent_id,
+                            "content": (f"PM '{agent.agent_id}' planned update {project_update.get('number')} with "
+                                        f"{len(task_descriptions)} tasks for its team ({labels}). Moving to assign them."),
+                        },
+                        tasks_to_schedule=[(agent, 0)]
+                    )
 
             # NOTE: create_team and tool_information auto-execution has been REMOVED
             # from this workflow. The cycle_handler.py handles these operations when
@@ -943,7 +1000,8 @@ class PMKickoffWorkflow(BaseWorkflow):
 
     def _write_project_structure_md(self, workspace_path: Path, created_dirs: List[str],
                                     code_base_definitions: Any = None,
-                                    planned_files: Optional[List[str]] = None) -> None:
+                                    planned_files: Optional[List[str]] = None,
+                                    existing_note: str = EXISTING_FILES_NOTE_CARRIED) -> None:
         """
         Write a PROJECT_STRUCTURE.md file into the workspace root that documents
         the pre-defined directory layout and planned files. Workers are instructed
@@ -954,7 +1012,7 @@ class PMKickoffWorkflow(BaseWorkflow):
         python_project = (any(str(f).endswith(".py") for f in (planned_files or []))
                           or (workspace_path / "conftest.py").is_file())
         content = render_project_structure_md(created_dirs, planned_files or [], code_base_definitions, existing_files,
-                                              python_project=python_project)
+                                              python_project=python_project, existing_note=existing_note)
         workspace_path.mkdir(parents=True, exist_ok=True)
         md_path = workspace_path / "PROJECT_STRUCTURE.md"
         md_path.write_text(content, encoding="utf-8")

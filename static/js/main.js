@@ -186,7 +186,7 @@ const handleApproveButtonClick = async (event) => {
             buttons.forEach(choice => {
                 choice.disabled = false;
                 choice.style.backgroundColor = '';
-                choice.textContent = labels[choice.dataset.mode] || 'Approve Project Start';
+                choice.textContent = choice.dataset.label || labels[choice.dataset.mode] || 'Approve Project Start';  // Round 3b
             });
         }
     }
