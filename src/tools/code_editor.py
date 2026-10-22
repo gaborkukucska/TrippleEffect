@@ -173,6 +173,29 @@ TOP_LEVEL_REPLACE_KEYS = ("replace", "replace_block", "replace_text", "replaceme
 CHUNK_REPLACE_KEYS = ("replace", "replace_block", "replace_text", "replacement", "new", "new_code", "new_text", "new_content",
                       "content", "line_content", "text", "code", "replace_with", "replacement_text")
 TOP_LEVEL_START_KEYS = ("start_line", "from_line", "line_start", "replace_start_line")
+CHUNK_SEARCH_KEYS = ("search", "search_block", "search_text", "find", "old", "old_code")  # the keys execute() reads
+
+
+def whole_file_chunk_content(chunks: Any) -> Optional[str]:
+    """
+    Round 2t: the new file content if `chunks` is ONE chunk that replaces a whole (missing) file - no search text, start
+    line absent or 1, and a non-empty new text - else None.
+    """
+    if not isinstance(chunks, list) or len(chunks) != 1 or not isinstance(chunks[0], dict):
+        return None
+    chunk = chunks[0]
+    if any(isinstance(chunk.get(key), str) and chunk.get(key).strip() for key in CHUNK_SEARCH_KEYS):
+        return None
+    start = next((chunk.get(key) for key in ("start_line", "from_line", "line_start", "start") if chunk.get(key) not in (None, "")), None)
+    if start is not None:
+        first, _ = parse_line_numbers(start)
+        if first not in (0, 1):
+            return None
+    replace_key = next((key for key in CHUNK_REPLACE_KEYS if key in chunk), None)
+    text = chunk.get(replace_key) if replace_key else None
+    if not isinstance(text, str) or not text.strip():
+        return None
+    return text
 TOP_LEVEL_END_KEYS = ("end_line", "to_line", "line_end", "replace_end_line")
 EDIT_ACTION_ALIASES = frozenset({
     "replace", "edit", "modify", "replace_chunk", "replace_lines", "replace_line", "search_replace", "search_replace_block",
@@ -712,6 +735,22 @@ class CodeEditorTool(BaseTool):
                 # Round 2p: 2026-10-21 18:19:03 W1 tried to create src/server.py with replace_chunks (start_line 1, end_line -1)
                 if abs_path.is_dir():
                     return {"status": "error", "message": f"'{filename}' is a directory, not a file: code_editor edits files."}
+                # Round 2t: ONE chunk that replaces "the whole file" (no search text, from line 1) holds the complete new
+                # file: it is created with file_system 'write' and its checks. 2026-10-21 20:56:54 and 20:58:22 W1 sent
+                # src/app.py like this twice (8.7k characters the first time), was refused both times and then split the
+                # file into src/app.py.part1, .part2 ... instead.
+                whole_file = whole_file_chunk_content(chunks)
+                if whole_file is not None:
+                    from src.tools.file_system import FileSystemTool
+                    logger.info(f"CodeEditorTool: '{filename}' does not exist; creating it from {agent_id}'s whole-file chunk.")
+                    created = await FileSystemTool().execute(
+                        agent_id=agent_id, agent_sandbox_path=agent_sandbox_path,
+                        project_name=project_name, session_name=session_name,
+                        action="write", path=filename, content=whole_file, scope=scope)
+                    if isinstance(created, dict) and created.get("status") == "success":
+                        created["message"] = (f"[Note: '{filename}' did not exist, so your one whole-file chunk was saved as the "
+                                              f"new file. To create a file, use file_system 'write'.] {created.get('message') or ''}").strip()
+                    return created
                 return {"status": "error", "message": (
                     f"File '{filename}' does not exist yet, so it cannot be edited. To CREATE it, call the file_system tool "
                     f"with action='write', filename='{filename}' and the COMPLETE file content.")}

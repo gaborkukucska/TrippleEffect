@@ -21,6 +21,75 @@ class _EditRefused(Exception):
     """Round 1y: raised inside search_replace_block when the result must not be saved (the message says why)."""
 
 
+# Round 2t: 2026-10-21 20:55-21:00 W1 wrote src/app.py in pieces as 'src/app.py.part1', 'src/app.py.part2',
+# 'src/app.py.part1.txt' ... (6 writes, 6 deletes), while src/app.py itself was never created. Nothing ever joins such files.
+_PART_FILE_RE = re.compile(r"^(?P<real>.+\.[A-Za-z0-9]{1,10})\.(?:part|chunk|piece)[_-]?\d+(?:\.(?:txt|tmp|bak))?$",
+                           re.IGNORECASE)
+
+
+def part_file_target(filename: Optional[str]) -> Optional[str]:
+    """'src/app.py' for 'src/app.py.part1' / 'src/app.py.part2.txt' / 'src/app.py.chunk_1'; None for ordinary names."""
+    text = str(filename or "").strip().replace("\\", "/")
+    if not text:
+        return None
+    directory, _, name = text.rpartition("/")
+    match = _PART_FILE_RE.match(name)
+    if not match:
+        return None
+    return f"{directory}/{match.group('real')}" if directory else match.group("real")
+
+
+def rejected_write_state_note(filename: str, existed: bool) -> str:
+    """
+    Round 2t: what a rejected 'write' left behind. 2026-10-21 20:52:43 W1's first src/app.py was rejected (a 'try' without
+    'except'); W1 then edited the file it believed existed ("rewrite this file using code_editor") and was told twice
+    that src/app.py does not exist.
+    """
+    if existed:
+        return f" The existing '{filename}' is unchanged."
+    return (f" '{filename}' was NOT created and still does not exist: send the COMPLETE corrected file with 'write' again. "
+            f"If it is too long for one reply, write its first part to '{filename}' (whole functions or classes only) and "
+            f"add the rest with 'append' to '{filename}'.")
+
+
+def python_append_error(filename: str, original: str, new_content: str) -> Optional[Dict[str, Any]]:
+    """
+    Round 2t: the refusal of an 'append' that turns valid Python into invalid Python, else None. A file that was already
+    broken is never blocked (the append may be its repair).
+    """
+    from src.tools.python_static_check import parse_python, syntax_error_report
+    try:
+        parse_python(new_content)
+        return None
+    except SyntaxError as syntax_err:
+        try:
+            parse_python(original)
+        except SyntaxError:
+            return None
+        try:
+            report = syntax_error_report(new_content, syntax_err)
+        except Exception:
+            report = ""
+        state = (f"'{filename}' is unchanged." if original else f"'{filename}' was NOT created.")
+        return {"status": "error", "message": (
+            f"Append rejected: '{filename}' would not be valid Python after it ({syntax_err.msg} at line {syntax_err.lineno}). "
+            f"Nothing was appended; {state} Append whole functions or classes: every part must end where a function or "
+            "class ends." + (f"\n{report}" if report else ""))}
+
+
+def part_file_refusal(filename: str, real: str, real_exists: bool) -> Dict[str, Any]:
+    """Round 2t: the refusal of a write / append to a part file of `real`."""
+    if real_exists:
+        how = (f"'{real}' exists, so add your next part to it with file_system action 'append' and filename '{real}' "
+               "(whole functions or classes per call).")
+    else:
+        how = (f"'{real}' does not exist yet: create it with file_system action 'write', filename '{real}' and the first "
+               f"part (whole functions or classes only), then add every further part with 'append' to '{real}'.")
+    return {"status": "error", "error_type": "part_file", "message": (
+        f"Refused: '{filename}' would be a PART of '{real}'. Nothing ever joins part files, so nothing was written. Write "
+        f"the code into '{real}' itself: {how}")}
+
+
 class FileSystemTool(BaseTool):
     """
     Tool for reading, writing, listing files/directories, creating directories,
@@ -626,6 +695,9 @@ class FileSystemTool(BaseTool):
                 if filename.endswith('/'):
                     return {"status": "error", "message": f"The path '{filename}' appears to be a directory. Please use the 'mkdir' action to create directories."}
                 if content is None: return self._content_required_error("write", kwargs)
+                part_of = part_file_target(filename)  # Round 2t
+                if part_of:
+                    return part_file_refusal(filename, part_of, (base_path / part_of.lstrip("/")).is_file())
                 result = await self._write_file(base_path, filename, content, agent_id, scope_description, force_overwrite=force_overwrite_requested)
             elif action == "list":
                 # relative_path default handled above
@@ -643,6 +715,9 @@ class FileSystemTool(BaseTool):
             elif action == "append":
                 if not filename: return {"status": "error", "message": "'filename' parameter is required for 'append'."}
                 if content is None: return self._content_required_error("append", kwargs)
+                part_of = part_file_target(filename)  # Round 2t
+                if part_of:
+                    return part_file_refusal(filename, part_of, (base_path / part_of.lstrip("/")).is_file())
                 result = await self._append_to_file(base_path, filename, content, agent_id, scope_description)
             elif action == "insert_lines":
                 if not filename: return {"status": "error", "message": "'filename' parameter is required for 'insert_lines'."}
@@ -1426,6 +1501,7 @@ Pushes changes to a remote repository.
                     return {
                         "status": "error",
                         "message": f"Write rejected due to Python SyntaxError in resulting code: {syntax_err.msg} at line {syntax_err.lineno}. No changes were saved. Please check your indentation and brackets."
+                                   + rejected_write_state_note(filename, validated_path.is_file())  # Round 2t
                                    + (f"\n{syntax_report}" if syntax_report else "")
                     }
                     
@@ -1864,6 +1940,16 @@ Pushes changes to a remote repository.
         if not val_path: return {"status": "error", "message": f"Invalid path '{filename}'."}
         if val_path.is_dir(): return {"status": "error", "message": f"Cannot append. '{filename}' is a directory."}
         try:
+            is_python = str(filename).endswith(".py")
+            if is_python:
+                # Round 2t: a Python file is checked like every other edit: appending must not turn valid code into
+                # invalid code, and the appended text starts on a new line
+                original = await asyncio.to_thread(val_path.read_text, encoding='utf-8') if val_path.is_file() else ""
+                if original and not original.endswith("\n") and not content.startswith("\n"):
+                    content = "\n" + content
+                refused = python_append_error(filename, original, original + content)
+                if refused:
+                    return refused
             await asyncio.to_thread(val_path.parent.mkdir, parents=True, exist_ok=True)
             def append_sync():
                 with open(val_path, 'a', encoding='utf-8') as f:
@@ -1872,7 +1958,14 @@ Pushes changes to a remote repository.
             logger.info(f"Agent {agent_id} appended to '{filename}' in {scope_description}")
             check_note = ""
             from src.tools.source_check import check_kind, edit_note  # Round 2r: JavaScript / JSON / shell syntax
-            if check_kind(filename):
+            if is_python:
+                from src.tools.python_static_check import saved_edit_notes  # Round 2t: same hints as the other edits
+                try:
+                    new_text = await asyncio.to_thread(val_path.read_text, encoding='utf-8')
+                    check_note = await asyncio.to_thread(saved_edit_notes, new_text, filename, base_path)
+                except (OSError, UnicodeDecodeError):
+                    check_note = ""
+            elif check_kind(filename):
                 try:
                     new_text = await asyncio.to_thread(val_path.read_text, encoding='utf-8')
                     check_note = await asyncio.to_thread(edit_note, new_text, filename)

@@ -79,8 +79,23 @@ def cut_off_reply_notice(agent) -> str:
         f"({streak} time(s) in a row), so NOTHING was executed or saved. {budget_text} Think briefly and make the tool call "
         "smaller: change only the lines that need to change (code_editor 'replace_chunks' with one small chunk, or "
         "file_system 'replace_lines') instead of sending a whole file again. A NEW file that is too long for one reply: "
-        "write its first part with file_system 'write', then add the rest with 'append' (one function or class per call)."
+        "write its first part with file_system 'write', then add the rest with 'append' (one function or class per call), "
+        # Round 2t: 2026-10-21 20:55:12 W1 followed this by writing 'src/app.py.part1' and appending to 'src/app.py.part2'
+        "always to the file's own path (e.g. 'src/app.py', never 'src/app.py.part1'). A file that does not exist yet has "
+        "no lines to change: create it first."
     )
+
+
+def worker_choice_text(manager, pm_agent_id: str) -> str:
+    """
+    Round 2t: who a PM assigns tasks to - its workers by name. "assign ... to a suitable agent" made PM1 assign
+    "Kick-off Task 9: Write docs/SETUP.md" to ITSELF (2026-10-21 20:54:22).
+    """
+    from src.tools.project_management import team_worker_ids
+    workers = team_worker_ids(manager, pm_agent_id)
+    if workers:
+        return f"one of your workers ({', '.join(workers)}; never to yourself)"
+    return "one of your workers (never to yourself)"
 
 
 def effective_context_window(agent, model_num_ctx: Optional[int]) -> Optional[int]:
@@ -2499,7 +2514,8 @@ class AgentCycleHandler:
                                                 directive_message_content = (
                                                     f"[Framework System Message]: Task assignment processed successfully. Here are the remaining unassigned tasks:\n"
                                                     f"{summary_str}\n\n"
-                                                    "Your mandatory next action is to assign the next ACTIONABLE (non-blocked) task from this list to a suitable agent."
+                                                    "Your mandatory next action is to assign the next ACTIONABLE (non-blocked) task from this list to "
+                                                    + worker_choice_text(self._manager, agent.agent_id) + "."  # Round 2t
                                                 )
                                             else:
                                                 # All remaining tasks are blocked by dependencies
@@ -2525,7 +2541,8 @@ class AgentCycleHandler:
                                 directive_message_content = (
                                     "[Framework System Message]: You now have the list of available agents. For your convenience, here is the summary of unassigned tasks you previously retrieved:\n"
                                     f"{summary_str}\n\n"
-                                    "Your mandatory next action is to assign the first task from this list to a suitable agent using its correct UUID."
+                                    "Your mandatory next action is to assign the first task from this list to "
+                                    + worker_choice_text(self._manager, agent.agent_id) + " using its correct UUID."  # Round 2t
                                 )
 
                             if directive_message_content:

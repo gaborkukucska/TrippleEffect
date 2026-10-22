@@ -48,6 +48,71 @@ def clean_agent_id(value: Any) -> Optional[str]:
     return text if _AGENT_ID_RE.match(text) else None
 
 
+# Round 2t: only workers carry out tasks. 2026-10-21 20:54:22 PM1 assigned "Kick-off Task 9: Write docs/SETUP.md" to itself;
+# a PM cannot write files, so the task would never be done (and no worker was activated for it).
+FRAMEWORK_CALLERS = frozenset({"framework", "system"})
+_PM_LIKE_ID_RE = re.compile(r"^pm(?:\d+|[_-].*)?$", re.IGNORECASE)
+
+
+def non_worker_role(agent_id: Optional[str], manager: Any = None) -> Optional[str]:
+    """
+    'a Project Manager' / 'the Admin AI' / 'the Constitutional Guardian' if agent_id is not a worker, else None. A known
+    agent is judged by its agent_type, an unknown id by its name (PM1, pm_..., admin_ai, constitutional_guardian_ai).
+    """
+    if not agent_id:
+        return None
+    from src.agents.constants import (AGENT_TYPE_ADMIN, AGENT_TYPE_PM, BOOTSTRAP_AGENT_ID,
+                                      CONSTITUTIONAL_GUARDIAN_AGENT_ID)
+    if agent_id == CONSTITUTIONAL_GUARDIAN_AGENT_ID:
+        return "the Constitutional Guardian"
+    agents = getattr(manager, "agents", None)
+    agent = agents.get(agent_id) if isinstance(agents, dict) else None
+    if agent is not None:
+        agent_type = getattr(agent, "agent_type", None)
+        if agent_type == AGENT_TYPE_PM:
+            return "a Project Manager"
+        if agent_type == AGENT_TYPE_ADMIN:
+            return "the Admin AI"
+        return None
+    if agent_id == BOOTSTRAP_AGENT_ID:
+        return "the Admin AI"
+    if _PM_LIKE_ID_RE.match(agent_id):
+        return "a Project Manager"
+    return None
+
+
+def team_worker_ids(manager: Any, agent_id: Optional[str]) -> List[str]:
+    """The workers of agent_id's team (all workers if it has no team). Never raises."""
+    try:
+        from src.agents.constants import AGENT_TYPE_WORKER
+        state_manager = getattr(manager, "state_manager", None)
+        team_id = state_manager.get_agent_team(agent_id) if state_manager is not None and agent_id else None
+        if team_id:
+            members = state_manager.get_agents_in_team(team_id) or []
+        else:
+            agents = getattr(manager, "agents", None)
+            members = list(agents.values()) if isinstance(agents, dict) else []
+        return [a.agent_id for a in members if getattr(a, "agent_type", None) == AGENT_TYPE_WORKER and getattr(a, "agent_id", None)]
+    except Exception:
+        return []
+
+
+def non_worker_assignment_error(assignee: str, caller_id: Optional[str], manager: Any, task_ref: str,
+                                outcome: str = "was NOT changed") -> Optional[Dict[str, Any]]:
+    """Round 2t: the refusal for an agent assigning a task to a PM / Admin AI / the Guardian, or None (framework calls pass)."""
+    if caller_id in FRAMEWORK_CALLERS:
+        return None
+    role = non_worker_role(assignee, manager)
+    if not role:
+        return None
+    workers = team_worker_ids(manager, caller_id)
+    target = f"one of your workers: {', '.join(workers)}" if workers else "a worker (create one first if your team has none)"
+    logger.warning(f"ProjectManagementTool: '{caller_id}' tried to assign {task_ref} to '{assignee}' ({role}). Refused.")
+    return {"status": "error", "error_type": "non_worker_assignee", "message": (
+        f"{task_ref} {outcome}: '{assignee}' is {role}, and only workers carry out tasks - they write the files, "
+        f"which Project Managers, the Admin AI and the Guardian cannot do. Assign it to {target}.")}
+
+
 def clean_tag(value: Any) -> str:
     """Makes a value safe to use as a Taskwarrior tag: no quotes/brackets/commas, whitespace becomes '_'."""
     text = str(value).replace('"', "").replace("'", "").replace("[", "").replace("]", "").replace(",", "")
@@ -598,6 +663,10 @@ class ProjectManagementTool(BaseTool):
                 clean_assignee = clean_agent_id(kwargs["assignee_agent_id"])
                 if not clean_assignee:
                     return {"status": "error", "message": f"Invalid assignee_agent_id {kwargs['assignee_agent_id']!r}. Use the plain agent id such as 'W1' (letters, digits, '_', '.', ':' or '-'; no spaces or line breaks)."}
+                refusal = non_worker_assignment_error(clean_assignee, agent_id, kwargs.get("manager"), "The task",
+                                                      outcome="was NOT created")  # Round 2t
+                if refusal:
+                    return refusal
                 kwargs["assignee_agent_id"] = clean_assignee
                 task['assignee'] = clean_assignee
             elif self._is_worker_agent(agent_id):
@@ -1097,6 +1166,8 @@ class ProjectManagementTool(BaseTool):
                     modified_fields.append("assignee")
                 elif task['status'] == 'pending' and task['assignee'] and task['assignee'] != agent_id and not agent_id.startswith("admin") and not agent_id.startswith("PM"):
                     return {"status": "error", "message": f"Task '{task_id}' is already 'pending' and actively assigned to '{task['assignee']}'. Reassigning active tasks owned by others is blocked to prevent disruption. Only the assignee can hand it off, or its status must first be changed to 'waiting'."}
+                elif (refusal := non_worker_assignment_error(new_assignee, agent_id, kwargs.get("manager"), f"Task '{task_id}'")):
+                    return refusal  # Round 2t: only workers carry out tasks
                 else:
                     task['assignee'] = new_assignee
                     modified_fields.append("assignee")

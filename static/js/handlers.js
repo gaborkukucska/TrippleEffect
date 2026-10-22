@@ -259,6 +259,19 @@ export const handleWebSocketMessage = (data) => {
                     existingNote = `<p><strong>A project named ${safeTitle} already exists</strong> (${existingProject.sessions.length} earlier session(s); ` +
                         `latest: <code>${escapeHTML(latest.name || '?')}</code> with ${escapeHTML(String(latest.files ?? 0))} file(s), ` +
                         `last changed ${escapeHTML(latest.last_changed || '?')}). Continue it, or start this plan as a new project?</p>`;
+                    // Round 2t: say which files 'continue' carries over (2026-10-21 20:52 it carried the latest, EMPTY session)
+                    if (existingProject.carry_session) {
+                        const carryCount = Number(existingProject.carry_work_file_count || 0);
+                        const shownFiles = Array.isArray(existingProject.carry_work_files) ? existingProject.carry_work_files : [];
+                        if (carryCount > 0) {
+                            const fileList = shownFiles.map(name => `<code>${escapeHTML(String(name))}</code>`).join(', ') +
+                                (carryCount > shownFiles.length ? ` and ${carryCount - shownFiles.length} more` : '');
+                            existingNote += `<p>Continue carries over the ${escapeHTML(String(carryCount))} work file(s) of session ` +
+                                `<code>${escapeHTML(existingProject.carry_session)}</code>: ${fileList}.</p>`;
+                        } else {
+                            existingNote += `<p>No earlier session has work files: Continue carries over only the earlier plan.</p>`;
+                        }
+                    }
                     approvalButtons =
                         `<button class="approve-project-btn" data-pm-id="${safePmId}" data-mode="continue">Continue existing project</button> ` +
                         `<button class="approve-project-btn" data-pm-id="${safePmId}" data-mode="new">Start new project</button>` +

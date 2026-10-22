@@ -393,8 +393,10 @@ def test_an_indented_line_after_a_plain_statement_is_named():
 def test_code_editor_on_a_missing_file_says_how_to_create_it(tmp_path):
     from src.tools.code_editor import CodeEditorTool
     (tmp_path / "src").mkdir()
+    # Round 2t: ONE whole-file chunk (start_line 1, no search) now CREATES the file (tests/unit/test_round2t.py); an edit of
+    # some lines of a missing file is still refused
     result = run(CodeEditorTool().execute("W1", tmp_path, scope="private", action="replace_chunks", filename="src/server.py",
-                                          chunks=[{"start_line": 1, "end_line": -1, "search": "", "replace": "x = 1\n"}]))
+                                          chunks=[{"start_line": 165, "end_line": 203, "search": "", "replace": "x = 1\n"}]))
     assert result["status"] == "error"
     assert result["message"] == ("File 'src/server.py' does not exist yet, so it cannot be edited. To CREATE it, call the "
                                  "file_system tool with action='write', filename='src/server.py' and the COMPLETE file content.")

@@ -267,10 +267,12 @@ class ProjectCreationWorkflow(BaseWorkflow):
             final_message += f" It replaces the earlier plan of {', '.join(replaced)} (never approved; removed)."
 
         if existing_project:
+            from src.utils.project_folders import carried_files_text
+            carried_text = carried_files_text(existing_project)  # Round 2t: which session's files 'continue' carries over
             final_message += (
                 f" NOTE: a project named '{project_title}' already exists ({len(existing_project['sessions'])} earlier "
                 f"session(s), latest: '{existing_project['latest_session']}'). The approval card asks the user whether to "
-                f"CONTINUE that project (its latest files are carried over) or to start it as the NEW project "
+                f"CONTINUE that project ({carried_text}) or to start it as the NEW project "
                 f"'{existing_project['suggested_new_name']}'. Tell the user about this choice."
             )
             # Admin AI gets no workflow result message in its history, so it is told here (it may be asked about it)
@@ -278,8 +280,8 @@ class ProjectCreationWorkflow(BaseWorkflow):
             # "continue" as an order to continue the project ITSELF)
             agent.message_history.append({"role": "system", "content": (
                 f"[Framework Note]: A project named '{project_title}' already existed (latest session "
-                f"'{existing_project['latest_session']}'). The user's approval card asks whether to CONTINUE it (its latest "
-                f"files are carried over) or to start this plan as the NEW project '{existing_project['suggested_new_name']}'. "
+                f"'{existing_project['latest_session']}'). The user's approval card asks whether to CONTINUE it "
+                f"({carried_text}) or to start this plan as the NEW project '{existing_project['suggested_new_name']}'. "
                 "The user answers with the card's buttons (or by typing continue or new); the framework then starts the "
                 "project. You do NOT start, investigate or plan it again yourself.")})
 

@@ -493,7 +493,8 @@ async def approve_project_start(
                 logger.info(f"Approval: the user started '{pm_project_name}' as the NEW project '{new_name}'.")
                 pm_project_name = new_name
             else:
-                carry_over = (pm_project_name, existing_project.get("latest_session"))
+                # Round 2t: the latest session WITH work files (2026-10-21 20:52 the latest one was empty: 0 files carried)
+                carry_over = (pm_project_name, existing_project.get("carry_session") or existing_project.get("latest_session"))
                 logger.info(f"Approval: the user CONTINUES the existing project '{pm_project_name}'.")
             agent_to_start._existing_project_info = None
 

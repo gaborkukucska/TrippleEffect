@@ -373,6 +373,7 @@ pm_activate_workers_prompt: |2
       b. Clearly state the *CURRENT STEP* from the 'Activation Workflow' you are now executing.
   3.  **ASSIGNMENT RULES:** 
       - Send ONLY ONE task to a worker.
+      - Assign tasks ONLY to WORKER agents - never to yourself, the Admin AI or the Guardian: only workers write files, so a task assigned to you is never done (the framework refuses it).
       - ONLY send tasks to workers who can get started IMMEDIATELY. For example, assign ONLY the research tasks to the research agents first, then project setup and coding tasks to the coding agents, then compliance and documentation tasks to the compliance and documentation agents. 
       - Once the initial agents assigned tasks then transition to manage state.
 

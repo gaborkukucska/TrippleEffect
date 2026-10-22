@@ -25,6 +25,8 @@ SESSION_MARKERS = ("agent_session_data.json", "shared_workspace", "task_data")
 # Files the kickoff writes for the NEW plan; the earlier ones are kept under another name or not copied
 FRAMEWORK_WORKSPACE_FILES = {"PROJECT_STRUCTURE.md", "conftest.py"}
 EARLIER_PLAN_NAME = "PREVIOUS_PROJECT_PLAN.md"
+NON_WORK_FILES = FRAMEWORK_WORKSPACE_FILES | {"PROJECT_PLAN.md", EARLIER_PLAN_NAME}  # Round 2t
+MAX_SHOWN_WORK_FILES = 8  # Round 2t: work files named on the approval card
 SKIPPED_DIRS = {"__pycache__", ".pytest_cache", ".git", "node_modules", ".venv", "venv", ".te_background", ".mypy_cache"}
 MAX_LISTED_FILES = 40
 
@@ -40,6 +42,15 @@ def _workspace_files(workspace: Path) -> List[Path]:
         if path.is_file():
             files.append(path)
     return files
+
+
+def _work_files(workspace: Path) -> List[str]:
+    """
+    Round 2t: the workspace files that hold the project's WORK (relative paths): everything except the plan and the files
+    the framework writes for each kickoff (PROJECT_PLAN.md, PREVIOUS_PROJECT_PLAN.md, PROJECT_STRUCTURE.md, conftest.py).
+    """
+    return [path.relative_to(workspace).as_posix() for path in _workspace_files(workspace)
+            if path.relative_to(workspace).as_posix() not in NON_WORK_FILES]
 
 
 def _session_dirs(project_dir: Path) -> List[Path]:
@@ -72,34 +83,59 @@ def unique_project_name(projects_base: Path, name: str) -> str:
     return f"{stem}_{number}"
 
 
+def _carry_session(sessions: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """
+    Round 2t: the session whose files 'continue' carries over: the latest one with WORK files, else the latest one. Sessions
+    are sorted oldest first. 2026-10-21 20:52 'continue' carried 0 files: the latest session (startup_1792572946, a run that
+    never got past its kickoff) had no files, while the three sessions before it held the project's code.
+    """
+    if not sessions:
+        return None
+    with_work = [session for session in sessions if session.get("work_files")]
+    return with_work[-1] if with_work else sessions[-1]
+
+
 def existing_project_info(projects_base: Path, project_name: str, current_session: Optional[str]) -> Optional[Dict[str, Any]]:
     """
     Earlier sessions of a project with this name, or None if there are none. A session of the current server run counts
     only if its workspace already has files (it then held an earlier project with the same title).
+    Round 2t: + each session's number of work files, and the session 'continue' carries over ('carry_session', the latest
+    one with work files) with its work file names ('carry_work_files', at most MAX_SHOWN_WORK_FILES, and
+    'carry_work_file_count').
     """
     try:
         project_dir = Path(projects_base) / project_name
         sessions = []
         for session_dir in _session_dirs(project_dir):
-            files = _workspace_files(session_dir / "shared_workspace")
+            workspace = session_dir / "shared_workspace"
+            files = _workspace_files(workspace)
             if session_dir.name == current_session and not files:
                 continue
+            work = _work_files(workspace)
             changed = _last_change(session_dir)
             sessions.append({
                 "name": session_dir.name,
                 "files": len(files),
+                "work_files": len(work),
                 "last_changed": datetime.fromtimestamp(changed).isoformat(timespec="minutes") if changed else None,
                 "_mtime": changed,
+                "_work": work,
             })
         if not sessions:
             return None
         sessions.sort(key=lambda s: s["_mtime"])
+        carry = _carry_session(sessions)
+        carry_work = list(carry.get("_work") or [])
         for session in sessions:
             session.pop("_mtime", None)
+            session.pop("_work", None)
         return {
             "name": project_name,
             "sessions": sessions,
             "latest_session": sessions[-1]["name"],
+            "carry_session": carry["name"],
+            "carry_work_files": carry_work[:MAX_SHOWN_WORK_FILES],
+            "carry_work_file_count": len(carry_work),
             "suggested_new_name": unique_project_name(Path(projects_base), project_name),
         }
     except Exception as err:
@@ -107,20 +143,37 @@ def existing_project_info(projects_base: Path, project_name: str, current_sessio
         return None
 
 
+def carried_files_text(info: Optional[Dict[str, Any]]) -> str:
+    """Round 2t: what 'continue' carries over, for the Admin AI messages (the approval card says the same)."""
+    info = info or {}
+    carry, latest = info.get("carry_session"), info.get("latest_session")
+    count = info.get("carry_work_file_count")
+    if not carry or count is None:
+        return "its latest files are carried over"
+    if not count:
+        return "no earlier session has work files, so only its earlier plan is carried over"
+    text = f"the {count} work file(s) of its session '{carry}' are carried over"
+    if latest and latest != carry:
+        text += f"; its latest session '{latest}' has no work files"
+    return text
+
+
 def carry_over_workspace(projects_base: Path, project_name: str, from_session: Optional[str],
                          to_session: str) -> Tuple[Optional[str], List[str]]:
     """
-    'Continue the existing project': copy the files of from_session's workspace (default: the latest other session) into
-    to_session's workspace. Existing files are never overwritten; the earlier PROJECT_PLAN.md becomes
-    PREVIOUS_PROJECT_PLAN.md and the framework files of the kickoff are not copied. Returns (session used, copied paths).
+    'Continue the existing project': copy the files of from_session's workspace (default: the latest other session with
+    work files, else the latest other session - Round 2t) into to_session's workspace. Existing files are never overwritten;
+    the earlier PROJECT_PLAN.md becomes PREVIOUS_PROJECT_PLAN.md and the framework files of the kickoff are not copied.
+    Returns (session used, copied paths).
     """
     try:
         project_dir = Path(projects_base) / project_name
         if not from_session:
-            candidates = [s for s in _session_dirs(project_dir) if s.name != to_session]
+            candidates = sorted((s for s in _session_dirs(project_dir) if s.name != to_session), key=_last_change)
             if not candidates:
                 return None, []
-            from_session = max(candidates, key=_last_change).name
+            with_work = [s for s in candidates if _work_files(s / "shared_workspace")]
+            from_session = (with_work or candidates)[-1].name
         if from_session == to_session:
             return None, []
         source = project_dir / from_session / "shared_workspace"
@@ -201,7 +254,7 @@ def carry_over_note(project_name: str, from_session: str, copied: List[str]) -> 
     shown = ", ".join(copied[:MAX_LISTED_FILES]) + (f" (and {len(copied) - MAX_LISTED_FILES} more)" if len(copied) > MAX_LISTED_FILES else "")
     return (
         f"[Framework System Message]: The user chose to CONTINUE the existing project '{project_name}'. The files of its "
-        f"latest session '{from_session}' were copied into your workspace: {shown or 'none'}. "
+        f"session '{from_session}' were copied into your workspace: {shown or 'none'}. "
         + (f"The earlier plan is in {EARLIER_PLAN_NAME}. " if EARLIER_PLAN_NAME in copied else "")
         + "Plan the work ON TOP of these files: tasks change or extend them instead of creating them again."
     )
