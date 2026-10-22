@@ -50,7 +50,7 @@ class ToolInformationTool(BaseTool):
         ToolParameter( # New parameter
             name="sub_action",
             type="string",
-            description="For 'get_info' on certain complex tools (like 'manage_team'): Specifies a sub-action to get detailed help for (e.g., 'create_agent').",
+            description="For 'get_info' on tools with several actions ('file_system', 'project_management', 'manage_team'): the action to get detailed help for (e.g. 'write', 'modify_task', 'create_agent').",
             required=False,
         ),
     ]

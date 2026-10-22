@@ -207,6 +207,48 @@ def drop_blank_fields(kwargs: Dict[str, Any], keys=MODIFY_OPTIONAL_FIELDS) -> Li
     return dropped
 
 
+# Round 2w: names a model gives the assignee. 2026-10-22 11:08 PM1 sent modify_task with 'new_assignee_value': 'W1' and
+# 'add_assignee_agent_id': 'W1' (and the action 'add_assignee_agent_to_task'); all were refused, PM1 went to 'error'.
+ASSIGNEE_ALIAS_KEYS = ("assignee", "task_assignee", "new_assignee", "new_assignee_value", "add_assignee_agent_id",
+                       "assignee_id", "assign_to", "assigned_to", "assign_to_agent", "worker_id", "worker", "target_agent_id")
+
+
+def normalize_assignee_alias(kwargs: Dict[str, Any]) -> Optional[str]:
+    """
+    Round 2w: copies the first non-empty assignee alias into 'assignee_agent_id' when that is missing or empty.
+    Returns the alias key used, or None.
+    """
+    if not _is_blank(kwargs.get("assignee_agent_id")):
+        return None
+    for key in ASSIGNEE_ALIAS_KEYS:
+        if key in kwargs and not _is_blank(kwargs[key]):
+            kwargs["assignee_agent_id"] = kwargs[key]
+            return key
+    return None
+
+
+def resolve_task_reference(tw, aliases: Dict[str, str], ref: str):
+    """
+    Round 2w: the task an id names - an alias, an integer ID, a UUID, or a UUID with 1-2 characters wrong
+    (match_task_by_uuid_prefix). Raises LookupError if there is no single such task. A malformed UUID is never handed
+    to Taskwarrior.
+    """
+    text = str(ref or "").strip()
+    text = aliases.get(text, text)
+    if text.isdigit():
+        return tw.tasks.get(id=int(text))
+    if UUID_RE.match(text.lower()):
+        try:
+            return tw.tasks.get(uuid=text)
+        except Exception as err:
+            if "exist" not in str(err).lower():
+                raise
+    matches = match_task_by_uuid_prefix(tw.tasks.all(), text)
+    if len(matches) == 1:
+        return matches[0]
+    raise LookupError(f"no task matches '{ref}'")
+
+
 def taskwarrior_error_summary(err: Any) -> str:
     """The error lines of a Taskwarrior/tasklib exception without the 'Command used: task rc...' line."""
     lines = [line.strip() for line in str(err).splitlines() if line.strip()]
@@ -325,20 +367,31 @@ def open_tasks_listing(tw, limit: int = MAX_LISTED_OPEN_TASKS) -> str:
 class ProjectManagementTool(BaseTool):
     name = "project_management"
     auth_level: str = "worker"
-    summary: Optional[str] = "Manages project tasks (add_task, get_tasks, modify_task, get_project_state) via Taskwarrior. Use tool_information with sub_action for per-action help."
-    description = "Manages project tasks using Tasklib."
+    # Round 2w: the summary named actions that do not exist (get_tasks, get_project_state), the description and the
+    # 'action' parameter named none (2026-10-22 11:08 PM1 invented 'add_assignee_agent_to_task' and 'new_assignee_value')
+    summary: Optional[str] = "Manages project tasks (add_task, list_tasks, modify_task, complete_task, get_dependency_graph) via Taskwarrior. Use tool_information with sub_action for per-action help."
+    description = (
+        "Manages the project's tasks (Taskwarrior). Actions: 'add_task' (description; optional task_id alias, depends, "
+        "priority, assignee_agent_id), 'list_tasks' (optional filters), 'modify_task' (task_id plus ONLY the fields to "
+        "change: assignee_agent_id, task_progress, description, priority, depends, tags), 'complete_task' (task_id), "
+        "'get_dependency_graph'. To ASSIGN a task to a worker: "
+        '{"action": "modify_task", "task_id": "<uuid>", "assignee_agent_id": "W1"} - the framework adds the worker\'s tag '
+        "and starts the worker. Only workers (W1, W2, ...) can be assignees. Empty values ('') are ignored."
+    )
     parameters: List[ToolParameter] = [
-        ToolParameter(name="action", type="str", required=True, description="The action to perform."),
+        ToolParameter(name="action", type="str", required=True, description="One of: 'add_task', 'list_tasks', 'modify_task' (change a task, e.g. ASSIGN it with assignee_agent_id), 'complete_task', 'get_dependency_graph'."),
         ToolParameter(name="title", type="str", required=False, description="Short task title (used as description if description is omitted)."),
         ToolParameter(name="description", type="str", required=False, description="Task description."),
-        ToolParameter(name="task_id", type="str", required=False, description="Task attribute. For add_task: assign a custom alias (e.g., 'task_1'). For other actions: use UUID, ID, or your custom alias."),
-        ToolParameter(name="task_progress", type="str", required=False, description="Granular task progress state (e.g., todo, in_progress, waiting, stuck, finished)."),
-        ToolParameter(name="priority", type="str", required=False, description="Task priority."),
+        ToolParameter(name="task_id", type="str", required=False, description="For add_task: an optional alias for the new task (e.g. 'task_1'). For the other actions: the task's UUID (exactly as listed), ID or alias."),
+        ToolParameter(name="task_progress", type="str", required=False, description="Progress of the task: 'todo', 'doing', 'in_progress', 'waiting', 'stuck', 'decomposed', 'finished' or 'deleted'."),
+        ToolParameter(name="priority", type="str", required=False, description="Task priority: 'H' (high), 'M' (medium) or 'L' (low)."),
         ToolParameter(name="project_filter", type="str", required=False, description="Filter tasks by project."),
-        ToolParameter(name="assignee_filter", type="str", required=False, description="Filter tasks by assignee."),
-        ToolParameter(name="task_progress_filter", type="str", required=False, description="Filter tasks by granuler progress state."),
+        ToolParameter(name="assignee_filter", type="str", required=False, description="For 'list_tasks': only tasks of this agent ('unassigned' for tasks without one)."),
+        ToolParameter(name="task_progress_filter", type="str", required=False, description="For 'list_tasks': only tasks with this progress (e.g. 'todo')."),
+        ToolParameter(name="tags_filter", type="str", required=False, description="For 'list_tasks': comma-separated tags; also the magic tags 'assigned' / 'unassigned'."),
+        ToolParameter(name="tags_filter_mode", type="str", required=False, description="For 'list_tasks': 'include' (default) or 'exclude' the tasks that have tags_filter."),
         ToolParameter(name="tags", type="list", required=False, description="List of tags."),
-        ToolParameter(name="depends", type="str", required=False, description="Dependency task UUID."),
+        ToolParameter(name="depends", type="str", required=False, description="UUID (or alias) of the task this one depends on; several separated by commas."),
         ToolParameter(name="assignee_agent_id", type="str", required=False, description="Agent ID for assignment: a WORKER (e.g. 'W1'); a Project Manager, the Admin AI or the Guardian is refused."),
         ToolParameter(name="dry_run", type="boolean", required=False, description="If true, simulates the action without saving to the database. Useful to verify complex state changes."),
     ]
@@ -367,6 +420,20 @@ class ProjectManagementTool(BaseTool):
                     logger.warning(f"ProjectManagementTool: Auto-healed {fname} ({len(lines)} -> {len(cleaned)} line(s): removed empty lines, re-joined split records, cleaned tag values).")
             except Exception as heal_err:
                 logger.debug(f"ProjectManagementTool: Could not check/heal {fname}: {heal_err}")
+
+    # Round 2w: parameters the tool reads besides its schema parameters (names models use for the same thing)
+    ACCEPTED_EXTRA_KEYS = frozenset({"manager", "fields", "field", "value", "task_uuid", "status", "status_filter",
+                                     "title_filter", "task_title", "task_description", "task_priority", "task_depends",
+                                     "include_decomposed", "include_completed", "show_completed"} | set(ASSIGNEE_ALIAS_KEYS))
+
+    def _unknown_parameters_note(self, kwargs: Dict[str, Any]) -> str:
+        """Round 2w: ' Unknown parameter(s) ignored: ...' plus the assignment example, or ''."""
+        known = {param.name for param in self.parameters} | self.ACCEPTED_EXTRA_KEYS
+        unknown = sorted(key for key in kwargs if key not in known)
+        if not unknown:
+            return ""
+        return (f" Unknown parameter(s) were ignored: {', '.join(unknown)}. To assign the task to a worker send exactly: "
+                "{\"action\": \"modify_task\", \"task_id\": \"UUID\", \"assignee_agent_id\": \"W1\"}.")
 
     def _is_worker_agent(self, agent_id: Optional[str]) -> bool:
         """True if agent_id represents a worker (not admin, PM, framework, or system)."""
@@ -567,9 +634,13 @@ class ProjectManagementTool(BaseTool):
                     logger.info("ProjectManagementTool: Auto-injected task_progress='deleted' for deletion intent.")
                     
                 action = corrected_action
+            elif "assign" in str(action).lower():
+                # Round 2w: 'add_assignee_agent_to_task', 'assign_worker', ... (PM1 2026-10-22 11:08:29) mean modify_task
+                logger.info(f"ProjectManagementTool: Auto-correcting action '{action}' -> 'modify_task' (an assignment).")
+                action = "modify_task"
             else:
                 return {
-                    "status": "error", 
+                    "status": "error",
                     "message": f"Invalid action '{action}'. Valid actions are: {', '.join(valid_actions)}.",
                     "error_type": "invalid_action",
                     "valid_actions": valid_actions
@@ -586,9 +657,14 @@ class ProjectManagementTool(BaseTool):
         if not tw:
             return {"status": "error", "message": "Failed to initialize TaskWarrior backend."}
 
+        if action in ("add_task", "modify_task"):
+            alias_key = normalize_assignee_alias(kwargs)  # Round 2w
+            if alias_key:
+                logger.info(f"ProjectManagementTool: '{agent_id}' gave the assignee as '{alias_key}'; used as assignee_agent_id.")
+
         try:
             aliases = self._load_aliases(project_name, session_name)
-            
+
             if action == "add_task":
                 return await self._execute_add_task(tw, aliases, project_name, session_name, agent_id, kwargs)
             elif action == "list_tasks":
@@ -1207,17 +1283,18 @@ class ProjectManagementTool(BaseTool):
             if "depends" in kwargs and str(kwargs["depends"] or "").strip() in ("", "[]", "None", "null"):
                 kwargs.pop("depends")  # Round 2f: 'depends': '' (PM1 2026-10-19 10:14) means no dependency, not task ''
             if "depends" in kwargs:
-                try:
-                    dep_id = str(kwargs["depends"]).strip()
-                    if dep_id in aliases:
-                        dep_id = aliases[dep_id]
-                    dep_task = tw.tasks.get(uuid=dep_id) if '-' in dep_id else tw.tasks.get(id=int(dep_id))
-                    if task['depends'] is None:
-                        task['depends'] = set()
-                    task['depends'].add(dep_task)
+                # Round 2w: several dependencies separated by commas (or a list), as add_task accepts them
+                dep_ids = [d.strip() for d in str(kwargs["depends"]).replace('[', '').replace(']', '').replace('"', '').replace("'", "").split(',') if d.strip()]
+                for dep_id in dep_ids:
+                    try:
+                        dep_task = resolve_task_reference(tw, aliases, dep_id)
+                        if task['depends'] is None:
+                            task['depends'] = set()
+                        task['depends'].add(dep_task)
+                    except Exception as e:
+                        return {"status": "error", "message": f"Dependency task '{dep_id}' not found, so nothing was changed. Integer IDs shift when tasks are completed. Use UUID or custom alias instead. Detail: {taskwarrior_error_summary(e)}"}
+                if dep_ids:
                     modified_fields.append("depends")
-                except Exception as e:
-                    return {"status": "error", "message": f"Dependency task '{kwargs['depends']}' not found. Integer IDs shift when tasks are completed. Use UUID or custom alias instead. Detail: {e}"}
 
             if not modified_fields:
                 return {"status": "error", "message": (
@@ -1226,6 +1303,7 @@ class ProjectManagementTool(BaseTool):
                     "task_progress, status, description, priority, tags, depends, assignee_agent_id. "
                     "CORRECT example: {\"action\": \"modify_task\", \"task_id\": \"UUID\", \"task_progress\": \"finished\"}"
                     + (f" Empty values ('') are ignored; they were sent for: {', '.join(blank_fields)}." if blank_fields else "")
+                    + self._unknown_parameters_note(kwargs)  # Round 2w
                 )}
 
             is_dry_run = str(kwargs.get("dry_run")).lower() == "true"
@@ -1417,8 +1495,12 @@ class ProjectManagementTool(BaseTool):
 
 **Description:** Manages project tasks using a Taskwarrior backend. This tool is available to PMs (for general project management) and Workers (to decompose tasks into sub-tasks).
 
-**CRITICAL - Task Assignment:**
-When assigning a task to an agent, you MUST use BOTH the `assignee_agent_id` parameter AND add the agent's ID as a tag (e.g., `tags=+{project_name_placeholder}_worker_1`). This ensures the framework can correctly track assignments.
+**Task Assignment:**
+Assign a task to a WORKER with `modify_task`, `task_id` (the task's UUID) and `assignee_agent_id` (the worker's ID, e.g. `W1`).
+The framework adds the worker's tag and the `assigned` tag itself and starts the worker. Only workers can be assignees.
+Example: `{{"action": "modify_task", "task_id": "UUID", "assignee_agent_id": "W1"}}`
+
+**Valid actions:** add_task, list_tasks, modify_task, complete_task, get_dependency_graph.
 """
 
         if sub_action == "add_task":
@@ -1427,20 +1509,19 @@ When assigning a task to an agent, you MUST use BOTH the `assignee_agent_id` par
 Creates a new task.
 *   `<description>` (string, required): A clear and concise description of the task.
 *   `<project_filter>` (string, optional): The project name to associate the task with. Defaults to current project.
-*   `<task_progress>` (string, optional): Initial progress state. Valid options: 'todo', 'in_progress', 'waiting', 'stuck', 'failed', 'finished'. Defaults to 'todo'.
-*   `<priority>` (string, optional): Task priority (e.g., 'H', 'M', 'L').
-*   `<tags>` (string, optional): Comma-separated list of tags to add (e.g., `+bug,+urgent`).
+*   `<task_id>` (string, optional): An alias for the new task (e.g. `task_1`) that later calls can use instead of the UUID.
+*   `<task_progress>` (string, optional): Initial progress state: 'todo' (default), 'doing', 'in_progress', 'waiting', 'stuck', 'finished'.
+*   `<priority>` (string, optional): 'H' (high), 'M' (medium) or 'L' (low).
+*   `<tags>` (list or comma-separated string, optional): Tags to add (e.g., `["bug", "urgent"]`).
 *   `<assignee_agent_id>` (string, optional): The ID of the WORKER to assign this task to (e.g. `W1`). Only workers carry out tasks: a Project Manager, the Admin AI or the Guardian is refused and the task is NOT created.
-*   `<depends>` (string, optional): The UUID of a task that this new task depends on.
+*   `<depends>` (string, optional): UUID(s) or alias(es) of the task(s) this new task depends on, separated by commas.
 *   Example:
     ```json
     {{
       "action": "add_task",
       "description": "Implement user authentication API endpoint",
-      "project_filter": "{project_name_placeholder}",
-      "task_progress": "todo",
       "priority": "H",
-      "tags": "+backend,+api"
+      "assignee_agent_id": "W1"
     }}
     ```
 """
@@ -1452,6 +1533,7 @@ Lists existing tasks. Note that we use a granular 'task_progress' system to trac
 *   `<task_progress_filter>` (string, optional): Filter by exact progress (e.g., 'todo', 'in_progress', 'stuck', 'finished').
 *   `<assignee_filter>` (string, optional): Filter by assigned agent ID. To find unassigned tasks awaiting delegation, set this exact value to 'unassigned'.
 *   `<tags_filter>` (string, optional): Filter by a comma-separated list of tags. You can also use the magic tags 'assigned' or 'unassigned' here in combination with exclude/include modes.
+*   `<tags_filter_mode>` (string, optional): 'include' (default: only tasks WITH those tags) or 'exclude' (only tasks WITHOUT them).
 *   Example:
     ```json
     {{
@@ -1466,22 +1548,28 @@ Lists existing tasks. Note that we use a granular 'task_progress' system to trac
             return common_header + f"""
 **Action: modify_task**
 Modifies an existing task.
-*   `<task_id>` (string, required): The UUID or integer ID of the task to modify.
+*   `<task_id>` (string, required): The UUID (exactly as listed), alias or integer ID of the task to modify.
 *   `<description>` (string, optional): New description for the task.
-*   `<task_progress>` (string, optional): Update task progress. Use detailed states: 'todo', 'in_progress', 'waiting', 'stuck', 'failed', 'finished'. (Calling this automatically updates underlying system status).
-*   `<priority>` (string, optional): New priority.
+*   `<task_progress>` (string, optional): Update task progress: 'todo', 'doing', 'in_progress', 'waiting', 'stuck', 'decomposed', 'finished' or 'deleted'. (This also updates the underlying system status; 'finished' is refused while the task's files have problems.)
+*   `<priority>` (string, optional): New priority: 'H', 'M' or 'L'.
 *   `<tags>` (string, optional): New comma-separated list of tags. Use `+tag` to add and `-tag` to remove.
-*   `<assignee_agent_id>` (string, optional): Reassign the task to a new WORKER (e.g. `W1`); a Project Manager, the Admin AI or the Guardian is refused and nothing is changed. **REMEMBER to also update the tag.**
-*   `<depends>` (string, optional): Add a dependency by providing the task ID or UUID it depends on.
+*   `<assignee_agent_id>` (string, optional): Assign or reassign the task to a WORKER (e.g. `W1`); a Project Manager, the Admin AI or the Guardian is refused and nothing is changed. The worker's tag is added automatically.
+*   `<depends>` (string, optional): Add dependencies: the UUID(s), alias(es) or ID(s) of the task(s) it depends on, separated by commas.
 *   Send ONLY the fields you change. An empty value ('') means "not given" and is ignored.
-*   Example:
+*   Example (assign a task):
     ```json
     {{
       "action": "modify_task",
       "task_id": "123e4567-e89b-12d3-a456-426614174000",
-      "task_progress": "in_progress",
-      "assignee_agent_id": "{project_name_placeholder}_worker_1",
-      "tags": "+{project_name_placeholder}_worker_1,assigned"
+      "assignee_agent_id": "W1"
+    }}
+    ```
+*   Example (report progress):
+    ```json
+    {{
+      "action": "modify_task",
+      "task_id": "123e4567-e89b-12d3-a456-426614174000",
+      "task_progress": "finished"
     }}
     ```
 """

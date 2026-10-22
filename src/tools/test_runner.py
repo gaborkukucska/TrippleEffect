@@ -129,7 +129,7 @@ class TestRunnerTool(BaseTool):
         **Parameters:**
         *   `<command>` (string, required): The shell command to run.
         *   `<working_dir>` (string, optional): A subdirectory to run the command in.
-        *   `<timeout>` (integer, optional): Maximum execution time in seconds.
+        *   `<timeout>` (integer, optional): Maximum execution time in seconds (default 30, at most 120).
         *   `<scope>` (string, optional): 'private', 'shared', or 'projects'. Default: 'shared'.
 
         **Example JSON Call:**

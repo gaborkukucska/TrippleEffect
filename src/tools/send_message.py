@@ -24,7 +24,7 @@ class SendMessageTool(BaseTool):
         ToolParameter(
             name="target_agent_id",
             type="string",
-            description="The unique ID of the agent teammate you want to send the message to (e.g., 'coder', 'analyst'). Must be a valid agent ID.",
+            description="The unique ID of the agent teammate you want to send the message to (e.g., 'W1', 'PM1', 'admin_ai'). Must be a valid agent ID.",
             required=True,
             aliases=["target", "agent", "recipient", "to"]
         ),
@@ -117,14 +117,14 @@ class SendMessageTool(BaseTool):
         **Parameters:**
 
         *   `<target_agent_id>` (string, required): The unique ID of the agent to send the message to.
-            *   **CRITICAL:** Use the exact agent ID (e.g., `W1`, `W2`, `PM_1`, `admin_ai`) obtained from `ManageTeamTool` (`create_agent` feedback or `list_agents`). Using personas might fail if not unique.
+            *   **CRITICAL:** Use the exact agent ID (e.g., `W1`, `W2`, `PM1`, `admin_ai`) obtained from `manage_team` (`create_agent` feedback or `list_agents`). Using personas might fail if not unique.
         *   `<message_content>` (string, required): The content of the message to send.
             *   **IMPORTANT:** For large outputs (code, reports), use the `file_system` tool to write the content to a file first, then use `send_message` to notify the recipient about the file (`filename` and `scope`). Do not include large content directly in the message.
 
         **Example (messaging PM):**
         ```json
         {
-          "target_agent_id": "PM_1",
+          "target_agent_id": "PM1",
           "message_content": "Task T5 is complete. The server module has been implemented at src/server.py."
         }
         ```

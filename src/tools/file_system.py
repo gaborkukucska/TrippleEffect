@@ -146,7 +146,8 @@ class FileSystemTool(BaseTool):
         "project, else 'private'. "
         "Actions: 'read', 'write' (for NEW files), 'append' (add to end), 'insert_lines', 'replace_lines', "
         "'list', 'tree' (recursive listing), 'mkdir', 'delete', 'find_replace', 'regex_replace', 'copy', 'move', 'rename', "
-        "'exists' (check file/dir existence and metadata), 'search_replace_block', 'git_commit', 'git_status', 'git_diff', 'git_init'. "
+        "'exists' (check file/dir existence and metadata), 'search_replace_block', 'git_init', 'git_add', 'git_commit', "
+        "'git_status', 'git_diff', 'git_log', 'git_branch', 'git_checkout', 'git_pull', 'git_push'. "
         "All paths are relative to the selected scope. Python files must stay valid Python: a change that breaks one is "
         "rejected and nothing is saved. When the 'write' of a NEW Python file is rejected, its text is kept: fix the faulty "
         "line with 'find_replace' or 'replace_lines' on that file instead of sending the whole file again. Write code into "
@@ -156,7 +157,7 @@ class FileSystemTool(BaseTool):
         ToolParameter(
             name="action",
             type="string",
-            description="The operation: 'read', 'write', 'append', 'insert_lines', 'replace_lines', 'find_replace', 'regex_replace', 'search_replace_block', 'list', 'tree', 'mkdir', 'delete', 'copy', 'move', 'rename', 'exists', 'git_commit', 'git_status', 'git_diff'.",
+            description="The operation: 'read', 'write', 'append', 'insert_lines', 'replace_lines', 'find_replace', 'regex_replace', 'search_replace_block', 'list', 'tree', 'mkdir', 'delete', 'copy', 'move', 'rename', 'exists', 'git_init', 'git_add', 'git_commit', 'git_status', 'git_diff', 'git_log', 'git_branch', 'git_checkout', 'git_pull', 'git_push'.",
             required=True,
         ),
         ToolParameter(
@@ -168,7 +169,7 @@ class FileSystemTool(BaseTool):
         ToolParameter(
             name="filename",
             type="string", 
-            description="Relative path to the file within the scope. Required for 'read', 'write', 'find_replace', 'regex_replace'. Can also use 'filepath'.",
+            description="Relative path to the file within the scope. Required for 'read', 'write', 'append', 'insert_lines', 'replace_lines', 'find_replace', 'regex_replace' and 'search_replace_block'. Can also use 'filepath'.",
             required=False, # Dynamically required
             aliases=["filepath", "file", "file_path", "file_name", "target_file", "name"]
         ),

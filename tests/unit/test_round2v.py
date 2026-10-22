@@ -346,7 +346,7 @@ def test_the_code_editor_and_project_management_help():
     assignee = next(p for p in pm_tool.parameters if p.name == "assignee_agent_id")
     assert "a Project Manager, the Admin AI or the Guardian is refused" in assignee.description
     assert "The ID of the WORKER to assign this task to" in pm_tool.get_detailed_usage(sub_action="add_task")
-    assert "Reassign the task to a new WORKER" in pm_tool.get_detailed_usage(sub_action="modify_task")
+    assert "Assign or reassign the task to a WORKER" in pm_tool.get_detailed_usage(sub_action="modify_task")  # Round 2w wording
 
 
 def test_the_worker_prompt_knows_the_kept_text():

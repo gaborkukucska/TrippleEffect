@@ -512,7 +512,7 @@ class CodeEditorTool(BaseTool):
     description: str = (
         "Advanced code editing capabilities for precise modifications. "
         "Allows modifying multiple non-contiguous segments of code in a single file safely. "
-        "Actions: 'replace_chunks'. Note: Each chunk's 'search' + 'replace' text is strictly limited to a combined 16384 characters. If editing massive files, split into multiple chunks or calls."
+        "Actions: 'replace_chunks'. Note: Each chunk's 'search' + 'replace' text is strictly limited to a combined 32768 characters. If editing massive files, split into multiple chunks or calls."
     )
     parameters: List[ToolParameter] = [
         ToolParameter(
@@ -537,7 +537,7 @@ class CodeEditorTool(BaseTool):
         ToolParameter(
             name="chunks",
             type="array",
-            description="An array of objects. Each object MUST have a 'replace' string. To target lines, provide 'start_line' and 'end_line' integers. To target text, provide a 'search' string.",
+            description="An array of objects. Each object MUST have a 'replace' string. To target lines, provide 'start_line' and 'end_line' integers. To target text, provide a 'search' string. (code_editor edits existing files; create new files with file_system 'write'.)",
             required=True,
             aliases=["replacements", "replace_chunks", "edits", "replacements_json", "modifications"]
         )

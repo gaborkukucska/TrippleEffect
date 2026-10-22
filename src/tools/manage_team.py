@@ -97,7 +97,8 @@ class ManageTeamTool(BaseTool):
     """
     name: str = "manage_team"
     auth_level: str = "pm" # PMs and Admins can use this
-    summary: Optional[str] = "Manages agents/teams (create_agent, set_agent_state, send_message, get_team_status) and can set agent states (not Admin AI). Use tool_information with sub_action for per-action help."
+    # Round 2w: the summary named send_message and get_team_status, which are not actions of this tool
+    summary: Optional[str] = "Manages agents/teams (create_agent, delete_agent, create_team, list_agents, list_teams, get_agent_details, set_agent_state, ...) and can set agent states (not Admin AI). Use tool_information with sub_action for per-action help."
     description: str = (
         "Manages agents and teams dynamically. "
         f"Valid actions: {', '.join(VALID_ACTIONS)}. "
@@ -325,8 +326,14 @@ class ManageTeamTool(BaseTool):
         pm_agent_id_placeholder = "PM1"
         
         # Define valid states for PMs and Workers to list in the usage instructions
-        valid_pm_states = [PM_STATE_STARTUP, PM_STATE_WORK, PM_STATE_MANAGE, DEFAULT_STATE]
-        valid_worker_states = [WORKER_STATE_STARTUP, WORKER_STATE_WORK, WORKER_STATE_WAIT, DEFAULT_STATE]
+        # Round 2w: all states the workflow manager accepts (the list named only 4 of 9 PM and 4 of 7 worker states)
+        from src.agents.constants import (PM_STATE_ACTIVATE_WORKERS, PM_STATE_AUDIT, PM_STATE_BUILD_TEAM_TASKS,
+                                          PM_STATE_REPORT_CHECK, PM_STATE_STANDBY, WORKER_STATE_DECOMPOSE,
+                                          WORKER_STATE_REPORT, WORKER_STATE_TEST)
+        valid_pm_states = [PM_STATE_STARTUP, PM_STATE_BUILD_TEAM_TASKS, PM_STATE_ACTIVATE_WORKERS, PM_STATE_WORK,
+                           PM_STATE_MANAGE, PM_STATE_REPORT_CHECK, PM_STATE_AUDIT, PM_STATE_STANDBY, DEFAULT_STATE]
+        valid_worker_states = [WORKER_STATE_STARTUP, WORKER_STATE_DECOMPOSE, WORKER_STATE_WORK, WORKER_STATE_TEST,
+                               WORKER_STATE_REPORT, WORKER_STATE_WAIT, DEFAULT_STATE]
         
         common_header = """**Tool Name:** manage_team
 **Description:** Essential tool for Project Managers to manage their worker team (creating, deleting, tracking state). Also allows Admins to create new PMs.
@@ -339,7 +346,7 @@ Creates a new worker agent for your team.
 *   `<role>` (string, required): The EXACT role name from your kickoff plan that this agent fulfills (e.g., 'Coder', 'UI_Designer'). This MUST match the 'next role to create' instructions exactly.
 *   `<persona>` (string, required): Display name for the agent. This can be the same as the role or a descriptive title.
 *   `<system_prompt>` (string, required): The main instruction set defining the agent's role, capabilities, and goal.
-*   `<agent_id>` (string, optional): A custom unique ID for the agent (e.g., `{worker_agent_id_placeholder}`). If omitted, one will be generated.
+*   Agent IDs are given by the framework (W1, W2, ...): do NOT send an `agent_id`. The new ID is in the result.
 *   `<team_id>` (string, optional): The ID of the team to assign this agent to (e.g., `{team_id_placeholder}`).
 *   `<provider>` and `<model>` (string, optional): LEAVE THESE OUT. The framework automatically picks a valid, available model for every new agent. Only set them if you were explicitly given an exact provider and model name; invented names are not available and are ignored.
 *   `<temperature>` (float, optional): Model temperature (e.g., 0.7). Defaults to framework settings if omitted.
@@ -420,6 +427,7 @@ Changes a non-Admin AI agent's workflow state. If the agent is IDLE, this will a
 *   `<new_state>` (string, required): The target state for the agent.
     *   Valid states for Project Manager (PM) type agents: {', '.join(valid_pm_states)}
     *   Valid states for Worker type agents: {', '.join(valid_worker_states)}
+    *   Short names are accepted too: 'work' means 'worker_work' for a worker and 'pm_work' for a PM, 'wait' means 'worker_wait', 'manage' means 'pm_manage'.
 *   Example (Activate a worker agent by setting its state to 'work'):
     ```json
     {{
