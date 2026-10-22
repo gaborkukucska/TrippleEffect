@@ -691,6 +691,18 @@ class Agent:
                 parsing_errors: List[Any] = []
 
                 unknown_tool_requests: List[Dict[str, Any]] = []  # Round 2n
+                if not native_tool_calls_received and self.manager and getattr(self.manager, 'tool_executor', None):
+                    # Round 2z: a reply that is ONLY a tool call written as JSON text runs as that call. 2026-10-22 16:23:35
+                    # Admin AI (OpenRouter, nemotron-3.5-lightning) replied '{"name": "request_state", "arguments": {"state":
+                    # "planning"}}'; it was shown to the user as text and the project never started.
+                    from src.llm_providers.tool_call_format import json_text_tool_calls
+                    known_names = list(self.manager.tool_executor.tools.keys()) + ["request_state"]
+                    text_calls = json_text_tool_calls(final_cleaned_response_for_tools_or_text, known_names)
+                    if text_calls:
+                        logger.info(f"Agent {self.agent_id}: reply was {len(text_calls)} tool call(s) written as JSON text; "
+                                    "running them as native tool calls.")
+                        native_tool_calls_received = text_calls
+                        final_cleaned_response_for_tools_or_text = ""
                 if native_tool_calls_received:
                     logger.info(f"Agent {self.agent_id} received {len(native_tool_calls_received)} native tool calls. Bypassing XML parsing.")
                     for call_data in native_tool_calls_received:

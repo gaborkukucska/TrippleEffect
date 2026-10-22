@@ -102,9 +102,10 @@ class OpenAIProvider(BaseLLMProvider):
         last_exception = None
 
         # Filter kwargs for chat.completions.create
+        from src.llm_providers.tool_call_format import add_tool_call_delta, finished_tool_calls, openai_chat_messages
         api_params: Dict[str, Any] = {
             "model": model,
-            "messages": messages,
+            "messages": openai_chat_messages(messages),  # Round 2z: the framework's history in the OpenAI format
             "temperature": temperature,
             "stream": True,
         }
@@ -215,11 +216,7 @@ class OpenAIProvider(BaseLLMProvider):
                          
                          if delta.tool_calls:
                              for tc_chunk in delta.tool_calls:
-                                 tc_index = tc_chunk.index
-                                 if tc_index not in tool_calls_accumulator:
-                                     tool_calls_accumulator[tc_index] = {"id": tc_chunk.id, "type": "function", "function": {"name": tc_chunk.function.name or "", "arguments": ""}}
-                                 if tc_chunk.function.arguments:
-                                     tool_calls_accumulator[tc_index]["function"]["arguments"] += tc_chunk.function.arguments
+                                 add_tool_call_delta(tool_calls_accumulator, tc_chunk)  # Round 2z
 
                          if delta.content:
                              yield {"type": "response_chunk", "content": delta.content}
@@ -231,14 +228,9 @@ class OpenAIProvider(BaseLLMProvider):
                          return 
                 
                 if tool_calls_accumulator:
-                    final_tool_calls = []
-                    for idx in sorted(tool_calls_accumulator.keys()):
-                        tc = tool_calls_accumulator[idx]
-                        try:
-                            tc["function"]["arguments"] = json.loads(tc["function"]["arguments"])
-                            final_tool_calls.append(tc)
-                        except json.JSONDecodeError:
-                            logger.error(f"Failed to parse tool call arguments: {tc['function']['arguments']}")
+                    # Round 2z: arguments that are not valid JSON are passed on as text (the agent hears what was wrong)
+                    # instead of the call being dropped without a word
+                    final_tool_calls = finished_tool_calls(tool_calls_accumulator)
                     if final_tool_calls:
                         logger.info(f"OpenAIProvider yielding native_tool_calls: {final_tool_calls}")
                         yield {"type": "native_tool_calls", "tool_calls": final_tool_calls}

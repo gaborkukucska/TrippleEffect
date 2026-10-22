@@ -14,6 +14,48 @@ from src.agents.constants import (
 
 logger = logging.getLogger(__name__)
 
+# Round 2z: models for which OpenRouter refused tool use ("No endpoints found that support tool use"): sent without tools
+_NO_TOOL_MODELS: set = set()
+
+
+def tool_support_refused(error: Any) -> bool:
+    """Round 2z: True if an OpenRouter error says the model cannot be used with tools (HTTP 400/404 naming tool use)."""
+    status = getattr(error, "status_code", None)
+    if status not in (400, 404):
+        return False
+    body = getattr(error, "body", None)
+    text = json.dumps(body) if isinstance(body, (dict, list)) else str(body or "")
+    text = f"{text} {error}".lower()
+    return "tool" in text and ("support" in text or "endpoint" in text)
+
+
+def openrouter_finish_info(finish_reason: Optional[str], usage: Any, reasoning_text: str, max_tokens: Optional[int],
+                           content_chars: int, tool_call_count: int) -> Optional[Dict[str, Any]]:
+    """
+    Round 2z: the 'finish_info' event the agent uses to tell a reply CUT OFF at the output limit ('length') or one whose
+    output was lost from a really empty one - as the Ollama provider reports it. Reasoning tokens that OpenRouter counts
+    but does not send as text are left out of output_tokens. None without a finish reason.
+    """
+    if not finish_reason:
+        return None
+    from src.llm_providers.ollama_provider import thinking_tail
+
+    def field(obj: Any, name: str) -> Any:
+        return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+    output_tokens = field(usage, "completion_tokens") if usage is not None else None
+    prompt_tokens = field(usage, "prompt_tokens") if usage is not None else None
+    details = field(usage, "completion_tokens_details") if usage is not None else None
+    hidden_reasoning = field(details, "reasoning_tokens") if details is not None else None
+    if isinstance(output_tokens, int) and isinstance(hidden_reasoning, int) and not reasoning_text:
+        output_tokens = max(0, output_tokens - hidden_reasoning)
+    reason = "length" if finish_reason == "length" else "stop"
+    logger.info(f"OpenRouter finished: finish_reason={finish_reason}, prompt_tokens={prompt_tokens}, "
+                f"output_tokens={output_tokens}, content_chars={content_chars}, reasoning_chars={len(reasoning_text)}, "
+                f"tool_calls={tool_call_count}")
+    return {"type": "finish_info", "done_reason": reason, "output_tokens": output_tokens,
+            "thinking_chars": len(reasoning_text), "thinking_tail": thinking_tail(reasoning_text),
+            "prompt_tokens": prompt_tokens, "num_ctx": None, "num_predict": max_tokens}
+
 LOCAL_RETRYABLE_EXCEPTIONS = (
     openai.APIConnectionError,
     openai.APITimeoutError,
@@ -46,7 +88,8 @@ class OpenRouterProvider(BaseLLMProvider):
     """
     LLM Provider implementation for OpenRouter API with retry mechanism.
     Uses the openai library configured for OpenRouter.
-    Streams raw text completions. Tool handling is done by the Agent Core via XML parsing.
+    Streams raw text completions. Round 2z: with NATIVE_TOOL_CALLING_ENABLED the tool schemas are sent and native tool
+    calls are returned as 'native_tool_calls' events (src/llm_providers/tool_call_format.py).
     Includes enhanced handling for errors occurring during stream processing.
     Filters kwargs to prevent passing unsupported arguments to the OpenAI client.
     """
@@ -80,7 +123,8 @@ class OpenRouterProvider(BaseLLMProvider):
                 max_retries=0, 
                 **valid_client_kwargs # Pass only valid kwargs
             )
-            logger.info(f"OpenRouterProvider initialized. Base URL: {self.base_url}. Client: {self._openai_client}. Tool support via XML parsing by Agent.")
+            logger.info(f"OpenRouterProvider initialized. Base URL: {self.base_url}. Client: {self._openai_client}. "
+                        f"Native tool calls: {'on' if settings.NATIVE_TOOL_CALLING_ENABLED else 'off (XML parsing by Agent)'}.")
         except Exception as e:
             logger.error(f"Error initializing OpenAI client for OpenRouter: {e}", exc_info=True)
             raise ValueError(f"Failed to initialize OpenAI client for OpenRouter: {e}") from e
@@ -96,8 +140,12 @@ class OpenRouterProvider(BaseLLMProvider):
         **kwargs 
     ) -> AsyncGenerator[Dict[str, Any], Optional[List[ToolResultDict]]]:
         logger.info(f"Starting stream_completion with OpenRouter model {model}. History length: {len(messages)}.")
-        if tools or tool_choice:
-            logger.warning(f"OpenRouterProvider received tools/tool_choice arguments, but they will be ignored.")
+        from src.llm_providers.tool_call_format import (add_tool_call_delta, finished_tool_calls, openai_chat_messages)
+        send_tools = bool(settings.NATIVE_TOOL_CALLING_ENABLED and tools) and model not in _NO_TOOL_MODELS
+        if (tools or tool_choice) and not send_tools:
+            reason = ("OpenRouter refused tool use for this model earlier" if model in _NO_TOOL_MODELS
+                      else "native tool calling is off")
+            logger.info(f"OpenRouterProvider: tools not sent for '{model}' ({reason}).")
 
         response_stream = None
         last_exception = None
@@ -106,7 +154,7 @@ class OpenRouterProvider(BaseLLMProvider):
         # Start with core params always needed
         api_params: Dict[str, Any] = {
             "model": model,
-            "messages": messages,
+            "messages": openai_chat_messages(messages),  # Round 2z: the framework's history in the OpenAI format
             "temperature": temperature,
             "stream": True,
         }
@@ -115,10 +163,15 @@ class OpenRouterProvider(BaseLLMProvider):
 
         # Add other valid OpenAI completion kwargs from the provided **kwargs
         for k, v in kwargs.items():
-            if k in OPENAI_COMPLETIONS_VALID_KWARGS:
+            if k in OPENAI_COMPLETIONS_VALID_KWARGS and k not in ("tools", "tool_choice"):
                 api_params[k] = v
-            else:
+            elif k not in ("tools", "tool_choice"):
                 logger.warning(f"OpenRouterProvider stream_completion: Ignoring unsupported kwarg '{k}' for OpenAI chat completions.")
+        if send_tools:
+            api_params["tools"] = tools  # Round 2z
+            if tool_choice:
+                api_params["tool_choice"] = tool_choice
+            logger.info(f"OpenRouterProvider: native tool calling - {len(tools or [])} tool schema(s) attached for '{model}'.")
 
         for attempt in range(MAX_RETRIES + 1):
             try:
@@ -154,6 +207,14 @@ class OpenRouterProvider(BaseLLMProvider):
             except openai.APIStatusError as e:
                 last_exception = e
                 logger.warning(f"OpenRouter API Status Error on attempt {attempt + 1}/{MAX_RETRIES + 1}: Status={e.status_code}, Body={e.body}")
+                if "tools" in api_params and tool_support_refused(e):
+                    # Round 2z: a model without tool support - send it without tools from now on (tool calls written as
+                    # JSON text are still recognised by the agent)
+                    _NO_TOOL_MODELS.add(model)
+                    api_params.pop("tools", None)
+                    api_params.pop("tool_choice", None)
+                    logger.warning(f"OpenRouterProvider: '{model}' cannot be used with tools on OpenRouter; retrying without them.")
+                    continue
                 if (e.status_code >= 500 or e.status_code in RETRYABLE_STATUS_CODES) and attempt < MAX_RETRIES: 
                     logger.info(f"Status {e.status_code} is retryable. Waiting {RETRY_DELAY_SECONDS}s before retrying...") 
                     await asyncio.sleep(RETRY_DELAY_SECONDS) 
@@ -202,15 +263,27 @@ class OpenRouterProvider(BaseLLMProvider):
 
         try:
             finish_reason = None
+            tool_call_pieces: Dict[int, Dict[str, Any]] = {}  # Round 2z
+            reasoning_parts: List[str] = []
+            content_chars = 0
+            usage = None
             try:
                 async for chunk in response_stream:
                     raw_chunk_data_for_log = None
                     try:
+                        if getattr(chunk, "usage", None) is not None:
+                            usage = chunk.usage
                         delta = chunk.choices[0].delta if chunk.choices else None
                         if chunk.choices and chunk.choices[0].finish_reason:
                             finish_reason = chunk.choices[0].finish_reason
                         if not delta: continue
+                        for piece in (getattr(delta, "tool_calls", None) or []):
+                            add_tool_call_delta(tool_call_pieces, piece)
+                        reasoning = getattr(delta, "reasoning", None) or getattr(delta, "reasoning_content", None)
+                        if isinstance(reasoning, str) and reasoning:
+                            reasoning_parts.append(reasoning)
                         if delta.content:
+                            content_chars += len(delta.content)
                             yield {"type": "response_chunk", "content": delta.content}
                     except Exception as chunk_proc_err:
                         logger.error(f"Error processing OpenRouter chunk content: {chunk_proc_err}", exc_info=True)
@@ -225,6 +298,14 @@ class OpenRouterProvider(BaseLLMProvider):
                 yield {"type": "error", "content": f"[OpenRouterProvider Error]: APIError during stream - {stream_api_err}", "_exception_obj": stream_api_err} 
                 return 
             logger.debug(f"OpenRouter stream finished processing loop. Finish reason captured: {finish_reason}")
+            native_calls = finished_tool_calls(tool_call_pieces)
+            if native_calls:
+                logger.info(f"OpenRouterProvider returned native tool_calls: {native_calls}")
+                yield {"type": "native_tool_calls", "tool_calls": native_calls}
+            finish_event = openrouter_finish_info(finish_reason, usage, "".join(reasoning_parts), max_tokens,
+                                                  content_chars, len(native_calls))
+            if finish_event:
+                yield finish_event
         except Exception as stream_err:
              logger.exception(f"Unexpected Error processing OpenRouter response stream: {stream_err}")
              yield {"type": "error", "content": f"[OpenRouterProvider Error]: Unexpected Error processing stream - {type(stream_err).__name__}", "_exception_obj": stream_err}
