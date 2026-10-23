@@ -296,6 +296,72 @@ def finished_task_change_error(task: Any, task_ref: Any, kwargs: Dict[str, Any],
         return None
 
 
+def _worker_parent_task(tw: Any, agent_id: str, manager: Any) -> Optional[Any]:
+    """The task a worker is working on: its current/active task, else its only open task. None if unknown."""
+    worker = getattr(manager, "agents", {}).get(agent_id) if isinstance(getattr(manager, "agents", None), dict) else None
+    pending = list(tw.tasks.pending())
+    for attr in ("current_task_id", "active_task_id"):
+        wanted = str(getattr(worker, attr, "") or "").strip() if worker is not None else ""
+        if wanted:
+            for task in pending:
+                if str(get_task_field(task, "uuid", "")) == wanted:
+                    return task
+    own = [t for t in pending if str(get_task_field(t, "assignee", "") or "").strip() == agent_id
+           and str(get_task_field(t, "task_progress", "todo")).strip().lower() not in _OPEN_EXCLUDED_PROGRESS]
+    return own[0] if len(own) == 1 else None
+
+
+def foreign_files_subtask_error(tw: Any, agent_id: Optional[str], manager: Any, description: str) -> Optional[Dict[str, Any]]:
+    """
+    Round 3e: the refusal of a task a WORKER creates (a sub-task of its decomposition) that names a file which its own task
+    does not name but another open task does - the work of that other task - or None. Never raises.
+    2026-10-23 16:59:13 W1 decomposed "Kick-off Task 1: Set up Express server ... in src/server.js and src/routes/" into eight
+    sub-tasks that created src/game.js (Task 5), src/routes/auth.js (Task 3), public/index.html (Task 6), tests/... (Task 7)
+    and docs/README.md (Task 8), wrote all of them itself in 12 minutes while W2 waited, and the other kick-off tasks were then
+    "finished" without being worked on.
+    """
+    try:
+        if not agent_id or agent_id in FRAMEWORK_CALLERS or _is_pm_caller(agent_id, manager):
+            return None
+        worker = getattr(manager, "agents", {}).get(agent_id) if isinstance(getattr(manager, "agents", None), dict) else None
+        from src.agents.constants import AGENT_TYPE_WORKER
+        if worker is None or getattr(worker, "agent_type", None) != AGENT_TYPE_WORKER:
+            return None
+        from src.utils.task_files import file_paths_in_text
+        new_files = file_paths_in_text(description)
+        if not new_files:
+            return None
+        parent = _worker_parent_task(tw, agent_id, manager)
+        if parent is None:
+            return None
+        parent_uuid = str(get_task_field(parent, "uuid", ""))
+        parent_files = set(file_paths_in_text(str(get_task_field(parent, "description", "") or "")))
+        for other in tw.tasks.pending():
+            if str(get_task_field(other, "uuid", "")) == parent_uuid or "project_kickoff" in _task_tags(other):
+                continue
+            if str(get_task_field(other, "task_progress", "todo")).strip().lower() in _OPEN_EXCLUDED_PROGRESS:
+                continue
+            other_text = str(get_task_field(other, "description", "") or "")
+            taken = [f for f in new_files if f in set(file_paths_in_text(other_text)) and f not in parent_files]
+            if not taken:
+                continue
+            other_shown = " ".join(other_text.split())
+            other_shown = other_shown if len(other_shown) <= 90 else other_shown[:87] + "..."
+            parent_shown = " ".join(str(get_task_field(parent, "description", "") or "").split())
+            parent_shown = parent_shown if len(parent_shown) <= 90 else parent_shown[:87] + "..."
+            logger.warning(f"ProjectManagementTool: '{agent_id}' tried to create a task for {taken} of task "
+                           f"{get_task_field(other, 'uuid', '?')}. Refused.")
+            return {"status": "error", "error_type": "foreign_files", "message": (
+                f"The task was NOT created: {', '.join(taken)} belongs to another open task ('{other_shown}', "
+                f"{get_task_field(other, 'uuid', '?')}), not to YOUR task ('{parent_shown}'). A sub-task covers only a part "
+                "of your own task - leave the other tasks' files to the workers who get those tasks. Create sub-tasks only "
+                "for the files and steps your task names, or work on your task directly (request worker_work).")}
+        return None
+    except Exception as err:
+        logger.debug(f"foreign_files_subtask_error failed: {err}")
+        return None
+
+
 STARTED_PROGRESS = ("doing", "in_progress")
 
 
@@ -893,7 +959,7 @@ class ProjectManagementTool(BaseTool):
             elif action == "modify_task":
                 return await self._execute_modify_task(tw, aliases, project_name, session_name, agent_id, kwargs)
             elif action == "complete_task":
-                return await self._execute_complete_task(tw, aliases, project_name, session_name, kwargs)
+                return await self._execute_complete_task(tw, aliases, project_name, session_name, kwargs, agent_id=agent_id)
             elif action == "get_dependency_graph":
                 return await self._execute_get_dependency_graph(tw, kwargs)
             else:
@@ -968,6 +1034,11 @@ class ProjectManagementTool(BaseTool):
                 refusal = finished_duplicate_error(tw, title, description, kwargs.get("project_filter"))
                 if refusal:
                     return refusal
+
+            # Round 3e: a worker's (sub-)task does not take the files of ANOTHER open task
+            refusal = foreign_files_subtask_error(tw, agent_id, kwargs.get("manager"), main_desc)
+            if refusal:
+                return refusal
 
             task = Task(tw, description=main_desc)
             
@@ -1306,7 +1377,7 @@ class ProjectManagementTool(BaseTool):
             hidden_note += " tasks hidden by default)."
             return {"status": "success", "message": f"Found {len(minimal_task_list)} task(s).{hidden_note}", "tasks": minimal_task_list}
 
-    def _completion_refusal(self, task, project_name, session_name, task_label) -> Optional[Dict[str, Any]]:
+    def _completion_refusal(self, task, project_name, session_name, task_label, caller_id=None) -> Optional[Dict[str, Any]]:
         """
         Round 2a: an error result if the task may not be marked finished yet because existing Python files named in its
         description (Round 2n: or changed for it by its worker) are empty, invalid or have defects
@@ -1325,13 +1396,25 @@ class ProjectManagementTool(BaseTool):
                 task_uuid = None
             changed = files_changed_for_task(str(task_uuid), workspace) if task_uuid else []
             problems = task_completion_problems(task['description'], workspace, changed)
+            # Round 3e: a task that says to run / verify / fix the tests needs a passing full test run of the current files
+            from src.utils.test_runs import verification_problem
+            unverified = None
+            if caller_id not in FRAMEWORK_CALLERS and "project_kickoff" not in _task_tags(task):
+                unverified = verification_problem(workspace, task['description'])
         except Exception as gate_err:
             logger.warning(f"ProjectManagementTool: completion check failed ({gate_err}); not blocking.")
             return None
-        if not problems:
+        if not problems and not unverified:
             return None
-        logger.warning(f"ProjectManagementTool: refused to mark task '{task_label}' finished: {problems}")
-        return {"status": "error", "message": completion_refusal_message(str(task_label), problems)}
+        logger.warning(f"ProjectManagementTool: refused to mark task '{task_label}' finished: {problems or unverified}")
+        if not problems:
+            return {"status": "error", "error_type": "tests_not_passing", "message": (
+                f"Task '{task_label}' was NOT marked finished: {unverified}\nA PM should send the task back to its worker "
+                "with send_message (name what fails) instead of marking it finished.")}
+        message = completion_refusal_message(str(task_label), problems)
+        if unverified:
+            message += f"\nAlso: {unverified}"
+        return {"status": "error", "message": message}
 
     async def _execute_modify_task(self, tw, aliases, project_name, session_name, agent_id, kwargs):
             task_id = kwargs.get("task_id") or kwargs.get("task_uuid")
@@ -1462,7 +1545,7 @@ class ProjectManagementTool(BaseTool):
                 requested_start = t_prog in STARTED_PROGRESS and previous_progress not in STARTED_PROGRESS
                 if t_prog == "finished":
                     # Round 2a: PM1 marked tasks finished whose files held only docstrings (2026-10-18 15:30, 15:50)
-                    refusal = self._completion_refusal(task, project_name, session_name, task_id)
+                    refusal = self._completion_refusal(task, project_name, session_name, task_id, caller_id=agent_id)
                     if refusal:
                         return refusal
                 task["task_progress"] = t_prog
@@ -1608,7 +1691,7 @@ class ProjectManagementTool(BaseTool):
                 "dry_run": is_dry_run
             }
 
-    async def _execute_complete_task(self, tw, aliases, project_name, session_name, kwargs):
+    async def _execute_complete_task(self, tw, aliases, project_name, session_name, kwargs, agent_id=None):
             task_id = kwargs.get("task_id") or kwargs.get("task_uuid")
             if not task_id:
                 title_alt = kwargs.get("title") or kwargs.get("title_filter") or kwargs.get("task_title") or kwargs.get("description")
@@ -1680,7 +1763,7 @@ class ProjectManagementTool(BaseTool):
 
 
 
-            refusal = self._completion_refusal(task, project_name, session_name, task_id)  # Round 2a
+            refusal = self._completion_refusal(task, project_name, session_name, task_id, caller_id=agent_id)  # Round 2a
             if refusal:
                 return refusal
 

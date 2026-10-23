@@ -597,7 +597,22 @@ class FileSystemTool(BaseTool):
         edit_keys = ("start_line", "end_line", "search", "search_block", "find")
         if not all(any(key in item for key in edit_keys) or isinstance(item.get("replace"), dict) for item in parsed):
             return None
-        return parsed
+        # Round 3e: the new text under the name of the action ('[{"replace_lines": "...", ...}]', W3 2026-10-23 18:40:27)
+        text_aliases = ("replace_lines", "new_lines", "lines", "line_content")
+        flattened = []
+        for item in parsed:
+            item = dict(item)
+            if not any(key in item for key in ("replace", "replace_text", "content", "text", "code", "new_text")):
+                for alias in text_aliases:
+                    value = item.get(alias)
+                    if isinstance(value, list) and all(isinstance(line, str) for line in value):
+                        value = "\n".join(value)
+                    if isinstance(value, str):
+                        item.pop(alias)
+                        item["replace"] = value
+                        break
+            flattened.append(item)
+        return flattened
 
     async def execute(
         self,
@@ -926,8 +941,9 @@ class FileSystemTool(BaseTool):
                         action="replace_chunks", filename=filename, chunks=line_edits, scope=scope,
                     )
                     if isinstance(ce_result, dict) and ce_result.get("message"):
-                        ce_result["message"] = ("[Note: your 'replace_lines' held a list of line edits, so the framework applied "
-                                                "them with the code_editor tool. For ONE range use replace_start_line, "
+                        # Round 3e: "passed to" - the edit may still fail (2026-10-23 18:09:31 said "applied" on a rejection)
+                        ce_result["message"] = ("[Note: your 'replace_lines' held a list of line edits, so the framework passed "
+                                                "them to the code_editor tool. For ONE range use replace_start_line, "
                                                 "replace_end_line and content.] " + str(ce_result["message"]))
                     return ce_result
                 if replace_start_line is None or replace_end_line is None:

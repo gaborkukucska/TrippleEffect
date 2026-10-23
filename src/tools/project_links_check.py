@@ -14,6 +14,8 @@ syntax error, so the existing checks (python_static_check, source_check) saw not
 * export_problems(): a JavaScript file that takes a value from a project module (`const x = require('./m.js')`,
   `import {a} from './m.js'`) that exports nothing.
 * missing_dependency_problems(): a JavaScript file that requires an npm package that package.json does not list.
+* server_on_load_problems() (Round 3e): a test file that loads a project module which starts a server when it is loaded,
+  so the test run never ends; test_hang_hint(): the text for an agent whose test command timed out.
 * link_problems(workspace, path): all of these for one existing file (used by the task completion check,
   src/utils/task_files.py); link_notes_text(): the '[Framework check ...]' text for a write or an edit that WAS saved.
 
@@ -88,7 +90,8 @@ def is_test_file(rel_path: str) -> bool:
 
 def _strip_js_comments(source: str) -> str:
     """Block comments and whole-line // comments (enough to ignore commented-out requires; strings are kept)."""
-    source = re.sub(r"/\*.*?\*/", " ", source, flags=re.DOTALL)
+    # line breaks of block comments are kept, so line numbers stay right (Round 3e)
+    source = re.sub(r"/\*.*?\*/", lambda m: " " + "\n" * m.group(0).count("\n"), source, flags=re.DOTALL)
     return "\n".join("" if line.lstrip().startswith("//") else line for line in source.splitlines())
 
 
@@ -323,6 +326,132 @@ def missing_dependency_problems(workspace: Path, rel_path: str, source: Optional
     return problems
 
 
+# --- Round 3e: a module that starts a server when it is loaded ------------------------------------------------------------
+# 2026-10-23 18:09-19:02 (Multiplayer_Snake_Game): tests/test_api.js did `const app = require('../src/server')`, and
+# src/server.js called `server.listen(config.port, ...)` at its top level. Loading it started the server, so mocha never
+# ended: 16 runs of `npm test` / `npx mocha tests/` timed out (60-120 s each), W3 and PM1 spent 50 minutes on it and
+# "Kick-off Task 9: Run all tests ..." was marked finished anyway.
+_TOP_LEVEL_LISTEN_RE = re.compile(r"^(?:await\s+)?([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\.listen\s*\(", re.MULTILINE)
+_RUN_DIRECTLY_GUARDS = ("require.main === module", "require.main == module", "require.main !== module",
+                        "module.parent", "import.meta.url", "import.meta.main", "process.argv[1]")
+_TEST_COMMAND_RE = re.compile(
+    r"\b(?:npm\s+(?:run\s+)?test|npm\s+t\b|yarn\s+test|pnpm\s+test|npx\s+(?:mocha|jest|vitest)|mocha|jest|vitest|"
+    r"node\s+--test|pytest|python3?\s+-m\s+(?:pytest|unittest))\b")
+
+
+def starts_server_on_load(source: Optional[str]) -> Optional[str]:
+    """
+    The top-level 'x.listen(' call of a JavaScript source (e.g. 'server.listen(' with its line number) if the module starts
+    a server as soon as it is loaded - a listen call at the start of a line, with no "run directly" guard such as
+    `if (require.main === module)` anywhere in the file - else None.
+    """
+    if not source:
+        return None
+    stripped = _strip_js_comments(source)
+    if any(guard in stripped for guard in _RUN_DIRECTLY_GUARDS):
+        return None
+    match = _TOP_LEVEL_LISTEN_RE.search(stripped)
+    if not match:
+        return None
+    line = stripped.count("\n", 0, match.start()) + 1
+    return f"`{match.group(1)}.listen(` at line {line}"
+
+
+def _mocha_exits(workspace: Path) -> bool:
+    """True if the project runs mocha with --exit (package.json "test" script or a .mocharc with exit: true)."""
+    root = Path(workspace)
+    try:
+        package = json.loads((root / "package.json").read_text(encoding="utf-8"))
+        script = str(((package or {}).get("scripts") or {}).get("test") or "")
+        if "--exit" in script:
+            return True
+    except (OSError, ValueError, UnicodeDecodeError, AttributeError):
+        pass
+    for name in (".mocharc.js", ".mocharc.cjs", ".mocharc.json", ".mocharc.yml", ".mocharc.yaml", ".mocharc.jsonc"):
+        try:
+            text = (root / name).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if re.search(r"""["']?exit["']?\s*[:=]\s*true""", text):
+            return True
+    return False
+
+
+def server_on_load_problems(workspace: Path, rel_path: str, source: Optional[str] = None) -> List[str]:
+    """Round 3e: a TEST file that loads a project module which starts a server when it is loaded (the run never ends)."""
+    problems: List[str] = []
+    try:
+        rel = str(rel_path).replace("\\", "/")
+        if _language(rel) != "javascript" or not is_test_file(rel):
+            return problems
+        if source is None:
+            source = (Path(workspace) / rel).read_text(encoding="utf-8")
+        if not _JS_TEST_CODE_RE.search(source or "") or _mocha_exits(workspace):
+            return problems
+        root = Path(workspace).resolve()
+        seen = set()
+        for spec in _js_specs(source or ""):
+            target = _resolve_js(root, rel, spec)
+            if target is None or target in seen or target.suffix.lower() not in (".js", ".mjs", ".cjs"):
+                continue
+            seen.add(target)
+            try:
+                listen = starts_server_on_load(target.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError):
+                continue
+            if not listen:
+                continue
+            shown = target.relative_to(root).as_posix()
+            problems.append(
+                f"{rel} loads {shown}, which STARTS THE SERVER as soon as it is loaded ({listen}), so the test run never "
+                f"ends (`npm test` / mocha / `node --test` time out). In {shown} start the server only when the file is "
+                "run directly - `if (require.main === module) { server.listen(...); }` - and export app/server for the "
+                "tests (or close the server in an `after()` hook).")
+    except Exception as err:
+        logger.debug(f"server_on_load_problems({rel_path}) failed: {err}")
+    return problems
+
+
+def is_test_command(command: Optional[str]) -> bool:
+    """True for a command that runs tests (npm test, npx mocha, jest, node --test, pytest, ...)."""
+    return bool(command) and bool(_TEST_COMMAND_RE.search(str(command)))
+
+
+def test_hang_hint(workspace: Optional[Path], command: Optional[str]) -> str:
+    """
+    Round 3e: what to tell an agent whose TEST command timed out ('' for other commands): the test files that load a module
+    which starts a server on load, or the usual causes of a test run that does not end.
+    """
+    try:
+        if not is_test_command(command):
+            return ""
+        found: List[str] = []
+        if workspace and Path(workspace).is_dir():
+            root = Path(workspace).resolve()
+            for path in sorted(root.rglob("*")):
+                try:
+                    rel = path.relative_to(root)
+                except ValueError:
+                    continue
+                if set(rel.parts[:-1]) & _SKIP_DIRS or not path.is_file() or not is_test_file(rel.as_posix()):
+                    continue
+                for problem in server_on_load_problems(root, rel.as_posix()):
+                    if problem not in found:
+                        found.append(problem)
+                if len(found) >= 3:
+                    break
+        if found:
+            return ("\n[Framework hint - why the TEST run did not end:]\n- " + "\n- ".join(found)
+                    + "\nRunning the same test command again (or with a longer timeout) will time out again: fix this first.")
+        return ("\n[Framework hint - a TEST run that does not end keeps something open:] usually a server that starts "
+                "listening when its file is loaded (start it only under `if (require.main === module)`), an open database "
+                "connection or socket, or a timer/setInterval that is never cleared. Close them in an after()/afterAll() "
+                "hook, or run mocha with `--exit`. Running the same command again with a longer timeout will not help.")
+    except Exception as err:
+        logger.debug(f"test_hang_hint failed: {err}")
+        return ""
+
+
 def link_problems(workspace: Path, path: Path, rel_path: Optional[str] = None) -> List[str]:
     """All link problems of one existing file (for the task completion check). Never raises."""
     try:
@@ -339,6 +468,7 @@ def link_problems(workspace: Path, path: Path, rel_path: Optional[str] = None) -
             problems.append(target_problem)
         problems.extend(export_problems(root, rel, source))
         problems.extend(missing_dependency_problems(root, rel, source))
+        problems.extend(server_on_load_problems(root, rel, source))  # Round 3e
         return problems
     except Exception as err:
         logger.debug(f"link_problems({path}) failed: {err}")
@@ -361,6 +491,7 @@ def link_notes_text(workspace: Optional[Path], rel_path: Optional[str], source: 
             problems.append(target_problem)
         problems.extend(export_problems(root, rel, source))
         problems.extend(missing_dependency_problems(root, rel, source))
+        problems.extend(server_on_load_problems(root, rel, source))  # Round 3e
         if not problems:
             return ""
         return ("\n[Framework check - the file WAS saved, but it does not work with the project yet (a task with this "

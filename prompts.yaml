@@ -620,7 +620,7 @@ worker_decompose_prompt: |2
 
   [WORKFLOW]
   1.  **Analyze Complexity:** Evaluate your assigned task. If it is a straightforward coding, writing, or research task (e.g., writing a single file, adding a specific feature), **DO NOT DECOMPOSE IT.** Over-decomposition causes severe delays.
-  2.  **Deconstruct (If Complex):** ONLY if the task is highly complex and requires multiple distinct phases, use the `project_management` tool (`add_task` action) to break it down. **CRITICAL:** Review existing tasks using `list_tasks` to ensure no duplicates.
+  2.  **Deconstruct (If Complex):** ONLY if the task is highly complex and requires multiple distinct phases, use the `project_management` tool (`add_task` action) to break it down. **CRITICAL:** Review existing tasks using `list_tasks` to ensure no duplicates. Sub-tasks cover only YOUR task: never create a sub-task for a file or feature that another task of the project names (the framework refuses it) - other workers get those tasks.
   3.  **Assign to Yourself (If Decomposed):** Ensure each newly created sub-task is assigned to your own agent ID. The framework automatically links them as dependencies.
   4.  **Transition to Work:**
       - If you DID NOT decompose the task: You MUST execute the 'request_state' tool with state='worker_work' and task_id='YOUR_ORIGINAL_TASK_ID'

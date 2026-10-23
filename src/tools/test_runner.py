@@ -86,10 +86,15 @@ class TestRunnerTool(BaseTool):
             return {"status": "error", "message": res.message}
         if res.status == "error":
             return {"status": "error", "message": f"TestRunner failed: {res.message}"}
+        from src.utils.test_runs import record_test_run, PASSED, FAILED, TIMEOUT  # Round 3e
+        record_workspace = base_path if run_path == base_resolved else None
         if res.status == "timeout":
+            record_test_run(record_workspace, command, TIMEOUT, (res.stdout or "")[-400:])
+            from src.tools.project_links_check import test_hang_hint
             result = {
                 "status": "error",
-                "message": f"Test command timed out after {timeout} seconds.",
+                "message": f"Test command timed out after {timeout} seconds: the test run did not END."
+                           + test_hang_hint(run_path, command),  # Round 3e
                 "suggestion": "The tests took too long to run. Check for infinite loops or increase the timeout parameter.",
             }
             if res.stdout.strip():
@@ -100,6 +105,8 @@ class TestRunnerTool(BaseTool):
 
         stdout = res.stdout.strip()
         stderr = res.stderr.strip()
+        record_test_run(record_workspace, command, PASSED if res.returncode == 0 else FAILED,
+                        (stdout + "\n" + stderr).strip()[-400:])  # Round 3e
         result: Dict[str, Any] = {
             "command": command,
             "exit_code": res.returncode,

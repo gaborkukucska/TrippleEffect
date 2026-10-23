@@ -19,8 +19,23 @@ _COUNTS_ATTR = "_forced_reports_by_task"
 
 
 def current_task_of(agent: Any) -> Optional[str]:
+    """
+    The worker's current task id. Round 3e: when the id was cleared, the id last seen (else the injected task description).
+    2026-10-23 18:15-18:44 W3 was forced to report 3 times on Kick-off Task 9 and nothing was escalated: PM1 had marked the
+    task finished at 18:41, the prompt assembler then cleared W3's task ids, and the 3rd report was not counted.
+    """
     task_id = getattr(agent, "active_task_id", None) or getattr(agent, "current_task_id", None)
-    return str(task_id) if task_id else None
+    if task_id:
+        try:
+            agent._escalation_task_key = str(task_id)
+        except Exception:
+            pass
+        return str(task_id)
+    last = getattr(agent, "_escalation_task_key", None)
+    if last:
+        return str(last)
+    description = " ".join(str(getattr(agent, "_injected_task_description", "") or "").split())
+    return f"task: {description[:120]}" if description else None
 
 
 def record_forced_report(agent: Any) -> Optional[Tuple[str, int]]:
@@ -31,12 +46,14 @@ def record_forced_report(agent: Any) -> Optional[Tuple[str, int]]:
     try:
         task_id = current_task_of(agent)
         if not task_id:
+            logger.info(f"task_escalation: '{getattr(agent, 'agent_id', '?')}' was forced to report, but its task is unknown.")
             return None
         counts = getattr(agent, _COUNTS_ATTR, None)
         if not isinstance(counts, dict):
             counts = {}
             setattr(agent, _COUNTS_ATTR, counts)
         counts[task_id] = counts.get(task_id, 0) + 1
+        logger.info(f"task_escalation: '{getattr(agent, 'agent_id', '?')}' forced to report {counts[task_id]}x on {task_id}.")
         if counts[task_id] % FORCED_REPORTS_BEFORE_ESCALATION == 0:
             return task_id, counts[task_id]
     except Exception as err:
