@@ -97,6 +97,150 @@ def team_worker_ids(manager: Any, agent_id: Optional[str]) -> List[str]:
         return []
 
 
+# --- Round 3c: one task at a time per worker; no second task for work that is already finished ------------------------------
+# 2026-10-22 23:33-00:13 (qwen3.5:4b, Multiplayer_Snake_Game): during the kick-off PM1 gave Kick-off Tasks 1, 2, 3, 4 and 5 to
+# W1 and only Task 6 (the README) to W2. W2 finished the README at 00:42 and then had nothing to do for hours, while W1's queue
+# held four tasks (Task 2 was moved to W2 only at 06:25). At 01:59 PM1 created "Kick-off Task 8: Write README.md ..." -
+# the README Task 6 had finished at 00:42 - and W2 spent 50 minutes finding that the README was done.
+_OPEN_EXCLUDED_PROGRESS = frozenset({"decomposed", "finished", "completed", "complete", "done", "closed", "deleted"})
+FINISHED_DUPLICATE_RATIO = 0.8
+_TASK_LABEL_RE = re.compile(r"^\s*(?:kick-?off\s+task|update\s+\d+\s+task|task)\s*\d+\s*[:.\-]\s*", re.IGNORECASE)
+
+
+def _is_pm_caller(caller_id: Optional[str], manager: Any) -> bool:
+    agents = getattr(manager, "agents", None)
+    caller = agents.get(caller_id) if isinstance(agents, dict) and caller_id else None
+    from src.agents.constants import AGENT_TYPE_PM
+    return caller is not None and getattr(caller, "agent_type", None) == AGENT_TYPE_PM
+
+
+def _task_tags(task: Any) -> set:
+    try:
+        return {str(tag) for tag in (get_task_field(task, "tags") or [])}
+    except TypeError:
+        return set()
+
+
+def open_ready_tasks_of(tasks: Any, worker_id: str, skip_uuid: Optional[str] = None) -> List[Any]:
+    """The worker's pending tasks that are not finished / decomposed and wait for no unfinished dependency."""
+    from src.utils.task_utils import unfinished_dependencies
+    result = []
+    for task in tasks or []:
+        if str(get_task_field(task, "assignee", "") or "").strip() != worker_id:
+            continue
+        if skip_uuid and str(get_task_field(task, "uuid", "")) == str(skip_uuid):
+            continue
+        if str(get_task_field(task, "status", "pending")).strip().lower() != "pending":
+            continue
+        if str(get_task_field(task, "task_progress", "todo")).strip().lower() in _OPEN_EXCLUDED_PROGRESS:
+            continue
+        if "project_kickoff" in _task_tags(task):
+            continue
+        try:
+            if unfinished_dependencies(task):
+                continue
+        except Exception:
+            pass
+        result.append(task)
+    return result
+
+
+def busy_worker_assignment_error(tw: Any, assignee: str, task: Any, caller_id: Optional[str], manager: Any,
+                                 task_ref: str, outcome: str = "was NOT changed") -> Optional[Dict[str, Any]]:
+    """
+    Round 3c: the refusal for a PM giving a READY task to a worker that already has an open READY task, or None. A task
+    that waits for unfinished dependencies may still be queued for a busy worker (it starts that worker when it is ready).
+    Only PM calls are checked; framework calls and workers (e.g. sub-tasks of a decomposition) pass. Never raises.
+    """
+    try:
+        if caller_id in FRAMEWORK_CALLERS or not _is_pm_caller(caller_id, manager):
+            return None
+        from src.utils.task_utils import unfinished_dependencies
+        if task is not None and unfinished_dependencies(task):
+            return None
+        pending = list(tw.tasks.pending())
+        task_uuid = get_task_field(task, "uuid") if task is not None else None
+        current = open_ready_tasks_of(pending, assignee, skip_uuid=task_uuid)
+        if not current:
+            return None
+        busy = current[0]
+        description = " ".join(str(get_task_field(busy, "description", "")).split())
+        if len(description) > 90:
+            description = description[:87] + "..."
+        free = [w for w in team_worker_ids(manager, caller_id) if w != assignee and not open_ready_tasks_of(pending, w)]
+        text = (f"{task_ref} {outcome}: '{assignee}' already has an open task ('{description}', "
+                f"{get_task_field(busy, 'task_progress', 'todo')}, {get_task_field(busy, 'uuid', '?')}). A worker works on ONE "
+                "task at a time, so a second ready task would only wait in its queue.")
+        if free:
+            text += f" Give this task to a worker without a task: {', '.join(free)}."
+        else:
+            text += (" All your workers have a task now: leave this task unassigned - you are woken up when a worker is free "
+                     "(or, if the tasks can be done in parallel, create one more worker with the manage_team tool).")
+        logger.warning(f"ProjectManagementTool: '{caller_id}' tried to give {task_ref} to the busy worker '{assignee}'. Refused.")
+        return {"status": "error", "error_type": "busy_worker", "message": text}
+    except Exception as err:
+        logger.debug(f"busy_worker_assignment_error failed: {err}")
+        return None
+
+
+def task_core_text(title: Any, description: Any) -> str:
+    """
+    Round 3c: the text that says what a task is, for comparisons: title and description (one of them when it repeats the
+    other - 01:59 'Kick-off Task 8: Write README.md ...: Write README.md ...'), without a 'Kick-off Task N:' label.
+    """
+    def collapse(first: str, second: str) -> Optional[str]:
+        a, b = first.strip(), second.strip()
+        if a and b and (a.lower() in b.lower() or b.lower() in a.lower()):
+            return max((a, b), key=len)
+        return None
+
+    parts = [" ".join(str(part).split()) for part in (title, description) if part and str(part).strip()]
+    parts = [_TASK_LABEL_RE.sub("", part).strip() for part in parts]
+    if len(parts) == 1 and ": " in parts[0]:
+        # a stored description 'Title: Description' whose description repeats its title
+        head, _sep, tail = parts[0].partition(": ")
+        parts = [collapse(head, tail) or parts[0]]
+    if len(parts) == 2:
+        merged = collapse(parts[0], parts[1])
+        if merged:
+            parts = [merged]
+    return ": ".join(part for part in parts if part)
+
+
+def finished_duplicate_error(tw: Any, title: Any, description: Any, project: Optional[str]) -> Optional[Dict[str, Any]]:
+    """
+    Round 3c: the refusal for a new task whose work a FINISHED task of the project already did (the same text, apart from
+    a 'Kick-off Task N:' label), or None. Never raises.
+    """
+    try:
+        import difflib
+        wanted = task_core_text(title, description).lower()
+        if len(wanted) < 12:
+            return None
+        finished = tw.tasks.filter(status="completed")
+        if project:
+            finished = finished.filter(project=project)
+        for task in finished:
+            if str(get_task_field(task, "task_progress", "finished")).strip().lower() == "deleted":
+                continue
+            done_text = str(get_task_field(task, "description", "") or "")
+            done = task_core_text(None, done_text).lower()
+            if len(done) < 12:
+                continue
+            ratio = difflib.SequenceMatcher(None, wanted, done).ratio()
+            if ratio >= FINISHED_DUPLICATE_RATIO:
+                uuid = get_task_field(task, "uuid", "?")
+                logger.warning(f"ProjectManagementTool: new task '{description[:80]}' repeats the FINISHED task {uuid} ({ratio:.2f}). Refused.")
+                return {"status": "error", "error_type": "finished_duplicate", "message": (
+                    f"The task was NOT created: the same work is already FINISHED in task {uuid} ('{' '.join(done_text.split())[:100]}'). "
+                    "Do not create it again. If that finished work has a problem, create a task that names the problem and "
+                    "the file(s) to fix (e.g. 'Fix the failing start command in README.md: ...').")}
+        return None
+    except Exception as err:
+        logger.debug(f"finished_duplicate_error failed: {err}")
+        return None
+
+
 STARTED_PROGRESS = ("doing", "in_progress")
 
 
@@ -761,6 +905,15 @@ class ProjectManagementTool(BaseTool):
                         "is_duplicate": True
                     }
 
+            # Round 3c: work a FINISHED task already did is not planned again (the kick-off and update plans are exempt: the
+            # framework creates them from a fresh plan)
+            tag_values = kwargs.get("tags")
+            tag_text = ",".join(str(t) for t in tag_values) if isinstance(tag_values, (list, tuple, set)) else str(tag_values or "")
+            if agent_id not in FRAMEWORK_CALLERS and "kickoff" not in tag_text.lower():
+                refusal = finished_duplicate_error(tw, title, description, kwargs.get("project_filter"))
+                if refusal:
+                    return refusal
+
             task = Task(tw, description=main_desc)
             
             # Apply unified task_progress mapping (alias handling for 'status' fallback)
@@ -846,6 +999,13 @@ class ProjectManagementTool(BaseTool):
                 if resolved_deps:
                     task['depends'] = resolved_deps
                     logger.info(f"ProjectManagementTool: Set {len(resolved_deps)} dependencies for task.")
+
+            if get_task_field(task, 'assignee'):
+                # Round 3c: one ready task at a time per worker (PM calls)
+                refusal = busy_worker_assignment_error(tw, str(task['assignee']), task, agent_id, kwargs.get("manager"),
+                                                       "The task", outcome="was NOT created")
+                if refusal:
+                    return refusal
 
             add_blocked_note = ""
             if task['task_progress'] in STARTED_PROGRESS:
@@ -1298,7 +1458,10 @@ class ProjectManagementTool(BaseTool):
                     return {"status": "error", "message": f"Task '{task_id}' is already 'pending' and actively assigned to '{task['assignee']}'. Reassigning active tasks owned by others is blocked to prevent disruption. Only the assignee can hand it off, or its status must first be changed to 'waiting'."}
                 elif (refusal := non_worker_assignment_error(new_assignee, agent_id, kwargs.get("manager"), f"Task '{task_id}'")):
                     return refusal  # Round 2t: only workers carry out tasks
+                elif (refusal := busy_worker_assignment_error(tw, new_assignee, task, agent_id, kwargs.get("manager"), f"Task '{task_id}'")):
+                    return refusal  # Round 3c: one ready task at a time per worker
                 else:
+                    previous_assignee = str(task['assignee'] or "").strip()
                     task['assignee'] = new_assignee
                     modified_fields.append("assignee")
                     
@@ -1307,6 +1470,10 @@ class ProjectManagementTool(BaseTool):
                         current_tags = set(current_tags)
                     elif isinstance(current_tags, set):
                         current_tags = current_tags.copy()
+                    # Round 3c: the previous assignee's tag goes (03:40 Kick-off Task 3 of W1 still carried the tag 'W2')
+                    previous_tag = clean_tag(previous_assignee) if previous_assignee else None
+                    if previous_tag and previous_tag != new_assignee:
+                        current_tags.discard(previous_tag)
                         
                     current_tags.add("assigned")
                     current_tags.add(new_assignee)

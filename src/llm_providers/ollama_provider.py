@@ -62,6 +62,49 @@ def thinking_tail(thinking: Any, limit: int = THINKING_TAIL_CHARS) -> str:
     return tail[space + 1:] if 0 <= space < 40 else tail
 
 
+# Round 3c: the server's own timings (nanoseconds) of a finished reply
+OLLAMA_TIMING_KEYS = ("total_duration", "load_duration", "prompt_eval_duration", "eval_duration")
+
+
+def ollama_timing_text(data: Any) -> str:
+    """
+    Round 3c: ', timing: load 0.1s, prompt 3,097 tok in 28.1s (110 tok/s), output 94 tok in 23.0s (4.1 tok/s), total 51.5s'
+    from a finished Ollama reply, or '' when it has no timings. 2026-10-22/23 (qwen3.5:4b) calls took about 2 minutes and
+    the log could not tell reading the prompt from writing the reply, nor a model reload.
+    """
+    if not isinstance(data, dict) or not any(key in data for key in OLLAMA_TIMING_KEYS):
+        return ""
+    try:
+        def seconds(key: str) -> Optional[float]:
+            value = data.get(key)
+            return float(value) / 1e9 if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+        def part(label: str, count_key: str, duration_key: str) -> Optional[str]:
+            duration, count = seconds(duration_key), data.get(count_key)
+            if duration is None:
+                return None
+            if isinstance(count, int) and not isinstance(count, bool):
+                rate = f" ({count / duration:.1f} tok/s)" if duration > 0 else ""
+                return f"{label} {count:,} tok in {duration:.1f}s{rate}"
+            return f"{label} {duration:.1f}s"
+
+        parts = []
+        load = seconds("load_duration")
+        if load is not None:
+            parts.append(f"load {load:.1f}s")
+        for label, count_key, duration_key in (("prompt", "prompt_eval_count", "prompt_eval_duration"),
+                                               ("output", "eval_count", "eval_duration")):
+            text = part(label, count_key, duration_key)
+            if text:
+                parts.append(text)
+        total = seconds("total_duration")
+        if total is not None:
+            parts.append(f"total {total:.1f}s")
+        return (", timing: " + ", ".join(parts)) if parts else ""
+    except Exception:
+        return ""
+
+
 def log_ollama_finish(data: Any, thinking_chars: Optional[int] = None, content_chars: Optional[int] = None,
                       thinking_text: Optional[str] = None) -> Optional[str]:
     """
@@ -86,7 +129,8 @@ def log_ollama_finish(data: Any, thinking_chars: Optional[int] = None, content_c
             logger.info(f"Ollama thinking ({len(thinking_text)} chars): {excerpt}")
         text = (f"Ollama finished: done_reason={reason}, prompt_tokens={data.get('prompt_eval_count', '?')}, "
                 f"output_tokens={data.get('eval_count', '?')}, content_chars={content_chars}, "
-                f"thinking_chars={thinking_chars}, tool_calls={len(msg.get('tool_calls') or [])}")
+                f"thinking_chars={thinking_chars}, tool_calls={len(msg.get('tool_calls') or [])}"
+                + ollama_timing_text(data))  # Round 3c
         if reason == "length":
             logger.warning(text + " -> the reply was CUT OFF at the output token limit (num_predict / per-state max_tokens).")
         else:
@@ -130,8 +174,10 @@ def is_context_window_full(done_reason: Any, prompt_tokens: Any, output_tokens: 
         if done_reason != "length" or not num_ctx or prompt_tokens is None:
             return False
         prompt, output, window = int(prompt_tokens), int(output_tokens or 0), int(num_ctx)
-        if num_predict and output >= int(num_predict):
-            return False  # it used its whole output budget: an ordinary cut-off
+        if num_predict and int(num_predict) > 0:
+            # Round 3c: a reply stops at 'length' for one of two limits. Below its output budget it was the window - also
+            # when the server counted only the prompt tokens it did not have cached (a reused prompt reports fewer).
+            return output < int(num_predict)
         return prompt + output >= window - CONTEXT_FULL_MARGIN
     except (TypeError, ValueError):
         return False
@@ -840,7 +886,8 @@ class OllamaProvider(BaseLLMProvider):
                                              accumulated_thinking_parts.append(str(msg["thinking"]))
                                          if chunk_data.get("done"):
                                              is_done = True
-                                             done_stats = {k: chunk_data[k] for k in ("done_reason", "eval_count", "prompt_eval_count") if k in chunk_data}
+                                             done_stats = {k: chunk_data[k] for k in ("done_reason", "eval_count", "prompt_eval_count") + OLLAMA_TIMING_KEYS
+                                                           if k in chunk_data}  # Round 3c: + the timings
                                      except json.JSONDecodeError:
                                          logger.error(f"Failed to decode NDJSON fallback line: {line[:100]}...")
                                  

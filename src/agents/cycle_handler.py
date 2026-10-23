@@ -2581,6 +2581,11 @@ class AgentCycleHandler:
                                                 all_kickoff = getattr(agent, '_all_kickoff_task_uuids', set())
                                                 remaining_uuids = {t.get("uuid") for t in remaining_tasks}
                                                 assigned_uuids = all_kickoff - remaining_uuids
+                                            # Round 3c: a dependency is met when its task is FINISHED (an assigned task is not
+                                            # done yet), and a task can only start if a worker is free (2026-10-22 23:45-00:13
+                                            # PM1 gave Tasks 2-5 to W1, busy with Task 1, because "assigned" counted as met)
+                                            from src.agents.assignable_work import activation_view
+                                            view = activation_view(self._manager, agent, remaining_tasks)
 
                                             actionable_count = 0
                                             for task_info in remaining_tasks:
@@ -2588,21 +2593,36 @@ class AgentCycleHandler:
                                                 uuid = task_info.get("uuid")
                                                 deps = task_info.get("depends", [])
                                                 truncated_desc = (desc[:75] + '...') if len(desc) > 75 else desc
-                                                # A task is actionable if all its dependencies are in assigned_uuids (already assigned)
-                                                has_unmet_deps = any(dep not in assigned_uuids for dep in deps) if deps else False
+                                                if view is not None:
+                                                    has_unmet_deps = uuid in view["blocked"]
+                                                else:
+                                                    # A task is actionable if all its dependencies are in assigned_uuids (already assigned)
+                                                    has_unmet_deps = any(dep not in assigned_uuids for dep in deps) if deps else False
                                                 dep_note = " [BLOCKED - has unmet dependencies]" if has_unmet_deps else ""
                                                 task_summary_lines.append(f"- {truncated_desc} (UUID: {uuid}){dep_note}")
                                                 if not has_unmet_deps:
                                                     actionable_count += 1
 
                                             summary_str = "\n".join(task_summary_lines)
+                                            free_workers = view["free_workers"] if view is not None else None
 
-                                            if actionable_count > 0:
+                                            if actionable_count > 0 and free_workers == []:
+                                                # Round 3c: every worker has a ready task: the rest is assigned in pm_manage
+                                                project_name = agent.agent_config.get("config", {}).get("project_name_context", "Unknown Project")
+                                                directive_message_content = (
+                                                    f"[Framework System Message]: Task assignment processed successfully. Every worker of your team now has a task, "
+                                                    f"so the remaining tasks wait until a worker is free:\n{summary_str}\n\n"
+                                                    "Do NOT give a second task to a busy worker. Your MANDATORY next action is to report this to the Admin AI and transition to manage state. "
+                                                    f"Use the send_message tool to send the following message to '{BOOTSTRAP_AGENT_ID}':\n"
+                                                    f"'Project `{project_name}` initial kick-off tasks assigned: every worker has a task. The remaining tasks are assigned as workers finish.'"
+                                                )
+                                            elif actionable_count > 0:
                                                 directive_message_content = (
                                                     f"[Framework System Message]: Task assignment processed successfully. Here are the remaining unassigned tasks:\n"
                                                     f"{summary_str}\n\n"
                                                     "Your mandatory next action is to assign the next ACTIONABLE (non-blocked) task from this list to "
-                                                    + worker_choice_text(self._manager, agent.agent_id) + "."  # Round 2t
+                                                    + (f"a worker without a task ({', '.join(free_workers)}; never to yourself)" if free_workers
+                                                       else worker_choice_text(self._manager, agent.agent_id)) + "."  # Round 2t / 3c
                                                 )
                                             else:
                                                 # All remaining tasks are blocked by dependencies

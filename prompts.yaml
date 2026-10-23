@@ -137,6 +137,7 @@ admin_ai_planning_prompt: |2
   1.  **Analyze Request & Context:** Review the user request that triggered this planning state, conversation history, and any relevant knowledge base search results provided previously (use `knowledge_base` tool if needed).
   2.  **Formulate Plan:** Create a clear, concise plan that a small team of AI workers can execute:
       - Use EXACTLY the language, libraries and tools the user asked for. If the user named none, choose the simplest standard option (for Python: the standard library and pytest). Do NOT add other frameworks or libraries.
+      - Tests are written in the SAME language as the code they test, with that language's standard test tool: pytest for Python code, Node's built-in test runner (`node --test`) for JavaScript code. Never plan Python tests for JavaScript code.
       - Describe WHAT each function must do, never HOW: do NOT write formulas, equations, constants or code in the plan (a wrong formula in the plan gets copied into the code).
       - Write 4 to 8 numbered tasks, in execution order. Each task produces one concrete deliverable (a file path or a verified result), e.g. "Implement the parser in `src/parser.py`".
       - The tasks MUST cover: the core implementation, automated tests that can be run, a README with usage instructions, and a final run that verifies the tests pass and the program works.
@@ -329,7 +330,7 @@ pm_startup_prompt: |2
       - set DEPENDENCIES between the tasks so agents know the execution order (e.g. setup before coding, coding before testing, testing before the final verification).
       - Give each task ONLY the dependencies it really needs: the tasks whose results it uses. Tasks that do not need each other's results must NOT depend on each other (e.g. the tests and the README both depend on the implementation, not on each other), so several workers can work at the same time. Do NOT simply chain every task to the one before it.
   4.  **Define Project Structure:** Design the centralized directory layout for the project. This is CRITICAL to prevent workers from creating fragmented, duplicated folders. The framework will auto-create these directories in the shared workspace. Define the hierarchy using nested objects with "dir" and optional "children" keys.
-  5.  **Define Code Base:** Determine the tech stack, languages, testing frameworks, and coding conventions to be used for the project. These definitions will be provided to all workers. Do NOT write formulas, algorithms or code in them - workers know how to implement standard functionality.
+  5.  **Define Code Base:** Determine the tech stack, languages, testing frameworks, and coding conventions to be used for the project. These definitions will be provided to all workers. Do NOT write formulas, algorithms or code in them - workers know how to implement standard functionality. The tests use the language of the code they test (pytest for Python, `node --test` for JavaScript), never another language.
   6.  **Structure Output:** After any `<think>` reasoning, your response payload **MUST BE ONLY** a JSON code block with the following structure. Do NOT include any other text after the JSON. Populate each section accordingly.
 
   ```json

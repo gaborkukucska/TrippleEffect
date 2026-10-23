@@ -234,6 +234,34 @@ def duplicate_structure_files(structure_files: List[str], task_files: List[str])
     return drop, notes
 
 
+# --- Round 3c: the tests of JavaScript code are JavaScript -------------------------------------------------------------------
+# 2026-10-22 23:24 the snake game was JavaScript (src/game.js, src/player.js, src/server.js), but the plan said "Write pytest
+# tests" and the structure planned tests/test_game.py, test_player.py and test_leaderboard.py. The framework wrote a pytest
+# conftest.py, and W1 spent 9 hours on a Python copy of the game (src/game.py) so that pytest had something to import.
+_JS_EXTENSIONS = frozenset({".js", ".mjs", ".cjs", ".ts", ".jsx", ".tsx"})
+_TEST_PATH_RE = re.compile(r"(^|/)(tests?|__tests__|spec)/|(^|/)(test_[^/]+|[^/]+_test\.py|[^/]+\.(test|spec)\.[^/]+|conftest\.py)$",
+                           re.IGNORECASE)
+JS_TEST_LANGUAGE_NOTE = ("FRAMEWORK NOTE: the code of this project is JavaScript, so its tests are JavaScript too (e.g. "
+                         "tests/game.test.js, run with `node --test tests/`). Never write Python tests or a Python copy of "
+                         "the code for them; a task that says 'pytest' means these JavaScript tests.")
+
+
+def align_test_language(planned_files: List[str]) -> Tuple[List[str], Optional[str]]:
+    """
+    Round 3c: (planned files, note). When the planned CODE is JavaScript/TypeScript only, planned Python test files (and a
+    conftest.py) are dropped and the note says to write JavaScript tests. Anything else is returned unchanged with None.
+    """
+    tests = [f for f in planned_files if _TEST_PATH_RE.search(f)]
+    code_exts = {PurePosixPath(f).suffix.lower() for f in planned_files
+                 if f not in tests and PurePosixPath(f).suffix.lower() in (_JS_EXTENSIONS | {".py"})}
+    if not code_exts or not code_exts <= _JS_EXTENSIONS:
+        return planned_files, None
+    python_tests = [f for f in tests if f.lower().endswith(".py")]
+    if not python_tests:
+        return planned_files, None
+    return [f for f in planned_files if f not in python_tests], JS_TEST_LANGUAGE_NOTE
+
+
 def with_root_files(planned_files: List[str], root_names: List[str]) -> List[str]:
     """
     Round 2v: the planned files plus the root files the tasks say to create ("Create server.py ..."), unless a planned file
@@ -362,6 +390,54 @@ def _render_definitions(value: Any, indent: int = 0) -> List[str]:
                 out.append(f"{pad}- {v}")
         return out
     return [pad + str(value)]
+
+
+# --- Round 3c: tests, README and verification wait for the code ------------------------------------------------------------
+# 2026-10-22 23:24:14 (qwen3.5:4b) the kick-off plan gave dependencies only to the last task; "Write pytest tests ... in
+# tests/" and "Write README.md" depended on nothing. W1 started the tests at 00:20, while the player, server and UI code did
+# not exist yet, and was still on them at 09:52; W2 wrote a README for code nobody had written.
+_VERIFY_TASK_RE = re.compile(r"^\W*(?:run|execute|verify|verification|final|integration|end-to-end|smoke)\b", re.IGNORECASE)
+_TEST_WORD_RE = re.compile(r"\b(?:tests?|pytest|jest|unit[- ]?tests?|test suite|test cases?|specs?)\b", re.IGNORECASE)
+_WRITE_WORD_RE = re.compile(r"\b(?:write|add|create|implement|extend|develop)\b", re.IGNORECASE)
+_DOCS_TASK_RE = re.compile(r"\breadme\b|\bdocumentation\b|\bdocs/|\busage guide\b", re.IGNORECASE)
+
+
+def kickoff_task_kind(text: str) -> str:
+    """'verify', 'tests', 'docs' or 'code' for a kick-off task description."""
+    text = text or ""
+    if _VERIFY_TASK_RE.search(text):
+        return "verify"
+    if _TEST_WORD_RE.search(text) and _WRITE_WORD_RE.search(text):
+        return "tests"
+    if _DOCS_TASK_RE.search(text):
+        return "docs"
+    return "code"
+
+
+def infer_missing_dependencies(task_info_list: List[Dict[str, Any]]) -> List[str]:
+    """
+    Round 3c: a tests or docs task without any dependency gets the earlier CODE tasks as dependencies; a verification task
+    without any dependency gets all earlier tasks. A dependency the PM gave is never changed. Changes task_info_list in place
+    and returns notes for the log.
+    """
+    notes: List[str] = []
+    earlier: List[Tuple[str, str]] = []  # (id, kind)
+    for info in task_info_list:
+        task_id = str(info.get("id") or "").strip()
+        kind = kickoff_task_kind(str(info.get("description") or ""))
+        if task_id and not info.get("depends_on"):
+            if kind in ("tests", "docs"):
+                needed = [tid for tid, k in earlier if k == "code"]
+            elif kind == "verify":
+                needed = [tid for tid, _k in earlier]
+            else:
+                needed = []
+            if needed:
+                info["depends_on"] = needed
+                notes.append(f"'{task_id}' ({kind}) had no dependency: it now waits for {', '.join(needed)}.")
+        if task_id:
+            earlier.append((task_id, kind))
+    return notes
 
 
 # Round 2p: 2026-10-21 18:01:07 the kickoff plan said "depends_on": ["task_1..6"] for the README task; the id was dropped as
@@ -577,6 +653,8 @@ class PMKickoffWorkflow(BaseWorkflow):
                 tasks_to_schedule=[(agent, 0)]
             )
         logger.info(f"PMKickoffWorkflow: Extracted {len(task_descriptions)} tasks for agent '{agent.agent_id}': {task_descriptions}")
+        for note in infer_missing_dependencies(task_info_list):  # Round 3c
+            logger.warning(f"PMKickoffWorkflow: kickoff plan of '{agent.agent_id}': {note}")
 
         created_tasks_info = []
         failed_tasks_info = []
@@ -706,6 +784,11 @@ class PMKickoffWorkflow(BaseWorkflow):
                 planned_files = [f for f in planned_files if f not in dropped_files]
                 notes += duplicate_notes
                 planned_files = with_root_files(planned_files, root_files_to_create)  # Round 2v
+                planned_files, language_note = align_test_language(planned_files)  # Round 3c
+                if language_note:
+                    notes.append("the code is JavaScript: the planned Python test files were dropped (JavaScript tests instead).")
+                    code_base_definitions = (f"{code_base_definitions}\n\n{language_note}" if isinstance(code_base_definitions, str)
+                                             else [code_base_definitions, language_note] if code_base_definitions else language_note)
                 for note in notes:
                     logger.warning(f"PMKickoffWorkflow: project_structure from PM '{agent.agent_id}': {note}")
                 created_dirs = self._create_directory_structure(planned_dirs, workspace_path)

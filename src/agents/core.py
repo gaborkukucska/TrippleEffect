@@ -525,6 +525,13 @@ class Agent:
                 # an output cut-off, doubled the output budget and the Guardian blocked W1 for 2 "empty" replies. A full
                 # window needs a shorter history (the cycle handler condenses it), not a larger output budget.
                 self._context_window_full = True
+                try:
+                    # Round 3c: a cached prompt is reported smaller: a full window holds at least num_ctx - output tokens
+                    window_tokens = int(finish_event_data.get("num_ctx") or 0) - int(finish_event_data.get("output_tokens") or 0)
+                    if window_tokens > self._last_prompt_tokens:
+                        self._last_prompt_tokens = window_tokens
+                except (TypeError, ValueError):
+                    pass
                 logger.warning(f"Agent {self.agent_id}: the CONTEXT WINDOW is full ({finish_event_data.get('prompt_tokens')} "
                                f"prompt + {finish_event_data.get('output_tokens')} output tokens of num_ctx "
                                f"{finish_event_data.get('num_ctx')}); the history must be condensed.")

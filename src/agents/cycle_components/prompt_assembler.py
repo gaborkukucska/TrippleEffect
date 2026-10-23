@@ -384,16 +384,18 @@ class PromptAssembler:
         else:
             logger.debug(f"PromptAssembler: Preserving existing state prompt for '{agent.agent_id}' (State: {agent.state}).")
 
+        # Round 3c: everything injected for this call only goes AFTER the stored history. The system prompt and the stored
+        # history then start every request of an agent in the same way, so a local server (Ollama) reuses its prompt cache
+        # and only reads the new messages. Inserted after the system prompt (or before the last messages), a report that
+        # changed made the server read the whole history again (2026-10-22/23, qwen3.5:4b on a local server: a typical
+        # call had an 11,000-token prompt and took about 2 minutes). Appended, a report also never lands between an
+        # assistant's tool call and its result.
         # 3. Inject System Health Report (Admin AI only)
         if agent.agent_id == BOOTSTRAP_AGENT_ID: # Check agent ID
             system_health_report = await self._generate_system_health_report(agent)
             if system_health_report:
                 health_msg: MessageDict = {"role": "system", "content": system_health_report}
-                # Insert *after* the main system prompt but before other history
-                if len(history_for_call) > 1:
-                    history_for_call.insert(1, health_msg)
-                else:
-                    history_for_call.append(health_msg) # Append if only system prompt was there
+                history_for_call.append(health_msg)
                 logger.debug(f"Injected system health report for Admin AI '{agent.agent_id}'.")
 
         # 3.5 Inject Workspace Tree (PM and Worker only)
@@ -401,13 +403,7 @@ class PromptAssembler:
             workspace_tree_report = await self._generate_workspace_tree_report()
             if workspace_tree_report:
                 tree_msg: MessageDict = {"role": "system", "content": workspace_tree_report}
-                # Insert closer to the bottom to ensure the agent is aware of the current file system state.
-                # We place it before the last 2 messages (which are typically the latest action/feedback).
-                insert_pos = max(1, len(history_for_call) - 2)
-                if len(history_for_call) <= 2:
-                    history_for_call.append(tree_msg)
-                else:
-                    history_for_call.insert(insert_pos, tree_msg)
+                history_for_call.append(tree_msg)  # Round 3c: after the history (see above)
                 logger.debug(f"Injected shared_workspace tree report for {agent.agent_type} '{agent.agent_id}'.")
 
         # 3.55 Inject Worker Assigned Tasks Report (Worker only)
@@ -415,9 +411,7 @@ class PromptAssembler:
             worker_tasks_report = self._generate_worker_tasks_report(agent)
             if worker_tasks_report:
                 tasks_msg: MessageDict = {"role": "system", "content": worker_tasks_report}
-                # Insert after system prompt (and workspace tree if present)
-                insert_pos = min(2, len(history_for_call))
-                history_for_call.insert(insert_pos, tasks_msg)
+                history_for_call.append(tasks_msg)  # Round 3c: after the history (see above)
                 logger.debug(f"Injected assigned tasks report for worker '{agent.agent_id}'.")
 
         # 3.6 Inject Message Read/Ack instructions (Workers and PMs)
@@ -439,9 +433,7 @@ class PromptAssembler:
                     f"Do NOT mark a message as read until you have fully understood and acted on it."
                 )
                 read_msg: MessageDict = {"role": "system", "content": read_instruction}
-                # Insert after system prompt position
-                insert_pos = min(2, len(history_for_call))
-                history_for_call.insert(insert_pos, read_msg)
+                history_for_call.append(read_msg)  # Round 3c: after the history (see above)
                 logger.debug(f"Injected mark_message_read instructions for {agent.agent_type} '{agent.agent_id}' with {len(unread_messages)} unread messages.")
 
             # 3.7 Report-state safety check: remind worker of unread messages before reporting

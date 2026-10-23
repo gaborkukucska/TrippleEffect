@@ -87,6 +87,42 @@ def idle_worker_ids(workers: Iterable[Any], pending_tasks: Iterable[Any]) -> Lis
     return ids
 
 
+def activation_view(manager: Any, pm_agent: Any, task_summaries: Iterable[Any]) -> Optional[dict]:
+    """
+    Round 3c: for the PM's activation directive - {"blocked": uuids of the listed tasks that wait for an UNFINISHED
+    dependency, "free_workers": the team's workers without an open ready task (None without workers)}, or None if the task store or the team
+    cannot be read (the caller then keeps its old rule). Never raises.
+    """
+    try:
+        project = getattr(manager, "current_project", None)
+        session = getattr(manager, "current_session", None)
+        state_manager = getattr(manager, "state_manager", None)
+        if not project or not session or state_manager is None:
+            return None
+        from src.tools.project_management import ProjectManagementTool, open_ready_tasks_of, team_worker_ids
+        tw = ProjectManagementTool()._get_taskwarrior_instance(project, session)
+        if tw is None:
+            return None
+        blocked = set()
+        for summary in task_summaries or []:
+            uuid = summary.get("uuid") if isinstance(summary, dict) else None
+            if not uuid:
+                continue
+            try:
+                task = tw.tasks.get(uuid=uuid)
+            except Exception:
+                continue
+            if unfinished_dependencies(task):
+                blocked.add(uuid)
+        pending = list(tw.tasks.pending())
+        team = team_worker_ids(manager, pm_agent.agent_id)
+        free = [w for w in team if not open_ready_tasks_of(pending, w)] if team else None
+        return {"blocked": blocked, "free_workers": free}
+    except Exception as error:
+        logger.debug(f"activation_view failed for '{getattr(pm_agent, 'agent_id', '?')}': {error}")
+        return None
+
+
 def assignment_hint(tasks: List[Any], worker_ids: List[str]) -> str:
     """The message that tells a PM which tasks wait for a worker, and the exact call that assigns the first one."""
     if not tasks or not worker_ids:

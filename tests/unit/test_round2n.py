@@ -529,7 +529,9 @@ def test_context_window_full_versus_output_cut_off():
     assert is_context_window_full("length", 32742, 26, 32768, 8192)       # 23:59:30
     assert not is_context_window_full("length", 11095, 4096, 32768, 4096)  # 23:21:12: an ordinary cut-off
     assert not is_context_window_full("stop", 32675, 93, 32768, 4096)
-    assert not is_context_window_full("length", 12000, 93, 32768, 4096)
+    # Round 3c: below its output budget a 'length' stop is the window, also when the server reported fewer prompt tokens
+    # (it counts only the tokens it did not have cached)
+    assert is_context_window_full("length", 12000, 93, 32768, 4096)
     assert not is_context_window_full("length", None, 93, 32768, 4096)
     assert not is_context_window_full("length", 32675, 93, None, 4096)
 

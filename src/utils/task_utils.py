@@ -27,12 +27,13 @@ def get_task_field(task: Any, key: str, default: Any = None) -> Any:
 
 def task_is_assigned_to(task: Any, agent_id: str) -> bool:
     """
-    True if the task is assigned to ``agent_id`` via the ``assignee`` field, or via the legacy
-    ``+assigned`` / ``+<agent_id>`` tag pair.
+    True if the task is assigned to ``agent_id`` via the ``assignee`` field, or - for a task without an assignee - via
+    the legacy ``+assigned`` / ``+<agent_id>`` tag pair.
     """
     assignee = get_task_field(task, "assignee")
-    if assignee is not None and str(assignee).strip() == str(agent_id):
-        return True
+    if assignee is not None and str(assignee).strip():
+        # Round 3c: the assignee field decides; the tags of an earlier assignee stay on a reassigned task (2026-10-23)
+        return str(assignee).strip() == str(agent_id)
     tags = get_task_field(task, "tags")
     if tags:
         try:
