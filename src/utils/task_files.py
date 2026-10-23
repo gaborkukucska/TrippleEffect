@@ -17,6 +17,9 @@ docstring and no code"), but nothing stopped the tasks from being closed.
 * The kick-off also uses file_paths_in_text(): when the PM's project_structure lists no files, the files named in the
   kick-off tasks are the planned files (that run had no tests/ directory and no conftest.py, while PROJECT_STRUCTURE.md
   said a framework conftest.py existed).
+* Round 3d: the links between files are checked too (src/tools/project_links_check.py): a test file that loads no project
+  file (2026-10-23: tests/test_gameLogic.js tested its own copy of the game logic for two hours), a JavaScript module
+  loaded for its value that exports nothing, and an npm package that package.json does not list ('sqlite3').
 * Round 2r: JavaScript (.js/.mjs/.cjs), JSON and shell (.sh/.bash) files are checked too (src/tools/source_check.py).
   2026-10-21 19:31:22 Kick-off Task 2 ("Implement WebSocket handlers in game-server/game-engine.js ...") was marked
   finished although game-engine.js failed `node --check` with "SyntaxError: Unexpected token 'default'".
@@ -145,6 +148,7 @@ def task_completion_problems(description: Optional[str], workspace: Optional[Pat
                 continue
             if path not in to_check:
                 to_check.append(path)
+        from src.tools.project_links_check import link_problems  # Round 3d
         for path in to_check:
             shown = str(path.relative_to(root)).replace("\\", "/")
             if path.suffix == ".py":
@@ -152,6 +156,9 @@ def task_completion_problems(description: Optional[str], workspace: Optional[Pat
             else:
                 other = file_problem(path, shown)
                 found = [other] if other else []
+            if not found:
+                # Round 3d: a test that tests a copy, a module that exports nothing, an npm package package.json lacks
+                found = link_problems(root, path, shown)
             for problem in found:
                 if problem not in problems:
                     problems.append(problem)

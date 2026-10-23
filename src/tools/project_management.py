@@ -217,6 +217,13 @@ def finished_duplicate_error(tw: Any, title: Any, description: Any, project: Opt
         wanted = task_core_text(title, description).lower()
         if len(wanted) < 12:
             return None
+        # Round 3d: also without the new task's title, and against a finished task's description without ITS title.
+        # 2026-10-23 12:17 PM1 re-created Kick-off Task 1 as "Backend server setup with Socket.io: Implement Express server
+        # ..." (0.79 with the title, 0.86 without) and Task 2 as "Frontend game UI implementation: Build HTML/CSS/..." (0.79/0.89).
+        wanted_variants = [wanted]
+        description_only = task_core_text(None, description).lower()
+        if len(description_only) >= 12 and description_only not in wanted_variants:
+            wanted_variants.append(description_only)
         finished = tw.tasks.filter(status="completed")
         if project:
             finished = finished.filter(project=project)
@@ -227,7 +234,11 @@ def finished_duplicate_error(tw: Any, title: Any, description: Any, project: Opt
             done = task_core_text(None, done_text).lower()
             if len(done) < 12:
                 continue
-            ratio = difflib.SequenceMatcher(None, wanted, done).ratio()
+            done_variants = [done]
+            head, separator, tail = done.partition(": ")
+            if separator and len(head) <= 60 and len(tail.strip()) >= 12 and "." not in head:
+                done_variants.append(tail.strip())   # 'Title: description' -> 'description'
+            ratio = max(difflib.SequenceMatcher(None, w, d).ratio() for w in wanted_variants for d in done_variants)
             if ratio >= FINISHED_DUPLICATE_RATIO:
                 uuid = get_task_field(task, "uuid", "?")
                 logger.warning(f"ProjectManagementTool: new task '{description[:80]}' repeats the FINISHED task {uuid} ({ratio:.2f}). Refused.")
@@ -238,6 +249,50 @@ def finished_duplicate_error(tw: Any, title: Any, description: Any, project: Opt
         return None
     except Exception as err:
         logger.debug(f"finished_duplicate_error failed: {err}")
+        return None
+
+
+FINISHED_PROGRESS = frozenset({"finished", "completed", "complete", "done", "closed"})
+
+
+def task_is_finished(task: Any) -> bool:
+    """Round 3d: True for a task that is completed (status) or finished (task_progress)."""
+    status = str(get_task_field(task, "status", "") or "").strip().lower()
+    progress = str(get_task_field(task, "task_progress", "") or "").strip().lower()
+    return status == "completed" or progress in FINISHED_PROGRESS
+
+
+def finished_task_change_error(task: Any, task_ref: Any, kwargs: Dict[str, Any], caller_id: Optional[str],
+                               map_progress) -> Optional[Dict[str, Any]]:
+    """
+    Round 3d: the refusal of a modify_task that would give a FINISHED task to a worker again without reopening it, or
+    rewrite its description into other work; None otherwise (also for framework calls). 2026-10-23 12:46:36 PM1 gave the
+    finished Kick-off Task 1 (the Express server) to W2, which was activated on a finished task; at 13:11:24 it rewrote that
+    task's description into "Create project documentation: ..." and activated W2 on it again - the record of the finished
+    server work was gone.
+    """
+    try:
+        if caller_id in FRAMEWORK_CALLERS or not task_is_finished(task):
+            return None
+        raw_progress = kwargs.get("task_progress") or kwargs.get("status")
+        reopening = bool(raw_progress) and map_progress(raw_progress)[0] not in FINISHED_PROGRESS | {"deleted"}
+        current = " ".join(str(get_task_field(task, "description", "") or "").split())
+        new_description = kwargs.get("description")
+        rewrites = (new_description is not None and str(new_description).strip()
+                    and " ".join(str(new_description).split()) != current)
+        assigns = bool(kwargs.get("assignee_agent_id") or kwargs.get("assignee"))
+        if not rewrites and not (assigns and not reopening):
+            return None
+        shown = current if len(current) <= 100 else current[:97] + "..."
+        what = "rewritten into other work" if rewrites else "given to a worker again"
+        logger.warning(f"ProjectManagementTool: '{caller_id}' tried to change the FINISHED task {task_ref} ({what}). Refused.")
+        return {"status": "error", "error_type": "finished_task", "message": (
+            f"Task '{task_ref}' is FINISHED ('{shown}') and was NOT changed: a finished task is not {what}. For new or "
+            "remaining work create a NEW task with action 'add_task' (a title and a description that names the problem and "
+            "the file(s)), then assign that new task. To have exactly this work done again, reopen it: modify_task with "
+            "task_progress='todo' and the assignee_agent_id.")}
+    except Exception as err:
+        logger.debug(f"finished_task_change_error failed: {err}")
         return None
 
 
@@ -1392,6 +1447,11 @@ class ProjectManagementTool(BaseTool):
                 }
 
 
+
+            # Round 3d: a FINISHED task is not given out again without being reopened, and never rewritten into other work
+            refusal = finished_task_change_error(task, task_id, kwargs, agent_id, self._map_task_progress)
+            if refusal:
+                return refusal
 
             # Validate task_progress or legacy status if provided
             previous_progress = str(task['task_progress'] or 'todo')  # Round 2x: kept if a blocked task may not start

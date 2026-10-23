@@ -564,6 +564,71 @@ def files_changed_after(history, index: int) -> bool:
     return False
 
 
+# --- Commands run again after files changed (Round 3d) ------------------------------------------------------------------------
+# 2026-10-23 12:07:31 W2 fixed tests/run_integration_tests.sh; its re-run of `bash tests/run_integration_tests.sh` at 12:07:52 was
+# a "duplicate" of the 12:06:39 run and got the OLD output back. W1 told PM1 at 13:41: "The command_executor tool keeps returning
+# cached results when I run the same command multiple times" while it edited the tests between the runs. A command (a test run
+# above all) is run again when any file of the workspace changed since its last run - also a file another agent changed, which
+# the agent's own history cannot show.
+COMMAND_RUN_TOOLS = frozenset({"command_executor", "test_runner"})
+_FINGERPRINT_SKIP_DIRS = frozenset({".git", "node_modules", "__pycache__", ".pytest_cache", ".venv", "venv", ".te_background",
+                                    ".mypy_cache", "coverage"})
+MAX_FINGERPRINT_FILES = 5000
+
+
+def is_command_run_call(tool_name: Optional[str], arguments: Any = None) -> bool:
+    """True for a call that runs a command or tests (its result depends on the files at the time it runs)."""
+    return str(tool_name or "") in COMMAND_RUN_TOOLS
+
+
+def workspace_fingerprint(workspace: Any) -> Optional[tuple]:
+    """
+    (file count, newest modification time in ns, total size) of the workspace's files (dependency/cache folders left out),
+    or None if it cannot be computed (missing folder, too many files). None means "unknown": treat it as changed.
+    """
+    import os
+    from pathlib import Path
+    try:
+        root = Path(workspace)
+        if not root.is_dir():
+            return None
+        count = newest = total = 0
+        for current, dirs, files in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in _FINGERPRINT_SKIP_DIRS]
+            for name in files:
+                count += 1
+                if count > MAX_FINGERPRINT_FILES:
+                    return None
+                try:
+                    stat = os.stat(os.path.join(current, name))
+                except OSError:
+                    continue
+                newest = max(newest, stat.st_mtime_ns)
+                total += stat.st_size
+        return count, newest, total
+    except Exception:
+        return None
+
+
+def workspace_changed_since_last_run(agent: Any, signature: Any, workspace: Any) -> bool:
+    """
+    True if the workspace differs from what it was when this agent last made this call (or there is no record of that, or
+    the state is unknown): then the call must really run instead of being answered from the history. Records the current
+    state for the next time.
+    """
+    fingerprint = workspace_fingerprint(workspace) if workspace is not None else None
+    marks = getattr(agent, "_command_workspace_marks", None)
+    if not isinstance(marks, dict):
+        marks = {}
+        try:
+            agent._command_workspace_marks = marks
+        except Exception:
+            return True
+    previous = marks.get(signature)
+    marks[signature] = fingerprint
+    return previous is None or fingerprint is None or previous != fingerprint
+
+
 # --- Repeated file writes and edits (Round 2e) -------------------------------------------------------------------------------
 # 2026-10-19 05:20:38 W2 replaced lines 48-50 of tests/test_temp_convert.py; at 05:21:50 it sent exactly the same call again and
 # the Guardian (an LLM call) answered ALLOW. Applied twice, an edit by line numbers or an insert changes lines that have moved

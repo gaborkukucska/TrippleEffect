@@ -141,6 +141,120 @@ def _close_open_brackets(text: str) -> str:
     return text.rstrip() + "".join("]" if opener == "[" else "}" for opener in reversed(stack))
 
 
+# --- Round 3d: unbalanced brackets and the location written INSIDE 'replace' -------------------------------------------------
+# 2026-10-23 11:45-15:12 (Multiplayer_Snake_Game, qwen3.5:4b): 47 of the 79 failed code_editor calls of W1 and W2 had one shape:
+# the line numbers (or the search text) written inside a 'replace' OBJECT, the new text beside it as 'replace_text':
+#     [{"replace": {"start_line": 46, "end_line": 182}, "replace_text": "..."}]
+# As a list it was "malformed" (10x) or crashed with "replace() argument 2 must be str, not dict" (12x); as a JSON string
+# (25x) it always had ONE bracket wrong - '"end_line": 131}, "replace_text": "..."}}]' (one '}' too many at the end) or
+# '{"replace": {..., "search": "..."}, {"replace": ...' (the '}' that closes a chunk missing) - while every string and escape
+# in it was correct.
+def _rebalance_brackets(text: str) -> str:
+    """
+    Round 3d: fixes the bracket structure of a JSON text OUTSIDE its strings (strings are copied unchanged): a '}' or ']' that
+    closes nothing open is dropped, a ']' closes the objects still open inside its list, an object that is followed by ', {'
+    (a new object where a member name must come) is closed first, and brackets still open at the end are closed. The text is
+    returned unchanged if a string is left open.
+    """
+    out: List[str] = []
+    stack: List[str] = []
+    in_string = escaped = False
+    size = len(text)
+    index = 0
+    while index < size:
+        char = text[index]
+        if in_string:
+            out.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            out.append(char)
+        elif char in "[{":
+            stack.append(char)
+            out.append(char)
+        elif char == "}":
+            if stack and stack[-1] == "{":
+                stack.pop()
+                out.append(char)
+            # else: a '}' that closes no object - dropped
+        elif char == "]":
+            if "[" in stack:
+                while stack[-1] == "{":
+                    stack.pop()
+                    out.append("}")
+                stack.pop()
+                out.append(char)
+            # else: a ']' that closes no list - dropped
+        elif char == "," and stack and stack[-1] == "{":
+            following = index + 1
+            while following < size and text[following] in " \t\r\n":
+                following += 1
+            if following < size and text[following] == "{":
+                stack.pop()
+                out.append("}")   # the object ends here: the next '{' is the next list item
+            out.append(char)
+        elif char == "," and stack and stack[-1] == "[" and out and out[-1] == "}":
+            following = index + 1
+            while following < size and text[following] in " \t\r\n":
+                following += 1
+            if following < size and text[following] == '"':
+                # '..."search": "..."}, "replace_text": "..."}]': a member name follows, so that '}' closed the chunk too
+                # early - the chunk goes on
+                out.pop()
+                stack.append("{")
+            out.append(char)
+        else:
+            out.append(char)
+        index += 1
+    if in_string:
+        return text
+    rebalanced = "".join(out).rstrip()
+    rebalanced += "".join("]" if opener == "[" else "}" for opener in reversed(stack))
+    return rebalanced
+
+
+NESTED_LOCATION_KEYS = ("start_line", "end_line", "from_line", "to_line", "line_start", "line_end", "start", "end")
+NESTED_TEXT_KEYS = ("replace_text", "replace", "replacement", "new_text", "new_code", "new_content", "content", "text", "code",
+                    "replace_with", "replacement_text", "replace_block")
+NESTED_SEARCH_KEYS = ("search", "search_block", "search_text", "find", "old", "old_code")
+
+
+def unnest_replace_object(chunk: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Round 3d: a chunk whose 'replace' is an OBJECT (the location and/or texts written inside it) as a flat chunk
+    {start_line, end_line, search, replace}, or None if 'replace' is not an object. Keys given beside the object win over the
+    same keys inside it. The flat chunk has no 'replace' if neither part holds a new text (the caller says so).
+    """
+    inner = chunk.get("replace") if isinstance(chunk, dict) else None
+    if not isinstance(inner, dict):
+        return None
+    flat: Dict[str, Any] = {key: value for key, value in chunk.items() if key != "replace"}
+    for key in NESTED_LOCATION_KEYS + NESTED_SEARCH_KEYS:
+        if key in inner and flat.get(key) in (None, ""):
+            flat[key] = inner[key]
+    new_text = None
+    for source in (chunk, inner):
+        for key in NESTED_TEXT_KEYS:
+            value = source.get(key)
+            if isinstance(value, str):
+                new_text = value
+                break
+        if new_text is not None:
+            break
+    for key in NESTED_TEXT_KEYS:
+        flat.pop(key, None)
+    if new_text is not None:
+        flat["replace"] = new_text
+    return flat
+
+
 _LINE_RANGE_RE = re.compile(r"^\s*(\d+)\s*(?:,|-|–|:|\.\.|to)\s*(\d+)\s*$", re.IGNORECASE)
 
 
@@ -621,6 +735,8 @@ class CodeEditorTool(BaseTool):
 
         chunks = kwargs.get("chunks") or kwargs.get("replacements") or kwargs.get("edits")
         single_chunk_note = ""
+        bracket_repair_note = ""  # Round 3d
+        nested_replace_note = ""  # Round 3d
         if not chunks:
             # Round 2d: ONE edit sent as top-level arguments (search_block/replace_block + start_line/end_line ...)
             single_chunk = single_chunk_from_args(kwargs)
@@ -640,8 +756,15 @@ class CodeEditorTool(BaseTool):
                 # Round 2d: a backslash that starts no JSON escape ('\\"\\"\\"\\CLI', 2026-10-18 22:33 and 22:35) is a literal
                 # backslash. Only those backslashes change; everything else is parsed exactly as sent.
                 try:
-                    chunks = _loads_chunks(_close_open_brackets(_repair_json_escapes(chunks)))
-                    logger.info("CodeEditorTool: 'chunks' parsed after repairing invalid backslash escapes / missing closing brackets.")
+                    try:
+                        chunks = _loads_chunks(_close_open_brackets(_repair_json_escapes(chunks)))
+                        logger.info("CodeEditorTool: 'chunks' parsed after repairing invalid backslash escapes / missing closing brackets.")
+                    except Exception:
+                        # Round 3d: one '}' too many or too few (2026-10-23: 25 of 25 refused 'chunks' strings)
+                        chunks = _loads_chunks(_rebalance_brackets(_repair_json_escapes(chunks)))
+                        logger.info("CodeEditorTool: 'chunks' parsed after repairing unbalanced brackets.")
+                        bracket_repair_note = (" [Note: your 'chunks' text had a '}' too many or too few; the framework "
+                                               "repaired the brackets.]")
                 except Exception:
                     # JSON Resilience Layer
                     try:
@@ -681,6 +804,35 @@ class CodeEditorTool(BaseTool):
         for idx, chunk in enumerate(chunks):
             if not isinstance(chunk, dict):
                 return {"status": "error", "message": f"Chunk at index {idx} is invalid (got {type(chunk).__name__}). 'chunks' must be a list of JSON objects containing 'search' and 'replace' keys."}
+
+        # Round 3d: {"replace": {"start_line": 46, "end_line": 182}, "replace_text": "..."} -> {start_line, end_line, replace}
+        unnested: List[int] = []
+        for idx, chunk in enumerate(list(chunks)):
+            flat = unnest_replace_object(chunk)
+            if flat is None:
+                continue
+            if "replace" not in flat:
+                where = (f"lines {flat.get('start_line')}-{flat.get('end_line')}" if flat.get("start_line") is not None
+                         else "a 'search' text")
+                return {"status": "error", "message": (
+                    f"Chunk {idx} gives {where} but NO new text, so nothing was changed: its 'replace' is an object, not the "
+                    "new text. Send the new text as the string 'replace' next to the location, e.g. "
+                    "{\"start_line\": 46, \"end_line\": 60, \"replace\": \"<the new lines>\"}.")}
+            chunks[idx] = flat
+            unnested.append(idx)
+        if unnested:
+            logger.info(f"CodeEditorTool: '{agent_id}' wrote the location inside 'replace' in chunk(s) {unnested}; flattened.")
+            nested_replace_note = (
+                f" [Note: chunk(s) {', '.join(map(str, unnested))} had the line numbers / search text INSIDE a 'replace' object; "
+                "they were read as {\"start_line\": .., \"end_line\": .., \"replace\": \"<new text>\"}. Send them that way next "
+                "time.]")
+        for idx, chunk in enumerate(chunks):
+            replace_key = next((key for key in CHUNK_REPLACE_KEYS if key in chunk), None)
+            if replace_key is not None and chunk.get(replace_key) is not None and not isinstance(chunk.get(replace_key), str):
+                # Round 3d: a non-text 'replace' crashed the edit ("replace() argument 2 must be str, not dict")
+                return {"status": "error", "message": (
+                    f"Chunk {idx}: '{replace_key}' must be the new text as ONE string, not a "
+                    f"{type(chunk.get(replace_key)).__name__}. Nothing was changed.")}
 
         # --- FIX +42: Guard against oversized chunks that cause LLM JSON overflow ---
         MAX_CHUNKS = 20
@@ -997,6 +1149,7 @@ class CodeEditorTool(BaseTool):
                 return {
                     "status": "error",
                     "message": f"Code edit failed: {successful} chunks succeeded, but {len(errors)} failed issues occurred.\n" + "\n".join(errors) + "\nNo changes were saved." + earlier_note
+                               + nested_replace_note + bracket_repair_note  # Round 3d
                 }
                 
             emptied = emptied_file_error(filename, original_content, content)
@@ -1052,6 +1205,9 @@ class CodeEditorTool(BaseTool):
                 # Round 2r: syntax check of JavaScript / JSON / shell files (src/tools/source_check.py)
                 from src.tools.source_check import edit_note
                 code_notes_text = await asyncio.to_thread(edit_note, content, filename)
+            # Round 3d: a test of a copy, a loaded module that exports nothing, an npm package package.json lacks
+            from src.tools.file_system import FileSystemTool
+            code_notes_text += await asyncio.to_thread(FileSystemTool._link_notes, base_path, abs_path, content)
             return {
                 "status": "success",
                 "message": f"Successfully applied {successful} edits to '{filename}'."
@@ -1066,6 +1222,7 @@ class CodeEditorTool(BaseTool):
                            + (f" WARNING: {' | '.join(removed_statements)} - these lines are NOT in your new text any more. "
                               "If they were still needed, add them back." if removed_statements else "")
                            + single_chunk_note
+                           + nested_replace_note + bracket_repair_note  # Round 3d
                            + code_notes_text
             }
 

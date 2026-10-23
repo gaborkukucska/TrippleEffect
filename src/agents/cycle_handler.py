@@ -834,7 +834,23 @@ class AgentCycleHandler:
         
         # Create signature for the current call
         current_sig = (tool_name, json.dumps(tool_args, sort_keys=True))
-        
+
+        # Round 3d: a command / test run is run again when the workspace changed since this agent last ran it (also by
+        # another agent): the earlier output would be stale (2026-10-23 12:07:52, 13:41)
+        from src.agents.tool_activity import is_command_run_call, workspace_changed_since_last_run
+        if is_command_run_call(tool_name, tool_args):
+            workspace = None
+            try:
+                project = getattr(self._manager, 'current_project', None)
+                session = getattr(self._manager, 'current_session', None)
+                if project and session:
+                    from src.tools.sandbox_runner import resolve_shared_workspace
+                    workspace = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, str(project), str(session))
+            except Exception as ws_err:
+                logger.debug(f"CycleHandler: workspace of the command run for '{agent.agent_id}' unknown: {ws_err}")
+            if workspace is not None and workspace_changed_since_last_run(agent, current_sig, workspace):
+                return None
+
         def _is_equivalent(sig1: Tuple[str, str], sig2: Tuple[str, str]) -> bool:
             if sig1 == sig2:
                 return True

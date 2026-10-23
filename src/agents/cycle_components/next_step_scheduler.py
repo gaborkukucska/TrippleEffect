@@ -320,6 +320,7 @@ class NextStepScheduler:
                             override_msg = "[EMERGENCY SYSTEM OVERRIDE]: You have failed to execute tools successfully for 3 consecutive cycles. The framework has automatically transitioned you to the 'worker_report' state. You MUST now summarize the issues you encountered and report back to the PM."
                             override_msg += forced_report_details(agent)  # Round 2p: the last error and the way back to work
                             agent.message_history.append({"role": "system", "content": override_msg})
+                            await self._note_forced_report(agent)  # Round 3d: the PM hears of repeated forced reports
                             if self._manager and hasattr(self._manager, 'db_manager') and self._manager.current_session_db_id:
                                 asyncio.create_task(self._manager.db_manager.log_interaction(session_id=self._manager.current_session_db_id, agent_id=agent.agent_id, role="system_emergency_override", content=override_msg))
                             agent.set_status(AGENT_STATUS_IDLE)
@@ -362,6 +363,8 @@ class NextStepScheduler:
                                 
                                 override_msg = f"[EMERGENCY SYSTEM OVERRIDE]: You were stuck in an infinite loop repeating the exact same tool calls. The framework has automatically transitioned you to the '{target_state}' state. You MUST stop repeating your previous actions."
                                 agent.message_history.append({"role": "system", "content": override_msg})
+                                if target_state == WORKER_STATE_REPORT:
+                                    await self._note_forced_report(agent)  # Round 3d
                                 if self._manager and hasattr(self._manager, 'db_manager') and self._manager.current_session_db_id:
                                     await self._manager.db_manager.log_interaction(session_id=self._manager.current_session_db_id, agent_id=agent.agent_id, role="system_emergency_override", content=override_msg)
                                 agent.set_status(AGENT_STATUS_IDLE)
@@ -603,6 +606,37 @@ class NextStepScheduler:
                         return
         
         self._log_end_of_schedule_next_step(agent, "Path E - Default End")
+
+    async def _note_forced_report(self, agent: 'Agent') -> None:
+        """
+        Round 3d: counts a forced worker_report on the worker's current task; every FORCED_REPORTS_BEFORE_ESCALATION-th one
+        the Guardian sends the PM the facts and asks for a different decision (src/agents/task_escalation.py). Never raises.
+        """
+        try:
+            from src.agents.task_escalation import record_forced_report, supervisor_of, escalation_message
+            from src.agents.constants import CONSTITUTIONAL_GUARDIAN_AGENT_ID
+            from src.agents.tool_activity import is_tool_result_failure
+            due = record_forced_report(agent)
+            if not due:
+                return
+            task_id, count = due
+            pm_id = supervisor_of(self._manager, agent)
+            handler = getattr(self._manager, 'interaction_handler', None)
+            if not pm_id or handler is None:
+                logger.info(f"NextStepScheduler: '{agent.agent_id}' forced to report {count}x on task {task_id}; no PM to tell.")
+                return
+            last_error = ""
+            for msg in reversed(list(getattr(agent, "message_history", None) or [])):
+                if isinstance(msg, dict) and msg.get("role") == "tool" and is_tool_result_failure(msg.get("name"), msg.get("content")):
+                    last_error = " ".join(str(msg.get("content") or "").split())[:300]
+                    break
+            logger.warning(f"NextStepScheduler: '{agent.agent_id}' was forced to report {count}x on task {task_id}. "
+                           f"Escalating to its PM '{pm_id}'.")
+            await handler.route_and_activate_agent_message(
+                sender_id=CONSTITUTIONAL_GUARDIAN_AGENT_ID, target_identifier=pm_id,
+                message_content=escalation_message(agent, task_id, count, last_error))
+        except Exception as err:
+            logger.error(f"NextStepScheduler: escalation of the forced reports of '{getattr(agent, 'agent_id', '?')}' failed: {err}")
 
     def _log_end_of_schedule_next_step(self, agent: 'Agent', path_identifier: str) -> None:
         logger.debug(f"NextStepScheduler (END via {path_identifier}): Agent '{getattr(agent, 'agent_id', 'N/A')}', "

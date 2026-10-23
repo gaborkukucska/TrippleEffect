@@ -24,6 +24,40 @@ SUMMARY_MAX_TOKENS = 1000
 FALLBACK_SUMMARY_MAX_LINES = 30
 FALLBACK_TEXT_CHARS = 160
 
+# --- Round 3d: summaries roll on instead of one summary followed by hard truncations ------------------------------------------
+# 2026-10-23 (Multiplayer_Snake_Game): every summary adds TWO messages ('[CONTEXT SUMMARY 1/2' and '2/2'), and "2 summaries
+# present" stopped all further summaries. So after the FIRST summary of a worker, every later condensation was a hard
+# truncation that kept only the last 2 messages and that first, ever older summary (139 "summarization SKIPPED", 32 hard
+# truncations); W1 forgot what it had just read and read tests/test_gameLogic.js 50+ times. Now a new summary is made
+# whenever enough NEW messages have come in since the last one (the older summary is summarized with the rest); only a
+# history that is still too big right after a summary is hard-truncated near the window's end.
+SUMMARY_MARKER = "[CONTEXT SUMMARY"
+CONDENSED_KEEP_MESSAGES = 6        # messages _create_condensed_history keeps after the summaries
+MIN_NEW_MESSAGES_FOR_NEW_SUMMARY = 6
+
+
+def is_summary_message(msg: Any) -> bool:
+    return isinstance(msg, dict) and msg.get("role") == "system" and SUMMARY_MARKER in str(msg.get("content") or "")
+
+
+def messages_since_last_summary(history: Optional[List[Dict[str, Any]]]) -> Optional[int]:
+    """How many messages follow the newest summary message, or None if the history holds no summary."""
+    messages = list(history or [])
+    for index in range(len(messages) - 1, -1, -1):
+        if is_summary_message(messages[index]):
+            return len(messages) - index - 1
+    return None
+
+
+def new_summary_would_help(history: Optional[List[Dict[str, Any]]]) -> bool:
+    """
+    True if a new LLM summary can shrink the history: there is no summary yet, or enough messages came in after the newest one
+    (more than the condensation keeps plus MIN_NEW_MESSAGES_FOR_NEW_SUMMARY). False right after a summary: summarizing again
+    would only repeat it.
+    """
+    since = messages_since_last_summary(history)
+    return since is None or since >= CONDENSED_KEEP_MESSAGES + MIN_NEW_MESSAGES_FOR_NEW_SUMMARY
+
 
 def _short(text: Any, limit: int = FALLBACK_TEXT_CHARS) -> str:
     flat = " ".join(str(text or "").split())
@@ -125,23 +159,17 @@ class ContextSummarizer:
         
         if context_length > threshold:
             # CRITICAL FIX: Prevent infinite summarization loops, but allow EMERGENCY truncation.
-            if message_history:
-                summary_count = sum(
-                    1 for msg in message_history
-                    if msg.get('role') == 'system' and '[CONTEXT SUMMARY' in msg.get('content', '')
-                )
-                
+            # Round 3d: "loop" = summarizing again right after a summary; once enough new messages came in, summarize again.
+            if message_history and not new_summary_would_help(message_history):
+                since = messages_since_last_summary(message_history)
                 hard_limit = int(model_num_ctx * 0.9) if (model_num_ctx and model_num_ctx > 0) else 29000
-                
-                if summary_count >= 2:
-                    if context_length >= hard_limit:
-                        logger.warning(f"CRITICAL: Context {context_length} tokens approaching hard limit {hard_limit} for agent {agent_id}! Forcing emergency hard truncation.")
-                        return True
-                    else:
-                        logger.info(f"Context summarization SKIPPED for agent {agent_id}. "
-                                   f"Context: {context_length} tokens > Threshold: {threshold}, "
-                                   f"but {summary_count} summaries already present.")
-                        return False
+                if context_length >= hard_limit:
+                    logger.warning(f"CRITICAL: Context {context_length} tokens approaching hard limit {hard_limit} for agent {agent_id}! Forcing emergency hard truncation.")
+                    return True
+                logger.info(f"Context summarization SKIPPED for agent {agent_id}. "
+                            f"Context: {context_length} tokens > Threshold: {threshold}, "
+                            f"but only {since} message(s) came after the last summary.")
+                return False
             
             logger.info(f"Context summarization triggered for agent {agent_id}. "
                        f"Context: {context_length} tokens, Threshold: {threshold}")
@@ -169,17 +197,18 @@ class ContextSummarizer:
             logger.warning("Constitutional Guardian not available for context summarization")
             return False, None
             
-        # Check if we need to do an emergency hard truncate instead of LLM summarization
-        summary_count = sum(1 for msg in message_history if msg.get('role') == 'system' and '[CONTEXT SUMMARY' in msg.get('content', ''))
-        if summary_count >= 2:
+        # Check if we need to do an emergency hard truncate instead of LLM summarization (Round 3d: only right after a
+        # summary - otherwise the history is summarized again, the older summary with it)
+        if not new_summary_would_help(message_history):
             logger.warning(f"Performing emergency HARD TRUNCATION for agent {agent_id} to avoid context limit loops.")
             condensed = []
-            if message_history and message_history[0].get('role') == 'system':
+            if message_history and message_history[0].get('role') == 'system' and not is_summary_message(message_history[0]):
                 condensed.append(message_history[0])
             
-            for msg in message_history:
-                if msg.get('role') == 'system' and '[CONTEXT SUMMARY' in msg.get('content', ''):
-                    condensed.append(msg)
+            # Round 3d: only the NEWEST summary (one '1/2' + '2/2' pair), not every older one as well
+            summaries = [msg for msg in message_history if is_summary_message(msg)]
+            for msg in summaries[-2:]:
+                condensed.append(msg)
                     
             if len(message_history) > 2:
                 for msg in message_history[-2:]:
@@ -329,11 +358,19 @@ Please provide your summary as plain text (no XML tags needed for this summariza
         
         for msg in chunk:
             role = msg.get('role', 'unknown')
-            content = msg.get('content', '')
-            
-            # Truncate very long messages
-            if len(content) > 2000:
-                content = content[:1900] + "...[truncated]"
+            content = str(msg.get('content') or '')  # Round 3d: None for tool-call messages
+            if role == "assistant" and msg.get("tool_calls"):
+                # Round 3d: the calls themselves (a tool-call message has no text, so the summary did not know what was done)
+                called = [line[len("- called "):] for line in fallback_chunk_summary([msg]).splitlines()
+                          if line.startswith("- called ")]
+                if called:
+                    content = (content + " " if content else "") + "[called " + "; ".join(called) + "]"
+
+            # Truncate very long messages (Round 3d: an earlier summary is kept up to its full size, ~1000 tokens, so a new
+            # summary carries it on)
+            limit = 4400 if is_summary_message(msg) else 2000
+            if len(content) > limit:
+                content = content[:limit - 100] + "...[truncated]"
             
             formatted_messages.append(f"[{role.upper()}]: {content}")
         

@@ -560,6 +560,45 @@ class FileSystemTool(BaseTool):
             "message": f"'content' parameter is required for '{action}'. Received parameters: {names}. Pass the text to write as 'content'.",
         }
 
+    @staticmethod
+    def _link_notes(base_path: Path, file_path: Path, content: str) -> str:
+        """Round 3d: src/tools/project_links_check.link_notes_text for a saved file ('' if nothing to say). Never raises."""
+        try:
+            from src.tools.project_links_check import link_notes_text
+            rel = Path(file_path).resolve().relative_to(Path(base_path).resolve()).as_posix()
+            return link_notes_text(base_path, rel, content)
+        except Exception as err:
+            logger.debug(f"FileSystemTool: link notes for '{file_path}' failed: {err}")
+            return ""
+
+    @staticmethod
+    def _line_edit_list(value: Any) -> Optional[List[Dict[str, Any]]]:
+        """
+        Round 3d: `value` as a list of code_editor chunks if it is a list of edit objects (or the JSON text of one, or of one
+        object) - each with line numbers, a search text or a 'replace' object - else None.
+        """
+        parsed = value
+        if isinstance(value, str):
+            text = value.strip()
+            if not text.startswith(("[", "{")):
+                return None
+            from src.tools.code_editor import _loads_chunks, _rebalance_brackets, _repair_json_escapes
+            try:
+                parsed = _loads_chunks(text)
+            except Exception:
+                try:
+                    parsed = _loads_chunks(_rebalance_brackets(_repair_json_escapes(text)))
+                except Exception:
+                    return None
+        if isinstance(parsed, dict):
+            parsed = [parsed]
+        if not isinstance(parsed, list) or not parsed or not all(isinstance(item, dict) for item in parsed):
+            return None
+        edit_keys = ("start_line", "end_line", "search", "search_block", "find")
+        if not all(any(key in item for key in edit_keys) or isinstance(item.get("replace"), dict) for item in parsed):
+            return None
+        return parsed
+
     async def execute(
         self,
         agent_id: str,
@@ -875,6 +914,22 @@ class FileSystemTool(BaseTool):
                     replace_start_line = _safe_int(start_line)
                 if replace_end_line is None and end_line is not None:
                     replace_end_line = _safe_int(end_line)
+                line_edits = self._line_edit_list(_fo(kwargs.get("replace_lines"), kwargs.get("chunks"),
+                                                      kwargs.get("edits"), kwargs.get("replacements")))
+                if line_edits is not None and (replace_start_line is None or replace_end_line is None):
+                    # Round 3d: 2026-10-23 12:31-14:36 W1/W2 sent the edits as a LIST under 'replace_lines'
+                    # ('[{"start_line": 73, "end_line": 110, "replace_text": "..."}]') 5 times: each one is a code_editor chunk
+                    from src.tools.code_editor import CodeEditorTool
+                    logger.info(f"FileSystemTool: replace_lines from '{agent_id}' with a list of line edits; passing it to code_editor.")
+                    ce_result = await CodeEditorTool().execute(
+                        agent_id, agent_sandbox_path, project_name=project_name, session_name=session_name,
+                        action="replace_chunks", filename=filename, chunks=line_edits, scope=scope,
+                    )
+                    if isinstance(ce_result, dict) and ce_result.get("message"):
+                        ce_result["message"] = ("[Note: your 'replace_lines' held a list of line edits, so the framework applied "
+                                                "them with the code_editor tool. For ONE range use replace_start_line, "
+                                                "replace_end_line and content.] " + str(ce_result["message"]))
+                    return ce_result
                 if replace_start_line is None or replace_end_line is None:
                     # Round 2d: W1 sent replace_lines with find_text + replace_text and no (or only an end) line number 3 times
                     # on 2026-10-18 23:29-23:38. Old text + new text is a search/replace: do that instead of refusing.
@@ -890,6 +945,10 @@ class FileSystemTool(BaseTool):
                     # Round 1v: W1 sent the new lines as 'replace_text' three times; that IS the content here.
                     content = _fo(replace_text, replace_block_param, kwargs.get("replacement_content"),
                                   kwargs.get("new_content"), kwargs.get("new_text"), kwargs.get("new_lines"))
+                if content is None and isinstance(kwargs.get("replace_lines"), str) and line_edits is None:
+                    # Round 3d: 2026-10-23 15:03:22 W1 sent the new lines as 'replace_lines' (with replace_start_line 94 and
+                    # replace_end_line 144) and got "'content' parameter is required"
+                    content = kwargs.get("replace_lines")
                 if content is None: return self._content_required_error("replace_lines", kwargs)
                 result = await self._replace_lines_in_file(base_path, filename, replace_start_line, replace_end_line, content, agent_id, scope_description)
             elif action == "search_replace_block":
@@ -1732,6 +1791,8 @@ Pushes changes to a remote repository.
                 # with a syntax error was rejected above, so only a blank file (e.g. an empty .json) still gets a note.
                 from src.tools.source_check import write_note
                 success_msg += await asyncio.to_thread(write_note, content, filename)
+            # Round 3d: a test of a copy, a loaded module that exports nothing, an npm package package.json lacks
+            success_msg += await asyncio.to_thread(self._link_notes, base_path, validated_path, content)
             return {"status": "success", "message": success_msg}
         except FileExistsError:
             logger.warning(f"Agent {agent_id} attempted to write file '{filename}' but a parent path exists as a file."); return {"status": "error", "message": f"Cannot write to '{filename}': A parent path already exists but is a FILE, not a directory. Did you previously use 'write' instead of 'mkdir' to create a directory?"}

@@ -644,9 +644,24 @@ class AgentManager:
                                 if has_waiting_workers:
                                     waiting_agent_ids = [w.agent_id for w in waiting_workers]
                                     ids_str = ", ".join(waiting_agent_ids)
-                                    filter_example = f"<project_management><action>list_tasks</action><assignee_filter>{waiting_agent_ids[0]}</assignee_filter></project_management>"
-                                    wake_msg_parts.append(f"\\nCRITICAL INSTRUCTION: Since worker(s) {ids_str} are waiting, you MUST use `list_tasks` filtered to their specific ID to see what work they have completed. Example: {filter_example}")
-                                
+                                    # Round 3d: the example was XML (the agents call tools natively) and every wake-up for a
+                                    # waiting worker read as "find this worker a task": 2026-10-23 13:17, 13:29 and 14:03 PM1
+                                    # created three "Update Project Documentation" tasks for the idle W2.
+                                    wake_msg_parts.append(
+                                        f"\nWorker(s) {ids_str} are waiting. Check what they finished: call `project_management` "
+                                        f"with action=\"list_tasks\" and assignee_filter=\"{waiting_agent_ids[0]}\".")
+                                    if not open_work_hint:
+                                        try:
+                                            open_work_hint = assignment_hint_for(self, agent)  # unassigned work for them?
+                                        except Exception as hint_err:
+                                            logger.debug(f"Watchdog: assignment hint for '{agent.agent_id}' failed: {hint_err}")
+                                            open_work_hint = None
+                                    if not open_work_hint:
+                                        wake_msg_parts.append(
+                                            "If no task is open for them, that is NORMAL while other workers finish: do NOT "
+                                            "create a task just to keep them busy and do NOT give out a finished task again. "
+                                            "If nothing needs a decision, request 'pm_standby'.")
+
                                 wake_msg = " ".join(wake_msg_parts)
                                 if open_work_hint:
                                     wake_msg += "\n" + open_work_hint
