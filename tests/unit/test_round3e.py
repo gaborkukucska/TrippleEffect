@@ -113,7 +113,9 @@ def test_starts_server_on_load():
     assert starts_server_on_load(SERVER_JS_GUARDED) is None                   # only when run directly
     assert starts_server_on_load("function start() {\n  server.listen(3000);\n}\nmodule.exports = start;\n") is None
     assert starts_server_on_load("// server.listen(3000);\nmodule.exports = {};\n") is None
-    assert starts_server_on_load("if (!module.parent) {\n  app.listen(3000);\n}\napp.listen(1);\n") is None
+    assert starts_server_on_load("if (!module.parent) {\n  app.listen(3000);\n}\n") is None
+    # Round 3f: a guard elsewhere in the file does not hide an unguarded listen
+    assert starts_server_on_load("if (!module.parent) {\n  app.listen(3000);\n}\napp.listen(1);\n") == "`app.listen(` at line 4"
     assert starts_server_on_load("") is None and starts_server_on_load(None) is None
 
 
@@ -153,7 +155,8 @@ def test_test_hang_hint(tmp_path):
     assert test_hang_hint(ws, "npm install") == ""
     (ws / "src" / "server.js").write_text(SERVER_JS_GUARDED, encoding="utf-8")
     generic = test_hang_hint(ws, "npx mocha tests/")
-    assert generic.startswith("\n[Framework hint - a TEST run that does not end keeps something open:]")
+    assert generic.startswith("\n[Framework hint - a TEST run that does not end either loops forever or keeps something "
+                              "open:]")   # Round 3f: CPU use unknown
     assert "`--exit`" in generic and "will not help" in generic
     assert test_hang_hint(None, "npm test").startswith("\n[Framework hint - a TEST run that does not end")
 

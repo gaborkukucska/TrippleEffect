@@ -587,6 +587,44 @@ class ToolExecutor:
         
         return fallback_response
 
+    @staticmethod
+    def _foreign_file_creation_message(tool_args: Dict[str, Any], agent_id: str, project_name: Optional[str],
+                                       session_name: Optional[str], manager: Any) -> Optional[str]:
+        """
+        Round 3f: for a file_system 'write' of a NEW file in the shared workspace, the refusal text when the file belongs to
+        a task assigned to another worker (src/tools/project_management.foreign_file_creation_error), else None.
+        """
+        try:
+            action = tool_args.get("action")
+            if not isinstance(action, str):
+                return None
+            action = action.strip().strip("<>/\"' \t").lower()
+            from src.agents.tool_activity import FORCE_WRITE_ACTIONS
+            if action not in ("write", "write_file") and action not in FORCE_WRITE_ACTIONS:
+                return None
+            if not project_name or not session_name:
+                return None
+            if str(tool_args.get("scope") or "shared").lower() != "shared":
+                return None
+            filename = None
+            for key in ("filename", "filepath", "file", "path", "file_path", "file_name", "target_file", "name"):
+                value = tool_args.get(key)
+                if isinstance(value, str) and value.strip():
+                    filename = value.strip()
+                    break
+            if not filename or filename.startswith("/") or ".." in Path(filename).parts:
+                return None
+            from src.config.settings import settings
+            from src.tools.sandbox_runner import resolve_shared_workspace
+            workspace = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, project_name, session_name)
+            if (workspace / filename).exists():
+                return None  # changing an existing file stays allowed
+            from src.tools.project_management import foreign_file_creation_error
+            return foreign_file_creation_error(manager, agent_id, project_name, session_name, filename)
+        except Exception as err:
+            logger.debug(f"ToolExecutor: foreign file check failed: {err}")
+            return None
+
     async def execute_tool(
         self,
         agent_id: str,
@@ -866,6 +904,16 @@ class ToolExecutor:
                     logger.error(f"ToolExecutor: {error_msg}")
                     return error_msg
             
+            # --- Round 3f: a worker does not create the file of a task assigned to ANOTHER worker ---
+            if tool_name == "file_system" and agent_type_for_auth == AGENT_TYPE_WORKER and manager is not None:
+                ownership_message = self._foreign_file_creation_message(kwargs_for_tool, agent_id, project_name,
+                                                                        session_name, manager)
+                if ownership_message:
+                    logger.warning(f"[TOOL_EXEC_BLOCKED] ID:{execution_id} | 'file_system' write of '{agent_id}' refused: "
+                                   "the file belongs to another worker's task.")
+                    self._update_execution_stats(success=False)
+                    return f"{fuzzy_warning}Error from tool '{tool_name}': {ownership_message}"
+
             # --- Deterministic Policy Gate (Review S2) ---
             # Runs for native and legacy tool calls alike, after authorization and
             # argument validation and before any side effect. Shell tools are checked

@@ -322,6 +322,56 @@ DEFAULT_CONNECT_TIMEOUT = 15.0
 DEFAULT_READ_TIMEOUT = 1800.0 
 DEFAULT_TOTAL_TIMEOUT = 3600.0 
 
+# --- Round 3f: a stream that stops AFTER it started -----------------------------------------------------------------------
+# 2026-10-23 20:53:51 (WiFi_Snake_Multiplayer_Game) the Ollama stream of a context summary stopped after 2,608 characters;
+# the per-chunk timeout (DEFAULT_READ_TIMEOUT, 30 minutes, needed for the FIRST chunk: a long prompt on slow hardware or a
+# request queued behind others) fired at 21:24:02, and the whole team waited. Once replies have streamed, the slowest output
+# rate seen for the model tells how long the longest silent stretch can be (Ollama holds back a native tool call until it
+# is complete, so a whole reply of num_predict tokens may arrive at once): after the first data the timeout is
+# num_predict / slowest rate x 1.5 + 60 s, at least STREAM_STALL_MIN_SECONDS and at most DEFAULT_READ_TIMEOUT.
+STREAM_STALL_MIN_SECONDS = 180.0
+STREAM_STALL_MARGIN_SECONDS = 60.0
+_MIN_TOKENS_FOR_RATE = 20
+_RATE_HISTORY = 20
+_output_rates: Dict[str, List[float]] = {}
+
+
+def note_output_rate(rate_key: str, data: Any) -> Optional[float]:
+    """Remembers the output rate (tokens/s) of a finished reply for rate_key (base URL + model). Returns it, or None."""
+    try:
+        if not isinstance(data, dict):
+            return None
+        count, duration = data.get("eval_count"), data.get("eval_duration")
+        if not isinstance(count, int) or isinstance(count, bool) or count < _MIN_TOKENS_FOR_RATE:
+            return None
+        if not isinstance(duration, (int, float)) or isinstance(duration, bool) or duration <= 0:
+            return None
+        rate = count / (float(duration) / 1e9)
+        rates = _output_rates.setdefault(str(rate_key), [])
+        rates.append(rate)
+        del rates[:-_RATE_HISTORY]
+        return rate
+    except Exception:
+        return None
+
+
+def stream_stall_timeout(rate_key: str, num_predict: Any) -> float:
+    """Seconds without data after a stream has started before it counts as stopped (DEFAULT_READ_TIMEOUT if no rate known)."""
+    rates = _output_rates.get(str(rate_key)) or []
+    if not rates:
+        return DEFAULT_READ_TIMEOUT
+    try:
+        budget = int(num_predict) if num_predict and int(num_predict) > 0 else 8192
+    except (TypeError, ValueError):
+        budget = 8192
+    seconds = budget / min(rates) * 1.5 + STREAM_STALL_MARGIN_SECONDS
+    return round(min(DEFAULT_READ_TIMEOUT, max(STREAM_STALL_MIN_SECONDS, seconds)), 1)
+
+
+def reset_output_rates() -> None:
+    """For tests."""
+    _output_rates.clear()
+
 from src.config.settings import settings 
 import copy
 
@@ -757,16 +807,20 @@ class OllamaProvider(BaseLLMProvider):
                         # indefinite hangs when Ollama unloads/stops model mid-stream.
                         # aiohttp's sock_read timeout does not always fire in chunked
                         # transfer-encoding edge cases, so this is a hard safety net.
-                        chunk_read_timeout = DEFAULT_READ_TIMEOUT  # 240s per chunk
+                        rate_key = f"{self.base_url}|{model}"  # Round 3f
+                        stall_timeout = stream_stall_timeout(rate_key, valid_options.get("num_predict"))
                         stream_iter = response.content.iter_any().__aiter__()
                         keep_alive_count = 0
                         while True:
+                            # Round 3f: the long timeout only until the first reply line arrived
+                            chunk_read_timeout = stall_timeout if processed_lines > 0 else DEFAULT_READ_TIMEOUT
                             try:
                                 chunk = await asyncio.wait_for(stream_iter.__anext__(), timeout=chunk_read_timeout)
                             except StopAsyncIteration:
                                 break  # Stream ended normally
                             except asyncio.TimeoutError:
-                                logger.error(f"OllamaProvider: Hard per-chunk read timeout ({chunk_read_timeout}s) fired. Ollama likely stopped mid-stream.")
+                                logger.error(f"OllamaProvider: Hard per-chunk read timeout ({chunk_read_timeout}s) fired "
+                                             f"after {processed_lines} reply line(s). Ollama likely stopped mid-stream.")
                                 stream_error_obj = asyncio.TimeoutError(f"No data received from Ollama for {chunk_read_timeout}s during streaming")
                                 yield {"type": "error", "content": f"[Ollama Error]: Stream stalled - no data for {chunk_read_timeout}s. Model may have been unloaded.", "_exception_obj": stream_error_obj}
                                 stream_error_occurred = True
@@ -801,6 +855,7 @@ class OllamaProvider(BaseLLMProvider):
                                                  # logger.debug(f"OllamaProvider: Yielding response_chunk: {content_chunk[:100]}...") # Disabled to prevent log spam
                                                  yield {"type": "response_chunk", "content": content_chunk}
                                     if chunk_data.get("done", False):
+                                        note_output_rate(f"{self.base_url}|{model}", chunk_data)  # Round 3f
                                         all_thinking = "".join(streamed_thinking)
                                         finish_reason = log_ollama_finish(chunk_data, thinking_chars=len(all_thinking),
                                                                           content_chars=streamed_content_chars, thinking_text=all_thinking)
@@ -908,6 +963,7 @@ class OllamaProvider(BaseLLMProvider):
                                                                    thinking_text="".join(accumulated_thinking_parts))
                              else:
                                  finish_reason = log_ollama_finish(response_data)
+                             note_output_rate(f"{self.base_url}|{model}", response_data)  # Round 3f
                              finish_event = finish_info_event(response_data, finish_reason,
                                                               num_ctx=valid_options.get("num_ctx"),
                                                               num_predict=valid_options.get("num_predict"))

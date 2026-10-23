@@ -19,6 +19,8 @@ What it guarantees (Review items S1, S3, R4, R10):
   until timeout. Commands ending in a single ``&`` are detached explicitly and
   their output goes to a log file the agent can read later.
 * Captured output is bounded (head + tail) before it is decoded.
+* Round 3f: before a timed-out group is stopped, its CPU use over one second is measured (``SandboxResult.cpu_busy``,
+  Linux /proc only), so the agent can be told whether the program was stuck in a loop (busy) or waiting (idle).
 
 This is NOT an OS-level sandbox: the command still runs as the server user and
 can reach the network and any path that user can. Deterministic command rules
@@ -101,6 +103,8 @@ class SandboxResult:
     background_log: Optional[str] = None  # path relative to cwd, when detached
     message: str = ""
     command_executed: str = ""
+    # Round 3f: on timeout, the CPU cores the process group used in its last second (1.0 = one core busy), None if unknown
+    cpu_busy: Optional[float] = None
 
 
 # --- Settings helpers (lazy, so the module stays importable in unit tests) ---
@@ -269,6 +273,58 @@ async def _terminate_group(process: "asyncio.subprocess.Process") -> None:
         logger.error(f"sandbox_runner: process {process.pid} did not exit after SIGKILL.")
 
 
+# --- Round 3f: was a timed-out command busy or waiting? ---------------------------------------------------------------
+# 2026-10-23 20:47-21:26 (WiFi_Snake_Multiplayer_Game) `node test/game.test.js` and `npm test` timed out 4 times: the game's
+# spawnFood() looped forever (a 0x0 board has no free cell). The agent was told about interactive prompts and servers left
+# open, and kept looking for a socket that was never opened. A loop keeps a CPU core busy; a process that waits does not.
+CPU_SAMPLE_SECONDS = 1.0
+
+
+def _group_cpu_seconds(pgid: int) -> Optional[float]:
+    """CPU seconds (user + system) used so far by the live processes of process group pgid; None without /proc."""
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return None
+    try:
+        ticks_per_second = os.sysconf("SC_CLK_TCK")
+    except (ValueError, OSError, AttributeError):
+        return None
+    total = 0
+    found = False
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text()
+        except OSError:
+            continue
+        fields = stat[stat.rfind(")") + 2:].split()
+        try:
+            if int(fields[2]) != pgid:  # fields after the name: state, ppid, pgrp, ...
+                continue
+            total += int(fields[11]) + int(fields[12])  # utime, stime
+            found = True
+        except (IndexError, ValueError):
+            continue
+    return total / ticks_per_second if found else None
+
+
+async def group_cpu_rate(pgid: int, interval: float = CPU_SAMPLE_SECONDS) -> Optional[float]:
+    """CPU cores process group pgid used over the next `interval` seconds (1.0 = one core fully busy), or None."""
+    try:
+        first = _group_cpu_seconds(pgid)
+        if first is None:
+            return None
+        await asyncio.sleep(interval)
+        second = _group_cpu_seconds(pgid)
+        if second is None:
+            return None
+        return round(max(0.0, second - first) / interval, 2)
+    except Exception as e:
+        logger.debug(f"sandbox_runner: CPU sample of group {pgid} failed: {e}")
+        return None
+
+
 def _read_capped(fileobj, max_bytes: int) -> Tuple[str, bool, int]:
     """Returns (text, truncated, total_bytes); keeps head and tail when large."""
     try:
@@ -344,11 +400,15 @@ async def run_sandboxed(
                                  command_executed=command_to_run)
 
         status = "completed"
+        cpu_busy: Optional[float] = None
         try:
             await asyncio.wait_for(process.wait(), timeout=timeout)
         except asyncio.TimeoutError:
             status = "timeout"
-            logger.warning(f"sandbox_runner: '{tool_name}' command for agent {agent_id} timed out after {timeout}s; terminating process group {process.pid}.")
+            cpu_busy = await group_cpu_rate(process.pid)  # Round 3f: busy (a loop) or waiting?
+            logger.warning(f"sandbox_runner: '{tool_name}' command for agent {agent_id} timed out after {timeout}s "
+                           f"(CPU in its last second: {cpu_busy if cpu_busy is not None else 'unknown'}); "
+                           f"terminating process group {process.pid}.")
             await _terminate_group(process)
         except asyncio.CancelledError:
             logger.warning(f"sandbox_runner: '{tool_name}' command for agent {agent_id} cancelled; terminating process group {process.pid}.")
@@ -371,5 +431,6 @@ async def run_sandboxed(
         duration_seconds=round(duration, 2),
         background_log=background_log,
         command_executed=command_to_run,
+        cpu_busy=cpu_busy,
     )
 # END OF FILE src/tools/sandbox_runner.py

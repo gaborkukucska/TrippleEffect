@@ -15,7 +15,8 @@ syntax error, so the existing checks (python_static_check, source_check) saw not
   `import {a} from './m.js'`) that exports nothing.
 * missing_dependency_problems(): a JavaScript file that requires an npm package that package.json does not list.
 * server_on_load_problems() (Round 3e): a test file that loads a project module which starts a server when it is loaded,
-  so the test run never ends; test_hang_hint(): the text for an agent whose test command timed out.
+  so the test run never ends; test_hang_hint(): the text for an agent whose test command timed out (Round 3f: a busy
+  process - a loop that never ends - or an idle one, measured by src/tools/sandbox_runner.py, and the last output line).
 * link_problems(workspace, path): all of these for one existing file (used by the task completion check,
   src/utils/task_files.py); link_notes_text(): the '[Framework check ...]' text for a write or an edit that WAS saved.
 
@@ -337,6 +338,14 @@ _RUN_DIRECTLY_GUARDS = ("require.main === module", "require.main == module", "re
 _TEST_COMMAND_RE = re.compile(
     r"\b(?:npm\s+(?:run\s+)?test|npm\s+t\b|yarn\s+test|pnpm\s+test|npx\s+(?:mocha|jest|vitest)|mocha|jest|vitest|"
     r"node\s+--test|pytest|python3?\s+-m\s+(?:pytest|unittest))\b")
+# Round 3f: a test FILE run directly ('node test/game.test.js', 'python tests/test_x.py'). 2026-10-23 20:47 and 21:24 such
+# runs timed out and the agent was told about interactive prompts and servers instead of why a test run does not end.
+_DIRECT_TEST_RUN_RE = re.compile(
+    r"(?:^|[\s;&|(])(?:node|nodejs|bun|deno\s+(?:run|test)|python3?|py|npx\s+(?:ts-node|tsx))"
+    r"(?:\s+-{1,2}[\w-]+(?:=\S+)?)*\s+(['\"]?)(?P<path>[^\s'\";&|()]+)\1")
+# CPU cores a timed-out process group used in its last second (sandbox_runner.SandboxResult.cpu_busy)
+BUSY_CPU_RATE = 0.5
+IDLE_CPU_RATE = 0.05
 
 
 def starts_server_on_load(source: Optional[str]) -> Optional[str]:
@@ -348,13 +357,29 @@ def starts_server_on_load(source: Optional[str]) -> Optional[str]:
     if not source:
         return None
     stripped = _strip_js_comments(source)
-    if any(guard in stripped for guard in _RUN_DIRECTLY_GUARDS):
-        return None
-    match = _TOP_LEVEL_LISTEN_RE.search(stripped)
-    if not match:
-        return None
-    line = stripped.count("\n", 0, match.start()) + 1
-    return f"`{match.group(1)}.listen(` at line {line}"
+    for match in _TOP_LEVEL_LISTEN_RE.finditer(stripped):
+        if _inside_run_directly_guard(stripped, match.start()):
+            continue
+        line = stripped.count("\n", 0, match.start()) + 1
+        return f"`{match.group(1)}.listen(` at line {line}"
+    return None
+
+
+def _inside_run_directly_guard(source: str, position: int) -> bool:
+    """
+    Round 3f: True if the listen call at `position` is inside a "run directly" guard (`if (require.main === module) {`
+    still open there, or the guard on the same line). 2026-10-23 21:26 W2 ADDED a guarded listen to src/server/server.js
+    and kept the unguarded one above it: any guard in the file used to hide both.
+    """
+    before = source[:position]
+    starts = [(before.rfind(guard), guard) for guard in _RUN_DIRECTLY_GUARDS]
+    start, guard = max(starts)
+    if start < 0:
+        return False
+    between = before[start + len(guard):]
+    if "\n" not in between:
+        return True  # if (require.main === module) server.listen(...)
+    return between.count("{") > between.count("}")
 
 
 def _mocha_exits(workspace: Path) -> bool:
@@ -412,19 +437,102 @@ def server_on_load_problems(workspace: Path, rel_path: str, source: Optional[str
     return problems
 
 
+def _direct_test_runs(command: str) -> List["re.Match"]:
+    """Round 3f: the matches of a test FILE run directly ('node test/game.test.js')."""
+    return [m for m in _DIRECT_TEST_RUN_RE.finditer(command) if is_test_file(m.group("path"))]
+
+
+# Round 3f: 2026-10-23 test/game.test.js (WiFi_Snake_Multiplayer_Game) did `global.process = { exit: function(code) {...} }`
+# and ended with `if (testsFailed > 0) { process.exit(1); }` - a failing run would have ended with exit code 0 ("passed").
+_PROCESS_OVERRIDE_RE = re.compile(r"^\s*(?:global|globalThis|window)\.process\s*=(?!=)", re.MULTILINE)
+
+
+def process_override_problems(rel_path: str, source: Optional[str]) -> List[str]:
+    """Round 3f: a JavaScript TEST file that replaces Node's `process` object (its exit code no longer reports failures)."""
+    try:
+        rel = str(rel_path).replace("\\", "/")
+        if _language(rel) != "javascript" or not is_test_file(rel) or not source:
+            return []
+        stripped = _strip_js_comments(source)
+        match = _PROCESS_OVERRIDE_RE.search(stripped)
+        if not match:
+            return []
+        line = stripped.count("\n", 0, match.start()) + 1
+        return [f"{rel} replaces Node's `process` object (`{match.group(0).strip()}` at line {line}): process.exit() and the "
+                "exit code no longer work, so a FAILING test run ends with exit code 0 (it looks passed) or never ends. "
+                "Do not assign global.process; to test code that calls process.exit, pass a function in or stub only "
+                "`process.exit` and restore it afterwards."]
+    except Exception as err:
+        logger.debug(f"process_override_problems({rel_path}) failed: {err}")
+        return []
+
+
 def is_test_command(command: Optional[str]) -> bool:
-    """True for a command that runs tests (npm test, npx mocha, jest, node --test, pytest, ...)."""
-    return bool(command) and bool(_TEST_COMMAND_RE.search(str(command)))
+    """True for a command that runs tests (npm test, npx mocha, jest, node --test, pytest, node test/x.test.js, ...)."""
+    if not command:
+        return False
+    text = str(command)
+    return bool(_TEST_COMMAND_RE.search(text)) or bool(_direct_test_runs(text))
 
 
-def test_hang_hint(workspace: Optional[Path], command: Optional[str]) -> str:
+def test_command_end(command: Optional[str]) -> Optional[int]:
+    """Round 3f: the position right after the LAST test invocation in the command (for '... || true' checks), or None."""
+    if not command:
+        return None
+    text = str(command)
+    ends = [m.end() for m in _TEST_COMMAND_RE.finditer(text)] + [m.end() for m in _direct_test_runs(text)]
+    return max(ends) if ends else None
+
+
+def last_output_line(output: Optional[str]) -> str:
+    """Round 3f: the last non-empty line of a command's output (at most 200 characters), '' if none."""
+    for line in reversed(str(output or "").splitlines()):
+        line = line.strip()
+        if line and not line.startswith("...[") and not line.startswith("--- "):
+            return line if len(line) <= 200 else line[:197] + "..."
+    return ""
+
+
+def cpu_state(cpu_busy: Optional[float]) -> Optional[str]:
+    """Round 3f: 'busy', 'idle' or None (unknown / in between) for the CPU use of a timed-out process group."""
+    if not isinstance(cpu_busy, (int, float)) or isinstance(cpu_busy, bool):
+        return None
+    if cpu_busy >= BUSY_CPU_RATE:
+        return "busy"
+    if cpu_busy <= IDLE_CPU_RATE:
+        return "idle"
+    return None
+
+
+def busy_loop_text(cpu_busy: float, output: Optional[str]) -> str:
+    """Round 3f: what a timed-out command that kept the CPU busy means."""
+    last = last_output_line(output)
+    where = (f" It printed last: '{last}' - the code that runs right AFTER that line is where it loops." if last
+             else " It printed nothing, so it loops before its first output (e.g. while a module is loaded).")
+    return (f"the process was BUSY when it was stopped (it used {min(cpu_busy, 9.99) * 100:.0f}% of a CPU core), so it was "
+            "not waiting for anything: the code is stuck in a loop that never ends - a `while`/`for` loop whose exit "
+            "condition never becomes true (e.g. it searches for a free cell on a board whose size is still 0, or a counter "
+            "that is never changed), or a function that keeps calling itself." + where)
+
+
+def test_hang_hint(workspace: Optional[Path], command: Optional[str], cpu_busy: Optional[float] = None,
+                   output: Optional[str] = None) -> str:
     """
     Round 3e: what to tell an agent whose TEST command timed out ('' for other commands): the test files that load a module
     which starts a server on load, or the usual causes of a test run that does not end.
+    Round 3f: cpu_busy (CPU cores used in the last second before the stop) tells a loop that never ends (busy) from a
+    process that waits for something left open (idle); output is the command's output so far (its last line is quoted).
     """
     try:
         if not is_test_command(command):
             return ""
+        state = cpu_state(cpu_busy)
+        if state == "busy":
+            return ("\n[Framework hint - why the TEST run did not end:] " + busy_loop_text(cpu_busy, output)
+                    + " Read that code and fix the loop. Running the tests again (or with a longer timeout) will time out "
+                    "again.")
+        last = last_output_line(output)
+        printed = f" It printed last: '{last}'." if last else ""
         found: List[str] = []
         if workspace and Path(workspace).is_dir():
             root = Path(workspace).resolve()
@@ -443,10 +551,18 @@ def test_hang_hint(workspace: Optional[Path], command: Optional[str]) -> str:
         if found:
             return ("\n[Framework hint - why the TEST run did not end:]\n- " + "\n- ".join(found)
                     + "\nRunning the same test command again (or with a longer timeout) will time out again: fix this first.")
-        return ("\n[Framework hint - a TEST run that does not end keeps something open:] usually a server that starts "
-                "listening when its file is loaded (start it only under `if (require.main === module)`), an open database "
-                "connection or socket, or a timer/setInterval that is never cleared. Close them in an after()/afterAll() "
-                "hook, or run mocha with `--exit`. Running the same command again with a longer timeout will not help.")
+        if state == "idle":
+            return ("\n[Framework hint - the TEST process was IDLE (0% CPU) when it was stopped, so it waited for something "
+                    "left open:] usually a server that starts listening when its file is loaded (start it only under "
+                    "`if (require.main === module)`), an open database connection or socket, or a timer/setInterval that is "
+                    "never cleared. Close them in an after()/afterAll() hook, or run mocha with `--exit`." + printed
+                    + " Running the same command again with a longer timeout will not help.")
+        return ("\n[Framework hint - a TEST run that does not end either loops forever or keeps something open:] a "
+                "`while`/`for` loop whose exit condition never becomes true or a function that keeps calling itself; or a "
+                "server that starts listening when its file is loaded (start it only under `if (require.main === module)`), "
+                "an open database connection or socket, or a timer/setInterval that is never cleared (close them in an "
+                "after()/afterAll() hook, or run mocha with `--exit`)." + printed
+                + " Running the same command again with a longer timeout will not help.")
     except Exception as err:
         logger.debug(f"test_hang_hint failed: {err}")
         return ""
@@ -469,6 +585,7 @@ def link_problems(workspace: Path, path: Path, rel_path: Optional[str] = None) -
         problems.extend(export_problems(root, rel, source))
         problems.extend(missing_dependency_problems(root, rel, source))
         problems.extend(server_on_load_problems(root, rel, source))  # Round 3e
+        problems.extend(process_override_problems(rel, source))  # Round 3f
         return problems
     except Exception as err:
         logger.debug(f"link_problems({path}) failed: {err}")
@@ -492,6 +609,7 @@ def link_notes_text(workspace: Optional[Path], rel_path: Optional[str], source: 
         problems.extend(export_problems(root, rel, source))
         problems.extend(missing_dependency_problems(root, rel, source))
         problems.extend(server_on_load_problems(root, rel, source))  # Round 3e
+        problems.extend(process_override_problems(rel, source))  # Round 3f
         if not problems:
             return ""
         return ("\n[Framework check - the file WAS saved, but it does not work with the project yet (a task with this "

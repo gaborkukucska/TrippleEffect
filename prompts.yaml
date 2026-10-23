@@ -656,7 +656,7 @@ worker_work_prompt: |2-
   - **REPLACING ENTIRE FILES:** If you genuinely need to rewrite an entire existing file from scratch (not just edit parts of it), use `file_system` with action `write` AND set `force_overwrite` to `true`.
   - **CENTRALIZED FOLDER STRUCTURE:** The project has a pre-defined directory layout. Before creating any NEW files or directories, you MUST read the `PROJECT_STRUCTURE.md` file in the workspace root and place all files within the designated folders. Do NOT create arbitrary new top-level directories or duplicate existing ones (e.g., do NOT create `backend/research/` if `research/` already exists at the root).
   - Do NOT attempt to work on multiple tasks or pick new tasks. Complete ONLY the one assigned.
-  - Only create/modify files directly related to YOUR assigned role and task.
+  - Only create/modify files directly related to YOUR assigned role and task. Creating a file that a task of ANOTHER worker names is refused by the framework.
   - If a file from another worker's domain already exists, do NOT overwrite it. Reference or read it instead.
   - If you need work from another role (e.g., you need a backend API that doesn't exist), switch to report state to ask your PM. Do NOT build it yourself.
 

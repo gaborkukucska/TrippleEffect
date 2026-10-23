@@ -272,14 +272,15 @@ class CommandExecutionTool(BaseTool):
             return {"status": "error", "message": f"Error starting command execution: {result.message}"}
         if result.status == "timeout":
             # Round 3e: a TEST run that does not end is not a server to put in the background: say why it hangs
-            from src.tools.project_links_check import is_test_command, test_hang_hint
+            from src.tools.project_links_check import is_test_command, test_hang_hint, cpu_state, busy_loop_text
             from src.utils.test_runs import record_test_run, TIMEOUT
+            cpu_busy = getattr(result, "cpu_busy", None)  # Round 3f: busy (a loop) or idle (waiting)
             if is_test_command(command):
-                record_test_run(cwd_path, command, TIMEOUT, (result.stdout or "")[-400:])
+                record_test_run(cwd_path, command, TIMEOUT, (result.stdout or "")[-400:], cpu_busy=cpu_busy)
                 tail = (result.stdout or "").strip()[-800:]
                 message = (f"The TEST command timed out after {timeout:.0f} seconds and its process group was terminated: "
                            "the test run did not END." + (f" Output so far (end):\n{tail}" if tail else "")
-                           + test_hang_hint(cwd_path, command))
+                           + test_hang_hint(cwd_path, command, cpu_busy, result.stdout))
                 response = {"status": "error", "message": message}
                 if (result.stderr or "").strip():
                     response["content"] = f"--- PARTIAL STDERR (last 1500 chars) ---\n{result.stderr.strip()[-1500:]}"
@@ -289,16 +290,20 @@ class CommandExecutionTool(BaseTool):
                 partial.append(f"--- PARTIAL STDOUT (last 1500 chars) ---\n{result.stdout.strip()[-1500:]}")
             if result.stderr.strip():
                 partial.append(f"--- PARTIAL STDERR (last 1500 chars) ---\n{result.stderr.strip()[-1500:]}")
-            response = {
-                "status": "error",
-                "message": (
+            if cpu_state(cpu_busy) == "busy":
+                # Round 3f: a busy process waits for no input and is no server: it loops
+                message = (f"Command execution timed out after {timeout:.0f} seconds and its process group was terminated: "
+                           + busy_loop_text(cpu_busy, result.stdout) + " Fix that loop in the code - running the command "
+                           "again, with a longer timeout or with ' &', will not help.")
+            else:
+                message = (
                     f"Command execution timed out after {timeout:.0f} seconds and its process group was terminated. "
                     "Interactive commands (nano, vim, input prompts) are not supported: stdin is closed. "
                     "To run a server or other long-running process, end the command with ' &' "
                     "(for example 'python server.py &'). The framework detaches it and writes its output "
                     "to a log file under '.te_background/' that you can read later."
-                ),
-            }
+                )
+            response = {"status": "error", "message": message}
             if partial:
                 response["content"] = "\n\n".join(partial)
             return response

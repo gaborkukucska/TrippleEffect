@@ -89,13 +89,16 @@ class TestRunnerTool(BaseTool):
         from src.utils.test_runs import record_test_run, PASSED, FAILED, TIMEOUT  # Round 3e
         record_workspace = base_path if run_path == base_resolved else None
         if res.status == "timeout":
-            record_test_run(record_workspace, command, TIMEOUT, (res.stdout or "")[-400:])
-            from src.tools.project_links_check import test_hang_hint
+            cpu_busy = getattr(res, "cpu_busy", None)  # Round 3f
+            record_test_run(record_workspace, command, TIMEOUT, (res.stdout or "")[-400:], cpu_busy=cpu_busy)
+            from src.tools.project_links_check import test_hang_hint, cpu_state
             result = {
                 "status": "error",
                 "message": f"Test command timed out after {timeout} seconds: the test run did not END."
-                           + test_hang_hint(run_path, command),  # Round 3e
-                "suggestion": "The tests took too long to run. Check for infinite loops or increase the timeout parameter.",
+                           + test_hang_hint(run_path, command, cpu_busy, res.stdout),  # Round 3e/3f
+                "suggestion": ("A longer timeout will not help a test run that does not end: follow the hint."
+                               if cpu_state(cpu_busy) else
+                               "The tests took too long to run. Check for infinite loops or increase the timeout parameter."),
             }
             if res.stdout.strip():
                 result["partial_stdout"] = res.stdout.strip()[-1500:]

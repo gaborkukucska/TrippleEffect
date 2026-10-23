@@ -21,6 +21,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 SUMMARY_MAX_TOKENS = 1000
+# Round 3f: 2026-10-23 20:53:51 the Ollama stream of W2's 2nd summary stopped after 2,608 characters and the call waited 30
+# minutes (the provider's per-chunk timeout) while the whole team stood still. A summary call longer than this is given up
+# and the fallback summary is used.
+SUMMARY_TIMEOUT_SECONDS = 600.0
+SUMMARY_CUT_OFF_NOTE = "\n(This summary was cut off: the model stopped answering.)"
 FALLBACK_SUMMARY_MAX_LINES = 30
 FALLBACK_TEXT_CHARS = 160
 
@@ -322,24 +327,41 @@ Please provide your summary as plain text (no XML tags needed for this summariza
             
             # Use the CG's LLM provider directly for summarization
             summary_chunks = []
+            stream_errors = []
             # Round 2p: thinking off - with thinking on, qwen3.5 spent all 800 tokens thinking and returned no summary 14 times
             # on 2026-10-21 (18:13-18:33), so W1 dragged a 20-26k token history through every cycle.
             from src.llm_providers.ollama_provider import thinking_off_kwargs
-            async with aclosing(cg_agent.llm_provider.stream_completion(
-                model=cg_agent.model,
-                messages=temp_history,
-                temperature=0.3,  # Lower temperature for more focused summaries
-                max_tokens=SUMMARY_MAX_TOKENS,
-                **thinking_off_kwargs(cg_agent.llm_provider)
-            )) as stream:
-                async for response_chunk in stream:
-                    if isinstance(response_chunk, dict) and response_chunk.get("type") == "response_chunk" and response_chunk.get("content"):
-                        summary_chunks.append(response_chunk["content"])
-            
-            # Restore original CG history
-            cg_agent.message_history = original_history
+
+            async def read_summary() -> None:
+                async with aclosing(cg_agent.llm_provider.stream_completion(
+                    model=cg_agent.model,
+                    messages=temp_history,
+                    temperature=0.3,  # Lower temperature for more focused summaries
+                    max_tokens=SUMMARY_MAX_TOKENS,
+                    **thinking_off_kwargs(cg_agent.llm_provider)
+                )) as stream:
+                    async for response_chunk in stream:
+                        if isinstance(response_chunk, dict) and response_chunk.get("type") == "response_chunk" and response_chunk.get("content"):
+                            summary_chunks.append(response_chunk["content"])
+                        elif isinstance(response_chunk, dict) and response_chunk.get("type") == "error":
+                            stream_errors.append(str(response_chunk.get("content") or "error"))
+
+            try:
+                await asyncio.wait_for(read_summary(), timeout=SUMMARY_TIMEOUT_SECONDS)  # Round 3f
+            except asyncio.TimeoutError:
+                logger.warning(f"ContextSummarizer: summary {chunk_num}/2 for '{original_agent_id}' took longer than "
+                               f"{SUMMARY_TIMEOUT_SECONDS:.0f}s; using the fallback summary.")
+                return None
+            finally:
+                # Restore original CG history (Round 3f: also after an error or a timeout)
+                cg_agent.message_history = original_history
             
             summary = ''.join(summary_chunks).strip()
+            if summary and stream_errors:
+                # Round 3f: a reply that stopped mid-stream is kept, but marked as incomplete
+                logger.warning(f"ContextSummarizer: summary {chunk_num}/2 for '{original_agent_id}' was cut off "
+                               f"({stream_errors[-1][:120]}).")
+                summary += SUMMARY_CUT_OFF_NOTE
             
             if summary:
                 logger.debug(f"Generated summary for chunk {chunk_num}: {len(summary)} characters")

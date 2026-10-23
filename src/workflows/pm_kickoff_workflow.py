@@ -276,10 +276,36 @@ def with_root_files(planned_files: List[str], root_names: List[str]) -> List[str
     return planned
 
 
+# Round 3f: files the tools of a project read from the workspace ROOT only. 2026-10-23 19:56 (WiFi_Snake_Multiplayer_Game) the
+# plan put package.json in config/; W1 wrote config/package.json, `npm test` found no package.json, W1 wrote a second one at
+# the root, and the project kept two different package.json files.
+ROOT_ONLY_FILE_NAMES = frozenset({
+    "package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", ".mocharc.json", ".mocharc.js", ".mocharc.yml",
+    "jest.config.js", "requirements.txt", "pyproject.toml", "setup.py", "setup.cfg", "pytest.ini", "tox.ini",
+})
+
+
+def root_only_files(files: List[str]) -> Tuple[List[str], List[str]]:
+    """
+    Round 3f: (files, notes). A root-only file (package.json, requirements.txt, ...) planned ONLY inside a directory moves to
+    the workspace root. Several files of that name (e.g. client/package.json and server/package.json) stay as they are.
+    """
+    notes: List[str] = []
+    result = list(files)
+    for name in sorted(ROOT_ONLY_FILE_NAMES):
+        same = [f for f in result if PurePosixPath(f).name == name]
+        if len(same) != 1 or len(PurePosixPath(same[0]).parts) == 1:
+            continue
+        result[result.index(same[0])] = name
+        notes.append(f"Planned file '{same[0]}' moved to the workspace root ('{name}'): the project's tools read it only there.")
+    return result, notes
+
+
 def normalize_planned_layout(dirs: List[str], files: List[str]) -> Tuple[List[str], List[str], List[str]]:
     """
     Makes a planned layout consistent: Python test files always live in tests/; other Python files planned at the workspace
-    root move to src/ when the plan declares a src/ directory. Returns (dirs, files, notes).
+    root move to src/ when the plan declares a src/ directory; Round 3f: a root-only file planned only inside a directory
+    (config/package.json) moves to the root. Returns (dirs, files, notes).
     """
     new_dirs = list(dirs)
     new_files: List[str] = []
@@ -302,7 +328,8 @@ def normalize_planned_layout(dirs: List[str], files: List[str]) -> Tuple[List[st
             add_dir(str(PurePosixPath(target).parent))
         if target not in new_files:
             new_files.append(target)
-    return new_dirs, new_files, notes
+    new_files, root_notes = root_only_files(new_files)  # Round 3f
+    return new_dirs, new_files, notes + root_notes
 
 
 _MANAGER_ROLE_RE = re.compile(r"(^|[^a-z0-9])(pm\d*|project[\s_\-]*manager|projectmanager)($|[^a-z0-9])", re.IGNORECASE)

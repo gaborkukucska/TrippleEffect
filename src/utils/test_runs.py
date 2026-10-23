@@ -48,25 +48,26 @@ def is_full_test_run(command: Optional[str]) -> bool:
     text = str(command)
     if re.search(r"(?<!\|)\|(?!\|)", text):
         return False  # 'npm test | head' - the exit code is the pipe's, not the tests'
-    from src.tools.project_links_check import _TEST_COMMAND_RE
-    last = None
-    for last in _TEST_COMMAND_RE.finditer(text):
-        pass
-    if last is not None and re.search(r"\|\||;", text[last.end():]):
+    from src.tools.project_links_check import test_command_end
+    end = test_command_end(text)
+    if end is not None and re.search(r"\|\||;", text[end:]):
         return False  # 'npm test || true', 'npm test; echo done' - the exit code is not the tests'
     # 'npx mocha tests/' or 'pytest tests' run everything; 'npx mocha tests/test_snake.js' runs one file
     return not _NAMED_TEST_FILE_RE.search(text)
 
 
-def record_test_run(workspace: Any, command: str, outcome: str, summary: str = "") -> None:
-    """Remembers a FULL test run of this workspace (other commands are ignored). Never raises."""
+def record_test_run(workspace: Any, command: str, outcome: str, summary: str = "", cpu_busy: Optional[float] = None) -> None:
+    """
+    Remembers a FULL test run of this workspace (other commands are ignored). Never raises.
+    Round 3f: cpu_busy - for a TIMEOUT, the CPU cores the run used in its last second (a loop that never ends, or waiting).
+    """
     try:
         if not workspace or not is_full_test_run(command):
             return
         from src.agents.tool_activity import workspace_fingerprint
         _RUNS[_key(workspace)] = {
             "command": str(command).strip(), "outcome": outcome, "summary": " ".join(str(summary or "").split())[-400:],
-            "fingerprint": workspace_fingerprint(workspace), "time": time.time(),
+            "fingerprint": workspace_fingerprint(workspace), "time": time.time(), "cpu_busy": cpu_busy,
         }
         logger.info(f"test_runs: full test run '{str(command).strip()[:80]}' in {workspace}: {outcome}.")
     except Exception as err:
@@ -129,7 +130,7 @@ def verification_problem(workspace: Any, description: Optional[str]) -> Optional
             if run.get("outcome") == TIMEOUT:
                 from src.tools.project_links_check import test_hang_hint
                 return (f"the tests do NOT pass: the last full test run (`{run['command']}`) did not END - it timed out."
-                        + test_hang_hint(workspace, run["command"]))
+                        + test_hang_hint(workspace, run["command"], run.get("cpu_busy"), run.get("summary")))
             detail = f" Its output ended with: {run['summary']}" if run.get("summary") else ""
             return f"the tests do NOT pass: the last full test run (`{run['command']}`) failed.{detail}"
         return (f"no full test run of the CURRENT files has passed yet. Run the whole test suite (`{command}`) with "

@@ -341,6 +341,8 @@ def foreign_files_subtask_error(tw: Any, agent_id: Optional[str], manager: Any, 
                 continue
             if str(get_task_field(other, "task_progress", "todo")).strip().lower() in _OPEN_EXCLUDED_PROGRESS:
                 continue
+            if str(get_task_field(other, "assignee", "") or "").strip() == agent_id:
+                continue  # Round 3f: its own next task (2026-10-23 20:12:24 W2 was refused index.html of its own Task 4)
             other_text = str(get_task_field(other, "description", "") or "")
             taken = [f for f in new_files if f in set(file_paths_in_text(other_text)) and f not in parent_files]
             if not taken:
@@ -359,6 +361,75 @@ def foreign_files_subtask_error(tw: Any, agent_id: Optional[str], manager: Any, 
         return None
     except Exception as err:
         logger.debug(f"foreign_files_subtask_error failed: {err}")
+        return None
+
+
+def _clean_rel_path(rel_path: Any) -> str:
+    rel = str(rel_path).replace("\\", "/").strip()
+    while rel.startswith("./"):
+        rel = rel[2:]
+    return rel
+
+
+def _task_names_path(names: List[str], rel_path: str) -> bool:
+    """True if one of the paths a task names is rel_path, or is a bare file name equal to rel_path's name."""
+    rel = _clean_rel_path(rel_path)
+    base = rel.rsplit("/", 1)[-1]
+    return any(name == rel or ("/" not in name and name == base) for name in names)
+
+
+def foreign_file_creation_error(manager: Any, agent_id: Optional[str], project_name: Optional[str],
+                                session_name: Optional[str], rel_path: Optional[str]) -> Optional[str]:
+    """
+    Round 3f: the refusal (text) for a WORKER that creates a NEW file which its own task does not name but an open task
+    ASSIGNED TO ANOTHER WORKER does - that worker's work - or None. Never raises.
+    2026-10-23 20:01:55 (WiFi_Snake_Multiplayer_Game) W1, working on "Kick-off Task 2: ... core game logic ... in script.js",
+    wrote test/game.test.js, the file of "Kick-off Task 6: Write unit tests ... in test/game.test.js", assigned to W2 40 s
+    earlier. W1 spent 10 minutes on that test file; W2 later inherited it and spent an hour on it.
+    """
+    try:
+        if not agent_id or not rel_path or agent_id in FRAMEWORK_CALLERS or not project_name or not session_name:
+            return None
+        rel_path = _clean_rel_path(rel_path)
+        agents = getattr(manager, "agents", None)
+        worker = agents.get(agent_id) if isinstance(agents, dict) else None
+        from src.agents.constants import AGENT_TYPE_WORKER
+        if worker is None or getattr(worker, "agent_type", None) != AGENT_TYPE_WORKER:
+            return None
+        tw = ProjectManagementTool()._get_taskwarrior_instance(project_name, session_name)
+        if tw is None:
+            return None
+        own = _worker_parent_task(tw, agent_id, manager)
+        if own is None:
+            return None
+        from src.utils.task_files import file_paths_in_text
+        own_text = str(get_task_field(own, "description", "") or "")
+        if _task_names_path(file_paths_in_text(own_text), rel_path):
+            return None
+        own_uuid = str(get_task_field(own, "uuid", ""))
+        for other in tw.tasks.pending():
+            if str(get_task_field(other, "uuid", "")) == own_uuid or "project_kickoff" in _task_tags(other):
+                continue
+            if str(get_task_field(other, "task_progress", "todo")).strip().lower() in _OPEN_EXCLUDED_PROGRESS:
+                continue
+            assignee = str(get_task_field(other, "assignee", "") or "").strip()
+            if not assignee or assignee == agent_id:
+                continue
+            other_text = str(get_task_field(other, "description", "") or "")
+            if not _task_names_path(file_paths_in_text(other_text), rel_path):
+                continue
+            def shown(text: str) -> str:
+                text = " ".join(text.split())
+                return text if len(text) <= 90 else text[:87] + "..."
+            logger.warning(f"ProjectManagementTool: '{agent_id}' tried to create '{rel_path}', the file of task "
+                           f"{get_task_field(other, 'uuid', '?')} assigned to '{assignee}'. Refused.")
+            return (f"The file was NOT created: '{rel_path}' is the file of the task '{shown(other_text)}' "
+                    f"({get_task_field(other, 'uuid', '?')}), which is assigned to {assignee}. Your task is "
+                    f"'{shown(own_text)}' and does not name it. Leave other workers' files to them and finish the files of "
+                    f"YOUR task. If your task cannot be done without '{rel_path}', tell your PM with send_message.")
+        return None
+    except Exception as err:
+        logger.debug(f"foreign_file_creation_error failed: {err}")
         return None
 
 
