@@ -260,9 +260,95 @@ def output_hints(workspace: Optional[Path], output: Optional[str]) -> List[str]:
     return hints
 
 
+# --- Round 3g+: the same tests keep failing although files change -----------------------------------------------------------
+# 2026-10-24 10:07-11:43 (WiFi_Snake_Multiplayer_Game, Python) W1 wrote tests/test_game/test_game.py once and then changed
+# src/game.py 45 times in 1.5 hours, because the same 8 tests kept failing: the TESTS were wrong (they expected the snake to
+# eat food that is placed at random, `body[1] == (-2, 0)` after a turn, a collision for a straight snake). W2 changed
+# tests/test_network/test_network.py 32 times while its mocks answered `send()` instead of `recv()`.
+STUCK_RUNS = 4
+_CODE_SUFFIXES = (".py", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx")
+_SNAPSHOT_SKIP = frozenset({"node_modules", ".git", "__pycache__", ".pytest_cache", ".venv", "venv", "dist", "build",
+                            "coverage", ".te_background", ".mypy_cache"})
+_STREAKS: Dict[Tuple[str, Tuple[str, ...]], Dict[str, Any]] = {}
+
+
+def _code_snapshot(root: Path) -> Dict[str, Tuple[int, int]]:
+    """{relative path: (mtime_ns, size)} of the code and test files of the workspace (at most 2000)."""
+    snapshot: Dict[str, Tuple[int, int]] = {}
+    try:
+        for path in root.rglob("*"):
+            if len(snapshot) >= 2000:
+                break
+            try:
+                rel = path.relative_to(root)
+            except ValueError:
+                continue
+            if set(rel.parts[:-1]) & _SNAPSHOT_SKIP or path.suffix.lower() not in _CODE_SUFFIXES or not path.is_file():
+                continue
+            stat = path.stat()
+            snapshot[rel.as_posix()] = (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        pass
+    return snapshot
+
+
+def _failing_test_files(output: str) -> Tuple[str, ...]:
+    files = {f for f, _n in jest_failed_tests(output)} | {node.split("::", 1)[0] for node in pytest_failed_tests(output)}
+    return tuple(sorted(files))
+
+
+def stuck_note(root: Path, output: str) -> Optional[str]:
+    """
+    Round 3g+: the note for tests that have failed in exactly the same way in STUCK_RUNS (or more) runs in a row although
+    code or test files were changed between the runs (repeated every 3 more runs), else None. Never raises.
+    """
+    try:
+        from src.tools.project_links_check import is_test_file
+        failing = tuple(sorted(set(name for _f, name in jest_failed_tests(output)) | set(pytest_failed_tests(output))))
+        if not failing:
+            return None
+        key = (str(root.resolve()), _failing_test_files(output))
+        snapshot = _code_snapshot(root)
+        previous = _STREAKS.get(key)
+        if previous and previous["failing"] == failing:
+            changed = {rel for rel in set(snapshot) | set(previous["snapshot"])
+                       if snapshot.get(rel) != previous["snapshot"].get(rel)}
+            if changed:
+                previous["streak"] += 1
+                previous["changed"] |= changed
+            previous["snapshot"] = snapshot
+            record = previous
+        else:
+            record = {"failing": failing, "snapshot": snapshot, "streak": 1, "changed": set()}
+            _STREAKS[key] = record
+        streak = record["streak"]
+        if streak < STUCK_RUNS or (streak - STUCK_RUNS) % 3:
+            return None
+        changed = sorted(record["changed"])
+        tests_changed = [rel for rel in changed if is_test_file(rel)]
+        shown = ", ".join(changed[:6]) + (" ..." if len(changed) > 6 else "")
+        head = (f"[Framework check - the same {len(failing)} test(s) have failed in each of the last {streak} runs, "
+                f"although {shown} changed in between:]\n")
+        causes = ("a test that expects a fixed result from RANDOM values (e.g. food placed at random: set the position in "
+                  "the test first), a mock of the wrong method (the code reads the reply with `recv()`, the test sets "
+                  "`send.return_value`), or an expectation that contradicts the task or another test")
+        if not tests_changed:
+            return head + ("Only the code changed - the test file(s) did not. So the TEST may be what is wrong. Before the "
+                           "next change, compare each failing assertion with your task description. Typical wrong tests: "
+                           f"{causes}. Do not bend the code to an impossible assertion: fix the test (or report it to your "
+                           "PM with send_message if the test belongs to another task).")
+        return head + ("These changes do not reach the cause. Before the next change, read the FIRST failing assertion and "
+                       "the code it calls line by line. If the assertion cannot be true, fix the assertion - typical: "
+                       f"{causes}.")
+    except Exception as err:
+        logger.debug(f"stuck_note failed: {err}")
+        return None
+
+
 async def diagnose_failed_test_run(workspace: Any, command: str, output: str) -> str:
     """
-    The framework's notes for a FAILED test run ('' if none): failed tests that pass alone, and known traps in the output.
+    The framework's notes for a FAILED test run ('' if none): failed tests that pass alone, the same tests failing again
+    and again (Round 3g+), and known traps in the output.
     Cached per (workspace, workspace fingerprint, failing tests). Never raises.
     """
     try:
@@ -275,9 +361,15 @@ async def diagnose_failed_test_run(workspace: Any, command: str, output: str) ->
         if failing and key in _CACHE:
             return _CACHE[key]
         parts: List[str] = []
-        isolated = await isolation_check(root, command, output) if failing else None
+        isolated = None
+        if failing and _isolation_worth_running(root, output):
+            isolated = await isolation_check(root, command, output)
+            _remember_isolation(root, output, found=bool(isolated))
         if isolated:
             parts.append(isolated)
+        stuck = stuck_note(root, output)
+        if stuck:
+            parts.append(stuck)
         hints = output_hints(root, output)
         if hints:
             parts.append("[Framework hints for this test output:]\n" + "\n".join(f"- {hint}" for hint in hints))
@@ -292,8 +384,41 @@ async def diagnose_failed_test_run(workspace: Any, command: str, output: str) ->
         return ""
 
 
+# Round 3g+: no second isolation check of the same failing tests while the test files are unchanged (2026-10-24 the check ran
+# 53 times for W1's and W2's runs and never found a test that passed alone: their tests were wrong, not order-dependent).
+_ISOLATION_DONE: Dict[Tuple[str, Tuple[str, ...]], Tuple[Tuple[str, ...], Dict[str, Tuple[int, int]]]] = {}
+
+
+def _test_files_snapshot(root: Path, output: str) -> Dict[str, Tuple[int, int]]:
+    snapshot = {}
+    for rel in _failing_test_files(output):
+        try:
+            stat = (root / rel).stat()
+            snapshot[rel] = (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            snapshot[rel] = (0, 0)
+    return snapshot
+
+
+def _isolation_worth_running(root: Path, output: str) -> bool:
+    failing = tuple(sorted(set(name for _f, name in jest_failed_tests(output)) | set(pytest_failed_tests(output))))
+    done = _ISOLATION_DONE.get((str(root.resolve()), _failing_test_files(output)))
+    return not (done and done[0] == failing and done[1] == _test_files_snapshot(root, output))
+
+
+def _remember_isolation(root: Path, output: str, found: bool) -> None:
+    key = (str(root.resolve()), _failing_test_files(output))
+    if found:
+        _ISOLATION_DONE.pop(key, None)  # it found something: check again next time
+        return
+    failing = tuple(sorted(set(name for _f, name in jest_failed_tests(output)) | set(pytest_failed_tests(output))))
+    _ISOLATION_DONE[key] = (failing, _test_files_snapshot(root, output))
+
+
 def clear_cache() -> None:
     """For tests."""
     _CACHE.clear()
+    _STREAKS.clear()
+    _ISOLATION_DONE.clear()
 
 # END OF FILE src/utils/test_diagnosis.py

@@ -495,6 +495,24 @@ def _task_names_path(names: List[str], rel_path: str) -> bool:
     return any(name == rel or ("/" not in name and name == base) for name in names)
 
 
+# Round 3g+: a test folder a task names ('Write pytest tests ... in tests/'). 2026-10-24 10:07:57 W1 (Kick-off Task 1,
+# src/game.py) wrote tests/test_game/test_game.py although "Kick-off Task 7: Write pytest tests for game mechanics,
+# networking, player management, and leaderboard in tests/" was W2's; W1's tests were wrong and W1 spent 1.5 hours bending
+# src/game.py to them.
+_TEST_DIR_CLAIM_RE = re.compile(r"(?<![\w./-])(tests?|__tests__|spec)/(?![\w.-])")
+_TEST_WORD_RE = re.compile(r"\b(?:tests?|testing|pytest|jest|mocha|unit tests?)\b", re.IGNORECASE)
+
+
+def _claims_test_file(task_text: str, rel_path: str) -> bool:
+    """True if the task names a test folder ('in tests/') that holds rel_path, and rel_path is a test file."""
+    from src.tools.project_links_check import is_test_file
+    rel = _clean_rel_path(rel_path)
+    if not is_test_file(rel):
+        return False
+    top = rel.split("/", 1)[0]
+    return any(match.group(1) == top for match in _TEST_DIR_CLAIM_RE.finditer(task_text))
+
+
 def foreign_file_creation_error(manager: Any, agent_id: Optional[str], project_name: Optional[str],
                                 session_name: Optional[str], rel_path: Optional[str]) -> Optional[str]:
     """
@@ -523,6 +541,7 @@ def foreign_file_creation_error(manager: Any, agent_id: Optional[str], project_n
         own_text = str(get_task_field(own, "description", "") or "")
         if _task_names_path(file_paths_in_text(own_text), rel_path):
             return None
+        own_mentions_tests = bool(_TEST_WORD_RE.search(own_text)) or _claims_test_file(own_text, rel_path)
         own_uuid = str(get_task_field(own, "uuid", ""))
         for other in tw.tasks.pending():
             if str(get_task_field(other, "uuid", "")) == own_uuid or "project_kickoff" in _task_tags(other):
@@ -533,7 +552,8 @@ def foreign_file_creation_error(manager: Any, agent_id: Optional[str], project_n
             if not assignee or assignee == agent_id:
                 continue
             other_text = str(get_task_field(other, "description", "") or "")
-            if not _task_names_path(file_paths_in_text(other_text), rel_path):
+            if not _task_names_path(file_paths_in_text(other_text), rel_path) and not (
+                    not own_mentions_tests and _claims_test_file(other_text, rel_path)):  # Round 3g+: 'tests in tests/'
                 continue
             def shown(text: str) -> str:
                 text = " ".join(text.split())
