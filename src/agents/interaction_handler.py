@@ -163,13 +163,24 @@ class AgentInteractionHandler:
             else:
                 agents_to_check = list(self._manager.agents.values())
                 
+            same_role = []
             for existing_agent in agents_to_check:
                 if getattr(existing_agent, 'agent_type', '') == AGENT_TYPE_WORKER:
                     existing_config = getattr(existing_agent, 'agent_config', {}).get('config', {})
                     existing_role = existing_config.get('role', '')
                     if existing_role and existing_role.lower().strip() == role_requested.lower().strip():
-                        logger.warning(f"InteractionHandler: Prevented duplicate agent creation. Role '{role_requested}' already exists.")
-                        return False, f"Agent creation failed: An agent with the role '{role_requested}' already exists in your team. Do not create duplicate roles. Use 'list_agents' to see your current team.", None
+                        same_role.append(existing_agent)
+            if same_role:
+                # Round 3i: a second worker of a role is allowed when every worker of that role is busy (more hands, not a
+                # duplicate). 2026-10-24 13:24:24 and 13:25:37 PM1 was told "create one more worker" (busy-worker refusal)
+                # and then refused twice: "An agent with the role 'Coder' already exists".
+                from src.agents.team_scaling import second_worker_refusal
+                refusal = second_worker_refusal(self._manager, role_requested, same_role, agents_to_check)
+                if refusal:
+                    logger.warning(f"InteractionHandler: Prevented duplicate agent creation. Role '{role_requested}' already exists.")
+                    return False, refusal, None
+                logger.info(f"InteractionHandler: role '{role_requested}' exists, but all its workers are busy - creating "
+                            "one more.")
 
         # Determine if we should auto-assign a worker name
         if not agent_id_requested or not re.match(r'^W\d+$', agent_id_requested, re.IGNORECASE):

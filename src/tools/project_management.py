@@ -183,6 +183,77 @@ def busy_worker_assignment_error(tw: Any, assignee: str, task: Any, caller_id: O
         return None
 
 
+def admin_assignment_error(assignee: str, caller_id: Optional[str], manager: Any, task_ref: str,
+                           outcome: str = "was NOT changed") -> Optional[Dict[str, Any]]:
+    """
+    Round 3i: the refusal for the ADMIN AI giving a task to a worker of a team that has a PM, or None. Never raises.
+    2026-10-24 13:15:53 (WiFi_Snake_Game) Admin AI answered PM1's "kick-off tasks assigned" report by giving SEVEN tasks to
+    W2 in one reply - W2 was busy, the busy-worker check covers only PMs - and W2 then wrote src/main.py, the file of the task
+    PM1 gave W1 seven minutes later.
+    """
+    try:
+        agents = getattr(manager, "agents", None)
+        caller = agents.get(caller_id) if isinstance(agents, dict) and caller_id else None
+        from src.agents.constants import AGENT_TYPE_ADMIN, AGENT_TYPE_PM
+        if caller is None or getattr(caller, "agent_type", None) != AGENT_TYPE_ADMIN:
+            return None
+        state_manager = getattr(manager, "state_manager", None)
+        team_id = state_manager.get_agent_team(assignee) if state_manager is not None else None
+        if not team_id:
+            return None
+        pms = [getattr(a, "agent_id", None) for a in (state_manager.get_agents_in_team(team_id) or [])
+               if getattr(a, "agent_type", None) == AGENT_TYPE_PM]
+        pms = [pm for pm in pms if pm]
+        if not pms:
+            return None
+        logger.warning(f"ProjectManagementTool: Admin AI '{caller_id}' tried to give {task_ref} to '{assignee}' of the team "
+                       f"of {pms[0]}. Refused.")
+        return {"status": "error", "error_type": "admin_assignment", "message": (
+            f"{task_ref} {outcome}: '{assignee}' works in the team of {pms[0]}, and giving tasks to its workers is "
+            f"{pms[0]}'s job - {pms[0]} knows which worker is free and what each one is doing. If something should change, "
+            f"tell {pms[0]} with send_message (which task, and why).")}
+    except Exception as err:
+        logger.debug(f"admin_assignment_error failed: {err}")
+        return None
+
+
+async def notify_previous_assignee(manager: Any, caller_id: Optional[str], previous: str, new: str, task: Any) -> bool:
+    """
+    Round 3i: tells the worker that LOST a task (it was given to another worker) to stop working on it, and clears the
+    task from that worker's current task. Returns True if a message was sent. Never raises.
+    2026-10-24 13:22:48 PM1 moved "Kick-off Task 4: Integrate all components in src/main.py" from W2 to W1 without a word;
+    W2 wrote src/main.py at 13:24:08, and W1's own write of src/main.py was then refused ("already exists").
+    """
+    try:
+        agents = getattr(manager, "agents", None)
+        if not isinstance(agents, dict) or caller_id not in agents or previous not in agents or previous == caller_id:
+            return False
+        from src.agents.constants import AGENT_TYPE_WORKER
+        worker = agents[previous]
+        if getattr(worker, "agent_type", None) != AGENT_TYPE_WORKER:
+            return False
+        task_uuid = str(get_task_field(task, "uuid", "") or "")
+        for attr in ("current_task_id", "active_task_id"):
+            if str(getattr(worker, attr, "") or "") == task_uuid and task_uuid:
+                setattr(worker, attr, None)
+        description = " ".join(str(get_task_field(task, "description", "") or "").split())
+        if len(description) > 120:
+            description = description[:117] + "..."
+        handler = getattr(manager, "interaction_handler", None)
+        if handler is None:
+            return False
+        await handler.route_and_activate_agent_message(
+            sender_id=caller_id, target_identifier=previous,
+            message_content=(f"[Framework notice] The task '{description}' ({task_uuid}) was given to {new}. It is no longer "
+                             f"YOUR task: stop working on it and do not change its files - {new} does that now. Continue "
+                             "with your own task, or report to your PM if you have none."))
+        logger.info(f"ProjectManagementTool: told '{previous}' that task {task_uuid} now belongs to '{new}'.")
+        return True
+    except Exception as err:
+        logger.debug(f"notify_previous_assignee failed: {err}")
+        return False
+
+
 def task_core_text(title: Any, description: Any) -> str:
     """
     Round 3c: the text that says what a task is, for comparisons: title and description (one of them when it repeats the
@@ -1345,6 +1416,11 @@ class ProjectManagementTool(BaseTool):
                     logger.info(f"ProjectManagementTool: Set {len(resolved_deps)} dependencies for task.")
 
             if get_task_field(task, 'assignee'):
+                # Round 3i: the Admin AI does not hand out the tasks of a PM's team
+                refusal = admin_assignment_error(str(task['assignee']), agent_id, kwargs.get("manager"), "The task",
+                                                 outcome="was NOT created")
+                if refusal:
+                    return refusal
                 # Round 3c: one ready task at a time per worker (PM calls)
                 refusal = busy_worker_assignment_error(tw, str(task['assignee']), task, agent_id, kwargs.get("manager"),
                                                        "The task", outcome="was NOT created")
@@ -1635,6 +1711,7 @@ class ProjectManagementTool(BaseTool):
         return {"status": "error", "message": message}
 
     async def _execute_modify_task(self, tw, aliases, project_name, session_name, agent_id, kwargs):
+            reassigned_from = None  # Round 3i: the worker that loses the task (it is told)
             task_id = kwargs.get("task_id") or kwargs.get("task_uuid")
             if not task_id:
                 # Fallback: check if the model passed title or description instead of task_id
@@ -1819,12 +1896,16 @@ class ProjectManagementTool(BaseTool):
                     return {"status": "error", "message": f"Task '{task_id}' is already 'pending' and actively assigned to '{task['assignee']}'. Reassigning active tasks owned by others is blocked to prevent disruption. Only the assignee can hand it off, or its status must first be changed to 'waiting'."}
                 elif (refusal := non_worker_assignment_error(new_assignee, agent_id, kwargs.get("manager"), f"Task '{task_id}'")):
                     return refusal  # Round 2t: only workers carry out tasks
+                elif (refusal := admin_assignment_error(new_assignee, agent_id, kwargs.get("manager"), f"Task '{task_id}'")):
+                    return refusal  # Round 3i: the Admin AI does not hand out the tasks of a PM's team
                 elif (refusal := busy_worker_assignment_error(tw, new_assignee, task, agent_id, kwargs.get("manager"), f"Task '{task_id}'")):
                     return refusal  # Round 3c: one ready task at a time per worker
                 else:
                     previous_assignee = str(task['assignee'] or "").strip()
                     task['assignee'] = new_assignee
                     modified_fields.append("assignee")
+                    if previous_assignee and previous_assignee != new_assignee:
+                        reassigned_from = previous_assignee
                     
                     current_tags = task['tags'] if task['tags'] else set()
                     if isinstance(current_tags, list):
@@ -1891,6 +1972,9 @@ class ProjectManagementTool(BaseTool):
                         f"Task '{task_id}' was NOT changed: Taskwarrior refused the change of "
                         f"{', '.join(modified_fields)}: {summary.rstrip('.')}. Send only the fields you want to change.")}
                 asyncio.create_task(broadcast(json.dumps({"type": "project_tasks_updated", "project_name": project_name, "session_name": session_name})))
+                if reassigned_from:
+                    await notify_previous_assignee(kwargs.get("manager"), agent_id, reassigned_from,
+                                                   str(task['assignee'] or ""), task)
             else:
                 logger.info("ProjectManagementTool: 'modify_task' dry_run succeeded. Database not modified.")
                 

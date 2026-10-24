@@ -2319,6 +2319,9 @@ class AgentCycleHandler:
                                     if last_failure:
                                         error_message += f" Last error ({called_tool_name}): {last_failure[:400]}"
                                     agent.message_history.append({"role": "system", "content": f"[Framework Error]: {error_message}"})
+                                    # Round 3j: count again from zero (2026-10-24 13:24:24 and 13:25:37: every later failure
+                                    # repeated the error, because the counter stayed at 3)
+                                    agent._consecutive_tool_failures = 0
                                     
                                     if context.current_db_session_id:
                                         await self._manager.db_manager.log_interaction(
