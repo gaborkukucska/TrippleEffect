@@ -63,6 +63,39 @@ def jest_failed_tests(output: Optional[str]) -> List[Tuple[str, str]]:
     return found
 
 
+_JEST_SUITE_FAILED_RE = re.compile(r"^\s*● Test suite failed to run\s*$")
+_PYTEST_ERROR_RE = re.compile(r"^ERROR (\S+?\.py)(?:::\S+)?(?: - .*)?$", re.MULTILINE)
+
+
+def suite_failures(output: Optional[str]) -> List[str]:
+    """
+    Round 3k: test FILES that did not run at all - jest's "● Test suite failed to run" (a missing module, a syntax or config
+    error) and pytest's "ERROR tests/x.py" (a collection error). 2026-10-24 14:41-16:34 (WiFi_Snake_Game) every one of W1's
+    49 test runs ended like this (`Cannot find module '@babel/preset-env'`, `ws.Server is not a constructor`), so the
+    "same tests keep failing" check never counted them: they have no test names.
+    """
+    found: List[str] = []
+    current_file: Optional[str] = None
+    for line in str(output or "").splitlines():
+        file_match = _JEST_FAIL_FILE_RE.match(line)
+        if file_match:
+            current_file = file_match.group(1)
+            continue
+        if current_file and _JEST_SUITE_FAILED_RE.match(line) and current_file not in found:
+            found.append(current_file)
+    for match in _PYTEST_ERROR_RE.finditer(str(output or "")):
+        if match.group(1) not in found:
+            found.append(match.group(1))
+    return found
+
+
+def _all_failures(output: str) -> Tuple[str, ...]:
+    """Round 3k: failed test names plus 'did not run: <file>' for test files that did not run."""
+    names = set(name for _f, name in jest_failed_tests(output)) | set(pytest_failed_tests(output))
+    names |= {f"did not run: {path}" for path in suite_failures(output)}
+    return tuple(sorted(names))
+
+
 def pytest_failed_tests(output: Optional[str]) -> List[str]:
     """The node ids of the failed pytest tests ('FAILED tests/test_x.py::test_a - ...' lines)."""
     found: List[str] = []
@@ -253,6 +286,19 @@ def output_hints(workspace: Optional[Path], output: Optional[str]) -> List[str]:
                      "in the test setup file: `HTMLCanvasElement.prototype.getContext = () => ({ fillRect() {}, clearRect() "
                      "{}, beginPath() {}, arc() {}, fill() {}, stroke() {}, fillText() {}, strokeRect() {}, moveTo() {}, "
                      "lineTo() {}, closePath() {}, measureText: () => ({ width: 0 }) });` - not a canvas element per test.")
+    missing = []
+    for found in re.finditer(r"Cannot find module '([^'./][^']*)'", text):
+        name = found.group(1)
+        package = "/".join(name.split("/")[:2]) if name.startswith("@") else name.split("/")[0]
+        if package not in missing:
+            missing.append(package)
+    if missing:
+        # Round 3k: 2026-10-24 jest.config.js used babel-jest with '@babel/preset-env', which was not installed
+        installs = " ".join(missing[:4])
+        hints.append(f"The npm package(s) {', '.join(missing[:4])} are not installed, so the test file cannot even load. "
+                     f"Either install them (`npm install --save-dev {installs}`, which also adds them to package.json) or "
+                     "remove what needs them (e.g. a babel `transform` in jest.config.js that plain Node.js code does not "
+                     "need).")
     match = re.search(r"ReferenceError: (describe|it|test|expect|beforeEach) is not defined", text)
     if match:
         hints.append(f"`{match.group(1)}` is not defined: this test file uses the globals of a test runner (jest or mocha). "
@@ -294,6 +340,7 @@ def _code_snapshot(root: Path) -> Dict[str, Tuple[int, int]]:
 
 def _failing_test_files(output: str) -> Tuple[str, ...]:
     files = {f for f, _n in jest_failed_tests(output)} | {node.split("::", 1)[0] for node in pytest_failed_tests(output)}
+    files |= set(suite_failures(output))  # Round 3k
     return tuple(sorted(files))
 
 
@@ -304,7 +351,7 @@ def stuck_note(root: Path, output: str) -> Optional[str]:
     """
     try:
         from src.tools.project_links_check import is_test_file
-        failing = tuple(sorted(set(name for _f, name in jest_failed_tests(output)) | set(pytest_failed_tests(output))))
+        failing = _all_failures(output)  # Round 3k: + test files that did not run
         if not failing:
             return None
         key = (str(root.resolve()), _failing_test_files(output))
@@ -327,6 +374,16 @@ def stuck_note(root: Path, output: str) -> Optional[str]:
         changed = sorted(record["changed"])
         tests_changed = [rel for rel in changed if is_test_file(rel)]
         shown = ", ".join(changed[:6]) + (" ..." if len(changed) > 6 else "")
+        not_run = [name[len("did not run: "):] for name in failing if name.startswith("did not run: ")]
+        if not_run and len(not_run) == len(failing):
+            # Round 3k: no test ran at all - the suites fail before the first test
+            return (f"[Framework check - the test file(s) {', '.join(not_run[:5])} have not RUN at all in the last {streak} "
+                    f"runs, although {shown} changed in between:]\n"
+                    "Every run stops before the first test ('Test suite failed to run' / a collection ERROR), so changing "
+                    "the code or the assertions cannot help. Read the FIRST error under it and fix exactly that: a package "
+                    "that is not installed (add it to package.json / requirements.txt and install it), a wrong "
+                    "require/import path, or a broken test configuration (jest.config.js, babel). Remove configuration "
+                    "the project does not need (e.g. a babel transform without babel installed).")
         head = (f"[Framework check - the same {len(failing)} test(s) have failed in each of the last {streak} runs, "
                 f"although {shown} changed in between:]\n")
         causes = ("a test that expects a fixed result from RANDOM values (e.g. food placed at random: set the position in "

@@ -659,6 +659,7 @@ body {
 }
 
 /* --- Project Tasks Styling --- */
+.task-totals { font-size: 0.85em; opacity: 0.8; margin: 2px 0 6px; }  /* Round 3k */
 .task-group details { margin-bottom: 5px; }
 .task-group summary {
     font-size: 0.9em; font-weight: bold; color: var(--text-color-secondary);

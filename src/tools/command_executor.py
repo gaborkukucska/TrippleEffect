@@ -361,12 +361,14 @@ class CommandExecutionTool(BaseTool):
         """Round 3g: the framework's notes for a FAILED test run ('' for other commands or a passing run). Never raises."""
         try:
             from src.tools.project_links_check import is_test_command
-            from src.utils.test_diagnosis import diagnose_failed_test_run, jest_failed_tests, pytest_failed_tests
+            from src.utils.test_diagnosis import (diagnose_failed_test_run, jest_failed_tests, pytest_failed_tests,
+                                                  suite_failures)
             if not is_test_command(command):
                 return ""
             output = f"{stdout or ''}\n{stderr or ''}"
             # a piped run ('npm test 2>&1 | head -100') ends with the pipe's exit code: the output tells
-            if returncode == 0 and not jest_failed_tests(output) and not pytest_failed_tests(output):
+            if returncode == 0 and not jest_failed_tests(output) and not pytest_failed_tests(output) \
+                    and not suite_failures(output):
                 return ""
             return await diagnose_failed_test_run(cwd_path, command, output)
         except Exception as err:

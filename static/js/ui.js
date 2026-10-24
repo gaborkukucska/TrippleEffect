@@ -641,14 +641,30 @@ export const renderProjectTasks = (tasksData) => {
         return;
     }
 
-    // Preserve open state of existing groups before unmounting
-    const openStates = {};
+    // Preserve open state of existing groups before unmounting.
+    // Round 3k: also across a page reload (localStorage). 2026-10-24 15:55 the browser reloaded; afterwards every group
+    // but "Active" was closed again, and the project looked as if it had lost its finished tasks.
+    const OPEN_STATES_KEY = 'te_task_group_open_states';
+    let openStates = {};
+    try {
+        openStates = JSON.parse(localStorage.getItem(OPEN_STATES_KEY) || '{}') || {};
+    } catch (e) {
+        openStates = {};
+    }
     const existingDetails = DOM.projectTasksContent.querySelectorAll('details.task-group');
     existingDetails.forEach(detail => {
         if (detail.id) {
             openStates[detail.id] = detail.open;
         }
     });
+    const saveOpenStates = () => {
+        try {
+            localStorage.setItem(OPEN_STATES_KEY, JSON.stringify(openStates));
+        } catch (e) {
+            /* storage unavailable: the groups simply use their defaults */
+        }
+    };
+    saveOpenStates();
 
     DOM.projectTasksContent.innerHTML = '';
 
@@ -687,6 +703,10 @@ export const renderProjectTasks = (tasksData) => {
         }
         
         details.className = 'task-group';
+        details.addEventListener('toggle', () => {  // Round 3k: remember the choice
+            openStates[id] = details.open;
+            saveOpenStates();
+        });
         
         const summary = document.createElement('summary');
         summary.textContent = `${title} (${tasks.length})`;
@@ -737,6 +757,13 @@ export const renderProjectTasks = (tasksData) => {
         details.appendChild(listDiv);
         return details;
     };
+
+    // Round 3k: one line with ALL counts, so closed groups never look like lost tasks
+    const totals = document.createElement('div');
+    totals.className = 'task-totals';
+    totals.textContent = `${tasksData.length} task(s): ${activeTasks.length} active, ${assignedTasks.length} assigned, ` +
+        `${unassignedTasks.length} unassigned, ${completedTasks.length} completed`;
+    DOM.projectTasksContent.appendChild(totals);
 
     const activeGroup = createGroup('task-group-active', '🔥 Active', activeTasks, true);
     if (activeGroup) DOM.projectTasksContent.appendChild(activeGroup);

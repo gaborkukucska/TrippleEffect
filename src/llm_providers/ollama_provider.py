@@ -334,6 +334,48 @@ STREAM_STALL_MARGIN_SECONDS = 60.0
 _MIN_TOKENS_FOR_RATE = 20
 _RATE_HISTORY = 20
 _output_rates: Dict[str, List[float]] = {}
+_prompt_rates: Dict[str, List[float]] = {}   # Round 3k
+_MIN_PROMPT_TOKENS_FOR_RATE = 200
+NON_STREAM_MIN_SECONDS = 300.0
+NON_STREAM_MARGIN_SECONDS = 120.0
+
+
+def _note_prompt_rate(rate_key: str, data: Dict[str, Any]) -> None:
+    """Round 3k: the prompt reading rate (tokens/s) of a finished reply, for the non-streaming read timeout."""
+    count, duration = data.get("prompt_eval_count"), data.get("prompt_eval_duration")
+    if isinstance(count, int) and not isinstance(count, bool) and count >= _MIN_PROMPT_TOKENS_FOR_RATE \
+            and isinstance(duration, (int, float)) and not isinstance(duration, bool) and duration > 0:
+        rates = _prompt_rates.setdefault(str(rate_key), [])
+        rates.append(count / (float(duration) / 1e9))
+        del rates[:-_RATE_HISTORY]
+
+
+def non_stream_read_timeout(rate_key: str, prompt_chars: int, num_predict: Any) -> float:
+    """
+    Round 3k: how long a NON-streaming request may wait for its answer (Ollama answers only when the whole reply is done):
+    the prompt at the slowest reading rate seen plus num_predict tokens at the slowest output rate, x 1.5, plus
+    NON_STREAM_MARGIN_SECONDS (x 1 more reply per further parallel request, OLLAMA_CONCURRENCY_LIMIT) - at least
+    NON_STREAM_MIN_SECONDS, at most DEFAULT_READ_TIMEOUT (also when no rate is known).
+    2026-10-24 14:50:38 (WiFi_Snake_Game) W1's request (tools attached, so not streamed) was sent while the laptop lost its
+    internet connection; it waited for the answer until 15:20:38 - 30 minutes in which the whole team stood still.
+    """
+    output_rates = _output_rates.get(str(rate_key)) or []
+    prompt_rates = _prompt_rates.get(str(rate_key)) or []
+    if not output_rates or not prompt_rates:
+        return DEFAULT_READ_TIMEOUT
+    try:
+        budget = int(num_predict) if num_predict and int(num_predict) > 0 else 8192
+    except (TypeError, ValueError):
+        budget = 8192
+    prompt_tokens = max(0, int(prompt_chars or 0)) / 3.0  # a generous token estimate
+    # one reply x 1.5, plus room for the replies of the other requests the server may handle first
+    try:
+        parallel = max(1, int(getattr(settings, 'OLLAMA_CONCURRENCY_LIMIT', 2) or 1))
+    except (TypeError, ValueError):
+        parallel = 2
+    factor = 1.5 + (parallel - 1)
+    seconds = (prompt_tokens / min(prompt_rates) + budget / min(output_rates)) * factor + NON_STREAM_MARGIN_SECONDS
+    return round(min(DEFAULT_READ_TIMEOUT, max(NON_STREAM_MIN_SECONDS, seconds)), 1)
 
 
 def note_output_rate(rate_key: str, data: Any) -> Optional[float]:
@@ -341,6 +383,7 @@ def note_output_rate(rate_key: str, data: Any) -> Optional[float]:
     try:
         if not isinstance(data, dict):
             return None
+        _note_prompt_rate(rate_key, data)  # Round 3k
         count, duration = data.get("eval_count"), data.get("eval_duration")
         if not isinstance(count, int) or isinstance(count, bool) or count < _MIN_TOKENS_FOR_RATE:
             return None
@@ -371,6 +414,7 @@ def stream_stall_timeout(rate_key: str, num_predict: Any) -> float:
 def reset_output_rates() -> None:
     """For tests."""
     _output_rates.clear()
+    _prompt_rates.clear()
 
 from src.config.settings import settings 
 import copy
@@ -675,8 +719,19 @@ class OllamaProvider(BaseLLMProvider):
                             custom_headers = session.headers.copy() 
                             custom_headers['Content-Type'] = 'application/json' 
                             
+                            post_kwargs: Dict[str, Any] = {}
+                            if not use_streaming_mode:
+                                # Round 3k: a non-streamed answer comes in one piece when the reply is done - do not wait
+                                # 30 minutes for one that never comes (a lost connection)
+                                read_timeout = non_stream_read_timeout(f"{self.base_url}|{model}", len(json_payload_str),
+                                                                       valid_options.get("num_predict"))
+                                if read_timeout < DEFAULT_READ_TIMEOUT:
+                                    post_kwargs["timeout"] = aiohttp.ClientTimeout(
+                                        total=read_timeout + DEFAULT_CONNECT_TIMEOUT, connect=DEFAULT_CONNECT_TIMEOUT,
+                                        sock_read=read_timeout)
                             response = await session.post(
                                 chat_endpoint,
+                                **post_kwargs,
                                 data=json_payload_str.encode('utf-8'), 
                                 headers=custom_headers 
                             )
