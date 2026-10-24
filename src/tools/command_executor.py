@@ -344,11 +344,34 @@ class CommandExecutionTool(BaseTool):
             content_parts.append(f"--- STDERR ---\n{stderr_str.strip()}")
         if returncode != 0 and not stderr_str.strip() and not stdout_str.strip():
             content_parts.append("--- Output ---\nNo output provided by command.")
+        if not result.background_log:
+            # Round 3g: failed tests that pass alone, and known traps in the output (src/utils/test_diagnosis.py)
+            diagnosis = await self._test_diagnosis(cwd_path, command, returncode, result.stdout, result.stderr)
+            if diagnosis:
+                content_parts.append(diagnosis.strip())
         return {
             "status": status,
             "message": result_message,
             "content": "\n\n".join(content_parts)
         }
+
+    @staticmethod
+    async def _test_diagnosis(cwd_path: Path, command: str, returncode: Optional[int], stdout: Optional[str],
+                              stderr: Optional[str]) -> str:
+        """Round 3g: the framework's notes for a FAILED test run ('' for other commands or a passing run). Never raises."""
+        try:
+            from src.tools.project_links_check import is_test_command
+            from src.utils.test_diagnosis import diagnose_failed_test_run, jest_failed_tests, pytest_failed_tests
+            if not is_test_command(command):
+                return ""
+            output = f"{stdout or ''}\n{stderr or ''}"
+            # a piped run ('npm test 2>&1 | head -100') ends with the pipe's exit code: the output tells
+            if returncode == 0 and not jest_failed_tests(output) and not pytest_failed_tests(output):
+                return ""
+            return await diagnose_failed_test_run(cwd_path, command, output)
+        except Exception as err:
+            logger.debug(f"CommandExecutionTool: test diagnosis failed: {err}")
+            return ""
 
     def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None, sub_action: Optional[str] = None) -> str:
         """Returns detailed usage instructions for the CommandExecutionTool."""

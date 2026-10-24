@@ -126,6 +126,11 @@ class TestRunnerTool(BaseTool):
         else:
             result["status"] = "error"
             result["message"] = f"Test command failed with exit code {res.returncode}."
+            # Round 3g: failed tests that pass alone, and known traps in the output (src/utils/test_diagnosis.py)
+            from src.utils.test_diagnosis import diagnose_failed_test_run
+            diagnosis = await diagnose_failed_test_run(run_path, command, f"{res.stdout}\n{res.stderr}")
+            if diagnosis:
+                result["framework_check"] = diagnosis.strip()
 
         return result
 

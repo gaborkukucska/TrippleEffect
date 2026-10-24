@@ -568,6 +568,93 @@ def test_hang_hint(workspace: Optional[Path], command: Optional[str], cpu_busy: 
         return ""
 
 
+# --- Round 3g: a jest setup file that jest also runs as a test file -------------------------------------------------------
+# 2026-10-23 (WiFi_Snake_Game) jest.config.js had testMatch ['**/tests/**/*.js'] and setupFilesAfterEnv
+# ['<rootDir>/tests/setup.js']: jest ran tests/setup.js as a test suite ("Your test suite must contain at least one test"),
+# and PM1 created the task "Add at least one test to tests/setup.js".
+_JEST_CONFIG_NAMES = ("jest.config.js", "jest.config.cjs", "jest.config.mjs")
+_JEST_LIST_RE = r"{key}\s*:\s*\[([^\]]*)\]"
+_QUOTED_STRING_RE = re.compile(r"""['"`]([^'"`]+)['"`]""")
+
+
+def _glob_regex(pattern: str) -> Optional["re.Pattern"]:
+    """A regex for a simple glob ('**/tests/**/*.js'); None for patterns with extglob/brace syntax."""
+    if any(ch in pattern for ch in "(){}[]!"):
+        return None
+    pattern = pattern.replace("<rootDir>/", "").lstrip("./")
+    out = ""
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out += "(?:.*/)?"
+            i += 3
+        elif pattern.startswith("**", i):
+            out += ".*"
+            i += 2
+        elif pattern[i] == "*":
+            out += "[^/]*"
+            i += 1
+        elif pattern[i] == "?":
+            out += "[^/]"
+            i += 1
+        else:
+            out += re.escape(pattern[i])
+            i += 1
+    return re.compile("^" + out + "$")
+
+
+def jest_setup_match_problems(workspace: Path, rel_path: str) -> List[str]:
+    """
+    Round 3g: for jest.config.js or a jest setup file - a setup file (setupFiles / setupFilesAfterEnv) that the config's
+    testMatch also matches, so jest runs it as a test suite. Only explicit, simple testMatch globs are judged.
+    """
+    try:
+        rel = str(rel_path).replace("\\", "/")
+        root = Path(workspace)
+        config_text = None
+        for name in _JEST_CONFIG_NAMES:
+            if (root / name).is_file():
+                config_text = (root / name).read_text(encoding="utf-8")
+                break
+        if config_text is None:
+            return []
+        from src.utils.test_diagnosis import _jest_setup_files
+        setup_files = _jest_setup_files(root)
+        if rel not in _JEST_CONFIG_NAMES and rel not in setup_files:
+            return []
+        # whole-line // comments only: a glob such as '**/tests/**/*.js' looks like a /* block comment */
+        stripped = "\n".join(line for line in config_text.splitlines() if not line.lstrip().startswith("//"))
+        match_block = re.search(_JEST_LIST_RE.format(key="testMatch"), stripped)
+        if not match_block:
+            return []
+        globs = [g for g in (_glob_regex(p) for p in _QUOTED_STRING_RE.findall(match_block.group(1))) if g]
+        ignore_block = re.search(_JEST_LIST_RE.format(key="testPathIgnorePatterns"), stripped)
+        ignores = _QUOTED_STRING_RE.findall(ignore_block.group(1)) if ignore_block else []
+        problems = []
+        for setup in setup_files:
+            if not any(g.match(setup) for g in globs):
+                continue
+            ignored = False
+            for pattern in ignores:
+                try:
+                    if re.search(pattern.replace("<rootDir>", ""), "/" + setup):
+                        ignored = True
+                        break
+                except re.error:
+                    continue
+            if ignored:
+                continue
+            problems.append(
+                f"jest runs the setup file {setup} as a TEST file: testMatch in the jest config matches it, so jest reports "
+                "'Your test suite must contain at least one test' (and any test written into it runs before every test "
+                f"file). Exclude it - add '<rootDir>/{setup}' to testPathIgnorePatterns - or move it out of the tests "
+                "folder (e.g. jest.setup.js) and point setupFilesAfterEnv there. Never add tests to a setup file.")
+        return problems
+    except Exception as err:
+        logger.debug(f"jest_setup_match_problems({rel_path}) failed: {err}")
+        return []
+
+
 def link_problems(workspace: Path, path: Path, rel_path: Optional[str] = None) -> List[str]:
     """All link problems of one existing file (for the task completion check). Never raises."""
     try:
@@ -586,6 +673,7 @@ def link_problems(workspace: Path, path: Path, rel_path: Optional[str] = None) -
         problems.extend(missing_dependency_problems(root, rel, source))
         problems.extend(server_on_load_problems(root, rel, source))  # Round 3e
         problems.extend(process_override_problems(rel, source))  # Round 3f
+        problems.extend(jest_setup_match_problems(root, rel))  # Round 3g
         return problems
     except Exception as err:
         logger.debug(f"link_problems({path}) failed: {err}")
@@ -610,6 +698,7 @@ def link_notes_text(workspace: Optional[Path], rel_path: Optional[str], source: 
         problems.extend(missing_dependency_problems(root, rel, source))
         problems.extend(server_on_load_problems(root, rel, source))  # Round 3e
         problems.extend(process_override_problems(rel, source))  # Round 3f
+        problems.extend(jest_setup_match_problems(root, rel))  # Round 3g
         if not problems:
             return ""
         return ("\n[Framework check - the file WAS saved, but it does not work with the project yet (a task with this "

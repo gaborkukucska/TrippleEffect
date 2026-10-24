@@ -252,6 +252,123 @@ def finished_duplicate_error(tw: Any, title: Any, description: Any, project: Opt
         return None
 
 
+def open_duplicate_error(tw: Any, agent_id: Optional[str], manager: Any, title: Any, description: Any,
+                         project: Optional[str]) -> Optional[Dict[str, Any]]:
+    """
+    Round 3g: the refusal for a PM's new task that repeats an OPEN task a worker already has (the same text, or the open
+    task's whole text inside the new one), or None. Never raises.
+    2026-10-24 07:02:50 (WiFi_Snake_Game) PM1 created "Fix failing tests for game.js module: " + the full text of W1's open
+    task "Fix failing tests: 18 tests failed across game.js, network.js, and sync.js ..." and gave it to the new worker W4, so
+    W1 and W4 edited src/game.js at the same time for the same failures. (The older check of pending tasks never ran: it
+    tested `'description' in task`, which is always False for a tasklib task.)
+    """
+    try:
+        if not agent_id or agent_id in FRAMEWORK_CALLERS or not _is_pm_caller(agent_id, manager):
+            return None
+        import difflib
+        wanted_variants = [v for v in (task_core_text(title, description).lower(),
+                                       task_core_text(None, description).lower()) if len(v) >= 12]
+        if not wanted_variants:
+            return None
+        pending = tw.tasks.pending()
+        if project:
+            pending = pending.filter(project=project)
+        for task in pending:
+            assignee = str(get_task_field(task, "assignee", "") or "").strip()
+            if not assignee or assignee == agent_id or "project_kickoff" in _task_tags(task):
+                continue
+            if str(get_task_field(task, "task_progress", "todo")).strip().lower() in _OPEN_EXCLUDED_PROGRESS:
+                continue
+            open_text = str(get_task_field(task, "description", "") or "")
+            core = task_core_text(None, open_text).lower()
+            if len(core) < 12:
+                continue
+            core_variants = [core]
+            head, separator, tail = core.partition(": ")
+            if separator and len(head) <= 60 and len(tail.strip()) >= 12 and "." not in head:
+                core_variants.append(tail.strip())
+            ratio = max(difflib.SequenceMatcher(None, w, c).ratio() for w in wanted_variants for c in core_variants)
+            contained = any(len(c) >= 40 and c in w for w in wanted_variants for c in core_variants)
+            if ratio < FINISHED_DUPLICATE_RATIO and not contained:
+                continue
+            uuid = get_task_field(task, "uuid", "?")
+            progress = str(get_task_field(task, "task_progress", "todo") or "todo")
+            logger.warning(f"ProjectManagementTool: new task '{str(description)[:80]}' repeats the OPEN task {uuid} of "
+                           f"'{assignee}' ({ratio:.2f}, contained: {contained}). Refused.")
+            return {"status": "error", "error_type": "open_duplicate", "message": (
+                f"The task was NOT created: the same work is already OPEN in task {uuid} "
+                f"('{' '.join(open_text.split())[:120]}'), assigned to {assignee} (task_progress: {progress}). Two workers "
+                f"on the same work edit the same files against each other. Instead, send {assignee} what to do differently "
+                "(send_message), or change that task (modify_task). Create a new task only for DIFFERENT work, naming its "
+                "own files.")}
+        return None
+    except Exception as err:
+        logger.debug(f"open_duplicate_error failed: {err}")
+        return None
+
+
+# --- Round 3g: improvement work nobody asked for ---------------------------------------------------------------------------
+# 2026-10-23 22:37-23:47 (WiFi_Snake_Game) with one kick-off task still open, PM1 gave the idle W1 and W3 "Polish UI components
+# and add animations", "Code review and optimization for game logic modules" (twice), "Review game.js/player.js/network.js
+# for performance issues and best practices" and "Add CSS animations for player movement" - none of it in the plan, none of
+# it about a problem. The prompts forbid inventing work for idle workers; the model did it anyway.
+_IMPROVEMENT_RE = re.compile(
+    r"\b(polish\w*|enhanc\w*|optimi[sz]\w*|refactor\w*|beautif\w*|animation\w*|code review|best practices|"
+    r"performance (?:review|report|recommendation|issue)s?|clean[ -]?up|"
+    r"improve (?:the )?(?:ui|ux|code|performance|look|design|quality|readability))\b", re.IGNORECASE)
+_PROBLEM_RE = re.compile(
+    r"\b(fix\w*|fail\w*|error\w*|bugs?|broken|crash\w*|missing|does not|doesn't|cannot|can't|not work\w*|"
+    r"regression|issues? (?:found|reported)|slow\w*|lag\w*|freez\w*|hang\w*)\b", re.IGNORECASE)
+
+
+def _improvement_stem(word: str) -> str:
+    word = word.lower()
+    for stem in ("polish", "enhanc", "optimi", "refactor", "beautif", "animation", "review", "best practice",
+                 "performance", "clean", "improve"):
+        if stem in word:
+            return stem
+    return word
+
+
+def unplanned_improvement_error(tw: Any, agent_id: Optional[str], manager: Any, title: Any, description: Any,
+                                project: Optional[str]) -> Optional[Dict[str, Any]]:
+    """
+    Round 3g: the refusal for a PM's new task of improvement work (polish, optimize, animations, code review, ...) that the
+    project plan does not ask for and that names no problem, or None. The plan is every kick-off/update task of the project
+    (an update task carries the user's feedback, so "add animations" asked for by the user is allowed). Never raises.
+    """
+    try:
+        if not agent_id or agent_id in FRAMEWORK_CALLERS or not _is_pm_caller(agent_id, manager):
+            return None
+        text = " ".join(str(part) for part in (title, description) if part)
+        match = _IMPROVEMENT_RE.search(text)
+        if not match or _PROBLEM_RE.search(text):
+            return None
+        plan_parts = []
+        for task in list(tw.tasks.pending()) + list(tw.tasks.completed()):
+            if project and str(get_task_field(task, "project", "") or "") not in ("", project):
+                continue
+            if "project_kickoff" in _task_tags(task):
+                plan_parts.append(str(get_task_field(task, "description", "") or ""))
+        plan = " ".join(plan_parts).lower()
+        if not plan:
+            return None  # no plan to compare with
+        stem = _improvement_stem(match.group(1))
+        if stem in plan:
+            return None
+        logger.warning(f"ProjectManagementTool: '{agent_id}' tried to add unplanned improvement work "
+                       f"('{match.group(1)}'): '{text[:80]}'. Refused.")
+        return {"status": "error", "error_type": "unplanned_improvement", "message": (
+            f"The task was NOT created: '{match.group(1)}' work is not part of the project plan and the task names no "
+            "problem. An idle worker with nothing to do is NORMAL while the remaining tasks are finished - do not invent "
+            "work for it (it changes working files and costs hours). Create a task only for planned work that is missing, "
+            "or for a problem that was FOUND, naming the problem and the file(s) to fix (e.g. 'Fix: the score does not "
+            "update in src/ui.js'). If nothing needs a decision, request 'pm_standby'.")}
+    except Exception as err:
+        logger.debug(f"unplanned_improvement_error failed: {err}")
+        return None
+
+
 FINISHED_PROGRESS = frozenset({"finished", "completed", "complete", "done", "closed"})
 
 
@@ -1103,6 +1220,16 @@ class ProjectManagementTool(BaseTool):
             tag_text = ",".join(str(t) for t in tag_values) if isinstance(tag_values, (list, tuple, set)) else str(tag_values or "")
             if agent_id not in FRAMEWORK_CALLERS and "kickoff" not in tag_text.lower():
                 refusal = finished_duplicate_error(tw, title, description, kwargs.get("project_filter"))
+                if refusal:
+                    return refusal
+                # Round 3g: nor work a worker already HAS
+                refusal = open_duplicate_error(tw, agent_id, kwargs.get("manager"), title, description,
+                                               kwargs.get("project_filter"))
+                if refusal:
+                    return refusal
+                # Round 3g: nor improvement work the plan does not ask for
+                refusal = unplanned_improvement_error(tw, agent_id, kwargs.get("manager"), title, description,
+                                                      kwargs.get("project_filter"))
                 if refusal:
                     return refusal
 

@@ -48,12 +48,52 @@ def is_full_test_run(command: Optional[str]) -> bool:
     text = str(command)
     if re.search(r"(?<!\|)\|(?!\|)", text):
         return False  # 'npm test | head' - the exit code is the pipe's, not the tests'
+    if "||" in text:
+        return False  # 'npm test || true', 'npm test || pytest' - the exit code is not (only) the tests'
     from src.tools.project_links_check import test_command_end
     end = test_command_end(text)
-    if end is not None and re.search(r"\|\||;", text[end:]):
-        return False  # 'npm test || true', 'npm test; echo done' - the exit code is not the tests'
+    if end is not None and re.search(r";", text[end:]):
+        return False  # 'npm test; echo done' - the exit code is not the tests'
     # 'npx mocha tests/' or 'pytest tests' run everything; 'npx mocha tests/test_snake.js' runs one file
-    return not _NAMED_TEST_FILE_RE.search(text)
+    if _NAMED_TEST_FILE_RE.search(text):
+        return False
+    # Round 3g: 2026-10-23 22:01 'npm test -- tests/test_player' (one folder of the tests) was recorded as a full run
+    return end is None or not _test_path_arguments(text[end:])
+
+
+_WHOLE_SUITE_DIRS = frozenset({"tests", "test", "spec", "__tests__", "."})
+_FILTER_FLAGS_WITH_VALUE = frozenset({"-t", "--testNamePattern", "--testPathPattern", "-k", "-m", "--grep", "-g",
+                                      "--spec", "--test-name-pattern", "--selectProjects", "--findRelatedTests"})
+
+
+def _test_path_arguments(rest: str) -> list:
+    """Round 3g: positional arguments after a test command that select PART of the tests (not 'tests/' or '.')."""
+    import shlex
+    try:
+        tokens = shlex.split(rest)
+    except ValueError:
+        tokens = rest.split()
+    selected = []
+    skip_next = False
+    for token in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        if token in ("&&", "&", "|"):
+            break
+        if token == "--" or re.match(r"^\d*[<>]", token) or ">" in token:
+            continue  # npm's argument separator, redirections such as 2>&1
+        if token.startswith("-"):
+            flag = token.split("=", 1)[0]
+            if flag in _FILTER_FLAGS_WITH_VALUE:
+                if "=" not in token:
+                    skip_next = True
+                selected.append(token)
+            continue
+        if token.rstrip("/") in _WHOLE_SUITE_DIRS:
+            continue
+        selected.append(token)
+    return selected
 
 
 def record_test_run(workspace: Any, command: str, outcome: str, summary: str = "", cpu_busy: Optional[float] = None) -> None:

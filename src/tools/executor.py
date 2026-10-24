@@ -806,6 +806,19 @@ class ToolExecutor:
                     logger.info(f"Executor: file_system read from '{agent_id}' had no filename; using '{inferred_file}' "
                                 "from its last file call.")
 
+            # Round 3g: the command written into 'action' ('run_command>\nnpm test -- tests/setup.js': 19 calls of W1-W3 on
+            # 2026-10-23/24, each refused as "Missing required parameters: command")
+            if tool_name == "command_executor" and isinstance(tool_args.get("action"), str) and not tool_args.get("command"):
+                action_command = re.match(r"^\s*(?:run_command|run|execute|exec|shell)\s*(?:>\s*|\n)\s*(\S[\s\S]*)$",
+                                          tool_args["action"])
+                if action_command:
+                    tool_args["action"] = "run_command"
+                    tool_args["command"] = action_command.group(1).strip()
+                    fuzzy_warning += ("[Framework note: your command was inside 'action', so it was run as 'command'. "
+                                      "Put the command in 'command' and only 'run_command' in 'action'.]\n")
+                    logger.info(f"Executor: command_executor call of '{agent_id}' had its command in 'action'; "
+                                f"running '{tool_args['command'][:80]}'.")
+
             # Round 2k: tools the agent's state does not allow, and project file changes by a PM, are refused here
             # (offering only some tool schemas did not stop W1 editing code in worker_report, 2026-10-20 10:19-11:03)
             framework_internal = bool(tool_args.pop(FRAMEWORK_INTERNAL_ARG, False))
