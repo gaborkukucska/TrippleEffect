@@ -470,6 +470,13 @@ class AgentManager:
                         cycle_lock = getattr(self, '_agent_cycle_locks', {}).get(agent.agent_id)
                         if cycle_lock is not None and cycle_lock.locked():
                             continue
+                        # Round 3l: an agent that waits for a Constitutional Guardian decision is not stalled. 2026-10-24
+                        # 20:31-21:25 (user review of concern 'cg_1') W1, W3 and W4 got "[Framework Watchdog]: You were
+                        # detected as IDLE ... Resuming cycle..." every minute - 54 notes each - and every reschedule was
+                        # refused. The escalation starts their cycles when the decision is made.
+                        block_reason = getattr(getattr(self, 'cg_escalation', None), 'cycle_block_reason', None)
+                        if callable(block_reason) and block_reason(agent) is not None:
+                            continue
                         # Round 2r: 2026-10-21 19:31:44 PM1 was set to 'error' after 3 failed tool calls and nothing ever
                         # resumed it; the run stood still. An agent in 'error' is resumed after a delay (limited per hour).
                         error_recovery = getattr(self, 'error_recovery', None)
@@ -941,7 +948,7 @@ class AgentManager:
             agent.cg_original_event_data = None
             agent.cg_awaiting_user_decision = False
             await escalation.request_revision(concern, decided_by="user", feedback=user_feedback)
-            await escalation.finish_user_review(agent_id, "revise")
+            await escalation.finish_user_review(agent_id, "revise", feedback=user_feedback)
             logger.info(f"Agent '{agent_id}' will revise its held {concern.kind} with the user's feedback. Agents resumed.")
             return True, f"Agent '{agent_id}' will retry with feedback."
 

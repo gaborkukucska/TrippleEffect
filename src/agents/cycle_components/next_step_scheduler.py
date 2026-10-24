@@ -255,7 +255,13 @@ class NextStepScheduler:
                   and is_unhandled_project_request(agent)):
                 agent._auto_planning_for = last_user_text(agent.message_history)
                 workflow_manager = getattr(self._manager, 'workflow_manager', None)
-                switched = bool(workflow_manager and workflow_manager.change_state(agent, ADMIN_STATE_PLANNING))
+                # Round 3l: never the same user request twice
+                from src.agents.replanning_guard import replanning_block_message, note_planning_started
+                replan_block = replanning_block_message(self._manager, agent)
+                switched = bool(not replan_block and workflow_manager
+                                and workflow_manager.change_state(agent, ADMIN_STATE_PLANNING))
+                if switched:
+                    note_planning_started(agent)
                 if switched:
                     logger.warning(f"NextStepScheduler: Admin AI '{agent_id}' answered a project request with chat text only. Framework switched it to planning.")
                     agent.message_history.append({

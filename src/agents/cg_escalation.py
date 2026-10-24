@@ -447,15 +447,37 @@ class CGEscalation:
         paused_text = f"All agents are PAUSED until you decide on the Constitutional Guardian concern about {what}."
         await self._ui({"type": "system_event", "agent_id": "system", "message": paused_text, "content": paused_text})
 
-    async def finish_user_review(self, author_id: str, outcome: str) -> Optional[CGConcern]:
+    async def finish_user_review(self, author_id: str, outcome: str, feedback: Optional[str] = None) -> Optional[CGConcern]:
         """Called after the user decided (approve / revise / stop): settle the concern and resume the system."""
         concern = self.user_concern_for(author_id) or self.get(self._paused_for)
         if concern is not None and concern.author_id == author_id:
             concern.status = "revising" if outcome == "revise" else "resolved"
             concern.level_since = time.time()
             concern.trail.append(f"the user decided '{outcome}'")
+            self._tell_agent_deciders(concern, outcome, feedback)  # Round 3l
         await self.resume()
         return concern
+
+    def _tell_agent_deciders(self, concern: CGConcern, outcome: str, feedback: Optional[str]) -> None:
+        """
+        Round 3l: the AGENTS of the concern's chain (e.g. the Admin AI that passed it up) learn what the user decided.
+        2026-10-24 20:31:47 Admin AI approved concern 'cg_1' (PM1's message to W4 about sudo/apt-get) and it went to the user;
+        Admin AI marked the Guardian's message read, so when the system resumed at 21:25:35 after the user's decision, the
+        newest user message in its history was the ORIGINAL project request - it took it for a new one and planned the
+        project again (a project update) while PM1 and the workers went on. A note, not a message: nobody is woken up.
+        """
+        what = {"revise": "asked the author to REVISE it", "approve": "APPROVED it", "stop": "STOPPED it"}.get(
+            outcome, f"decided '{outcome}'")
+        detail = f" The user's feedback: {feedback}" if feedback else ""
+        agents = getattr(self._manager, "agents", {})
+        for agent_id in dict.fromkeys(concern.chain):
+            if agent_id in (USER, concern.author_id) or agent_id not in agents:
+                continue
+            agents[agent_id].message_history.append({"role": "system", "content": (
+                f"[Constitutional Guardian]: the USER decided concern '{concern.concern_id}' on {concern.author_id}'s "
+                f"{concern.kind}: the user {what}.{detail} {concern.author_id} handles it - there is nothing for you to do. "
+                "This is NOT a new request from the user: do not plan or start anything because of it.")})
+            logger.info(f"CGEscalation: told '{agent_id}' that the user decided '{outcome}' on concern '{concern.concern_id}'.")
 
     async def resume(self) -> None:
         """End the system pause (if no other concern waits for the user) and start the cycles that were not started."""

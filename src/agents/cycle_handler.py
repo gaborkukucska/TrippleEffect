@@ -1621,6 +1621,17 @@ class AgentCycleHandler:
                                 requested_state = ADMIN_STATE_PLANNING
                                 task_description = None
 
+                        # Round 3l: the Admin AI does not plan the same user request twice (src/agents/replanning_guard.py)
+                        if (agent.agent_type == AGENT_TYPE_ADMIN and self._manager.workflow_manager.resolve_state_alias(
+                                agent.agent_type, requested_state) == ADMIN_STATE_PLANNING):
+                            from src.agents.replanning_guard import replanning_block_message, note_planning_started
+                            replan_block = replanning_block_message(self._manager, agent)
+                            if replan_block:
+                                agent.message_history.append({"role": "system", "content": replan_block})
+                                context.needs_reactivation_after_cycle = True
+                                continue
+                            note_planning_started(agent)
+
                         # Record the agent's action in its history so it knows it made the request.
                         # Round 2x: as a framework (system) note - written as the agent's own reply ("[Action Taken:
                         # Transitioned to state ...]") it was copied by the model as text that runs nothing.
