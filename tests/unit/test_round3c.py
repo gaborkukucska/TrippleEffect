@@ -352,7 +352,8 @@ def test_injected_reports_follow_the_stored_history():
     assert sent[:len(stored)] == stored                                            # the request starts with the history
     extra = [m["content"].split("\n")[0] for m in sent[len(stored):]]
     assert extra == ["[SHARED WORKSPACE TREE (Current State)]", "[YOUR ASSIGNED TASKS - 1 task(s)]",
-                     "[MESSAGE ACKNOWLEDGEMENT SYSTEM]"]
+                     "[MESSAGE ACKNOWLEDGEMENT SYSTEM]",
+                     "[NEW MESSAGE(S) FOR YOU - read this before your next step]"]   # Round 3i: the unread message last
     # the next request (two more messages) starts with everything the previous one stored
     agent.message_history += [{"role": "assistant", "content": "", "tool_calls": [{"id": "c2", "name": "file_system", "arguments": {}}]},
                               {"role": "tool", "tool_call_id": "c2", "content": "file read"}]

@@ -511,6 +511,13 @@ class PromptAssembler:
                     except Exception as e:
                         logger.warning(f"PromptAssembler: Failed to fetch task for reminder pin: {e}")
 
+        # 3.9 Round 3i: unread messages LAST, so they are the most recent thing the model reads (after the workspace tree,
+        # the task list and the task focus reminder)
+        from src.agents.message_delivery import new_messages_block
+        messages_block = new_messages_block(agent, history_for_call)
+        if messages_block:
+            history_for_call.append({"role": "system", "content": messages_block})
+
         context.history_for_call = history_for_call
 
         # 4. Log the history being sent to the LLM

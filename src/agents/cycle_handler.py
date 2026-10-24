@@ -1125,6 +1125,9 @@ class AgentCycleHandler:
             cycle_text_content = "" # <<<< FIX: Track text buffer before it gets cleared
 
             try: # This try block is for one pass of LLM call and its event processing
+                # Round 3i: messages queued while the agent was busy reach it NOW, not when it next waits
+                from src.agents.message_delivery import deliver_pending_messages
+                deliver_pending_messages(agent)
                 await self._prompt_assembler.prepare_llm_call_data(context) # Ensures history_for_call is fresh
 
                 # (Proactive start-of-cycle deduplication was removed from here because it
@@ -1171,6 +1174,14 @@ class AgentCycleHandler:
                             )
                             if success and summarized_context:
                                 summarized_context_list: List[Any] = list(summarized_context)
+                                # Round 3i: an UNREAD message is never summarized away - it goes back at the end
+                                from src.agents.message_delivery import unread_messages_missing_from
+                                dropped_unread = unread_messages_missing_from(agent, context.history_for_call,
+                                                                              summarized_context_list)
+                                if dropped_unread:
+                                    summarized_context_list.extend(dropped_unread)
+                                    logger.info(f"CycleHandler: kept {len(dropped_unread)} unread message(s) of "
+                                                f"'{agent.agent_id}' after the context summary.")
                                 # CRITICAL FIX: Insert context anchors into summarized context
                                 if context_anchors:
                                     # Insert anchors at the appropriate position (before the last few messages)

@@ -368,7 +368,7 @@ class AgentInteractionHandler:
                 "message": (
                     f"Your message to '{resolved_target_id}' was queued (they are currently busy). "
                     f"Content queued: \"{content_preview}\". "
-                    f"It will be delivered when they are available. "
+                    f"It is shown to them at their next step (Round 3i). "
                     f"Do NOT re-send this message. Move on to your next management action."
                 )
             }
@@ -481,12 +481,11 @@ class AgentInteractionHandler:
                     message_content=str(message_content)
                 )
                 # --- NEW LOGIC: INJECT SENDER'S INBOX (PHASE W) ---
-                queued_msgs = getattr(agent, 'message_inbox', [])
-                if queued_msgs:
-                    agent.message_history.extend(queued_msgs)
-                    agent.message_inbox = []
-                    
-                    result_content = f"{route_status['message']}\n\n[SYSTEM NOTIFICATION]: You just received {len(queued_msgs)} queued incoming messages! They have been appended to your active message history so you can review them."
+                # Round 3i: a deferred task activation stays queued until worker_wait (src/agents/message_delivery.py)
+                from src.agents.message_delivery import deliver_pending_messages
+                delivered_count = deliver_pending_messages(agent)
+                if delivered_count:
+                    result_content = f"{route_status['message']}\n\n[SYSTEM NOTIFICATION]: You just received {delivered_count} queued incoming messages! They have been appended to your active message history so you can review them."
                 else:
                     result_content = route_status["message"]
 
