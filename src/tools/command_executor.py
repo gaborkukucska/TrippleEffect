@@ -362,13 +362,14 @@ class CommandExecutionTool(BaseTool):
         try:
             from src.tools.project_links_check import is_test_command
             from src.utils.test_diagnosis import (diagnose_failed_test_run, jest_failed_tests, pytest_failed_tests,
-                                                  suite_failures)
+                                                  suite_failures, other_failed_tests)
             if not is_test_command(command):
                 return ""
             output = f"{stdout or ''}\n{stderr or ''}"
             # a piped run ('npm test 2>&1 | head -100') ends with the pipe's exit code: the output tells
+            # (Round 3m: + the failed tests of other runners - TAP, mocha, unittest, a hand-written runner)
             if returncode == 0 and not jest_failed_tests(output) and not pytest_failed_tests(output) \
-                    and not suite_failures(output):
+                    and not suite_failures(output) and not other_failed_tests(output):
                 return ""
             return await diagnose_failed_test_run(cwd_path, command, output)
         except Exception as err:

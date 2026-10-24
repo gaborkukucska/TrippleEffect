@@ -14,6 +14,10 @@ check looked only at the files' syntax, never at the tests' result.
   marked finished yet - the last full run failed or did not end, or no full run of the CURRENT files passed - else None.
   The current files are compared by the workspace fingerprint (src/agents/tool_activity.workspace_fingerprint), taken after
   the run, so a change after the run asks for a new run.
+* Round 3m: a project without a test command the framework knows (no "test" script in package.json, no test_*.py) but
+  with test files - 2026-10-24 22:12:41 (WiFi_Multiplayer_Snake, no package.json) W1 marked "Kick-off Task 8: Run automated
+  tests ..." finished 14 seconds after `node tests/game.test.js` FAILED - needs a passing run of ANY test command (e.g. that
+  `node tests/game.test.js`) of the current files.
 Records live in memory: after a restart the tests are simply run again.
 """
 import json
@@ -27,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 PASSED, FAILED, TIMEOUT = "passed", "failed", "timeout"
 _RUNS: Dict[str, Dict[str, Any]] = {}
+_ANY_RUNS: Dict[str, Dict[str, Any]] = {}  # Round 3m: the latest run of any test command whose exit code is the tests'
 _NAMED_TEST_FILE_RE = re.compile(r"\S+\.(?:m?js|cjs|ts|py)\b|::|\s-k\s|--grep|\s-g\s|--test-name-pattern")
 _TEST_RUN_TASK_RE = re.compile(
     r"\b(?:run|runs|running|execute|executes|verify|verifies|fix|fixes|make)\b[^.\n]{0,60}?"
@@ -40,8 +45,8 @@ def _key(workspace: Any) -> str:
         return str(workspace)
 
 
-def is_full_test_run(command: Optional[str]) -> bool:
-    """True for a test command that runs the whole suite (no single test file, test id or name filter)."""
+def exit_code_is_the_tests(command: Optional[str]) -> bool:
+    """Round 3m: True for a test command whose exit code is the tests' own (no pipe, no '||', nothing after a ';')."""
     from src.tools.project_links_check import is_test_command
     if not is_test_command(command):
         return False
@@ -54,6 +59,16 @@ def is_full_test_run(command: Optional[str]) -> bool:
     end = test_command_end(text)
     if end is not None and re.search(r";", text[end:]):
         return False  # 'npm test; echo done' - the exit code is not the tests'
+    return True
+
+
+def is_full_test_run(command: Optional[str]) -> bool:
+    """True for a test command that runs the whole suite (no single test file, test id or name filter)."""
+    if not exit_code_is_the_tests(command):
+        return False
+    text = str(command)
+    from src.tools.project_links_check import test_command_end
+    end = test_command_end(text)
     # 'npx mocha tests/' or 'pytest tests' run everything; 'npx mocha tests/test_snake.js' runs one file
     if _NAMED_TEST_FILE_RE.search(text):
         return False
@@ -102,13 +117,17 @@ def record_test_run(workspace: Any, command: str, outcome: str, summary: str = "
     Round 3f: cpu_busy - for a TIMEOUT, the CPU cores the run used in its last second (a loop that never ends, or waiting).
     """
     try:
-        if not workspace or not is_full_test_run(command):
+        if not workspace or not exit_code_is_the_tests(command):
             return
         from src.agents.tool_activity import workspace_fingerprint
-        _RUNS[_key(workspace)] = {
+        record = {
             "command": str(command).strip(), "outcome": outcome, "summary": " ".join(str(summary or "").split())[-400:],
             "fingerprint": workspace_fingerprint(workspace), "time": time.time(), "cpu_busy": cpu_busy,
         }
+        _ANY_RUNS[_key(workspace)] = record  # Round 3m
+        if not is_full_test_run(command):
+            return
+        _RUNS[_key(workspace)] = record
         logger.info(f"test_runs: full test run '{str(command).strip()[:80]}' in {workspace}: {outcome}.")
     except Exception as err:
         logger.debug(f"record_test_run failed: {err}")
@@ -118,9 +137,15 @@ def latest_test_run(workspace: Any) -> Optional[Dict[str, Any]]:
     return _RUNS.get(_key(workspace))
 
 
+def latest_any_test_run(workspace: Any) -> Optional[Dict[str, Any]]:
+    """Round 3m: the latest run of any test command (one file too) whose exit code is the tests' own."""
+    return _ANY_RUNS.get(_key(workspace))
+
+
 def clear_test_runs() -> None:
     """For tests."""
     _RUNS.clear()
+    _ANY_RUNS.clear()
 
 
 def is_test_run_task(description: Optional[str]) -> bool:
@@ -159,9 +184,9 @@ def verification_problem(workspace: Any, description: Optional[str]) -> Optional
         if not workspace or not is_test_run_task(description):
             return None
         command = project_test_command(workspace)
-        if not command:
-            return None
         from src.agents.tool_activity import workspace_fingerprint
+        if not command:
+            return _unknown_command_problem(workspace, workspace_fingerprint(workspace))  # Round 3m
         run = latest_test_run(workspace)
         current = workspace_fingerprint(workspace)
         if run and current is not None and run.get("fingerprint") == current:
@@ -178,5 +203,47 @@ def verification_problem(workspace: Any, description: Optional[str]) -> Optional
     except Exception as err:
         logger.debug(f"verification_problem failed: {err}")
         return None
+
+
+def project_test_files(workspace: Any, limit: int = 20) -> list:
+    """Round 3m: the test files of the workspace (relative paths, at most `limit`), outside node_modules and the like."""
+    from src.tools.project_links_check import is_test_file
+    skip = {"node_modules", ".git", ".venv", "venv", "__pycache__", "dist", "build", "coverage", ".te_background"}
+    found = []
+    try:
+        root = Path(workspace)
+        for path in sorted(root.rglob("*")):
+            if len(found) >= limit:
+                break
+            rel = path.relative_to(root)
+            if set(rel.parts[:-1]) & skip or path.suffix.lower() not in (".js", ".mjs", ".cjs", ".ts", ".jsx", ".tsx", ".py"):
+                continue
+            if is_test_file(rel.as_posix()) and path.is_file():
+                found.append(rel.as_posix())
+    except (OSError, ValueError):
+        pass
+    return found
+
+
+def _unknown_command_problem(workspace: Any, current: Any) -> Optional[str]:
+    """
+    Round 3m: for a project whose test command the framework does not know: None when it has no test files or the latest
+    run of a test command (any, one file too) of the current files passed, else the reason.
+    """
+    test_files = project_test_files(workspace)
+    if not test_files:
+        return None
+    run = latest_any_test_run(workspace)
+    if run and current is not None and run.get("fingerprint") == current:
+        if run.get("outcome") == PASSED:
+            return None
+        detail = f" Its output ended with: {run['summary']}" if run.get("summary") else ""
+        state = "did not END - it timed out" if run.get("outcome") == TIMEOUT else "failed"
+        return f"the tests do NOT pass: the last test run (`{run['command']}`) {state}.{detail}"
+    shown = ", ".join(test_files[:3]) + (" ..." if len(test_files) > 3 else "")
+    example = (f"node {test_files[0]}" if not test_files[0].endswith(".py") else f"python -m pytest -q {test_files[0]}")
+    return (f"no test run of the CURRENT files has passed yet. This project has no test command the framework knows (no "
+            f"\"test\" script in package.json), so run its test file(s) ({shown}) directly with command_executor (e.g. "
+            f"`{example}`), fix what fails, and mark the task finished when that run passes.")
 
 # END OF FILE src/utils/test_runs.py

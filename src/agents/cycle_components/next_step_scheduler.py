@@ -992,6 +992,13 @@ class NextStepScheduler:
         if not hasattr(agent, 'message_history') or len(agent.message_history) < 6:
             return False
         
+        # Round 3m: which calls changed a file (a successful write/edit), to tell "edit, run the tests again" from a loop
+        from src.agents.tool_activity import is_tool_result_failure, _written_path
+        results_by_id = {}
+        for msg in agent.message_history[-24:]:
+            if isinstance(msg, dict) and msg.get('role') == 'tool' and msg.get('tool_call_id') is not None:
+                results_by_id[msg['tool_call_id']] = (msg.get('name'), msg.get('content'))
+
         # Look at recent tool executions — collect signatures
         recent_tool_calls = []
         for msg in reversed(agent.message_history[-12:]):  # Check last 12 messages for wider window
@@ -1001,24 +1008,40 @@ class NextStepScheduler:
                     tool_args = call.get('arguments', {})
                     # Full signature = name + args (exact match)
                     full_signature = f"{tool_name}:{tool_args}"
+                    result = results_by_id.get(call.get('id')) if isinstance(call, dict) else None
+                    changed_file = bool(isinstance(call, dict) and _written_path(call) and result is not None
+                                        and not is_tool_result_failure(result[0] or tool_name, result[1]))
                     # Name-only signature (for diversity check)
                     recent_tool_calls.append({
                         'full': full_signature,
                         'name': tool_name,
-                        'args': str(tool_args)
+                        'args': str(tool_args),
+                        'changed_file': changed_file,
                     })
                 if len(recent_tool_calls) >= 6:  # Enough to analyze
                     break
-        
+
         if len(recent_tool_calls) < 4:
             return False
-        
+
         # === Check 1: Identical full signatures repeated 3+ times ===
+        # Round 3m: ... with no file changed in between. 2026-10-24 22:57:09 W1 ran `node tests/game.test.js` for the third
+        # time - after a successful edit before each run - and was forced to report: "edit, test again" is how a worker fixes
+        # a failing test, not a loop (the same call 3 times with nothing changed still is).
         last_full = recent_tool_calls[0]['full']
         identical_count = sum(1 for call in recent_tool_calls[:6] if call['full'] == last_full)
-        if identical_count >= 3:
+        unchanged_repeats = 0  # the same call, newest first, until another call changed a file
+        for call in recent_tool_calls[:6]:
+            if call['full'] == last_full:
+                unchanged_repeats += 1
+            elif call['changed_file']:
+                break
+        if unchanged_repeats >= 3:
             logger.warning(f"NextStepScheduler: Detected tool execution loop - identical call repeated {identical_count} times: '{recent_tool_calls[0]['name']}'")
             return True
+        if identical_count >= 3:
+            logger.info(f"NextStepScheduler: '{agent.agent_id}' repeated '{recent_tool_calls[0]['name']}' {identical_count} "
+                        "times, but files were changed in between (edit, then run again) - not a loop.")
         
         # === Check 2: Alternating A-B-A-B pattern (with identical args) ===
         if len(recent_tool_calls) >= 4:

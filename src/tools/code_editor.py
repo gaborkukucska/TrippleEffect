@@ -975,6 +975,12 @@ class CodeEditorTool(BaseTool):
                 if isinstance(search_text, str) and not search_text.strip():
                     # Round 1x: an empty 'search' matched "987 times" and was rejected as ambiguous. It means "no search".
                     search_text = None
+                if isinstance(search_text, str) and search_text == replace_text:
+                    # Round 3m: 2026-10-24 22:57-22:59 W1 sent {"search": "  gameState.isRunning = true;", "replace": the same
+                    # text} five times - an edit that changes nothing.
+                    errors.append(f"Chunk {idx} changes NOTHING: its 'replace' text is exactly its 'search' text. Put the "
+                                  "NEW text in 'replace'.")
+                    continue
 
                 # Single-line inference if only one bound is provided
                 if start_line is not None and end_line is None and search_text is None:
@@ -1119,7 +1125,14 @@ class CodeEditorTool(BaseTool):
                                     
                         errors.append(f"Chunk {idx}: Search text not found in file. Ensure exact matching. Use the `file_system` tool with `action='read'` to review the file contents to find the correct exact text before trying again.")
                     elif occurrences > 1:
-                        errors.append(f"Chunk {idx}: Search text is ambiguous (found {occurrences} times). Please make the search block larger/more unique, or use start_line and end_line.")
+                        # Round 3m: say WHERE - 2026-10-24 22:58 W1 retried the same ambiguous search 4 times
+                        found_at, position = [], content.find(search_text)
+                        while position != -1 and len(found_at) < 6:
+                            found_at.append(content.count("\n", 0, position) + 1)
+                            position = content.find(search_text, position + 1)
+                        errors.append(f"Chunk {idx}: Search text is ambiguous (found {occurrences} times, at lines "
+                                      f"{', '.join(map(str, found_at))}). Please make the search block larger/more unique, or "
+                                      "use start_line and end_line.")
                     else:
                         new_content = content.replace(search_text, replace_text)
                         if filename.endswith('.py'):

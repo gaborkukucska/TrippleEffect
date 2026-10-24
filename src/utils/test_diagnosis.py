@@ -90,10 +90,89 @@ def suite_failures(output: Optional[str]) -> List[str]:
 
 
 def _all_failures(output: str) -> Tuple[str, ...]:
-    """Round 3k: failed test names plus 'did not run: <file>' for test files that did not run."""
+    """
+    Round 3k: failed test names plus 'did not run: <file>' for test files that did not run.
+    Round 3m: + the failed tests of other runners (other_failed_tests) when jest and pytest name none.
+    """
     names = set(name for _f, name in jest_failed_tests(output)) | set(pytest_failed_tests(output))
+    if not names:
+        names = set(other_failed_tests(output))
     names |= {f"did not run: {path}" for path in suite_failures(output)}
     return tuple(sorted(names))
+
+
+# --- Round 3m: the failed tests of other test runners -----------------------------------------------------------------------
+# 2026-10-24 22:15-23:09 (WiFi_Multiplayer_Snake, no package.json) W1's tests/game.test.js was its own small runner, run with
+# `node tests/game.test.js` 30+ times: "✗ initializeGameState creates valid snake: Expected isRunning to be false initially"
+# and "Failed tests:\n  - <name>: <error>". Neither jest nor pytest output, so the "same tests keep failing" check never
+# counted a run - for 55 minutes W1 toggled `isRunning` in src/game.js while the TEST was wrong.
+_TAP_NOT_OK_RE = re.compile(r"^\s*not ok \d+(?:\s+-)?\s+(.+?)\s*(?:#.*)?$")
+_MARKED_FAIL_RE = re.compile(r"^\s*(?:✗|✖|✘|×|❌)\s+(.+?)\s*$")
+_UNITTEST_FAIL_RE = re.compile(r"^(?:FAIL|ERROR): (\w+ \([\w.]+\))\s*$")
+_LABELLED_FAIL_RE = re.compile(r"^\s*FAIL(?:ED)?:\s+(.+?)\s*$")
+_FAILED_HEADING_RE = re.compile(r"^\s*(?:failed|failing)\s+tests?\s*:?\s*$", re.IGNORECASE)
+_BULLET_RE = re.compile(r"^\s*[-*•]\s+(.+?)\s*$")
+_MOCHA_FAILING_RE = re.compile(r"^\s*\d+ failing\s*$")
+_MOCHA_ITEM_RE = re.compile(r"^\s*\d+\) (.+?)\s*$")
+_DURATION_RE = re.compile(r"\s*(?:\(\d+(?:\.\d+)?\s*m?s\)|\s\d+(?:\.\d+)?\s*ms)$")  # (0.5ms), vitest's " 5ms"
+_NOT_TEST_NAMES = frozenset({"failing tests", "failing tests:", "failed tests", "failed tests:"})
+
+
+def _clean_test_name(text: str) -> str:
+    """'<name>: <error>' -> '<name>', without a trailing duration '(0.5ms)'."""
+    name = _DURATION_RE.sub("", str(text or "").strip())
+    if ": " in name:
+        name = name.split(": ", 1)[0].strip()
+    return name[:200]
+
+
+def other_failed_tests(output: Optional[str]) -> List[str]:
+    """
+    Round 3m: the names of the failed tests of runners other than jest and pytest, in order, without duplicates: TAP
+    (`node --test`: 'not ok 2 - moves left'), mocha ('1 failing' then '1) Game\\n     moves left:'), unittest
+    ('FAIL: test_x (tests.test_game.T)'), and hand-written runners ('✗ <name>: <error>', 'FAIL: <name>', a 'Failed tests:'
+    list of '- <name>: <error>').
+    """
+    found: List[str] = []
+
+    def add(raw: str) -> None:
+        name = _clean_test_name(raw)
+        if name and name.lower() not in _NOT_TEST_NAMES and name not in found:
+            found.append(name)
+
+    lines = str(output or "").splitlines()
+    in_failed_list = in_mocha = False
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        index += 1
+        if _FAILED_HEADING_RE.match(line):
+            in_failed_list = True
+            continue
+        if in_failed_list:
+            bullet = _BULLET_RE.match(line)
+            if bullet:
+                add(bullet.group(1))
+                continue
+            in_failed_list = False
+        if _MOCHA_FAILING_RE.match(line):
+            in_mocha = True
+            continue
+        if in_mocha:
+            item = _MOCHA_ITEM_RE.match(line)
+            if item:
+                parts = [item.group(1)]
+                while not parts[-1].endswith(":") and index < len(lines) and len(parts) < 6 and lines[index].strip():
+                    parts.append(lines[index].strip())
+                    index += 1
+                add(" ".join(part.rstrip(":").strip() for part in parts))
+                continue
+        for pattern in (_TAP_NOT_OK_RE, _UNITTEST_FAIL_RE, _MARKED_FAIL_RE, _LABELLED_FAIL_RE):
+            match = pattern.match(line)
+            if match:
+                add(match.group(1))
+                break
+    return found
 
 
 def pytest_failed_tests(output: Optional[str]) -> List[str]:
@@ -303,6 +382,123 @@ def output_hints(workspace: Optional[Path], output: Optional[str]) -> List[str]:
     if match:
         hints.append(f"`{match.group(1)}` is not defined: this test file uses the globals of a test runner (jest or mocha). "
                      "Run it with the project's test command (`npm test`, or `npx jest <file>`), not with `node <file>`.")
+    if workspace:
+        hints.extend(inverted_check_hints(Path(workspace), text))  # Round 3m
+    return hints
+
+
+# --- Round 3m: a check that throws exactly when the value is RIGHT ----------------------------------------------------------
+# 2026-10-24 22:15-23:09 tests/game.test.js line 88: `if (!gameState.isRunning) { throw new Error('Expected isRunning to be
+# false initially'); }` - it throws exactly when isRunning IS false. W1 (and PM1, who rewrote the task as "set isRunning to
+# false (line 53 in game.js)") changed src/game.js for 55 minutes; W1 thought about it for 39,553 characters in one reply.
+_EXPR = r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*|\[[^\]\n]+\])*"
+_JS_GUARDED_THROW_RE = re.compile(
+    r"\bif\s*\(\s*(?P<cond>[^()\n]+?)\s*\)\s*\{?\s*\n?\s*throw\s+(?:new\s+)?\w*Error\(\s*(?P<q>['\"`])(?P<msg>.*?)(?P=q)")
+_PY_GUARDED_RAISE_RE = re.compile(
+    r"\bif\s+(?P<cond>[^:\n]+?)\s*:\s*\n?\s*raise\s+\w*(?:Error|Exception)\(\s*(?P<q>['\"])(?P<msg>.*?)(?P=q)")
+_EXPECTED_BOOL_RE = re.compile(
+    r"\b([A-Za-z_$][\w$]*)\s+(?:to\s+be|should\s+be|must\s+be)\s+(?:initially\s+)?(true|false|truthy|falsy)\b",
+    re.IGNORECASE)
+_TEST_SOURCE_SUFFIXES = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".py")
+
+
+def _check_parts(cond: str, python: bool) -> Optional[Tuple[str, bool, str]]:
+    """(checked expression, the value for which the check throws, the corrected condition) of a simple check, or None."""
+    cond = cond.strip()
+    if python:
+        match = re.fullmatch(rf"not\s+({_EXPR})", cond)
+        if match:
+            return match.group(1), False, match.group(1)
+        match = re.fullmatch(rf"({_EXPR})\s+(is not|is|==|!=)\s+(True|False)", cond)
+        if match:
+            equal = match.group(2) in ("is", "==")
+            value = match.group(3) == "True"
+            fixed_op = {"is": "is not", "is not": "is", "==": "!=", "!=": "=="}[match.group(2)]
+            return match.group(1), value if equal else not value, f"{match.group(1)} {fixed_op} {match.group(3)}"
+        if re.fullmatch(_EXPR, cond):
+            return cond, True, f"not {cond}"
+        return None
+    match = re.fullmatch(rf"!\s*({_EXPR})", cond)
+    if match:
+        return match.group(1), False, match.group(1)
+    match = re.fullmatch(rf"({_EXPR})\s*(===|==|!==|!=)\s*(true|false)", cond)
+    if match:
+        equal = match.group(2) in ("===", "==")
+        value = match.group(3) == "true"
+        fixed_op = {"===": "!==", "==": "!=", "!==": "===", "!=": "=="}[match.group(2)]
+        return match.group(1), value if equal else not value, f"{match.group(1)} {fixed_op} {match.group(3)}"
+    if re.fullmatch(_EXPR, cond):
+        return cond, True, f"!{cond}"
+    return None
+
+
+def _test_sources(root: Path, limit: int = 100) -> List[Path]:
+    from src.tools.project_links_check import is_test_file
+    found: List[Path] = []
+    try:
+        for path in sorted(root.rglob("*")):
+            if len(found) >= limit:
+                break
+            try:
+                rel = path.relative_to(root)
+            except ValueError:
+                continue
+            if set(rel.parts[:-1]) & _SNAPSHOT_SKIP or path.suffix.lower() not in _TEST_SOURCE_SUFFIXES:
+                continue
+            if is_test_file(rel.as_posix()) and path.is_file() and path.stat().st_size <= 300_000:
+                found.append(path)
+    except OSError:
+        pass
+    return found
+
+
+def inverted_check_hints(root: Path, output: str) -> List[str]:
+    """
+    Round 3m: for a failed message such as 'Expected isRunning to be false' that the output shows, the test files' checks
+    `if (!x.isRunning) throw new Error('Expected isRunning to be false ...')` (Python: `if not x: raise ...`) that throw
+    exactly when the value IS what the message expects. At most 3. Never raises.
+    """
+    hints: List[str] = []
+    try:
+        text = str(output or "")
+        if not _EXPECTED_BOOL_RE.search(text):
+            return hints
+        for path in _test_sources(root):
+            try:
+                source = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            python = path.suffix.lower() == ".py"
+            for match in (_PY_GUARDED_RAISE_RE if python else _JS_GUARDED_THROW_RE).finditer(source):
+                message = match.group("msg")
+                shown = message.split("${", 1)[0].split("{", 1)[0] if match.group("q") == "`" or python else message
+                if len(shown.strip()) < 8 or shown not in text:
+                    continue  # this check did not fail in the run
+                expected = _EXPECTED_BOOL_RE.search(message)
+                parts = _check_parts(match.group("cond"), python)
+                if not expected or not parts:
+                    continue
+                expression, throws_for, fixed = parts
+                subject = expected.group(1)
+                last_name = re.findall(r"[A-Za-z_$][\w$]*", expression)[-1]  # gameState.isRunning, s['isRunning']
+                if last_name.lower() != subject.lower():
+                    continue
+                wanted = expected.group(2).lower() in ("true", "truthy")
+                if throws_for != wanted:
+                    continue
+                line = source.count("\n", 0, match.start()) + 1
+                rel = path.relative_to(root).as_posix()
+                word = "true" if wanted else "false"
+                keyword = "raise" if python else "throw"
+                hints.append(
+                    f"{rel} line {line}: `if {'' if python else '('}{match.group('cond').strip()}{':' if python else ')'}` "
+                    f"{keyword}s '{' '.join(message.split())[:100]}' exactly when {subject} IS {word} - the check is "
+                    f"INVERTED, so this test fails when the code is RIGHT. Fix the condition in the test (`if "
+                    f"{'' if python else '('}{fixed}{':' if python else ')'}`); do not change the code for it.")
+                if len(hints) >= 3:
+                    return hints
+    except Exception as err:
+        logger.debug(f"inverted_check_hints failed: {err}")
     return hints
 
 
@@ -388,7 +584,9 @@ def stuck_note(root: Path, output: str) -> Optional[str]:
                 f"although {shown} changed in between:]\n")
         causes = ("a test that expects a fixed result from RANDOM values (e.g. food placed at random: set the position in "
                   "the test first), a mock of the wrong method (the code reads the reply with `recv()`, the test sets "
-                  "`send.return_value`), or an expectation that contradicts the task or another test")
+                  "`send.return_value`), an inverted check (`if (!x) throw new Error('Expected x to be false')` throws "
+                  "exactly when x IS false), a move the code rightly refuses (a snake heading right cannot turn straight "
+                  "back LEFT into its own body), or an expectation that contradicts the task or another test")
         if not tests_changed:
             return head + ("Only the code changed - the test file(s) did not. So the TEST may be what is wrong. Before the "
                            "next change, compare each failing assertion with your task description. Typical wrong tests: "

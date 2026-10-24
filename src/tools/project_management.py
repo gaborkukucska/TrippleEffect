@@ -383,10 +383,15 @@ def open_duplicate_error(tw: Any, agent_id: Optional[str], manager: Any, title: 
 # and add animations", "Code review and optimization for game logic modules" (twice), "Review game.js/player.js/network.js
 # for performance issues and best practices" and "Add CSS animations for player movement" - none of it in the plan, none of
 # it about a problem. The prompts forbid inventing work for idle workers; the model did it anyway.
+# Round 3m: + documentation beyond the plan. 2026-10-24 22:08 PM1 added "Kick-off Task 7: Create comprehensive documentation"
+# (the plan's README.md was finished at 22:02) and 23:01 "Create User Guide and API Documentation" for the idle W2, who
+# rewrote docs/API.md (13 KB) while W1's failing test was the only open work.
 _IMPROVEMENT_RE = re.compile(
     r"\b(polish\w*|enhanc\w*|optimi[sz]\w*|refactor\w*|beautif\w*|animation\w*|code review|best practices|"
     r"performance (?:review|report|recommendation|issue)s?|clean[ -]?up|"
-    r"improve (?:the )?(?:ui|ux|code|performance|look|design|quality|readability))\b", re.IGNORECASE)
+    r"improve (?:the )?(?:ui|ux|code|performance|look|design|quality|readability)|"
+    r"(?:user|developer|player|installation|deployment) guides?|api (?:documentation|docs|reference)|tutorials?|"
+    r"(?:comprehensive|additional|extended|detailed|more) (?:documentation|docs))\b", re.IGNORECASE)
 _PROBLEM_RE = re.compile(
     r"\b(fix\w*|fail\w*|error\w*|bugs?|broken|crash\w*|missing|does not|doesn't|cannot|can't|not work\w*|"
     r"regression|issues? (?:found|reported)|slow\w*|lag\w*|freez\w*|hang\w*)\b", re.IGNORECASE)
@@ -395,9 +400,11 @@ _PROBLEM_RE = re.compile(
 def _improvement_stem(word: str) -> str:
     word = word.lower()
     for stem in ("polish", "enhanc", "optimi", "refactor", "beautif", "animation", "review", "best practice",
-                 "performance", "clean", "improve"):
+                 "performance", "clean", "improve", "guide", "api doc", "api ref", "tutorial"):  # Round 3m: + documentation
         if stem in word:
             return stem
+    if word.endswith(("documentation", "docs")):
+        return word.split()[0]  # 'comprehensive documentation' -> 'comprehensive'
     return word
 
 

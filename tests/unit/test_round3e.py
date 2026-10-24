@@ -340,10 +340,18 @@ def test_the_test_check_spares_other_tasks_and_the_framework(tasks):
     assert tasks("PM1", manager, action="modify_task", task_id=ui, task_progress="finished")["status"] == "success"
     t9 = _add(tasks, manager, TASK_9, "W1")
     assert tasks("framework", manager, action="modify_task", task_id=t9, task_progress="finished")["status"] == "success"
-    # no project test command: nothing to check
+    # no project test command: Round 3m - a passing run of ANY test command (here: the one test file) of the current files
     (ws / "package.json").write_text(json.dumps({"name": "snake", "scripts": {"start": "node src/server.js"}}))
     t8 = _add(tasks, manager, "Kick-off Task 8: Run the tests and the program to verify that everything works", "W1")
+    refused = tasks("PM1", manager, action="modify_task", task_id=t8, task_progress="finished")
+    assert refused.get("error_type") == "tests_not_passing" and "`node tests/test_api.js`" in refused["message"], refused
+    from src.utils.test_runs import record_test_run, PASSED
+    record_test_run(ws, "node tests/test_api.js", PASSED, "all passed")
     assert tasks("PM1", manager, action="modify_task", task_id=t8, task_progress="finished")["status"] == "success"
+    # no test command and no test file: nothing to check
+    (ws / "tests" / "test_api.js").unlink()
+    t10 = _add(tasks, manager, "Kick-off Task 10: Run the tests again", "W1")
+    assert tasks("PM1", manager, action="modify_task", task_id=t10, task_progress="finished")["status"] == "success"
 
 
 TASK_1 = ("Kick-off Task 1: Set up Express server with Socket.io, game rooms and the REST API in src/server.js and "
