@@ -366,6 +366,17 @@ class AgentInteractionHandler:
                     f"Wait for their response or move on to your next management action."
                 )
             }
+            # Round 3o: a PM's message gives a waiting worker WITHOUT an open task no work (2026-10-25 13:39:24)
+            try:
+                from src.tools.project_management import idle_worker_message_note
+                idle_note = idle_worker_message_note(self._manager, sender_id, resolved_target_id)
+            except Exception as note_error:
+                logger.debug(f"InteractionHandler: idle worker note failed: {note_error}")
+                idle_note = ""
+            if idle_note:
+                delivery_status["message"] += idle_note
+                logger.info(f"InteractionHandler: '{resolved_target_id}' waits without an open task; told '{sender_id}' "
+                            "to create a task for the requested change.")
         else:
             # Queue it
             if not hasattr(target_agent, 'message_inbox'):

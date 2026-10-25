@@ -587,6 +587,29 @@ class ToolExecutor:
         
         return fallback_response
 
+    # Round 3o: the fields of a FAILED test_runner / command_executor result the agent needs: before, a failed result was only
+    # its message. 2026-10-25 13:28:56 W1 saw "Test command failed with exit code 5. - Please check your parameters" and never
+    # the output, nor the framework's diagnosis (Rounds 3g-3n) of any failed test_runner run.
+    FAILURE_DETAIL_TOOLS = frozenset({"test_runner", "command_executor"})
+    FAILURE_DETAIL_ORDER = ("exit_code", "stdout", "stderr", "partial_stdout", "partial_stderr", "content", "suggestion",
+                            "framework_check")
+
+    @classmethod
+    def _failure_details(cls, tool_name: str, result: Any) -> str:
+        """Round 3o: the extra fields of a failed test_runner / command_executor result as text ('' for other tools)."""
+        if tool_name not in cls.FAILURE_DETAIL_TOOLS or not isinstance(result, dict):
+            return ""
+        parts = []
+        for key in cls.FAILURE_DETAIL_ORDER:
+            value = result.get(key)
+            if value is None or value == "":
+                continue
+            if isinstance(value, str) and ("\n" in value or len(value) > 80):
+                parts.append(f"--- {key.upper()} ---\n{value.strip()}")
+            else:
+                parts.append(f"[{key}]: {value}")
+        return "\n".join(parts)
+
     @staticmethod
     def _foreign_file_creation_message(tool_args: Dict[str, Any], agent_id: str, project_name: Optional[str],
                                        session_name: Optional[str], manager: Any) -> Optional[str]:
@@ -623,6 +646,47 @@ class ToolExecutor:
             return foreign_file_creation_error(manager, agent_id, project_name, session_name, filename)
         except Exception as err:
             logger.debug(f"ToolExecutor: foreign file check failed: {err}")
+            return None
+
+    @staticmethod
+    def _foreign_file_change_message(tool_name: str, tool_args: Dict[str, Any], agent_id: str,
+                                     project_name: Optional[str], session_name: Optional[str], manager: Any) -> Optional[str]:
+        """
+        Round 3o: for a file_system / code_editor call that changes, moves or deletes an EXISTING file of the shared
+        workspace, the refusal text when the file belongs to another worker's task
+        (src/tools/project_management.foreign_file_change_error), else None.
+        """
+        try:
+            if tool_name not in ("file_system", "code_editor") or not project_name or not session_name:
+                return None
+            if not is_file_change_call(tool_name, tool_args):
+                return None
+            action = str(tool_args.get("action") or "").strip().strip("<>/\"' \t").lower()
+            if tool_name == "file_system" and action == "copy":
+                return None  # a copy leaves the file as it is
+            if str(tool_args.get("scope") or "shared").lower() != "shared":
+                return None
+            filename = None
+            for key in ("filename", "filepath", "file", "path", "file_path", "file_name", "target_file", "name"):
+                value = tool_args.get(key)
+                if isinstance(value, str) and value.strip():
+                    filename = value.strip()
+                    break
+            if not filename or filename.startswith("/") or ".." in Path(filename).parts:
+                return None
+            from src.config.settings import settings
+            from src.tools.sandbox_runner import resolve_shared_workspace
+            workspace = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, project_name, session_name)
+            if not (workspace / filename).is_file():
+                if tool_name == "code_editor" and not (workspace / filename).exists():
+                    # code_editor creates a missing file from one whole-file chunk (Round 2t): the same rule as a write
+                    from src.tools.project_management import foreign_file_creation_error
+                    return foreign_file_creation_error(manager, agent_id, project_name, session_name, filename)
+                return None  # a NEW file written by file_system: _foreign_file_creation_message
+            from src.tools.project_management import foreign_file_change_error
+            return foreign_file_change_error(manager, agent_id, project_name, session_name, filename)
+        except Exception as err:
+            logger.debug(f"ToolExecutor: foreign file change check failed: {err}")
             return None
 
     async def execute_tool(
@@ -927,6 +991,17 @@ class ToolExecutor:
                     self._update_execution_stats(success=False)
                     return f"{fuzzy_warning}Error from tool '{tool_name}': {ownership_message}"
 
+            # --- Round 3o: a worker does not change the files of ANOTHER worker's task (open or finished) ---
+            if tool_name in ("file_system", "code_editor") and agent_type_for_auth == AGENT_TYPE_WORKER \
+                    and manager is not None and not framework_internal:
+                change_message = self._foreign_file_change_message(tool_name, kwargs_for_tool, agent_id, project_name,
+                                                                   session_name, manager)
+                if change_message:
+                    logger.warning(f"[TOOL_EXEC_BLOCKED] ID:{execution_id} | '{tool_name}' change of '{agent_id}' refused: "
+                                   "the file belongs to another worker's task.")
+                    self._update_execution_stats(success=False)
+                    return f"{fuzzy_warning}Error from tool '{tool_name}': {change_message}"
+
             # --- Round 3n: the framework's history placeholder is not file content ---
             if tool_name in ("file_system", "code_editor"):
                 from src.agents.context_compaction import compaction_placeholder_refusal
@@ -1058,6 +1133,11 @@ class ToolExecutor:
                     fallback_response["action"] = tool_args.get("action", "unknown_action")
                     return fallback_response
                 else:
+                    # Round 3o: a failed test run's output and the framework's diagnosis are the point of the result
+                    details = self._failure_details(tool_name, result)
+                    if details:
+                        return (f"[Tool Execution Failed] {error_message} [ID:{execution_id}] - Read the output below and "
+                                f"fix what it shows.\n{details}")
                     return f"[Tool Execution Failed] {error_message} [ID:{execution_id}] - {fallback_response['suggested_action']}"
 
             # Handle success case - format result appropriately

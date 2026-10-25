@@ -19,6 +19,7 @@ Temp_Convert_CLI run:
 """
 import json
 import os
+import re
 from typing import Any, Dict, Iterable, List, Optional
 
 # Prefixes the framework puts in front of a failed tool result (lower-case, compared after lstrip()).
@@ -39,6 +40,14 @@ CONTENT_RETURNING_TOOLS = frozenset({
 })
 
 
+# Round 3o: the executor's refusals BEFORE a tool runs ("Error from tool 'file_system': The file was NOT created: ...", the
+# policy gate, the compaction placeholder), also after a framework note line ("[System Warning: ...]"). 2026-10-25 13:30:00
+# W1's refused write of W2's tests/test_snake.py counted as a SUCCESSFUL file_system call: the framework then told W1 it had
+# "created/modified code files (tests/test_snake.py)" and took W1's three identical failed test runs for "edit, then run
+# again - not a loop". Compared on the lower-cased text, at the start of a line (a file's content is shown as 'N: ...').
+_EXECUTOR_REFUSAL_RE = re.compile(r"^error from tool '[\w.-]+': ", re.MULTILINE)
+
+
 def is_tool_result_failure(tool_name: Optional[str], content: Any) -> bool:
     """True if a tool result (as stored in the message history) represents a failed tool call."""
     text = "" if content is None else str(content)
@@ -52,6 +61,8 @@ def is_tool_result_failure(tool_name: Optional[str], content: Any) -> bool:
 
     lowered = text.lower()
     if lowered.lstrip().startswith(FRAMEWORK_FAILURE_PREFIXES):
+        return True
+    if _EXECUTOR_REFUSAL_RE.search(lowered[:2000]):  # Round 3o
         return True
     if tool_name in CONTENT_RETURNING_TOOLS:
         return False
@@ -793,7 +804,10 @@ def state_tool_block_message(agent_type: Optional[str], state: Optional[str], to
         return (
             f"A Project Manager does not change project files, so this '{_clean_action(args) or tool_name}' on '{target}' "
             "was NOT done. The worker who owns the task makes the change: use send_message to tell that worker exactly "
-            "what must change (or create/assign a task for it) and let the worker edit the file."
+            "what must change (or create/assign a task for it) and let the worker edit the file. A worker WITHOUT an open "
+            "task (waiting in worker_wait) does not act on a message: for such a worker create a task for the change "
+            "(project_management add_task with a description that names the file and the change, and "
+            "assignee_agent_id='<worker id>')."  # Round 3o
         )
     return None
 

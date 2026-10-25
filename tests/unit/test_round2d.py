@@ -445,6 +445,9 @@ def test_a_cut_off_reply_is_recorded_and_the_next_call_gets_more_tokens(monkeypa
     import src.agents.core as core_module
     provider = _FakeProvider([{"type": "finish_info", "done_reason": "length", "output_tokens": 1024}])
     agent = _worker(provider, monkeypatch)
+    # Round 3o: after a cut-off in worker_decompose the budget is at least the worker_work budget (tested in
+    # test_round3o.py); with a worker_work budget no larger than the decompose budget only the doubling applies here
+    monkeypatch.setattr(core_module.settings, "WORKER_WORK_STATE_MAX_TOKENS", 1024)
     _consume(agent)
     assert agent._last_reply_cut_off is True and agent._consecutive_cut_off_replies == 1
     _consume(agent)

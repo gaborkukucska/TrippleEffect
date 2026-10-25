@@ -81,6 +81,18 @@ def boosted_max_tokens(base: Optional[int], consecutive_cut_offs: int) -> Option
     return min(base * (2 ** consecutive_cut_offs), base * MAX_TOKENS_BOOST_FACTOR)
 
 
+def budget_after_cut_off(base: Optional[int], consecutive_cut_offs: int, floor: Optional[int] = None) -> Optional[int]:
+    """
+    Round 3o: boosted_max_tokens(), but after a cut-off never below `floor`. A worker in worker_decompose (2048 tokens) that
+    writes its whole file there is cut off at 2048, 4096 and 8192 tokens before a retry fits (2026-10-25 13:32:24-13:35:16:
+    W2's 14,390-character tests/test_snake.py, 2.5 minutes): after the first cut-off it gets at least the worker_work budget.
+    """
+    boosted = boosted_max_tokens(base, consecutive_cut_offs)
+    if boosted is not None and floor and consecutive_cut_offs and consecutive_cut_offs > 0 and boosted < floor:
+        return floor
+    return boosted
+
+
 def cut_off_boost_level(agent: Any) -> int:
     """
     Round 2n: how many doublings the output budget of the agent's next call gets: the cut-offs in a row, or - while the
@@ -381,7 +393,10 @@ class Agent:
             if max_tokens_override is not None:
                 # Round 2d: after replies that were CUT OFF at the output limit, the next call gets a larger budget (x2 per
                 # cut-off in a row, at most x4) so a complete tool call fits. The configured value stays the normal budget.
-                max_tokens_override = boosted_max_tokens(max_tokens_override, cut_off_boost_level(self))  # Round 2n: sticky
+                cut_off_floor = (settings.WORKER_WORK_STATE_MAX_TOKENS  # Round 3o: a write cut off in decompose
+                                 if self.agent_type == AGENT_TYPE_WORKER and self.state == WORKER_STATE_DECOMPOSE else None)
+                max_tokens_override = budget_after_cut_off(max_tokens_override, cut_off_boost_level(self),
+                                                           cut_off_floor)  # Round 2n: sticky
                 logger.info(f"Agent {self.agent_id}: Applying max_tokens={max_tokens_override} for state '{self.state}'")
             self._last_reply_cut_off = False  # Round 2d: set again below if this reply is cut off
             self._last_cut_off_max_tokens = max_tokens_override

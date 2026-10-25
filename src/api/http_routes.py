@@ -610,11 +610,14 @@ async def stop_active_project(
     
     stopped_agents = []
     try:
+        from src.agents.user_stop import mark_stopped  # Round 3o: replies that arrive after the stop are not acted on
         agents_snapshot = list(manager.agents.values())
         for agent in agents_snapshot:
             # Skip bootstrap admin_ai — it should stay responsive
             if agent.agent_id == BOOTSTRAP_AGENT_ID:
                 continue
+            if agent.agent_type in (AGENT_TYPE_PM, AGENT_TYPE_WORKER):
+                mark_stopped(agent)
             
             if agent.agent_type == AGENT_TYPE_PM:
                 if agent.state != PM_STATE_STANDBY:
@@ -680,11 +683,14 @@ async def start_active_project(
     )
     
     try:
+        from src.agents.user_stop import mark_resumed  # Round 3o
         agents_snapshot = list(manager.agents.values())
         
         for agent in agents_snapshot:
             if agent.agent_id == BOOTSTRAP_AGENT_ID:
                 continue
+            if agent.agent_type in (AGENT_TYPE_PM, AGENT_TYPE_WORKER):
+                mark_resumed(agent)
             
             if agent.agent_type == AGENT_TYPE_PM:
                 if agent.state == PM_STATE_STANDBY:

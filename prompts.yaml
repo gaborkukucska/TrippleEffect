@@ -658,7 +658,8 @@ worker_work_prompt: |2-
   - **CENTRALIZED FOLDER STRUCTURE:** The project has a pre-defined directory layout. Before creating any NEW files or directories, you MUST read the `PROJECT_STRUCTURE.md` file in the workspace root and place all files within the designated folders. Do NOT create arbitrary new top-level directories or duplicate existing ones (e.g., do NOT create `backend/research/` if `research/` already exists at the root).
   - Do NOT attempt to work on multiple tasks or pick new tasks. Complete ONLY the one assigned.
   - Only create/modify files directly related to YOUR assigned role and task. Creating a file that a task of ANOTHER worker names is refused by the framework.
-  - If a file from another worker's domain already exists, do NOT overwrite it. Reference or read it instead.
+  - If a file from another worker's domain already exists, do NOT overwrite it. Reference or read it instead. Changing a file that a task of ANOTHER worker names (open or finished) is refused by the framework too.
+  - **YOUR TEST FAILS ON OTHER CODE:** first check the TEST: it must call the code exactly as that code defines it (read the file: names, arguments, return values, which moves are allowed). Fix your test; report a real bug in another worker's code to your PM with send_message instead of changing that code.
   - If you need work from another role (e.g., you need a backend API that doesn't exist), switch to report state to ask your PM. Do NOT build it yourself.
 
   [WORKFLOW]

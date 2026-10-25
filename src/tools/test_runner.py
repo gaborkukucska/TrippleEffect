@@ -120,9 +120,21 @@ class TestRunnerTool(BaseTool):
         if stderr:
             result["stderr"] = _head_tail(stderr)
 
-        if res.returncode == 0:
+        # Round 3o: 'pytest ... 2>&1 | head -100' ends with the PIPE's exit code. 2026-10-25 13:39:57 PM1's piped run of
+        # W2's failing tests (8 failed, 2 errors) came back as "Test command completed successfully."
+        piped_failures = res.returncode == 0 and self._output_shows_failures(command, f"{res.stdout}\n{res.stderr}")
+        if res.returncode == 0 and not piped_failures:
             result["status"] = "success"
             result["message"] = "Test command completed successfully."
+        elif piped_failures:
+            result["status"] = "error"
+            result["message"] = ("Tests FAILED: the command ended with exit code 0 only because of the pipe / '||' after the "
+                                 "test command - the output shows failed tests. Run the test command without '| head', "
+                                 "'| tail' or '|| ...' to see its real result.")
+            from src.utils.test_diagnosis import diagnose_failed_test_run
+            diagnosis = await diagnose_failed_test_run(run_path, command, f"{res.stdout}\n{res.stderr}")
+            if diagnosis:
+                result["framework_check"] = diagnosis.strip()
         else:
             result["status"] = "error"
             result["message"] = f"Test command failed with exit code {res.returncode}."
@@ -133,6 +145,23 @@ class TestRunnerTool(BaseTool):
                 result["framework_check"] = diagnosis.strip()
 
         return result
+
+    @staticmethod
+    def _output_shows_failures(command: str, output: str) -> bool:
+        """Round 3o: True when the exit code is not the tests' own (a pipe, '||') and the output shows failed tests."""
+        try:
+            from src.utils.test_runs import exit_code_is_the_tests
+            if exit_code_is_the_tests(command):
+                return False
+            from src.utils.test_diagnosis import (jest_failed_tests, pytest_failed_tests, suite_failures,
+                                                  other_failed_tests)
+            import re
+            verbose_failure = re.search(r"^\S+::\S+ (?:FAILED|ERROR)\b", output, re.MULTILINE)  # 'pytest -v | head'
+            return bool(jest_failed_tests(output) or pytest_failed_tests(output) or suite_failures(output)
+                        or other_failed_tests(output) or verbose_failure)
+        except Exception as err:
+            logger.debug(f"TestRunner: piped failure check failed: {err}")
+            return False
 
     def get_detailed_usage(self, agent_context: Optional[Dict[str, Any]] = None, sub_action: Optional[str] = None) -> str:
         usage = """

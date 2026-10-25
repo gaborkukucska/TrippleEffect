@@ -220,6 +220,80 @@ def _rebalance_brackets(text: str) -> str:
     return rebalanced
 
 
+# --- Round 3o: quotes inside a text that were not escaped -------------------------------------------------------------------
+# 2026-10-25 13:36:39 W2 sent 'chunks' as a JSON string whose 'search' text held a Python docstring with plain quotes:
+#     [{"search": "def __post_init__(self) -> None:\n        """Initialize the snake body ..."""\n ...", "replace": "..."}]
+# ('Expecting , delimiter'; every repair failed). The keys still show where each text begins and ends.
+_CHUNK_KEY_NAMES = ("search", "replace", "search_block", "replace_block", "start_line", "end_line")
+_CHUNK_KEY_RE = re.compile(r'"(' + "|".join(_CHUNK_KEY_NAMES) + r')"\s*:\s*')
+_JSON_SIMPLE_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f"}
+
+
+def _decode_lenient_json_string(raw: str) -> str:
+    """The text of a JSON string body whose quotes may not be escaped: known escapes are decoded, anything else is kept."""
+    out: List[str] = []
+    index, size = 0, len(raw)
+    while index < size:
+        char = raw[index]
+        if char == "\\" and index + 1 < size:
+            following = raw[index + 1]
+            if following in _JSON_SIMPLE_ESCAPES:
+                out.append(_JSON_SIMPLE_ESCAPES[following])
+                index += 2
+                continue
+            if following == "u" and re.fullmatch(r"[0-9a-fA-F]{4}", raw[index + 2:index + 6] or ""):
+                out.append(chr(int(raw[index + 2:index + 6], 16)))
+                index += 6
+                continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def parse_chunks_by_keys(text: str) -> List[Dict[str, Any]]:
+    """
+    Round 3o: reads a 'chunks' JSON text whose string values contain unescaped quotes, by its keys ("search", "replace",
+    "start_line", ...): each value runs to the next key of the chunk (or the chunk's end). Raises ValueError when the text
+    does not have exactly that shape (a key twice in one chunk - e.g. a key-like text inside a value - or anything else).
+    """
+    body = str(text or "").strip()
+    if not (body.startswith("[") and body.endswith("]")):
+        raise ValueError("not a list")
+    body = body[1:-1].strip()
+    if not (body.startswith("{") and body.endswith("}")):
+        raise ValueError("not a list of objects")
+    objects = re.split(r'(?<=["\dl])\s*\}\s*,\s*\{(?=\s*")', body[1:-1])
+    chunks: List[Dict[str, Any]] = []
+    for obj in objects:
+        obj = obj.strip()
+        keys = list(_CHUNK_KEY_RE.finditer(obj))
+        if not keys or keys[0].start() != 0:
+            raise ValueError("a chunk does not start with a known key")
+        chunk: Dict[str, Any] = {}
+        for position, key in enumerate(keys):
+            name = key.group(1)
+            if name in chunk:
+                raise ValueError(f"key '{name}' twice in one chunk")
+            end = keys[position + 1].start() if position + 1 < len(keys) else len(obj)
+            raw = obj[key.end():end].strip()
+            if position + 1 < len(keys):
+                if not raw.endswith(","):
+                    raise ValueError("no ',' between two keys")
+                raw = raw[:-1].rstrip()
+            if raw.startswith('"') and raw.endswith('"') and len(raw) >= 2:
+                chunk[name] = _decode_lenient_json_string(raw[1:-1])
+            elif re.fullmatch(r"-?\d+", raw):
+                chunk[name] = int(raw)
+            elif raw == "null":
+                chunk[name] = None
+            else:
+                raise ValueError(f"value of '{name}' is neither text nor a number")
+        if not any(isinstance(chunk.get(k), str) for k in ("replace", "replace_block")):
+            raise ValueError("a chunk without new text")
+        chunks.append(chunk)
+    return chunks
+
+
 NESTED_LOCATION_KEYS = ("start_line", "end_line", "from_line", "to_line", "line_start", "line_end", "start", "end")
 NESTED_TEXT_KEYS = ("replace_text", "replace", "replacement", "new_text", "new_code", "new_content", "content", "text", "code",
                     "replace_with", "replacement_text", "replace_block")
@@ -794,7 +868,14 @@ class CodeEditorTool(BaseTool):
                             else:
                                 raise ValueError("AST evaluated to non-list")
                         except Exception as e3:
-                            return {"status": "error", "message": f"'chunks' was provided as a string but is not valid JSON. Ensure you use an array of objects. Parse error: {e1}. Repair attempt failed: {e3}"}
+                            try:
+                                chunks = parse_chunks_by_keys(chunks)  # Round 3o: quotes inside a text not escaped
+                                logger.info("CodeEditorTool: 'chunks' read by its keys (unescaped quotes inside a text).")
+                                bracket_repair_note += (" [Note: a text in your 'chunks' had quotes (\") that were not "
+                                                        "escaped; the framework read it by its keys. Inside a JSON string "
+                                                        "write a quote as \\\".]")
+                            except Exception:
+                                return {"status": "error", "message": f"'chunks' was provided as a string but is not valid JSON. Ensure you use an array of objects. Parse error: {e1}. Repair attempt failed: {e3}"}
 
         if isinstance(chunks, dict) and any(key in chunks for key in CHUNK_REPLACE_KEYS):
             chunks = [chunks]  # Round 2d: one chunk object without the surrounding list

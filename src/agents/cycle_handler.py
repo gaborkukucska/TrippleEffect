@@ -44,6 +44,7 @@ from src.workflows.base import WorkflowResult  # type: ignore[import]
 from src.agents.tool_activity import is_tool_result_failure, claims_project_complete, pm_standby_block_message  # type: ignore[import]
 from src.agents.tool_activity import ADMIN_WORK_TO_PLANNING_NOTE, last_user_text, project_request_needs_planning  # type: ignore[import]  # Round 2g
 from src.agents.assignable_work import assignment_hint_for  # type: ignore[import]  # Round 2h
+from src.agents.user_stop import DISCARDED_EVENT_TYPES, stopped_during_cycle, resumed_since_stop, discarded_reply_note  # type: ignore[import]  # Round 3o
 from src.agents.assignable_work import worker_wait_block_message  # type: ignore[import]  # Round 2l
 from src.agents.assignable_work import pm_audit_block_message  # type: ignore[import]  # Round 2p
 from src.agents.tool_activity import FRAMEWORK_INTERNAL_ARG  # type: ignore[import]  # Round 2k
@@ -1053,6 +1054,7 @@ class AgentCycleHandler:
 
     async def _run_cycle_internal(self, agent: Agent, retry_count: int = 0): # pyright: ignore[reportGeneralTypeIssues]
         logger.info(f"!!! CycleHandler: run_cycle TASK STARTED for Agent '{agent.agent_id}' (Retry: {retry_count}) !!!")
+        cycle_started_at = time.time()  # Round 3o: a reply that arrives after the user stopped the project is not acted on
         
         # --- NEW: Watchdog for Agent Stalls (cycles without state transitions) ---
         if not hasattr(agent, '_cycles_without_transition'):
@@ -1269,6 +1271,20 @@ class AgentCycleHandler:
                     event_type = event.get("type")
                     if event_type != "response_chunk":
                         logger.debug(f"CycleHandler '{agent.agent_id}': Received Event from Agent.process_message: Type='{event_type}', Keys={list(event.keys())}")
+
+                    # Round 3o: the user stopped the project while this reply was being written (2026-10-25 13:40:47: PM1's
+                    # and W2's tool calls still ran 10 and 18 seconds after the stop) - its actions are dropped
+                    if event_type in DISCARDED_EVENT_TYPES and stopped_during_cycle(agent, cycle_started_at):
+                        resumed = resumed_since_stop(agent)
+                        agent.message_history.append({"role": "system", "content": discarded_reply_note(event)})
+                        logger.warning(f"CycleHandler: '{agent.agent_id}' was stopped by the user during this cycle; its "
+                                       f"'{event_type}' was dropped ({'resumed since - it runs again' if resumed else 'not rescheduled'}).")
+                        context.action_taken_this_cycle = True
+                        context.cycle_completed_successfully = True
+                        context.needs_reactivation_after_cycle = resumed
+                        if not resumed:
+                            agent.needs_priority_recheck = False
+                        llm_stream_ended_cleanly = False; break
 
                     if event_type == "error":
                         context.last_error_obj = event.get('_exception_obj', ValueError(event.get('content', 'Unknown Agent Core Error')))

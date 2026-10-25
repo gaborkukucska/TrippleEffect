@@ -234,6 +234,30 @@ def duplicate_structure_files(structure_files: List[str], task_files: List[str])
     return drop, notes
 
 
+def prune_dirs_of_dropped_files(dirs: List[str], files: List[str], dropped: List[str]) -> Tuple[List[str], List[str]]:
+    """
+    Round 3o: (directories, notes) without the directories that were planned only for files the kick-off DROPPED - no kept
+    file and no kept sub-directory lies under them. 2026-10-25 13:27:20 'src/game/snake_game.py' and 'src/server/server.py'
+    were dropped for the tasks' 'src/snake_game.py' and 'src/server.py', but src/game/ and src/server/ were still created and
+    listed in PROJECT_STRUCTURE.md: W1 listed both, PM1 looked for src/server/server.py and src/server/__init__.py.
+    A directory the plan lists without any file (e.g. 'assets/') is kept.
+    """
+    def under(path: str, directory: str) -> bool:
+        return path.startswith(directory.rstrip("/") + "/")
+
+    removed: List[str] = []
+    for directory in sorted(dirs, key=lambda d: (-d.count("/"), d)):  # deepest first
+        if not any(under(f, directory) for f in dropped):
+            continue
+        if any(under(f, directory) for f in files):
+            continue
+        if any(under(other, directory) for other in dirs if other != directory and other not in removed):
+            continue
+        removed.append(directory)
+    notes = [f"Directory '{d}/' not created: it was planned only for file(s) that were dropped." for d in sorted(removed)]
+    return [d for d in dirs if d not in removed], notes
+
+
 # --- Round 3c: the tests of JavaScript code are JavaScript -------------------------------------------------------------------
 # 2026-10-22 23:24 the snake game was JavaScript (src/game.js, src/player.js, src/server.js), but the plan said "Write pytest
 # tests" and the structure planned tests/test_game.py, test_player.py and test_leaderboard.py. The framework wrote a pytest
@@ -804,6 +828,7 @@ class PMKickoffWorkflow(BaseWorkflow):
                 planned_dirs, planned_files, notes = plan_project_structure(structure_items + task_named_files)
                 planned_dirs, planned_files, layout_notes = normalize_planned_layout(planned_dirs, planned_files)
                 notes = list(notes) + layout_notes
+                planned_before_drops = list(planned_files)  # Round 3o
                 # Round 2y: one file, two paths (structure vs. task text): keep the task's path
                 structure_only = normalize_planned_layout(*plan_project_structure(structure_items)[:2])[1]
                 task_only = normalize_planned_layout(*plan_project_structure(task_named_files)[:2])[1]
@@ -816,6 +841,11 @@ class PMKickoffWorkflow(BaseWorkflow):
                     notes.append("the code is JavaScript: the planned Python test files were dropped (JavaScript tests instead).")
                     code_base_definitions = (f"{code_base_definitions}\n\n{language_note}" if isinstance(code_base_definitions, str)
                                              else [code_base_definitions, language_note] if code_base_definitions else language_note)
+                # Round 3o: no empty directories for the files that were dropped
+                all_dropped = list(dropped_files) + [f for f in planned_before_drops if f not in planned_files
+                                                     and f not in dropped_files]
+                planned_dirs, prune_notes = prune_dirs_of_dropped_files(planned_dirs, planned_files, all_dropped)
+                notes += prune_notes
                 for note in notes:
                     logger.warning(f"PMKickoffWorkflow: project_structure from PM '{agent.agent_id}': {note}")
                 created_dirs = self._create_directory_structure(planned_dirs, workspace_path)

@@ -648,6 +648,144 @@ def foreign_file_creation_error(manager: Any, agent_id: Optional[str], project_n
         return None
 
 
+# --- Round 3o: a worker does not change the files of ANOTHER worker's task ------------------------------------------------
+# 2026-10-25 13:35-13:40 (Laptop_Snake_Multiplayer, nemotron-3.5-lightning): W2's task was "Kick-off Task 3: Write pytest tests
+# ... in tests/test_snake.py". Its tests called GameState.spawn_food(position=...) (no such argument), used HTTPServer without
+# importing it and expected a snake to reverse from UP to DOWN. Instead of fixing its tests, W2 edited src/snake_game.py - the
+# file of W1's FINISHED Kick-off Task 1 - four times ('length: int = 1' -> 3 -> 1, the body set-up), and PM1 then asked W1 to
+# change the code to match the tests.
+def _all_tasks(tw: Any) -> List[Any]:
+    """The pending and the completed tasks (finished tasks still own their files)."""
+    tasks: List[Any] = []
+    for getter in ("pending", "completed"):
+        try:
+            tasks.extend(list(getattr(tw.tasks, getter)()))
+        except Exception:
+            continue
+    return tasks
+
+
+def _shown_text(text: str, limit: int = 90) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit - 3] + "..."
+
+
+def _task_time(task: Any, field: str) -> Optional[float]:
+    """A task's 'entry' / 'end' time as a timestamp, or None."""
+    try:
+        value = get_task_field(task, field)
+        if value is None or value == "":
+            return None
+        if hasattr(value, "timestamp"):
+            return float(value.timestamp())
+        text = str(value).strip()
+        return float(text) if re.fullmatch(r"\d+(?:\.\d+)?", text) else None
+    except Exception:
+        return None
+
+
+def foreign_file_change_error(manager: Any, agent_id: Optional[str], project_name: Optional[str],
+                              session_name: Optional[str], rel_path: Optional[str]) -> Optional[str]:
+    """
+    Round 3o: the refusal (text) for a WORKER that changes an EXISTING file named by a task (open or finished) assigned to
+    ANOTHER worker, or None. Allowed: a task of its own names the file (any of its tasks, finished ones too); its own
+    current task says to run / verify / fix the tests (src/utils/test_runs.is_test_run_task - such a task fixes whatever
+    fails); or its current task was created AFTER the other task was finished (follow-up work such as "Fix the score bug" or
+    an update task may change finished work - the kick-off tasks of one plan are created together, so a test task never
+    counts as follow-up of the code it tests). PMs, the framework, unassigned and kick-off tasks own nothing here.
+    Never raises.
+    """
+    try:
+        if not agent_id or not rel_path or agent_id in FRAMEWORK_CALLERS or not project_name or not session_name:
+            return None
+        rel_path = _clean_rel_path(rel_path)
+        agents = getattr(manager, "agents", None)
+        worker = agents.get(agent_id) if isinstance(agents, dict) else None
+        from src.agents.constants import AGENT_TYPE_WORKER
+        if worker is None or getattr(worker, "agent_type", None) != AGENT_TYPE_WORKER:
+            return None
+        tw = ProjectManagementTool()._get_taskwarrior_instance(project_name, session_name)
+        if tw is None:
+            return None
+        from src.utils.task_files import file_paths_in_text
+        from src.utils.test_runs import is_test_run_task
+        tasks = [t for t in _all_tasks(tw) if "project_kickoff" not in _task_tags(t)
+                 and str(get_task_field(t, "status", "") or "").strip().lower() != "deleted"]
+        own_tasks = [t for t in tasks if str(get_task_field(t, "assignee", "") or "").strip() == agent_id]
+        for own_task in own_tasks:
+            if _task_names_path(file_paths_in_text(str(get_task_field(own_task, "description", "") or "")), rel_path):
+                return None
+        current = _worker_parent_task(tw, agent_id, manager)
+        open_own = [t for t in own_tasks if not task_is_finished(t)
+                    and str(get_task_field(t, "task_progress", "todo")).strip().lower() not in _OPEN_EXCLUDED_PROGRESS]
+        deciding = [current] if current is not None else open_own
+        if any(is_test_run_task(str(get_task_field(t, "description", "") or "")) for t in deciding):
+            return None  # 'Run the tests ... and fix any failures' may change any file
+        for other in tasks:
+            assignee = str(get_task_field(other, "assignee", "") or "").strip()
+            if not assignee or assignee == agent_id or non_worker_role(assignee, manager):
+                continue
+            other_text = str(get_task_field(other, "description", "") or "")
+            if not _task_names_path(file_paths_in_text(other_text), rel_path):
+                continue
+            if current is not None and task_is_finished(other):
+                created, finished_at = _task_time(current, "entry"), _task_time(other, "end")
+                if created is not None and finished_at is not None and created > finished_at:
+                    continue  # follow-up work, planned after that task was done
+            state = "FINISHED" if task_is_finished(other) else "open"
+            own_shown = (f"Your task is '{_shown_text(get_task_field(current, 'description', ''))}' and does not name it."
+                         if current is not None else "None of your tasks names it.")
+            logger.warning(f"ProjectManagementTool: '{agent_id}' tried to change '{rel_path}', the file of the {state} task "
+                           f"{get_task_field(other, 'uuid', '?')} of '{assignee}'. Refused.")
+            return (f"'{rel_path}' was NOT changed: it is the file of the {state} task '{_shown_text(other_text)}' "
+                    f"({get_task_field(other, 'uuid', '?')}) of {assignee}. {own_shown} Do not change another worker's "
+                    f"files. If one of YOUR tests fails because of '{rel_path}', first check the TEST: does it call the code "
+                    f"exactly the way '{rel_path}' defines it (names, arguments, return values, what is allowed)? Read "
+                    f"'{rel_path}' and fix your test to match the real code. Only if the code really has a bug: tell your PM "
+                    "with send_message (the test, what it expects, what the code does) - the PM gives the fix to "
+                    f"{assignee}.")
+        return None
+    except Exception as err:
+        logger.debug(f"foreign_file_change_error failed: {err}")
+        return None
+
+
+def idle_worker_message_note(manager: Any, sender_id: Optional[str], target_id: Optional[str]) -> str:
+    """
+    Round 3o: the note for a PM whose message reaches a worker that waits (worker_wait) WITHOUT an open task: a message
+    gives it no work. '' otherwise. 2026-10-25 13:39:24 PM1 sent W1 (waiting, no task) a list of fixes for
+    src/snake_game.py; W1 marked the message read and nothing happened. Never raises.
+    """
+    try:
+        agents = getattr(manager, "agents", None)
+        if not isinstance(agents, dict) or not sender_id or not target_id:
+            return ""
+        sender, target = agents.get(sender_id), agents.get(target_id)
+        from src.agents.constants import AGENT_TYPE_PM, AGENT_TYPE_WORKER, WORKER_STATE_WAIT
+        if sender is None or target is None or getattr(sender, "agent_type", None) != AGENT_TYPE_PM:
+            return ""
+        if getattr(target, "agent_type", None) != AGENT_TYPE_WORKER or getattr(target, "state", None) != WORKER_STATE_WAIT:
+            return ""
+        project_name = getattr(manager, "current_project", None)
+        session_name = getattr(manager, "current_session", None)
+        if not project_name or not session_name:
+            return ""
+        tw = ProjectManagementTool()._get_taskwarrior_instance(project_name, session_name)
+        if tw is None:
+            return ""
+        for task in tw.tasks.pending():
+            if str(get_task_field(task, "assignee", "") or "").strip() != target_id:
+                continue
+            if str(get_task_field(task, "task_progress", "todo")).strip().lower() not in _OPEN_EXCLUDED_PROGRESS:
+                return ""  # it has an open task (also one that waits for others): it will work on it
+        return (f" NOTE: {target_id} is waiting and has NO open task, so this message gives it no work - it can only read "
+                f"it. If {target_id} must change files, create a task for it: project_management action 'add_task' with "
+                f"a title, a description that names the file(s) and the exact change, and assignee_agent_id='{target_id}'.")
+    except Exception as err:
+        logger.debug(f"idle_worker_message_note failed: {err}")
+        return ""
+
+
 STARTED_PROGRESS = ("doing", "in_progress")
 
 

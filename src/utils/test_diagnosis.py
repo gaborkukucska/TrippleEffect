@@ -24,7 +24,7 @@ import logging
 import re
 import shlex
 import time
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -600,10 +600,349 @@ def stuck_note(root: Path, output: str) -> Optional[str]:
         return None
 
 
+# --- Round 3o: a test that calls the project's code in a way the code does not define ---------------------------------------
+# 2026-10-25 13:35-13:40 (Laptop_Snake_Multiplayer, Python): W2's tests/test_snake.py called
+# `gs.spawn_food(position=Point(5, 5))` ("TypeError: GameState.spawn_food() got an unexpected keyword argument 'position'"),
+# used HTTPServer and BaseHTTPRequestHandler without importing them ("NameError: name 'BaseHTTPRequestHandler' is not defined",
+# the whole file did not run) - and W2 changed src/snake_game.py to fit its tests. Such an error says exactly what is wrong
+# and where; the framework now says it too, with the definition the code really has.
+_E_LINE_RE = re.compile(r"^E\s+(?P<kind>(?:\w+\.)*\w*(?:Error|Exception))\s*:\s*(?P<msg>.+?)\s*$")
+_LOCATION_AFTER_RE = re.compile(r"^(?P<path>[^\s:]+\.py):(?P<line>\d+): (?P<kind>[\w.]+)\s*$")
+_LOCATION_BEFORE_RE = re.compile(r"^(?P<path>[^\s:]+\.py):(?P<line>\d+): in \S+")
+_SUMMARY_ERROR_RE = re.compile(
+    r"^(?:FAILED|ERROR) \S+ - (?P<kind>(?:\w+\.)*\w*(?:Error|Exception)): (?P<msg>.+?)\s*$", re.MULTILINE)
+_SECTION_LINE_RE = re.compile(r"^(?:_{3,}|={3,})")
+_UNEXPECTED_KW_RE = re.compile(r"^(?P<qual>[\w.<>]+)\(\) got an unexpected keyword argument '(?P<arg>\w+)'")
+_MISSING_ARGS_RE = re.compile(r"^(?P<qual>[\w.<>]+)\(\) missing \d+ required (?:positional|keyword-only) arguments?: (?P<args>.+)$")
+_TOO_MANY_RE = re.compile(r"^(?P<qual>[\w.<>]+)\(\) takes (?:from \d+ to )?(?P<takes>\d+) positional arguments? "
+                          r"but (?P<given>\d+) (?:were|was) given")
+_NO_ATTRIBUTE_RE = re.compile(r"^'(?P<cls>\w+)' object has no attribute '(?P<attr>\w+)'")
+_MODULE_NO_ATTRIBUTE_RE = re.compile(r"^module '(?P<mod>[\w.]+)' has no attribute '(?P<attr>\w+)'")
+_CANNOT_IMPORT_RE = re.compile(r"^cannot import name '(?P<name>\w+)' from '(?P<mod>[\w.]+)'")
+_NAME_ERROR_RE = re.compile(r"^name '(?P<name>\w+)' is not defined")
+MAX_API_HINTS = 4
+# where a name a test forgot to import usually comes from (checked with hasattr, never guessed)
+_STDLIB_IMPORT_MODULES = ("http.server", "json", "threading", "time", "socket", "socketserver", "unittest.mock", "random",
+                          "dataclasses", "typing", "collections", "enum", "pathlib", "io", "urllib.request", "os", "sys",
+                          "asyncio", "math", "datetime", "http.client", "tempfile", "contextlib", "functools", "itertools")
+
+
+def failure_locations(output: Optional[str]) -> List[Tuple[str, str, Optional[Tuple[str, int]]]]:
+    """
+    Round 3o: (exception kind, message, (file, line) where it was raised or None) of the errors in a pytest output, in
+    order, without duplicates: the 'E   TypeError: ...' lines with the 'tests/x.py:194: TypeError' line after them (or the
+    'tests/x.py:315: in <module>' line before them), plus the short summary's 'FAILED/ERROR ... - Kind: message' lines.
+    """
+    found: List[Tuple[str, str, Optional[Tuple[str, int]]]] = []
+    seen = set()
+    lines = str(output or "").splitlines()
+    before: Optional[Tuple[str, int]] = None
+    for index, line in enumerate(lines):
+        if _SECTION_LINE_RE.match(line):
+            before = None
+            continue
+        located = _LOCATION_BEFORE_RE.match(line)
+        if located:
+            before = (located.group("path"), int(located.group("line")))
+            continue
+        error = _E_LINE_RE.match(line)
+        if not error:
+            continue
+        location = None
+        for following in lines[index + 1:index + 60]:
+            if _SECTION_LINE_RE.match(following):
+                break
+            after = _LOCATION_AFTER_RE.match(following)
+            if after:
+                location = (after.group("path"), int(after.group("line")))
+                break
+        location = location or before
+        key = (error.group("kind").split(".")[-1], error.group("msg"))
+        if key not in seen:
+            seen.add(key)
+            found.append((key[0], key[1], location))
+    for summary in _SUMMARY_ERROR_RE.finditer(str(output or "")):
+        key = (summary.group("kind").split(".")[-1], summary.group("msg"))
+        if key[1].endswith("...") or any(key[0] == k and key[1] == m for k, m, _l in found):
+            continue  # cut to the terminal width, or already found with its location
+        if key not in seen:
+            seen.add(key)
+            found.append((key[0], key[1], None))
+    return found
+
+
+def _signature(node: Any) -> str:
+    import ast
+    try:
+        text = f"def {node.name}({ast.unparse(node.args)})"
+        if getattr(node, "returns", None) is not None:
+            text += f" -> {ast.unparse(node.returns)}"
+    except Exception:
+        text = f"def {getattr(node, 'name', '?')}(...)"
+    return text if len(text) <= 200 else text[:197] + "..."
+
+
+def project_definitions(root: Path, limit: int = 200) -> Dict[str, Any]:
+    """
+    Round 3o: the functions, classes (with their methods and attributes) and module names of the project's Python files -
+    test files and conftest.py excluded. {'functions': {name: [(rel, line, signature)]}, 'classes': {name: [{'rel', 'line',
+    'methods': {name: (line, signature)}, 'attributes': [...]}]}, 'modules': {dotted name: (rel, [top-level names])}}.
+    """
+    import ast
+    import warnings
+    from src.tools.project_links_check import is_test_file
+    result: Dict[str, Any] = {"functions": {}, "classes": {}, "modules": {}}
+    try:
+        files = []
+        for path in sorted(Path(root).rglob("*.py")):
+            if len(files) >= limit:
+                break
+            try:
+                rel = path.relative_to(root)
+            except ValueError:
+                continue
+            if set(rel.parts[:-1]) & _SNAPSHOT_SKIP or rel.name == "conftest.py" or is_test_file(rel.as_posix()):
+                continue
+            if path.is_file() and path.stat().st_size <= 300_000:
+                files.append((path, rel.as_posix()))
+        for path, rel in files:
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, SyntaxError, ValueError):
+                continue
+            top_names: List[str] = []
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    top_names.append(node.name)
+                    result["functions"].setdefault(node.name, []).append((rel, node.lineno, _signature(node)))
+                elif isinstance(node, ast.ClassDef):
+                    top_names.append(node.name)
+                    methods: Dict[str, Tuple[int, str]] = {}
+                    attributes: List[str] = []
+                    for item in node.body:
+                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            methods[item.name] = (item.lineno, _signature(item))
+                            for sub in ast.walk(item):
+                                if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name) and \
+                                        sub.value.id == "self" and isinstance(sub.ctx, ast.Store) and sub.attr not in attributes:
+                                    attributes.append(sub.attr)
+                        elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                            if item.target.id not in attributes:
+                                attributes.append(item.target.id)
+                        elif isinstance(item, ast.Assign):
+                            for target in item.targets:
+                                if isinstance(target, ast.Name) and target.id not in attributes:
+                                    attributes.append(target.id)
+                    result["classes"].setdefault(node.name, []).append(
+                        {"rel": rel, "line": node.lineno, "methods": methods, "attributes": attributes})
+                elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    top_names += [t.id for t in targets if isinstance(t, ast.Name)]
+                elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                    top_names += [(alias.asname or alias.name).split(".")[0] for alias in node.names if alias.name != "*"]
+            dotted = rel[:-3].replace("/", ".")
+            for name in {dotted, dotted[4:] if dotted.startswith("src.") else dotted, dotted.split(".")[-1]}:
+                result["modules"].setdefault(name, (rel, top_names))
+    except Exception as err:
+        logger.debug(f"project_definitions failed: {err}")
+    return result
+
+
+def _member_names(cls: Dict[str, Any], limit: int = 16) -> str:
+    names = [name for name in cls["attributes"] if not name.startswith("_")]
+    names += [f"{name}()" for name in cls["methods"] if not name.startswith("_") and name not in names]
+    shown = ", ".join(names[:limit]) + (" ..." if len(names) > limit else "")
+    return shown or "no public attributes"
+
+
+def _resolve_callable(defs: Dict[str, Any], qual: str) -> Optional[Tuple[str, int, str]]:
+    """(rel, line, signature) of 'Class.method', 'function', 'module.function' or a class (its __init__), or None."""
+    parts = [part for part in qual.split(".") if part and part != "<locals>"]
+    if not parts:
+        return None
+    if len(parts) >= 2:
+        owner, member = parts[-2], parts[-1]
+        for cls in defs["classes"].get(owner, []):
+            if member in cls["methods"]:
+                line, signature = cls["methods"][member]
+                return cls["rel"], line, signature
+        module = defs["modules"].get(owner)
+        if module:
+            for rel, line, signature in defs["functions"].get(member, []):
+                if rel == module[0]:
+                    return rel, line, signature
+    name = parts[-1]
+    if name == "__init__":
+        return None
+    functions = defs["functions"].get(name, [])
+    if len(functions) == 1:
+        return functions[0]
+    classes = defs["classes"].get(name, [])
+    if len(classes) == 1:
+        cls = classes[0]
+        if "__init__" in cls["methods"]:
+            line, signature = cls["methods"]["__init__"]
+            return cls["rel"], line, signature
+        if cls["attributes"]:
+            return cls["rel"], cls["line"], f"class {name} with the fields {', '.join(cls['attributes'][:12])}"
+    return None
+
+
+def _stdlib_source(name: str) -> Optional[str]:
+    import importlib
+    for module_name in _STDLIB_IMPORT_MODULES:
+        try:
+            if hasattr(importlib.import_module(module_name), name):
+                return module_name
+        except Exception:
+            continue
+    return None
+
+
+def api_mismatch_hints(root: Optional[Path], output: Optional[str]) -> List[str]:
+    """
+    Round 3o: for errors in a pytest output that say the code was called in a way it does not define (an unexpected or
+    missing argument, an attribute or name that does not exist, an import of a name a module does not have), what the
+    project's code really defines and whether the TEST or the code made the call. At most MAX_API_HINTS. Never raises.
+    """
+    hints: List[str] = []
+    try:
+        if not root or not output:
+            return hints
+        errors = [e for e in failure_locations(output)
+                  if e[0] in ("TypeError", "AttributeError", "ImportError", "ModuleNotFoundError", "NameError")]
+        if not errors:
+            return hints
+        from src.tools.project_links_check import is_test_file
+        defs = project_definitions(Path(root))
+
+        def where(location: Optional[Tuple[str, int]]) -> Tuple[str, Optional[bool]]:
+            if not location:
+                return "A test", None
+            path = location[0].replace("\\", "/")
+            return f"{path} line {location[1]}", bool(is_test_file(path))
+
+        def verdict(in_test: Optional[bool], location: Optional[Tuple[str, int]], kind: str = "") -> str:
+            if in_test and kind == "NameError":
+                return " Fix the test file - the code is not the problem."
+            if in_test:
+                return (" So the TEST is wrong here: change the test to match the code - do not change the code to fit "
+                        "the test.")
+            if in_test is False and location:
+                return f" So the code itself makes this wrong call: fix line {location[1]} of {location[0]}."
+            return " Check whether the test or the code makes this call, and fix the caller."
+
+        for kind, message, location in errors:
+            if len(hints) >= MAX_API_HINTS:
+                break
+            place, in_test = where(location)
+            hint = None
+            match = _UNEXPECTED_KW_RE.match(message)
+            if match:
+                found = _resolve_callable(defs, match.group("qual"))
+                if found:
+                    hint = (f"{place} calls `{match.group('qual')}()` with the argument '{match.group('arg')}', but "
+                            f"{found[0]} line {found[1]} defines `{found[2]}` - it has no '{match.group('arg')}'.")
+            if hint is None:
+                match = _MISSING_ARGS_RE.match(message) or _TOO_MANY_RE.match(message)
+                if match:
+                    found = _resolve_callable(defs, match.group("qual"))
+                    if found:
+                        hint = (f"{place} calls `{match.group('qual')}()` in a way it does not take ({message.strip()}): "
+                                f"{found[0]} line {found[1]} defines `{found[2]}`.")
+            if hint is None:
+                match = _NO_ATTRIBUTE_RE.match(message)
+                if match:
+                    classes = defs["classes"].get(match.group("cls"), [])
+                    if len(classes) == 1:
+                        cls = classes[0]
+                        hint = (f"{place} uses `.{match.group('attr')}` of a {match.group('cls')} object, but class "
+                                f"{match.group('cls')} ({cls['rel']} line {cls['line']}) has no '{match.group('attr')}'. "
+                                f"It has: {_member_names(cls)}.")
+            if hint is None:
+                match = _MODULE_NO_ATTRIBUTE_RE.match(message) or _CANNOT_IMPORT_RE.match(message)
+                if match:
+                    wanted = match.groupdict().get("attr") or match.groupdict().get("name")
+                    module = defs["modules"].get(match.group("mod")) or defs["modules"].get(match.group("mod").split(".")[-1])
+                    if module:
+                        names = [n for n in module[1] if not n.startswith("_")]
+                        shown = ", ".join(names[:16]) + (" ..." if len(names) > 16 else "")
+                        hint = (f"{place} needs '{wanted}' from '{match.group('mod')}', but {module[0]} defines no "
+                                f"'{wanted}'. It defines: {shown or 'nothing public'}.")
+            if hint is None:
+                match = _NAME_ERROR_RE.match(message)
+                if match:
+                    name = match.group("name")
+                    sources = []
+                    for module_name, (rel, names) in defs["modules"].items():
+                        if name in names and "." not in module_name and (name in defs["functions"] or name in defs["classes"]):
+                            sources.append(f"from {module_name} import {name}")
+                            break
+                    stdlib = None if sources else _stdlib_source(name)
+                    if stdlib:
+                        sources.append(f"from {stdlib} import {name}")
+                    if in_test:
+                        hint = (f"{place} uses `{name}`, but the test file never imports or defines it"
+                                + (f" - add `{sources[0]}` at the top" if sources else "") + ".")
+                    elif location:
+                        hint = (f"{place} uses `{name}`, which that file never imports or defines"
+                                + (f" - add `{sources[0]}`" if sources else "") + ".")
+            if hint:
+                hints.append(hint + verdict(in_test, location, kind))
+    except Exception as err:
+        logger.debug(f"api_mismatch_hints failed: {err}")
+    return hints
+
+
+# --- Round 3o: a test run in which no test ran -----------------------------------------------------------------------------
+# 2026-10-25 13:28:56 W1 (Kick-off Task 1: src/snake_game.py) ran `pytest -q` before any test file existed: "Test command failed
+# with exit code 5". W1 then tried to write tests/test_snake.py (W2's task; refused) and ran the same command twice more.
+_NO_TESTS_RAN_RE = re.compile(r"\bno tests ran\b|\bcollected 0 items\b|No tests found, exiting with code")
+
+
+def no_tests_note(root: Optional[Path], output: Optional[str]) -> Optional[str]:
+    """Round 3o: the note for a test run in which NO test ran (pytest exit code 5, jest 'No tests found'), else None."""
+    try:
+        text = str(output or "")
+        if not _NO_TESTS_RAN_RE.search(text) or re.search(r"\b\d+ (?:passed|failed)\b", text):
+            return None
+        from src.utils.test_runs import project_test_files
+        test_files = project_test_files(root) if root else []
+        if test_files:
+            shown = ", ".join(test_files[:3]) + (" ..." if len(test_files) > 3 else "")
+            return (f"[Framework check - NO test ran although the project has test file(s) ({shown}):]\n"
+                    "The test runner collected none of them. pytest collects only files named test_*.py or *_test.py, "
+                    "functions named test_* and classes named Test* without __init__; jest only files that match its "
+                    "testMatch (e.g. *.test.js). Check the file and function names, or run one file directly "
+                    f"(`python -m pytest -q {test_files[0]}`).")
+        example = ""
+        try:
+            from src.tools.project_links_check import is_test_file
+            for path in sorted(Path(root).rglob("*.py")) if root else []:
+                rel = path.relative_to(root).as_posix()
+                if not (set(PurePath(rel).parts[:-1]) & _SNAPSHOT_SKIP) and not is_test_file(rel) \
+                        and PurePath(rel).name != "conftest.py":
+                    example = f" (e.g. `python -c \"import {rel[:-3].replace('/', '.')}\"`)"
+                    break
+        except Exception:
+            example = ""
+        return ("[Framework check - NO test ran: the project has no test file yet (this is pytest's exit code 5 / jest's "
+                "'No tests found'), so this says nothing about your code.]\n"
+                "If writing the tests is another task (see your task list and PROJECT_STRUCTURE.md), leave it to that "
+                "task and do NOT write them yourself. Check your own code another way - import or run it"
+                f"{example} - and finish your task. Do not run the test command again until a test file exists.")
+    except Exception as err:
+        logger.debug(f"no_tests_note failed: {err}")
+        return None
+
+
 async def diagnose_failed_test_run(workspace: Any, command: str, output: str) -> str:
     """
     The framework's notes for a FAILED test run ('' if none): failed tests that pass alone, the same tests failing again
     and again (Round 3g+), and known traps in the output.
+    Round 3o: + calls that do not match the project's code (api_mismatch_hints) and runs in which no test ran.
     Cached per (workspace, workspace fingerprint, failing tests). Never raises.
     """
     try:
@@ -622,6 +961,13 @@ async def diagnose_failed_test_run(workspace: Any, command: str, output: str) ->
             _remember_isolation(root, output, found=bool(isolated))
         if isolated:
             parts.append(isolated)
+        no_tests = no_tests_note(root, output)  # Round 3o
+        if no_tests:
+            parts.append(no_tests)
+        api_hints = api_mismatch_hints(root, output)  # Round 3o
+        if api_hints:
+            parts.append("[Framework check - calls that do not match the project's code:]\n"
+                         + "\n".join(f"- {hint}" for hint in api_hints))
         stuck = stuck_note(root, output)
         if stuck:
             parts.append(stuck)
