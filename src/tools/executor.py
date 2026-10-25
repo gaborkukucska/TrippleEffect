@@ -927,6 +927,16 @@ class ToolExecutor:
                     self._update_execution_stats(success=False)
                     return f"{fuzzy_warning}Error from tool '{tool_name}': {ownership_message}"
 
+            # --- Round 3n: the framework's history placeholder is not file content ---
+            if tool_name in ("file_system", "code_editor"):
+                from src.agents.context_compaction import compaction_placeholder_refusal
+                placeholder_message = compaction_placeholder_refusal(tool_name, kwargs_for_tool)
+                if placeholder_message:
+                    logger.warning(f"[TOOL_EXEC_BLOCKED] ID:{execution_id} | '{tool_name}' write of '{agent_id}' refused: "
+                                   "it sent the compaction placeholder as text.")
+                    self._update_execution_stats(success=False)
+                    return f"{fuzzy_warning}Error from tool '{tool_name}': {placeholder_message}"
+
             # --- Deterministic Policy Gate (Review S2) ---
             # Runs for native and legacy tool calls alike, after authorization and
             # argument validation and before any side effect. Shell tools are checked

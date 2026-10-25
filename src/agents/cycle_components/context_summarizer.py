@@ -122,6 +122,14 @@ class ContextSummarizer:
         
     REAL_PROMPT_TRIGGER_RATIO = 0.75  # Round 2n: share of the window the last REAL prompt may fill
 
+    @staticmethod
+    def trigger_threshold(model_num_ctx: Optional[int]) -> int:
+        """Round 3n: the estimated history size above which the context is condensed (50% of the window, else the setting)."""
+        from src.config.settings import settings
+        if model_num_ctx and model_num_ctx > 0:
+            return int(model_num_ctx * 0.5)
+        return int(settings.SUMMARIZER_TRIGGER_THRESHOLD)
+
     async def should_summarize_context(self, agent_id: str, context_length: int, max_tokens: int,
                                         message_history: Optional[List[Dict[str, Any]]] = None,
                                         model_num_ctx: Optional[int] = None,
@@ -155,12 +163,8 @@ class ContextSummarizer:
             logger.info(f"Context summarizer: last real prompt of agent {agent_id} had {real_prompt_tokens} tokens "
                         f"(> {int(self.REAL_PROMPT_TRIGGER_RATIO * 100)}% of num_ctx={model_num_ctx}).")
         # Dynamic threshold: use 50% of model's context window if available
-        if model_num_ctx and model_num_ctx > 0:
-            threshold = int(model_num_ctx * 0.5)
-            logger.debug(f"Context summarizer: Using dynamic threshold {threshold} "
-                        f"(50% of model num_ctx={model_num_ctx}) for agent {agent_id}")
-        else:
-            threshold = settings.SUMMARIZER_TRIGGER_THRESHOLD
+        threshold = self.trigger_threshold(model_num_ctx)
+        logger.debug(f"Context summarizer: threshold {threshold} (num_ctx={model_num_ctx}) for agent {agent_id}")
         
         if context_length > threshold:
             # CRITICAL FIX: Prevent infinite summarization loops, but allow EMERGENCY truncation.
@@ -248,6 +252,12 @@ class ContextSummarizer:
             condensed_history = self._create_condensed_history(
                 message_history, summary1, summary2
             )
+            # Round 3n: the kept messages lose what the agent no longer needs (its own write payloads, out-of-date reads):
+            # 2026-10-25 a prompt right after a summary was still ~15,000 of the ~22,500 tokens that trigger the next one
+            from src.agents.context_compaction import compact_history
+            condensed_history, saved_chars = compact_history(condensed_history, keep_recent=2)
+            if saved_chars:
+                logger.info(f"ContextSummarizer: compacted the kept messages of agent {agent_id} by {saved_chars} chars.")
             
             logger.info(f"Successfully summarized context for agent {agent_id}. "
                        f"Original: {len(message_history)} messages, "

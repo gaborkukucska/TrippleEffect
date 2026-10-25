@@ -821,6 +821,41 @@ class AgentCycleHandler:
                 f"history reduced from {original_len} to {len(agent.message_history)} messages."
             )
 
+    COMPACTION_HEADROOM = 0.9  # Round 3n: compaction must bring the history this far below the trigger to skip a summary
+
+    def _compacted_instead_of_summary(self, agent: Agent, context: Any, estimated_tokens: int, real_prompt_tokens: int,
+                                      model_num_ctx: Optional[int]) -> bool:
+        """
+        Round 3n: compacts the agent's history (src/agents/context_compaction.py) and returns True if that made enough room,
+        so the LLM summary is not needed. The compacted history is kept either way (the summary then has less to read).
+        2026-10-25: 167 summaries in 4 hours, W3 every 3 cycles. Never raises.
+        """
+        try:
+            from src.agents.context_compaction import compact_history, DEFAULT_KEEP_RECENT
+            stored = list(agent.message_history)
+            for_call = list(context.history_for_call or [])
+            if len(for_call) < len(stored) or for_call[1:len(stored)] != stored[1:]:
+                return False  # the call history is not the stored history plus appended reports: leave it alone
+            compacted, saved = compact_history(stored, keep_recent=DEFAULT_KEEP_RECENT)
+            if not saved:
+                return False
+            agent.message_history = compacted
+            context.history_for_call = [for_call[0]] + compacted[1:] + for_call[len(stored):] if stored else for_call
+            after = self._context_summarizer.estimate_token_count(context.history_for_call)
+            real_after = max(0, int(real_prompt_tokens or 0) - max(0, int(estimated_tokens or 0) - after))
+            threshold = self._context_summarizer.trigger_threshold(model_num_ctx)
+            real_limit = int(model_num_ctx * self._context_summarizer.REAL_PROMPT_TRIGGER_RATIO) if model_num_ctx else None
+            enough = after <= threshold * self.COMPACTION_HEADROOM and (
+                not real_prompt_tokens or real_limit is None or real_after <= real_limit * self.COMPACTION_HEADROOM)
+            agent._last_prompt_tokens = real_after
+            logger.info(f"CycleHandler: compacted the history of '{agent.agent_id}' by {saved} chars "
+                        f"(estimate {estimated_tokens} -> {after} tokens, threshold {threshold})"
+                        + ("; no summary needed." if enough else "; still too big, summarizing."))
+            return enough
+        except Exception as err:
+            logger.warning(f"CycleHandler: history compaction for '{agent.agent_id}' failed: {err}")
+            return False
+
     def _detect_cross_cycle_duplicate_tool_call(self, agent: Agent, tool_name: str, tool_args: Dict[str, Any]) -> Optional[str]:
         """
         Detect if a tool call with the same name and arguments already succeeded
@@ -1153,8 +1188,14 @@ class AgentCycleHandler:
                     force_condense = bool(getattr(agent, '_context_window_full', False))
                     real_prompt_tokens = getattr(agent, '_last_prompt_tokens', 0) or 0
                     
-                    if await self._context_summarizer.should_summarize_context(agent.agent_id, estimated_tokens, max_tokens, message_history=context.history_for_call, model_num_ctx=model_num_ctx,
-                                                                               real_prompt_tokens=real_prompt_tokens, force=force_condense):
+                    needs_condensing = await self._context_summarizer.should_summarize_context(
+                        agent.agent_id, estimated_tokens, max_tokens, message_history=context.history_for_call,
+                        model_num_ctx=model_num_ctx, real_prompt_tokens=real_prompt_tokens, force=force_condense)
+                    if needs_condensing and not force_condense and \
+                            self._compacted_instead_of_summary(agent, context, estimated_tokens, real_prompt_tokens,
+                                                               model_num_ctx):
+                        needs_condensing = False  # Round 3n: compaction made enough room - no LLM summary needed
+                    if needs_condensing:
                         logger.info(f"CycleHandler: Context summarization needed for agent '{agent.agent_id}' due to token limits")
                         try:
                             # CRITICAL FIX: Preserve context anchors for Admin AI work state

@@ -344,6 +344,11 @@ class CommandExecutionTool(BaseTool):
             content_parts.append(f"--- STDERR ---\n{stderr_str.strip()}")
         if returncode != 0 and not stderr_str.strip() and not stdout_str.strip():
             content_parts.append("--- Output ---\nNo output provided by command.")
+        # Round 3n: `python src/x.py` with `from src.` imports, a `pkill -f` that killed itself (src/tools/command_hints.py)
+        from src.tools.command_hints import command_notes
+        notes = command_notes(cwd_path, command, returncode, f"{result.stdout or ''}\n{result.stderr or ''}")
+        if notes:
+            content_parts.append("[Framework notes on this command:]\n" + "\n".join(f"- {note}" for note in notes))
         if not result.background_log:
             # Round 3g: failed tests that pass alone, and known traps in the output (src/utils/test_diagnosis.py)
             diagnosis = await self._test_diagnosis(cwd_path, command, returncode, result.stdout, result.stderr)
