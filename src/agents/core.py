@@ -108,6 +108,21 @@ def cut_off_while_writing(output_tokens: Any, thinking_chars: Any) -> bool:
         return False
 
 
+# Round 3q: 2026-10-25 23:17:00-23:17:20 PM1 called project_management(action='request_state', state='pm_audit') three
+# times and W1 (23:33:29) project_management(action='request_state', state='worker_work', task_id=...): each was refused with
+# "You cannot change your state using the project_management tool", and the state did not change.
+MISPLACED_STATE_ACTIONS = frozenset({"request_state", "switch_state", "change_state", "set_state", "transition_state"})
+
+
+def misplaced_state_request(tool_name: Any, arguments: Any) -> bool:
+    """Round 3q: True for a project_management call that is really a state request (an action above and a 'state')."""
+    if tool_name != "project_management" or not isinstance(arguments, dict):
+        return False
+    action = str(arguments.get("action") or "").strip().lower()
+    state = arguments.get("state")
+    return action in MISPLACED_STATE_ACTIONS and isinstance(state, str) and bool(state.strip())
+
+
 def cut_off_boost_level(agent: Any) -> int:
     """
     Round 2n: how many doublings the output budget of the agent's next call gets: the cut-offs in a row, or - while the
@@ -754,6 +769,12 @@ class Agent:
                             if isinstance(arguments, str):
                                 arguments = json.loads(arguments)
                             call_id = call_data.get("id", f"native_call_{self.agent_id}_{int(time.time() * 1000)}_{os.urandom(2).hex()}")
+                            if misplaced_state_request(tool_name, arguments):
+                                # Round 3q: project_management(action='request_state', state=...) runs as request_state
+                                logger.warning(f"Agent {self.agent_id}: '{tool_name}' was called with action "
+                                               f"'{arguments.get('action')}' and state '{arguments.get('state')}'; handled as a "
+                                               "request_state call.")
+                                tool_name = "request_state"
                             if self.agent_type == AGENT_TYPE_PM and self.state == PM_STATE_STARTUP:
                                 logger.warning(f"Agent {self.agent_id}: Ignoring native call to '{tool_name}' in {PM_STATE_STARTUP} (no tools are offered; output the JSON kickoff plan).")
                             elif tool_name in self.manager.tool_executor.tools:

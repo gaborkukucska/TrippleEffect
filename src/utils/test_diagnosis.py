@@ -384,6 +384,9 @@ def output_hints(workspace: Optional[Path], output: Optional[str]) -> List[str]:
                      "Run it with the project's test command (`npm test`, or `npx jest <file>`), not with `node <file>`.")
     if workspace:
         hints.extend(inverted_check_hints(Path(workspace), text))  # Round 3m
+        # Round 3q: 2026-10-25 22:53:59 "No module named 'src.frontend.players'" for src/frontend/players.js got no hint
+        from src.tools.project_links_check import missing_module_language_hints
+        hints.extend(missing_module_language_hints(Path(workspace), text))
     return hints
 
 

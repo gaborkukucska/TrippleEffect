@@ -607,6 +607,38 @@ def replacement_already_in_place(lines: List[str], start_idx: int, end_idx: int,
     return _same_lines(lines[start_idx:start_idx + len(new_lines)], new_lines)
 
 
+# Round 3q: 2026-10-25 22:48:18 (qwen3.5:4b) W1 sent {"start_line": 10, "end_line": 54, "replace": '    <div
+# class="game-container">'} for src/frontend/index.html: line 10 unchanged, lines 11-54 (the whole game page) deleted. The edit
+# was saved as "Successfully applied 1 edits"; W1 rewrote the page 90 seconds later.
+TRUNCATED_RANGE_MIN_LOST_LINES = 5
+
+
+def truncated_range_replacement(lines: List[str], start_idx: int, end_idx: int, replacement) -> Optional[str]:
+    """
+    Round 3q: the refusal text for a line-range chunk whose 'replace' is ONLY the first line(s) of the range, unchanged, so
+    the rest of the range (at least 5 non-blank lines) would just be deleted - a replacement that was cut short. None for
+    any other chunk (an intended deletion names the lines to delete with 'replace': '').
+    """
+    new_lines = [line for line in str(replacement or "").splitlines()]
+    while new_lines and not new_lines[-1].strip():
+        new_lines.pop()
+    if not new_lines or not any(line.strip() for line in new_lines):
+        return None
+    kept = len(new_lines)
+    old = lines[start_idx:end_idx]
+    if kept >= len(old) or not _same_lines(old[:kept], new_lines):
+        return None
+    lost = [line for line in old[kept:] if line.strip()]
+    if len(lost) < TRUNCATED_RANGE_MIN_LOST_LINES:
+        return None
+    first_lost, last_lost = start_idx + kept + 1, end_idx
+    return (f"lines {start_idx + 1}-{end_idx} would be replaced by their own first {'line' if kept == 1 else f'{kept} lines'} "
+            f"(unchanged), so lines {first_lost}-{last_lost} ({len(lost)} lines of code) would simply be DELETED - your "
+            f"'replace' text looks cut short. NOTHING was changed. To change these lines, send ALL their new text as 'replace' "
+            f"(read the file first if needed); to delete lines {first_lost}-{last_lost} on purpose, send start_line "
+            f"{first_lost}, end_line {last_lost} and 'replace': ''.")
+
+
 IMPORTANT_STATEMENT_PREFIXES = ("return", "def ", "async def ", "class ", "import ", "from ", "raise", "yield", "assert ",
                                 "if __name__")
 MAX_REMOVED_STATEMENTS = 4
@@ -1126,6 +1158,10 @@ class CodeEditorTool(BaseTool):
                                                          f"search text; it was found at line {found_line} and replaced there")
                             continue
                         
+                    truncated = truncated_range_replacement(lines, start_idx, end_idx, replace_text) if search_text is None else None
+                    if truncated:
+                        errors.append(f"Chunk {idx}: {truncated}")  # Round 3q
+                        continue
                     if search_text is None and replacement_already_in_place(lines, start_idx, end_idx, replace_text):
                         # Round 2e: 03:48 W1 re-sent its 03:47 chunk (lines 24-26 -> 5 lines) inside a new call; applied
                         # again it would have replaced 3 of the 5 lines it had already written with the same 5 lines.

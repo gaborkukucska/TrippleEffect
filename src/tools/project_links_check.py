@@ -17,6 +17,10 @@ syntax error, so the existing checks (python_static_check, source_check) saw not
 * server_on_load_problems() (Round 3e): a test file that loads a project module which starts a server when it is loaded,
   so the test run never ends; test_hang_hint(): the text for an agent whose test command timed out (Round 3f: a busy
   process - a loop that never ends - or an idle one, measured by src/tools/sandbox_runner.py, and the last output line).
+* python_import_language_problems() (Round 3q): a Python file that imports a module which exists only as a JavaScript file
+  of the project ('from src.frontend.players import ...' for src/frontend/players.js); missing_module_language_hints(): the
+  same for "No module named ..." in a test run's output. unloaded_browser_script_problem(): a browser script that no page
+  of the project loads (a note on the write / edit only, link_notes_text).
 * link_problems(workspace, path): all of these for one existing file (used by the task completion check,
   src/utils/task_files.py); link_notes_text(): the '[Framework check ...]' text for a write or an edit that WAS saved.
 
@@ -467,6 +471,241 @@ def process_override_problems(rel_path: str, source: Optional[str]) -> List[str]
         return []
 
 
+# --- Round 3q: a Python import of a JavaScript file -----------------------------------------------------------------------
+# 2026-10-25 22:53:46 (WiFi_Snake_Game, qwen3.5:4b): W2 wrote tests/test_players.py with `from src.frontend.players import
+# (Player, players, ...)` for src/frontend/players.js. Every run failed with "ModuleNotFoundError: No module named
+# 'src.frontend.players'" (exit code 2) and the framework's diagnosis said nothing. PM1 then made a task to "fix the test
+# imports", W1 wrote src/frontend/players.py - a Python copy of players.js - and spent 23:21-23:50 making that copy fit the
+# test (no full test run ever passed). The project's own plan said "Testing: pytest for Python modules".
+MAX_LANGUAGE_PROBLEMS = 3
+
+
+def _python_import_targets(source: str) -> Optional[List[tuple]]:
+    """(module, line) of every absolute import of a Python source ('from a.b import c' also gives 'a.b.c'), None if it does
+    not parse."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return None
+    targets: List[tuple] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            targets.extend((alias.name, node.lineno) for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            targets.append((node.module, node.lineno))
+            targets.extend((f"{node.module}.{alias.name}", node.lineno) for alias in node.names if alias.name != "*")
+    return sorted(set(targets), key=lambda item: (item[1], item[0]))
+
+
+def _python_module_exists(bases: List[Path], parts: List[str]) -> bool:
+    for base in bases:
+        target = base.joinpath(*parts)
+        if Path(str(target) + ".py").is_file() or target.is_dir():  # a module, a package or a namespace package
+            return True
+    return False
+
+
+def _installed_module(name: str) -> bool:
+    """True if a top-level module of that name is importable here (an installed package). Only for one-part names: the
+    framework's own 'src' package must not hide a project's src/."""
+    import importlib.util
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def other_language_module_file(workspace: Path, module: str, from_rel: Optional[str] = None) -> Optional[str]:
+    """
+    Round 3q: the project's JavaScript/TypeScript file that a Python import of `module` points to when NO Python module or
+    package of that name exists (searched from the workspace root, src/ - the framework conftest adds both - and the
+    importing file's folder), else None. 'src.frontend.players' -> 'src/frontend/players.js'; a one-part name ('players')
+    also matches a JavaScript file of that name anywhere in the project when no players.py exists and the name is neither in
+    the standard library nor installed. Never raises.
+    """
+    try:
+        parts = [part for part in str(module or "").split(".") if part]
+        if not parts or not all(part.isidentifier() for part in parts):
+            return None
+        if parts[0] in set(getattr(sys, "stdlib_module_names", ())) | _PY_TEST_LIBRARIES:
+            return None
+        root = Path(workspace).resolve()
+        bases = [root, root / "src"]
+        if from_rel:
+            bases.append((root / str(from_rel)).parent)
+        if _python_module_exists(bases, parts):
+            return None
+        if len(parts) == 1 and _installed_module(parts[0]):
+            return None  # 'import tasklib': the installed package, whatever files the project has
+        for base in bases:
+            target = base.joinpath(*parts)
+            for suffix in JS_SUFFIXES:
+                candidate = Path(str(target) + suffix)
+                try:
+                    if candidate.is_file() and candidate.resolve().is_relative_to(root):
+                        return candidate.resolve().relative_to(root).as_posix()
+                except (OSError, ValueError):
+                    continue
+        if len(parts) == 1:
+            project_files = _project_source_files(root)
+            if any(PurePosixPath(p).name == f"{parts[0]}.py" for p in project_files):
+                return None
+            matches = sorted(p for p in project_files
+                             if _language(p) == "javascript" and PurePosixPath(p).stem == parts[0])
+            if matches:
+                return matches[0]
+    except Exception as err:
+        logger.debug(f"other_language_module_file({module}) failed: {err}")
+    return None
+
+
+def _javascript_test_advice(workspace: Path, js_rel: str) -> str:
+    stem = PurePosixPath(js_rel).stem
+    test_rel = f"tests/{stem}.test.js"
+    advice = (f"JavaScript is tested with a JavaScript test run by Node.js (e.g. {test_rel} with "
+              f"`const {stem} = require('{_relative_spec(test_rel, js_rel)}');`, run with `node --test tests/`)")
+    try:
+        source = (Path(workspace) / js_rel).read_text(encoding="utf-8")
+        if len(source) <= MAX_SOURCE_BYTES and not _JS_EXPORT_RE.search(_strip_js_comments(source)):
+            advice += (f"; {js_rel} exports nothing yet, so it needs e.g. `if (typeof module !== 'undefined') "
+                       "module.exports = { ... };` at its end (the browser ignores that line)")
+    except (OSError, UnicodeDecodeError):
+        pass
+    return advice
+
+
+def python_import_language_problems(workspace: Path, rel_path: str, source: Optional[str] = None) -> List[str]:
+    """Round 3q: imports of a Python file whose module exists only as a JavaScript/TypeScript file of the project."""
+    try:
+        rel = str(rel_path).replace("\\", "/")
+        if _language(rel) != "python":
+            return []
+        if source is None:
+            source = (Path(workspace) / rel).read_text(encoding="utf-8")
+        if not source or len(source) > MAX_SOURCE_BYTES:
+            return []
+        targets = _python_import_targets(source)
+        if not targets:
+            return []
+        problems: List[str] = []
+        reported: Set[str] = set()
+        for module, line in targets:
+            js_rel = other_language_module_file(workspace, module, rel)
+            if not js_rel or js_rel in reported:
+                continue
+            reported.add(js_rel)
+            problems.append(
+                f"{rel} imports '{module}' (line {line}), but that module is JavaScript code: {js_rel}. Python cannot import "
+                f"a JavaScript file, so this fails with \"ModuleNotFoundError: No module named '{module}'\"" +
+                (" and no test in the file runs" if is_test_file(rel) else "") + ". "
+                f"{_javascript_test_advice(workspace, js_rel)}; pytest tests only Python code. Do NOT write a Python copy "
+                f"of {js_rel} to make the import work.")
+            if len(problems) >= MAX_LANGUAGE_PROBLEMS:
+                break
+        return problems
+    except Exception as err:
+        logger.debug(f"python_import_language_problems({rel_path}) failed: {err}")
+        return []
+
+
+# Round 3q: 2026-10-25 the finished WiFi_Snake_Game's src/frontend/index.html loaded only game.js: src/frontend/players.js
+# and src/frontend/leaderboard.js (Kick-off Tasks 4 and 5, both "finished") were never loaded by any page, so their code
+# never ran. A note (not a completion refusal: the page may belong to another task and be written later).
+_SCRIPT_SRC_RE = re.compile(r"""<script\b[^>]*?\bsrc\s*=\s*(['"])([^'"]+)\1""", re.IGNORECASE)
+_BROWSER_CODE_RE = re.compile(r"\b(?:document|window|localStorage|sessionStorage|navigator)\s*\.")
+MAX_HTML_FILES = 50
+
+
+def _project_files_with_suffix(root: Path, suffixes: tuple, limit: int) -> List[Path]:
+    found: List[Path] = []
+    try:
+        for path in sorted(root.rglob("*")):
+            if len(found) >= limit:
+                break
+            try:
+                rel = path.relative_to(root)
+            except ValueError:
+                continue
+            if set(rel.parts[:-1]) & _SKIP_DIRS or rel.parts[0].startswith(".") or not path.is_file():
+                continue
+            if path.suffix.lower() in suffixes:
+                found.append(path)
+    except OSError:
+        pass
+    return found
+
+
+def unloaded_browser_script_problem(workspace: Path, rel_path: str, source: Optional[str]) -> Optional[str]:
+    """
+    Round 3q: a browser script (.js that uses document/window/localStorage and requires nothing) of a project whose HTML
+    pages load local scripts, when no page loads it and no other JavaScript file names it. None otherwise. Never raises.
+    """
+    try:
+        rel = str(rel_path).replace("\\", "/")
+        if not rel.lower().endswith(".js") or is_test_file(rel) or not source or len(source) > MAX_SOURCE_BYTES:
+            return None
+        code = _strip_js_comments(source)
+        if not _BROWSER_CODE_RE.search(code) or re.search(r"\brequire\s*\(", code):
+            return None
+        root = Path(workspace).resolve()
+        target = (root / rel).resolve()
+        pages: List[str] = []
+        for page in _project_files_with_suffix(root, (".html", ".htm"), MAX_HTML_FILES):
+            text = page.read_text(encoding="utf-8", errors="replace")
+            local = [m.group(2).split("?")[0].split("#")[0] for m in _SCRIPT_SRC_RE.finditer(text)
+                     if not re.match(r"^(?:[a-z]+:)?//", m.group(2), re.IGNORECASE)]
+            if not local:
+                continue
+            for spec in local:
+                base = root if spec.startswith("/") else page.parent
+                if (base / spec.lstrip("/")).resolve() == target:
+                    return None
+            pages.append(page.relative_to(root).as_posix())
+        if not pages:
+            return None  # no page loads local scripts: not a browser project the check understands
+        name = PurePosixPath(rel).name
+        for other in _project_files_with_suffix(root, JS_SUFFIXES, MAX_PROJECT_FILES):
+            if other.resolve() != target and name in other.read_text(encoding="utf-8", errors="replace"):
+                return None  # imported, required or loaded by another script
+        from os.path import relpath
+        spec = relpath(rel, PurePosixPath(pages[0]).parent.as_posix() or ".").replace("\\", "/")
+        shown = ", ".join(pages[:3])
+        return (f"{rel} is browser code, but no page loads it: {shown} {'has' if len(pages) == 1 else 'have'} no "
+                f"`<script src=\"{spec}\">`, so its code never runs. Add `<script src=\"{spec}\"></script>` to the page that "
+                "uses it, before the script that calls its functions.")
+    except Exception as err:
+        logger.debug(f"unloaded_browser_script_problem({rel_path}) failed: {err}")
+        return None
+
+
+_NO_MODULE_RE = re.compile(r"No module named '([\w.]+)'")
+
+
+def missing_module_language_hints(workspace: Optional[Path], output: Optional[str]) -> List[str]:
+    """Round 3q: for "No module named 'x.y'" in a test run's output, the hint when x.y is a JavaScript file of the project."""
+    hints: List[str] = []
+    try:
+        if not workspace or not output:
+            return hints
+        seen: Set[str] = set()
+        for match in _NO_MODULE_RE.finditer(str(output)):
+            module = match.group(1)
+            js_rel = other_language_module_file(Path(workspace), module)
+            if not js_rel or js_rel in seen:
+                continue
+            seen.add(js_rel)
+            hints.append(f"The tests import '{module}', but that module is JavaScript ({js_rel}): Python cannot import a "
+                         f"JavaScript file - that is the ModuleNotFoundError. {_javascript_test_advice(Path(workspace), js_rel)}"
+                         f"; pytest tests only Python code. Do NOT write a Python copy of {js_rel}.")
+            if len(hints) >= MAX_LANGUAGE_PROBLEMS:
+                break
+    except Exception as err:
+        logger.debug(f"missing_module_language_hints failed: {err}")
+    return hints
+
+
 def is_test_command(command: Optional[str]) -> bool:
     """True for a command that runs tests (npm test, npx mocha, jest, node --test, pytest, node test/x.test.js, ...)."""
     if not command:
@@ -674,6 +913,7 @@ def link_problems(workspace: Path, path: Path, rel_path: Optional[str] = None) -
         problems.extend(server_on_load_problems(root, rel, source))  # Round 3e
         problems.extend(process_override_problems(rel, source))  # Round 3f
         problems.extend(jest_setup_match_problems(root, rel))  # Round 3g
+        problems.extend(python_import_language_problems(root, rel, source))  # Round 3q
         return problems
     except Exception as err:
         logger.debug(f"link_problems({path}) failed: {err}")
@@ -699,10 +939,15 @@ def link_notes_text(workspace: Optional[Path], rel_path: Optional[str], source: 
         problems.extend(server_on_load_problems(root, rel, source))  # Round 3e
         problems.extend(process_override_problems(rel, source))  # Round 3f
         problems.extend(jest_setup_match_problems(root, rel))  # Round 3g
-        if not problems:
-            return ""
-        return ("\n[Framework check - the file WAS saved, but it does not work with the project yet (a task with this "
-                "problem cannot be marked finished):]\n- " + "\n- ".join(problems))
+        problems.extend(python_import_language_problems(root, rel, source))  # Round 3q
+        text = ""
+        if problems:
+            text = ("\n[Framework check - the file WAS saved, but it does not work with the project yet (a task with this "
+                    "problem cannot be marked finished):]\n- " + "\n- ".join(problems))
+        unloaded = unloaded_browser_script_problem(root, rel, source)  # Round 3q: a note only, not a completion problem
+        if unloaded:
+            text += f"\n[Framework note - the file WAS saved:]\n- {unloaded}"
+        return text
     except Exception as err:
         logger.debug(f"link_notes_text({rel_path}) failed: {err}")
         return ""

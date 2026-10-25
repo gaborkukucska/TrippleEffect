@@ -13,6 +13,8 @@ minutes each) adding a leaderboard with localStorage, high scores and multiplaye
 task_done_hint(): for a worker in worker_work whose current task names files that ALL exist and pass the framework's
 completion checks (src/utils/task_files.task_completion_problems), the note that the task looks done (with the exact
 modify_task call) and the files of other open tasks it must not build. '' otherwise. Never raises.
+Round 3q: not for a task that may not be marked finished yet because its tests do not pass (src/utils/test_runs.
+verification_problem - the same check modify_task applies).
 """
 import logging
 from pathlib import Path
@@ -74,6 +76,14 @@ def task_done_hint(manager: Any, agent: Any) -> str:
         task_uuid = str(get_task_field(task, "uuid", "") or "")
         if task_completion_problems(description, Path(workspace), files_changed_for_task(task_uuid, workspace)):
             return ""  # the files still have defects (the completion check names them)
+        # Round 3q: 2026-10-25 23:28:02-23:46:50 the hint told W1 four times that "Fix test imports: ..." was DONE while
+        # every `python -m pytest -q` failed - and each of W1's 8 modify_task calls was refused with "no full test run of
+        # the CURRENT files has passed yet". The hint names a task done only when marking it finished would be accepted.
+        tags = {str(tag) for tag in (get_task_field(task, "tags") or [])}
+        if "project_kickoff" not in tags:
+            from src.utils.test_runs import verification_problem
+            if verification_problem(workspace, description):
+                return ""
         others: List[str] = []
         for other in pending:
             if other is task or str(get_task_field(other, "uuid", "")) == task_uuid:

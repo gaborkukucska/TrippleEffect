@@ -521,6 +521,16 @@ PYTHON_TEST_LINES = [
 OTHER_STACK_TEST_LINES = [
     "Run tests and other commands from the workspace root, with the tools of the project's tech stack.",
 ]
+# Round 3q: 2026-10-25 WiFi_Snake_Game planned src/backend/server.py AND src/frontend/*.js; the structure file said only "Run
+# tests ... with `python -m pytest -q` ... write `from my_module import my_function`", and W2 wrote a Python test that
+# imported src/frontend/players.js ("from src.frontend.players import ..."). A project with Python AND JavaScript files is
+# told which tool tests which language.
+MIXED_STACK_TEST_LINES = [
+    "pytest tests only the Python files. A Python test can NOT import a JavaScript file: test JavaScript files with a",
+    "JavaScript test run by Node.js (e.g. tests/players.test.js that loads '../src/players.js' with require, run with",
+    "`node --test tests/`), and never write a Python copy of a JavaScript file.",
+]
+_JAVASCRIPT_SUFFIXES = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx")
 
 
 EXISTING_FILES_NOTE_CARRIED = ("These planned files ALREADY EXIST (carried over from the project's earlier session): read them "
@@ -537,12 +547,16 @@ def render_project_structure_md(dirs: List[str], planned_files: List[str], code_
     Builds PROJECT_STRUCTURE.md: standards, then a tree of directories and planned files. Round 2o: planned files that
     already exist (a continued project's files carried over from its earlier session) are listed as existing, not as
     files to create. Round 2r: the pytest / conftest.py note only for a Python project (default: Python files are
-    planned - the same rule that writes the framework conftest.py).
+    planned - the same rule that writes the framework conftest.py). Round 3q: + which tool tests which language when Python
+    AND JavaScript files are planned.
     """
     existing = [f for f in planned_files if f in set(existing_files or [])]
     to_create = [f for f in planned_files if f not in existing]
     if python_project is None:
         python_project = any(str(f).endswith(".py") for f in planned_files)
+    test_lines = PYTHON_TEST_LINES if python_project else OTHER_STACK_TEST_LINES
+    if python_project and any(str(f).lower().endswith(_JAVASCRIPT_SUFFIXES) for f in planned_files):
+        test_lines = PYTHON_TEST_LINES + MIXED_STACK_TEST_LINES  # Round 3q
     lines = [
         "# Project Directory Structure",
         "",
@@ -551,7 +565,7 @@ def render_project_structure_md(dirs: List[str], planned_files: List[str], code_
         "Do NOT create arbitrary new top-level directories without PM approval.",
         "Directories already exist. Files listed under 'Files To Create' do NOT exist yet: create each one with file_system 'write'",
         "at exactly that path. Paths never contain notes in brackets.",
-        *(PYTHON_TEST_LINES if python_project else OTHER_STACK_TEST_LINES),
+        *test_lines,
         "",
     ]
     rendered = _render_definitions(code_base_definitions)
