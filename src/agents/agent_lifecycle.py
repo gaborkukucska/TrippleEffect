@@ -288,6 +288,37 @@ async def _select_best_available_model( # Added current_rr_indices_override to s
 
 
 # --- initialize_bootstrap_agents (Ensured full code included) ---
+LOCAL_PROVIDER_TYPES = ("ollama", "vllm", "litellm")
+
+
+def same_model_on_other_local_provider(manager: Any, model_registry: Any, config_provider: Optional[str],
+                                       config_model: Optional[str]) -> Optional[Tuple[str, str]]:
+    """
+    Round 3p: (specific provider, canonical model id) of the CONFIGURED model on another local provider type when the
+    configured local provider type has no instance with it, else None. 2026-10-25 20:00:59 config.yaml gave admin_ai
+    provider 'vllm' (no vLLM server ran) and model 'qwen3.5:4b-q4_K_M', which Ollama had: auto-selection picked
+    qwen3.5:9b-q4_K_M instead, so the laptop's Ollama kept a second, larger model loaded next to the 4B the team used.
+    """
+    try:
+        if config_provider not in LOCAL_PROVIDER_TYPES or not config_model:
+            return None
+        suffix = str(config_model)
+        for prefix in (f"{t}/" for t in LOCAL_PROVIDER_TYPES):
+            if suffix.startswith(prefix):
+                suffix = suffix[len(prefix):]
+                break
+        provider_lists = getattr(manager, "available_local_providers_list", None) or {}
+        for other in LOCAL_PROVIDER_TYPES:
+            if other == config_provider:
+                continue
+            for specific in provider_lists.get(other) or []:
+                if model_registry.is_model_available(specific, suffix):
+                    return specific, f"{other}/{suffix}"
+    except Exception as err:
+        logger.debug(f"Lifecycle: same-model lookup on other local providers failed: {err}")
+    return None
+
+
 async def initialize_bootstrap_agents(manager: 'AgentManager'):
     """ Initializes bootstrap agents defined in settings. """
     logger.info("Lifecycle: Initializing bootstrap agents...")
@@ -383,6 +414,18 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
                 else:
                     logger.warning(f"Lifecycle: Generic local provider '{config_provider}' specified for agent '{agent_id}', but no specific instances found in `available_local_providers_list`. Fallback to auto-selection.")
             # --- End New Logic for Generic Local Provider Round-Robin ---
+
+            # Round 3p: the configured model on another local provider type before any auto-selection of another model
+            if not use_config_value and config_provider in LOCAL_PROVIDER_TYPES:
+                alternative = same_model_on_other_local_provider(
+                    manager, getattr(manager, "model_registry", None) or model_registry, config_provider, config_model)
+                if alternative:
+                    final_provider_for_creation, final_model_canonical = alternative
+                    use_config_value = True
+                    selection_method = f"config.yaml model on {alternative[0]} (provider '{config_provider}' unavailable)"
+                    logger.warning(f"Lifecycle: provider '{config_provider}' configured for agent '{agent_id}' has no "
+                                   f"instance with '{config_model}'; using the same model on '{alternative[0]}' "
+                                   f"({alternative[1]}) instead of selecting another model. Fix the provider in config.yaml.")
 
             # --- Existing Logic for Remote Providers or Specific Local (if new logic didn't set use_config_value) ---
             if not use_config_value and config_provider not in ["ollama", "vllm", "litellm"]: # Only run this for remote or if local RR failed
@@ -499,10 +542,10 @@ async def initialize_bootstrap_agents(manager: 'AgentManager'):
             # --- End Initial Prompt Loading ---
 
             # Inject max_tokens if needed (logic remains the same, based on final provider)
-        is_local_provider_selected = final_provider_for_creation.startswith("ollama-local-") or \
-                                         final_provider_for_creation.startswith("vllm-local-") or \
-                                         final_provider_for_creation.startswith("litellm-local-") or \
-                                         final_provider_for_creation == "vllm-proxy" or \
+        # Round 3p: 'ollama-local' (the localhost Ollama, Round 2m) is local too - the prefix test 'ollama-local-' missed it,
+        # so 2026-10-25 20:00:59 admin_ai on 'ollama-local' got num_predict 8192 instead of ADMIN_AI_LOCAL_MAX_TOKENS (4096)
+        from src.config.model_registry import is_local_provider_name
+        is_local_provider_selected = is_local_provider_name(final_provider_for_creation) or \
                                          final_provider_for_creation.endswith("-proxy")
         if is_local_provider_selected:
                 if "max_tokens" not in final_agent_config_data and "num_predict" not in final_agent_config_data:

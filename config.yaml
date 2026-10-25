@@ -27,22 +27,22 @@ agents:
       agent_type: "admin" # Explicitly set agent type
       temperature: 0.6 # Balanced temperature for planning and control
       persona: "Admin AI (@admin_ai)" # Display name
-      provider: "openrouter" # Provider name
+      # provider: "openrouter" # Provider name
       # model: "meta-llama/llama-4-maverick:free" # Model name
       # model: "google/gemini-flash-1.5:free"
       # model: "google/gemma-3-27b-it:free"
       # model: "google/gemma-4-26b-a4b-it:free"
       # model: "google/gemma-4-31b-it:free"
       # model: "nvidia/nemotron-3-ultra-550b-a55b:free"
-      model: "nvidia/nemotron-3.5-lightning:free"
+      # model: "nvidia/nemotron-3.5-lightning:free"
       # model: "nvidia/nemotron-3.5-super-vl:free"
       # model: "nvidia/nemotron-3-super-120b-a12b:free"
       # You can also specify local models!
       # provider: "ollama" # Set the provider
-      # provider: "vllm" # Set the provider
+      provider: "vllm" # Set the provider
       # model: "deepseek-r1:14b"
       # model: "qwen3-coder:30b"
-      # model: "qwen3.5:4b-q4_K_M"
+      model: "qwen3.5:4b-q4_K_M"
       # model: "granite4.2:8b-q4_0"
       # model: "qwen3.5:9b-q4_K_M"
       # model: "qwen3.5:2b"
@@ -55,22 +55,22 @@ agents:
       agent_type: "worker" # Classified as a worker, but is a system-level agent
       temperature: 0.1
       persona: "Constitutional Guardian (@cg_agent)" # Display name
-      provider: "openrouter" # Provider name
+      # provider: "openrouter" # Provider name
       # model: "meta-llama/llama-4-maverick:free" # Model name
       # model: "google/gemini-flash-1.5:free"
       # model: "google/gemma-3-27b-it:free"
       # model: "google/gemma-4-26b-a4b-it:free"
       # model: "google/gemma-4-31b-it:free"
       # model: "nvidia/nemotron-3-ultra-550b-a55b:free"
-      model: "nvidia/nemotron-3.5-lightning:free"
+      # model: "nvidia/nemotron-3.5-lightning:free"
       # model: "nvidia/nemotron-3.5-super-vl:free"
       # model: "nvidia/nemotron-3-super-120b-a12b:free"
       # You can also specify local models!
       # provider: "vllm"
-      # provider: "ollama"
+      provider: "ollama"
       # model: "deepseek-r1:14b"
       # model: "qwen3-coder:30b"
-      # model: "qwen3.5:4b-q4_K_M"
+      model: "qwen3.5:4b-q4_K_M"
       # model: "granite4.2:8b-q4_0"
       # model: "qwen3.5:9b-q4_K_M"
       # model: "qwen3.5:2b"
@@ -84,22 +84,22 @@ agents:
       agent_type: "pm" # Explicitly set agent type
       temperature: 0.6
       persona: "Project Manager (@pm_agent)"
-      provider: "openrouter" # Provider name
+      # provider: "openrouter" # Provider name
       # model: "meta-llama/llama-4-maverick:free" # Model name
       # model: "google/gemini-flash-1.5:free"
       # model: "google/gemma-3-27b-it:free"
       # model: "google/gemma-4-26b-a4b-it:free"
       # model: "google/gemma-4-31b-it:free"
       # model: "nvidia/nemotron-3-ultra-550b-a55b:free"
-      model: "nvidia/nemotron-3.5-lightning:free"
+      # model: "nvidia/nemotron-3.5-lightning:free"
       # model: "nvidia/nemotron-3.5-super-vl:free"
       # model: "nvidia/nemotron-3-super-120b-a12b:free"
       # You can also specify local models!
       # provider: "vllm" # Set the provider
-      # provider: "ollama"
+      provider: "ollama"
       # model: "deepseek-r1:14b"
       # model: "qwen3-coder:30b"
-      # model: "qwen3.5:4b-q4_K_M"
+      model: "qwen3.5:4b-q4_K_M"
       # model: "granite4.2:8b-q4_0"
       # model: "qwen3.5:9b-q4_K_M"
       # model: "qwen3.5:2b"

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 TrippleEffect: Session & Log Collector  (v2: smart log reduction; v2.2: the session of the log;
-v2.3: configuration and environment, with secrets redacted; v2.4: every project session of the log)
+v2.3: configuration and environment, with secrets redacted; v2.4: every project session of the log;
+v2.5: keys that .env sets more than once)
 
 Run from the TrippleEffect repository root:   python3 collect.py
 Output directory: ~/Desktop/te_session_data     (change with --dest)
@@ -515,9 +516,10 @@ def redact_text_line(line: str) -> Tuple[str, int]:
 
 
 def redact_env_file(text: str) -> Tuple[str, Dict[str, str], int]:
-    """(.env with secrets redacted, {name: shown value}, number of redactions)."""
+    """(.env with secrets redacted, {name: shown value}, number of redactions). v2.5: + the keys set more than once."""
     out, values, hidden_count = [], {}, 0
-    for line in text.splitlines():
+    assignments: Dict[str, List[Tuple[int, str]]] = {}
+    for number, line in enumerate(text.splitlines(), start=1):
         match = ENV_LINE_RE.match(line)
         if not match or line.lstrip().startswith("#"):
             shown_line, n = redact_text_line(line) if not line.lstrip().startswith("#") else (line, 0)
@@ -528,8 +530,23 @@ def redact_env_file(text: str) -> Tuple[str, Dict[str, str], int]:
         shown, hidden = redact_value(match.group("name"), value)
         hidden_count += int(hidden)
         values[match.group("name")] = shown
+        assignments.setdefault(match.group("name"), []).append((number, shown.strip()))
         out.append(f"{match.group('lead')}{match.group('name')}{match.group('eq')}{with_comment(shown, comment)}")
+    duplicates = env_duplicates(assignments)
+    if duplicates:
+        out += ["", "# " + "=" * 98, "# collect.py v2.5: KEYS SET MORE THAN ONCE - python-dotenv uses the LAST value:"]
+        out += [f"#   {line}" for line in duplicates]
     return "\n".join(out) + "\n", values, hidden_count
+
+
+def env_duplicates(assignments: Dict[str, List[Tuple[int, str]]]) -> List[str]:
+    """v2.5: one line per key assigned more than once with different values (2026-10-25: OLLAMA_MAX_CTX_CAP 24576 / 32768)."""
+    lines = []
+    for name, items in assignments.items():
+        if len(items) > 1 and len({value for _n, value in items}) > 1:
+            shown = ", ".join(f"line {number}: {value}" for number, value in items)
+            lines.append(f"{name} ({shown}) -> line {items[-1][0]} applies")
+    return lines
 
 
 def redact_yaml(text: str) -> Tuple[str, int]:
@@ -664,6 +681,9 @@ def collect_configuration(root: Path, dest: Path, summary: List[str]) -> None:
         text, env_values, hidden = redact_env_file(env_path.read_text(encoding="utf-8", errors="replace"))
         (dest / "zz_env_redacted.txt").write_text(text, encoding="utf-8")
         summary.append(f"Generated: zz_env_redacted.txt ({len(env_values)} setting(s), {hidden} value(s) redacted)")
+        if "KEYS SET MORE THAN ONCE" in text:  # v2.5
+            summary.append("WARNING: .env sets some keys more than once (the LAST value applies) - see the end of "
+                           "zz_env_redacted.txt")
     else:
         summary.append(".env: not found in the repository root")
     report, hidden = build_environment_report(root, env_values, env_path.is_file())

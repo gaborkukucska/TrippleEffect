@@ -1084,6 +1084,12 @@ class AgentCycleHandler:
                         logger.info(f"Watchdog: Cleaned {removed} stale watchdog messages from '{agent.agent_id}' history before injecting fresh one.")
                 
                 intervention_msg = watchdog_intervention_text(agent)  # Round 2x: the states of the agent's own role
+                # Round 3p: a worker whose task's files are complete is told so, and which work belongs to other tasks
+                from src.agents.task_focus import task_done_hint
+                done_hint = task_done_hint(self._manager, agent)
+                if done_hint:
+                    intervention_msg += "\n" + done_hint
+                    logger.info(f"Watchdog: told '{agent.agent_id}' that the files of its task are complete.")
                 agent.message_history.append({"role": "system", "content": intervention_msg})
         # -------------------------------------------------------------------------
         

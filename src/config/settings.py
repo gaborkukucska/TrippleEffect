@@ -66,6 +66,51 @@ except ImportError as e:
 
 logger = logging.getLogger(__name__)
 
+# --- Round 3p: a key set twice in .env ---------------------------------------------------------------------------------------
+# 2026-10-25 20:00 (laptop, qwen3.5:4b): the .env had a "When using Ollama on laptop" block with OLLAMA_MAX_CTX_CAP=24576 and
+# OLLAMA_CONCURRENCY_LIMIT=1, and further down the "Ollama Specific Overrides" block of .env.example with 32768 and 3.
+# python-dotenv keeps the LAST value, so the run used 32768 and 3 - and nothing said so.
+_ENV_ASSIGNMENT_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$")
+
+
+def _env_value(raw: str) -> str:
+    """The value of a .env assignment as python-dotenv reads it (quotes removed, ' # comment' after a bare value removed)."""
+    text = raw.strip()
+    if text[:1] in ("'", '"'):
+        end = text.find(text[0], 1)
+        return text[1:end] if end > 0 else text[1:]
+    return re.split(r"\s+#", text, maxsplit=1)[0].strip()
+
+
+def env_file_duplicates(path: Path) -> Dict[str, List[tuple]]:
+    """
+    Round 3p: {name: [(line number, value), ...]} of the keys a .env file assigns more than once with DIFFERENT values (the
+    last one is the one that applies). Commented lines are ignored. Never raises.
+    """
+    found: Dict[str, List[tuple]] = {}
+    try:
+        for number, line in enumerate(Path(path).read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
+            if line.lstrip().startswith("#"):
+                continue
+            match = _ENV_ASSIGNMENT_RE.match(line)
+            if match:
+                found.setdefault(match.group(1), []).append((number, _env_value(match.group(2))))
+    except OSError:
+        return {}
+    return {name: items for name, items in found.items() if len(items) > 1 and len({value for _n, value in items}) > 1}
+
+
+def env_duplicate_warnings(path: Path, secret_name_re: str = r"KEY|TOKEN|SECRET|PASSWORD") -> List[str]:
+    """Round 3p: one warning text per key that .env sets twice with different values (secret values are not shown)."""
+    warnings_found = []
+    for name, items in env_file_duplicates(path).items():
+        secret = re.search(secret_name_re, name, re.IGNORECASE) is not None
+        shown = ", ".join(f"line {number}: {'<hidden>' if secret else repr(value)}" for number, value in items)
+        warnings_found.append(f".env sets {name} {len(items)} times with different values ({shown}). The LAST one "
+                              f"(line {items[-1][0]}) applies; remove or comment out the others.")
+    return warnings_found
+
+
 # --- Governance principle validation (Round 2m) ---
 # Before Round 2m a principle without 'name' or 'text' was kept and made every system prompt fail with a KeyError, and a
 # list entry that was not a dict raised AttributeError in the validation itself, which emptied the whole list.

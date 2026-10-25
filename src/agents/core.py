@@ -93,6 +93,21 @@ def budget_after_cut_off(base: Optional[int], consecutive_cut_offs: int, floor: 
     return boosted
 
 
+def cut_off_while_writing(output_tokens: Any, thinking_chars: Any) -> bool:
+    """
+    Round 3p: True for a reply cut off at the output limit whose output was mostly NOT thinking - a tool call (a file write)
+    was being written when the limit cut it, and the server dropped the unfinished call. Such a reply did more than think,
+    so its retry keeps thinking on. 2026-10-25 20:56:32 W2: 1,536 output tokens, 385 thinking characters (~110 tokens), no
+    text, no tool call - "thinking switched off for this reply (the last reply only thought)".
+    """
+    try:
+        from src.llm_providers.ollama_provider import lost_output_tokens
+        total = int(output_tokens or 0)
+        return total > 0 and lost_output_tokens("stop", total, thinking_chars, 0, 0) >= total * 0.5
+    except (TypeError, ValueError, ImportError):
+        return False
+
+
 def cut_off_boost_level(agent: Any) -> int:
     """
     Round 2n: how many doublings the output budget of the agent's next call gets: the cut-offs in a row, or - while the
@@ -583,8 +598,12 @@ class Agent:
             # Round 2h: a reply that only thought (no text, no tool call) is retried without thinking on every path - the
             # pm_startup kick-off retry too (PM1 thought 15,737 chars and wrote nothing, 2026-10-19 21:10-21:25)
             # Round 2x: not a reply whose output was lost - it did more than think; its tool call was dropped
+            # Round 3p: nor a reply CUT OFF while it wrote a tool call (its output was mostly not thinking)
             if (not stream_had_error and not native_tool_calls_received and not complete_assistant_response.strip()
-                    and self._last_reply_thinking_chars > 0 and not self._last_reply_output_lost):
+                    and self._last_reply_thinking_chars > 0 and not self._last_reply_output_lost
+                    and not (self._last_reply_cut_off
+                             and cut_off_while_writing(getattr(self, '_last_output_tokens', 0),
+                                                       self._last_reply_thinking_chars))):
                 self._think_off_next_call = True
 
             if not stream_had_error:

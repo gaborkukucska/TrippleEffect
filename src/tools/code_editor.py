@@ -1059,8 +1059,18 @@ class CodeEditorTool(BaseTool):
                 if isinstance(search_text, str) and search_text == replace_text:
                     # Round 3m: 2026-10-24 22:57-22:59 W1 sent {"search": "  gameState.isRunning = true;", "replace": the same
                     # text} five times - an edit that changes nothing.
+                    # Round 3p: say whether that text is already in the file (2026-10-25 20:43:03 W1 re-sent lines 151-165
+                    # of src/game.js unchanged as both texts, four times in 30 minutes)
+                    found_at, position = [], content.find(search_text) if search_text.strip() else -1
+                    while position != -1 and len(found_at) < 4:
+                        first = content.count("\n", 0, position) + 1
+                        found_at.append(f"{first}-{first + search_text.rstrip(chr(10)).count(chr(10))}")
+                        position = content.find(search_text, position + 1)
+                    where = (f" That text is ALREADY in the file (lines {', '.join(found_at)}) exactly as you sent it: there "
+                             "is nothing to change there. To change that code, send the CHANGED lines as 'replace'; if it "
+                             "is right as it is, leave it." if found_at else "")
                     errors.append(f"Chunk {idx} changes NOTHING: its 'replace' text is exactly its 'search' text. Put the "
-                                  "NEW text in 'replace'.")
+                                  "NEW text in 'replace'." + where)
                     continue
 
                 # Single-line inference if only one bound is provided

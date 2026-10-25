@@ -97,6 +97,13 @@ async def lifespan(app: FastAPI):
     """
     global agent_manager_instance, ollama_proxy_process
     logger.info("Application startup sequence initiated...")
+    # Round 3p: a key set twice in .env silently takes its LAST value (settings are read before logging starts)
+    try:
+        from src.config.settings import env_duplicate_warnings
+        for env_warning in env_duplicate_warnings(BASE_DIR / '.env'):
+            logger.warning(f"Configuration: {env_warning}")
+    except Exception as env_check_error:
+        logger.debug(f"Configuration: .env duplicate check failed: {env_check_error}")
 
     # --- Initialize Database Explicitly ---
     # Call the async initialization function here, within the running event loop
