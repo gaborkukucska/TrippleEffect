@@ -38,8 +38,8 @@ agents:
       # model: "nvidia/nemotron-3.5-super-vl:free"
       # model: "nvidia/nemotron-3-super-120b-a12b:free"
       # You can also specify local models!
-      # provider: "ollama" # Set the provider
-      provider: "vllm" # Set the provider
+      provider: "ollama" # Set the provider
+      # provider: "vllm" # Set the provider
       # model: "deepseek-r1:14b"
       # model: "qwen3-coder:30b"
       model: "qwen3.5:4b-q4_K_M"
