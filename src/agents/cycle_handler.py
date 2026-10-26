@@ -49,6 +49,7 @@ from src.agents.assignable_work import worker_wait_block_message  # type: ignore
 from src.agents.assignable_work import pm_audit_block_message  # type: ignore[import]  # Round 2p
 from src.agents.tool_activity import FRAMEWORK_INTERNAL_ARG  # type: ignore[import]  # Round 2k
 from src.agents.tool_activity import call_imitation_notice  # type: ignore[import]  # Round 2o
+from src.agents.tool_guidance import native_tool_calling, call_text, request_state_text, guardian_reset_state  # type: ignore[import]  # Round 3v
 from src.agents.cg_escalation import KIND_REPLY, is_reviewed_reply, review_context  # type: ignore[import]  # Round 2o
 
 if TYPE_CHECKING:
@@ -122,10 +123,54 @@ def lost_output_notice(agent) -> str:
 # Round 2x: where an agent that stays in one state too long should go - states of its OWN role. The watchdog told PM1 (in
 # pm_report_check) to request 'worker_wait', a worker state; PM1 thought "as PM1 my valid states are ..." (2026-10-22 12:11).
 WATCHDOG_EXIT_STATES = {
-    "worker": "'worker_report' (your task is done) or 'worker_wait' (you are blocked)",
+    # Round 3v: a blocked worker reports (worker_report) - worker_wait is refused while its own task is open
+    "worker": "'worker_report' (to tell your PM that your task is done, or what blocks you)",
     "pm": "'pm_manage' (to assign or review tasks) or 'pm_standby' (to wait for your workers)",
     "admin": "'admin_standby'",
 }
+
+
+def worker_breaker_next_step(agent) -> str:
+    """
+    Round 3v: what a worker the circuit breaker moved to worker_report does next. It was told to "use `file_system write`
+    with `force_overwrite=true`" - in worker_report, which offers no file tools.
+    """
+    task_id = getattr(agent, "active_task_id", None) or getattr(agent, "current_task_id", None)
+    task_id = task_id if isinstance(task_id, str) and task_id else "YOUR_TASK_ID"
+    return ("Tell your PM with `send_message` what failed. To change the file differently, call "
+            + request_state_text("worker_work", task_id) + ", read the file again and change only the lines that need "
+            "it with their fresh line numbers (code_editor 'replace_chunks' with 'start_line'/'end_line', or file_system "
+            "'replace_lines'); a file you created yourself can be written again whole with file_system 'write'.")
+
+
+def pm_completion_directive(state: str) -> str:
+    """
+    Round 3v: what a PM that thinks the project is complete does next - the same path as its prompts: pm_manage (and
+    pm_work) go to 'pm_audit', the audit runs the tests and reports to the Admin AI. The directive used to say "send_message
+    to the Admin AI, then pm_standby" (as a JSON text) and so skipped the audit the pm_manage prompt requires.
+    """
+    check = call_text("project_management", action="list_tasks")
+    if state == PM_STATE_AUDIT:
+        return ("[Framework System Message]: You have expressed thoughts about project completion. Finish the audit "
+                f"checklist of this state: {check} must show no open task and the tests must pass; only then tell the Admin "
+                f"AI with `send_message` (target_agent_id='{BOOTSTRAP_AGENT_ID}') and call "
+                + request_state_text("pm_standby") + ". If work is left, call " + request_state_text("pm_manage") + ".")
+    return ("[Framework System Message]: You have expressed thoughts about project completion. Your MANDATORY next "
+            f"action is to verify the actual project status: {check}. If a task is still open, keep managing it. If every "
+            "task is finished, call " + request_state_text("pm_audit") + " - the audit runs the tests and reports the "
+            "completion to the Admin AI.")
+
+
+def admin_false_completion_text(pending_count: int) -> str:
+    """
+    Round 3v: one text for both Admin AI completion gates. One of them said "transition to 'admin_work' and use
+    `{"action": "run_command", ...}`" (a JSON text without a tool name, for a check no shell command does), the other
+    "use project_management list_tasks".
+    """
+    return ("[Framework System Message - HARD GATE BLOCK]: Your response was BLOCKED from reaching the user. "
+            f"You claimed the project was complete, but the backend database shows {pending_count} PENDING tasks. "
+            f"Check the real task status with {call_text('project_management', action='list_tasks')}, or ask the PM "
+            "for an explanation with `send_message`. Do not falsely report completion.")
 
 
 def watchdog_intervention_text(agent) -> str:
@@ -689,77 +734,9 @@ class AgentCycleHandler:
         logger.info(f"Final CG evaluation verdict being returned: '{verdict_to_return[:50]}...'")
         return verdict_to_return
 
-    def _generate_empty_response_guidance(self, agent: 'Agent') -> str:
-        """Generates specific guidance for an agent stuck in an empty response loop."""
-        base_message = "[Framework Intervention]: You have produced multiple empty responses, indicating you are stuck. "
-        if agent.agent_type == AGENT_TYPE_ADMIN and agent.state == 'work':
-            # Analyze recent history for context
-            last_tool_call = None
-            for msg in reversed(agent.message_history):
-                if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                    last_tool_call = msg["tool_calls"][0]
-                    break
-
-            if last_tool_call and isinstance(last_tool_call, dict):
-                tool_name = last_tool_call.get("name")
-                guidance = (
-                    f"Your last action was an attempt to use the '{tool_name}' tool. "
-                    "You are now in a loop. To proceed, you MUST take a different action. "
-                    "1. Re-evaluate your goal. What are you trying to accomplish? "
-                    "2. Use the `{\"action\": \"list_tools\"}` JSON command to see all available tools. "
-                    "3. Choose a DIFFERENT tool to continue your task or provide a comprehensive summary of your findings and request a state change."
-                )
-            else:
-                guidance = (
-                    "You have not taken any meaningful action recently. "
-                    "To proceed, you MUST take a concrete action. "
-                    "Use `{\"action\": \"list_tools\"}` to see available tools and test one, "
-                    "or provide a summary of your work so far."
-                )
-            return base_message + guidance
-
-        return base_message + "Please review your objective and take a concrete step to move forward."
-
-    def _generate_admin_work_completion_message(self, agent: 'Agent') -> str:
-        """
-        Generates a specific, actionable task for an Admin AI that is stuck in a work loop.
-        This task instructs the agent to systematically test available tools to break the loop.
-        """
-        logger.info(f"Generating tool-testing task for stuck Admin AI '{agent.agent_id}'.")
-
-        # Get the list of available tools to make the prompt more intelligent.
-        tool_list_str = "Could not retrieve tool list."
-        if hasattr(self._manager, 'tool_executor') and self._manager.tool_executor:
-            try:
-                # Using a method that gets a simple list for the agent's type.
-                tool_list_str = self._manager.tool_executor.get_available_tools_list_str(agent.agent_type, agent.state)
-            except Exception as e:
-                logger.error(f"Error getting tool list for tool testing task generation: {e}")
-
-        # Frame the new task as a system intervention.
-        task_message = (
-            "[Framework Intervention]: You appear to be stuck in a work loop without a specific task. "
-            "A new task has been assigned to you to ensure progress.\n\n"
-            "**Your New Task: Systematically Test Available Tools**\n\n"
-            "**Step 1: Discover all available tools.**\n"
-            "Your first action MUST be to output the following JSON to get a list of all tools you can use:\n"
-            "```json\n"
-            "{\n"
-            "  \"action\": \"list_tools\"\n"
-            "}\n"
-            "```\n\n"
-            "**Step 2: Analyze and Test.**\n"
-            "After you receive the list, pick ONE tool from the list that you have not recently used and test one of its actions. "
-            "Use the `get_info` action of the `tool_information` tool first if you are unsure how to use it.\n\n"
-            "**CRITICAL REMINDERS:**\n"
-            "1. Execute ONLY ONE tool call per response to avoid overwhelming yourself\n"
-            "2. DO NOT repeat the same tool with identical parameters\n"
-            "3. After testing a tool, provide a brief summary of what you learned\n"
-            "4. When you have completed testing, transition to conversation state by calling the 'request_state' tool with state='conversation'\n\n"
-            f"**For context, here is a summary of tools currently available to you:**\n{tool_list_str}"
-        )
-        return task_message
-
+    # Round 3v: the unused _generate_empty_response_guidance / _generate_admin_work_completion_message were removed: they
+    # told the Admin AI to write `{"action": "list_tools"}` as text and to request state='conversation'. The Guardian's
+    # guidance (agent_health_monitor) is the one that is used.
 
     def _has_too_many_recent_system_messages(self, agent: Agent, threshold: int = 3, lookback: int = 5) -> bool:
         """Check if too many recent system messages would flood the LLM context."""
@@ -1479,14 +1456,18 @@ class AgentCycleHandler:
                             
                             # CRITICAL FIX: Removed enhanced feedback for markdown fences, as the parser already strips them.
                             if parsing_error_msg and "list_tools" in parsing_error_msg:
+                                # Round 3v: list_tools is an action of the `tool_information` tool - named as a native
+                                # call (the feedback showed a bare `{"action": "list_tools"}` JSON text without a tool)
+                                from src.agents.tool_guidance import LIST_TOOLS_CALL
                                 feedback_to_agent = (f"[Framework Feedback: Tool Usage Error]\n"
                                                    f"You attempted to use '{malformed_tool_name}' with action='list_tools', but list_tools does not belong to that tool.\n"
-                                                   f"Correct usage:\n```json\n{{\n  \"action\": \"list_tools\"\n}}\n```\n"
+                                                   f"Correct usage: call {LIST_TOOLS_CALL}.\n"
                                                    f"This will list all available tools and their summaries.")
                             elif malformed_tool_name == "unknown":
                                 feedback_to_agent = (f"[Framework Feedback: JSON Parsing Error]\n"
                                                    f"Your tool call was malformed: {parsing_error_msg}\n"
-                                                   f"Please check your syntax. You must specify a valid tool name from your system instructions.")
+                                                   f"Please check your syntax. You must call a tool named in [TOOL USE] of your system instructions"
+                                                   + (" as a native tool call (never as text in your reply)." if native_tool_calling() else "."))
                             else:
                                 feedback_to_agent = (f"[Framework Feedback: JSON Parsing Error]\n"
                                                    f"Your JSON for '{malformed_tool_name}' was malformed: {parsing_error_msg}\n"
@@ -1592,12 +1573,7 @@ class AgentCycleHandler:
                                 if not is_actually_complete:
                                     logger.warning(f"CycleHandler: HARD GATE ACTIVATED. Admin AI attempted to report completion while {pending_count} tasks are pending.")
                                     # Inject a framework message and rewrite the UI payload
-                                    system_message = (
-                                        "[Framework System Message - HARD GATE BLOCK]: Your response was BLOCKED from reaching the user. "
-                                        f"You claimed the project was complete, but the backend database shows {pending_count} PENDING tasks. "
-                                        "You MUST transition to 'admin_work' and use `{\"action\": \"run_command\", \"command\": \"...\"}` or PM tools to verify the actual task status, "
-                                        "or ping the PM for an explanation. Do not falsely report completion."
-                                    )
+                                    system_message = admin_false_completion_text(pending_count)  # Round 3v
                                     agent.message_history.append({"role": "system", "content": system_message})
                                     raw_content = f"[Framework Blocked false completion claim from Admin! {pending_count} tasks are still pending. Forcing Admin audit...]"
                                     event["content"] = raw_content
@@ -2093,15 +2069,12 @@ class AgentCycleHandler:
                                                             "The framework has automatically executed list_agents for you. "
                                                             "The agent list result is shown above. "
                                                             "Your MANDATORY next action is to assign the first unassigned task "
-                                                            "to a suitable worker agent using: \n"
-                                                            "```json\n"
-                                                            "{\n"
-                                                            "  \"action\": \"modify_task\",\n"
-                                                            "  \"task_id\": \"TASK_UUID\",\n"
-                                                            "  \"assignee_agent_id\": \"WORKER_ID\",\n"
-                                                            "  \"tags\": [\"+WORKER_ID\", \"assigned\"]\n"
-                                                            "}\n"
-                                                            "```"
+                                                            "to a suitable worker agent: call "
+                                                            # Round 3v: a native call named in words; the framework adds the
+                                                            # worker's tags itself (the JSON example set "tags" by hand)
+                                                            + call_text("project_management", action="modify_task",
+                                                                        task_id="TASK_UUID", assignee_agent_id="WORKER_ID")
+                                                            + " (the framework tags the task for the worker)."
                                                         )
                                                     }
                                                     self._deduplicate_pm_framework_messages(agent)
@@ -2274,8 +2247,10 @@ class AgentCycleHandler:
                                                         f"[Framework Circuit Breaker]: You have repeatedly tried to execute '{tool_name}' "
                                                         f"with the EXACT same arguments that previously failed {agent._duplicate_failure_count} times in a row. "
                                                         "Because you were stuck in a loop, your task state has been forcibly changed to 'worker_report'. "
-                                                        "Stop trying this exact approach. If you are stuck on a large file edit, you MUST use "
-                                                        "`file_system write` with `force_overwrite=true` to replace the whole file instead of replacing chunks."
+                                                        "Stop trying this exact approach. "
+                                                        # Round 3v: worker_report offers no file tools, and 'write' replaces
+                                                        # the worker's own file without force_overwrite (file_system help)
+                                                        + worker_breaker_next_step(agent)
                                                     )
                                                 }
                                                 all_tool_results_for_history.append(escalation_msg)
@@ -2508,7 +2483,7 @@ class AgentCycleHandler:
                                 agent.successfully_created_agent_count_for_build = 0 # Reset counter before first create
                                 directive_message_content = (
                                     "[Framework System Message]: You have successfully retrieved the detailed information for the 'manage_team' tool with sub_action 'create_agent'. "
-                                    "Your MANDATORY next action is to proceed with Step 2 of your workflow: Create your first worker agent based on your kickoff plan using the 'manage_team' tool (action='create_agent')."
+                                    "Your MANDATORY next action is to proceed with Step 3 of your workflow: Create your first worker agent based on your kickoff plan using the 'manage_team' tool (action='create_agent')."
                                 )
                             elif called_tool_name == "manage_team" and called_tool_args.get("action") == "create_agent":
                                 # This was an agent creation action. This is the new, context-aware intervention logic.
@@ -2651,7 +2626,9 @@ class AgentCycleHandler:
                                         directive_message_content = (
                                             f"[Framework System Message]: Task list retrieved successfully. Here is a summary of the unassigned tasks:\n"
                                             f"{summary_str}\n\n"
-                                            "Your mandatory next action is to get the list of available agents using the `{\"action\": \"list_agents\"}` tool format."
+                                            # Round 3v: the tool named (it was a bare `{"action": "list_agents"}` JSON text)
+                                            "Your mandatory next action is to get the list of available agents: call "
+                                            + call_text("manage_team", action="list_agents") + "."
                                         )
                                     elif action_performed == "modify_task":
                                         # The tool result contains the definitive UUID of the task that was modified
@@ -2916,12 +2893,7 @@ class AgentCycleHandler:
                                                     pending_count = len(pending_tasks)
                                                     if pending_count > 0:
                                                         logger.warning(f"CycleHandler: FINAL_RESPONSE HARD GATE ACTIVATED. Admin AI attempted to report completion while {pending_count} tasks are pending. Blocking delivery to user.")
-                                                        gate_msg = (
-                                                            f"[Framework System Message - HARD GATE BLOCK]: Your response was BLOCKED from reaching the user. "
-                                                            f"You claimed the project was complete, but the backend database shows {pending_count} PENDING tasks. "
-                                                            "You MUST use project_management list_tasks to verify the actual task status, "
-                                                            "or message the PM for an explanation. Do not falsely report completion."
-                                                        )
+                                                        gate_msg = admin_false_completion_text(pending_count)  # Round 3v
                                                         agent.message_history.append({"role": "system", "content": gate_msg})
                                                         # Send a sanitized notification to the UI instead of the false completion
                                                         await self._manager.send_to_ui({
@@ -3060,14 +3032,7 @@ class AgentCycleHandler:
                         logger.info(f"CycleHandler: PM '{agent.agent_id}' showing completion thoughts. Triggering project status verification.")
                         
                         # Inject a directive to verify project completion
-                        completion_verification_directive = (
-                            "[Framework System Message]: You have expressed thoughts about project completion. "
-                            "Your MANDATORY next action is to verify the actual project status. "
-                            "Use the project management tool with action 'list_tasks' to check for any remaining tasks. "
-                            "If no unassigned tasks remain and all work is truly complete, report completion to the Admin AI using: "
-                            "`{\"action\": \"send_message\", \"target_agent_id\": \"" + BOOTSTRAP_AGENT_ID + "\", \"message_content\": \"Project [PROJECT_NAME] is complete. All tasks have been finished successfully.\"}` "
-                            "followed by calling the 'request_state' tool with state='pm_standby'"
-                        )
+                        completion_verification_directive = pm_completion_directive(agent.state)  # Round 3v
                         
                         agent.message_history.append({"role": "system", "content": completion_verification_directive})
                         
@@ -3152,8 +3117,10 @@ class AgentCycleHandler:
                                 
                                 standby_message_content = (
                                     "[Framework Intervention]: You have completed multiple management cycles without taking concrete action. "
-                                    "Your project appears to be in a stable state. You will now transition to standby mode. "
-                                    "Call the 'request_state' tool with state='pm_standby'."
+                                    "Your project appears to be in a stable state. "
+                                    # Round 3v: the state is set below - it asked the PM to request the state it was put into
+                                    "[Framework Override]: Your state is now 'pm_standby'. You stay there until a worker "
+                                    "reports or the Admin AI writes to you."
                                 )
                                 if open_work_hint:
                                     standby_message_content = (
@@ -3444,48 +3411,21 @@ class AgentCycleHandler:
                         
                         # Ensure agent's task state completely resets to force re-planning on stalling / empty response loops
                         recovery_type = recovery_plan.get("type", "")
-                        if recovery_type in ["minimal_response_pattern", "stuck_in_state", "tool_information_loop_violation", "empty_response_violation"]:
-                            # CRITICAL FIX: Agent-type-aware state recovery.
-                            # Previously, all agents were blindly reset to worker_wait/worker_report,
-                            # which caused PM agents to fall into the DEFAULT state and become non-functional.
-                            if agent.agent_type == AGENT_TYPE_PM:
-                                # PM agents should NEVER be set to worker states.
-                                # Reset to pm_manage (safe default) so PM can reassess project status.
-                                target_state = PM_STATE_MANAGE
-                                logger.warning(
-                                    f"CycleHandler: Constitutional Guardian Intervention Reset - "
-                                    f"PM agent '{agent.agent_id}' resetting to '{target_state}' "
-                                    f"(recovery_type: {recovery_type})"
-                                )
-                                agent.needs_priority_recheck = True
-                                agent.set_state(target_state)
-                                
-                            elif agent.agent_type == AGENT_TYPE_ADMIN:
-                                # Admin agents should reset to admin_standby
-                                target_state = ADMIN_STATE_STANDBY
-                                logger.warning(
-                                    f"CycleHandler: Constitutional Guardian Intervention Reset - "
-                                    f"Admin agent '{agent.agent_id}' resetting to '{target_state}' "
-                                    f"(recovery_type: {recovery_type})"
-                                )
-                                agent.needs_priority_recheck = True
-                                agent.set_state(target_state)
-                                
-                            else:
-                                # Worker agents — original logic
-                                has_task_record = (hasattr(agent, 'metadata') and 
-                                               isinstance(agent.metadata, dict) and 
-                                               'task_id' in agent.metadata)
-                                
-                                target_state = "worker_report" if has_task_record else "worker_wait"
-                                logger.warning(
-                                    f"CycleHandler: Constitutional Guardian Intervention Reset - "
-                                    f"Changing worker '{agent.agent_id}' state to '{target_state}'"
-                                )
-                                
-                                agent.needs_priority_recheck = True
-                                agent.set_state(target_state)
-                                    
+                        # Round 3v: the state comes from tool_guidance.guardian_reset_state - the same value the Guardian's
+                        # guidance names (it told the agent nothing about the reset before). Agent-type-aware: a PM goes to
+                        # pm_manage, the Admin AI to admin_standby, a worker to worker_wait (the old worker branch asked for
+                        # 'worker_report' when agent.metadata had a task_id - no agent has 'metadata', so it was always
+                        # worker_wait).
+                        target_state = recovery_plan.get("reset_state") or guardian_reset_state(agent.agent_type, recovery_type)
+                        if target_state:
+                            logger.warning(
+                                f"CycleHandler: Constitutional Guardian Intervention Reset - "
+                                f"{agent.agent_type} agent '{agent.agent_id}' resetting to '{target_state}' "
+                                f"(recovery_type: {recovery_type})"
+                            )
+                            agent.needs_priority_recheck = True
+                            agent.set_state(target_state)
+                            if agent.agent_type == AGENT_TYPE_WORKER:
                                 if hasattr(agent, "current_task_id"):
                                     agent.current_task_id = None
                                 if hasattr(agent, "active_task_id"):

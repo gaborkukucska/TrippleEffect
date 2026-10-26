@@ -172,19 +172,23 @@ def build_request_state_schema(agent_type, state, valid_states):
     - A PM in pm_startup must output the JSON kickoff plan, so the tool is not offered at all.
     - Other PM states get a description listing the states a PM can really request (the old text always
       listed worker states, which a PM can never enter).
-    - Admin and worker agents get exactly the schema they always had.
+    - Round 3v: the Admin AI and workers are listed their own states too (the Admin AI saw worker states as examples).
     """
     if agent_type == AGENT_TYPE_PM and state == PM_STATE_STARTUP:
         return None
-    if agent_type == AGENT_TYPE_PM:
-        shown = [s for s in (valid_states or []) if s and s not in ("default", PM_STATE_STARTUP, state)]
-        state_desc = "The destination state to transition to."
-        if shown:
-            state_desc += " Valid states for you: " + ", ".join(shown) + "."
-        task_desc = "Only used by workers; leave empty."
-    else:
-        state_desc = "The destination state to transition to (e.g., worker_work, worker_test, worker_report, worker_wait)."
+    # Round 3v: every agent type is shown ITS OWN states (the Admin AI used to see the worker states as examples)
+    entry_states = {AGENT_TYPE_PM: ("default", PM_STATE_STARTUP), AGENT_TYPE_ADMIN: ("default", "startup"),
+                    AGENT_TYPE_WORKER: ("default", "worker_startup")}.get(agent_type, ("default",))
+    shown = [s for s in (valid_states or []) if s and s not in entry_states and s != state]
+    state_desc = "The destination state to transition to."
+    if shown:
+        state_desc += " Valid states for you: " + ", ".join(shown) + "."
+    elif agent_type == AGENT_TYPE_WORKER:
+        state_desc += " Valid states for you: worker_decompose, worker_work, worker_test, worker_report, worker_wait."
+    if agent_type == AGENT_TYPE_WORKER:
         task_desc = "REQUIRED when transitioning to 'worker_work' or 'worker_test' state. The UUID of the sub-task you are choosing to work on."
+    else:
+        task_desc = "Only used by workers; leave empty."
     return {
         "type": "function",
         "function": {
@@ -434,41 +438,19 @@ class Agent:
             tool_schemas = None
             if settings.NATIVE_TOOL_CALLING_ENABLED and self.manager and getattr(self.manager, 'tool_executor', None):
                 tool_schemas = []
-                for tool_name, tool in self.manager.tool_executor.tools.items():
-                    # Round 2o: 'resolve_concern' only while a Constitutional Guardian concern waits for this agent's decision
-                    if tool_name == "resolve_concern":
-                        escalation = getattr(self.manager, "cg_escalation", None)
-                        if escalation is None or not escalation.pending_for_decider(self.agent_id):
-                            continue
-                    # Restrict specific states to only the tools they actually need
-                    if self.agent_type == AGENT_TYPE_WORKER:
-                        if self.state == WORKER_STATE_DECOMPOSE and tool_name not in ['project_management', 'file_system', 'codebase_search', 'mark_message_read', 'send_message']:
-                            continue
-                        # Round 2k: the same list the executor enforces (tool_activity.state_tool_allowlist)
-                        allowed_here = state_tool_allowlist(self.agent_type, self.state)
-                        if allowed_here is not None and tool_name not in allowed_here:
-                            continue
-                    elif self.agent_type == AGENT_TYPE_PM:
-                        if self.state == PM_STATE_STARTUP:
-                            # In startup, PM must focus strictly on outputting the JSON kickoff plan
-                            # No tools needed; pseudo-tool request_state is available if needed.
-                            continue
-                        if self.state == PM_STATE_BUILD_TEAM_TASKS and tool_name not in ['manage_team', 'tool_information', 'mark_message_read', 'send_message']:
-                            continue
-                            
-                    # Apply standard auth checks for native tools
-                    tool_auth_level = getattr(tool, 'auth_level', 'worker')
-                    is_authorized = False
-                    if self.agent_type == AGENT_TYPE_ADMIN:
-                        is_authorized = True
-                    elif self.agent_type == AGENT_TYPE_PM:
-                        is_authorized = tool_auth_level in ['pm', 'worker']
-                    elif self.agent_type == AGENT_TYPE_WORKER:
-                        is_authorized = tool_auth_level == 'worker'
-                        
-                    if is_authorized:
-                        tool_schemas.append(tool.get_json_schema())
-                        
+                all_tools = self.manager.tool_executor.tools
+                # Round 2o: 'resolve_concern' only while a Constitutional Guardian concern waits for this agent's decision
+                skip = []
+                escalation = getattr(self.manager, "cg_escalation", None)
+                if "resolve_concern" in all_tools and (escalation is None or not escalation.pending_for_decider(self.agent_id)):
+                    skip.append("resolve_concern")
+                # Round 3v: ONE table decides the tools a state offers (src/agents/tool_guidance.py); the system prompt's
+                # "Tools you can call in this state" line is made from the same table, and the executor enforces
+                # tool_activity.state_tool_allowlist (Round 2k), which the table never exceeds
+                from src.agents.tool_guidance import offered_tool_names
+                for tool_name in offered_tool_names(self.agent_type, self.state, all_tools, skip=skip):
+                    tool_schemas.append(all_tools[tool_name].get_json_schema())
+
                 # Inject request_state as a pseudo-tool so LLM knows its schema (not offered to a PM in pm_startup)
                 _valid_states_for_type = getattr(getattr(self.manager, 'workflow_manager', None), '_valid_states', {}).get(self.agent_type, [])
                 _request_state_schema = build_request_state_schema(self.agent_type, self.state, _valid_states_for_type)

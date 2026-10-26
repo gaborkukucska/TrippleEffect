@@ -28,7 +28,6 @@ def run(coro):
 
 
 # ------------------------------------------------------------- request_state schema
-ORIGINAL_STATE_DESC = "The destination state to transition to (e.g., worker_work, worker_test, worker_report, worker_wait)."
 ORIGINAL_TASK_DESC = ("REQUIRED when transitioning to 'worker_work' or 'worker_test' state. "
                       "The UUID of the sub-task you are choosing to work on.")
 
@@ -58,15 +57,32 @@ def test_request_state_pm_without_valid_states_still_valid_schema():
     assert schema["function"]["parameters"]["properties"]["state"]["description"] == "The destination state to transition to."
 
 
+ADMIN_STATES = [C.ADMIN_STATE_STARTUP, C.ADMIN_STATE_CONVERSATION, C.ADMIN_STATE_PLANNING, C.ADMIN_STATE_WORK,
+                C.ADMIN_STATE_STANDBY, "default"]
+WORKER_STATES = [C.WORKER_STATE_STARTUP, C.WORKER_STATE_DECOMPOSE, C.WORKER_STATE_WORK, C.WORKER_STATE_TEST,
+                 C.WORKER_STATE_REPORT, C.WORKER_STATE_WAIT, "default"]
+
+
 @pytest.mark.parametrize("agent_type,state", [
     (C.AGENT_TYPE_ADMIN, C.ADMIN_STATE_CONVERSATION),
     (C.AGENT_TYPE_ADMIN, C.ADMIN_STATE_PLANNING),
     (C.AGENT_TYPE_WORKER, C.WORKER_STATE_WORK),
     (C.AGENT_TYPE_WORKER, C.WORKER_STATE_DECOMPOSE),
 ])
-def test_request_state_admin_and_worker_schema_unchanged(agent_type, state):
+def test_request_state_admin_and_worker_get_their_own_states(agent_type, state):
+    # Round 3v: the Admin AI and workers are shown their OWN states (the Admin AI was shown the worker states as examples:
+    # "e.g., worker_work, worker_test, worker_report, worker_wait"); the schema shape is unchanged.
     from src.agents.core import build_request_state_schema
-    schema = build_request_state_schema(agent_type, state, ["whatever", "default"])
+    own = ADMIN_STATES if agent_type == C.AGENT_TYPE_ADMIN else WORKER_STATES
+    schema = build_request_state_schema(agent_type, state, own)
+    props = schema["function"]["parameters"]["properties"]
+    desc = props["state"]["description"]
+    entry = {"default", C.ADMIN_STATE_STARTUP, C.WORKER_STATE_STARTUP}
+    shown = [s for s in own if s not in entry and s != state]
+    assert desc == "The destination state to transition to. Valid states for you: " + ", ".join(shown) + "."
+    listed = desc.split("Valid states for you: ")[1].rstrip(".").split(", ")
+    assert set(listed) <= set(own)  # no state of another agent type
+    expected_task = ORIGINAL_TASK_DESC if agent_type == C.AGENT_TYPE_WORKER else "Only used by workers; leave empty."
     assert schema == {
         "type": "function",
         "function": {
@@ -75,8 +91,8 @@ def test_request_state_admin_and_worker_schema_unchanged(agent_type, state):
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "state": {"type": "string", "description": ORIGINAL_STATE_DESC},
-                    "task_id": {"type": ["string", "null"], "description": ORIGINAL_TASK_DESC},
+                    "state": {"type": "string", "description": desc},
+                    "task_id": {"type": ["string", "null"], "description": expected_task},
                     "task_description": {"type": "string", "description": "Optional description of the task."},
                 },
                 "required": ["state"],

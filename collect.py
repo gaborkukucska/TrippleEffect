@@ -2,7 +2,8 @@
 """
 TrippleEffect: Session & Log Collector  (v2: smart log reduction; v2.2: the session of the log;
 v2.3: configuration and environment, with secrets redacted; v2.4: every project session of the log;
-v2.5: keys that .env sets more than once)
+v2.5: keys that .env sets more than once; v2.6: full tool calls, system prompts and injected notices from the
+request payloads of the DEBUG log)
 
 Run from the TrippleEffect repository root:   python3 collect.py
 Output directory: ~/Desktop/te_session_data     (change with --dest)
@@ -27,6 +28,13 @@ What it collects (same names as before, plus the new zz_ files):
                                 really gets: .env first (src/main.py loads it with override=True), else this shell's
                                 environment, else the code default. Plus Python / node / bash / Taskwarrior versions.
   zz_git_state.txt              NEW (v2.3). Branch, last commits, changed files and the local diff (redacted).
+  zz_tool_calls_full.txt        NEW (v2.6). From the request payloads of the DEBUG log (each LLM call is logged with its
+                                whole conversation): every tool call counted once per tool/action with its failures;
+                                every distinct FAILED call with its full arguments and the tool result; code_editor
+                                chunks whose 'replace' repeats 'search' (they change nothing).
+  zz_prompts_and_injections.txt NEW (v2.6). The system prompt of each agent type / state (each variant once, later
+                                variants as a diff), the tool names offered per state, and every framework / Guardian
+                                message injected into a conversation, with how often and to whom.
   other__<Project>__*           NEW (v2.4). The workspace and task data of every OTHER project session the log worked
                                 in (e.g. a second project the run created), named other__<Project>__workspace__... and
                                 other__<Project>__task_data__...; --primary-only leaves them out.
@@ -53,6 +61,7 @@ The script only writes files it generates into the destination folder (earlier e
 names are replaced). It never touches your repository.
 """
 import argparse
+import json
 import os
 import platform
 import re
@@ -288,6 +297,273 @@ def grouped_scan(entries: List[Entry], selector, title: str, max_chars: int = 15
             out.append("... [scan truncated at size limit; remaining groups omitted; see zz_events.txt]")
             break
     return "\n".join(out) + "\n"
+
+
+# --------------------------------------------------------------------------------------
+# v2.6: what the models were really sent (the DEBUG request payloads)
+# --------------------------------------------------------------------------------------
+# Every LLM call is logged at DEBUG level with its complete request: the system prompt, the whole conversation (with
+# every tool call's full arguments and every tool result) and the tool schemas offered. From these:
+#   zz_tool_calls_full.txt         - tool calls per tool/action and how many failed; every distinct FAILED call with its
+#                                    full arguments and result; code_editor chunks whose 'replace' repeats 'search'
+#   zz_prompts_and_injections.txt  - the system prompt per agent type and state (each variant once), the tools offered
+#                                    per state, and every framework / Guardian message injected into a conversation
+PAYLOAD_MARKERS = ("EXACT JSON payload being sent to", "FULL JSON equivalent of api_params being sent")
+PAYLOAD_MODEL_RE = re.compile(r"Provider '([^']+)'")
+AGENT_ID_RE = re.compile(r"Your Agent ID: `([^`]+)`")
+AGENT_TYPE_RE = re.compile(r"Your Agent Type: `([^`]+)`")
+STATE_NAME_RE = re.compile(r"Tools you can call in this state \('([\w-]+)'\)")
+STATE_LABEL_RE = re.compile(r"---\s*(?:Current State|Worker Agent State|State):\s*([^\n]+?)\s*---")
+VOLATILE_PROMPT_RE = re.compile(r"(Current Time \(UTC\): `)[^`]*`")
+FAILURE_PREFIXES = ("[tool execution failed]", "[toolexec error", "[tool execution error", "[tool error", "error:")
+CONTENT_TOOLS = {"file_system", "web_search", "zim_search", "knowledge_base", "codebase_search", "tool_information",
+                 "asset_search", "github_tool", "system_help"}
+EXECUTOR_REFUSAL_RE = re.compile(r"^error from tool '[\w.-]+': ", re.MULTILINE)
+SEARCH_KEYS = ("search", "search_block", "search_text", "find", "old", "old_code")
+REPLACE_KEYS = ("replace", "replace_block", "replace_text", "replacement", "new", "new_code", "new_text", "new_content",
+                "content", "line_content", "text", "code", "replace_with", "replacement_text")
+MAX_PAYLOAD_FILE = 1_500_000
+
+
+def iter_payloads(entries: List[Entry]):
+    """(timestamp, model, payload dict) for every logged request payload that parses as JSON."""
+    for e in entries:
+        if e.level != "DEBUG" or not any(marker in e.msg for marker in PAYLOAD_MARKERS):
+            continue
+        try:
+            payload = json.loads("\n".join(e.cont))
+        except ValueError:
+            continue
+        if isinstance(payload, dict) and isinstance(payload.get("messages"), list):
+            model = PAYLOAD_MODEL_RE.search(e.msg)
+            yield e.stamp, (model.group(1) if model else "?"), payload
+
+
+def _text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):  # content parts
+        return "\n".join(str(part.get("text", part)) if isinstance(part, dict) else str(part) for part in value)
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _arguments(raw) -> Dict:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            value = json.loads(raw)
+            return value if isinstance(value, dict) else {"_raw": raw}
+        except ValueError:
+            return {"_raw": raw}
+    return {}
+
+
+def result_failed(tool: str, content: str) -> bool:
+    """The framework's rule (src/agents/tool_activity.is_tool_result_failure), copied so the script needs no imports."""
+    try:
+        data = json.loads(content)
+    except (ValueError, TypeError):
+        pass
+    else:
+        return isinstance(data, dict) and data.get("status") == "error"
+    lowered = content.lower()
+    if lowered.lstrip().startswith(FAILURE_PREFIXES) or EXECUTOR_REFUSAL_RE.search(lowered[:2000]):
+        return True
+    if tool in CONTENT_TOOLS:
+        return False
+    return "error" in lowered or "[tool execution failed]" in lowered
+
+
+def _first_key(chunk: Dict, keys) -> Optional[str]:
+    return next((key for key in keys if key in chunk), None)
+
+
+def _chunks(arguments: Dict) -> List[Dict]:
+    chunks = arguments.get("chunks") or arguments.get("replacements") or arguments.get("edits")
+    if isinstance(chunks, str):
+        try:
+            chunks = json.loads(chunks, strict=False)
+        except ValueError:
+            return []
+    if isinstance(chunks, dict):
+        chunks = [chunks]
+    return [c for c in chunks or [] if isinstance(c, dict)] if isinstance(chunks, list) else []
+
+
+def _shown(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit] + f"\n...[+{len(text) - limit} chars]"
+
+
+def _who(messages: List[Dict]) -> Tuple[str, str, str]:
+    """(agent id, agent type, state) from the system prompt of a payload."""
+    system = _text(messages[0].get("content")) if messages and messages[0].get("role") == "system" else ""
+    agent = AGENT_ID_RE.search(system)
+    agent_type = AGENT_TYPE_RE.search(system)
+    state = STATE_NAME_RE.search(system) or STATE_LABEL_RE.search(system)
+    return (agent.group(1) if agent else "?", agent_type.group(1) if agent_type else "?",
+            state.group(1).strip() if state else "?")
+
+
+def _injection_key(content: str) -> str:
+    return BIGNUM_RE.sub("N", norm_key(content))[:3000]
+
+
+def analyse_payloads(entries: List[Entry]) -> Dict:
+    data = {"payloads": 0, "calls": OrderedDict(), "counts": {}, "prompts": OrderedDict(), "tools": OrderedDict(),
+            "injections": OrderedDict(), "noop": []}
+    seen_messages: set = set()
+    for stamp, model, payload in iter_payloads(entries):
+        data["payloads"] += 1
+        messages = [m for m in payload["messages"] if isinstance(m, dict)]
+        agent, agent_type, state = _who(messages)
+        where = (agent_type, state)
+        # the system prompt: each distinct text once per (agent type, state)
+        if messages and messages[0].get("role") == "system":
+            prompt = _text(messages[0].get("content"))
+            normal = VOLATILE_PROMPT_RE.sub(r"\1...`", prompt).replace(f"`{agent}`", "`<agent>`")
+            group = data["prompts"].setdefault(where, {"agents": set(), "first": stamp, "variants": OrderedDict()})
+            group["agents"].add(agent)
+            variant = group["variants"].setdefault(normal, [stamp, 0, prompt])
+            variant[1] += 1
+        # the tools offered in this call
+        names = tuple(sorted(str((t.get("function") or {}).get("name") or t.get("name") or "?")
+                             for t in payload.get("tools") or [] if isinstance(t, dict)))
+        offered = data["tools"].setdefault(where, OrderedDict())
+        offered[names] = offered.get(names, 0) + 1
+        for index, message in enumerate(messages):
+            role = message.get("role")
+            content = _text(message.get("content"))
+            key = (agent, role, norm_key(content)[:4000], json.dumps(message.get("tool_calls"), sort_keys=True, default=str)[:4000])
+            if key in seen_messages:
+                continue
+            seen_messages.add(key)
+            if index > 0 and (role == "system" or (role == "user" and content.lstrip().startswith("["))):
+                injected = data["injections"].setdefault(_injection_key(content), {
+                    "first": stamp, "count": 0, "agents": set(), "states": set(), "role": role, "text": content})
+                injected["count"] += 1
+                injected["agents"].add(agent)
+                injected["states"].add(state)
+            if role != "assistant" or not message.get("tool_calls"):
+                continue
+            later = messages[index + 1:]
+            next_assistant = next((i for i, m in enumerate(later) if m.get("role") == "assistant"), len(later))
+            results = [m for m in later[:next_assistant] if m.get("role") == "tool"]
+            for position, call in enumerate(message["tool_calls"]):
+                function = call.get("function") or {}
+                tool = str(function.get("name") or "?")
+                arguments = _arguments(function.get("arguments"))
+                call_id = call.get("id")
+                result = next((m for m in results if call_id and m.get("tool_call_id") == call_id), None)
+                if result is None and position < len(results):
+                    result = results[position]
+                result_text = _text(result.get("content")) if result else ""
+                failed = bool(result) and result_failed(tool, result_text)
+                action = str(arguments.get("action") or "-")
+                count = data["counts"].setdefault((tool, action), [0, 0])
+                count[0] += 1
+                count[1] += 1 if failed else 0
+                if failed:
+                    signature = (tool, json.dumps(arguments, sort_keys=True, default=str)[:20000],
+                                 BIGNUM_RE.sub("N", norm_key(result_text.splitlines()[0] if result_text else ""))[:300])
+                    entry = data["calls"].setdefault(signature, {"first": stamp, "count": 0, "agents": set(),
+                                                                "state": state, "model": model, "tool": tool,
+                                                                "arguments": arguments, "result": result_text})
+                    entry["count"] += 1
+                    entry["agents"].add(agent)
+                if tool == "code_editor":
+                    noop = [c for c in _chunks(arguments)
+                            if _first_key(c, SEARCH_KEYS) and _first_key(c, REPLACE_KEYS)
+                            and c[_first_key(c, SEARCH_KEYS)] == c[_first_key(c, REPLACE_KEYS)]]
+                    if noop:
+                        filename = str(arguments.get("filename") or arguments.get("filepath") or arguments.get("path") or "")
+                        before = next((_text(m.get("content")) for m in reversed(messages[:index])
+                                       if m.get("role") == "tool" and filename and filename in _text(m.get("content"))), "")
+                        data["noop"].append((stamp, agent, state, arguments, result_text, before))
+    return data
+
+
+def build_tool_calls_report(data: Dict) -> str:
+    out = [f"# Tool calls ({data['payloads']:,} request payloads read; each call counted once)", "",
+           "## Calls per tool and action (failed / total)"]
+    for (tool, action), (total, failed) in sorted(data["counts"].items(), key=lambda kv: (-kv[1][1], -kv[1][0])):
+        out.append(f"  {failed:>5} / {total:<6} {tool}  action={action}")
+    out += ["", f"## Failed calls: {len(data['calls'])} distinct (same tool, arguments and first result line = one)", ""]
+    for number, entry in enumerate(sorted(data["calls"].values(), key=lambda v: v["first"]), 1):
+        out.append("=" * 110)
+        out.append(f"#{number}  x{entry['count']}  {entry['tool']}  first {entry['first']}  agents {', '.join(sorted(entry['agents']))}"
+                   f"  state {entry['state']}  model {entry['model']}")
+        out.append("--- arguments:")
+        out.append(_shown(json.dumps(entry["arguments"], indent=1, ensure_ascii=False, default=str), 6000))
+        out.append("--- result:")
+        out.append(_shown(entry["result"], 4000))
+        if sum(len(x) + 1 for x in out) > MAX_PAYLOAD_FILE:
+            out.append("... [file size limit reached; later failed calls omitted]")
+            break
+    out += ["", f"## code_editor chunks whose 'replace' repeats 'search' (they change nothing): {len(data['noop'])}", ""]
+    for number, (stamp, agent, state, arguments, result, before) in enumerate(data["noop"][:40], 1):
+        out.append("=" * 110)
+        out.append(f"#{number}  {stamp}  {agent} ({state})  file {arguments.get('filename') or arguments.get('filepath')}")
+        out.append("--- arguments:")
+        out.append(_shown(json.dumps(arguments, indent=1, ensure_ascii=False, default=str), 8000))
+        out.append("--- result:")
+        out.append(_shown(result or "(no result in the payload)", 2500))
+        out.append("--- the last earlier tool result that names the file:")
+        out.append(_shown(before or "(none in the payload)", 4000))
+    if len(data["noop"]) > 40:
+        out.append(f"... [{len(data['noop']) - 40} more]")
+    return "\n".join(out) + "\n"
+
+
+def build_prompts_report(data: Dict) -> str:
+    import difflib
+    out = [f"# System prompts, offered tools and injected messages ({data['payloads']:,} request payloads read)", "",
+           "## Tools offered per agent type and state (tool names sent with the call: count)"]
+    for (agent_type, state), offered in data["tools"].items():
+        for names, count in offered.items():
+            out.append(f"  {agent_type:<7} {state:<22} x{count:<5} {', '.join(names) or '(no tools)'}")
+    out += ["", f"## Injected framework / Guardian messages: {len(data['injections'])} distinct "
+                "(count = conversations it was added to; numbers and ids normalised)", ""]
+    for entry in sorted(data["injections"].values(), key=lambda v: v["first"]):
+        out.append("-" * 110)
+        out.append(f"x{entry['count']}  first {entry['first']}  role {entry['role']}  agents {', '.join(sorted(entry['agents']))}"
+                   f"  states {', '.join(sorted(entry['states']))}")
+        out.append(_shown(entry["text"], 3000))
+    out += ["", f"## System prompts: {len(data['prompts'])} agent type / state combination(s)", ""]
+    for (agent_type, state), group in data["prompts"].items():
+        variants = list(group["variants"].values())
+        out.append("=" * 110)
+        out.append(f"### {agent_type} / {state}  agents {', '.join(sorted(group['agents']))}  first {group['first']}  "
+                   f"{len(variants)} variant(s)")
+        first_stamp, count, prompt = variants[0]
+        out.append(f"--- variant 1 (x{count}, first {first_stamp}):")
+        out.append(_shown(prompt, 30000))
+        for number, (stamp, count, text) in enumerate(variants[1:6], 2):
+            diff = [line for line in difflib.unified_diff(prompt.splitlines(), text.splitlines(), lineterm="", n=0)
+                    if not line.startswith(("---", "+++", "@@"))]
+            out.append(f"--- variant {number} (x{count}, first {stamp}): {len(diff)} changed line(s) against variant 1")
+            out.extend("    " + clip(line, 300) for line in diff[:40])
+            if len(diff) > 40:
+                out.append(f"    ... [{len(diff) - 40} more]")
+        if len(variants) > 6:
+            out.append(f"--- ... {len(variants) - 6} more variant(s)")
+        if sum(len(x) + 1 for x in out) > MAX_PAYLOAD_FILE:
+            out.append("... [file size limit reached; later prompts omitted]")
+            break
+    return "\n".join(out) + "\n"
+
+
+def redact_report(text: str) -> Tuple[str, int]:
+    """v2.6: the payload reports hold prompts and tool results - redacted like the git diff."""
+    hidden = 0
+    lines = []
+    for line in text.splitlines():
+        shown, n = redact_text_line(line)
+        hidden += n
+        lines.append(shown)
+    return "\n".join(lines) + "\n", hidden
 
 
 # --------------------------------------------------------------------------------------
@@ -824,6 +1100,19 @@ def main() -> int:
             ("zz_log_error_scan.txt", err_scan),
             ("zz_tool_errors_scan.txt", tool_scan),
         ])
+        # v2.6: the request payloads (DEBUG log): full tool calls, prompts per state, offered tools, injected notices
+        payload_note = ""
+        try:
+            payload_data = analyse_payloads(entries)
+            if payload_data["payloads"]:
+                for name, builder in (("zz_tool_calls_full.txt", build_tool_calls_report),
+                                      ("zz_prompts_and_injections.txt", build_prompts_report)):
+                    files[name], _hidden = redact_report(builder(payload_data))
+            else:
+                payload_note = ("No request payloads in the log (they are logged at DEBUG level): zz_tool_calls_full.txt "
+                                "and zz_prompts_and_injections.txt were not written.")
+        except Exception as exc:  # the other files are still written
+            payload_note = f"Request payload analysis failed: {type(exc).__name__}: {exc}"
         for name, content in files.items():
             (dest / name).write_text(content, encoding="utf-8")
 
@@ -835,6 +1124,8 @@ def main() -> int:
                        f"({stats['noise']:,} noise entries dropped, {stats['suppressed']:,} repeated entries counted in the footer)")
         for name in files:
             summary.append(f"Generated: {name} ({kb(len(files[name].encode('utf-8', errors='replace')))})")
+        if payload_note:
+            summary.append(payload_note)
         summary.append("Read zz_events.txt first: it is the complete, untruncated timeline of the run.")
 
         if args.raw:

@@ -94,6 +94,11 @@ class ToolInformationTool(BaseTool):
 
         calling_agent = manager.agents.get(agent_id)
         agent_type = getattr(calling_agent, 'agent_type', AGENT_TYPE_WORKER)
+        # Round 3v: the tools the caller is OFFERED in its current state (the native tools it was given). list_tools listed
+        # every tool of its type, e.g. code_editor to a PM (which may never change files) or project_management to a PM
+        # in pm_build_team_tasks, where it is not offered.
+        offered = self._offered_now(manager, calling_agent, agent_id, agent_type)
+        state_now = getattr(calling_agent, 'state', None)
 
         CATEGORY_MAP = {
             "project_management": "Project",
@@ -115,7 +120,7 @@ class ToolInformationTool(BaseTool):
             if action == "list_categories":
                 categories = {}
                 for name, tool in manager.tool_executor.tools.items():
-                    if self._is_authorized(agent_type, tool.auth_level):
+                    if self._is_authorized(agent_type, tool.auth_level) and (offered is None or name in offered):
                         cat = CATEGORY_MAP.get(name, "General")
                         if cat not in categories: categories[cat] = []
                         categories[cat].append(name)
@@ -129,8 +134,13 @@ class ToolInformationTool(BaseTool):
             elif action == "list_tools":
                 category_filter = kwargs.get("category")
                 tools_list = []
+                other_states = []
                 for name, tool in sorted(manager.tool_executor.tools.items()):
                     if self._is_authorized(agent_type, tool.auth_level):
+                        if offered is not None and name not in offered:
+                            if name != "resolve_concern":
+                                other_states.append(name)
+                            continue
                         cat = CATEGORY_MAP.get(name, "General")
                         if category_filter and cat.lower() != category_filter.lower():
                              continue
@@ -139,13 +149,16 @@ class ToolInformationTool(BaseTool):
 
                 tools_details = []
                 filter_msg = f" in category '{category_filter}'" if category_filter else ""
-                tools_details.append(f"Available tools for agent type '{agent_type}'{filter_msg} ({len(tools_list)} total):\n")
+                where = f" in state '{state_now}'" if offered is not None and state_now else ""
+                tools_details.append(f"Available tools for agent type '{agent_type}'{where}{filter_msg} ({len(tools_list)} total):\n")
                 
                 for tool_info in tools_list:
                     tools_details.append(f"• **{tool_info['name']}** [{tool_info['category']}]: {tool_info['summary']}")
                 
                 tools_details.append(f"\nTo get detailed usage for any tool, use the 'tool_information' tool with action='get_info' and tool_name='TOOL_NAME'.")
                 tools_details.append(f"For per-action help on complex tools, add sub_action='ACTION_NAME'.")
+                if other_states:
+                    tools_details.append(f"Not available in this state (other states of your workflow offer them): {', '.join(other_states)}.")
                 
                 return {"status": "success", "message": "\n".join(tools_details)}
 
@@ -166,8 +179,9 @@ class ToolInformationTool(BaseTool):
         
         if tool_name_req.lower() == 'all':
             usage_info = []
+            offered = self._offered_now(manager, manager.agents.get(agent_id), agent_id, agent_type)
             for name, tool in sorted(manager.tool_executor.tools.items()):
-                if self._is_authorized(agent_type, tool.auth_level):
+                if self._is_authorized(agent_type, tool.auth_level) and (offered is None or name in offered):
                     usage_info.append(self._get_single_tool_usage_dict(agent_id, agent_type, name, sub_action_req, tool, manager))
             
             # Combine all usage information into a single response
@@ -178,7 +192,9 @@ class ToolInformationTool(BaseTool):
         if tool_name_req == "list_tools":
             return {
                 "status": "error", 
-                "message": f"❌ Common mistake detected! 'list_tools' is NOT a tool name - it's an ACTION within the tool_information tool.\n\nCorrect usage:\n{{\"action\": \"list_tools\"}}\n\nNOT:\n{{\"action\": \"get_info\", \"tool_name\": \"list_tools\"}}"
+                "message": ("❌ Common mistake detected! 'list_tools' is NOT a tool name - it's an ACTION within the tool_information tool.\n\n"
+                            "Correct usage: call the `tool_information` tool with action='list_tools'.\n\n"
+                            "NOT: action='get_info' with tool_name='list_tools'.")
             }
         
         tool = manager.tool_executor.tools.get(tool_name_req)
@@ -191,8 +207,32 @@ class ToolInformationTool(BaseTool):
             }
 
         usage_dict = self._get_single_tool_usage_dict(agent_id, agent_type, tool_name_req, sub_action_req, tool, manager)
+        # Round 3v: help for a tool the current state does not offer says so (the agent cannot call it here)
+        calling_agent = manager.agents.get(agent_id)
+        offered = self._offered_now(manager, calling_agent, agent_id, agent_type)
+        if offered is not None and tool_name_req not in offered:
+            note = (f"Note: `{tool_name_req}` is not available in your current state "
+                    f"'{getattr(calling_agent, 'state', '?')}' - another state of your workflow offers it.\n\n")
+            return {"status": "success", "message": note + usage_dict["usage"]}
         # Return the actual usage information in the message field
         return {"status": "success", "message": usage_dict["usage"]}
+
+    @staticmethod
+    def _offered_now(manager: Any, calling_agent: Any, agent_id: str, agent_type: str) -> Optional[set]:
+        """Round 3v: the tools offered to the caller in its current state, or None when its state is unknown."""
+        state = getattr(calling_agent, 'state', None)
+        tools = getattr(getattr(manager, 'tool_executor', None), 'tools', None)
+        if not isinstance(state, str) or not state or not isinstance(tools, dict):
+            return None
+        from src.agents.tool_guidance import offered_tool_names
+        escalation = getattr(manager, "cg_escalation", None)
+        skip = []
+        try:
+            if "resolve_concern" in tools and (escalation is None or not escalation.pending_for_decider(agent_id)):
+                skip.append("resolve_concern")
+        except Exception:
+            skip.append("resolve_concern")
+        return set(offered_tool_names(agent_type, state, tools, skip=skip))
 
     def _get_single_tool_usage_dict(self, agent_id: str, agent_type: str, tool_name: str, sub_action: Optional[str], tool: BaseTool, manager: 'AgentManager') -> Dict[str, Any]:
         agent_context = {

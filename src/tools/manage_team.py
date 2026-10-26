@@ -200,8 +200,9 @@ class ManageTeamTool(BaseTool):
 
         if not action or action not in VALID_ACTIONS:
             error_msg = (
-                f"Error: Invalid or missing 'action'. You must specify a valid action inside the XML block.\n"
-                f"Make sure you are using the correct JSON format. For example:\n"
+                # Round 3v: tool calls are native - the 'action' goes into the call's arguments (not an "XML block")
+                f"Error: Invalid or missing 'action'. Put a valid 'action' into the arguments of your `manage_team` tool call.\n"
+                f"For example, these arguments:\n"
                 f"{{\n"
                 f"  \"action\": \"create_agent\",\n"
                 f"  \"role\": \"Engineer\",\n"
@@ -209,7 +210,7 @@ class ManageTeamTool(BaseTool):
                 f"  \"system_prompt\": \"You are...\"\n"
                 f"}}\n\n"
                 f"Valid actions are: {', '.join(VALID_ACTIONS)}.\n"
-                f"Do NOT just send empty tags or thoughts without a valid tool call!"
+                f"Do NOT just send thoughts without a valid tool call!"
             )
             logger.error(f"'{agent_id}' requested ManageTeamTool but action '{action}' is missing or invalid.")
             return {"status": "error", "action_requested": action, "message": error_msg, "result_data": None}
@@ -265,8 +266,8 @@ class ManageTeamTool(BaseTool):
             elif missing: 
                 error_message = (
                     f"Error: Missing required parameter(s) for 'create_agent': {', '.join(missing)}.\n"
-                    f"You MUST provide the 'role' explicitly based on your kickoff plan. Do not omit these required JSON fields.\n"
-                    f"Example:\n"
+                    f"You MUST provide the 'role' explicitly based on your kickoff plan. Do not omit these required fields.\n"
+                    f"Example arguments of your `manage_team` tool call:\n"
                     f"{{\n"
                     f"  \"action\": \"create_agent\",\n"
                     f"  \"role\": \"Developer\",\n"

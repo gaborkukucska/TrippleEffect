@@ -18,6 +18,16 @@ class ErrorType(Enum):
     FORMAT_ERROR = "format_error"
     TOOL_NOT_FOUND = "tool_not_found"
 
+def _info_call(tool_name: str) -> str:
+    """Round 3v: the help call, named as a native call of the `tool_information` tool (it was a bare JSON text)."""
+    return f"call the `tool_information` tool with action='get_info' and tool_name='{tool_name}'"
+
+
+def _arguments_text(tool_name: str, arguments: Dict[str, Any]) -> str:
+    """Round 3v: an example names the tool whose ARGUMENTS it shows (it was a bare JSON object, written like a call)."""
+    return f"Arguments of the `{tool_name}` tool call: " + json.dumps(arguments, indent=2)
+
+
 class ToolErrorHandler:
     """
     Centralized error handling system for tools with enhanced feedback,
@@ -98,10 +108,11 @@ class ToolErrorHandler:
         else:
             # Generic error handling
             error_response["message"] = f"Error using tool '{tool_name}': {error_type.value}"
+            # Round 3v: the help call names its tool (it was a bare JSON text) and tool calls are native (not XML)
             error_response["suggestions"] = [
-                f"Check the tool's documentation using: {{\"action\": \"get_info\", \"tool_name\": \"{tool_name}\"}}",
+                f"Check the tool's documentation: {_info_call(tool_name)}",
                 "Verify all required parameters are provided",
-                "Ensure proper XML formatting"
+                "Put the arguments inside the tool call - never write a tool call as text, JSON or XML"
             ]
             
         return error_response
@@ -121,7 +132,7 @@ class ToolErrorHandler:
             error_response["message"] = f"Missing 'action' parameter for tool '{tool_name}'"
             error_response["suggestions"] = [
                 f"All tools require an 'action' parameter",
-                f"Get available actions: {{\"action\": \"get_info\", \"tool_name\": \"{tool_name}\"}}"
+                f"Get available actions: {_info_call(tool_name)}"
             ]
             return error_response
             
@@ -145,7 +156,7 @@ class ToolErrorHandler:
                 
                 # Generate corrected JSON example
                 corrected_examples.append(
-                    f"{{\"action\": \"{primary_suggestion}\"}}"
+                    _arguments_text(tool_name, {"action": primary_suggestion})
                 )
                 
                 suggestions.extend([
@@ -173,11 +184,14 @@ class ToolErrorHandler:
             agent_state = agent_context.get("agent_state")
             
             if agent_type == "admin" and agent_state == "work":
-                suggestions.append("In work state, focus on information-gathering tools like 'list_tools', 'search_knowledge'")
+                # Round 3v: the admin_work prompt's own tools ('list_tools' / 'search_knowledge' belong to other tools)
+                suggestions.append("In work state, gather information with `project_management` action 'list_tasks' "
+                                   "or `manage_team` action 'list_agents'")
             elif tool_name == "knowledge_base" and attempted_action in ["learn", "remember"]:
                 suggestions.insert(0, "For saving information, use 'save_knowledge' action")
-                corrected_examples.insert(0, 
-                    f"{{\"action\": \"save_knowledge\", \"summary\": \"Your learning here\", \"keywords\": \"relevant,keywords\"}}"
+                corrected_examples.insert(0,
+                    _arguments_text("knowledge_base", {"action": "save_knowledge", "summary": "Your learning here",
+                                                       "keywords": "relevant,keywords"})
                 )
                 
         error_response["suggestions"] = suggestions
@@ -216,21 +230,17 @@ class ToolErrorHandler:
 
         suggestions = [
             f"Add missing parameters: {', '.join(missing_params)}",
-            f"Get detailed usage: call the `tool_information` tool with {{\"action\": \"get_info\", \"tool_name\": \"{tool_name}\"}}"
+            f"Get detailed usage: {_info_call(tool_name)}"
         ]
 
         # Generate example with missing parameters (an empty call gets the tool's own usage examples instead)
         if tool_schema and missing_params and provided_params:
-            example_parts = [f"{{"]
+            example_args: Dict[str, Any] = {}
             if tool_args and 'action' in tool_args:
-                example_parts.append(f"  \"action\": \"{tool_args['action']}\",")
-            
-            for i, param in enumerate(missing_params[:2]):  # Show first 2 missing params
-                comma = "," if i < len(missing_params[:2]) - 1 else ""
-                example_parts.append(f"  \"{param}\": \"your_value_here\"{comma}")
-                
-            example_parts.append(f"}}")
-            error_response["corrected_examples"] = ["\n".join(example_parts)]
+                example_args["action"] = tool_args["action"]
+            for param in missing_params[:2]:  # Show first 2 missing params
+                example_args[param] = "your_value_here"
+            error_response["corrected_examples"] = [_arguments_text(tool_name, example_args)]
             
         error_response["suggestions"] = suggestions
         return error_response
@@ -248,7 +258,7 @@ class ToolErrorHandler:
         error_response["suggestions"] = [
             "Check parameter types and formats",
             "Ensure string parameters don't contain special characters",
-            f"Get parameter details: {{\"action\": \"get_info\", \"tool_name\": \"{tool_name}\"}}"
+            f"Get parameter details: {_info_call(tool_name)}"
         ]
         
         return error_response
@@ -277,7 +287,8 @@ class ToolErrorHandler:
             "help": ["system_help", "tool_information"]
         }
         
-        suggestions = ["Use 'tool_information' with action 'list_tools' to see all available tools"]
+        suggestions = ["Call only the tools named in [TOOL USE] of your system prompt ('tool_information' with action "
+                       "'list_tools' lists them where it is offered)"]
         
         tool_lower = tool_name.lower()
         for key, alternatives in common_tool_alternatives.items():

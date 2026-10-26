@@ -269,8 +269,9 @@ class GitHubTool(BaseTool):
 
         if not action or action not in ["list_repos", "list_files", "read_file"]:
             error_msg = (
-                f"Error: Invalid or missing 'action'. You must specify a valid action inside the JSON block.\n"
-                f"Make sure you are using the correct JSON format. For example:\n"
+                # Round 3v: tool calls are native - the 'action' goes into the call's arguments
+                f"Error: Invalid or missing 'action'. Put a valid 'action' into the arguments of your `github_tool` tool call.\n"
+                f"For example, these arguments:\n"
                 f"{{\n"
                 f"  \"action\": \"list_files\",\n"
                 f"  \"repo_full_name\": \"octocat/Spoon-Knife\"\n"

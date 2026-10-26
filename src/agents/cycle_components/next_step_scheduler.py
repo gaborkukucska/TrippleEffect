@@ -23,6 +23,8 @@ if TYPE_CHECKING:
 
 from src.agents.tool_activity import is_unhandled_project_request, last_user_text  # Round 1r
 from src.agents.assignable_work import ASSIGNMENT_CHECK_TAG, assignment_hint_for  # Round 2p
+from src.agents.tool_guidance import (  # Round 3v
+    offered_in, request_state_text, state_change_note, summary_state, tools_line)
 
 
 def forced_report_details(agent) -> str:
@@ -735,12 +737,11 @@ class NextStepScheduler:
                     # We've already intervened for this pattern - force completion
                     logger.critical(f"NextStepScheduler: Admin AI '{agent.agent_id}' ignoring tool_information loop intervention - forcing task completion")
                     
+                    # Round 3v: the state is changed below - the note names it (it asked for state='conversation' and
+                    # claimed "Tool testing has been completed", a task the Admin AI never had)
                     completion_message = (
-                        "[EMERGENCY SYSTEM OVERRIDE]: You have ignored the previous intervention about the tool_information loop. "
-                        "The system is now automatically completing your task.\n\n"
-                        "AUTOMATIC TASK COMPLETION: The Admin AI has successfully identified the available tools through the tool_information system. "
-                        f"The tools include: {', '.join(self._manager.tool_executor.tools.keys()) if hasattr(self._manager, 'tool_executor') else 'all configured tools'}. Tool testing has been completed.\n\n"
-                        "MANDATORY: Request state change immediately by calling the 'request_state' tool with state='conversation'"
+                        "[EMERGENCY SYSTEM OVERRIDE]: You have ignored the previous intervention about the tool_information loop.\n"
+                        + state_change_note(AGENT_TYPE_ADMIN, ADMIN_STATE_CONVERSATION)
                     )
                     
                     agent.message_history.append({"role": "system", "content": completion_message})
@@ -760,7 +761,7 @@ class NextStepScheduler:
                     # Force state change if the agent still doesn't comply
                     if hasattr(self._manager, 'workflow_manager'):
                         try:
-                            self._manager.workflow_manager.change_state(agent, 'admin_conversation')
+                            self._manager.workflow_manager.change_state(agent, ADMIN_STATE_CONVERSATION)
                             logger.critical(f"NextStepScheduler: FORCED state change to conversation for agent '{agent.agent_id}'")
                             return False  # Don't continue work state
                         except Exception as state_change_err:
@@ -769,16 +770,16 @@ class NextStepScheduler:
                     return True  # Give one final chance
                 else:
                     # First intervention for tool_information loop
+                    # Round 3v: the tools OFFERED in this state, no JSON example, the Admin AI's own state
+                    tools_now = tools_line(agent.agent_type, agent.state, offered_in(self._manager, agent.agent_type, agent.state))
                     loop_breaking_message = (
                         "[CRITICAL Framework Intervention]: You are stuck in a tool_information + list_tools infinite loop. "
-                        "This exact pattern matches the logs indicating you repeatedly call tool_information with list_tools action.\n\n"
-                        "LOOP DETECTION: Multiple consecutive tool_information calls with action='list_tools' detected.\n\n"
+                        "You repeatedly call `tool_information` with action='list_tools'.\n\n"
                         "MANDATORY INSTRUCTIONS TO BREAK THE LOOP:\n"
                         "1. STOP calling tool_information with list_tools - you already have the tool list\n"
-                        f"2. You have these tools available: {', '.join(self._manager.tool_executor.tools.keys()) if hasattr(self._manager, 'tool_executor') else 'all configured tools'}\n"
-                        "3. Choose ONE different tool (NOT tool_information) and test it\n"
-                        "4. Example: `{\"action\": \"list\", \"path\": \".\"}`\n"
-                        "5. After testing ONE tool, provide a summary and call the 'request_state' tool with state='conversation'\n\n"
+                        f"2. {tools_now or 'Your tools are named in [TOOL USE] of your system prompt.'}\n"
+                        "3. Call ONE other tool (NOT tool_information) for the next step of your task\n"
+                        f"4. When your task is done, write a short summary and call {request_state_text(summary_state(agent.agent_type))}\n\n"
                         "CRITICAL: Your next response MUST NOT contain tool_information calls. Use a different tool or request state change."
                     )
                     
@@ -829,9 +830,9 @@ class NextStepScheduler:
                         # General loop intervention (less aggressive than tool_information specific)
                         general_loop_message = (
                             "[Framework Intervention]: You are repeating the same tool execution pattern multiple times. "
-                            f"Detected pattern: {last_execution}\\n\\n"
+                            f"Detected pattern: {last_execution}\n\n"
                             "Please try a different approach or tool to continue your work, or provide a summary "
-                            "if your task is complete and call the 'request_state' tool with state='conversation'"
+                            f"if your task is complete and call {request_state_text(summary_state(agent.agent_type))}"
                         )
                         
                         agent.message_history.append({"role": "system", "content": general_loop_message})
@@ -869,50 +870,40 @@ class NextStepScheduler:
             if agent._consecutive_empty_work_cycles >= 2:
                 logger.error(f"NextStepScheduler: Admin AI '{agent.agent_id}' had {agent._consecutive_empty_work_cycles} consecutive empty cycles. Injecting progressive guidance.")
 
-                # CRITICAL FIX: More explicit intervention with COMPLETE response including XML
+                # Round 3v: no "copy this response" templates with a JSON tool call written as text (the Admin AI calls
+                # tools natively) and no state='conversation' (its state is 'admin_conversation').
+                done_call = request_state_text(summary_state(agent.agent_type))
                 if agent._consecutive_empty_work_cycles <= 2:
-                    # First intervention: Provide the COMPLETE response including XML 
                     guidance_message = (
-                        "[CRITICAL Framework Intervention]: You have been producing empty responses. "
-                        "I will provide your COMPLETE next response. Copy this ENTIRE response exactly:\n\n"
-                        "Great! I can see I've been getting stuck. Let me try the file_system tool to test my capabilities and move forward.\n\n"
-                        "```json\n{\n  \"action\": \"list\",\n  \"path\": \".\"\n}\n```\n\n"
-                        "CRITICAL: You MUST copy the JSON tool call above. Do not respond with just text - include the JSON."
+                        "[CRITICAL Framework Intervention]: You have been producing empty responses. Your next reply must DO "
+                        "something: call one of your tools for the next step of your task (a native tool call, never written "
+                        f"as text), or write a short summary of your results and call {done_call}."
                     )
                 elif agent._consecutive_empty_work_cycles <= 4:
-                    # Second intervention: Force a simple working response
                     guidance_message = (
-                        "[EMERGENCY Framework Intervention]: You are STILL producing empty responses. "
-                        "I will now provide you with a MANDATORY response template.\n\n"
-                        "YOUR MANDATORY RESPONSE (copy exactly):\n\n"
-                        "I understand I have been stuck in a loop. I will now complete my task by providing a summary. "
-                        f"Based on my attempts, I have successfully identified that I have access to tools including {', '.join(self._manager.tool_executor.tools.keys()) if hasattr(self._manager, 'tool_executor') else 'all configured tools'}. "
-                        "I have completed testing the tool_information tool multiple times. "
-                        "My task was to test all available tools and I have made progress on this. "
-                        "I will now request a state change to complete this task.\n\n"
-                        "Call the 'request_state' tool with state='conversation'\n\n"
-                        "COPY THIS RESPONSE EXACTLY. DO NOT MODIFY IT."
+                        "[EMERGENCY Framework Intervention]: You are STILL producing empty responses. Write a short summary "
+                        f"of what you have found so far for the user and call {done_call}."
                     )
                 else:
-                    # Final escalation: Force state change with system override
+                    # Final escalation: force the state change and tell the agent (the message used to be added only when
+                    # the state change failed - the agent was moved without a word)
                     guidance_message = (
-                        "[FINAL SYSTEM OVERRIDE]: You have failed to respond appropriately after multiple interventions. "
-                        "The system is now automatically completing your task.\n\n"
-                        "SYSTEM AUTO-COMPLETION: The Admin AI has tested the tool_information tool successfully. "
-                        "All available tools have been identified. Task completion summary: tools are available and functional. "
-                        "The agent has demonstrated the ability to access and use the tool system.\n\n"
-                        "FORCED STATE TRANSITION INITIATED."
+                        "[FINAL SYSTEM OVERRIDE]: You have failed to respond appropriately after multiple interventions.\n"
+                        + state_change_note(AGENT_TYPE_ADMIN, ADMIN_STATE_CONVERSATION)
                     )
-                    
-                    # Actually force the state change immediately
                     if hasattr(self._manager, 'workflow_manager'):
                         try:
                             logger.critical(f"NextStepScheduler: FORCING state change for Admin AI '{agent.agent_id}' due to persistent empty responses")
-                            self._manager.workflow_manager.change_state(agent, 'conversation')
+                            changed = self._manager.workflow_manager.change_state(agent, ADMIN_STATE_CONVERSATION)
+                            if changed is not False:
+                                agent.message_history.append({"role": "system", "content": guidance_message})
                             agent._consecutive_empty_work_cycles = 0
                             return False  # Don't continue work state
                         except Exception as state_change_err:
                             logger.error(f"NextStepScheduler: Failed to force state change: {state_change_err}")
+                    # the state was not changed: no note that says it was
+                    guidance_message = ("[FINAL SYSTEM OVERRIDE]: You have failed to respond appropriately after multiple "
+                                        f"interventions. Write a short summary of your findings for the user and call {done_call}.")
 
                 agent.message_history.append({"role": "system", "content": guidance_message})
 

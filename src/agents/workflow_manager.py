@@ -1211,18 +1211,21 @@ class AgentWorkflowManager:
 5. NEVER put XML parameters inside your response.
 6. **IMPORTANT:** ALWAYS use `code_editor` for modifying existing code. Only use `file_system` (write action) for creating BRAND NEW files."""
 
-        native_tool_instructions = """[TOOL USE]
-- **Native JSON Tools:** You have access to native JSON tool calling capabilities.
-- **Workflow:** Use the provided JSON tool functions to execute actions. Do NOT output XML `<tool_name>...</tool_name>` tags to call tools. Simply call the tool naturally! Your tool calls will be intercepted and executed by the system automatically.
-- **IMPORTANT:** ALWAYS use `code_editor` for modifying existing code. Only use `file_system` (write action) for creating BRAND NEW files."""
-
         # All states now support native tools natively if enabled globally.
         use_native_instructions = settings.NATIVE_TOOL_CALLING_ENABLED
 
-        if agent.state == "pm_startup":
-            tool_instructions = "[TOOL USE - RESTRICTED]\nYou are in startup mode. DO NOT use general action tools like file_system or code_editor. Only use the tools required to transition your state, or output the required JSON plan if requested."
+        # Round 3v: the [TOOL USE] block names exactly the tools this state OFFERS (the table core.py offers them from)
+        # and the file rules of the tools' own help, per agent type (src/agents/tool_guidance.py). It used to tell every
+        # agent - the PM too, which may never change project files - "ALWAYS use code_editor for modifying existing code".
+        from src.agents.tool_guidance import offered_tool_names, tool_use_instructions
+        executor_tools = getattr(getattr(manager, "tool_executor", None), "tools", None)
+        offered_names = (offered_tool_names(agent.agent_type, agent.state, executor_tools, skip=["resolve_concern"])
+                         if isinstance(executor_tools, dict) else None)
+        if use_native_instructions or agent.state == "pm_startup":
+            tool_instructions = tool_use_instructions(agent.agent_type, agent.state, offered_names,
+                                                      native=use_native_instructions)
         else:
-            tool_instructions = native_tool_instructions if use_native_instructions else json_tool_instructions
+            tool_instructions = json_tool_instructions
 
         json_tool_examples = """[EXAMPLE TOOL USE RESPONSE]
 <think>I need to add a new function to the main application logic.</think>
@@ -1240,11 +1243,11 @@ Call the 'request_state' tool with state='worker_report'"""
 
         native_tool_examples = """[EXAMPLE TOOL USE RESPONSE]
 <think>I need to modify the main logic to add a new parameter.</think>
-(Call the code_editor tool using native JSON. Include 'start_line' and 'end_line' keys to target lines, OR use the 'search' string. Do NOT just provide 'replace'.)
+(Call the code_editor tool as a native tool call: action 'replace_chunks' with chunks that have 'start_line' and 'end_line' from a fresh read, OR an exact 'search' text - plus 'replace', the NEW text.)
 
 [EXAMPLE: SWITCHING TO REPORT STATE]
 <think>I have completed the first milestone using my native tools. I need to report my progress to the PM.</think>
-(Call the request_state tool here using native JSON)"""
+(Call the request_state tool here as a native tool call)"""
 
         json_report_examples = """[EXAMPLE: MILESTONE REPORT]
 <think>I completed the database schema and saved it. I still have more work to do.</think>
@@ -1270,11 +1273,11 @@ Call the 'request_state' tool with state='worker_wait'"""
 
         native_report_examples = """[EXAMPLE: MILESTONE REPORT]
 <think>I completed the database schema and saved it. I still have more work to do.</think>
-(Call both the send_message AND request_state tools here using native JSON)
+(Call both the send_message AND request_state tools here as native tool calls)
 
 [EXAMPLE: FINAL REPORT]
 <think>All sub-tasks are done and the main task is marked completed. Time for my final report.</think>
-(Call both the send_message AND request_state tools here using native JSON)"""
+(Call both the send_message AND request_state tools here as native tool calls)"""
 
         tool_examples = native_tool_examples if use_native_instructions else json_tool_examples
         report_examples = native_report_examples if use_native_instructions else json_report_examples

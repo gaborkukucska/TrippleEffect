@@ -454,8 +454,9 @@ def test_the_tool_help_describes_the_new_checks():
         assert "NEW Python, JavaScript, JSON or shell file" in fs_tool.get_detailed_usage(sub_action=sub_action)
     assert "valid Python, JavaScript, JSON or shell file is rejected" in editor.description
     assert "valid JavaScript (.js/.mjs/.cjs), JSON and shell (.sh/.bash) files must" in editor.get_detailed_usage()
-    prompts = Path("prompts.yaml").read_text(encoding="utf-8")
-    assert "If your `write` of a new Python, JavaScript, JSON or shell file is rejected" in prompts
+    # Round 3v: the rule moved from the worker_work prompt into the one [TOOL USE] file rule (src/agents/tool_guidance.py)
+    from src.agents.tool_guidance import FILE_CHANGE_RULE
+    assert "If the 'write' of a NEW file is rejected for a syntax error, the file does NOT exist but your text is kept" in FILE_CHANGE_RULE
 
 
 # ======================================================================================== 3. tasks that wait
@@ -578,7 +579,9 @@ def test_the_watchdog_names_states_of_the_agents_own_role():
     assert "'pm_manage' (to assign or review tasks) or 'pm_standby' (to wait for your workers)" in text
     assert "worker_wait" not in text and "for 10 cycles" in text
     worker = types.SimpleNamespace(agent_type="worker", state="worker_work", _cycles_without_transition=15)
-    assert "'worker_report' (your task is done) or 'worker_wait' (you are blocked)" in watchdog_intervention_text(worker)
+    # Round 3v: a blocked worker reports - worker_wait is refused while its own task is open
+    assert "'worker_report' (to tell your PM that your task is done, or what blocks you)" in watchdog_intervention_text(worker)
+    assert "worker_wait" not in watchdog_intervention_text(worker)
     admin = types.SimpleNamespace(agent_type="admin", state="admin_work", _cycles_without_transition=10)
     assert "'admin_standby'" in watchdog_intervention_text(admin)
 

@@ -1061,7 +1061,9 @@ class FileSystemTool(BaseTool):
 **Description:** Performs operations on files and directories within different scopes. All paths MUST be relative to the scope root.
 
 **CRITICAL - Valid Actions Only:** The following actions are the ONLY valid actions:
-read, write, append, insert_lines, replace_lines, list, tree, mkdir, delete, find_replace, regex_replace, copy, move, rename, exists
+read, write, append, insert_lines, replace_lines, find_replace, regex_replace, search_replace_block, list, tree, mkdir,
+delete, copy, move, rename, exists, git_init, git_add, git_commit, git_status, git_diff, git_log, git_branch, git_checkout,
+git_pull, git_push
 
 **Scopes:**
 *   `shared`: Current session's shared workspace (the default when you work on a project).

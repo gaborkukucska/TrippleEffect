@@ -356,6 +356,9 @@ def test_the_worker_prompt_knows_the_kept_text():
     import yaml
     from pathlib import Path
     prompt = yaml.safe_load((Path(__file__).resolve().parents[2] / "prompts.yaml").read_text())["worker_work_prompt"]
-    assert "**REJECTED NEW FILE:**" in prompt and "do NOT send the whole file again" in prompt
+    # Round 3v: the kept-text rule is part of the one [TOOL USE] file rule the worker_work prompt refers to
+    from src.agents.tool_guidance import FILE_CHANGE_RULE
+    assert "follow the file rules in [TOOL USE]" in prompt
+    assert "your text is kept" in FILE_CHANGE_RULE and "never resend the whole file" in FILE_CHANGE_RULE
 
 # END OF FILE tests/unit/test_round2v.py
