@@ -8,7 +8,7 @@ from src.agents.constants import (
     RETRYABLE_EXCEPTIONS, RETRYABLE_STATUS_CODES
 )
 # Import PROVIDER_LEVEL_ERRORS from failover_handler for consistency
-from src.agents.failover_handler import PROVIDER_LEVEL_ERRORS
+from src.agents.failover_handler import PROVIDER_LEVEL_ERRORS, is_provider_level_error  # Round 3u: + gateway errors
 
 
 if TYPE_CHECKING:
@@ -47,7 +47,9 @@ class CycleOutcomeDeterminer:
         logger.info(f"OutcomeDeterminer: Analyzing error for agent '{agent_id}'. Error type: {error_type_name}, Content: {context.last_error_content[:100]}")
 
         # 1. Check for Provider-Level Errors (should trigger failover immediately)
-        if isinstance(last_error_obj, PROVIDER_LEVEL_ERRORS):
+        # Round 3u: also a gateway / proxy error (524, 502, ...) or a 5xx HTML page after the provider's retries: the server
+        # did not answer, so it is not counted as the agent's (empty) reply and failover skips that server
+        if is_provider_level_error(last_error_obj):
             logger.warning(f"OutcomeDeterminer: Agent '{agent_id}' encountered provider-level error: {error_type_name}. Marking for failover.")
             context.is_retryable_error_type = False
             context.is_key_related_error = False

@@ -25,6 +25,11 @@ the task at the end):
 
 `node --check` on a .js file that uses import/export reports success even for broken code (Node 22 module detection), so
 such a file is checked as an ES module (.mjs copy).
+
+Round 3u: pip requirements files (requirements.txt, requirements-dev.txt, requirements/base.txt, ...) are checked too
+(requirements_issue): 2026-10-26 19:26 W2 wrote requirements.txt as a Markdown document (headings, ``` fences around the
+package lines); `pip install -r requirements.txt` stops at the first fence, and the Dockerfile and deploy.sh it wrote
+both run that command.
 """
 import json
 import logging
@@ -42,6 +47,8 @@ logger = logging.getLogger(__name__)
 JAVASCRIPT = "JavaScript"
 JSON_KIND = "JSON"
 SHELL = "shell script"
+REQUIREMENTS = "pip requirements"  # Round 3u
+_REQUIREMENTS_NAME_RE = re.compile(r"^(?:[\w.-]*[-_.])?requirements(?:[-_.][\w.-]*)?\.(?:txt|in)$", re.IGNORECASE)
 _JS_SUFFIXES = {".js": ".js", ".mjs": ".mjs", ".cjs": ".cjs"}
 _SHELL_SUFFIXES = (".sh", ".bash")
 _SHELLS = frozenset({"sh", "bash", "dash"})
@@ -93,6 +100,10 @@ class SyntaxIssue:
                     "quotes.")
         elif self.kind == SHELL and ("unexpected end of file" in low or "unexpected token" in low):
             return "Hint: an 'if', 'for', 'while', 'case' or '{' is not closed ('fi', 'done', 'esac', '}'), or a quote is missing."
+        elif self.kind == REQUIREMENTS:
+            return ("Hint: a requirements file holds ONE package per line (e.g. 'Flask==3.0.0' or 'flask-socketio>=5.3'); a "
+                    "line starting with '#' is a comment. It is NOT Markdown: no ``` fences, no '- ' bullets, no prose. Put "
+                    "explanations in README.md.")
         return ""
 
     def detailed(self, source: str, before: int = CONTEXT_LINES_BEFORE) -> str:
@@ -122,6 +133,9 @@ def check_kind(filename: Optional[str]) -> Optional[str]:
         return JSON_KIND
     if lower.endswith(_SHELL_SUFFIXES):
         return SHELL
+    if _REQUIREMENTS_NAME_RE.match(PurePosixPath(name).name) or (
+            suffix == ".txt" and "requirements" in PurePosixPath(lower).parts[:-1]):
+        return REQUIREMENTS  # Round 3u
     return None
 
 
@@ -236,6 +250,69 @@ def shell_issue(source: str) -> Optional[SyntaxIssue]:
     return SyntaxIssue(SHELL, first.split(": ", 1)[-1] or "bash -n failed") if first else None
 
 
+# --- Round 3u: pip requirements files ------------------------------------------------------------------------------------
+_REQ_COMMENT_RE = re.compile(r"(?:^|\s)#.*$")
+_REQ_URL_OR_PATH_RE = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+.-]*://|git\+|hg\+|svn\+|bzr\+|\.{1,2}[\\/]|\.$|[\\/~]|[A-Za-z]:[\\/])")
+_REQ_NAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?(?:\s*\[\s*[A-Za-z0-9._,\s-]*\])?")
+_REQ_SPEC = r"(?:===|==|!=|~=|<=|>=|<|>)\s*[A-Za-z0-9*+!._-]+"
+_REQ_SPECS_RE = re.compile(r"^\s*(?:\(?\s*" + _REQ_SPEC + r"(?:\s*,\s*" + _REQ_SPEC + r")*\s*\)?)?\s*$")
+_REQ_ENV_VAR_RE = re.compile(r"\$\{[A-Z0-9_]+\}")
+
+
+def _requirement_line_ok(line: str) -> bool:
+    """True for one logical line of a pip requirements file (comment already removed)."""
+    if re.match(r"^--?[A-Za-z]", line):
+        return True  # an option: -r other.txt, -e ., --index-url ..., -c constraints.txt (a Markdown '- ' bullet is not)
+    if _REQ_URL_OR_PATH_RE.match(line):
+        return True  # a URL, a VCS link or a local path
+    line = re.split(r"\s+--?[A-Za-z]", line, maxsplit=1)[0].strip()  # per-requirement options ('--hash=sha256:...')
+    requirement = _REQ_ENV_VAR_RE.sub("0", line.split(";", 1)[0]).strip()  # a marker after ';'; pip expands ${VAR}
+    if not requirement:
+        return False
+    if "@" in requirement:
+        name, _at, url = requirement.partition("@")
+        return bool(_REQ_NAME_RE.fullmatch(name.strip())) and bool(url.strip())  # 'pkg @ https://...'
+    try:
+        from packaging.requirements import Requirement, InvalidRequirement
+        try:
+            Requirement(requirement)
+            return True
+        except InvalidRequirement:
+            pass  # pip also reads the older form 'pkg (>=1.0)'
+    except ImportError:  # pragma: no cover - packaging comes with pip and pytest
+        pass
+    match = _REQ_NAME_RE.match(requirement)
+    return bool(match) and bool(_REQ_SPECS_RE.match(requirement[match.end():]))
+
+
+def requirements_issue(source: str) -> Optional[SyntaxIssue]:
+    """
+    Round 3u: the first line of a pip requirements file that pip cannot read, as a SyntaxIssue, or None. Lines continued
+    with a trailing backslash are joined; blank lines and '#' comments are skipped.
+    """
+    text = source.lstrip("\ufeff")
+    logical: List[tuple] = []
+    pending, start = "", 0
+    for number, raw in enumerate(text.splitlines(), start=1):
+        if not pending:
+            start = number
+        if raw.rstrip().endswith("\\") and not raw.lstrip().startswith("#"):
+            pending += raw.rstrip()[:-1] + " "
+            continue
+        logical.append((start, pending + raw))
+        pending = ""
+    if pending:
+        logical.append((start, pending))
+    for number, raw in logical:
+        line = _REQ_COMMENT_RE.sub("", raw).strip()
+        if not line:
+            continue
+        if not _requirement_line_ok(line):
+            shown = line if len(line) <= 60 else line[:57] + "..."
+            return SyntaxIssue(REQUIREMENTS, f"'{shown}' is not a package requirement", number)
+    return None
+
+
 def check_source(source: str, filename: Optional[str]) -> Optional[SyntaxIssue]:
     """The syntax issue of source as the file filename, or None (no issue, not a checked kind, or no checker)."""
     kind = check_kind(filename)
@@ -246,6 +323,8 @@ def check_source(source: str, filename: Optional[str]) -> Optional[SyntaxIssue]:
             return javascript_issue(source, str(filename))
         if kind == JSON_KIND:
             return json_issue(source)
+        if kind == REQUIREMENTS:
+            return requirements_issue(source)  # Round 3u
         return shell_issue(source)
     except Exception as err:  # a check must never break a tool call
         logger.debug(f"source_check: checking '{filename}' failed: {err}")

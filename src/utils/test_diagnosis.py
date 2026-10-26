@@ -1055,6 +1055,142 @@ def api_mismatch_hints(root: Optional[Path], output: Optional[str]) -> List[str]
     return hints
 
 
+# --- Round 3u: errors that say the TEST calls code the project does not have ------------------------------------------------
+# 2026-10-26 19:21 (WiFi_Snake_Multiplayer) "Kick-off Task 7: Write pytest tests ..." was marked finished with 74 failing tests:
+# they called Game.update(), Game.pause(), Game.check_collision() and Server.test_client(), which do not exist, and built
+# Player / ScoreEntry / LeaderboardEntry without arguments their constructors require. The next task ("Run pytest tests and
+# deploy ...") then spent 2 hours changing src/game_logic.py to fit those tests.
+_NOT_PROJECT_TYPES = frozenset({"NoneType", "dict", "list", "str", "int", "float", "tuple", "set", "frozenset", "bool",
+                                "bytes", "function", "method", "module", "type", "object", "builtin_function_or_method"})
+
+
+def calls_missing_code(root: Optional[Path], output: Optional[str]) -> List[Tuple[str, str, Tuple[str, int]]]:
+    """
+    Round 3u: the errors of a pytest output that were raised IN a test file and say that the test calls code that does not
+    exist: an unexpected / missing / extra argument, an attribute an object (not None, a dict, a list ...) does not have, a
+    name the project's module does not define, or a name the test never imports. (kind, message, (file, line)) in order.
+    Errors raised inside the project's code, assertion failures and missing packages are not included. Never raises.
+    """
+    found: List[Tuple[str, str, Tuple[str, int]]] = []
+    try:
+        if not output:
+            return found
+        from src.tools.project_links_check import is_test_file
+        defs = None
+        for kind, message, location in failure_locations(output):
+            if not location or not is_test_file(location[0].replace("\\", "/")):
+                continue
+            wrong = False
+            if kind == "TypeError":
+                wrong = bool(_UNEXPECTED_KW_RE.match(message) or _MISSING_ARGS_RE.match(message)
+                             or _TOO_MANY_RE.match(message))
+            elif kind == "AttributeError":
+                match = _NO_ATTRIBUTE_RE.match(message)
+                if match:
+                    wrong = match.group("cls") not in _NOT_PROJECT_TYPES
+                else:
+                    match = _MODULE_NO_ATTRIBUTE_RE.match(message)
+                    if match and root:
+                        defs = defs if defs is not None else project_definitions(Path(root))
+                        module = match.group("mod")
+                        wrong = module in defs["modules"] or module.split(".")[-1] in defs["modules"]
+            elif kind == "ImportError":
+                match = _CANNOT_IMPORT_RE.match(message)
+                if match and root:
+                    defs = defs if defs is not None else project_definitions(Path(root))
+                    module = match.group("mod")
+                    wrong = module in defs["modules"] or module.split(".")[-1] in defs["modules"]
+            elif kind == "NameError":
+                wrong = bool(_NAME_ERROR_RE.match(message))
+            if wrong:
+                found.append((kind, message, location))
+    except Exception as err:
+        logger.debug(f"calls_missing_code failed: {err}")
+    return found
+
+
+# --- Round 3u: where a test run that did not end was stuck (pytest's faulthandler dump) ---------------------------------------
+# the progress dots of `pytest -q` may stand before it on the same line ('.Timeout (0:00:15)!')
+_FAULTHANDLER_TIMEOUT_RE = re.compile(r"Timeout \((?P<after>\d+:\d\d:\d\d(?:\.\d+)?)\)!")
+_FAULTHANDLER_FRAME_RE = re.compile(r'^\s*File "(?P<path>[^"]+)", line (?P<line>\d+) in (?P<func>\S+)')
+_NOT_PROJECT_DIRS = frozenset({"site-packages", "dist-packages", "node_modules", ".venv", "venv", "lib", "_pytest", "pluggy"})
+
+
+def _project_frame(root: Path, raw_path: str) -> Optional[str]:
+    """The workspace-relative path of a frame's file if it is a project file, else None."""
+    if not raw_path or raw_path.startswith("<"):
+        return None  # '<frozen runpy>', '<string>'
+    try:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = root / path
+        rel = path.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return None
+    if set(rel.parts[:-1]) & _NOT_PROJECT_DIRS or not (root / rel).is_file():
+        return None
+    return rel.as_posix()
+
+
+def _source_line(root: Path, rel: str, line: int) -> str:
+    try:
+        lines = (root / rel).read_text(encoding="utf-8", errors="replace").splitlines()
+        return lines[line - 1].strip() if 1 <= line <= len(lines) else ""
+    except OSError:
+        return ""
+
+
+def hung_test_note(root: Optional[Path], output: Optional[str]) -> Optional[str]:
+    """
+    Round 3u: for the output of a pytest run that did not end, where the test was stuck - from the stack pytest's
+    faulthandler prints for a test that runs too long (src/tools/sandbox_runner.with_pytest_hang_report): the test and the
+    project code line it was running. None when the output has no such stack of a project file. Never raises.
+    """
+    try:
+        text = str(output or "")
+        if not root or not text:
+            return None
+        root = Path(root)
+        for timeout_match in _FAULTHANDLER_TIMEOUT_RE.finditer(text):
+            frames: List[Tuple[str, int, str]] = []
+            for raw in text[timeout_match.end():].splitlines()[:200]:
+                if raw.startswith("Thread ") or raw.startswith("Current thread") or _FAULTHANDLER_TIMEOUT_RE.search(raw):
+                    if frames:
+                        break  # the first thread with project frames is the one that ran the test
+                    continue
+                frame = _FAULTHANDLER_FRAME_RE.match(raw)
+                if not frame:
+                    if frames and raw.strip() and not raw.startswith(" "):
+                        break
+                    continue
+                rel = _project_frame(root, frame.group("path"))
+                if rel:
+                    frames.append((rel, int(frame.group("line")), frame.group("func")))
+            if not frames:
+                continue
+            from src.tools.project_links_check import is_test_file
+            stuck_rel, stuck_line, stuck_func = frames[0]  # most recent call first
+            test = next((f for f in frames if is_test_file(f[0]) and f[2].startswith("test")), None)
+            code = _source_line(root, stuck_rel, stuck_line)
+            where = (f"{stuck_func}() at {stuck_rel} line {stuck_line}" + (f": `{code}`" if code else ""))
+            if test and test[:2] != (stuck_rel, stuck_line):
+                head = f"The test `{test[2]}` ({test[0]} line {test[1]}) did not end: after {timeout_match.group('after')} it was still running {where}."
+            elif test:
+                head = f"The test `{test[2]}` did not end: after {timeout_match.group('after')} it was still at {where}."
+            else:
+                head = f"The test run did not end: after {timeout_match.group('after')} it was still running {where}."
+            end = frames.index(test) if test in frames else len(frames)
+            chain = [f"{rel} line {line} in {func}()" for rel, line, func in frames[1:end][:3]]  # between the two
+            return ("[Framework check - where the test run was stuck:]\n" + head
+                    + (f"\nCalled from: {'; '.join(chain)}." if chain else "")
+                    + "\nFix THAT code path: a loop that never ends (a game loop, `while True`, a wait for a flag nothing sets), or "
+                      "a wait for something that never comes (a server, a socket, input, a thread) - a test must call code "
+                      "that returns. Running the tests again or with a longer timeout will not help.")
+    except Exception as err:
+        logger.debug(f"hung_test_note failed: {err}")
+    return None
+
+
 # --- Round 3o: a test run in which no test ran -----------------------------------------------------------------------------
 # 2026-10-25 13:28:56 W1 (Kick-off Task 1: src/snake_game.py) ran `pytest -q` before any test file existed: "Test command failed
 # with exit code 5". W1 then tried to write tests/test_snake.py (W2's task; refused) and ran the same command twice more.

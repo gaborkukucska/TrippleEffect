@@ -5,9 +5,10 @@ import math
 import asyncio
 import logging
 import random
-from typing import List, Dict, Any, Optional, AsyncGenerator
+from typing import List, Dict, Any, Optional, AsyncGenerator, Tuple
 
 from .base import BaseLLMProvider, MessageDict, ToolDict, ToolResultDict
+from .server_errors import mark_response_error  # Round 3u
 from src.agents.constants import (
     MAX_RETRIES, RETRY_DELAY_SECONDS, RETRYABLE_STATUS_CODES, KNOWN_OLLAMA_OPTIONS
 )
@@ -299,6 +300,125 @@ def uses_builtin_renderer(model_info: Any) -> bool:
         return True
     capabilities = model_info.get("model_capabilities")
     return isinstance(capabilities, list) and "completion" in capabilities
+
+
+# --- Round 3u: tool-call replies are streamed and collected ------------------------------------------------------------------
+# 2026-10-26 19:53-21:47 (WiFi_Snake_Multiplayer, Ollama 0.40.8 behind a Cloudflare proxy) 76 requests ended with "Status 524"
+# after 47-120 s: a request with tools attached was sent with stream=false, so the server sent NOTHING until the whole reply was
+# done, and the proxy gave up waiting. Streamed, the reply's thinking and text flow while it is generated. The lines are
+# collected and turned into the same events a non-streamed reply gives (one 'native_tool_calls' or 'response_chunk' event), so
+# the agents see no difference. OLLAMA_STREAM_TOOL_CALLS=false sends such requests without streaming again.
+def collect_ndjson_reply(lines: Any) -> Tuple[Dict[str, Any], int, str]:
+    """
+    One reply from Ollama's NDJSON lines (a streamed reply, or a non-streamed answer that came as several lines): the
+    message with all tool calls, the whole content and thinking, 'done' and the statistics of the last line; plus the
+    number of thinking characters and the thinking text. Lines that are not JSON are logged and skipped. Never raises.
+    """
+    accumulated_tool_calls: List[Any] = []
+    accumulated_content = ""
+    accumulated_thinking_chars = 0  # Round 1x: finish statistics
+    accumulated_thinking_parts: List[str] = []  # Round 1z: thinking excerpt in the log
+    done_stats: Dict[str, Any] = {}
+    is_done = False
+    has_error = None
+    for line in lines or []:
+        if not str(line).strip():
+            continue
+        try:
+            chunk_data = json.loads(line)
+        except json.JSONDecodeError:
+            logger.error(f"Failed to decode NDJSON fallback line: {str(line)[:100]}...")
+            continue
+        if not isinstance(chunk_data, dict):
+            continue
+        if chunk_data.get("error"):
+            has_error = chunk_data["error"]
+        msg = chunk_data.get("message", {})
+        if not isinstance(msg, dict):
+            msg = {}
+        if msg.get("tool_calls"):
+            accumulated_tool_calls.extend(msg["tool_calls"])
+        if msg.get("content"):
+            accumulated_content += msg["content"]
+        if msg.get("thinking"):
+            accumulated_thinking_chars += len(msg["thinking"])
+            accumulated_thinking_parts.append(str(msg["thinking"]))
+        if chunk_data.get("done"):
+            is_done = True
+            done_stats = {k: chunk_data[k] for k in ("done_reason", "eval_count", "prompt_eval_count") + OLLAMA_TIMING_KEYS
+                          if k in chunk_data}  # Round 3c: + the timings
+    thinking_text = "".join(accumulated_thinking_parts)
+    response_data: Dict[str, Any] = {
+        "message": {
+            "role": "assistant",
+            "content": accumulated_content,
+            "thinking": thinking_text  # Round 2h: for finish_info
+        },
+        "done": is_done
+    }
+    if accumulated_tool_calls:
+        response_data["message"]["tool_calls"] = accumulated_tool_calls
+    if has_error:
+        response_data["error"] = has_error
+    response_data.update(done_stats)
+    return response_data, accumulated_thinking_chars, thinking_text
+
+
+def complete_reply_events(response_data: Any) -> List[Dict[str, Any]]:
+    """
+    The events of a COMPLETE reply (non-streamed, or streamed and collected): an 'error' event, a 'native_tool_calls' event,
+    or the whole text as one 'response_chunk' (a text that is only a tool call written as JSON becomes that call). The
+    finish_info event is made separately. Never raises.
+    """
+    events: List[Dict[str, Any]] = []
+    try:
+        if not isinstance(response_data, dict):
+            logger.error(f"Unexpected non-streaming structure: {response_data}")
+            return [{"type": "error", "content": "[Ollama Error]: Unexpected non-streaming structure."}]
+        if response_data.get("error"):
+            error_msg = response_data["error"]
+            logger.error(f"Ollama non-streaming error: {error_msg}")
+            events.append({"type": "error", "content": f"[Ollama Error]: {error_msg}",
+                           "_exception_obj": ValueError(f"[Ollama Error]: {error_msg}")})
+        elif response_data.get("message") and isinstance(response_data["message"], dict):
+            msg = response_data["message"]
+            tool_calls = msg.get("tool_calls")
+            full_content = msg.get("content", "")
+            if tool_calls:
+                logger.info(f"Ollama returned native tool_calls: {tool_calls}")
+                events.append({"type": "native_tool_calls", "tool_calls": tool_calls})
+            elif full_content:
+                # Fallback: check if content is a JSON string representing a tool call (Qwen2.5 behavior)
+                try:
+                    parsed_content = json.loads(full_content)
+                    if isinstance(parsed_content, dict) and "name" in parsed_content and "arguments" in parsed_content:
+                        logger.info(f"Ollama (Qwen workaround) parsed raw JSON content as tool_call: {parsed_content}")
+                        events.append({"type": "native_tool_calls", "tool_calls": [{"function": parsed_content}]})
+                    else:
+                        logger.info(f"Non-streaming len: {len(full_content)}")
+                        events.append({"type": "response_chunk", "content": full_content})
+                except json.JSONDecodeError:
+                    logger.info(f"Non-streaming len: {len(full_content)}")
+                    events.append({"type": "response_chunk", "content": full_content})
+            else:
+                logger.warning("Non-streaming message content empty.")
+            if response_data.get("done", False):
+                logger.debug("Non-streaming done=true.")
+            else:
+                logger.warning("Non-streaming missing done=true.")
+        else:
+            logger.error(f"Unexpected non-streaming structure: {response_data}")
+            events.append({"type": "error", "content": "[Ollama Error]: Unexpected non-streaming structure."})
+    except Exception as err:
+        logger.error(f"Error processing non-streaming: {err}", exc_info=True)
+        events.append({"type": "error", "content": f"[Ollama Error]: Non-streaming processing error - {type(err).__name__}",
+                       "_exception_obj": err})
+    return events
+
+
+def stream_tool_calls_enabled() -> bool:
+    """Round 3u: True when a request with tools attached is streamed and collected (OLLAMA_STREAM_TOOL_CALLS, default on)."""
+    return bool(getattr(settings, "OLLAMA_STREAM_TOOL_CALLS", True))
 
 # --- Concurrency Limiter ---
 _ollama_semaphores = {}
@@ -667,11 +787,18 @@ class OllamaProvider(BaseLLMProvider):
             payload["think"] = bool(think)
 
         use_streaming_mode = self.streaming_mode
+        collect_stream = False  # Round 3u: streamed, but handled as ONE complete reply
         if settings.NATIVE_TOOL_CALLING_ENABLED and tools:
             payload["tools"] = tools
-            payload["stream"] = False  # Disable streaming for tool calls to ensure cleaner parsing
-            use_streaming_mode = False
-            logger.info("OllamaProvider: Native tool calling enabled. Attaching tools and forcing stream=False.")
+            use_streaming_mode = False  # the reply is handled as a whole (cleaner tool-call parsing)
+            if stream_tool_calls_enabled():
+                payload["stream"] = True
+                collect_stream = True
+                logger.info("OllamaProvider: Native tool calling enabled. Attaching tools; the reply is streamed and "
+                            "collected (OLLAMA_STREAM_TOOL_CALLS).")
+            else:
+                payload["stream"] = False
+                logger.info("OllamaProvider: Native tool calling enabled. Attaching tools and forcing stream=False.")
         
         try:
             full_payload_json_str_for_debug = json.dumps(payload, indent=2)
@@ -726,9 +853,16 @@ class OllamaProvider(BaseLLMProvider):
                                 read_timeout = non_stream_read_timeout(f"{self.base_url}|{model}", len(json_payload_str),
                                                                        valid_options.get("num_predict"))
                                 if read_timeout < DEFAULT_READ_TIMEOUT:
-                                    post_kwargs["timeout"] = aiohttp.ClientTimeout(
-                                        total=read_timeout + DEFAULT_CONNECT_TIMEOUT, connect=DEFAULT_CONNECT_TIMEOUT,
-                                        sock_read=read_timeout)
+                                    if collect_stream:
+                                        # Round 3u: the headers come with the first streamed line; after it the per-line
+                                        # stall timeout applies, so the whole reply may take longer than read_timeout
+                                        post_kwargs["timeout"] = aiohttp.ClientTimeout(
+                                            total=DEFAULT_TOTAL_TIMEOUT, connect=DEFAULT_CONNECT_TIMEOUT,
+                                            sock_read=read_timeout)
+                                    else:
+                                        post_kwargs["timeout"] = aiohttp.ClientTimeout(
+                                            total=read_timeout + DEFAULT_CONNECT_TIMEOUT, connect=DEFAULT_CONNECT_TIMEOUT,
+                                            sock_read=read_timeout)
                             response = await session.post(
                                 chat_endpoint,
                                 **post_kwargs,
@@ -776,7 +910,8 @@ class OllamaProvider(BaseLLMProvider):
                                 del payload["tools"]
                                 payload["stream"] = self.streaming_mode
                                 use_streaming_mode = self.streaming_mode
-                                
+                                collect_stream = False  # Round 3u
+
                                 for m in payload.get("messages", []):  # type: ignore[union-attr]
                                     if isinstance(m, dict) and "tool_calls" in m:
                                         del m["tool_calls"]
@@ -787,6 +922,7 @@ class OllamaProvider(BaseLLMProvider):
 
                             if response_status in RETRYABLE_STATUS_CODES or response_status >= 500:
                                 last_exception = aiohttp.ClientResponseError(req_info, response.history, status=response_status, message=f"Status {response_status}", headers=response.headers)
+                                mark_response_error(last_exception, response_text)  # Round 3u: a proxy page or Ollama's own error
                                 logger.warning(f"Ollama API Error attempt {attempt + 1}: Status {response_status}, Resp: {response_text[:200]}...")
                                 if attempt < MAX_RETRIES:
                                     backoff_delay = RETRY_DELAY_SECONDS * (2 ** attempt) + random.uniform(0, 1)
@@ -963,6 +1099,64 @@ class OllamaProvider(BaseLLMProvider):
                                     logger.error(f"Could not parse final buffer as JSON: {final_e}")
                                 except Exception as final_e:
                                     logger.error(f"Unexpected error processing final buffer: {final_e}")
+                    elif collect_stream:
+                        # Round 3u: a streamed reply with tools attached, collected into ONE complete reply. The lines keep
+                        # the connection busy while the reply is generated (a proxy in front of Ollama gave up on silent
+                        # non-streamed requests with "524"); the events are the same as for a non-streamed reply.
+                        logger.debug("Collecting a streamed tool-call reply...")
+                        rate_key = f"{self.base_url}|{model}"
+                        first_line_timeout = non_stream_read_timeout(rate_key, len(json_payload_str),
+                                                                     valid_options.get("num_predict"))
+                        stall_timeout = stream_stall_timeout(rate_key, valid_options.get("num_predict"))
+                        collected_lines: List[str] = []
+                        reply_done = False
+                        stream_iter = response.content.iter_any().__aiter__()
+                        while not reply_done:
+                            chunk_read_timeout = stall_timeout if collected_lines else first_line_timeout
+                            try:
+                                chunk = await asyncio.wait_for(stream_iter.__anext__(), timeout=chunk_read_timeout)
+                            except StopAsyncIteration:
+                                break
+                            except asyncio.TimeoutError:
+                                logger.error(f"OllamaProvider: no data for {chunk_read_timeout}s while collecting a streamed "
+                                             f"tool-call reply ({len(collected_lines)} line(s) so far).")
+                                stream_error_obj = asyncio.TimeoutError(
+                                    f"No data received from Ollama for {chunk_read_timeout}s during streaming")
+                                yield {"type": "error", "content": f"[Ollama Error]: Stream stalled - no data for "
+                                                                   f"{chunk_read_timeout}s. Model may have been unloaded.",
+                                       "_exception_obj": stream_error_obj}
+                                stream_error_occurred = True
+                                break
+                            if not chunk:
+                                continue
+                            byte_buffer += chunk
+                            while b'\n' in byte_buffer:
+                                line_bytes, byte_buffer = byte_buffer.split(b'\n', 1)
+                                line = line_bytes.decode('utf-8', errors='replace').strip()
+                                if not line:
+                                    continue
+                                collected_lines.append(line)
+                                try:
+                                    parsed_line = json.loads(line)
+                                except json.JSONDecodeError:
+                                    continue
+                                if isinstance(parsed_line, dict) and (parsed_line.get("done") or parsed_line.get("error")):
+                                    reply_done = True
+                        if not stream_error_occurred:
+                            if byte_buffer.strip():
+                                collected_lines.append(byte_buffer.decode('utf-8', errors='replace').strip())
+                            processed_lines = len(collected_lines)
+                            response_data, thinking_chars, thinking_text = collect_ndjson_reply(collected_lines)
+                            finish_reason = log_ollama_finish(response_data, thinking_chars=thinking_chars,
+                                                              thinking_text=thinking_text)
+                            note_output_rate(rate_key, response_data)  # Round 3f
+                            finish_event = finish_info_event(response_data, finish_reason,
+                                                             num_ctx=valid_options.get("num_ctx"),
+                                                             num_predict=valid_options.get("num_predict"))
+                            if finish_event:
+                                yield finish_event
+                            for reply_event in complete_reply_events(response_data):
+                                yield reply_event
                     else: 
                         logger.debug("Processing non-streaming response...")
                         response_data_text = ""
@@ -972,50 +1166,11 @@ class OllamaProvider(BaseLLMProvider):
                                  response_data = json.loads(response_data_text)
                              except json.JSONDecodeError:
                                  logger.warning(f"Failed strict non-streaming JSON decode. Attempting NDJSON fallback. Raw preview: {response_data_text[:200]}")
-                                 lines = response_data_text.strip().split("\n")
-                                 accumulated_tool_calls = []
-                                 accumulated_content = ""
-                                 accumulated_thinking_chars = 0  # Round 1x: finish statistics
-                                 accumulated_thinking_parts: List[str] = []  # Round 1z: thinking excerpt in the log
-                                 done_stats: Dict[str, Any] = {}
-                                 is_done = False
-                                 has_error = None
-                                 for line in lines:
-                                     if not line.strip(): continue
-                                     try:
-                                         chunk_data = json.loads(line)
-                                         if chunk_data.get("error"):
-                                             has_error = chunk_data["error"]
-                                         msg = chunk_data.get("message", {})
-                                         if msg.get("tool_calls"):
-                                             accumulated_tool_calls.extend(msg["tool_calls"])
-                                         if msg.get("content"):
-                                             accumulated_content += msg["content"]
-                                         if msg.get("thinking"):
-                                             accumulated_thinking_chars += len(msg["thinking"])
-                                             accumulated_thinking_parts.append(str(msg["thinking"]))
-                                         if chunk_data.get("done"):
-                                             is_done = True
-                                             done_stats = {k: chunk_data[k] for k in ("done_reason", "eval_count", "prompt_eval_count") + OLLAMA_TIMING_KEYS
-                                                           if k in chunk_data}  # Round 3c: + the timings
-                                     except json.JSONDecodeError:
-                                         logger.error(f"Failed to decode NDJSON fallback line: {line[:100]}...")
-                                 
-                                 response_data = {
-                                     "message": {
-                                         "role": "assistant",
-                                         "content": accumulated_content,
-                                         "thinking": "".join(accumulated_thinking_parts)  # Round 2h: for finish_info
-                                     },
-                                     "done": is_done
-                                 }
-                                 if accumulated_tool_calls:
-                                     response_data["message"]["tool_calls"] = accumulated_tool_calls
-                                 if has_error:
-                                     response_data["error"] = has_error
-                                 response_data.update(done_stats)
+                                 # Round 3u: the line collection is shared with the streamed tool-call replies
+                                 response_data, accumulated_thinking_chars, accumulated_thinking_text = collect_ndjson_reply(
+                                     response_data_text.strip().split("\n"))
                                  finish_reason = log_ollama_finish(response_data, thinking_chars=accumulated_thinking_chars,
-                                                                   thinking_text="".join(accumulated_thinking_parts))
+                                                                   thinking_text=accumulated_thinking_text)
                              else:
                                  finish_reason = log_ollama_finish(response_data)
                              note_output_rate(f"{self.base_url}|{model}", response_data)  # Round 3f
@@ -1024,40 +1179,8 @@ class OllamaProvider(BaseLLMProvider):
                                                               num_predict=valid_options.get("num_predict"))
                              if finish_event:
                                  yield finish_event
-                             if response_data.get("error"):
-                                 error_msg = response_data["error"]
-
-                                 logger.error(f"Ollama non-streaming error: {error_msg}")
-                                 stream_error_obj = ValueError(f"[Ollama Error]: {error_msg}")
-                                 yield {"type": "error", "content": f"[Ollama Error]: {error_msg}", "_exception_obj": stream_error_obj}
-                             elif response_data.get("message") and isinstance(response_data["message"], dict):
-                                 msg = response_data["message"]
-                                 tool_calls = msg.get("tool_calls")
-                                 full_content = msg.get("content", "")
-                                 
-                                 if tool_calls:
-                                     logger.info(f"Ollama returned native tool_calls: {tool_calls}")
-                                     yield {"type": "native_tool_calls", "tool_calls": tool_calls}
-                                 elif full_content:
-                                     # Fallback: check if content is a JSON string representing a tool call (Qwen2.5 behavior)
-                                     try:
-                                         parsed_content = json.loads(full_content)
-                                         if isinstance(parsed_content, dict) and "name" in parsed_content and "arguments" in parsed_content:
-                                             logger.info(f"Ollama (Qwen workaround) parsed raw JSON content as tool_call: {parsed_content}")
-                                             yield {"type": "native_tool_calls", "tool_calls": [{"function": parsed_content}]}
-                                         else:
-                                             logger.info(f"Non-streaming len: {len(full_content)}")
-                                             yield {"type": "response_chunk", "content": full_content}
-                                     except json.JSONDecodeError:
-                                         logger.info(f"Non-streaming len: {len(full_content)}")
-                                         yield {"type": "response_chunk", "content": full_content}
-                                 else:
-                                     logger.warning("Non-streaming message content empty.")
-
-                                 if response_data.get("done", False): logger.debug("Non-streaming done=true.")
-                                 else: logger.warning("Non-streaming missing done=true.")
-                             else:
-                                 logger.error(f"Unexpected non-streaming structure: {response_data}"); yield {"type": "error", "content": "[Ollama Error]: Unexpected non-streaming structure."}
+                             for reply_event in complete_reply_events(response_data):  # Round 3u: shared
+                                 yield reply_event
                         except json.JSONDecodeError:
                              logger.error(f"Failed non-streaming JSON decode. Raw: {response_data_text[:500]}...")
                              stream_error_obj = ValueError("Failed non-streaming decode.")

@@ -99,6 +99,25 @@ PROVIDER_LEVEL_ERRORS = (
     # Add others if needed, e.g., certain auth errors affecting the whole provider
 )
 
+
+def is_provider_level_error(error: Any) -> bool:
+    """
+    True for an error that says the PROVIDER (server) could not be reached or did not answer: PROVIDER_LEVEL_ERRORS, and
+    (Round 3u) a gateway / proxy status or a 5xx HTML error page after the provider's retries
+    (src/llm_providers/server_errors.py). Such an error is not counted as the agent's reply, and failover skips the
+    failing server instead of switching to another model on it. Never raises.
+    """
+    try:
+        if isinstance(error, PROVIDER_LEVEL_ERRORS):
+            return True
+        from src.llm_providers.server_errors import is_server_unavailable_error
+        return is_server_unavailable_error(error)
+    except Exception:
+        return False
+
+
+is_provider_level_error_check = is_provider_level_error  # handle_agent_model_failover has a local of the same name
+
 # Key-related errors imported from constants
 
 
@@ -495,7 +514,7 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
     await manager.send_to_ui({"type": "status", "agent_id": agent_id, "content": f"Failover: Encountered '{error_type_name}'. Trying recovery..."})
 
     # --- Check if error warrants failover ---
-    is_provider_level_error = isinstance(triggering_error_obj, PROVIDER_LEVEL_ERRORS)
+    is_provider_level_error = is_provider_level_error_check(triggering_error_obj)  # Round 3u: + gateway errors
     is_key_related_error = isinstance(triggering_error_obj, KEY_RELATED_ERRORS) or \
                          (isinstance(triggering_error_obj, openai.APIStatusError) and 
                           triggering_error_obj.status_code in KEY_RELATED_STATUS_CODES)

@@ -386,23 +386,35 @@ def open_duplicate_error(tw: Any, agent_id: Optional[str], manager: Any, title: 
 # Round 3m: + documentation beyond the plan. 2026-10-24 22:08 PM1 added "Kick-off Task 7: Create comprehensive documentation"
 # (the plan's README.md was finished at 22:02) and 23:01 "Create User Guide and API Documentation" for the idle W2, who
 # rewrote docs/API.md (13 KB) while W1's failing test was the only open work.
+# Round 3u: + documentation with a word in between ('comprehensive USER documentation'), FAQs, and Docker / deployment
+# scripts. 2026-10-26 19:24-19:49 (WiFi_Snake_Multiplayer) PM1 gave the idle W2 "Create deployment scripts and deployment
+# documentation" (Dockerfile, docker-compose.yml, deploy.sh, deploy-dev.sh and a Markdown requirements.txt) and "Create
+# comprehensive user documentation and FAQ" - while the plan's own "deploy the game locally" task was open with W1. Every
+# improvement phrase of the text is compared with the plan now: the FAQ task passed because its FIRST phrase, "installation
+# guide", matched the plan's "hosting guide".
 _IMPROVEMENT_RE = re.compile(
     r"\b(polish\w*|enhanc\w*|optimi[sz]\w*|refactor\w*|beautif\w*|animation\w*|code review|best practices|"
     r"performance (?:review|report|recommendation|issue)s?|clean[ -]?up|"
     r"improve (?:the )?(?:ui|ux|code|performance|look|design|quality|readability)|"
     r"(?:user|developer|player|installation|deployment) guides?|api (?:documentation|docs|reference)|tutorials?|"
-    r"(?:comprehensive|additional|extended|detailed|more) (?:documentation|docs))\b", re.IGNORECASE)
+    r"(?:comprehensive|additional|extended|detailed|more|extra|full|complete)\s+(?:[\w-]+\s+){0,2}?(?:documentation|docs)|"
+    r"faqs?|frequently asked questions|docker\w*|containeri[sz]\w*|"
+    r"(?:deployment|deploy) (?:scripts?|documentation|docs|configurations?|configs?|pipelines?)|ci/cd)\b", re.IGNORECASE)
 _PROBLEM_RE = re.compile(
     r"\b(fix\w*|fail\w*|error\w*|bugs?|broken|crash\w*|missing|does not|doesn't|cannot|can't|not work\w*|"
     r"regression|issues? (?:found|reported)|slow\w*|lag\w*|freez\w*|hang\w*)\b", re.IGNORECASE)
 
 
 def _improvement_stem(word: str) -> str:
-    word = word.lower()
+    word = " ".join(word.lower().split())
     for stem in ("polish", "enhanc", "optimi", "refactor", "beautif", "animation", "review", "best practice",
-                 "performance", "clean", "improve", "guide", "api doc", "api ref", "tutorial"):  # Round 3m: + documentation
+                 "performance", "clean", "improve", "guide", "api doc", "api ref", "tutorial",  # Round 3m: + documentation
+                 "faq", "frequently asked", "docker", "container", "ci/cd"):  # Round 3u
         if stem in word:
             return stem
+    deploy = re.match(r"^(?:deployment|deploy) (\w+)", word)  # Round 3u: 'deployment scripts' -> 'deployment script'
+    if deploy:
+        return "deploy" + ("ment" if word.startswith("deployment") else "") + " " + deploy.group(1).rstrip("s")
     if word.endswith(("documentation", "docs")):
         return word.split()[0]  # 'comprehensive documentation' -> 'comprehensive'
     return word
@@ -419,8 +431,8 @@ def unplanned_improvement_error(tw: Any, agent_id: Optional[str], manager: Any, 
         if not agent_id or agent_id in FRAMEWORK_CALLERS or not _is_pm_caller(agent_id, manager):
             return None
         text = " ".join(str(part) for part in (title, description) if part)
-        match = _IMPROVEMENT_RE.search(text)
-        if not match or _PROBLEM_RE.search(text):
+        matches = list(_IMPROVEMENT_RE.finditer(text))  # Round 3u: every phrase, not only the first
+        if not matches or _PROBLEM_RE.search(text):
             return None
         plan_parts = []
         for task in list(tw.tasks.pending()) + list(tw.tasks.completed()):
@@ -431,8 +443,8 @@ def unplanned_improvement_error(tw: Any, agent_id: Optional[str], manager: Any, 
         plan = " ".join(plan_parts).lower()
         if not plan:
             return None  # no plan to compare with
-        stem = _improvement_stem(match.group(1))
-        if stem in plan:
+        match = next((m for m in matches if _improvement_stem(m.group(1)) not in plan), None)
+        if match is None:
             return None
         logger.warning(f"ProjectManagementTool: '{agent_id}' tried to add unplanned improvement work "
                        f"('{match.group(1)}'): '{text[:80]}'. Refused.")
@@ -488,6 +500,48 @@ def finished_task_change_error(task: Any, task_ref: Any, kwargs: Dict[str, Any],
             "task_progress='todo' and the assignee_agent_id.")}
     except Exception as err:
         logger.debug(f"finished_task_change_error failed: {err}")
+        return None
+
+
+def _is_known_worker(agent_id: Optional[str], manager: Any) -> bool:
+    """True for an agent the manager knows as a worker (never the Constitutional Guardian)."""
+    try:
+        from src.agents.constants import AGENT_TYPE_WORKER, CONSTITUTIONAL_GUARDIAN_AGENT_ID
+        agents = getattr(manager, "agents", None)
+        agent = agents.get(agent_id) if isinstance(agents, dict) and agent_id else None
+        return (agent is not None and agent_id != CONSTITUTIONAL_GUARDIAN_AGENT_ID
+                and getattr(agent, "agent_type", None) == AGENT_TYPE_WORKER)
+    except Exception:
+        return False
+
+
+def foreign_task_change_error(task: Any, task_ref: Any, caller_id: Optional[str], manager: Any,
+                              finishing: bool = False) -> Optional[Dict[str, Any]]:
+    """
+    Round 3u: the refusal of a worker's change (modify_task, complete_task) of a task that is assigned to ANOTHER worker, or
+    None. Only workers the manager knows are judged; PMs, the Admin AI and framework calls pass, and a task of a PM (a
+    decomposed parent task) or without an assignee is not refused here. Never raises.
+    2026-10-26 19:21:06 PM1 gave "Kick-off Task 7: Write pytest tests ..." from W2 to W1 (the notice for W2 was queued: W2 was
+    in worker_report); at 19:21:08 W2 marked it finished - and that was accepted although 74 of its tests failed, while W1
+    had just been activated on it. W1's next task waited for it, so W1 then spent 2 hours on code its tests did not fit.
+    """
+    try:
+        if not caller_id or caller_id in FRAMEWORK_CALLERS or not _is_known_worker(caller_id, manager):
+            return None
+        owner = clean_agent_id(get_task_field(task, "assignee", "")) or ""
+        if not owner or owner == caller_id or non_worker_role(owner, manager):
+            return None
+        description = " ".join(str(get_task_field(task, "description", "") or "").split())
+        shown = description if len(description) <= 100 else description[:97] + "..."
+        what = "marked finished" if finishing else "changed"
+        logger.warning(f"ProjectManagementTool: '{caller_id}' tried to change task {task_ref} of '{owner}'. Refused.")
+        return {"status": "error", "error_type": "foreign_task", "message": (
+            f"Task '{task_ref}' ('{shown}') was NOT {what}: it is assigned to {owner}, not to you ({caller_id}) - {owner} "
+            "works on it now (it may have been given to them after you started). A worker changes only its OWN tasks. "
+            f"Do not change {owner}'s files for it. If you did work for this task, tell your PM with send_message what you "
+            "did and where; then continue with your own task, or request 'worker_report' if you have none.")}
+    except Exception as err:
+        logger.debug(f"foreign_task_change_error failed: {err}")
         return None
 
 
@@ -2086,6 +2140,37 @@ class ProjectManagementTool(BaseTool):
             message += f"\nAlso: {unverified}"
         return {"status": "error", "message": message}
 
+    async def _test_task_refusal(self, task, project_name, session_name, task_label, caller_id=None) -> Optional[Dict[str, Any]]:
+        """
+        Round 3u: an error result if the task's Python tests call code the project does not have (methods, arguments or
+        names that do not exist - src/utils/test_task_check.py), else None. Framework calls, the kick-off task and tasks that
+        say to run / verify / fix the tests (they need a passing full run, Round 3e) are not checked here. Never raises.
+        """
+        try:
+            if caller_id in FRAMEWORK_CALLERS or "project_kickoff" in _task_tags(task):
+                return None
+            description = str(get_task_field(task, "description", "") or "")
+            from src.utils.test_runs import is_test_run_task
+            if is_test_run_task(description):
+                return None
+            from src.config.settings import settings
+            from src.tools.sandbox_runner import resolve_shared_workspace
+            from src.utils.file_authorship import files_changed_for_task
+            from src.utils.test_task_check import test_task_problem
+            workspace = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, str(project_name), str(session_name))
+            task_uuid = get_task_field(task, "uuid", None)
+            changed = files_changed_for_task(str(task_uuid), workspace) if task_uuid else []
+            problem = await test_task_problem(workspace, description, changed, agent_id=str(caller_id or "framework"))
+        except Exception as gate_err:
+            logger.warning(f"ProjectManagementTool: test check of '{task_label}' failed ({gate_err}); not blocking.")
+            return None
+        if not problem:
+            return None
+        logger.warning(f"ProjectManagementTool: refused to mark task '{task_label}' finished: its tests call missing code.")
+        return {"status": "error", "error_type": "tests_call_missing_code", "message": (
+            f"Task '{task_label}' was NOT marked finished: {problem}\nA PM should send the task back to its worker with "
+            "send_message (name the failing calls) instead of marking it finished.")}
+
     async def _execute_modify_task(self, tw, aliases, project_name, session_name, agent_id, kwargs):
             reassigned_from = None  # Round 3i: the worker that loses the task (it is told)
             task_id = kwargs.get("task_id") or kwargs.get("task_uuid")
@@ -2210,6 +2295,12 @@ class ProjectManagementTool(BaseTool):
             refusal = planned_task_rewrite_error(task, task_id, kwargs, agent_id)
             if refusal:
                 return refusal
+            # Round 3u: a worker does not change (or finish) a task of another worker
+            refusal = foreign_task_change_error(task, task_id, agent_id, kwargs.get("manager"),
+                                                finishing=str(kwargs.get("task_progress") or kwargs.get("status") or "")
+                                                .strip().lower() in FINISHED_PROGRESS)
+            if refusal:
+                return refusal
 
             # Validate task_progress or legacy status if provided
             previous_progress = str(task['task_progress'] or 'todo')  # Round 2x: kept if a blocked task may not start
@@ -2221,6 +2312,10 @@ class ProjectManagementTool(BaseTool):
                 if t_prog == "finished":
                     # Round 2a: PM1 marked tasks finished whose files held only docstrings (2026-10-18 15:30, 15:50)
                     refusal = self._completion_refusal(task, project_name, session_name, task_id, caller_id=agent_id)
+                    if refusal:
+                        return refusal
+                    # Round 3u: tests that call methods, arguments or names the code does not have
+                    refusal = await self._test_task_refusal(task, project_name, session_name, task_id, caller_id=agent_id)
                     if refusal:
                         return refusal
                 task["task_progress"] = t_prog
@@ -2445,7 +2540,14 @@ class ProjectManagementTool(BaseTool):
 
 
 
+            # Round 3u: a worker does not finish a task of another worker
+            refusal = foreign_task_change_error(task, task_id, agent_id, kwargs.get("manager"), finishing=True)
+            if refusal:
+                return refusal
             refusal = self._completion_refusal(task, project_name, session_name, task_id, caller_id=agent_id)  # Round 2a
+            if refusal:
+                return refusal
+            refusal = await self._test_task_refusal(task, project_name, session_name, task_id, caller_id=agent_id)  # Round 3u
             if refusal:
                 return refusal
 

@@ -83,6 +83,7 @@ def test_a_non_streamed_request_that_never_answers_is_given_up(monkeypatch):
     monkeypatch.setattr(op, "NON_STREAM_MARGIN_SECONDS", 0.0)
     monkeypatch.setattr(op, "MAX_RETRIES", 0)
     monkeypatch.setattr(settings, "NATIVE_TOOL_CALLING_ENABLED", True)
+    monkeypatch.setattr(settings, "OLLAMA_STREAM_TOOL_CALLS", False, raising=False)  # Round 3u: the non-streamed request
     calls = []
 
     async def chat(request):

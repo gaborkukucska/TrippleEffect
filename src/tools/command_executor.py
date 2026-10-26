@@ -284,9 +284,13 @@ class CommandExecutionTool(BaseTool):
             if is_test_command(command):
                 record_test_run(cwd_path, command, TIMEOUT, (result.stdout or "")[-400:], cpu_busy=cpu_busy)
                 tail = (result.stdout or "").strip()[-800:]
+                # Round 3u: the test and the code line it was stuck in (pytest's faulthandler stack, see sandbox_runner)
+                from src.utils.test_diagnosis import hung_test_note
+                stuck = hung_test_note(cwd_path, f"{result.stdout or ''}\n{result.stderr or ''}")
                 message = (f"The TEST command timed out after {timeout:.0f} seconds and its process group was terminated: "
                            "the test run did not END." + (f" Output so far (end):\n{tail}" if tail else "")
-                           + test_hang_hint(cwd_path, command, cpu_busy, result.stdout))
+                           # the general hint only without the exact place (it would guess where the place is known)
+                           + (f"\n\n{stuck}" if stuck else test_hang_hint(cwd_path, command, cpu_busy, result.stdout)))
                 response = {"status": "error", "message": message}
                 if (result.stderr or "").strip():
                     response["content"] = f"--- PARTIAL STDERR (last 1500 chars) ---\n{result.stderr.strip()[-1500:]}"

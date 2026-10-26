@@ -98,10 +98,13 @@ class TestRunnerTool(BaseTool):
             cpu_busy = getattr(res, "cpu_busy", None)  # Round 3f
             record_test_run(record_workspace, command, TIMEOUT, (res.stdout or "")[-400:], cpu_busy=cpu_busy)
             from src.tools.project_links_check import test_hang_hint, cpu_state
+            from src.utils.test_diagnosis import hung_test_note  # Round 3u: the test and the line it was stuck in
+            stuck = hung_test_note(run_path, f"{res.stdout or ''}\n{res.stderr or ''}")
             result = {
                 "status": "error",
                 "message": f"Test command timed out after {timeout} seconds: the test run did not END."
-                           + test_hang_hint(run_path, command, cpu_busy, res.stdout),  # Round 3e/3f
+                           # Round 3e/3f: the general hint only without the exact place of Round 3u
+                           + (f"\n\n{stuck}" if stuck else test_hang_hint(run_path, command, cpu_busy, res.stdout)),
                 "suggestion": ("A longer timeout will not help a test run that does not end: follow the hint."
                                if cpu_state(cpu_busy) else
                                "The tests took too long to run. Check for infinite loops or increase the timeout parameter."),

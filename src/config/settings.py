@@ -408,6 +408,13 @@ class Settings:
         logger.info(f"Loaded OLLAMA_REPEAT_PENALTY: {self.OLLAMA_REPEAT_PENALTY}, "
                     f"OLLAMA_PRESENCE_PENALTY: {self.OLLAMA_PRESENCE_PENALTY} (None = the model's own default)")
 
+        # --- Round 3u: requests with tools attached are streamed and collected ---
+        # 2026-10-26 a proxy in front of the Ollama server (Cloudflare) answered 76 requests with "524" after 47-120 s: a
+        # request with tools was sent with stream=false, so nothing came back until the whole reply was done. Streamed, the
+        # reply flows while it is generated and is collected into the same events. false = the old non-streamed request.
+        self.OLLAMA_STREAM_TOOL_CALLS: bool = os.getenv("OLLAMA_STREAM_TOOL_CALLS", "true").strip().lower() in ("1", "true", "yes", "on")
+        logger.info(f"Loaded OLLAMA_STREAM_TOOL_CALLS: {self.OLLAMA_STREAM_TOOL_CALLS}")
+
         # --- Ollama Concurrency Limit ---
         try: self.OLLAMA_CONCURRENCY_LIMIT: int = int(os.getenv("OLLAMA_CONCURRENCY_LIMIT", "2")); logger.info(f"Loaded OLLAMA_CONCURRENCY_LIMIT: {self.OLLAMA_CONCURRENCY_LIMIT}")
         except ValueError: logger.warning("Invalid OLLAMA_CONCURRENCY_LIMIT, using 2."); self.OLLAMA_CONCURRENCY_LIMIT = 2

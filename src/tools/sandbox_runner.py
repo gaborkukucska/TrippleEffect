@@ -21,6 +21,8 @@ What it guarantees (Review items S1, S3, R4, R10):
 * Captured output is bounded (head + tail) before it is decoded.
 * Round 3f: before a timed-out group is stopped, its CPU use over one second is measured (``SandboxResult.cpu_busy``,
   Linux /proc only), so the agent can be told whether the program was stuck in a loop (busy) or waiting (idle).
+* Round 3u: a pytest command gets ``-o faulthandler_timeout=<half the timeout>`` in ``PYTEST_ADDOPTS``, so a test that
+  does not end prints where it is stuck (``with_pytest_hang_report``).
 
 This is NOT an OS-level sandbox: the command still runs as the server user and
 can reach the network and any path that user can. Deterministic command rules
@@ -219,6 +221,40 @@ def build_sandbox_env(
     return env
 
 
+# --- Round 3u: where a pytest run that does not end is stuck ------------------------
+# 2026-10-26 19:01:24 W2's `python -m pytest -q` timed out after 30 s with "the test run did not END" and nothing else; W2
+# guessed that public/game.js (a browser file pytest never loads) looped and edited it. pytest's faulthandler prints the
+# stack of a test that runs longer than faulthandler_timeout seconds - the test and the line of the code it is stuck in -
+# and goes on; that output reaches the captured stderr even when the run is then terminated
+# (src/utils/test_diagnosis.hung_test_note() reads it).
+PYTEST_HANG_REPORT_FRACTION = 0.5
+PYTEST_HANG_REPORT_MIN_SECONDS = 5
+
+
+def pytest_hang_report_seconds(timeout: float) -> int:
+    """Round 3u: after how many seconds a single test's stack is printed (half the run's timeout, at least 5 s)."""
+    try:
+        return max(PYTEST_HANG_REPORT_MIN_SECONDS, int(float(timeout) * PYTEST_HANG_REPORT_FRACTION))
+    except (TypeError, ValueError):
+        return PYTEST_HANG_REPORT_MIN_SECONDS
+
+
+def with_pytest_hang_report(env: Dict[str, str], command: str, timeout: float) -> Dict[str, str]:
+    """
+    Round 3u: for a command that runs pytest, env with '-o faulthandler_timeout=<seconds>' added to PYTEST_ADDOPTS (an
+    option the agent or the project set is kept: it comes later and wins). Other commands: env unchanged.
+    """
+    if "pytest" not in str(command or ""):
+        return env
+    option = f"-o faulthandler_timeout={pytest_hang_report_seconds(timeout)}"
+    current = str(env.get("PYTEST_ADDOPTS") or "").strip()
+    if "faulthandler_timeout" in current:
+        return env
+    updated = dict(env)
+    updated["PYTEST_ADDOPTS"] = f"{option} {current}".strip()
+    return updated
+
+
 # --- Background handling -------------------------------------------------------
 
 def detach_trailing_background(command: str, cwd: Path) -> Tuple[str, Optional[str]]:
@@ -377,6 +413,7 @@ async def run_sandboxed(
 
     if env is None:
         env = build_sandbox_env(home_dir=default_sandbox_home(), passthrough=_configured_passthrough())
+        env = with_pytest_hang_report(env, command, timeout)  # Round 3u
 
     command_to_run, background_log = detach_trailing_background(command, cwd)
     if background_log:
