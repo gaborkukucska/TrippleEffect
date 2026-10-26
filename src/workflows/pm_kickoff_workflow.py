@@ -276,6 +276,57 @@ def align_test_language(planned_files: List[str]) -> Tuple[List[str], Optional[s
     return [f for f in planned_files if f not in python_tests], JS_TEST_LANGUAGE_NOTE
 
 
+# --- Round 3s: Python tests planned for JavaScript code - in a project with Python code too ---------------------------------
+# 2026-10-26 09:29:08 (WiFi_Snake_Game) the game was JavaScript (src/core/snake_game.js, src/utils/score_manager.js, ...) and
+# its only Python file was src/server/server.py, but "Kick-off Task 7: Write pytest tests for game logic (movement, collision,
+# score calculation) in tests/test_game_logic.py" asked for pytest. Round 3c handles JavaScript-only projects; here W3 wrote
+# Python "mocks" of the game and a "Python bridge module" (src/core/snake_game.py) for 80 minutes. A planned Python test whose
+# name points at the JavaScript code becomes a JavaScript test - in the planned files AND in the kick-off task texts, which
+# are written before the structure is read.
+MIXED_TEST_LANGUAGE_NOTE = ("FRAMEWORK NOTE: tests are written in the language of the code they test. The JavaScript code of "
+                            "this project is tested with JavaScript tests (run with `node --test tests/`); pytest tests only "
+                            "its Python files. Never write a Python copy of JavaScript code for a test.")
+
+
+def javascript_test_renames(planned_files: List[str]) -> Dict[str, str]:
+    """
+    Round 3s: {planned Python test file: JavaScript test file} for the Python tests whose subject is the project's
+    JavaScript code (src/tools/project_links_check.subject_in_javascript): tests/test_game_logic.py ->
+    tests/game_logic.test.js. Python tests of Python code stay.
+    """
+    from src.tools.project_links_check import subject_in_javascript
+    tests = [f for f in planned_files if _TEST_PATH_RE.search(f)]
+    code = [f for f in planned_files if f not in tests]
+    renames: Dict[str, str] = {}
+    for test in tests:
+        path = PurePosixPath(test)
+        if path.suffix.lower() != ".py" or path.name == "conftest.py" or not subject_in_javascript(test, code):
+            continue
+        base = re.sub(r"^test_|_test$", "", path.stem) or path.stem
+        renames[test] = (path.parent / f"{base}.test.js").as_posix()
+    return renames
+
+
+def renamed_task_text(text: str, renames: Dict[str, str], planned_files: List[str]) -> str:
+    """Round 3s: a kick-off task text with the renamed test files and a note on which language tests what."""
+    from src.tools.project_links_check import subject_in_javascript
+    changed = []
+    for old, new in renames.items():
+        pattern = re.compile(r"(?<![\w./-])" + re.escape(old) + r"(?![\w])")
+        if pattern.search(text):
+            text = pattern.sub(new, text)
+            changed.append((old, new))
+    if not changed:
+        return text
+    code = [f for f in planned_files if not _TEST_PATH_RE.search(f)]
+    subjects = list(dict.fromkeys(filter(None, (subject_in_javascript(old, code) for old, _new in changed))))
+    python_code = [f for f in code if f.endswith(".py") and PurePosixPath(f).name != "__init__.py"]
+    return (f"{text} [Framework note: the code these tests check is JavaScript ({', '.join(subjects[:3])}), so they are "
+            f"JavaScript tests ({', '.join(new for _old, new in changed)}, run with `node --test tests/`), not pytest tests"
+            + (f"; pytest tests only the Python files ({', '.join(python_code[:3])})" if python_code else "")
+            + ". Never write a Python copy of the JavaScript code.]")
+
+
 def with_root_files(planned_files: List[str], root_names: List[str]) -> List[str]:
     """
     Round 2v: the planned files plus the root files the tasks say to create ("Create server.py ..."), unless a planned file
@@ -748,6 +799,21 @@ class PMKickoffWorkflow(BaseWorkflow):
         except Exception as e:
             logger.warning(f"PMKickoffWorkflow: Failed to mark initial project task as decomposed: {e}")
 
+        # Round 3s: Python tests planned for JavaScript code are JavaScript tests - fixed before the tasks are written
+        test_renames: Dict[str, str] = {}
+        try:
+            test_renames, language_planned = self._javascript_test_plan(data_input.get("project_structure", []),
+                                                                        task_descriptions)
+            if test_renames:
+                for task_info in task_info_list:
+                    task_info["description"] = renamed_task_text(task_info["description"], test_renames, language_planned)
+                task_descriptions = [task_info["description"] for task_info in task_info_list]
+                logger.warning(f"PMKickoffWorkflow: kickoff plan of '{agent.agent_id}': Python test file(s) for JavaScript "
+                               f"code planned as JavaScript tests: {test_renames}.")
+        except Exception as language_err:
+            logger.warning(f"PMKickoffWorkflow: test language check failed ({language_err}); plan kept as it is.")
+            test_renames = {}
+
         # --- Create Kickoff Sub-tasks ---
         task_label = f"Update {project_update.get('number')} Task" if project_update else "Kick-off Task"  # Round 3b
         created_task_ids: set = set()      # plan ids (aliases) of tasks created in THIS attempt
@@ -840,6 +906,20 @@ class PMKickoffWorkflow(BaseWorkflow):
                 planned_files = [f for f in planned_files if f not in dropped_files]
                 notes += duplicate_notes
                 planned_files = with_root_files(planned_files, root_files_to_create)  # Round 2v
+                if test_renames:  # Round 3s
+                    renamed_files: List[str] = []
+                    for planned in planned_files:
+                        target = test_renames.get(planned, planned)
+                        if target not in renamed_files:
+                            renamed_files.append(target)
+                    planned_files = renamed_files
+                    python_code = [f for f in planned_files if f.endswith(".py") and not _TEST_PATH_RE.search(f)]
+                    language_note_3s = MIXED_TEST_LANGUAGE_NOTE if python_code else JS_TEST_LANGUAGE_NOTE
+                    notes.append("Python test file(s) for JavaScript code planned as JavaScript tests: "
+                                 + ", ".join(f"{old} -> {new}" for old, new in test_renames.items()) + ".")
+                    code_base_definitions = (f"{code_base_definitions}\n\n{language_note_3s}" if isinstance(code_base_definitions, str)
+                                             else [code_base_definitions, language_note_3s] if code_base_definitions
+                                             else language_note_3s)
                 planned_files, language_note = align_test_language(planned_files)  # Round 3c
                 if language_note:
                     notes.append("the code is JavaScript: the planned Python test files were dropped (JavaScript tests instead).")
@@ -1127,6 +1207,21 @@ class PMKickoffWorkflow(BaseWorkflow):
             created.append(rel)
             logger.debug(f"PMKickoffWorkflow: Created directory: {rel}")
         return created
+
+    @staticmethod
+    def _javascript_test_plan(structure: Any, task_descriptions: List[str]) -> Tuple[Dict[str, str], List[str]]:
+        """Round 3s: (javascript_test_renames of the planned files, the planned files) from the plan's structure and the
+        files its task texts name - the same layout the structure step builds later."""
+        from src.utils.task_files import file_paths_in_text
+        named: List[str] = []
+        for text in task_descriptions:
+            for path in file_paths_in_text(text, with_directory_only=True):
+                if path not in named:
+                    named.append(path)
+        items = list(structure) if isinstance(structure, list) else ([structure] if structure else [])
+        dirs, files, _notes = plan_project_structure(items + named)
+        _dirs, files, _layout = normalize_planned_layout(dirs, files)
+        return javascript_test_renames(files), files
 
     def _write_test_scaffold(self, workspace_path: Path, planned_files: List[str]) -> None:
         """Writes the framework-owned root conftest.py when Python files are planned (never over an existing one)."""

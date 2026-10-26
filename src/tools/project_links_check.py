@@ -194,6 +194,67 @@ def _python_imports(source: str) -> Optional[List[str]]:
     return names
 
 
+# --- Round 3s: what a test is about, by the words of its name --------------------------------------------------------------
+_GENERIC_NAME_TOKENS = frozenset({"test", "tests", "spec", "main", "index", "init", "src", "lib", "module", "file"})
+
+
+def name_tokens(path: str) -> Set[str]:
+    """Round 3s: the words of a file name without test markers and extension: 'tests/test_game_logic.py' -> {'game',
+    'logic'}; 'src/core/snakeGame.js' -> {'snake', 'game'}. Words shorter than 3 letters and generic words are left out."""
+    base = PurePosixPath(str(path).replace("\\", "/")).name.split(".")[0]
+    words = re.findall(r"[a-z]+", re.sub(r"(?<=[a-z])(?=[A-Z])", "_", base).lower())
+    return {word for word in words if len(word) >= 3 and word not in _GENERIC_NAME_TOKENS}
+
+
+def subject_in_javascript(test_rel: str, project_files: Iterable[str]) -> Optional[str]:
+    """
+    Round 3s: the JavaScript file a (Python) test is about, when its name points at the project's JavaScript code and not at
+    its Python code: the JavaScript file of the same name, else the one sharing most name words with the test while no
+    Python file (outside the tests) shares any; with no Python code at all, the first JavaScript file. None otherwise.
+    """
+    files = [p for p in project_files if not set(PurePosixPath(p).parts[:-1]) & _TEST_DIRS]
+    js_code = sorted(p for p in files if _language(p) == "javascript")
+    py_code = [p for p in files if _language(p) == "python" and PurePosixPath(p).name not in ("__init__.py", "conftest.py")]
+    if not js_code:
+        return None
+    same = _likely_target(test_rel, js_code)
+    if same:
+        return same
+    if not py_code:
+        return js_code[0]
+    words = name_tokens(test_rel)
+    if not words or any(words & name_tokens(p) for p in py_code):
+        return None
+    scored = sorted(((len(words & name_tokens(p)), p) for p in js_code), key=lambda item: (-item[0], item[1]))
+    return scored[0][1] if scored and scored[0][0] else None
+
+
+def _test_folder_helpers(workspace: Path, test_rel: str, names: List[str]) -> List[str]:
+    """Round 3s: the files of the imported top-level modules when EVERY one of them lies inside a tests folder; [] if any
+    import is relative, resolves outside the tests folders or cannot be resolved (a package)."""
+    if not names or "." in names:
+        return []
+    root = Path(workspace).resolve()
+    bases = [root, root / "src", (root / test_rel).parent]
+    helpers: List[str] = []
+    for name in dict.fromkeys(names):
+        found = None
+        for base in bases:
+            for candidate in (base / f"{name}.py", base / name):
+                try:
+                    if candidate.exists() and candidate.resolve().is_relative_to(root):
+                        found = candidate.resolve().relative_to(root).as_posix()
+                        break
+                except (OSError, ValueError):
+                    continue
+            if found:
+                break
+        if not found or not set(PurePosixPath(found).parts[:-1] or PurePosixPath(found).parts[:1]) & _TEST_DIRS:
+            return []
+        helpers.append(found)
+    return helpers
+
+
 def test_target_problem(workspace: Path, rel_path: str, source: Optional[str] = None) -> Optional[str]:
     """
     The problem of a test file whose tests load no project file (they test a copy written inside the test file), or None.
@@ -231,7 +292,18 @@ def test_target_problem(workspace: Path, rel_path: str, source: Optional[str] = 
         if imports is None:
             return None
         stdlib = set(getattr(sys, "stdlib_module_names", ())) | _PY_TEST_LIBRARIES | {"__future__"}
-        if any(name == "." or (name and name not in stdlib) for name in imports):
+        others = [name for name in imports if name == "." or (name and name not in stdlib)]
+        helpers = _test_folder_helpers(workspace, rel, others)
+        if helpers:
+            # Round 3s: 2026-10-26 09:59-11:17 tests/test_game_logic.py imported only tests/mock_game_logic.py ("Mock
+            # implementations for JavaScript functions") - the game's code is src/core/snake_game.js
+            js_target = subject_in_javascript(rel, project_files)
+            advice = (_javascript_test_advice(workspace, js_target) if js_target else
+                      "Import the code under test from the project (e.g. `from my_module import my_function`)")
+            return (f"{rel} imports only modules inside the tests folder ({', '.join(helpers)}), not the project's code, so "
+                    "its tests run against a copy (e.g. mock versions of the real functions) and prove nothing about the "
+                    f"project. {advice}; delete the copied code.")
+        if others:
             return None
         if _mentions_project_file(source, project_files):
             return None

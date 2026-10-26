@@ -2008,7 +2008,14 @@ class AgentCycleHandler:
                                     f"(monitoring read - exempt from duplicate detection)."
                                 )
                             
-                            if (is_eligible_pm or is_eligible_worker) and not is_manage_monitoring_read:
+                            # Round 3s: 2026-10-26 10:22-10:25 W3 in worker_report repeated a file_system call 15 times:
+                            # each time the duplicate check handed back its earlier result (from worker_work) as a
+                            # success, so W3 never heard that file_system cannot be used in worker_report. A call the
+                            # current state forbids goes on to the executor, which refuses it with the state's rules.
+                            from src.agents.tool_activity import state_tool_block_message
+                            forbidden_here = state_tool_block_message(agent.agent_type, agent.state, tool_name,
+                                                                      tool_args) is not None
+                            if (is_eligible_pm or is_eligible_worker) and not is_manage_monitoring_read and not forbidden_here:
                                 prev_result = self._detect_cross_cycle_duplicate_tool_call(agent, tool_name, tool_args)
                                 if prev_result is not None:
                                     # Track duplicate count for escalation

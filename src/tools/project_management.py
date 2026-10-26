@@ -1,6 +1,6 @@
 # START OF FILE src/tools/project_management.py
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Dict, Any, Optional, TYPE_CHECKING # Import TYPE_CHECKING
 import re
 import json
@@ -801,6 +801,97 @@ def blocked_worker_change_error(manager: Any, agent_id: Optional[str], project_n
                 "automatically as soon as that task is finished.")
     except Exception as err:
         logger.debug(f"blocked_worker_change_error failed: {err}")
+        return None
+
+
+def project_pm_of(manager: Any, project_name: Optional[str]) -> Optional[str]:
+    """Round 3s: the id of a Project Manager working on this project (its project_name_context; any PM if none has one)."""
+    agents = getattr(manager, "agents", None)
+    if not isinstance(agents, dict) or not project_name:
+        return None
+    from src.agents.constants import AGENT_TYPE_PM
+    pms = [agent for agent in agents.values() if getattr(agent, "agent_type", None) == AGENT_TYPE_PM]
+    for pm in pms:
+        config = (getattr(pm, "agent_config", None) or {}).get("config", {}) if isinstance(
+            getattr(pm, "agent_config", None), dict) else {}
+        if config.get("project_name_context") == project_name:
+            return str(getattr(pm, "agent_id", "") or "") or None
+    if pms and not any(isinstance(getattr(pm, "agent_config", None), dict)
+                       and (pm.agent_config.get("config") or {}).get("project_name_context") for pm in pms):
+        return str(getattr(pms[0], "agent_id", "") or "") or None
+    return None
+
+
+def admin_project_change_error(manager: Any, agent_id: Optional[str], project_name: Optional[str],
+                               rel_path: Optional[str]) -> Optional[str]:
+    """
+    Round 3s: the refusal (text) for the ADMIN AI changing a file in the shared workspace of a project that a Project
+    Manager builds, or None. Never raises. 2026-10-26 09:33:18 (WiFi_Snake_Game) the Admin AI had handed the project to PM1
+    at 09:28:38, then requested its 'work' state to "Initialize WiFi Snake Game project: ... create HTML/CSS/JS files" and
+    wrote game.js and server.py into the team's workspace and edited index.html - beside src/core/snake_game.js and
+    src/server/server.py of PM1's plan. The project kept both versions.
+    """
+    try:
+        agents = getattr(manager, "agents", None)
+        agent = agents.get(agent_id) if isinstance(agents, dict) and agent_id else None
+        from src.agents.constants import AGENT_TYPE_ADMIN
+        if agent is None or getattr(agent, "agent_type", None) != AGENT_TYPE_ADMIN or not rel_path:
+            return None
+        pm_id = project_pm_of(manager, project_name)
+        if not pm_id:
+            return None
+        logger.warning(f"ProjectManagementTool: the Admin AI '{agent_id}' tried to change '{rel_path}' of project "
+                       f"'{project_name}', which {pm_id} builds. Refused.")
+        return (f"'{_clean_rel_path(rel_path)}' was NOT changed: the project '{project_name}' is built by {pm_id} and its "
+                "team, so the Admin AI does not change its files - a second version beside the team's files breaks the "
+                f"project. Tell {pm_id} what should change with send_message (the PM makes it a task for a worker), or tell "
+                "the user what you found.")
+    except Exception as err:
+        logger.debug(f"admin_project_change_error failed: {err}")
+        return None
+
+
+_JAVASCRIPT_TWIN_SUFFIXES = (".js", ".mjs", ".cjs", ".ts", ".jsx", ".tsx")
+
+
+def javascript_twin_creation_error(manager: Any, agent_id: Optional[str], project_name: Optional[str],
+                                   session_name: Optional[str], rel_path: Optional[str], workspace: Any) -> Optional[str]:
+    """
+    Round 3s: the refusal (text) for creating dir/x.py when dir/x.js (or .ts, ...) exists and no task names dir/x.py - a
+    Python copy of a JavaScript module - or None. Test files and the framework are not judged. Never raises.
+    2026-10-26 10:16:32 (WiFi_Snake_Game) W3, told to "Write pytest tests for game logic", wrote src/core/snake_game.py - a
+    "Python bridge module for JavaScript game logic" - beside src/core/snake_game.js, then src/utils/score_manager.py beside
+    score_manager.js, and spent an hour making its tests pass against those copies. The game never runs them.
+    """
+    try:
+        if not rel_path or not workspace or agent_id in FRAMEWORK_CALLERS:
+            return None
+        rel = _clean_rel_path(rel_path)
+        path = PurePosixPath(rel)
+        if path.suffix.lower() != ".py" or path.name == "conftest.py":
+            return None
+        from src.tools.project_links_check import is_test_file, _javascript_test_advice
+        if is_test_file(rel):
+            return None
+        root = Path(workspace)
+        twin = next((path.with_suffix(suffix).as_posix() for suffix in _JAVASCRIPT_TWIN_SUFFIXES
+                     if (root / path.with_suffix(suffix).as_posix()).is_file()), None)
+        if twin is None:
+            return None
+        if project_name and session_name:
+            tw = ProjectManagementTool()._get_taskwarrior_instance(project_name, session_name)
+            if tw is not None:
+                from src.utils.task_files import file_paths_in_text
+                for task in _all_tasks(tw):
+                    if _task_names_path(file_paths_in_text(str(get_task_field(task, "description", "") or "")), rel):
+                        return None  # planned Python work of that name
+        logger.warning(f"ProjectManagementTool: '{agent_id}' tried to create '{rel}', a Python copy of '{twin}'. Refused.")
+        return (f"'{rel}' was NOT created: {twin} already holds this module in JavaScript. A Python copy is a second "
+                "implementation that the project never runs - testing it proves nothing about the real code, and the two "
+                f"copies drift apart. {_javascript_test_advice(root, twin)}; pytest tests only the project's own Python "
+                "files. If a task really needs this Python file, the PM names it in a task.")
+    except Exception as err:
+        logger.debug(f"javascript_twin_creation_error failed: {err}")
         return None
 
 

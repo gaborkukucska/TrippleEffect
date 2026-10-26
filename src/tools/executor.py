@@ -686,6 +686,39 @@ class ToolExecutor:
             return None
 
     @staticmethod
+    def _admin_project_change_message(tool_name: str, tool_args: Dict[str, Any], agent_id: str,
+                                      project_name: Optional[str], manager: Any) -> Optional[str]:
+        """Round 3s: the refusal for the Admin AI changing a shared-workspace file of a project a PM builds, else None."""
+        try:
+            filename = ToolExecutor._shared_file_change_target(tool_name, tool_args)
+            if not filename or not project_name:
+                return None
+            from src.tools.project_management import admin_project_change_error
+            return admin_project_change_error(manager, agent_id, project_name, filename)
+        except Exception as err:
+            logger.debug(f"ToolExecutor: admin project change check failed: {err}")
+            return None
+
+    @staticmethod
+    def _javascript_twin_message(tool_name: str, tool_args: Dict[str, Any], agent_id: str, project_name: Optional[str],
+                                 session_name: Optional[str], manager: Any) -> Optional[str]:
+        """Round 3s: the refusal for creating a NEW Python copy (dir/x.py) of a JavaScript module dir/x.js, else None."""
+        try:
+            filename = ToolExecutor._shared_file_change_target(tool_name, tool_args)
+            if not filename or not project_name or not session_name:
+                return None
+            from src.config.settings import settings
+            from src.tools.sandbox_runner import resolve_shared_workspace
+            workspace = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, project_name, session_name)
+            if (workspace / filename).exists():
+                return None  # an existing file is changed, not created
+            from src.tools.project_management import javascript_twin_creation_error
+            return javascript_twin_creation_error(manager, agent_id, project_name, session_name, filename, workspace)
+        except Exception as err:
+            logger.debug(f"ToolExecutor: JavaScript twin check failed: {err}")
+            return None
+
+    @staticmethod
     def _foreign_file_change_message(tool_name: str, tool_args: Dict[str, Any], agent_id: str,
                                      project_name: Optional[str], session_name: Optional[str], manager: Any) -> Optional[str]:
         """
@@ -1015,6 +1048,27 @@ class ToolExecutor:
                                    "the file belongs to another worker's task.")
                     self._update_execution_stats(success=False)
                     return f"{fuzzy_warning}Error from tool '{tool_name}': {ownership_message}"
+
+            # --- Round 3s: the Admin AI does not change the files of a project a PM builds ---
+            if tool_name in ("file_system", "code_editor") and agent_type_for_auth == AGENT_TYPE_ADMIN \
+                    and manager is not None and not framework_internal:
+                admin_message = self._admin_project_change_message(tool_name, kwargs_for_tool, agent_id, project_name,
+                                                                   manager)
+                if admin_message:
+                    logger.warning(f"[TOOL_EXEC_BLOCKED] ID:{execution_id} | '{tool_name}' change of '{agent_id}' refused: "
+                                   "a Project Manager builds this project.")
+                    self._update_execution_stats(success=False)
+                    return f"{fuzzy_warning}Error from tool '{tool_name}': {admin_message}"
+
+            # --- Round 3s: no Python copy of a JavaScript module ---
+            if tool_name in ("file_system", "code_editor") and manager is not None and not framework_internal:
+                twin_message = self._javascript_twin_message(tool_name, kwargs_for_tool, agent_id, project_name,
+                                                             session_name, manager)
+                if twin_message:
+                    logger.warning(f"[TOOL_EXEC_BLOCKED] ID:{execution_id} | '{tool_name}' write of '{agent_id}' refused: "
+                                   "a Python copy of a JavaScript module.")
+                    self._update_execution_stats(success=False)
+                    return f"{fuzzy_warning}Error from tool '{tool_name}': {twin_message}"
 
             # --- Round 3r: a worker whose tasks all wait for unfinished tasks changes no files ---
             if tool_name in ("file_system", "code_editor") and agent_type_for_auth == AGENT_TYPE_WORKER \

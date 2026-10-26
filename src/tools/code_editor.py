@@ -946,6 +946,14 @@ class CodeEditorTool(BaseTool):
                 return {"status": "error", "message": (
                     f"Chunk {idx}: '{replace_key}' must be the new text as ONE string, not a "
                     f"{type(chunk.get(replace_key)).__name__}. Nothing was changed.")}
+            # Round 3s: 2026-10-26 11:13:31 a 'search' OBJECT crashed the edit ("Unhandled error during edit: 'dict' object
+            # has no attribute 'splitlines'"); W1 learned nothing about what was wrong.
+            search_key = next((key for key in CHUNK_SEARCH_KEYS if key in chunk), None)
+            if search_key is not None and chunk.get(search_key) is not None and not isinstance(chunk.get(search_key), str):
+                return {"status": "error", "message": (
+                    f"Chunk {idx}: '{search_key}' must be the exact text to find, as ONE string, not a "
+                    f"{type(chunk.get(search_key)).__name__}. For a line range use start_line and end_line next to 'replace' "
+                    "instead. Nothing was changed.")}
 
         # --- FIX +42: Guard against oversized chunks that cause LLM JSON overflow ---
         MAX_CHUNKS = 20
