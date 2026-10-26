@@ -264,6 +264,10 @@ class CommandExecutionTool(BaseTool):
                 "content": "Command Execution Failed\n\n--- STDERR ---\nFramework Blocked: sqlite3 is a standard library built-in module and cannot be installed via pip. Do not add it to requirements.txt or pip install it."
             }
 
+        if "pytest" in command:
+            # Round 3r: an earlier framework conftest.py loaded src/x.py twice (as 'src.x' and as 'x')
+            from src.utils.framework_conftest import refresh_framework_conftest
+            refresh_framework_conftest(cwd_path)
         result = await run_sandboxed(command, cwd_path, timeout, tool_name=self.name, agent_id=agent_id)
 
         if result.status == "blocked":

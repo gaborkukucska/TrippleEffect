@@ -750,6 +750,60 @@ def foreign_file_change_error(manager: Any, agent_id: Optional[str], project_nam
         return None
 
 
+def blocked_worker_change_error(manager: Any, agent_id: Optional[str], project_name: Optional[str],
+                                session_name: Optional[str], rel_path: Optional[str]) -> Optional[str]:
+    """
+    Round 3r: the refusal (text) for a WORKER that changes a file while EVERY open task it has waits for an unfinished task
+    (its dependencies), or None - also when it has no open task (not judged here) or one it can work on. Never raises.
+    2026-10-26 07:28:56 (WiFi_Snake_Game, qwen3.5:4b) W1 finished Kick-off Task 7; its other task, "Kick-off Task 8: Run the
+    tests and start the server", waited for "Kick-off Task 6: Write pytest tests" (W2). W1 was told "It stays waiting; its
+    assignee is started automatically", stayed in worker_work and changed src/snake_game.py 12 times until 07:51 to fit W2's
+    half-written tests, while W2 changed those tests to fit W1's changing code. W2 then spent until 09:05 on tests that
+    failed against the code W1 had bent out of shape (Snake.move kept only two segments).
+    """
+    try:
+        if not agent_id or not rel_path or agent_id in FRAMEWORK_CALLERS or not project_name or not session_name:
+            return None
+        agents = getattr(manager, "agents", None)
+        worker = agents.get(agent_id) if isinstance(agents, dict) else None
+        from src.agents.constants import AGENT_TYPE_WORKER
+        if worker is None or getattr(worker, "agent_type", None) != AGENT_TYPE_WORKER:
+            return None
+        tw = ProjectManagementTool()._get_taskwarrior_instance(project_name, session_name)
+        if tw is None:
+            return None
+        from src.utils.task_utils import unfinished_dependencies
+        own_open = [t for t in tw.tasks.pending()
+                    if str(get_task_field(t, "assignee", "") or "").strip() == agent_id
+                    and "project_kickoff" not in _task_tags(t)
+                    and str(get_task_field(t, "task_progress", "todo") or "todo").strip().lower() not in _OPEN_EXCLUDED_PROGRESS]
+        if not own_open:
+            return None
+        waiting = []
+        for task in own_open:
+            blocking = unfinished_dependencies(task)
+            if not blocking:
+                return None  # a task it can work on
+            waiting.append((task, blocking))
+        task, blocking = waiting[0]
+        dep_uuid, dep_text = blocking[0]
+        dep_assignee = ""
+        for dep in (get_task_field(task, "depends") or []):
+            if not isinstance(dep, (str, bytes)) and str(get_task_field(dep, "uuid", "")) == dep_uuid:
+                dep_assignee = str(get_task_field(dep, "assignee", "") or "").strip()
+        who = f", which {dep_assignee} is working on," if dep_assignee and dep_assignee != agent_id else ""
+        logger.warning(f"ProjectManagementTool: '{agent_id}' tried to change '{_clean_rel_path(rel_path)}' while its task "
+                       f"{get_task_field(task, 'uuid', '?')} waits for {dep_uuid}. Refused.")
+        return (f"'{_clean_rel_path(rel_path)}' was NOT changed: you have NO task you can work on now. Your task "
+                f"'{_shown_text(get_task_field(task, 'description', ''))}' ({get_task_field(task, 'uuid', '?')}) waits for "
+                f"'{_shown_text(dep_text)}' ({dep_uuid}){who} to be finished - until then its files are still changing. Do "
+                "not change files meanwhile: call the 'request_state' tool with state='worker_wait'. You are started "
+                "automatically as soon as that task is finished.")
+    except Exception as err:
+        logger.debug(f"blocked_worker_change_error failed: {err}")
+        return None
+
+
 def idle_worker_message_note(manager: Any, sender_id: Optional[str], target_id: Optional[str]) -> str:
     """
     Round 3o: the note for a PM whose message reaches a worker that waits (worker_wait) WITHOUT an open task: a message

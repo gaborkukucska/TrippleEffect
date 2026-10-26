@@ -337,11 +337,101 @@ def workspace_import_hints(workspace, skip_file=None, max_files: int = 200) -> D
     return {name: module for name, module in hints.items() if name not in ambiguous}
 
 
-def python_code_notes(source: str, filename: Optional[str] = None, import_hints: Optional[Dict[str, str]] = None) -> List[str]:
+# --- Round 3r: a mutable CLASS attribute that the instances change ------------------------------------------------------
+# 2026-10-26 (WiFi_Snake_Game) src/player_manager.py: `class PlayerManager:` with `_players: Dict[int, Player] = {}` in the class
+# body and `self._players[player_id] = player` in its methods. Every PlayerManager() shared that one dict, so a "fresh"
+# manager in a test still held the players of all earlier tests ("assert 4 == 2"); W2 changed its tests for 85 minutes.
+_MUTABLE_FACTORIES = frozenset({"dict", "list", "set", "defaultdict", "OrderedDict", "deque", "Counter"})
+_MUTATING_METHODS = frozenset({"append", "extend", "insert", "update", "add", "setdefault", "pop", "popitem", "clear",
+                               "remove", "discard", "appendleft"})
+
+
+def _mutable_value_kind(value: Optional[ast.AST]) -> Optional[str]:
+    if isinstance(value, ast.Dict):
+        return "dict"
+    if isinstance(value, ast.List):
+        return "list"
+    if isinstance(value, ast.Set):
+        return "set"
+    if isinstance(value, ast.Call):
+        func = value.func
+        name = func.id if isinstance(func, ast.Name) else (func.attr if isinstance(func, ast.Attribute) else None)
+        if name in _MUTABLE_FACTORIES:
+            return "set" if name == "set" else ("list" if name in ("list", "deque") else "dict")
+    return None
+
+
+def _is_self_attribute(node: ast.AST, name: str) -> bool:
+    return (isinstance(node, ast.Attribute) and node.attr == name and isinstance(node.value, ast.Name)
+            and node.value.id == "self")
+
+
+def shared_mutable_class_attributes(tree: ast.AST) -> List[Dict[str, object]]:
+    """
+    Round 3r: {'class', 'name', 'line', 'kind', 'changed_line'} for every dict/list/set held as a CLASS attribute of a class
+    with an __init__ (not a dataclass) that a method changes through `self.<name>` (`self.x[k] = v`, `self.x.append(...)`,
+    ...) and that __init__ does not replace with an instance attribute. Such a container is shared by every instance.
+    """
+    found: List[Dict[str, object]] = []
+    for cls in (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)):
+        if any("dataclass" in name for name in _decorator_names(cls)):
+            continue
+        methods = [n for n in cls.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        init = next((m for m in methods if m.name == "__init__"), None)
+        if init is None:
+            continue
+        for statement in cls.body:
+            if isinstance(statement, ast.Assign) and len(statement.targets) == 1 and isinstance(statement.targets[0], ast.Name):
+                name, value = statement.targets[0].id, statement.value
+            elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+                name, value = statement.target.id, statement.value
+            else:
+                continue
+            kind = _mutable_value_kind(value)
+            if not kind:
+                continue
+            replaced = any(isinstance(node, (ast.Assign, ast.AnnAssign)) and any(
+                _is_self_attribute(target, name) for target in (node.targets if isinstance(node, ast.Assign) else [node.target]))
+                for node in ast.walk(init))
+            if replaced:
+                continue
+            changed_line = None
+            for method in methods:
+                for node in ast.walk(method):
+                    if isinstance(node, (ast.Assign, ast.AugAssign, ast.Delete)):
+                        targets = node.targets if isinstance(node, (ast.Assign, ast.Delete)) else [node.target]
+                        if any(isinstance(t, ast.Subscript) and _is_self_attribute(t.value, name) for t in targets):
+                            changed_line = node.lineno
+                    elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                          and node.func.attr in _MUTATING_METHODS and _is_self_attribute(node.func.value, name)):
+                        changed_line = node.lineno
+                    if changed_line:
+                        break
+                if changed_line:
+                    break
+            if changed_line:
+                found.append({"class": cls.name, "name": name, "line": statement.lineno, "kind": kind,
+                              "changed_line": changed_line})
+    return found
+
+
+def shared_mutable_class_attribute_note(item: Dict[str, object]) -> str:
+    cls, name, kind = item["class"], item["name"], item["kind"]
+    empty = {"dict": "{}", "list": "[]", "set": "set()"}[str(kind)]
+    return (f"class '{cls}' keeps '{name}' as a CLASS attribute (line {item['line']}) and its methods change it through "
+            f"self.{name} (line {item['changed_line']}): every {cls} instance shares that one {kind}, so a new {cls}() "
+            f"still holds what earlier instances added (tests see each other's data). Create it per instance in __init__: "
+            f"`self.{name} = {empty}`. If all instances are MEANT to share it, write {cls}.{name} instead of self.{name}.")
+
+
+def python_code_notes(source: str, filename: Optional[str] = None, import_hints: Optional[Dict[str, str]] = None,
+                      advisory: bool = True) -> List[str]:
     """
     Hints about a Python source text; [] if it does not parse (the syntax check reports that separately).
     import_hints (Round 2e): {name: module} of functions/classes defined in OTHER files of the workspace, used to suggest the
     missing import of an undefined name ('from temp_convert import celsius_to_fahrenheit').
+    advisory (Round 3r): include the notes that may describe code written that way on purpose (a class attribute shared by
+    all instances) - shown after a write or an edit, but not a reason to refuse marking a task finished.
     """
     try:
         tree = parse_python(source)
@@ -386,6 +476,8 @@ def python_code_notes(source: str, filename: Optional[str] = None, import_hints:
                              "'return <value>' statement, so it returns None.")
 
     notes.extend(_duplicate_definitions(tree))
+    if advisory:  # Round 3r
+        notes.extend(shared_mutable_class_attribute_note(item) for item in shared_mutable_class_attributes(tree))
 
     # Round 2m: what Python itself warns about (an invalid escape such as '\\T' in "C:\\Temp" becomes an error in a
     # future Python version)
@@ -403,22 +495,35 @@ def python_code_notes(source: str, filename: Optional[str] = None, import_hints:
             if func.name.startswith("test") and not _is_docstring_only(func) and _checks_nothing(func):
                 notes.append(f"test '{func.name}' (line {func.lineno}) has no assert and calls nothing, so it can never fail. "
                              "Call the function under test and assert the expected result.")
+        # Round 3r: 2026-10-26 08:51 tests/test_snake_game.py line 86: `def test_can_move_same_direction(self):` at column 0
+        # (its class indentation lost) - pytest: "fixture 'self' not found" - and the three test methods indented below it
+        # became functions nested inside it, so they never ran.
+        for func in tree.body if isinstance(tree, ast.Module) else []:
+            if (isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)) and func.name.startswith("test")
+                    and func.args.args and func.args.args[0].arg == "self"):
+                nested = [n.name for n in ast.walk(func) if n is not func
+                          and isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name.startswith("test")]
+                hidden = (f", and the {len(nested)} test(s) indented below it ({', '.join(nested[:3])}"
+                          f"{', ...' if len(nested) > 3 else ''}) are now nested INSIDE it, so they never run") if nested else ""
+                notes.append(f"test '{func.name}' (line {func.lineno}) is a module-level function with a 'self' parameter: it "
+                             f"lost the indentation of its class, so pytest fails it with \"fixture 'self' not found\"{hidden}. "
+                             "Indent it (and the tests after it) back into the class.")
 
     return notes[:MAX_NOTES]
 
 
-def python_code_notes_for(source: str, filename: Optional[str], workspace=None) -> List[str]:
+def python_code_notes_for(source: str, filename: Optional[str], workspace=None, advisory: bool = True) -> List[str]:
     """
     Round 2e: python_code_notes() of a file in a workspace. Only when a name is undefined are the workspace's other modules
     scanned, to suggest the import ('from temp_convert import celsius_to_fahrenheit'). Never raises.
     """
     try:
-        notes = python_code_notes(source, filename)
+        notes = python_code_notes(source, filename, advisory=advisory)
         if workspace is not None and filename and any("NameError" in note for note in notes):
             from pathlib import Path
             hints = workspace_import_hints(workspace, skip_file=Path(workspace) / str(filename))
             if hints:
-                notes = python_code_notes(source, filename, hints)
+                notes = python_code_notes(source, filename, hints, advisory=advisory)
         return notes
     except Exception:
         return []

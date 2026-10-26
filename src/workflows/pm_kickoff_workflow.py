@@ -13,6 +13,7 @@ from src.agents.constants import (
 )
 from src.config.settings import settings
 from src.tools.sandbox_runner import resolve_shared_workspace
+from src.utils.framework_conftest import FRAMEWORK_CONFTEST, FRAMEWORK_CONFTEST_MARKER, refresh_framework_conftest
 
 if TYPE_CHECKING:
     from src.agents.manager import AgentManager
@@ -183,21 +184,10 @@ def plan_project_structure(structure: Any) -> Tuple[List[str], List[str], List[s
 # 2026-10-16 18:05: the PM planned temp_convert.py and test_temp_convert.py at the workspace ROOT but also declared empty src/ and
 # tests/ directories. Workers then moved files around, rewrote conftest.py again and again, and the finished project failed all
 # 15 tests with ModuleNotFoundError. The framework now makes the layout consistent and owns the import path.
-FRAMEWORK_CONFTEST_MARKER = "FRAMEWORK-OWNED conftest"
-FRAMEWORK_CONFTEST = "\n".join([
-    '"""FRAMEWORK-OWNED conftest: makes modules in src/ and in the project root importable from the tests.',
-    '',
-    'Do not edit or recreate this file. In tests simply write `from my_module import my_function`.',
-    '"""',
-    'import sys',
-    'from pathlib import Path',
-    '',
-    '_ROOT = Path(__file__).resolve().parent',
-    'for _path in (_ROOT / "src", _ROOT):',
-    '    if _path.is_dir() and str(_path) not in sys.path:',
-    '        sys.path.insert(0, str(_path))',
-    '',
-])
+# Round 3r: FRAMEWORK_CONFTEST and FRAMEWORK_CONFTEST_MARKER live in src/utils/framework_conftest.py (imported above; one
+# module per file, and an earlier framework version of a project's conftest.py is updated). Both names stay importable from
+# this module.
+REEXPORTED_CONFTEST_NAMES = (FRAMEWORK_CONFTEST, FRAMEWORK_CONFTEST_MARKER)
 _TEST_FILE_RE = re.compile(r"^(test_.+|.+_test)\.py$", re.IGNORECASE)
 _ROOT_PY_KEEP = frozenset({"conftest.py", "setup.py", "manage.py", "noxfile.py", "tasks.py", "wsgi.py", "asgi.py"})
 
@@ -1145,6 +1135,7 @@ class PMKickoffWorkflow(BaseWorkflow):
                 return
             conftest = workspace_path / "conftest.py"
             if conftest.exists():
+                refresh_framework_conftest(workspace_path)  # Round 3r: an earlier framework version is updated
                 return
             workspace_path.mkdir(parents=True, exist_ok=True)
             conftest.write_text(FRAMEWORK_CONFTEST, encoding="utf-8")

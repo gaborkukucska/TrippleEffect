@@ -76,6 +76,10 @@ class TestRunnerTool(BaseTool):
 
         logger.info(f"Agent {agent_id} running test command '{command}' in {run_path} with {timeout}s timeout.")
 
+        if "pytest" in command:
+            # Round 3r: an earlier framework conftest.py loaded src/x.py twice (as 'src.x' and as 'x')
+            from src.utils.framework_conftest import refresh_framework_conftest
+            refresh_framework_conftest(run_path)
         try:
             res = await run_sandboxed(command, run_path, timeout, tool_name=self.name, agent_id=agent_id)
         except Exception as e:

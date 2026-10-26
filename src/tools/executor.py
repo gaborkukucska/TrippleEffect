@@ -649,6 +649,43 @@ class ToolExecutor:
             return None
 
     @staticmethod
+    def _shared_file_change_target(tool_name: str, tool_args: Dict[str, Any]) -> Optional[str]:
+        """The relative path a file_system / code_editor call changes, moves or deletes in the SHARED workspace (a copy
+        excluded), else None."""
+        if tool_name not in ("file_system", "code_editor") or not is_file_change_call(tool_name, tool_args):
+            return None
+        action = str(tool_args.get("action") or "").strip().strip("<>/\"' \t").lower()
+        if tool_name == "file_system" and action == "copy":
+            return None  # a copy leaves the file as it is
+        if str(tool_args.get("scope") or "shared").lower() != "shared":
+            return None
+        for key in ("filename", "filepath", "file", "path", "file_path", "file_name", "target_file", "name"):
+            value = tool_args.get(key)
+            if isinstance(value, str) and value.strip():
+                filename = value.strip()
+                if filename.startswith("/") or ".." in Path(filename).parts:
+                    return None
+                return filename
+        return None
+
+    @staticmethod
+    def _blocked_worker_message(tool_name: str, tool_args: Dict[str, Any], agent_id: str, project_name: Optional[str],
+                                session_name: Optional[str], manager: Any) -> Optional[str]:
+        """
+        Round 3r: for a file change in the shared workspace by a worker whose open tasks ALL wait for unfinished tasks, the
+        refusal text (src/tools/project_management.blocked_worker_change_error), else None.
+        """
+        try:
+            filename = ToolExecutor._shared_file_change_target(tool_name, tool_args)
+            if not filename or not project_name or not session_name:
+                return None
+            from src.tools.project_management import blocked_worker_change_error
+            return blocked_worker_change_error(manager, agent_id, project_name, session_name, filename)
+        except Exception as err:
+            logger.debug(f"ToolExecutor: blocked worker check failed: {err}")
+            return None
+
+    @staticmethod
     def _foreign_file_change_message(tool_name: str, tool_args: Dict[str, Any], agent_id: str,
                                      project_name: Optional[str], session_name: Optional[str], manager: Any) -> Optional[str]:
         """
@@ -657,22 +694,10 @@ class ToolExecutor:
         (src/tools/project_management.foreign_file_change_error), else None.
         """
         try:
-            if tool_name not in ("file_system", "code_editor") or not project_name or not session_name:
+            if not project_name or not session_name:
                 return None
-            if not is_file_change_call(tool_name, tool_args):
-                return None
-            action = str(tool_args.get("action") or "").strip().strip("<>/\"' \t").lower()
-            if tool_name == "file_system" and action == "copy":
-                return None  # a copy leaves the file as it is
-            if str(tool_args.get("scope") or "shared").lower() != "shared":
-                return None
-            filename = None
-            for key in ("filename", "filepath", "file", "path", "file_path", "file_name", "target_file", "name"):
-                value = tool_args.get(key)
-                if isinstance(value, str) and value.strip():
-                    filename = value.strip()
-                    break
-            if not filename or filename.startswith("/") or ".." in Path(filename).parts:
+            filename = ToolExecutor._shared_file_change_target(tool_name, tool_args)
+            if not filename:
                 return None
             from src.config.settings import settings
             from src.tools.sandbox_runner import resolve_shared_workspace
@@ -990,6 +1015,17 @@ class ToolExecutor:
                                    "the file belongs to another worker's task.")
                     self._update_execution_stats(success=False)
                     return f"{fuzzy_warning}Error from tool '{tool_name}': {ownership_message}"
+
+            # --- Round 3r: a worker whose tasks all wait for unfinished tasks changes no files ---
+            if tool_name in ("file_system", "code_editor") and agent_type_for_auth == AGENT_TYPE_WORKER \
+                    and manager is not None and not framework_internal:
+                blocked_message = self._blocked_worker_message(tool_name, kwargs_for_tool, agent_id, project_name,
+                                                               session_name, manager)
+                if blocked_message:
+                    logger.warning(f"[TOOL_EXEC_BLOCKED] ID:{execution_id} | '{tool_name}' change of '{agent_id}' refused: "
+                                   "all of its tasks wait for unfinished tasks.")
+                    self._update_execution_stats(success=False)
+                    return f"{fuzzy_warning}Error from tool '{tool_name}': {blocked_message}"
 
             # --- Round 3o: a worker does not change the files of ANOTHER worker's task (open or finished) ---
             if tool_name in ("file_system", "code_editor") and agent_type_for_auth == AGENT_TYPE_WORKER \

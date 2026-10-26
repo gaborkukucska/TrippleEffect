@@ -804,6 +804,162 @@ def _stdlib_source(name: str) -> Optional[str]:
     return None
 
 
+# --- Round 3r: objects a module creates once, at import, that every test shares ------------------------------------------
+# 2026-10-26 07:41-09:05 (WiFi_Snake_Game, qwen3.5:4b) W2's tests imported register_player, get_player and get_leaderboard
+# from src/api.py, which creates `player_manager = PlayerManager()` and `leaderboard = Leaderboard()` when it is imported.
+# Its autouse fixtures deleted config/players.json and config/leaderboard.json before each test - after both objects had
+# already loaded them - so players registered by one test were still registered in the next ("assert 3 == 2", "assert 2 is
+# None") and the two entries an earlier run had saved stayed on the leaderboard ("assert 2 == 0"). 25 test runs in 85
+# minutes; the diagnosis only said that 1 of 5 failed tests passed alone.
+MAX_SHARED_STATE_HINTS = 2
+_DATA_FILE_RE = re.compile(r"^(?![/\\])[\w.\-/]+\.(?:json|csv|db|sqlite3?|txt|pkl|pickle|dat)$")
+
+
+def _python_module_path(root: Path, test_rel: str, module: str) -> Optional[Path]:
+    """The project file of an absolute import in a test (searched from the root, src/ and the test's folder)."""
+    parts = [part for part in str(module).split(".") if part]
+    if not parts:
+        return None
+    for base in (root, root / "src", (root / test_rel).parent):
+        target = base.joinpath(*parts)
+        for candidate in (Path(str(target) + ".py"), target / "__init__.py"):
+            try:
+                if candidate.is_file() and candidate.resolve().is_relative_to(root.resolve()):
+                    return candidate
+            except (OSError, ValueError):
+                continue
+    return None
+
+
+def _parse_python(path: Path):
+    import ast
+    import warnings
+    try:
+        if path.stat().st_size > 300_000:
+            return None
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, ValueError, UnicodeDecodeError):
+        return None
+
+
+def _data_files_of(root: Path, rel: str) -> List[str]:
+    """Relative data file names (config/players.json) written as string literals in a project file."""
+    import ast
+    tree = _parse_python(root / rel)
+    found: List[str] = []
+    for node in ast.walk(tree) if tree is not None else []:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and _DATA_FILE_RE.match(node.value.strip()):
+            if node.value.strip() not in found:
+                found.append(node.value.strip())
+    return found[:3]
+
+
+def _class_level_containers(root: Path, classes: Dict[str, Any], names: List[str]) -> List[Dict[str, Any]]:
+    """Round 3r: the dict/list/set class attributes the instances of these project classes share
+    (src/tools/python_static_check.shared_mutable_class_attributes), with the file of each class."""
+    from src.tools.python_static_check import shared_mutable_class_attributes
+    found: List[Dict[str, Any]] = []
+    for name in dict.fromkeys(names):
+        for definition in classes.get(name, [])[:1]:
+            tree = _parse_python(root / definition["rel"])
+            if tree is None:
+                continue
+            for item in shared_mutable_class_attributes(tree):
+                if item["class"] == name:
+                    found.append(dict(item, rel=definition["rel"]))
+    return found
+
+
+def shared_module_state_hints(root: Optional[Path], output: Optional[str]) -> List[str]:
+    """
+    Round 3r: for failed pytest tests whose file imports from a project module that creates instances of project classes
+    at import (`player_manager = PlayerManager()`) which the imported functions use (or the test imports directly), the
+    hint that every test shares those objects - and the data files their classes read, if any. Never raises.
+    """
+    import ast
+    hints: List[str] = []
+    try:
+        if not root or not pytest_failed_tests(output):
+            return hints
+        root = Path(root)
+        test_files = [rel for rel in _failing_test_files(str(output)) if rel.endswith(".py")][:5]
+        if not test_files:
+            return hints
+        classes = project_definitions(root)["classes"]
+        if not classes:
+            return hints
+        seen = set()
+        for test_rel in test_files:
+            tree = _parse_python(root / test_rel)
+            if tree is None:
+                continue
+            for node in tree.body:
+                if not isinstance(node, ast.ImportFrom) or node.level or not node.module:
+                    continue
+                module_path = _python_module_path(root, test_rel, node.module)
+                if module_path is None or module_path in seen:
+                    continue
+                seen.add(module_path)
+                module_tree = _parse_python(module_path)
+                if module_tree is None:
+                    continue
+                shared: Dict[str, Tuple[int, str]] = {}
+                for statement in module_tree.body:
+                    if isinstance(statement, ast.Assign) and isinstance(statement.value, ast.Call):
+                        func = statement.value.func
+                        class_name = func.id if isinstance(func, ast.Name) else (
+                            func.attr if isinstance(func, ast.Attribute) else None)
+                        if class_name in classes:
+                            for target in statement.targets:
+                                if isinstance(target, ast.Name):
+                                    shared[target.id] = (statement.lineno, class_name)
+                if not shared:
+                    continue
+                imported = {alias.name for alias in node.names}
+                users = [statement.name for statement in module_tree.body
+                         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and statement.name in imported
+                         and {n.id for n in ast.walk(statement) if isinstance(n, ast.Name)} & set(shared)]
+                if not users and not imported & set(shared):
+                    continue
+                rel_module = module_path.resolve().relative_to(root.resolve()).as_posix()
+                ordered = sorted(shared.items(), key=lambda item: item[1][0])[:3]
+                created = " and ".join(f"`{name} = {cls}()` (line {line})" for name, (line, cls) in ordered)
+                first_name, (_line, first_class) = ordered[0]
+                used_by = f" - {', '.join(users[:4])} use{'s' if len(users) == 1 else ''} them" if users else ""
+                text = (f"{rel_module} creates {created} ONCE, when it is imported, so every test shares these objects"
+                        f"{used_by}. What one test adds (e.g. a registered player or a score) is still there in the next "
+                        "test, and a fixture that deletes a data file does not reset them: they read it at import, before "
+                        "any fixture ran.")
+                data_files: List[str] = []
+                for _name, (_l, cls) in ordered:
+                    for definition in classes.get(cls, [])[:1]:
+                        for data_file in _data_files_of(root, definition["rel"])[:2]:  # the first ones of each class
+                            if data_file not in data_files:
+                                data_files.append(data_file)
+                if data_files:
+                    text += (f" They also read and write the project's own data file(s) {', '.join(data_files[:4])}, so "
+                             "what earlier test runs saved there comes back.")
+                class_level = _class_level_containers(root, classes, [cls for _n, (_l, cls) in ordered])
+                text += (f" Give each test fresh objects in an autouse fixture: delete the data files first, then e.g. "
+                         f"`import {node.module}` and `{node.module}.{first_name} = {first_class}()`.")
+                if class_level:
+                    shown_items = "; ".join(f"{item['class']}.{item['name']} ({item['rel']} line {item['line']})"
+                                            for item in class_level[:2])
+                    first = class_level[0]
+                    text += (f" A new instance alone does not help here: {shown_items} is a CLASS attribute that all "
+                             f"instances share - it belongs in __init__ (`self.{first['name']} = ...`); until that is fixed "
+                             f"the fixture must empty it too (`{first['class']}.{first['name']}.clear()`).")
+                text += " Do not change the assertions for this."
+                hints.append(text)
+                if len(hints) >= MAX_SHARED_STATE_HINTS:
+                    return hints
+    except Exception as err:
+        logger.debug(f"shared_module_state_hints failed: {err}")
+    return hints
+
+
 def api_mismatch_hints(root: Optional[Path], output: Optional[str]) -> List[str]:
     """
     Round 3o: for errors in a pytest output that say the code was called in a way it does not define (an unexpected or
@@ -946,6 +1102,7 @@ async def diagnose_failed_test_run(workspace: Any, command: str, output: str) ->
     The framework's notes for a FAILED test run ('' if none): failed tests that pass alone, the same tests failing again
     and again (Round 3g+), and known traps in the output.
     Round 3o: + calls that do not match the project's code (api_mismatch_hints) and runs in which no test ran.
+    Round 3r: + objects a module creates at import that all tests share (shared_module_state_hints).
     Cached per (workspace, workspace fingerprint, failing tests). Never raises.
     """
     try:
@@ -971,6 +1128,9 @@ async def diagnose_failed_test_run(workspace: Any, command: str, output: str) ->
         if api_hints:
             parts.append("[Framework check - calls that do not match the project's code:]\n"
                          + "\n".join(f"- {hint}" for hint in api_hints))
+        state_hints = shared_module_state_hints(root, output)  # Round 3r
+        if state_hints:
+            parts.append("[Framework check - state the tests share:]\n" + "\n".join(f"- {hint}" for hint in state_hints))
         stuck = stuck_note(root, output)
         if stuck:
             parts.append(stuck)

@@ -106,7 +106,8 @@ def python_file_problems(path: Path, shown_name: str, workspace: Optional[Path] 
     except SyntaxError as err:
         return [f"{shown_name} is not valid Python ({err.msg} at line {err.lineno})."]
     from src.tools.python_static_check import python_code_notes_for
-    return [f"{shown_name}: {note}" for note in python_code_notes_for(source, shown_name, workspace)]
+    # Round 3r: without the advisory notes (code that may be written that way on purpose)
+    return [f"{shown_name}: {note}" for note in python_code_notes_for(source, shown_name, workspace, advisory=False)]
 
 
 def task_completion_problems(description: Optional[str], workspace: Optional[Path],
