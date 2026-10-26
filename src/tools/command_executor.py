@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -268,6 +269,7 @@ class CommandExecutionTool(BaseTool):
             # Round 3r: an earlier framework conftest.py loaded src/x.py twice (as 'src.x' and as 'x')
             from src.utils.framework_conftest import refresh_framework_conftest
             refresh_framework_conftest(cwd_path)
+        run_started_at = time.time()  # Round 3t: for the data files a test run writes
         result = await run_sandboxed(command, cwd_path, timeout, tool_name=self.name, agent_id=agent_id)
 
         if result.status == "blocked":
@@ -355,7 +357,8 @@ class CommandExecutionTool(BaseTool):
             content_parts.append("[Framework notes on this command:]\n" + "\n".join(f"- {note}" for note in notes))
         if not result.background_log:
             # Round 3g: failed tests that pass alone, and known traps in the output (src/utils/test_diagnosis.py)
-            diagnosis = await self._test_diagnosis(cwd_path, command, returncode, result.stdout, result.stderr)
+            diagnosis = await self._test_diagnosis(cwd_path, command, returncode, result.stdout, result.stderr,
+                                                   run_started_at)
             if diagnosis:
                 content_parts.append(diagnosis.strip())
         return {
@@ -366,7 +369,7 @@ class CommandExecutionTool(BaseTool):
 
     @staticmethod
     async def _test_diagnosis(cwd_path: Path, command: str, returncode: Optional[int], stdout: Optional[str],
-                              stderr: Optional[str]) -> str:
+                              stderr: Optional[str], run_started_at: Optional[float] = None) -> str:
         """Round 3g: the framework's notes for a FAILED test run ('' for other commands or a passing run). Never raises."""
         try:
             from src.tools.project_links_check import is_test_command
@@ -380,7 +383,7 @@ class CommandExecutionTool(BaseTool):
             if returncode == 0 and not jest_failed_tests(output) and not pytest_failed_tests(output) \
                     and not suite_failures(output) and not other_failed_tests(output):
                 return ""
-            return await diagnose_failed_test_run(cwd_path, command, output)
+            return await diagnose_failed_test_run(cwd_path, command, output, run_started_at)
         except Exception as err:
             logger.debug(f"CommandExecutionTool: test diagnosis failed: {err}")
             return ""

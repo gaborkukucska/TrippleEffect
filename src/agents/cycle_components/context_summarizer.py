@@ -26,6 +26,12 @@ SUMMARY_MAX_TOKENS = 1000
 # and the fallback summary is used.
 SUMMARY_TIMEOUT_SECONDS = 600.0
 SUMMARY_CUT_OFF_NOTE = "\n(This summary was cut off: the model stopped answering.)"
+# Round 3t: 2026-10-26 12:46-15:40 17 of W2's and W4's chunk summaries stopped at SUMMARY_MAX_TOKENS (done_reason 'length',
+# ~3,900 characters) in the middle of a sentence - and the prompt asked for "Current progress and next steps" LAST, so that
+# was the part that was lost. The prompt now asks for that first and gives a length; a summary that reaches the limit is
+# marked.
+SUMMARY_WORD_LIMIT = 350
+SUMMARY_LENGTH_NOTE = "\n(This summary reached its length limit; its end may be missing.)"
 FALLBACK_SUMMARY_MAX_LINES = 30
 FALLBACK_TEXT_CHARS = 160
 
@@ -312,12 +318,12 @@ class ContextSummarizer:
             
             summarization_prompt = f"""You are being asked to summarize conversation history for agent '{original_agent_id}' to help manage context length for small local LLMs.
 
-Please provide a concise but comprehensive summary of this conversation chunk ({chunk_num}/2) that preserves:
-1. Key decisions and actions taken
-2. Important context and state changes
-3. Tool usage and results
-4. Any errors or issues encountered
-5. Current progress and next steps
+Please provide a concise but comprehensive summary of this conversation chunk ({chunk_num}/2), at most {SUMMARY_WORD_LIMIT} words, that preserves (most important first):
+1. Current progress and next steps
+2. Key decisions and actions taken
+3. Important context and state changes
+4. Tool usage and results
+5. Any errors or issues encountered
 
 CONVERSATION CHUNK TO SUMMARIZE:
 {chunk_text}
@@ -338,6 +344,8 @@ Please provide your summary as plain text (no XML tags needed for this summariza
             # Use the CG's LLM provider directly for summarization
             summary_chunks = []
             stream_errors = []
+            reached_limit = []  # Round 3t: done_reason 'length'
+
             # Round 2p: thinking off - with thinking on, qwen3.5 spent all 800 tokens thinking and returned no summary 14 times
             # on 2026-10-21 (18:13-18:33), so W1 dragged a 20-26k token history through every cycle.
             from src.llm_providers.ollama_provider import thinking_off_kwargs
@@ -355,6 +363,9 @@ Please provide your summary as plain text (no XML tags needed for this summariza
                             summary_chunks.append(response_chunk["content"])
                         elif isinstance(response_chunk, dict) and response_chunk.get("type") == "error":
                             stream_errors.append(str(response_chunk.get("content") or "error"))
+                        elif (isinstance(response_chunk, dict) and response_chunk.get("type") == "finish_info"
+                              and response_chunk.get("done_reason") == "length"):
+                            reached_limit.append(True)
 
             try:
                 await asyncio.wait_for(read_summary(), timeout=SUMMARY_TIMEOUT_SECONDS)  # Round 3f
@@ -372,6 +383,10 @@ Please provide your summary as plain text (no XML tags needed for this summariza
                 logger.warning(f"ContextSummarizer: summary {chunk_num}/2 for '{original_agent_id}' was cut off "
                                f"({stream_errors[-1][:120]}).")
                 summary += SUMMARY_CUT_OFF_NOTE
+            elif summary and reached_limit:
+                logger.warning(f"ContextSummarizer: summary {chunk_num}/2 for '{original_agent_id}' reached its "
+                               f"{SUMMARY_MAX_TOKENS}-token limit.")
+                summary += SUMMARY_LENGTH_NOTE
             
             if summary:
                 logger.debug(f"Generated summary for chunk {chunk_num}: {len(summary)} characters")

@@ -1097,18 +1097,110 @@ def no_tests_note(root: Optional[Path], output: Optional[str]) -> Optional[str]:
         return None
 
 
-async def diagnose_failed_test_run(workspace: Any, command: str, output: str) -> str:
+# --- Round 3t: data files the test run itself wrote --------------------------------------------------------------------
+# 2026-10-26 13:18-15:44 (WiFi_Snake_Game) src/leaderboard.py kept its entries in os.path.join(os.path.dirname(__file__),
+# 'leaderboard.json') = src/leaderboard.json, while reset_leaderboard() - called by the tests' autouse fixture - deleted
+# 'leaderboard.json' relative to the folder the tests run in, where no such file was. Every Leaderboard() read the entries of
+# all earlier tests and runs ("assert 4 == 1", "assert 6 == 3"); 19 full test runs failed and the diagnosis only said that
+# 4 of 5 failed tests passed alone.
+_WRITTEN_DATA_SUFFIXES = frozenset({".json", ".csv", ".db", ".sqlite", ".sqlite3", ".txt", ".pkl", ".pickle", ".dat"})
+_NOT_DATA_FILES = frozenset({"package.json", "package-lock.json", "tsconfig.json", "jsconfig.json", "composer.json",
+                             "requirements.txt", ".eslintrc.json", "jest.config.json", "coverage-final.json"})
+_WRITTEN_SKIP_DIRS = _SNAPSHOT_SKIP | frozenset({"coverage", ".nyc_output", "htmlcov", ".te_background"})
+MAX_WRITTEN_DATA_FILES = 3
+
+
+def data_files_written_since(root: Path, since: float, limit: int = 3000) -> List[str]:
+    """Round 3t: the project's data files (json, csv, db, txt, ...) changed or created at or after `since`."""
+    found: List[str] = []
+    checked = 0
+    try:
+        for path in sorted(Path(root).rglob("*")):
+            checked += 1
+            if checked > limit:
+                break
+            try:
+                rel = path.relative_to(root)
+            except ValueError:
+                continue
+            if set(rel.parts[:-1]) & _WRITTEN_SKIP_DIRS or rel.parts[0].startswith(".") or not path.is_file():
+                continue
+            if path.suffix.lower() not in _WRITTEN_DATA_SUFFIXES or path.name in _NOT_DATA_FILES:
+                continue
+            if path.stat().st_mtime >= since:
+                found.append(rel.as_posix())
+    except OSError:
+        pass
+    return found
+
+
+def _same_name_elsewhere(root: Path, written: str) -> List[str]:
+    """Round 3t: 'file line N' of string literals that are just the written file's NAME (a path relative to the folder the
+    tests run in) in the project's Python files, when that name does not exist at the workspace root."""
+    import ast
+    name = PurePath(written).name
+    if PurePath(written).parent == PurePath(".") or (Path(root) / name).exists():
+        return []
+    places: List[str] = []
+    for path in sorted(Path(root).rglob("*.py")):
+        try:
+            rel = path.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        if set(PurePath(rel).parts[:-1]) & _SNAPSHOT_SKIP:
+            continue
+        tree = _parse_python(path)
+        for node in ast.walk(tree) if tree is not None else []:
+            if isinstance(node, ast.Constant) and node.value == name:
+                places.append(f"{rel} line {node.lineno}")
+                break
+        if len(places) >= 2:
+            break
+    return places
+
+
+def written_data_note(root: Optional[Path], output: Optional[str], since: Optional[float]) -> Optional[str]:
+    """
+    Round 3t: for a FAILED test run, the note that the run wrote the project's own data files (so the tests share what is in
+    them), and where the code names such a file by a bare name that points at another place; None otherwise. Never raises.
+    """
+    try:
+        if not root or not since or not (pytest_failed_tests(output) or jest_failed_tests(output)):
+            return None
+        written = data_files_written_since(Path(root), since)[:MAX_WRITTEN_DATA_FILES]
+        if not written:
+            return None
+        lines = [f"[Framework check - this test run WROTE the project's data file(s) {', '.join(written)}:]",
+                 "Tests that use a real data file share what is in it: each test (and each later run) starts with the "
+                 "data that earlier tests left there, so counts and contents depend on the order of the tests. Give the "
+                 "tests their own temporary file instead - e.g. pass `tmp_path / '<file name>'` as the storage path, or "
+                 "`monkeypatch` the path the code uses - and delete nothing in the project from a test."]
+        for rel in written:
+            for place in _same_name_elsewhere(Path(root), rel):
+                lines.append(f"- '{PurePath(rel).name}' ({place}) is a path relative to the folder the tests run in (the "
+                             f"workspace root), where no such file is - but the file the code reads and writes is {rel}. "
+                             f"Deleting or opening '{PurePath(rel).name}' there does not touch {rel}.")
+        return "\n".join(lines)
+    except Exception as err:
+        logger.debug(f"written_data_note failed: {err}")
+        return None
+
+
+async def diagnose_failed_test_run(workspace: Any, command: str, output: str, run_started_at: Optional[float] = None) -> str:
     """
     The framework's notes for a FAILED test run ('' if none): failed tests that pass alone, the same tests failing again
     and again (Round 3g+), and known traps in the output.
     Round 3o: + calls that do not match the project's code (api_mismatch_hints) and runs in which no test ran.
     Round 3r: + objects a module creates at import that all tests share (shared_module_state_hints).
+    Round 3t: + the project's data files the run itself wrote (written_data_note; run_started_at = when the run began).
     Cached per (workspace, workspace fingerprint, failing tests). Never raises.
     """
     try:
         if not workspace:
             return ""
         root = Path(workspace)
+        # Round 3t: before the run-alone check below writes the data files again
+        written_note = written_data_note(root, output, run_started_at)
         from src.agents.tool_activity import workspace_fingerprint
         failing = tuple(name for _f, name in jest_failed_tests(output)) + tuple(pytest_failed_tests(output))
         key = (str(root.resolve()), workspace_fingerprint(root), failing)
@@ -1121,6 +1213,8 @@ async def diagnose_failed_test_run(workspace: Any, command: str, output: str) ->
             _remember_isolation(root, output, found=bool(isolated))
         if isolated:
             parts.append(isolated)
+        if written_note:
+            parts.append(written_note)  # Round 3t
         no_tests = no_tests_note(root, output)  # Round 3o
         if no_tests:
             parts.append(no_tests)

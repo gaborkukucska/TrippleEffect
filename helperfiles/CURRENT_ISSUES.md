@@ -1,7 +1,7 @@
 <!-- # START OF FILE helperfiles/CURRENT_ISSUES.md -->
 # TrippleEffect - Current Issues
 
-**Last Updated:** 2026-10-26 (v2.52, after Round 3s)
+**Last Updated:** 2026-10-26 (v2.52, after Round 3t)
 **Based on runs:** Temp_Converter_CLI, Browser_Snake_Game and several WiFi snake games, 2026-10-18 to 2026-10-26, `qwen3.5:4b` / `qwen3.5:9b` on local and remote Ollama
 **Previous audit:** `app_20260430_161149_974450.log` (long-duration stability audit)
 
@@ -13,6 +13,7 @@
 - **Severity:** Medium (P2)
 - **Description:** 2026-10-26: after every framework check had passed (no copies, no shared state, one module per file), 8 of 52 tests of a 4B worker still disagreed with the code: a snake that grows without eating, a duplicate player name that should be refused, players expected on a leaderboard that registration never fills, `get_player()` returning a dict where the test reads `.name`. The worker changed tests and the code owner changed code for over an hour (Round 3r stopped the owner of a blocked task from joining in).
 - **Next step:** after the same tests fail N times, give the PM a framework summary of each disagreement (test expectation vs. code behaviour) and let the PM decide which side changes, as a task for that side's owner.
+- **Status (Round 3t):** a PM can no longer rewrite a planned test task into other work, and a PM that tries to fix code itself is told which worker owns the file and to give that worker a new task.
 - **Files:** `src/utils/test_diagnosis.py`, `src/agents/task_escalation.py`
 
 ### +43. Whole-file rewrites by 4B models
@@ -40,7 +41,7 @@
 
 ---
 
-## Resolved in Rounds 2n–3s (October 2026)
+## Resolved in Rounds 2n–3t (October 2026)
 
 Full detail: `helperfiles/PROJECT_PLAN.md`, Phase Z. Each item has regression tests in `tests/unit/test_roundXX.py`.
 
@@ -58,6 +59,7 @@ Full detail: `helperfiles/PROJECT_PLAN.md`, Phase Z. Each item has regression te
 - **Python tests and Python copies for JavaScript code** (3c, 3q, 3s); **browser scripts no page loads** (3q).
 - **`.env` keys set twice without notice; a configured local model replaced** (3p).
 - **Tool calls the agent's state forbids answered from the duplicate cache; a `search` object crashing `code_editor`** (3s).
+- **A planned test task rewritten into "No test runs required"; PMs giving fixes to workers who may not change the file; tests sharing a data file the cleanup never reached; summaries cut off before the next steps** (3t).
 
 ---
 

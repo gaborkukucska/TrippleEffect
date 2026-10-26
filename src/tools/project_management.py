@@ -491,6 +491,92 @@ def finished_task_change_error(task: Any, task_ref: Any, kwargs: Dict[str, Any],
         return None
 
 
+_PLANNED_TASK_PREFIX_RE = re.compile(r"^\s*(?:Kick-off Task|Update \d+ Task)\s*\d+\s*:\s*", re.IGNORECASE)
+
+
+def _is_planned_task(task: Any) -> bool:
+    tags = _task_tags(task)
+    description = str(get_task_field(task, "description", "") or "")
+    return "kickoff" in tags or any(tag.startswith("update_") for tag in tags) or bool(
+        _PLANNED_TASK_PREFIX_RE.match(description))
+
+
+def planned_task_rewrite_error(task: Any, task_ref: Any, kwargs: Dict[str, Any], caller_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """
+    Round 3t: the refusal of a modify_task that REPLACES the text of an open planned task (a kick-off or update task of
+    the approved plan) with other work, or None. Adding to the text (the planned text stays in it) is allowed; framework
+    calls pass. 2026-10-26 13:16-14:51 (WiFi_Snake_Game) PM1 rewrote "Kick-off Task 7: Write pytest tests for game logic,
+    player management, and leaderboard in tests/" four times - into "Fix src/game_logic.py to export GRID_WIDTH ...", "Fix
+    test failure: Run `pytest ...`" and finally "Examine src/game_logic.py to verify GRID_WIDTH and GRID_HEIGHT are in
+    __all__ ... No test runs required." - which W2 then marked finished: the planned tests task was gone, and the test-run
+    check with it.
+    """
+    try:
+        if caller_id in FRAMEWORK_CALLERS or not _is_planned_task(task):
+            return None
+        new_description = kwargs.get("description")
+        if new_description is None or not str(new_description).strip():
+            return None
+        current = " ".join(str(get_task_field(task, "description", "") or "").split())
+        new_text = " ".join(str(new_description).split())
+        core = _PLANNED_TASK_PREFIX_RE.sub("", current).strip()
+        if not core or new_text == current or core.lower() in new_text.lower():
+            return None  # unchanged, or the planned text is kept and only added to
+        shown = current if len(current) <= 100 else current[:97] + "..."
+        logger.warning(f"ProjectManagementTool: '{caller_id}' tried to replace the text of the planned task {task_ref}. "
+                       "Refused.")
+        return {"status": "error", "error_type": "planned_task", "message": (
+            f"Task '{task_ref}' is a planned task of the approved plan ('{shown}') and its text was NOT replaced: a new "
+            "description would erase this planned work (and the checks that belong to it, such as the passing test run a "
+            "test task needs). For other work - for example a fix in a file of another worker - create a NEW task with "
+            "action 'add_task' (a description that names the problem and the file) and assign it to the worker whose task "
+            "made that file. To give this task's worker more details, use send_message, or add them after the planned text "
+            "(keep the planned text in the description).")}
+    except Exception as err:
+        logger.debug(f"planned_task_rewrite_error failed: {err}")
+        return None
+
+
+def file_owner_note(manager: Any, project_name: Optional[str], session_name: Optional[str], rel_path: Optional[str]) -> str:
+    """
+    Round 3t: for a Project Manager whose change of a project file was refused, who owns that file and what to do:
+    ' src/leaderboard.py belongs to W4 (...): ...' - '' if no worker's task names it. Never raises. 2026-10-26 13:30-14:12
+    PM1 tried to fix src/leaderboard.py and src/game_logic.py itself 9 times, then rewrote W2's tests task into a fix of
+    W1's src/game_logic.py - which W2 was not allowed to change.
+    """
+    try:
+        if not rel_path or not project_name or not session_name:
+            return ""
+        tw = ProjectManagementTool()._get_taskwarrior_instance(project_name, session_name)
+        if tw is None:
+            return ""
+        rel = _clean_rel_path(rel_path)
+        from src.utils.task_files import file_paths_in_text
+        owners = []
+        for task in _all_tasks(tw):
+            assignee = str(get_task_field(task, "assignee", "") or "").strip()
+            if (not assignee or non_worker_role(assignee, manager) or "project_kickoff" in _task_tags(task)
+                    or str(get_task_field(task, "status", "") or "").strip().lower() == "deleted"):
+                continue
+            if _task_names_path(file_paths_in_text(str(get_task_field(task, "description", "") or "")), rel):
+                owners.append(task)
+        if not owners:
+            return ""
+        open_owners = [t for t in owners if not task_is_finished(t)]
+        task = open_owners[0] if open_owners else owners[-1]
+        owner = str(get_task_field(task, "assignee", "") or "").strip()
+        label = f"'{_shown_text(get_task_field(task, 'description', ''), 70)}'"
+        if open_owners:
+            return (f" '{rel}' belongs to {owner}, whose open task {label} ({get_task_field(task, 'uuid', '?')}) names it: "
+                    f"tell {owner} exactly what must change with send_message.")
+        return (f" '{rel}' belongs to {owner} (its FINISHED task {label}): create a NEW task for the fix - action "
+                f"'add_task' with a description that names '{rel}' and the change, and assignee_agent_id='{owner}'. Do not "
+                "give the fix to a worker whose task does not name this file: it may not change it.")
+    except Exception as err:
+        logger.debug(f"file_owner_note failed: {err}")
+        return ""
+
+
 def _worker_parent_task(tw: Any, agent_id: str, manager: Any) -> Optional[Any]:
     """The task a worker is working on: its current/active task, else its only open task. None if unknown."""
     worker = getattr(manager, "agents", {}).get(agent_id) if isinstance(getattr(manager, "agents", None), dict) else None
@@ -2118,6 +2204,10 @@ class ProjectManagementTool(BaseTool):
 
             # Round 3d: a FINISHED task is not given out again without being reopened, and never rewritten into other work
             refusal = finished_task_change_error(task, task_id, kwargs, agent_id, self._map_task_progress)
+            if refusal:
+                return refusal
+            # Round 3t: an open task of the approved plan keeps its text (new work is a new task)
+            refusal = planned_task_rewrite_error(task, task_id, kwargs, agent_id)
             if refusal:
                 return refusal
 

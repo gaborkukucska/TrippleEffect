@@ -686,6 +686,20 @@ class ToolExecutor:
             return None
 
     @staticmethod
+    def _pm_file_owner_note(tool_name: str, tool_args: Dict[str, Any], project_name: Optional[str],
+                            session_name: Optional[str], manager: Any) -> str:
+        """Round 3t: src/tools/project_management.file_owner_note for the file a PM's refused change aimed at ('' if none)."""
+        try:
+            filename = ToolExecutor._shared_file_change_target(tool_name, tool_args)
+            if not filename:
+                return ""
+            from src.tools.project_management import file_owner_note
+            return file_owner_note(manager, project_name, session_name, filename)
+        except Exception as err:
+            logger.debug(f"ToolExecutor: file owner note failed: {err}")
+            return ""
+
+    @staticmethod
     def _admin_project_change_message(tool_name: str, tool_args: Dict[str, Any], agent_id: str,
                                       project_name: Optional[str], manager: Any) -> Optional[str]:
         """Round 3s: the refusal for the Admin AI changing a shared-workspace file of a project a PM builds, else None."""
@@ -945,6 +959,9 @@ class ToolExecutor:
             # (offering only some tool schemas did not stop W1 editing code in worker_report, 2026-10-20 10:19-11:03)
             framework_internal = bool(tool_args.pop(FRAMEWORK_INTERNAL_ARG, False))
             block_reason = None if framework_internal else state_tool_block_message(agent_type_for_auth, original_state, tool_name, tool_args)
+            if block_reason and agent_type_for_auth == AGENT_TYPE_PM and manager is not None:
+                # Round 3t: a PM's refused file change names the worker who owns the file and what to do
+                block_reason += self._pm_file_owner_note(tool_name, tool_args, project_name, session_name, manager)
             if block_reason:
                 logger.warning(f"[TOOL_EXEC_ERROR] ID:{execution_id} | Refused '{tool_name}' for '{agent_id}' "
                                f"(type {agent_type_for_auth}, state {original_state}): {block_reason[:120]}")

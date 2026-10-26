@@ -1,5 +1,6 @@
 # START OF FILE src/tools/test_runner.py
 import logging
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -80,6 +81,7 @@ class TestRunnerTool(BaseTool):
             # Round 3r: an earlier framework conftest.py loaded src/x.py twice (as 'src.x' and as 'x')
             from src.utils.framework_conftest import refresh_framework_conftest
             refresh_framework_conftest(run_path)
+        run_started_at = time.time()  # Round 3t: for the data files a test run writes
         try:
             res = await run_sandboxed(command, run_path, timeout, tool_name=self.name, agent_id=agent_id)
         except Exception as e:
@@ -136,7 +138,8 @@ class TestRunnerTool(BaseTool):
                                  "test command - the output shows failed tests. Run the test command without '| head', "
                                  "'| tail' or '|| ...' to see its real result.")
             from src.utils.test_diagnosis import diagnose_failed_test_run
-            diagnosis = await diagnose_failed_test_run(run_path, command, f"{res.stdout}\n{res.stderr}")
+            diagnosis = await diagnose_failed_test_run(run_path, command, f"{res.stdout}\n{res.stderr}",
+                                                       run_started_at)
             if diagnosis:
                 result["framework_check"] = diagnosis.strip()
         else:
@@ -144,7 +147,8 @@ class TestRunnerTool(BaseTool):
             result["message"] = f"Test command failed with exit code {res.returncode}."
             # Round 3g: failed tests that pass alone, and known traps in the output (src/utils/test_diagnosis.py)
             from src.utils.test_diagnosis import diagnose_failed_test_run
-            diagnosis = await diagnose_failed_test_run(run_path, command, f"{res.stdout}\n{res.stderr}")
+            diagnosis = await diagnose_failed_test_run(run_path, command, f"{res.stdout}\n{res.stderr}",
+                                                       run_started_at)
             if diagnosis:
                 result["framework_check"] = diagnosis.strip()
 
