@@ -203,6 +203,8 @@ The `AgentCycleHandler` maintains a per-agent cache of recent tool calls and the
 3. After 3+ consecutive duplicates, escalates with `[AUTO-ADVANCE]` — for PMs this forces a state transition; for workers it injects a strong corrective directive.
 4. Calls `_deduplicate_pm_framework_messages()` before each injection to remove old framework messages, preventing context bloat.
 
+Exceptions: a command or test run is run again when the workspace changed since the agent's last identical run (Round 3d), a read runs again after files changed, and a call that the agent's current state forbids is never answered from the cache - it goes to the executor, which refuses it with the state's rules (Round 3s).
+
 ### 4.9. Tool Action Alias Auto-Correction
 
 Both `ProjectManagementTool` and `FileSystemTool` include `action_suggestions` dictionaries that automatically correct common LLM action hallucinations (e.g., `mark_completed` → `complete_task`, `create_directory` → `mkdir`). When an invalid action is detected and a mapping exists, the tool auto-corrects and continues execution, appending a correction note to the successful result so the agent learns the correct action name.
@@ -225,9 +227,31 @@ These mechanisms were added after real runs with 4B–9B local models. Each one 
 - **Code feedback without blocking**: `python_static_check` reports missing imports, undefined names, stub functions, a declared return without `return`, tests that cannot fail and (since Round 2m) Python's own SyntaxWarnings as notes on every Python write. Hollow files and stubs block `task_progress=finished`. Agents' code is parsed with `parse_python()`, so its warnings never reach the server's stderr.
 - **Governance principles** are validated on load (`settings.usable_governance_principles()`). An entry without `name` or `text` is dropped with a warning instead of breaking every system prompt.
 
-### 4.12. Test Suite
+### 4.12. Project Guard Rails (v2.52, Rounds 2n–3s)
 
-`python -m pytest -q tests` runs the whole suite offline in seconds: 1057 tests at v2.51, 0 failures, and 0 warnings even with `-W error` (Python 3.13 and 3.14). The model-discovery tests talk to a local `aiohttp` server that imitates Ollama and OpenRouter. The cycle-handler tests drive the real `AgentCycleHandler.run_cycle()` with a real `Agent`, because `MagicMock(spec=Agent)` does not know instance attributes. Async tests must use `unittest.IsolatedAsyncioTestCase` or `asyncio.run()`: an `async def` method of a plain `TestCase` is counted as passed without running.
+The runs of Rounds 2n–3s built whole projects (CLI tools, browser games with a Python or Node.js server) with 4B–9B models. Most new guard rails sit in the `ToolExecutor`, run in this order before a file tool does anything, and answer with a refusal that says what to do instead:
+
+1. **State allowlist** (`tool_activity.state_tool_block_message`): tools the agent's state does not offer; PMs never change project files.
+2. **Another worker's new file** (`project_management.foreign_file_creation_error`, 3f): a worker does not create a file named by another worker's task.
+3. **Admin AI and a PM's project** (`admin_project_change_error`, 3s): the Admin AI does not change files of a project a PM builds - it tells the PM.
+4. **No Python copy of a JavaScript module** (`javascript_twin_creation_error`, 3s): `dir/x.py` is not created beside `dir/x.js` unless a task names it.
+5. **Waiting workers** (`blocked_worker_change_error`, 3r): a worker whose open tasks all wait for unfinished tasks changes no files.
+6. **Another worker's existing file** (`foreign_file_change_error`, 3o): a worker does not change a file named by another worker's task (open or finished), unless its own task names it, is a test-run task, or is follow-up work created after that task finished.
+7. **Compaction placeholders** (3n) are not file text; then the deterministic policy gate checks shell commands.
+
+**Task completion** (`project_management._completion_refusal`): `task_progress='finished'` is refused while the task's files (named in its text, or changed by the worker for it - `file_authorship`) are hollow, invalid (Python, JavaScript, JSON, shell) or have link problems (`project_links_check`: a test of a copy, a module that exports nothing, a missing npm package, a Python import of a JavaScript file), and - for a task that says to run, verify or fix the tests - until a full test run of the current files has passed (`utils/test_runs.py`).
+
+**Failed test runs** come back with the output and a diagnosis (`utils/test_diagnosis.py`): failing tests that pass when run alone, the same tests failing again and again although files changed, calls that do not match the project's code, objects a module creates at import that all tests share (and class attributes shared by all instances), a Python import of a JavaScript file, known jest traps, and runs in which no test ran.
+
+**Python projects** get a framework-owned root `conftest.py` (`utils/framework_conftest.py`) that puts `src/` and the root on `sys.path` and makes `import src.x` and `import x` the same module, so a file is never loaded twice. An earlier framework version of that file is replaced before a pytest run; a project's own conftest is never touched. **Mixed projects:** a Python test planned for JavaScript code becomes a JavaScript test in the kick-off tasks and in PROJECT_STRUCTURE.md (`javascript_test_renames`).
+
+**Context:** the summarizer works from the window actually sent; the history is compacted first (old write payloads, out-of-date reads, re-run outputs, `context_compaction.py`); messages reach busy agents at their next step and unread ones are shown last in the prompt (`message_delivery.py`).
+
+**Project updates** (`workflows/project_update.py`): feedback on a running project becomes "Update N" for the existing PM and team instead of a copy project.
+
+### 4.13. Test Suite
+
+`python -m pytest -q tests` runs the whole suite offline in about a minute: 1656 tests at v2.52 (1057 at v2.51), 0 failures, and 0 warnings even with `-W error` (Python 3.13 and 3.14). The model-discovery tests talk to a local `aiohttp` server that imitates Ollama and OpenRouter. The cycle-handler tests drive the real `AgentCycleHandler.run_cycle()` with a real `Agent`, because `MagicMock(spec=Agent)` does not know instance attributes. Async tests must use `unittest.IsolatedAsyncioTestCase` or `asyncio.run()`: an `async def` method of a plain `TestCase` is counted as passed without running.
 
 ## 5. State and Communication Model
 

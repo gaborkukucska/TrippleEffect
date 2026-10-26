@@ -198,6 +198,8 @@ The tests are an **older snapshot**: either the "76/76" run used a newer set, or
 
 **Status after Round 2m (2026-10-20):** all stale tests repaired against the current code (none skipped or deleted), `test_agent_lifecycle.py` imports again, and seven `async def` tests that had never run (plain `unittest.TestCase`) now run. `python -m pytest -q -W error tests`: 1057 passed, 0 failed, 0 warnings on Python 3.13 and 3.14. The repaired tests found real defects, fixed in the same round: the localhost Ollama (`ollama-local`) counted as a remote provider in failover and model selection; one malformed governance principle broke every system prompt; agents' code with an invalid escape printed SyntaxWarnings to the server's stderr.
 
+**Status after Round 3s (2026-10-26):** 1656 passed, 0 failed, 0 warnings. Every round since 2d adds `tests/unit/test_roundXX.py` built from the run that prompted it; the cycle-handler tests drive the real `AgentCycleHandler.run_cycle()`, and the conftest tests run pytest on small sample projects.
+
 **Plan:** un-ignore `tests/`; repair/retire stale tests; add characterization tests for the highest-risk modules first (policy gate, command env scrubbing, task store, state-transition table, loop-breaker decisions).
 
 ---
@@ -209,7 +211,7 @@ The tests are an **older snapshot**: either the "76/76" run used a newer set, or
 3. **Constrained decoding + `think` control** (6.2). Likely removes entire categories of retry cycles.
 4. **Capability-based model routing.** Use the performance tracker to learn per-model reliability (tool-call validity, context, thinking), route cheap steps (summaries, Guardian, classification) to a 1–3B model and coding to the 9B, escalate on validator failure. Your failover code already does half of this, driven by errors instead of capability.
 5. **Transactional workspace.** `git` snapshot before each worker cycle; roll back and re-plan when the loop-breaker fires. Eliminates the whole "overwrite protection" family of workarounds.
-6. **Framework-run verification.** Let the framework (not the agent) run the project's tests after each task and feed back a 10-line summary; the model decides what to fix.
+6. **Framework-run verification.** Let the framework (not the agent) run the project's tests after each task and feed back a 10-line summary; the model decides what to fix. *(Partly done in Rounds 3e-3s: test-run tasks need a passing run of the current files, and every failed run comes back with a framework diagnosis.)*
 7. **Real memory (Phase 28):** SQLite FTS5/BM25 first (zero dependencies, runs on a phone), optional local embeddings later; a "lessons learned" store populated from stall/loop events, so the same failure is not repeated in the next project.
 8. **Device profiles** (`phone`, `laptop`, `workstation`) that set context, concurrency, tool subsets and Guardian mode in one switch, matching the "old Android phone" goal.
 9. **Offline knowledge:** `zim_search` (offline Wikipedia/docs) is a standout feature for the stated goal; document it and promote it.

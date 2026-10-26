@@ -1,8 +1,8 @@
 <!-- # START OF FILE helperfiles/PROJECT_PLAN.md -->
 # Project Plan: TrippleEffect
 
-**Version:** 2.51
-**Date:** 2026-10-20
+**Version:** 2.52
+**Date:** 2026-10-26
 
 ## 1. Project Goals
 
@@ -196,11 +196,12 @@
 * [X] **Rounds 1c–2c (task store, tools, prompts):** self-healing Taskwarrior store and file system, sanitised tags/assignees, imperfect task UUIDs resolved, tool calls accepted in the shapes small models send (aliases, keyed actions, mixed JSON/Python chunks, bare-word JSON), Admin plan from Markdown without the JSON title block, tasks wait for unfinished dependencies, non-blocking Python code notes (missing imports, stubs, empty tests), edits can never empty a file, no 'finished' task with hollow files, a Guardian concern can always be resolved.
 * [X] **Rounds 2d–2l (driven by `qwen3.5:4b` / `qwen3.5:9b` runs, see Phase Z below):** started tasks resume in `worker_work`; cut-off replies get a larger budget instead of "empty response"; replies that only think are retried with thinking off; idle PMs are woken for unassigned work; per-state tool allowlists enforced in the executor (PMs no longer edit workers' files); broken kick-off plans keep their valid parts; explicit `OLLAMA_API_URLS` replace localhost; workers cannot park on their own open task.
 * [X] **Round 2m (tests):** all stale tests repaired, none skipped; `pytest tests` needs no `--ignore`; 7 never-run async tests run; real defects found and fixed (localhost Ollama treated as remote in failover/selection, one malformed governance principle broke every prompt, SyntaxWarnings from agents' code on stderr).
-* [X] **Unit Test Suite — 1057/1057 passing, 0 warnings** (`python -m pytest -q -W error tests`, Python 3.13 and 3.14).
+* [X] **Rounds 2n–3s (driven by `qwen3.5:4b` / `qwen3.5:9b` runs on local and remote Ollama, see Phase Z below):** real context window for summaries, history compaction before summarizing, messages delivered to busy agents; JavaScript/JSON/shell syntax checks; lost and cut-off replies retried; native tool calls for OpenRouter; project updates for a running project; one task per worker, tasks wait for their dependencies, workers do not change other workers' files and change none while their tasks wait; a passing full test run required to finish test tasks; failed test runs diagnosed (tests that pass alone, the same tests failing again and again, calls that do not match the code, state the tests share, a Python import of JavaScript); the framework conftest loads each file once; Python tests of JavaScript code become JavaScript tests and Python copies of JavaScript are refused; the Admin AI leaves a PM's project to the PM; `.env` keys set twice are reported.
+* [X] **Unit Test Suite — 1656/1656 passing, 0 warnings** (`python -m pytest -q -W error tests`, Python 3.13 and 3.14).
 
 **Future Goals:**
 
-* **Next (small-model reliability):** check a task's stated requirements when it is marked finished (2026-10-20: a CLI task was finished without its `main()`); an evaluation harness of fixed scenarios to measure each guard rail (see `helperfiles/REVIEW_REPORT.md` §9).
+* **Next (small-model reliability):** tests that contradict the code they test (and code bent to fit such tests) - let the PM decide with a framework summary of the disagreements instead of the worker changing both; smaller edits instead of repeated whole-file rewrites by 4B models; an evaluation harness of fixed scenarios to measure each guard rail (see `helperfiles/REVIEW_REPORT.md` §9).
 
 * **Phase 28: Advanced Memory & Learning.** (Feedback Loop, Learned Principles, Advanced Context Management, Long-term Memory Systems).
 * **Phase 29: Proactive Behavior.** (Scheduling, Goal Management, Autonomous Planning, Predictive Actions).
@@ -681,6 +682,72 @@ Every round was driven by a real run with a small local model (`qwen3.5:4b`, lat
 **Test status:** `python -m pytest -q -W error tests` - 1057 passed, 0 failed, 0 warnings (Python 3.13 and 3.14).
 
 **Open:** requirement checks when a task is marked finished; throughput with a single Ollama slot (`-np 1`) - agents queue for it by design.
+
+**Round 2n (context window, own files):** the summarizer uses the `num_ctx` actually sent and Ollama's real `prompt_eval_count`; a full context window is no longer taken for an output cut-off and forces a summary. New `src/utils/file_authorship.py` records who changed each file for which task: an agent may replace its OWN file with `write`, and the completion check also covers the files the assignee changed for the task. Misnamed tools are resolved (`manage_tool` -> `manage_team`); the raised output budget after a cut-off stays for the state; failover reads Ollama `/api/show` capabilities.
+
+**Round 2o:** the "[Action Taken: called ...]" history text of 2n was removed again (qwen3.5 imitated it: 27 of 153 replies ran nothing) and a reply that only imitates a call is not kept; the ChatML `template` field was dropped (`/api/chat` has no such field). The Constitutional Guardian reviews only text that leaves an agent; a concern climbs worker -> PM -> Admin AI -> user (new `resolve_concern` tool for the waiting decider; critical principles GP001/GP004/GP008 are not settled by an agent; at the user all agents pause). A plan for an existing project name asks whether to continue it or start a new project.
+
+**Round 2p:** a history ending with an assistant message is no longer sent as a prefill (the model stopped after one token); summaries are made without thinking and fall back to a framework summary of the tool calls; a PM is not parked in standby while a ready task waits for an idle worker; `pm_audit` is refused while tasks are open; the Admin AI cannot create PMs through `create_agent`; kick-off dependency ranges (`task_1..6`) are expanded.
+
+**Round 2r:** empty optional `modify_task` fields mean "not given" (PM1 stalled in `error`); new `src/agents/error_recovery.py` resumes an agent left in `error` (at most 3 times per hour, then its supervisor is told); new `src/tools/source_check.py` checks JavaScript (`node --check`), JSON and shell files on every write and edit and blocks 'finished' for invalid ones; PROJECT_STRUCTURE.md mentions pytest/conftest.py only for Python projects.
+
+**Round 2s:** a typed "continue" / "start new project" applies the pending existing-project choice; page scripts are versioned through an import map (no stale cached modules); messages to a PM whose plan awaits approval are refused; a new plan for the same project replaces the unapproved PM.
+
+**Round 2t:** "continue" carries the latest session that has work files; tasks can be assigned to workers only (not to a PM, the Admin AI or the Guardian); part files (`app.py.part1`) are refused; `code_editor` creates a missing file from one whole-file chunk; appends to `.py` files are syntax-checked.
+
+**Round 2v:** the text of a rejected new Python file is kept (`src/tools/rejected_drafts.py`) and completed in place with `find_replace` / `replace_lines`; missing-comma syntax errors name the line; files a task creates in the root ("Create server.py") are planned files; task UUIDs with one or two wrong characters resolve; all tool help texts brought up to date.
+
+**Round 2w:** every registered tool's schema and help are audited by a test (`test_round2w.py`); assignment calls in many shapes (`assigned_to`, actions containing 'assign') map to `modify_task`; `send_message` ids are `PM1` / `W1` / `admin_ai`.
+
+**Round 2x:** replies whose output never arrived, cut-off and context-full replies are retried and not counted as empty; JavaScript/JSON/shell writes with syntax errors are rejected like Python; a task with unfinished dependencies is never set to 'doing'; accepted state changes are recorded as framework notes, not as the agent's reply.
+
+**Round 2y:** small dropped tool calls get a resend notice (lost-output check calibrated on two runs); a rejected new file whose error moves further down counts as progress; a file named by a task and by the structure in different folders is planned once, at the task's path.
+
+**Round 2z:** Ollama sampling defaults `OLLAMA_REPEAT_PENALTY=1.0` and `OLLAMA_PRESENCE_PENALTY=0.0` (1.15 / 1.5 had dropped a three-argument call six times in a row).
+
+**Round 3a:** native tool calling for OpenRouter (tool schemas, OpenAI history format, streamed tool calls joined; models without tool support are retried without tools); a reply that is only a tool call written as JSON text runs as that call (`src/llm_providers/tool_call_format.py`).
+
+**Round 3b (project updates):** a plan for a project that already runs is an UPDATE: the approval card offers "Approve update", PROJECT_PLAN.md gets "## Update N", the existing PM plans it with the project's current files and its team gets "Update N Task i" tasks (`src/workflows/project_update.py`). Failover tries the same model on the provider's other keys first after a 429.
+
+**Round 3c:** one ready task per worker; activation counts only finished dependencies; a task repeating a finished one is refused; kick-off test/docs tasks wait for the code tasks and verification tasks for all earlier ones; no Python tests are planned for JavaScript-only code; a stable prompt start allows local prompt caching.
+
+**Round 3d:** `code_editor` flattens chunks whose location sits inside a `replace` object and repairs a bracket too many or too few; a finished task cannot be reassigned or rewritten without reopening it; new `src/tools/project_links_check.py` notes on write - and blocks 'finished' for - a test that loads no project file, a required JS module that exports nothing and an npm package missing from package.json; rolling summaries; command and test re-runs after workspace changes; every third forced report on one task goes to the PM (`src/agents/task_escalation.py`).
+
+**Round 3e:** new `src/utils/test_runs.py` records the latest full test run per workspace; a task that says to run, verify or fix the tests is finished only after a passing full run of the current files; a test run that never ends is explained (e.g. a module that starts a server when it is loaded); worker sub-tasks stay inside their own task.
+
+**Round 3f:** a stalled Ollama stream ends after an adaptive timeout (`num_predict` at the slowest seen output rate x1.5 + 60 s); a timed-out command says whether the program looped (CPU busy) or waited; a worker cannot create a file named by another worker's task; root-only files (package.json, requirements.txt) planned in a sub-folder move to the root.
+
+**Round 3g:** new `src/utils/test_diagnosis.py`: failing tests are re-run alone and those that pass alone are reported as depending on state left by earlier tests; hints for known jest traps (a setup file run as a test, `expect.any()` inside `JSON.stringify`, jsdom without canvas); PMs cannot copy a worker's open task or add unplanned "improvement" work; a command written inside `action` runs.
+
+**Round 3h:** the same tests failing in 4+ runs while files change point at the test (`stuck_note`); the run-alone check is not repeated for unchanged tests; no test files in another worker's test folder.
+
+**Round 3i:** new `src/agents/message_delivery.py`: messages reach busy agents at their next step, and unread messages are shown last in the prompt (and kept through summaries).
+
+**Round 3j:** the Admin AI cannot assign a PM's tasks; a worker that loses a task is told; a busy role may get one more worker (`src/agents/team_scaling.py`, at most 4 workers).
+
+**Round 3k:** non-streamed Ollama requests (tools attached) time out adaptively; test suites that never ran count in the stuck check; the task panel keeps its open groups across reloads.
+
+**Round 3l:** the agents of a Guardian concern learn the user's decision; the watchdog leaves paused agents alone; `src/agents/replanning_guard.py` stops the Admin AI from planning the same request twice.
+
+**Round 3m (a JavaScript project without package.json):** test files run directly (`node tests/game.test.js`) count in the stuck check, and a passing run of ANY test command of the current files is required to finish a test-run task when the project has no known test command; a check that throws exactly when the value is right (`if (!x) throw new Error('Expected x to be false')`) is named; `{"search": X, "replace": X}` is refused as changing nothing; unplanned documentation work is refused.
+
+**Round 3n:** the history is compacted before summarizing - old write payloads, out-of-date reads and re-run outputs become short placeholders (`src/agents/context_compaction.py`) - and the placeholder is refused as file text; notes for `python src/x.py` with package imports and for a `pkill -f` that killed its own shell.
+
+**Round 3o:** a worker cannot change the files of another worker's task (open or finished) unless its own task names them, is a test-run task or is follow-up work created after that task finished; failed `test_runner` / `command_executor` runs reach the agent with their output and the diagnosis; calls that do not match the project's code (missing names, wrong arguments) are named; a piped test run with failures counts as failed; Stop discards the tool calls of replies that arrive after it (`src/agents/user_stop.py`); a cut-off decomposition keeps the work budget.
+
+**Round 3p:** `.env` keys set twice with different values are reported at startup and by `collect.py` v2.5; a configured model that another local provider offers is kept; `ADMIN_AI_LOCAL_MAX_TOKENS` applies to `ollama-local`; the watchdog tells a worker when its task's files are complete and which files belong to other tasks (`src/agents/task_focus.py`); a no-op edit names the lines where the text already is; a reply cut off while writing keeps thinking on.
+
+**Round 3q:** a Python import of a JavaScript file is named on write, in the test diagnosis and by the completion check; PROJECT_STRUCTURE.md of a Python + JavaScript project says which tool tests which language; the task-done hint appears only when finishing would be accepted; `project_management(action='request_state')` runs as a state request; a line-range edit that only repeats the first line of its range is refused; a note for a browser script that no page loads.
+
+**Round 3r:** a worker whose tasks all wait for unfinished tasks changes no files; the framework conftest loads each file once (`import src.x` and `import x` give the same module, `src/utils/framework_conftest.py`) and an earlier framework conftest is updated before a pytest run; failed runs name the objects a module creates at import that all tests share, and class attributes shared by all instances; a test method that lost its class indentation is named.
+
+**Round 3s:** the Admin AI cannot change the files of a project a PM builds; a Python copy of a JavaScript module (`x.py` beside `x.js`) is refused unless a task names it; a Python test that imports only helpers inside the tests folder tests a copy; a Python test planned for JavaScript code becomes a JavaScript test in the kick-off tasks and the structure (`javascript_test_renames`); a call the agent's state forbids is not answered from the duplicate cache; a `search` object no longer crashes `code_editor`.
+
+**Files (Rounds 2n–3s):** mainly `src/agents/` (`core.py`, `cycle_handler.py`, `tool_activity.py`, `interaction_handler.py`, `agent_lifecycle.py` and the new `file_authorship`, `error_recovery`, `message_delivery`, `team_scaling`, `replanning_guard`, `task_escalation`, `context_compaction`, `user_stop`, `task_focus` modules), `src/tools/` (`executor.py`, `project_management.py`, `code_editor.py`, `file_system.py`, `command_executor.py`, `test_runner.py`, `python_static_check.py` and the new `source_check`, `rejected_drafts`, `project_links_check` modules), `src/utils/` (new `test_runs`, `test_diagnosis`, `framework_conftest`), `src/workflows/pm_kickoff_workflow.py`, `src/workflows/project_update.py`, `src/llm_providers/` (Ollama, OpenRouter, `tool_call_format.py`), `src/config/settings.py`, `prompts.yaml`, `collect.py`, `.env.example`, `static/`, `tests/unit/test_round2n.py` ... `test_round3s.py`.
+
+**Test status:** `python -m pytest -q -W error tests` - 1656 passed, 0 failed, 0 warnings (Python 3.13 and 3.14).
+
+**Open:** tests that contradict the code they test, and code changed to fit such tests (the framework names copies, shared state, calls that do not match and imports of JavaScript; real disagreements remain for the PM to decide); repeated whole-file rewrites by 4B models (15-18 KB per write, minutes each).
 
 ---
 <!-- # END OF FILE helperfiles/PROJECT_PLAN.md -->

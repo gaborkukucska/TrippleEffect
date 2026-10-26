@@ -1,15 +1,28 @@
 <!-- # START OF FILE helperfiles/CURRENT_ISSUES.md -->
 # TrippleEffect - Current Issues
 
-**Last Updated:** 2026-10-20 (v2.51, after Round 2m)
-**Based on runs:** Temp_Converter_CLI and Browser_Snake_Game, 2026-10-18 to 2026-10-20, `qwen3.5:4b` / `qwen3.5:9b` on Ollama (`-np 1`)
+**Last Updated:** 2026-10-26 (v2.52, after Round 3s)
+**Based on runs:** Temp_Converter_CLI, Browser_Snake_Game and several WiFi snake games, 2026-10-18 to 2026-10-26, `qwen3.5:4b` / `qwen3.5:9b` on local and remote Ollama
 **Previous audit:** `app_20260430_161149_974450.log` (long-duration stability audit)
 
 ---
 
 ## Active Issues (October 2026)
 
+### +44. Tests that contradict the code they test
+- **Severity:** Medium (P2)
+- **Description:** 2026-10-26: after every framework check had passed (no copies, no shared state, one module per file), 8 of 52 tests of a 4B worker still disagreed with the code: a snake that grows without eating, a duplicate player name that should be refused, players expected on a leaderboard that registration never fills, `get_player()` returning a dict where the test reads `.name`. The worker changed tests and the code owner changed code for over an hour (Round 3r stopped the owner of a blocked task from joining in).
+- **Next step:** after the same tests fail N times, give the PM a framework summary of each disagreement (test expectation vs. code behaviour) and let the PM decide which side changes, as a task for that side's owner.
+- **Files:** `src/utils/test_diagnosis.py`, `src/agents/task_escalation.py`
+
+### +43. Whole-file rewrites by 4B models
+- **Severity:** Low (P3)
+- **Description:** a 4B worker that fails an edit two or three times rewrites the whole file (15-18 KB, minutes per write) and usually introduces new defects. Edits are refused clearly (no-op chunks, cut-short line ranges, syntax errors), but the model returns to complete rewrites.
+- **Next step:** after a failed edit, offer the exact lines around the target (a small read) instead of the whole file; count repeated complete rewrites of one file as a stuck sign.
+- **Files:** `src/tools/code_editor.py`, `src/tools/file_system.py`
+
 ### +42. Task requirements are not checked when a task is marked finished
+- **Status (v2.52):** partly resolved - a task that says to run, verify or fix the tests needs a passing full test run of the current files (Rounds 3e, 3m), and the completion check covers the files the worker changed, link problems (tests of copies, missing exports, Python imports of JavaScript) and JS/JSON/shell syntax. Free-text requirements ("has a `main()`") are still not checked.
 - **Severity:** Medium (P2)
 - **Description:** 2026-10-20: a CLI task was marked finished although the file had no working `main()`. The framework blocks 'finished' for hollow files, stubs and undefined names (Rounds 2a/2e), but it does not compare the task's stated requirements with what was written.
 - **Next step:** derive checkable requirements from the task description (entry points, files, functions, "tests pass") and check them on `task_progress=finished`, like the existing hollow-file check.
@@ -24,6 +37,27 @@
 - **Severity:** Low (environment)
 - **Description:** 2026-10-19: a run "stuck for hours" was a laptop that went to sleep (about 77 watchdog ticks at once after wake-up, Ollama timeouts never fired).
 - **Workaround:** `systemd-inhibit --what=sleep:idle --why="TrippleEffect run" ./run.sh` (README, Quick Start).
+
+---
+
+## Resolved in Rounds 2n–3s (October 2026)
+
+Full detail: `helperfiles/PROJECT_PLAN.md`, Phase Z. Each item has regression tests in `tests/unit/test_roundXX.py`.
+
+- **Summaries triggered by the model's native window instead of the window sent** (2n); **history full of old file payloads, summarized every 3 cycles** - compacted first (3n).
+- **Imitated tool calls ("[Action Taken: ...]")** (2o); **assistant prefill that stopped the model after one token** (2p); **sampling penalties that dropped tool calls** (2z); **lost and cut-off replies counted as empty** (2x, 2y); **a reply cut off while writing switched thinking off** (3p).
+- **Agents stuck in `error` for good** (2r); **JavaScript/JSON/shell files never checked** (2r, 2x).
+- **Typed continue/new choice ignored, stale cached page scripts** (2s); **"continue" carried an empty session** (2t); **feedback on a running project created a copy project** - project updates (3b).
+- **Tasks given to PMs, part files, rejected new files resent whole** (2t, 2v); **assignment calls in unusual shapes** (2w); **waiting tasks shown as 'doing'** (2x).
+- **OpenRouter without native tool calls; calls written as JSON text** (3a).
+- **Several ready tasks per worker, finished work repeated, tests written before the code** (3c); **finished tasks reassigned or rewritten** (3d).
+- **Tests of copies, modules that export nothing, missing npm packages** (3d); **test tasks finished with failing or endless test runs** (3e, 3m); **tests that fail only after other tests, the same tests failing again and again** (3g, 3h, 3k); **calls that do not match the code** (3o); **objects shared by all tests, a file loaded as two modules** (3r).
+- **Stalled streams and non-streamed requests that never time out** (3f, 3k).
+- **Messages lost while an agent was busy** (3i); **the Admin AI assigning a PM's tasks or writing a PM's project files** (3j, 3s); **the same request planned twice** (3l).
+- **Workers creating or changing other workers' files** (3f, 3o); **a worker changing files while its tasks wait** (3r).
+- **Python tests and Python copies for JavaScript code** (3c, 3q, 3s); **browser scripts no page loads** (3q).
+- **`.env` keys set twice without notice; a configured local model replaced** (3p).
+- **Tool calls the agent's state forbids answered from the duplicate cache; a `search` object crashing `code_editor`** (3s).
 
 ---
 

@@ -1,7 +1,7 @@
 <!-- # IT IS CRITICAL THAT ALL AIs and LLMs FOLLOW THE DEVELOPMENT INSTRUCTIONS IN THE `helperfiles/DEVELOPMENT_RULES.md` FILE WHEN FURTHER DEVELOPING THIS FRAMEWORK!!! -->
 # 🚀 TrippleEffect Multi-Agent Framework
 
-**Version:** 2.51
+**Version:** 2.52
 
 > **⚠️ EXPERIMENTAL SOFTWARE — R&D USE ONLY**
 >
@@ -176,16 +176,14 @@ Since v2.51, Ollama URLs given in `OLLAMA_API_URLS` **replace** the default `htt
 ### A run seems stuck for hours
 Check whether the host went to sleep (the log stops, then watchdog ticks resume all at once). Start the run with `systemd-inhibit` as shown in the Quick Start. With Ollama started with `-np 1` (one request at a time), agents wait for each other by design - a long wait for the single slot is not a hang.
 
+### The startup log says ".env sets X 2 times with different values"
+python-dotenv uses the LAST value of a key, so a second block (for example the "Ollama Specific Overrides" copied from `.env.example`) silently overrides your own settings. The warning names both lines and the one that applies; remove or comment out the others. `collect.py` lists such keys at the end of `zz_env_redacted.txt`.
+
 ### "RAW template" Warnings in Logs (Ollama)
-If you see a warning in your logs that says `Has RAW template '{{ .Prompt }}'` for a downloaded model, it means the model was packaged without a conversational chat template. 
+A model whose template is `{{ .Prompt }}` is usually formatted by a renderer built into Ollama (qwen3.5, gemma4); the framework reads `/api/show` and warns only when Ollama reports neither a renderer nor capabilities for the model. In that case multi-turn conversations may not be formatted correctly. (Until Round 2n the framework sent a ChatML `template` field, but Ollama's `/api/chat` has no such field and ignored it, so it was removed in Round 2o.)
 
-**Automatic ChatML Injection:**
-The framework will automatically detect models with RAW templates and dynamically inject a highly robust ChatML template (`<|im_start|>system...`) into the API payload. This ensures multi-turn conversations format correctly without you needing to manually modify Modelfiles.
-
-*(Note: This dynamic template injection is a unique feature of the Ollama provider. Other providers like OpenAI, vLLM, and OpenRouter manage chat templating strictly on their server-side using the standardized `/v1/chat/completions` API schema and do not support payload-level template overrides).*
-
-**Manual Fix via Ollama CLI (Optional):**
-If you want to permanently fix the model in your local registry instead of relying on the dynamic injection:
+**Fix via Ollama CLI:**
+Give the model a chat template in your local registry:
 1. Export the current Modelfile: `ollama show --modelfile <model_name> > Modelfile`
 2. Replace the `TEMPLATE """{{ .Prompt }}"""` line with the appropriate chat template.
 3. Overwrite the model: `ollama create <model_name> -f Modelfile`
@@ -208,8 +206,9 @@ To keep this README clean and exciting, we've moved all the heavy lifting and de
 
 ## 🚀 Development Status
 
-* **Current Version:** 2.51
-* **Recent Highlights (v2.51, October 2026):** Small-model reliability rounds (Review Round 1, Rounds 1c–2m) driven by real runs with `qwen3.5:4b` and `qwen3.5:9b`: a deterministic policy gate and a single sandboxed shell runner; a self-healing Taskwarrior store; tool calls accepted in the shapes small models really send (aliases, mixed JSON/Python, off-by-one line ranges, cut-off JSON); per-state tool allowlists enforced in the executor; replies that only "think" are retried with thinking switched off; idle PMs are woken for unassigned work and workers cannot park on their own open task; broken kick-off plans keep their valid parts; explicit `OLLAMA_API_URLS` replace localhost; and a clean, fully running test suite (1057 tests, 0 failures, 0 warnings on Python 3.13/3.14). Details: `helperfiles/PROJECT_PLAN.md`, Phase Z.
+* **Current Version:** 2.52
+* **Recent Highlights (v2.52, October 2026):** Rounds 2n–3s, driven by whole projects built with `qwen3.5:4b` / `qwen3.5:9b`: the framework now guards a project as a whole - one task per worker, workers never change other workers' files (or any files while their tasks wait), the Admin AI leaves a PM's project to the PM; test tasks finish only after a passing test run, and failed runs come back with a diagnosis (tests that pass alone, the same tests failing again and again, calls that do not match the code, state shared by all tests, Python imports of JavaScript); Python tests of JavaScript code become JavaScript tests and Python copies of JavaScript are refused; project updates for a running project; native tool calls for OpenRouter; history compaction and message delivery to busy agents; `.env` keys set twice are reported. 1656 tests, 0 failures, 0 warnings. Details: `helperfiles/PROJECT_PLAN.md`, Phase Z.
+* **Earlier Highlights (v2.51, October 2026):** Small-model reliability rounds (Review Round 1, Rounds 1c–2m) driven by real runs with `qwen3.5:4b` and `qwen3.5:9b`: a deterministic policy gate and a single sandboxed shell runner; a self-healing Taskwarrior store; tool calls accepted in the shapes small models really send (aliases, mixed JSON/Python, off-by-one line ranges, cut-off JSON); per-state tool allowlists enforced in the executor; replies that only "think" are retried with thinking switched off; idle PMs are woken for unassigned work and workers cannot park on their own open task; broken kick-off plans keep their valid parts; explicit `OLLAMA_API_URLS` replace localhost; and a clean, fully running test suite (1057 tests, 0 failures, 0 warnings on Python 3.13/3.14). Details: `helperfiles/PROJECT_PLAN.md`, Phase Z.
 * **Earlier Highlights (v2.50):** Long-Run Stability & JSON Resilience (May 2026) — Finalized the implementation of a 3-tier resource exhaustion limit system (Teams, PMs, Workers). Migrated the entire authentication flow to native bcrypt with robust session heartbeat controls. Implemented an advisory LoopCoordinator layer with an asyncio.Lock based cycle execution queue to entirely eliminate watchdog thrashing. Added robust `scope` resolution logic to `test_runner` and `codebase_search` tools to unlock collaborative codebase interaction. Completely refactored the Admin AI's `ProjectCreationWorkflow` JSON parser to natively intercept and capture Markdown-formatted plans, permanently resolving `JSONDecodeError` workflow stalls.
 * **Current Phase:** Target Phase 28 features Advanced Memory & Learning systems, proactive behaviors, and federated communication foundations.
 
