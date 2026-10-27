@@ -143,14 +143,56 @@ UNUSABLE_REPLY_RETRY_CAP = 4
 
 
 def unusable_reply_kind(agent: Any) -> Optional[str]:
-    """Round 2x: 'context_full', 'cut_off' or 'output_lost' for the agent's last reply, else None."""
+    """Round 2x: 'context_full', 'cut_off', 'malformed' (Round 3w) or 'output_lost' for the agent's last reply, else None."""
     if getattr(agent, '_context_window_full', False) is True:
         return "context_full"
     if getattr(agent, '_last_reply_cut_off', False) is True:
         return "cut_off"
+    if isinstance(getattr(agent, '_last_reply_malformed', None), dict):
+        return "malformed"
     if getattr(agent, '_last_reply_output_lost', False) is True:
         return "output_lost"
     return None
+
+
+# --- Round 3w: a reply that was unusable because of what the MODEL wrote ------------------------------------------------------
+# 2026-10-27 00:25-07:49: nine times the model server could not parse a qwen tool call ("XML syntax error on line 37: element
+# <parameter> closed by </function>") or stopped a reply that repeated itself ("prediction aborted, token repeat limit
+# reached"), and once the framework stopped a runaway reply (32,000 characters). Each came back as a provider ERROR, so the
+# agent was failed over to another model (qwen3.5:4b -> gemma4:12b -> qwen3.5:9b) in the middle of its task. The server is
+# fine: the reply is retried on the same model with a notice that says what went wrong (cycle_handler.malformed_reply_notice);
+# only after UNUSABLE_REPLY_RETRY_CAP such replies in a row does the old error path (failover) apply.
+_TOOL_CALL_PARSE_ERROR_RE = re.compile(
+    r"XML syntax error|error parsing tool call|failed to parse (?:JSON|tool)|invalid tool call", re.IGNORECASE)
+_REPEAT_ERROR_RE = re.compile(r"token repeat limit|repetition limit", re.IGNORECASE)
+
+
+def malformed_reply_kind(error_text: Any) -> Optional[str]:
+    """Round 3w: 'tool_call' (the server could not parse the reply's tool call) or 'repeat' (a reply that repeated itself), else None."""
+    text = str(error_text or "")
+    if _TOOL_CALL_PARSE_ERROR_RE.search(text):
+        return "tool_call"
+    if _REPEAT_ERROR_RE.search(text):
+        return "repeat"
+    return None
+
+
+def mark_malformed_reply(agent: Any, kind: str, detail: str) -> bool:
+    """
+    Round 3w: records an unusable reply of kind 'tool_call', 'repeat' or 'runaway' (retried on the same model) and returns
+    True - or False when the agent already had UNUSABLE_REPLY_RETRY_CAP unusable replies in a row (then the caller reports
+    the error as before, which fails the agent over).
+    """
+    streak = getattr(agent, '_consecutive_unusable_replies', 0)
+    streak = streak if isinstance(streak, int) and not isinstance(streak, bool) else 0
+    if streak >= UNUSABLE_REPLY_RETRY_CAP:
+        return False
+    agent._last_reply_malformed = {"kind": kind, "detail": " ".join(str(detail or "").split())[:200]}
+    agent._consecutive_unusable_replies = streak + 1
+    agent._consecutive_malformed_replies = int(getattr(agent, '_consecutive_malformed_replies', 0) or 0) + 1
+    if kind in ("repeat", "runaway"):
+        agent._think_off_next_call = True  # the repetition is usually in the thinking
+    return True
 
 
 def excused_unusable_reply(agent: Any) -> bool:
@@ -466,6 +508,7 @@ class Agent:
             self._context_window_full = False
             self._last_reply_output_lost = False  # Round 2x: set again below if this reply's output is lost
             self._last_reply_lost_tokens = 0
+            self._last_reply_malformed = None  # Round 3w: set below for a reply the server could not parse or stopped
             self._call_imitation_text = None  # Round 2o
             # Round 2h: what this reply thought (from 'finish_info'), and thinking switched off for a retry after a reply
             # that only thought.
@@ -498,19 +541,22 @@ class Agent:
                             yielded_chunks = True
                             chunk_counter += 1
                             
+                            runaway_msg = None
                             if chunk_counter % 25 == 0 and detect_autoregressive_loop(self.text_buffer):
-                                error_msg = "[LLM Error] Autoregressive string loop detected. Terminating stream to prevent hang."
-                                logger.error(f"Agent {self.agent_id}: {error_msg}")
-                                error_event = {"type": "error", "content": error_msg, "_exception_obj": ValueError(error_msg), "agent_id": self.agent_id}
-                                yield error_event
-                                stream_had_error = True
-                                break
-                            
+                                runaway_msg = "[LLM Error] Autoregressive string loop detected. Terminating stream to prevent hang."
                             # CRITICAL FIX: Hard limit on output size to prevent runaway hallucinations bloating KV cache
-                            if len(self.text_buffer) > 32000:  # ~8k tokens max
-                                error_msg = "[LLM Error] Runaway generation detected (exceeded 32,000 chars). Terminating stream to prevent KV cache exhaustion."
-                                logger.error(f"Agent {self.agent_id}: {error_msg}")
-                                error_event = {"type": "error", "content": error_msg, "_exception_obj": ValueError(error_msg), "agent_id": self.agent_id}
+                            elif len(self.text_buffer) > 32000:  # ~8k tokens max
+                                runaway_msg = "[LLM Error] Runaway generation detected (exceeded 32,000 chars). Terminating stream to prevent KV cache exhaustion."
+                            if runaway_msg:
+                                logger.error(f"Agent {self.agent_id}: {runaway_msg}")
+                                # Round 3w: the model looped - retried on the same model with a notice, not failed over
+                                if mark_malformed_reply(self, "runaway", runaway_msg):
+                                    logger.warning(f"Agent {self.agent_id}: the runaway reply is discarded and retried "
+                                                   f"({self._consecutive_unusable_replies}/{UNUSABLE_REPLY_RETRY_CAP} unusable in a row).")
+                                    self.text_buffer = ""
+                                    complete_assistant_response = ""
+                                    break
+                                error_event = {"type": "error", "content": runaway_msg, "_exception_obj": ValueError(runaway_msg), "agent_id": self.agent_id}
                                 yield error_event
                                 stream_had_error = True
                                 break
@@ -526,6 +572,15 @@ class Agent:
                         finish_event_data = event  # Round 2n: token counts for the context-window check below
                     elif event_type == "status": event["agent_id"] = self.agent_id; yield event
                     elif event_type == "error":
+                        # Round 3w: the server could not parse the reply's tool call, or stopped a reply that repeated
+                        # itself - an unusable reply of this model, retried on it (not a provider failure)
+                        malformed = malformed_reply_kind(event.get('content'))
+                        if (malformed and not native_tool_calls_received and not complete_assistant_response.strip()
+                                and mark_malformed_reply(self, malformed, event.get('content'))):
+                            logger.warning(f"Agent {self.agent_id}: unusable reply ({malformed}): {str(event.get('content'))[:200]} "
+                                           f"- retried on the same model ({self._consecutive_unusable_replies}/"
+                                           f"{UNUSABLE_REPLY_RETRY_CAP} unusable in a row).")
+                            break
                         error_content = f"[{self.provider_name} Error] {event.get('content', 'Unknown provider error')}"
                         last_error_obj = event.get('_exception_obj', ValueError(error_content))
                         logger.error(f"Agent {self.agent_id}: Received error event from provider: {error_content}")
@@ -586,6 +641,7 @@ class Agent:
                                    f"output tokens but delivered no text and no tool call (output lost, "
                                    f"{self._consecutive_output_lost_replies} in a row) - most likely a malformed tool call.")
             if finish_reason_received is not None and not stream_had_error:
+                self._consecutive_malformed_replies = 0  # Round 3w: this reply came back complete
                 if not self._last_reply_output_lost:
                     self._consecutive_output_lost_replies = 0
                 if context_full or self._last_reply_cut_off or self._last_reply_output_lost:

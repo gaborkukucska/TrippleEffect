@@ -275,6 +275,90 @@ CONTINUE_AFTER_OWN_REPLY_NOTE = (
 )
 
 
+# --- Round 3w: the messages of an /api/chat request ---------------------------------------------------------------------------
+# Until Round 3v every tool result went to qwen, llama, mistral, gemma, phi and deepseek models as a USER message
+# ("--- Tool Response (file_system) ---"), also with native tool calling: the model's own tool call was never answered by a
+# tool message, which is not how these models were trained to see tool results (2026-10-27: 42 repeated calls, 28 edits that
+# changed nothing). Now a result that answers a tool call of the payload keeps the 'tool' role (with 'tool_name', as Ollama's
+# chat API expects) while tools are attached; a result whose call is no longer in the history (condensed away) and every
+# result of a request without tools stay user messages, as for the OpenAI-style providers (tool_call_format).
+USER_WORKAROUND_MODEL_FAMILIES = ("llama", "qwen", "mistral", "gemma", "phi", "deepseek")
+
+
+def _tool_response_text(message: Dict[str, Any], content: str) -> str:
+    return f"--- Tool Response ({message.get('name', 'unknown')}) ---\n{content}\n-----------------------"
+
+
+def ollama_chat_messages(messages: Any, model: str, native_tools: bool) -> List[Dict[str, Any]]:
+    """
+    The 'messages' of an Ollama /api/chat request. `native_tools`: tools are attached (native tool calling) - the assistant
+    messages carry their tool calls and the results that answer them keep the 'tool' role. Never raises on odd messages.
+    """
+    needs_user_workaround = any(family in str(model or "").lower() for family in USER_WORKAROUND_MODEL_FAMILIES)
+    result: List[Dict[str, Any]] = []
+    first_system_seen = False
+    pending_calls: List[Tuple[Optional[str], Optional[str]]] = []  # (id, name) of the latest assistant tool calls
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        original_role = msg.get("role")
+        role = original_role
+        content = msg.get("content")
+        if content is None:
+            text = ""
+        elif isinstance(content, str):
+            text = content
+        else:
+            try:
+                text = json.dumps(content)
+                logger.warning(f"Message content for role '{role}' was not a string ({type(content)}), serialized to JSON.")
+            except (TypeError, ValueError):
+                text = str(content)
+                logger.warning(f"Message content for role '{role}' was not a string ({type(content)}) and could not be JSON serialized. Converted to string.")
+        answers_a_call = False
+        if original_role == "system":
+            if first_system_seen:
+                if needs_user_workaround:
+                    role = "user"
+                    if not text.lstrip().startswith("["):
+                        text = f"[System Notification]:\n{text}"
+            else:
+                first_system_seen = True
+        elif original_role == "tool":
+            if native_tools:
+                call_id, name = msg.get("tool_call_id"), msg.get("name")
+                match = next((i for i, (cid, _n) in enumerate(pending_calls) if call_id and cid == call_id), None)
+                if match is None and not call_id:
+                    match = next((i for i, (_c, n) in enumerate(pending_calls) if name and n == name), None)
+                if match is not None:
+                    pending_calls.pop(match)
+                    answers_a_call = True
+            if not answers_a_call and needs_user_workaround:
+                role = "user"
+                text = _tool_response_text(msg, text)
+        elif original_role == "assistant":
+            pending_calls = []
+        elif original_role == "user":
+            pending_calls = []
+        to_send: Dict[str, Any] = {"role": role, "content": text}
+        if answers_a_call and msg.get("name"):
+            to_send["tool_name"] = msg.get("name")
+        if native_tools and original_role == "assistant" and msg.get("tool_calls"):
+            calls = []
+            for call in msg.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                function = call.get("function") if isinstance(call.get("function"), dict) else {}
+                name = call.get("name") or function.get("name")
+                arguments = call.get("arguments", function.get("arguments", {}))
+                calls.append({"function": {"name": name, "arguments": arguments if arguments is not None else {}}})
+                pending_calls.append((call.get("id"), name))
+            if calls:
+                to_send["tool_calls"] = calls
+        result.append(to_send)
+    return result
+
+
 def ends_with_assistant_message(messages: Any) -> bool:
     """
     Round 2p: True if a chat payload ends with an assistant message. Ollama then renders it as a prefill (qwen3.5 renderer:
@@ -421,14 +505,73 @@ def stream_tool_calls_enabled() -> bool:
     return bool(getattr(settings, "OLLAMA_STREAM_TOOL_CALLS", True))
 
 # --- Concurrency Limiter ---
-_ollama_semaphores = {}
+# Round 3w: one limiter per Ollama server (it was one semaphore for all servers), and it adapts. 2026-10-27 00:33-08:03 the
+# Cloudflare proxy in front of the server answered 93 requests with "524" (it waited 100 s for the first byte). The replies
+# are streamed (Round 3u) and the prompt was evaluated in under 3 s, so those requests had waited in the SERVER's queue
+# behind other replies (55-110 s each): OLLAMA_CONCURRENCY_LIMIT=3 was more than the server answers at once
+# (OLLAMA_NUM_PARALLEL). A proxy timeout now lowers the number of requests sent to that server at the same time by one
+# (down to 1); after LIMIT_RAISE_AFTER_CLEAN_REPLIES replies without one it is raised again (up to the configured limit).
+PROXY_TIMEOUT_STATUSES = frozenset({504, 524})
+LIMIT_RAISE_AFTER_CLEAN_REPLIES = 20
 
-def get_ollama_semaphore() -> asyncio.Semaphore:
+
+class OllamaRequestLimiter:
+    """At most `limit` concurrent requests to one Ollama server; the limit adapts to proxy timeouts (Round 3w)."""
+
+    def __init__(self, base_url: str, configured: int):
+        self.base_url = base_url
+        self.configured = max(1, int(configured or 1))
+        self.limit = self.configured
+        self.active = 0
+        self.clean_replies = 0
+        self._condition = asyncio.Condition()
+
+    async def __aenter__(self) -> "OllamaRequestLimiter":
+        async with self._condition:
+            await self._condition.wait_for(lambda: self.active < self.limit)
+            self.active += 1
+        return self
+
+    async def __aexit__(self, *exc_info: Any) -> None:
+        async with self._condition:
+            self.active -= 1
+            self._condition.notify_all()
+
+    def proxy_timed_out(self, status: int) -> None:
+        """A request to this server waited too long for its first byte (a proxy's 524 / 504)."""
+        self.clean_replies = 0
+        if self.limit > 1:
+            self.limit -= 1
+            logger.warning(f"Ollama server {self.base_url}: the proxy timed out (status {status}) while the request waited in "
+                           f"the server's queue - it answers fewer requests at once than OLLAMA_CONCURRENCY_LIMIT="
+                           f"{self.configured}. Now at most {self.limit} request(s) at a time are sent to it (set "
+                           f"OLLAMA_CONCURRENCY_LIMIT to the server's OLLAMA_NUM_PARALLEL).")
+
+    def reply_started(self) -> None:
+        """A request got its answer's first byte in time."""
+        if self.limit >= self.configured:
+            return
+        self.clean_replies += 1
+        if self.clean_replies >= LIMIT_RAISE_AFTER_CLEAN_REPLIES:
+            self.clean_replies = 0
+            self.limit += 1
+            logger.info(f"Ollama server {self.base_url}: {LIMIT_RAISE_AFTER_CLEAN_REPLIES} replies without a proxy timeout - "
+                        f"now at most {self.limit} request(s) at a time.")
+
+    def describe(self) -> str:
+        return f"{self.active}/{self.limit} in use, configured {self.configured}"
+
+
+_ollama_limiters: Dict[Tuple[Any, str], OllamaRequestLimiter] = {}
+
+
+def get_ollama_semaphore(base_url: str = "") -> OllamaRequestLimiter:
+    """The request limiter of this Ollama server (per event loop): OLLAMA_CONCURRENCY_LIMIT, adapted to proxy timeouts."""
     loop = asyncio.get_running_loop()
-    if loop not in _ollama_semaphores:
-        limit = getattr(settings, 'OLLAMA_CONCURRENCY_LIMIT', 2)
-        _ollama_semaphores[loop] = asyncio.Semaphore(limit)
-    return _ollama_semaphores[loop]
+    key = (loop, str(base_url or ""))
+    if key not in _ollama_limiters:
+        _ollama_limiters[key] = OllamaRequestLimiter(str(base_url or ""), getattr(settings, 'OLLAMA_CONCURRENCY_LIMIT', 2))
+    return _ollama_limiters[key]
 # ---------------------------
 
 RETRYABLE_AIOHTTP_EXCEPTIONS = (
@@ -703,76 +846,10 @@ class OllamaProvider(BaseLLMProvider):
         ignored_options = {k: v for k, v in raw_options.items() if k not in KNOWN_OLLAMA_OPTIONS and k != "stop"}
         if ignored_options: logger.warning(f"OllamaProvider ignoring unknown options: {ignored_options}")
 
-        messages_for_ollama_payload = []
-        first_system_seen = False
-        
-        # Models that need tool/system messages mapped to 'user' role due to their chat 
-        # templates or Ollama's stripping behavior when native tools are disabled.
-        models_needing_user_workaround = ["llama", "qwen", "mistral", "gemma", "phi", "deepseek"]
-        needs_user_workaround = any(m in model.lower() for m in models_needing_user_workaround)
-        
-        for msg in messages:
-            role = msg.get("role")
-            
-            if role == "system":
-                if first_system_seen:
-                    if needs_user_workaround:
-                        role = "user"
-                        logger.debug(
-                            f"OllamaProvider: Converting mid-conversation system message to 'user' role "
-                            f"for model '{model}'. Content preview: {str(msg.get('content', ''))[:80]}..."
-                        )
-                    else:
-                        logger.debug(f"OllamaProvider: Keeping mid-conversation system role for model '{model}'.")
-                else:
-                    first_system_seen = True
-            elif role == "tool":
-                if needs_user_workaround:
-                    role = "user"
-                    logger.debug(f"OllamaProvider: Converting 'tool' role message to 'user' role for model '{model}'.")
-                else:
-                    logger.debug(f"OllamaProvider: Keeping 'tool' role for model '{model}'.")
-
-            content = msg.get("content")
-            processed_content = "" 
-            if content is not None:
-                if not isinstance(content, str):
-                    try:
-                        processed_content = json.dumps(content)
-                        logger.warning(f"Message content for role '{role}' was not a string ({type(content)}), serialized to JSON.")
-                    except (TypeError, ValueError):
-                        processed_content = str(content)
-                        logger.warning(f"Message content for role '{role}' was not a string ({type(content)}) and could not be JSON serialized. Converted to string.")
-                else:
-                    processed_content = content
-            
-            # If this is a converted tool message, explicitly format it so the LLM knows what it is.
-            if msg.get("role") == "tool" and role == "user":
-                tool_name = msg.get("name", "unknown")
-                processed_content = f"--- Tool Response ({tool_name}) ---\n{processed_content}\n-----------------------"
-
-            # If this is a converted system message, explicitly format it so the LLM knows it's the system speaking.
-            if msg.get("role") == "system" and role == "user":
-                if not processed_content.lstrip().startswith("["):
-                    processed_content = f"[System Notification]:\n{processed_content}"
-
-            msg_to_send: Dict[str, Any] = {"role": role, "content": processed_content}
-            # We explicitly DO NOT send `tool_calls` because TrippleEffect relies on XML-in-content 
-            # and sending native tool_calls without the tools parameter confuses Ollama.
-            # However, if native tool calling is enabled and tools are passed, we MUST include them.
-            if settings.NATIVE_TOOL_CALLING_ENABLED and tools and msg.get("tool_calls"):
-                ollama_tool_calls = []
-                for tc in msg.get("tool_calls", []):
-                    ollama_tc = {
-                        "function": {
-                            "name": tc.get("name"),
-                            "arguments": tc.get("arguments", {})
-                        }
-                    }
-                    ollama_tool_calls.append(ollama_tc)
-                msg_to_send["tool_calls"] = ollama_tool_calls
-                
-            messages_for_ollama_payload.append(msg_to_send)
+        # Round 3w: built by ollama_chat_messages() - a tool result that answers a tool call of this payload keeps its
+        # 'tool' role while tools are attached (it was always turned into a user message for qwen and other models)
+        native_tools_attached = bool(settings.NATIVE_TOOL_CALLING_ENABLED and tools)
+        messages_for_ollama_payload = ollama_chat_messages(messages, model, native_tools_attached)
 
         # Round 2p: a history that ENDS with an assistant message is a "prefill" for Ollama - the model continues that
         # finished message instead of starting a new reply and stops at once (2026-10-21 18:24:29: PM1 got 1 output token
@@ -831,8 +908,8 @@ class OllamaProvider(BaseLLMProvider):
         last_exception = None
         response: Optional[aiohttp.ClientResponse] = None
 
-        semaphore = get_ollama_semaphore()
-        logger.debug(f"OllamaProvider '{model}': Waiting for semaphore (limit {semaphore._value})...")
+        semaphore = get_ollama_semaphore(self.base_url)
+        logger.debug(f"OllamaProvider '{model}': Waiting for semaphore ({semaphore.describe()})...")
         async with semaphore:
             logger.debug(f"OllamaProvider '{model}': Semaphore acquired!")
             try: 
@@ -912,14 +989,19 @@ class OllamaProvider(BaseLLMProvider):
                                 use_streaming_mode = self.streaming_mode
                                 collect_stream = False  # Round 3u
 
-                                for m in payload.get("messages", []):  # type: ignore[union-attr]
-                                    if isinstance(m, dict) and "tool_calls" in m:
-                                        del m["tool_calls"]
+                                # Round 3w: without tools no message carries tool calls and every tool result is
+                                # shown as a user message (as before Round 3w)
+                                rebuilt = ollama_chat_messages(messages, model, False)
+                                if ends_with_assistant_message(rebuilt):
+                                    rebuilt.append({"role": "user", "content": CONTINUE_AFTER_OWN_REPLY_NOTE})
+                                payload["messages"] = rebuilt
                                         
                                 if response and not response.closed: response.release()
                                 continue
                             # --- NATIVE TOOL FALLBACK END ---
 
+                            if response_status in PROXY_TIMEOUT_STATUSES:
+                                semaphore.proxy_timed_out(response_status)  # Round 3w: fewer requests at once to this server
                             if response_status in RETRYABLE_STATUS_CODES or response_status >= 500:
                                 last_exception = aiohttp.ClientResponseError(req_info, response.history, status=response_status, message=f"Status {response_status}", headers=response.headers)
                                 mark_response_error(last_exception, response_text)  # Round 3u: a proxy page or Ollama's own error
@@ -943,6 +1025,7 @@ class OllamaProvider(BaseLLMProvider):
                                 return
                         else: 
                             logger.info(f"API call headers OK (Status {response_status}) attempt {attempt + 1}. Start stream.")
+                            semaphore.reply_started()  # Round 3w
                             break
 
                     except RETRYABLE_AIOHTTP_EXCEPTIONS as e:

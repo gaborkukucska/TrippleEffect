@@ -70,6 +70,21 @@ def is_tool_result_failure(tool_name: Optional[str], content: Any) -> bool:
     return "error" in lowered or "[tool execution failed]" in lowered
 
 
+# Round 3w: a command that RAN and reported its exit code. 2026-10-27 01:23:13 PM1 was stopped ("3 consecutive tool execution
+# failures ... to prevent infinite loop") for running the project's failing test suite three times - the runs worked; their
+# result was that tests fail. Such a result is information for the agent, not a failed tool call.
+_COMMAND_RAN_RE = re.compile(
+    r"command execution completed with return code -?\d+|command execution (?:succeeded|failed) \(exit code: ?-?\d+\)|"
+    r"test command failed with exit code -?\d+|tests failed: the command ended with exit code", re.IGNORECASE)
+
+
+def command_ran(tool_name: Optional[str], content: Any) -> bool:
+    """True for a command_executor / test_runner result of a command that ran and ended with an exit code (0 or not)."""
+    if tool_name not in ("command_executor", "test_runner"):
+        return False
+    return bool(_COMMAND_RAN_RE.search(str(content or "")[:4000]))
+
+
 CODE_EXTENSIONS = frozenset({
     ".js", ".py", ".html", ".css", ".ts", ".jsx", ".tsx",
     ".sh", ".go", ".rs", ".java", ".c", ".cpp", ".rb", ".php",

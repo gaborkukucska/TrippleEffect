@@ -103,7 +103,8 @@ def test_a_history_ending_with_the_agents_own_text_gets_a_continue_note(monkeypa
     run(go())
     assert payloads[0]["messages"][-2] == {"role": "assistant", "content": PM1_NARRATION}
     assert payloads[0]["messages"][-1] == {"role": "user", "content": CONTINUE_AFTER_OWN_REPLY_NOTE}
-    assert payloads[1]["messages"][-1]["role"] == "user" and payloads[1]["messages"][-1]["content"].startswith("--- Tool Response")
+    # Round 3w: a result that answers a tool call of the payload keeps the 'tool' role while tools are attached
+    assert payloads[1]["messages"][-1] == {"role": "tool", "content": "ok", "tool_name": "file_system"}
     assert len(payloads[1]["messages"]) == 4                                      # nothing added after a tool result
     assert "real tool call" in CONTINUE_AFTER_OWN_REPLY_NOTE
 

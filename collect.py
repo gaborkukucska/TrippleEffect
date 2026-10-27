@@ -3,7 +3,7 @@
 TrippleEffect: Session & Log Collector  (v2: smart log reduction; v2.2: the session of the log;
 v2.3: configuration and environment, with secrets redacted; v2.4: every project session of the log;
 v2.5: keys that .env sets more than once; v2.6: full tool calls, system prompts and injected notices from the
-request payloads of the DEBUG log)
+request payloads of the DEBUG log; v2.7: tool results sent as user messages are found, Guardian calls are named)
 
 Run from the TrippleEffect repository root:   python3 collect.py
 Output directory: ~/Desktop/te_session_data     (change with --dest)
@@ -312,7 +312,8 @@ PAYLOAD_MARKERS = ("EXACT JSON payload being sent to", "FULL JSON equivalent of 
 PAYLOAD_MODEL_RE = re.compile(r"Provider '([^']+)'")
 AGENT_ID_RE = re.compile(r"Your Agent ID: `([^`]+)`")
 AGENT_TYPE_RE = re.compile(r"Your Agent Type: `([^`]+)`")
-STATE_NAME_RE = re.compile(r"Tools you can call in this state \('([\w-]+)'\)")
+STATE_NAME_RE = re.compile(r"(?:Tools you can call in this state|No tools are offered in this state) \('([\w-]+)'\)")
+TOOL_RESPONSE_RE = re.compile(r"^--- Tool Response \(([^)]*)\) ---\n(.*?)(?:\n-{10,})?\s*$", re.DOTALL)
 STATE_LABEL_RE = re.compile(r"---\s*(?:Current State|Worker Agent State|State):\s*([^\n]+?)\s*---")
 VOLATILE_PROMPT_RE = re.compile(r"(Current Time \(UTC\): `)[^`]*`")
 FAILURE_PREFIXES = ("[tool execution failed]", "[toolexec error", "[tool execution error", "[tool error", "error:")
@@ -403,8 +404,31 @@ def _who(messages: List[Dict]) -> Tuple[str, str, str]:
     agent = AGENT_ID_RE.search(system)
     agent_type = AGENT_TYPE_RE.search(system)
     state = STATE_NAME_RE.search(system) or STATE_LABEL_RE.search(system)
+    if not agent:
+        # v2.7: the Constitutional Guardian's own calls (reviews of messages, context summaries)
+        if "summarization" in system:
+            return "guardian", "guardian", "summary"
+        if "Constitutional Guardian" in system:
+            return "guardian", "guardian", "review"
     return (agent.group(1) if agent else "?", agent_type.group(1) if agent_type else "?",
             state.group(1).strip() if state else "?")
+
+
+def _tool_result(message: Dict) -> Optional[Tuple[str, str]]:
+    """
+    v2.7: (tool name, result text) of a tool result in a payload, else None. The Ollama provider sends a result as a 'tool'
+    message (with 'tool_name' since Round 3w) or - for a result whose call is not in the payload, and before Round 3w for
+    qwen, llama and other models - as a USER message "--- Tool Response (name) ---".
+    """
+    role = message.get("role")
+    content = _text(message.get("content"))
+    if role == "tool":
+        return str(message.get("name") or message.get("tool_name") or "?"), content
+    if role == "user":
+        match = TOOL_RESPONSE_RE.match(content)
+        if match:
+            return match.group(1), match.group(2)
+    return None
 
 
 def _injection_key(content: str) -> str:
@@ -440,7 +464,8 @@ def analyse_payloads(entries: List[Entry]) -> Dict:
             if key in seen_messages:
                 continue
             seen_messages.add(key)
-            if index > 0 and (role == "system" or (role == "user" and content.lstrip().startswith("["))):
+            if index > 0 and _tool_result(message) is None and (
+                    role == "system" or (role == "user" and content.lstrip().startswith("["))):
                 injected = data["injections"].setdefault(_injection_key(content), {
                     "first": stamp, "count": 0, "agents": set(), "states": set(), "role": role, "text": content})
                 injected["count"] += 1
@@ -450,7 +475,7 @@ def analyse_payloads(entries: List[Entry]) -> Dict:
                 continue
             later = messages[index + 1:]
             next_assistant = next((i for i, m in enumerate(later) if m.get("role") == "assistant"), len(later))
-            results = [m for m in later[:next_assistant] if m.get("role") == "tool"]
+            results = [m for m in later[:next_assistant] if _tool_result(m) is not None]
             for position, call in enumerate(message["tool_calls"]):
                 function = call.get("function") or {}
                 tool = str(function.get("name") or "?")
@@ -459,7 +484,7 @@ def analyse_payloads(entries: List[Entry]) -> Dict:
                 result = next((m for m in results if call_id and m.get("tool_call_id") == call_id), None)
                 if result is None and position < len(results):
                     result = results[position]
-                result_text = _text(result.get("content")) if result else ""
+                result_text = _tool_result(result)[1] if result else ""
                 failed = bool(result) and result_failed(tool, result_text)
                 action = str(arguments.get("action") or "-")
                 count = data["counts"].setdefault((tool, action), [0, 0])
@@ -479,8 +504,8 @@ def analyse_payloads(entries: List[Entry]) -> Dict:
                             and c[_first_key(c, SEARCH_KEYS)] == c[_first_key(c, REPLACE_KEYS)]]
                     if noop:
                         filename = str(arguments.get("filename") or arguments.get("filepath") or arguments.get("path") or "")
-                        before = next((_text(m.get("content")) for m in reversed(messages[:index])
-                                       if m.get("role") == "tool" and filename and filename in _text(m.get("content"))), "")
+                        before = next((_tool_result(m)[1] for m in reversed(messages[:index])
+                                       if _tool_result(m) is not None and filename and filename in _text(m.get("content"))), "")
                         data["noop"].append((stamp, agent, state, arguments, result_text, before))
     return data
 

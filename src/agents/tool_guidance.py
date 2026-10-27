@@ -114,8 +114,8 @@ def tool_use_instructions(agent_type: Optional[str], state: Optional[str], offer
     agent_type, state = str(agent_type or ""), str(state or "")
     names = list(offered) if offered is not None else None
     if not names and not offers_request_state(agent_type, state):
-        return ("[TOOL USE]\nNo tools are offered in this state: your reply is the JSON block the workflow below asks for "
-                "(after your <think> block), nothing else.")
+        return (f"[TOOL USE]\nNo tools are offered in this state ('{state}'): your reply is the JSON block the workflow "
+                "below asks for (after your <think> block), nothing else.")
     lines = ["[TOOL USE]"]
     if native:
         lines.append(CALL_RULE)

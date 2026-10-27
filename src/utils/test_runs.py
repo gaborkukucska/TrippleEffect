@@ -33,9 +33,12 @@ PASSED, FAILED, TIMEOUT = "passed", "failed", "timeout"
 _RUNS: Dict[str, Dict[str, Any]] = {}
 _ANY_RUNS: Dict[str, Dict[str, Any]] = {}  # Round 3m: the latest run of any test command whose exit code is the tests'
 _NAMED_TEST_FILE_RE = re.compile(r"\S+\.(?:m?js|cjs|ts|py)\b|::|\s-k\s|--grep|\s-g\s|--test-name-pattern")
+# Round 3w: the noun is not part of a path - "Fix SyntaxError in tests/test_server.py" names a FILE in the tests folder, not
+# the test suite (2026-10-27 00:37-08:04 W3's finished one-line fix was refused 26 times until the whole suite passed, while
+# the other failures were in server.py)
 _TEST_RUN_TASK_RE = re.compile(
     r"\b(?:run|runs|running|execute|executes|verify|verifies|fix|fixes|make)\b[^.\n]{0,60}?"
-    r"\b(?:tests?|test suite|npm test|pytest|mocha)\b", re.IGNORECASE)
+    r"(?<![/\\.\w])(?:tests?|test suite|npm test|pytest|mocha)\b(?![/\\.])", re.IGNORECASE)
 
 
 def _key(workspace: Any) -> str:

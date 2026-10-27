@@ -91,6 +91,27 @@ def cut_off_reply_notice(agent) -> str:
 SMALL_LOST_CALL_TOKENS = 400  # Round 2y: below this a lost tool call was a small one (no file content)
 
 
+def malformed_reply_notice(agent) -> str:
+    """
+    Round 3w: the message for a reply the model server could not parse ("XML syntax error ... element <parameter> closed by
+    </function>"), stopped because it repeated itself ("token repeat limit"), or that the framework stopped as a runaway
+    (core.mark_malformed_reply). Those replies used to fail the agent over to another model.
+    """
+    info = getattr(agent, '_last_reply_malformed', None) or {}
+    kind, detail = info.get("kind"), info.get("detail") or ""
+    streak = getattr(agent, '_consecutive_malformed_replies', 1) or 1
+    head = f"[Framework Notice]: Your last reply was unusable ({streak} time(s) in a row), so NOTHING was executed or saved: "
+    if kind == "tool_call":
+        return head + (
+            f"the model server could not read its tool call ({detail}). Make ONE native tool call with valid arguments: "
+            "each argument once, plain values without XML tags or markup inside them, long text only in the one argument "
+            "that takes it. If the call carried a whole file, make it smaller: change only the lines that need to change "
+            "(code_editor 'replace_chunks' with one small chunk, or file_system 'replace_lines').")
+    return head + (
+        "it repeated the same text over and over until it was stopped. Do not repeat yourself: think briefly, then make "
+        "ONE tool call for your next step (or give a short answer). If you were stuck, try a different next step.")
+
+
 def lost_output_notice(agent) -> str:
     """
     Round 2x: the message for a reply whose output was LOST: it finished normally and used output tokens, but no text and
@@ -2357,7 +2378,12 @@ class AgentCycleHandler:
                             called_tool_name = tool_calls[-1].get("name")  # Use last tool call
                             
                             # Check for persistent tool failures that could cause loops
-                            if not any_tool_success:
+                            # Round 3w: a command that ran (a failing test run) is a result, not a tool failure
+                            from src.agents.tool_activity import command_ran
+                            commands_ran = any(isinstance(r, dict) and r.get("role") == "tool"
+                                               and command_ran(r.get("name"), r.get("content"))
+                                               for r in all_tool_results_for_history)
+                            if not any_tool_success and not commands_ran:
                                 # Increment consecutive failure counter
                                 if not hasattr(agent, '_consecutive_tool_failures'):
                                     agent._consecutive_tool_failures = 0
@@ -3056,6 +3082,11 @@ class AgentCycleHandler:
                         llm_stream_ended_cleanly = False; break
                     else: logger.warning(f"CycleHandler: Unknown event type '{event_type}' from agent '{agent.agent_id}'.")
 
+                # Round 3w: a reply discarded as unusable (a runaway reply, or one the server could not parse) is not a text
+                # reply - its partial text was only seen while it streamed
+                if isinstance(getattr(agent, '_last_reply_malformed', None), dict) and not getattr(agent, 'text_buffer', ''):
+                    cycle_text_content = ""
+
                 # This block handles cases where the LLM stream finished without any specific break-worthy event.
                 if llm_stream_ended_cleanly and not context.last_error_obj and not context.action_taken_this_cycle:
                     # This block is now primarily for handling final text responses that are not part of other events.
@@ -3302,6 +3333,8 @@ class AgentCycleHandler:
                                     nudge_msg = context_full_notice(agent)  # Round 2n: the window was full; history is condensed next
                                 elif getattr(agent, '_last_reply_cut_off', False):
                                     nudge_msg = cut_off_reply_notice(agent)  # Round 2d: it was not empty, it was cut off
+                                elif isinstance(getattr(agent, '_last_reply_malformed', None), dict):
+                                    nudge_msg = malformed_reply_notice(agent)  # Round 3w: unreadable tool call / repetition
                                 elif getattr(agent, '_last_reply_output_lost', False):
                                     nudge_msg = lost_output_notice(agent)  # Round 2x: its tool call was dropped
                                 elif thinking_only_tail(agent):
