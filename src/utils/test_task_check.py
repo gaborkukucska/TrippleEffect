@@ -51,11 +51,13 @@ def named_directories(description: Optional[str]) -> List[str]:
     return found
 
 
-def task_python_test_files(workspace: Any, description: Optional[str], changed_files: Optional[Iterable[Any]] = None) -> List[str]:
+def task_python_test_files(workspace: Any, description: Optional[str], changed_files: Optional[Iterable[Any]] = None,
+                           suffixes: tuple = (".py",)) -> List[str]:
     """
     The Python test files of a task (workspace-relative, at most MAX_TEST_FILES): test files the description names with a
     directory or the worker changed for the task, and - for a task that writes tests - the test files in a folder the
     description names ('... in tests/'). conftest.py files are not tests. Never raises.
+    Round 3x: `suffixes` - the JavaScript test files of the task with JS_TEST_SUFFIXES.
     """
     found: List[str] = []
     try:
@@ -73,7 +75,7 @@ def task_python_test_files(workspace: Any, description: Optional[str], changed_f
                 rel = path.relative_to(root).as_posix()
             except (OSError, ValueError):
                 return
-            if (rel.endswith(".py") and PurePosixPath(rel).name != "conftest.py" and is_test_file(rel)
+            if (rel.endswith(suffixes) and PurePosixPath(rel).name != "conftest.py" and is_test_file(rel)
                     and not set(PurePosixPath(rel).parts[:-1]) & _SKIP_DIRS and rel not in found):
                 found.append(rel)
 
@@ -85,8 +87,9 @@ def task_python_test_files(workspace: Any, description: Optional[str], changed_f
             for rel_dir in named_directories(description):
                 base = (root / rel_dir).resolve()
                 if base.is_dir() and base.is_relative_to(root):
-                    for path in sorted(base.rglob("*.py")):
-                        add(path)
+                    for path in sorted(base.rglob("*")):
+                        if path.suffix in suffixes:
+                            add(path)
     except Exception as err:
         logger.debug(f"task_python_test_files failed: {err}")
     return found
@@ -95,6 +98,28 @@ def task_python_test_files(workspace: Any, description: Optional[str], changed_f
 def _shown(message: str, limit: int = 160) -> str:
     text = " ".join(str(message).split())
     return text if len(text) <= limit else text[:limit - 3] + "..."
+
+
+# Round 3x: 2026-10-27 09:27:12 "Kick-off Task 3: Write automated tests ... in tests/game.test.js" was marked finished while
+# that file called describe() / test() that nothing provided - it did not even load ("ReferenceError: describe is not
+# defined"). A JavaScript test file of the task must at least get its test-runner functions from somewhere.
+JS_TEST_SUFFIXES = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx")
+
+
+def javascript_test_problem(workspace: Any, description: Optional[str],
+                            changed_files: Optional[Iterable[Any]] = None) -> Optional[str]:
+    """Why the task's JavaScript test files cannot run (runner functions nothing provides), or None. Reads files only."""
+    try:
+        from src.utils.js_test_checks import missing_runner_globals, runner_globals_advice
+        root = Path(workspace).resolve()
+        for rel in task_python_test_files(root, description, changed_files, suffixes=JS_TEST_SUFFIXES):
+            missing = missing_runner_globals(root, rel)
+            if missing:
+                logger.info(f"test_task_check: {rel} uses {missing} that nothing provides.")
+                return f"its tests cannot run: {runner_globals_advice(root, rel, missing)}"
+    except Exception as err:
+        logger.debug(f"javascript_test_problem failed: {err}")
+    return None
 
 
 async def test_task_problem(workspace: Any, description: Optional[str], changed_files: Optional[Iterable[Any]] = None,
@@ -108,6 +133,9 @@ async def test_task_problem(workspace: Any, description: Optional[str], changed_
         if not workspace:
             return None
         root = Path(workspace).resolve()
+        js_problem = javascript_test_problem(root, description, changed_files)  # Round 3x
+        if js_problem:
+            return js_problem
         files = task_python_test_files(root, description, changed_files)
         if not files:
             return None

@@ -255,7 +255,7 @@ def test_output_hints(tmp_path):
     assert output_hints(ws, "Error: Not implemented: HTMLCanvasElement.prototype.getContext (without installing the canvas "
                             "npm package)")[0].startswith("jsdom has NO canvas")
     assert output_hints(ws, "ReferenceError: describe is not defined\n    at Object.<anonymous> (test/game.test.js:3:1)")[0] \
-        .startswith("`describe` is not defined: this test file uses the globals of a test runner")
+        .startswith("`describe` is not defined: this test file uses the globals of jest")   # Round 3x: the project's runner
     assert output_hints(ws, "Tests: 3 failed, 2 passed") == [] and output_hints(ws, "") == []
 
 

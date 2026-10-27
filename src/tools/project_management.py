@@ -2166,7 +2166,7 @@ class ProjectManagementTool(BaseTool):
             return None
         if not problem:
             return None
-        logger.warning(f"ProjectManagementTool: refused to mark task '{task_label}' finished: its tests call missing code.")
+        logger.warning(f"ProjectManagementTool: refused to mark task '{task_label}' finished: {problem[:120]}")
         return {"status": "error", "error_type": "tests_call_missing_code", "message": (
             f"Task '{task_label}' was NOT marked finished: {problem}\nA PM should send the task back to its worker with "
             "send_message (name the failing calls) instead of marking it finished.")}

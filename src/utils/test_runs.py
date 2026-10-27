@@ -244,7 +244,8 @@ def _unknown_command_problem(workspace: Any, current: Any) -> Optional[str]:
         state = "did not END - it timed out" if run.get("outcome") == TIMEOUT else "failed"
         return f"the tests do NOT pass: the last test run (`{run['command']}`) {state}.{detail}"
     shown = ", ".join(test_files[:3]) + (" ..." if len(test_files) > 3 else "")
-    example = (f"node {test_files[0]}" if not test_files[0].endswith(".py") else f"python -m pytest -q {test_files[0]}")
+    # Round 3x: `node --test` runs a node:test file and a plain script alike (and is the planned runner)
+    example = (f"node --test {test_files[0]}" if not test_files[0].endswith(".py") else f"python -m pytest -q {test_files[0]}")
     return (f"no test run of the CURRENT files has passed yet. This project has no test command the framework knows (no "
             f"\"test\" script in package.json), so run its test file(s) ({shown}) directly with command_executor (e.g. "
             f"`{example}`), fix what fails, and mark the task finished when that run passes.")

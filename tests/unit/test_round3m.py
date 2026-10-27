@@ -248,7 +248,7 @@ def test_a_test_task_needs_a_passing_run_when_no_test_command_is_known(tmp_path)
     task = "Kick-off Task 8: Run automated tests and the program to verify that all game functionality works correctly"
     assert verification_problem(ws, task) == (
         "no test run of the CURRENT files has passed yet. This project has no test command the framework knows (no \"test\" "
-        "script in package.json), so run its test file(s) (tests/game.test.js) directly with command_executor (e.g. `node "
+        "script in package.json), so run its test file(s) (tests/game.test.js) directly with command_executor (e.g. `node --test "
         "tests/game.test.js`), fix what fails, and mark the task finished when that run passes.")
     assert not is_full_test_run("node tests/game.test.js")
     record_test_run(ws, "node tests/game.test.js", FAILED, "Failed tests: - moveSnake moves snake LEFT")

@@ -380,14 +380,36 @@ def output_hints(workspace: Optional[Path], output: Optional[str]) -> List[str]:
                      "need).")
     match = re.search(r"ReferenceError: (describe|it|test|expect|beforeEach) is not defined", text)
     if match:
-        hints.append(f"`{match.group(1)}` is not defined: this test file uses the globals of a test runner (jest or mocha). "
-                     "Run it with the project's test command (`npm test`, or `npx jest <file>`), not with `node <file>`.")
+        hints.append(runner_globals_hint(workspace, text, match.group(1)))
     if workspace:
         hints.extend(inverted_check_hints(Path(workspace), text))  # Round 3m
         # Round 3q: 2026-10-25 22:53:59 "No module named 'src.frontend.players'" for src/frontend/players.js got no hint
         from src.tools.project_links_check import missing_module_language_hints
         hints.extend(missing_module_language_hints(Path(workspace), text))
     return hints
+
+
+def runner_globals_hint(workspace: Optional[Path], output: str, name: str) -> str:
+    """
+    Round 3x: the hint for "ReferenceError: describe is not defined". It said "run it with `npm test`, or `npx jest
+    <file>`" also for a project without package.json whose plan runs JavaScript tests with `node --test` (2026-10-27: 35
+    minutes of npm / npx jest / jest.config.js / package.json). Now: what provides those functions in THIS project.
+    """
+    from src.utils.js_test_checks import js_test_files, missing_runner_globals, package_test_runner, runner_globals_advice
+    if workspace:
+        runner = package_test_runner(workspace)
+        if runner in ("jest", "vitest", "jasmine", "mocha"):
+            return (f"`{name}` is not defined: this test file uses the globals of {runner}, which only the project's test "
+                    f"command provides. Run it with `npm test` (package.json runs {runner}), not with `node <file>`.")
+        named = [f for f in js_test_files(workspace) if f in output]
+        for rel in named or js_test_files(workspace):
+            missing = missing_runner_globals(workspace, rel)
+            if missing:
+                return runner_globals_advice(workspace, rel, missing)
+    return (f"`{name}` is not defined: the test file uses a test runner's functions without taking them from anywhere. "
+            "Take them from Node's built-in runner (`const { describe, test, beforeEach } = require('node:test');` at the "
+            "top of the file, run with `node --test tests/`), or run the file with the project's test command if its "
+            "package.json \"test\" script runs jest or mocha.")
 
 
 # --- Round 3m: a check that throws exactly when the value is RIGHT ----------------------------------------------------------
@@ -1322,6 +1344,19 @@ def written_data_note(root: Optional[Path], output: Optional[str], since: Option
         return None
 
 
+def js_test_mistake_hints(root: Path, output: str) -> List[str]:
+    """
+    Round 3x: mistakes in the failing JavaScript test files themselves (src/utils/js_test_checks.py): an exported variable
+    the test REPLACES while the module keeps using its own, objects compared with === / !==, names the test never defines.
+    """
+    from src.utils.js_test_checks import object_identity_hints, reassigned_export_hints, undefined_name_hints
+    files = [rel for rel in _failing_test_files(output) if not rel.endswith(".py")]
+    if not files:
+        return []
+    return (reassigned_export_hints(root, files) + object_identity_hints(root, output, files)
+            + undefined_name_hints(root, output, files))
+
+
 async def diagnose_failed_test_run(workspace: Any, command: str, output: str, run_started_at: Optional[float] = None) -> str:
     """
     The framework's notes for a FAILED test run ('' if none): failed tests that pass alone, the same tests failing again
@@ -1361,6 +1396,10 @@ async def diagnose_failed_test_run(workspace: Any, command: str, output: str, ru
         state_hints = shared_module_state_hints(root, output)  # Round 3r
         if state_hints:
             parts.append("[Framework check - state the tests share:]\n" + "\n".join(f"- {hint}" for hint in state_hints))
+        js_hints = js_test_mistake_hints(root, output)  # Round 3x
+        if js_hints:
+            parts.append("[Framework check - mistakes in the test file itself:]\n"
+                         + "\n".join(f"- {hint}" for hint in js_hints))
         stuck = stuck_note(root, output)
         if stuck:
             parts.append(stuck)

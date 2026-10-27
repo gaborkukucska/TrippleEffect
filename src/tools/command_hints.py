@@ -51,8 +51,44 @@ def command_notes(workspace: Optional[Path], command: Optional[str], returncode:
             notes.append(f"`{text.strip()[:80]}` killed ITSELF (exit code {returncode}): the shell that ran it has "
                          f"'{pattern}' in its own command line, so the -f pattern matched it too. The process you meant may "
                          f"still be running. Use a pattern that cannot match itself: `pkill -f '{safe}'`.")
+        if _NPM_RUN_RE.search(text) and _NO_PACKAGE_JSON_RE.search(out):
+            notes.append(npm_without_package_json_note(workspace, text))
     except Exception:
         return notes
     return notes
+
+
+# --- Round 3x: npm without a package.json ----------------------------------------------------------------------------------
+# 2026-10-27 09:26-09:53 `npm test` ended with exit code 254 eight times ("Could not read package.json"): the project had no
+# package.json - its plan runs JavaScript tests with `node --test`. The workers took the output for a broken test setup and
+# installed jest, wrote a jest.config.js and a package.json.
+_NPM_RUN_RE = re.compile(r"(?:^|[;&|]\s*)npm\s+(?:test|t|start|run(?:-script)?)\b")
+_NO_PACKAGE_JSON_RE = re.compile(r"Could not read package\.json|ENOENT[^\n]{0,120}package\.json", re.IGNORECASE)
+
+
+def npm_without_package_json_note(workspace: Optional[Path], command: str) -> str:
+    """What `npm test` / `npm start` without a package.json means, and what runs this project's tests instead."""
+    planned = None
+    js_tests: List[str] = []
+    try:
+        if workspace is not None:
+            from src.utils.js_test_checks import js_test_files, planned_js_runner
+            planned = planned_js_runner(workspace)
+            js_tests = js_test_files(workspace, limit=5)
+    except Exception:
+        pass
+    note = (f"`{command.strip()[:40]}` needs a package.json, and this project has none: npm ran nothing (exit code 254 is "
+            "npm's \"file not found\"). ")
+    if planned in ("jest", "vitest", "mocha"):
+        return note + (f"PROJECT_STRUCTURE.md runs the JavaScript tests with {planned}: create package.json with "
+                       f"`\"scripts\": {{\"test\": \"{planned}\"}}`, run `npm install --save-dev {planned}`, then `npm test`.")
+    if js_tests:
+        note += (f"Run the JavaScript tests ({', '.join(js_tests[:3])}) with Node's built-in runner: `node --test tests/`; a "
+                 "test file that calls describe() / test() takes them from it with `const { describe, test } = "
+                 "require('node:test');`.")
+        if planned == "node --test":
+            note += " PROJECT_STRUCTURE.md says the project's JavaScript tests run with `node --test`: do not install jest."
+        return note
+    return note + "Use `node <file>` for a script, or create package.json only if your task asks for one."
 
 # END OF FILE src/tools/command_hints.py

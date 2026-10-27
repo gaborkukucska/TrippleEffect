@@ -151,6 +151,38 @@ def split_line_range(param_name: str, value: Any, schema: Dict[str, Any], tool_a
     return result
 
 
+# --- Round 3x: paths in tool results ------------------------------------------------------------------------------------------
+# 2026-10-27 09:26-09:53 (WiFi_Snake_Game): a tool result showed the workspace as 'shared_workspace/...' and npm's output the
+# agent shells' HOME (/home/tom/TrippleEffect/sandboxes/_shell_home/.npm/_logs/...-debug-0.log). npm said the missing file was
+# 'shared_workspace/package.json', so W1 wrote 'shared_workspace/package.json' and ran `cd shared_workspace && npm test`; it
+# ran find / ls / cd in _shell_home ten times, once `cd` into npm's log FILE. Every command runs IN the workspace and every
+# file_system path is relative to it: a path in the workspace is shown relative to it ('package.json', 'tests/x.test.js', the
+# workspace itself as '.'), the shells' HOME as '~' (npm's cache and logs live there - not the project), other project
+# folders as 'projects_base/...'.
+def workspace_relative_paths(text: str, workspace: Any, projects_base: Any = None, shell_home: Any = None) -> str:
+    """`text` with the absolute paths of the workspace, the agent shells' HOME and the projects folder replaced."""
+    if not isinstance(text, str) or not text:
+        return text
+
+    def spellings(path: Any) -> List[str]:
+        if not path:
+            return []
+        found = []
+        for candidate in (str(path), str(Path(path).resolve()) if path else ""):
+            candidate = candidate.rstrip("/")
+            if candidate and candidate != "/" and candidate not in found:
+                found.append(candidate)
+        return sorted(found, key=len, reverse=True)
+
+    for absolute in spellings(workspace):
+        text = text.replace(absolute + "/", "").replace(absolute, ".")
+    for absolute in spellings(shell_home):
+        text = text.replace(absolute + "/", "~/").replace(absolute, "~")
+    for absolute in spellings(projects_base):
+        text = text.replace(absolute + "/", "projects_base/").replace(absolute, "projects_base")
+    return text
+
+
 class ToolExecutor:
     def __init__(self):
         self.tools: Dict[str, BaseTool] = {}
@@ -1175,15 +1207,13 @@ class ToolExecutor:
             # Scrub absolute paths from result and error_message before any further processing
             if project_name and session_name:
                 from src.config.settings import settings
-                base_dir_str = str(settings.PROJECTS_BASE_DIR.resolve())
-                workspace_dir_str = str((settings.PROJECTS_BASE_DIR / project_name / session_name / "shared_workspace").resolve())
-                
+                from src.tools.sandbox_runner import default_sandbox_home, resolve_shared_workspace
+                workspace_dir = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, project_name, session_name)
+
                 def sanitize_paths_in_string(s: str) -> str:
-                    s = s.replace(workspace_dir_str + "/", "shared_workspace/")
-                    s = s.replace(workspace_dir_str, "shared_workspace")
-                    s = s.replace(base_dir_str + "/", "projects_base/")
-                    s = s.replace(base_dir_str, "projects_base")
-                    return s
+                    # Round 3x: paths relative to the workspace (as file_system and command_executor use them) and '~'
+                    # for the agent shells' own HOME (see workspace_relative_paths)
+                    return workspace_relative_paths(s, workspace_dir, settings.PROJECTS_BASE_DIR, default_sandbox_home())
 
                 def sanitize_paths_in_obj(obj: Any) -> Any:
                     if isinstance(obj, str):

@@ -344,7 +344,7 @@ def test_the_test_check_spares_other_tasks_and_the_framework(tasks):
     (ws / "package.json").write_text(json.dumps({"name": "snake", "scripts": {"start": "node src/server.js"}}))
     t8 = _add(tasks, manager, "Kick-off Task 8: Run the tests and the program to verify that everything works", "W1")
     refused = tasks("PM1", manager, action="modify_task", task_id=t8, task_progress="finished")
-    assert refused.get("error_type") == "tests_not_passing" and "`node tests/test_api.js`" in refused["message"], refused
+    assert refused.get("error_type") == "tests_not_passing" and "`node --test tests/test_api.js`" in refused["message"], refused
     from src.utils.test_runs import record_test_run, PASSED
     record_test_run(ws, "node tests/test_api.js", PASSED, "all passed")
     assert tasks("PM1", manager, action="modify_task", task_id=t8, task_progress="finished")["status"] == "success"
