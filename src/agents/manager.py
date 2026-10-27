@@ -1081,6 +1081,11 @@ class AgentManager:
         worker_agent._needs_initial_work_context = True
         worker_agent.current_task_id = task_id_from_tool # Store the task ID as well
 
+        # Round 3z: a new task starts on the model the worker was configured with (after a failover switch)
+        if task_progress_from_tool not in ["finished", "completed"] and isinstance(getattr(worker_agent, '_configured_model', None), dict):
+            from src.agents.failover_handler import return_to_configured_model
+            await return_to_configured_model(self, worker_agent, "a new task")
+
         # Round 2d: a task the worker has ALREADY STARTED (progress 'doing') is resumed in worker_work. On 2026-10-18 the
         # watchdog re-activated W1 twice for its own 'doing' task into worker_decompose, where replies are capped at
         # WORKER_DECOMPOSE_STATE_MAX_TOKENS (1024): W1 stayed there for 29 cycles and four complete-file replies were cut off.

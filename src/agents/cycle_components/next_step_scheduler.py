@@ -110,6 +110,13 @@ class NextStepScheduler:
             # Round 3u: the provider answered again - the next outage starts with the short cooldown again
             agent._failover_exhaustion_retry_count = 0
 
+        if getattr(context, 'last_error_obj', None) is None and not context.trigger_failover \
+                and isinstance(getattr(agent, '_configured_model', None), dict):
+            # Round 3z: some time after a failover switch, back to the model the agent was configured with
+            from src.agents.failover_handler import FAILOVER_RETURN_AFTER_SECONDS, return_to_configured_model
+            await return_to_configured_model(self._manager, agent, "a cycle without errors after the failover",
+                                             min_age=FAILOVER_RETURN_AFTER_SECONDS)
+
         if context.trigger_failover:
             logger.warning(f"NextStepScheduler: Agent '{agent_id}' ({context.current_model_key_for_tracking}) requires failover. Error: {context.last_error_content[:100]}")
             failover_successful = await self._manager.handle_agent_model_failover(agent_id, context.last_error_obj or Exception("Unknown error triggering failover"))

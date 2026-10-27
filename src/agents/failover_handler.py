@@ -94,6 +94,12 @@ def _lacks_tool_support(model_id: str) -> bool:
 # Define provider-level errors (connection, timeout, etc.)
 PROVIDER_LEVEL_ERRORS = (
     aiohttp.ClientConnectorError,
+    # Round 3z: every aiohttp CONNECTION error (connection reset, server disconnected, connection timeout) - 2026-10-27
+    # 15:01:31-15:02:53 the Ollama server timed out 3x and then reset the connection ("[Errno 104] Connection reset by peer",
+    # aiohttp.ClientOSError). That was an "unknown error", so failover switched W1 to gemma4:12b on the SAME server: the
+    # server had to load a 12B model next to the 4B one the other agents used, and W1 stayed on it for the rest of the run.
+    aiohttp.ClientConnectionError,
+    ConnectionError,
     asyncio.TimeoutError,
     openai.APIConnectionError,
     # Add others if needed, e.g., certain auth errors affecting the whole provider
@@ -383,6 +389,59 @@ async def _try_switch_agent(
         return False
 
 
+# --- Round 3z: back to the configured model ---------------------------------------------------------------------------
+# A failover switch used to be for good: the agent kept the other model for the rest of the run (Round 3u noted it; on
+# 2026-10-27 W1 stayed on gemma4:12b after one connection reset while every other agent used qwen3.5:4b on the same server).
+# The model an agent had before its first failover is remembered (agent._configured_model); when the agent starts a NEW task,
+# or FAILOVER_RETURN_AFTER_SECONDS after the switch at the end of a cycle without an error, it is switched back if that model
+# is listed on its provider again (and a local server answers its health check).
+FAILOVER_RETURN_AFTER_SECONDS = 600
+
+
+async def return_to_configured_model(manager: 'AgentManager', agent: Any, reason: str, min_age: float = 0.0) -> bool:
+    """Round 3z: switches the agent back to its configured model (see above). True if it switched. Never raises."""
+    try:
+        configured = getattr(agent, '_configured_model', None)
+        if not isinstance(configured, dict):
+            return False
+        provider, model = configured.get("provider"), configured.get("model")
+        if not provider or not model or (getattr(agent, 'provider_name', None), getattr(agent, 'model', None)) == (provider, model):
+            agent._configured_model = None  # nothing to return to: the agent uses its configured model
+            return False
+        if time.time() - float(configured.get("since") or 0) < min_age:
+            return False
+        configured["since"] = time.time()  # the next attempt waits again, whatever happens now
+        available = model_registry.get_available_models_dict().get(provider, [])
+        if not any(isinstance(m, dict) and m.get("id") == model for m in available):
+            logger.info(f"Failover return: '{provider}/{model}' of agent '{agent.agent_id}' is not available; it stays on "
+                        f"'{agent.provider_name}/{agent.model}'.")
+            return False
+        if is_model_blacklisted(provider, model):
+            return False
+        key_config = None
+        if is_local_provider_name(provider):
+            url = model_registry.get_reachable_provider_url(provider)
+            if not url or not await _check_provider_health(url):
+                logger.info(f"Failover return: '{provider}' does not answer; agent '{agent.agent_id}' stays on '{agent.model}'.")
+                return False
+        else:
+            key_config = await manager.key_manager.get_active_key_config(provider)
+            if not key_config:
+                return False
+        current = f"{agent.provider_name}/{agent.model}"
+        if await _try_switch_agent(manager, agent, provider, model, key_config):
+            agent._configured_model = None
+            if hasattr(agent, '_failover_state'):
+                agent._failover_state = None
+            logger.warning(f"Failover return: agent '{agent.agent_id}' is back on its configured model '{provider}/{model}' "
+                           f"(was '{current}'; {reason}).")
+            return True
+        return False
+    except Exception as err:
+        logger.warning(f"Failover return for agent '{getattr(agent, 'agent_id', '?')}' failed: {err}")
+        return False
+
+
 # --- Main Failover Handler ---
 async def _try_same_model_next_key(manager: 'AgentManager', agent: Agent, failover_state: Dict[str, Any],
                                    provider: str, model: str) -> bool:
@@ -427,6 +486,10 @@ async def handle_agent_model_failover(manager: 'AgentManager', agent_id: str, la
     if not agent:
         logger.error(f"Failover Error: Agent '{agent_id}' not found during failover.")
         return False
+
+    # --- Round 3z: remember the model the agent was configured with, to return to it later (return_to_configured_model) ---
+    if not isinstance(getattr(agent, '_configured_model', None), dict):
+        agent._configured_model = {"provider": agent.provider_name, "model": agent.model, "since": time.time()}
 
     # --- Initialize Failover State ---
     # Use a dictionary attached to the agent instance to track state across potential retries *within* the failover sequence.

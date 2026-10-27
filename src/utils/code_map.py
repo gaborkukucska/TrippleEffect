@@ -315,6 +315,30 @@ def _matching_brace(clean: str, start: int) -> int:
     return len(clean)
 
 
+def _object_keys(clean: str, open_at: int, limit: int = 8) -> str:
+    """'{a, b, c, ...}': the top-level keys of the object literal whose '{' is at open_at (a blanked source).
+    Round 3z: a multi-line `return {` or `let gameState = {` was shown as a bare '{' (2026-10-27 15:01: getGameState())."""
+    end = _matching_brace(clean, open_at)
+    body = clean[open_at + 1:end]
+    keys: List[str] = []
+    depth, item = 0, ""
+    for ch in body + ",":
+        if ch in "{([":
+            depth += 1
+        elif ch in "})]":
+            depth -= 1
+        if ch == "," and depth == 0:
+            key = re.match(r"\s*(?:\.\.\.\s*)?([A-Za-z_$][\w$]*|\[[^\]]*\])", item)
+            if key and key.group(1) not in keys:
+                keys.append(("..." if item.strip().startswith("...") else "") + key.group(1))
+            item = ""
+        else:
+            item += ch
+    if not keys:
+        return "{}"
+    return "{" + ", ".join(keys[:limit]) + (", ..." if len(keys) > limit else "") + "}"
+
+
 def _export_items(source: str, clean: str) -> List[Tuple[str, str]]:
     """(name, shown text) of the entries of every `module.exports = { ... }` object: `a` -> 'a', `b: x` -> 'b',
     `getScore: () => score` -> 'getScore() -> score', `reset() { ... }` -> 'reset()'."""
@@ -432,6 +456,10 @@ def _js_returns(source: str, clean: str, body_start: int) -> List[str]:
             while stop < end and clean[stop] not in ";\n}":
                 stop += 1
             text = _short(source[i + 6:stop], MAX_RETURN_CHARS) or "undefined"
+            if text.startswith("{") and clean.find("{", i + 6) >= 0:
+                brace_at = clean.find("{", i + 6)
+                text = _object_keys(clean, brace_at)  # Round 3z: the shape of a returned object
+                stop = max(stop, _matching_brace(clean, brace_at))
             if text not in found:
                 found.append(text)
             i = stop
@@ -559,6 +587,8 @@ def javascript_outline(source: str, test_file: bool = False) -> List[str]:
             if value.startswith("require("):
                 continue
             shown = _shown_value(original)
+            if value.startswith("{"):
+                shown = _object_keys(clean, offsets[number] + line.find("{", match.start(3) if match.start(3) >= 0 else 0))
             entry = f"{name} = {shown}" if shown else name
             if kind == "const" and (name.isupper() or not value.startswith(("{", "["))):
                 constants.append(entry)

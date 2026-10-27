@@ -804,7 +804,12 @@ def foreign_file_creation_error(manager: Any, agent_id: Optional[str], project_n
                 # ("Kick-off Task 1: ... core game logic ... in src/game.js") wrote tests/test_game.js, the file of the
                 # unassigned "Kick-off Task 6: Write ... tests for game logic in tests/test_game.js"; W3 got Task 6 eight
                 # minutes later, could not replace W1's file (overwrite refused, last changed by W1) and spent 2h20m on it.
-                if not _is_planned_task(other) or not _task_names_path(file_paths_in_text(other_text), rel_path):
+                # Round 3z: also a test file in the test folder such a task names ('... in tests/'), unless the worker's
+                # own task is about tests (2026-10-27 15:13 W1, "Kick-off Task 1: ... core snake game logic in src/game.js",
+                # wrote tests/game/game.test.js for the unassigned "Kick-off Task 8: Write automated tests ... in tests/")
+                if not _is_planned_task(other) or not (
+                        _task_names_path(file_paths_in_text(other_text), rel_path)
+                        or (not own_mentions_tests and _claims_test_file(other_text, rel_path))):
                     continue
                 logger.warning(f"ProjectManagementTool: '{agent_id}' tried to create '{rel_path}', the file of the planned "
                                f"task {get_task_field(other, 'uuid', '?')} (not assigned yet). Refused.")
