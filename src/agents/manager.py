@@ -1150,9 +1150,14 @@ class AgentManager:
                 sys_prompt = worker_agent.message_history[0]
                 
                 # We can inject a summary message
+                # Round 3y: the note says what really happened - the earlier history is gone (it used to say "You retain
+                # your knowledge", 2026-10-27: workers then wrote tests from memory of code they no longer had)
                 summary_msg = {
                     "role": "system",
-                    "content": "[Framework System Reminder]: This agent has preserved history from previous tasks. Older task execution details have been condensed to save memory. You retain your knowledge and capabilities."
+                    "content": ("[Framework System Reminder]: The history of your earlier tasks was removed to save memory - "
+                                "you do NOT remember the code you or others wrote. Everything that was saved is in the "
+                                "files: the CODE MAP shows the interface of your new task's files, and file_system 'read' "
+                                "shows a file in full. Read a file before you change it or write tests for it.")
                 }
                 
                 # Keep the last 4 messages to preserve immediate recent context (likely the transition to worker_wait)

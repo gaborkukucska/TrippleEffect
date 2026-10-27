@@ -701,6 +701,23 @@ class ToolExecutor:
         return None
 
     @staticmethod
+    def _framework_conftest_message(tool_name: str, tool_args: Dict[str, Any], project_name: Optional[str],
+                                    session_name: Optional[str]) -> Optional[str]:
+        """Round 3y: the refusal for changing the framework-owned root conftest.py of the shared workspace, else None."""
+        try:
+            filename = ToolExecutor._shared_file_change_target(tool_name, tool_args)
+            if not filename or not project_name or not session_name:
+                return None
+            from src.config.settings import settings
+            from src.tools.sandbox_runner import resolve_shared_workspace
+            from src.utils.framework_conftest import framework_conftest_change_error
+            workspace = resolve_shared_workspace(settings.PROJECTS_BASE_DIR, project_name, session_name)
+            return framework_conftest_change_error(workspace, filename)
+        except Exception as err:
+            logger.debug(f"ToolExecutor: framework conftest check failed: {err}")
+            return None
+
+    @staticmethod
     def _blocked_worker_message(tool_name: str, tool_args: Dict[str, Any], agent_id: str, project_name: Optional[str],
                                 session_name: Optional[str], manager: Any) -> Optional[str]:
         """
@@ -1088,6 +1105,15 @@ class ToolExecutor:
                     logger.error(f"ToolExecutor: {error_msg}")
                     return error_msg
             
+            # --- Round 3y: the framework-owned root conftest.py is changed by nobody (only 'write' was refused before) ---
+            if tool_name in ("file_system", "code_editor") and not framework_internal:
+                conftest_message = self._framework_conftest_message(tool_name, kwargs_for_tool, project_name, session_name)
+                if conftest_message:
+                    logger.warning(f"[TOOL_EXEC_BLOCKED] ID:{execution_id} | '{tool_name}' change of '{agent_id}' refused: "
+                                   "the framework-owned conftest.py.")
+                    self._update_execution_stats(success=False)
+                    return f"{fuzzy_warning}Error from tool '{tool_name}': {conftest_message}"
+
             # --- Round 3f: a worker does not create the file of a task assigned to ANOTHER worker ---
             if tool_name == "file_system" and agent_type_for_auth == AGENT_TYPE_WORKER and manager is not None:
                 ownership_message = self._foreign_file_creation_message(kwargs_for_tool, agent_id, project_name,

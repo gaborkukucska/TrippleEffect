@@ -415,6 +415,14 @@ class Settings:
         self.OLLAMA_STREAM_TOOL_CALLS: bool = os.getenv("OLLAMA_STREAM_TOOL_CALLS", "true").strip().lower() in ("1", "true", "yes", "on")
         logger.info(f"Loaded OLLAMA_STREAM_TOOL_CALLS: {self.OLLAMA_STREAM_TOOL_CALLS}")
 
+        # --- Round 3y: the CODE MAP of a worker's task files (src/utils/code_map.py) ---
+        # Rebuilt from the files at every call of a worker in worker_decompose / worker_work / worker_test: what each file of
+        # its task exports (with parameters and return values), what stays inside the file, and the code its tests check.
+        # The most characters it may add to a call (about 4 per token); 0 switches it off.
+        try: self.CODE_MAP_MAX_CHARS: int = max(0, int(os.getenv("CODE_MAP_MAX_CHARS", "4200")))
+        except ValueError: logger.warning("Invalid CODE_MAP_MAX_CHARS, using 4200."); self.CODE_MAP_MAX_CHARS = 4200
+        logger.info(f"Loaded CODE_MAP_MAX_CHARS: {self.CODE_MAP_MAX_CHARS}")
+
         # --- Ollama Concurrency Limit ---
         try: self.OLLAMA_CONCURRENCY_LIMIT: int = int(os.getenv("OLLAMA_CONCURRENCY_LIMIT", "2")); logger.info(f"Loaded OLLAMA_CONCURRENCY_LIMIT: {self.OLLAMA_CONCURRENCY_LIMIT}")
         except ValueError: logger.warning("Invalid OLLAMA_CONCURRENCY_LIMIT, using 2."); self.OLLAMA_CONCURRENCY_LIMIT = 2

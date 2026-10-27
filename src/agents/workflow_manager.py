@@ -543,11 +543,17 @@ class AgentWorkflowManager:
                         # repeatedly outputs `<request_state state='worker_work'/>`
                         logger.info(f"WorkflowManager: Worker '{agent.agent_id}' transitioning to work state. Condensing history to prevent looping.")
                         if hasattr(agent, 'message_history') and agent.message_history:
+                            # Round 3y: the files it read and wrote before are named (2026-10-27 11:29:53 W1 wrote src/game.js
+                            # in worker_decompose; after this clear its first call in worker_work read src/game.js again)
+                            from src.utils.code_map import carried_files_note
+                            carried = carried_files_note(agent.message_history)
                             sys_prompt = agent.message_history[0] if agent.message_history[0].get("role") == "system" else None
                             if sys_prompt:
                                 agent.message_history = [sys_prompt]
                             else:
                                 agent.message_history = []
+                            if carried:
+                                agent.message_history.append({"role": "system", "content": carried})
                         agent._last_system_prompt_state = None  # Force fresh system prompt generation
                         # --- END DECOMPOSE TO WORK ---
                     # --- END DECOMPOSE TRANSITION VALIDATION ---

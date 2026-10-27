@@ -414,6 +414,15 @@ class PromptAssembler:
                 history_for_call.append(tasks_msg)  # Round 3c: after the history (see above)
                 logger.debug(f"Injected assigned tasks report for worker '{agent.agent_id}'.")
 
+        # 3.56 Round 3y: the CODE MAP - the interface of the worker's task files, rebuilt from disk at every call, so a
+        # cleared, summarized or compacted history never leaves a worker guessing the names of the code it tests or changes
+        if hasattr(agent, 'agent_type') and agent.agent_type == AGENT_TYPE_WORKER:
+            from src.utils.code_map import code_map_block
+            code_map = code_map_block(manager, agent)
+            if code_map:
+                history_for_call.append({"role": "system", "content": code_map})
+                logger.debug(f"Injected code map ({len(code_map)} chars) for worker '{agent.agent_id}'.")
+
         # 3.6 Inject Message Read/Ack instructions (Workers and PMs)
         if hasattr(agent, 'agent_type') and agent.agent_type in [AGENT_TYPE_WORKER, AGENT_TYPE_PM]:
             # Count unread messages in history

@@ -76,3 +76,59 @@ def unfinished_dependencies(task: Any) -> List[Tuple[str, str]]:
         description = " ".join(str(get_task_field(dep, "description", "")).split())
         blocking.append((str(get_task_field(dep, "uuid", "?")), description))
     return blocking
+
+
+# --- Round 3y: a worker does not START a task that waits for unfinished tasks ---------------------------------------------
+# 2026-10-27 11:56:46 (WiFi_Snake_Game) W4 was working on Kick-off Task 5 (src/api.py, 'doing') when its report ended; it asked
+# for worker_work with the id of its other task, "Kick-off Task 10: Write ... tests for API endpoints in tests/test_api.py" -
+# which depends on Task 5 - and got it. W4 wrote tests for an API that was still being written and marked Task 10 finished at
+# 13:20 while Task 5 was still open; Task 5 went to W1 later.
+_CLOSED_PROGRESS = frozenset({"finished", "completed", "complete", "done", "closed", "deleted", "decomposed"})
+
+
+def _shown(text: Any, limit: int = 80) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit - 3] + "..."
+
+
+def ready_task_of(tasks: Any, agent_id: str, exclude_uuid: Any = None) -> Any:
+    """The worker's first open task (assigned to it, not closed, not the kick-off task) that waits for nothing, or None."""
+    for task in tasks or []:
+        try:
+            if exclude_uuid and str(get_task_field(task, "uuid", "")) == str(exclude_uuid):
+                continue
+            if not task_is_assigned_to(task, agent_id):
+                continue
+            tags = get_task_field(task, "tags") or []
+            if "project_kickoff" in set(tags):
+                continue
+            if str(get_task_field(task, "task_progress", "todo") or "todo").strip().lower() in _CLOSED_PROGRESS:
+                continue
+            if str(get_task_field(task, "status", "pending") or "pending").strip().lower() != "pending":
+                continue
+            if unfinished_dependencies(task):
+                continue
+            return task
+        except Exception:
+            continue
+    return None
+
+
+def waiting_task_start_refusal(task: Any, task_ref: Any, agent_id: str, pending_tasks: Any = None) -> str:
+    """
+    Round 3y: the refusal for a worker that asks to work on `task` while it depends on unfinished tasks ('' if it waits for
+    nothing). Names what it waits for and the worker's own task that it can work on now (or worker_wait).
+    """
+    blocking = unfinished_dependencies(task)
+    if not blocking:
+        return ""
+    names = "; ".join(f"'{_shown(description, 70)}' ({uuid})" for uuid, description in blocking[:3])
+    ready = ready_task_of(pending_tasks, agent_id, exclude_uuid=get_task_field(task, "uuid", None))
+    if ready is not None:
+        then = (f"Work on your task '{_shown(get_task_field(ready, 'description', ''))}' instead: call the 'request_state' "
+                f"tool with state='worker_work' and task_id='{get_task_field(ready, 'uuid', '?')}'.")
+    else:
+        then = ("You have no task you can work on now: call the 'request_state' tool with state='worker_wait'. You are "
+                "started automatically when it can begin.")
+    return (f"Task '{task_ref}' ('{_shown(get_task_field(task, 'description', ''))}') can NOT be worked on yet: it waits for "
+            f"unfinished task(s) {names}, whose files are still changing. {then}")

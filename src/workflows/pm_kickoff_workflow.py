@@ -327,6 +327,60 @@ def renamed_task_text(text: str, renames: Dict[str, str], planned_files: List[st
             + ". Never write a Python copy of the JavaScript code.]")
 
 
+# --- Round 3y: a task that says "pytest" for a JavaScript test file ---------------------------------------------------------
+# 2026-10-27 11:27 (WiFi_Snake_Game) the plan named JavaScript test files from the start, so nothing was renamed (Round 3s),
+# but the task texts kept the plan's words: "Kick-off Task 6: Write pytest tests for game logic in tests/test_game.js" (the
+# same for tasks 7 and 8). W3 wrote PYTHON into tests/test_game.js (`import pytest` - "SyntaxError: Unexpected token
+# 'import'"), then tests/test_game.py and src/game.py, and spent 2h20m on the task.
+_PYTEST_WORDS_RE = re.compile(r"\b(?:pytest|py\.test|unittest)(?:\s+(?:unit\s+)?tests?)?\b|\bpython\s+(?:unit\s+)?tests?\b",
+                              re.IGNORECASE)
+
+
+def test_language_task_text(text: str, planned_files: List[str]) -> str:
+    """
+    Round 3y: a kick-off task text that asks for pytest / Python tests but names only JavaScript test files gets JavaScript
+    words and a note naming the code those tests check; a task to run the tests of a project with Python AND JavaScript tests
+    gets a note that both are run. Any other text is returned unchanged.
+    """
+    try:
+        from src.utils.task_files import file_paths_in_text
+        if "[Framework note: " in text and "JavaScript test" in text:
+            return text  # already explained (Round 3s rename note)
+        named = file_paths_in_text(text)
+        js_tests = [p for p in named if _TEST_PATH_RE.search(p) and PurePosixPath(p).suffix.lower() in _JS_EXTENSIONS]
+        py_tests = [p for p in named if _TEST_PATH_RE.search(p) and p.lower().endswith(".py")]
+        if not _PYTEST_WORDS_RE.search(text):
+            return text
+        code = [f for f in planned_files if not _TEST_PATH_RE.search(f)]
+        if js_tests and not py_tests:
+            new_text = _PYTEST_WORDS_RE.sub("JavaScript tests", text)
+            from src.utils.code_map import _subject_by_name
+            js_code = [f for f in code if PurePosixPath(f).suffix.lower() in _JS_EXTENSIONS]
+            subjects = list(dict.fromkeys(filter(None, (_subject_by_name(test, js_code) for test in js_tests))))
+            about = f" of {', '.join(subjects[:3])}" if subjects else ""
+            return (f"{new_text} [Framework note: {', '.join(js_tests[:3])} {'is a JavaScript test' if len(js_tests) == 1 else 'are JavaScript tests'}"
+                    f"{about}: write {'it' if len(js_tests) == 1 else 'them'} in JavaScript with Node's built-in runner "
+                    "(`const { describe, it, beforeEach } = require('node:test'); const assert = require('node:assert');`), "
+                    "run with `node --test tests/`. Never write Python into a .js file or a Python copy of the code.]")
+        from src.utils.test_runs import is_test_run_task
+        planned_js_tests = [f for f in planned_files if _TEST_PATH_RE.search(f)
+                            and PurePosixPath(f).suffix.lower() in _JS_EXTENSIONS]
+        planned_py_tests = [f for f in planned_files if _TEST_PATH_RE.search(f) and f.lower().endswith(".py")
+                            and PurePosixPath(f).name != "conftest.py"]
+        if not named or (not js_tests and not py_tests):
+            if is_test_run_task(text) and planned_js_tests:
+                if planned_py_tests:
+                    how = ("this project has Python tests (run with `python -m pytest -q`) AND JavaScript tests (run with "
+                           "`node --test tests/`): run BOTH; pytest cannot run the .js tests")
+                else:
+                    how = "the tests of this project are JavaScript: run them with `node --test tests/`, not pytest"
+                return f"{text} [Framework note: {how}.]"
+        return text
+    except Exception as err:
+        logger.debug(f"test_language_task_text failed: {err}")
+        return text
+
+
 def with_root_files(planned_files: List[str], root_names: List[str]) -> List[str]:
     """
     Round 2v: the planned files plus the root files the tasks say to create ("Create server.py ..."), unless a planned file
@@ -810,6 +864,15 @@ class PMKickoffWorkflow(BaseWorkflow):
                 task_descriptions = [task_info["description"] for task_info in task_info_list]
                 logger.warning(f"PMKickoffWorkflow: kickoff plan of '{agent.agent_id}': Python test file(s) for JavaScript "
                                f"code planned as JavaScript tests: {test_renames}.")
+            # Round 3y: "pytest" in a task that names JavaScript test files (nothing to rename) - its words are fixed too
+            renamed_files = [test_renames.get(f, f) for f in language_planned]
+            for task_info in task_info_list:
+                fixed = test_language_task_text(task_info["description"], renamed_files)
+                if fixed != task_info["description"]:
+                    logger.warning(f"PMKickoffWorkflow: kickoff plan of '{agent.agent_id}': test task text corrected for the "
+                                   f"test language: '{task_info['description'][:80]}'.")
+                    task_info["description"] = fixed
+            task_descriptions = [task_info["description"] for task_info in task_info_list]
         except Exception as language_err:
             logger.warning(f"PMKickoffWorkflow: test language check failed ({language_err}); plan kept as it is.")
             test_renames = {}

@@ -48,6 +48,13 @@ CONTENT_RETURNING_TOOLS = frozenset({
 _EXECUTOR_REFUSAL_RE = re.compile(r"^error from tool '[\w.-]+': ", re.MULTILINE)
 
 
+# Round 3y: a code_editor edit that WAS saved starts with this. 2026-10-27 11:37:33 W2's saved edit of src/server.py carried the
+# framework's note "... this fails with \"ModuleNotFoundError: ...\"" (an import of a JavaScript module): the word "error" made
+# the saved edit a FAILED call, so "edit, run the tests again" counted as failed cycles (forced reports) and as a loop with no
+# file changed in between.
+CODE_EDITOR_SAVED_PREFIX = "successfully applied "
+
+
 def is_tool_result_failure(tool_name: Optional[str], content: Any) -> bool:
     """True if a tool result (as stored in the message history) represents a failed tool call."""
     text = "" if content is None else str(content)
@@ -66,6 +73,8 @@ def is_tool_result_failure(tool_name: Optional[str], content: Any) -> bool:
         return True
     if tool_name in CONTENT_RETURNING_TOOLS:
         return False
+    if tool_name == "code_editor" and lowered.lstrip().startswith(CODE_EDITOR_SAVED_PREFIX):
+        return False  # Round 3y: a saved edit with notes after it (see CODE_EDITOR_SAVED_PREFIX)
     # Legacy rule, unchanged for all other tools (command output, test runs, ...).
     return "error" in lowered or "[tool execution failed]" in lowered
 

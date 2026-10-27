@@ -13,10 +13,16 @@ once), unless src/ is a package of its own (src/__init__.py) or the module canno
 * FRAMEWORK_CONFTEST: the current text. FRAMEWORK_CONFTEST_MARKER: the words that mark the file as the framework's.
 * refresh_framework_conftest(workspace): replaces a root conftest.py whose text is EXACTLY an earlier framework version with
   the current one (anything else - a project's own conftest - is left alone). Never raises.
+* Round 3y: framework_conftest_change_error(workspace, rel): the refusal for ANY agent change of the framework-owned root
+  conftest.py (file_system write/edit/delete/move and code_editor - only 'write' was refused before). 2026-10-27 13:44:44
+  W4 changed `type(finder).__name__` to `type(finder).__name` with code_editor; from then on every pytest run of the project
+  stopped with "AttributeError: type object 'AssertionRewritingHook' has no attribute '__name'" while loading conftest.py.
+  refresh_framework_conftest() also restores a framework-owned conftest.py that an AGENT changed (recorded by the tool
+  executor, src/utils/file_authorship.py).
 """
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -102,13 +108,51 @@ def refresh_framework_conftest(workspace: Any) -> bool:
         if not conftest.is_file():
             return False
         text = conftest.read_text(encoding="utf-8")
-        if text == FRAMEWORK_CONFTEST or text not in EARLIER_FRAMEWORK_CONFTESTS:
+        if text == FRAMEWORK_CONFTEST:
             return False
+        if text not in EARLIER_FRAMEWORK_CONFTESTS:
+            # Round 3y: a framework-owned conftest.py that an agent changed is the framework's again
+            from src.utils.file_authorship import last_writer
+            writer = last_writer(conftest)
+            if not writer or FRAMEWORK_CONFTEST_MARKER not in text[:300]:
+                return False
+            conftest.write_text(FRAMEWORK_CONFTEST, encoding="utf-8")
+            from src.utils.file_authorship import forget_file
+            forget_file(conftest)
+            logger.warning(f"framework_conftest: restored the framework-owned {conftest} that '{writer}' had changed.")
+            return True
         conftest.write_text(FRAMEWORK_CONFTEST, encoding="utf-8")
         logger.info(f"framework_conftest: updated the framework-owned {conftest} to the current version.")
         return True
     except Exception as err:
         logger.debug(f"refresh_framework_conftest failed: {err}")
         return False
+
+
+CHANGE_REFUSAL = ("conftest.py is managed by the framework and must not be changed. Modules in src/ and in the project root "
+                  "are already importable from tests: write `from my_module import my_function`. Run tests with "
+                  "`python -m pytest -q` from the workspace root. If a test cannot import something, fix the TEST or the "
+                  "module - never conftest.py.")
+
+
+def framework_conftest_change_error(workspace: Any, rel_path: Any) -> Optional[str]:
+    """Round 3y: the refusal for a change of the framework-owned ROOT conftest.py of the workspace, else None."""
+    try:
+        if not workspace or not rel_path:
+            return None
+        rel = str(rel_path).replace("\\", "/").strip()
+        while rel.startswith("./"):
+            rel = rel[2:]
+        if rel.lstrip("/") != "conftest.py":
+            return None
+        conftest = Path(workspace) / "conftest.py"
+        if not conftest.is_file():
+            return None
+        if FRAMEWORK_CONFTEST_MARKER not in conftest.read_text(encoding="utf-8", errors="replace")[:300]:
+            return None  # a project's own conftest.py
+        return CHANGE_REFUSAL
+    except Exception as err:
+        logger.debug(f"framework_conftest_change_error failed: {err}")
+        return None
 
 # END OF FILE src/utils/framework_conftest.py

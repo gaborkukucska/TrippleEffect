@@ -1344,17 +1344,67 @@ def written_data_note(root: Optional[Path], output: Optional[str], since: Option
         return None
 
 
+_NODE_NOT_OK_RE = re.compile(r"^(\s*)not ok \d+ - (.+?)\s*$")
+_NODE_LOCATION_RE = re.compile(r"^\s*location: '(.+?):\d+:\d+'\s*$")
+
+
+def node_test_failed_files(root: Any, output: Optional[str]) -> List[str]:
+    """
+    Round 3y: the workspace test files of the failed tests in a `node --test` (TAP) output: the `location:` of each `not ok`
+    block, and a `not ok N - tests/x.js` line that names a file (the file failed as a whole). The hints of Round 3x only read
+    jest's output, so a failed `node --test` run - the runner PROJECT_STRUCTURE.md recommends - never got them.
+    """
+    found: List[str] = []
+    try:
+        base = Path(root).resolve()
+        lines = str(output or "").splitlines()
+        for index, line in enumerate(lines):
+            match = _NODE_NOT_OK_RE.match(line)
+            if not match:
+                continue
+            candidates = [match.group(2)]
+            for follow in lines[index + 1:index + 14]:
+                if follow.strip() == "...":
+                    break
+                location = _NODE_LOCATION_RE.match(follow)
+                if location:
+                    candidates.append(location.group(1))
+                    break
+            for candidate in candidates:
+                path = Path(candidate)
+                try:
+                    rel = (path.resolve() if path.is_absolute() else (base / candidate).resolve()).relative_to(base).as_posix()
+                except (OSError, ValueError):
+                    continue
+                if rel.endswith((".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx")) and (base / rel).is_file() \
+                        and rel not in found:
+                    found.append(rel)
+    except Exception as err:
+        logger.debug(f"node_test_failed_files failed: {err}")
+    return found
+
+
 def js_test_mistake_hints(root: Path, output: str) -> List[str]:
     """
     Round 3x: mistakes in the failing JavaScript test files themselves (src/utils/js_test_checks.py): an exported variable
     the test REPLACES while the module keeps using its own, objects compared with === / !==, names the test never defines.
+    Round 3y: variables INSIDE a loaded module that the test sets or reads by name, and names it takes that the module does
+    not export (src/utils/code_map.py).
     """
     from src.utils.js_test_checks import object_identity_hints, reassigned_export_hints, undefined_name_hints
     files = [rel for rel in _failing_test_files(output) if not rel.endswith(".py")]
+    files += [rel for rel in node_test_failed_files(root, output) if rel not in files]  # Round 3y: node --test output
     if not files:
         return []
-    return (reassigned_export_hints(root, files) + object_identity_hints(root, output, files)
-            + undefined_name_hints(root, output, files))
+    hints = (reassigned_export_hints(root, files) + object_identity_hints(root, output, files)
+             + undefined_name_hints(root, output, files))
+    # Round 3y: the module's INNER variables used by the test, and names the module does not export (src/utils/code_map.py)
+    from src.utils.code_map import missing_names_hint, module_internal_hint
+    for rel in files[:4]:
+        for hint in (missing_names_hint(root, rel), module_internal_hint(root, rel)):
+            if hint and hint not in hints:
+                hints.append(hint)
+    return hints
 
 
 async def diagnose_failed_test_run(workspace: Any, command: str, output: str, run_started_at: Optional[float] = None) -> str:

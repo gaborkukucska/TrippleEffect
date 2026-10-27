@@ -3,7 +3,8 @@
 TrippleEffect: Session & Log Collector  (v2: smart log reduction; v2.2: the session of the log;
 v2.3: configuration and environment, with secrets redacted; v2.4: every project session of the log;
 v2.5: keys that .env sets more than once; v2.6: full tool calls, system prompts and injected notices from the
-request payloads of the DEBUG log; v2.7: tool results sent as user messages are found, Guardian calls are named)
+request payloads of the DEBUG log; v2.7: tool results sent as user messages are found, Guardian calls are named;
+v2.8: a saved code_editor edit with framework notes is not counted as a failed call, as in the framework since Round 3y)
 
 Run from the TrippleEffect repository root:   python3 collect.py
 Output directory: ~/Desktop/te_session_data     (change with --dest)
@@ -375,6 +376,8 @@ def result_failed(tool: str, content: str) -> bool:
         return True
     if tool in CONTENT_TOOLS:
         return False
+    if tool == "code_editor" and lowered.lstrip().startswith("successfully applied "):
+        return False  # v2.8 (Round 3y): a saved edit with framework notes after it
     return "error" in lowered or "[tool execution failed]" in lowered
 
 

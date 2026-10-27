@@ -394,10 +394,14 @@ def test_a_worker_does_not_create_the_file_of_another_worker_s_task(tasks):
     assert (tasks.workspace / "src" / "game" / "script.js").is_file(), answer
     _workspace(tasks.workspace, {"test/game.test.js": "// W2's test\n"})
     assert gate(args, "W1", PROJECT, SESSION, manager) is None              # changing an existing file stays allowed
-    # an unassigned or finished task does not own its file
-    unassigned = _add(tasks, manager, "Kick-off Task 7: Write README.md in docs/README.md")
+    # an unassigned task that is not part of the plan does not own its file
+    unassigned = _add(tasks, manager, "Write README.md in docs/README.md")
     assert foreign_file_creation_error(manager, "W1", PROJECT, SESSION, "docs/README.md") is None
     assert unassigned
+    # Round 3y: an unassigned PLANNED task does (2026-10-27: W1 wrote tests/test_game.js of the unassigned Kick-off Task 6)
+    _add(tasks, manager, "Kick-off Task 7: Write the guide in docs/GUIDE.md")
+    refusal = foreign_file_creation_error(manager, "W1", PROJECT, SESSION, "docs/GUIDE.md")
+    assert refusal and "not assigned yet" in refusal
 
 
 @needs_tw

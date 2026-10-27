@@ -1016,9 +1016,17 @@ def link_notes_text(workspace: Optional[Path], rel_path: Optional[str], source: 
         if problems:
             text = ("\n[Framework check - the file WAS saved, but it does not work with the project yet (a task with this "
                     "problem cannot be marked finished):]\n- " + "\n- ".join(problems))
+        notes = []
         unloaded = unloaded_browser_script_problem(root, rel, source)  # Round 3q: a note only, not a completion problem
         if unloaded:
-            text += f"\n[Framework note - the file WAS saved:]\n- {unloaded}"
+            notes.append(unloaded)
+        if is_test_file(rel) and _language(rel) == "javascript":
+            # Round 3y: a JavaScript test that uses a module's INNER variables or names the module does not export (notes)
+            from src.utils.code_map import missing_names_hint, module_internal_hint
+            notes.extend(hint for hint in (missing_names_hint(root, rel, source), module_internal_hint(root, rel, source))
+                         if hint)
+        if notes:
+            text += "\n[Framework note - the file WAS saved:]\n- " + "\n- ".join(notes)
         return text
     except Exception as err:
         logger.debug(f"link_notes_text({rel_path}) failed: {err}")

@@ -408,7 +408,19 @@ class AgentCycleHandler:
                                         f"You cannot work on an already completed task. If all your assigned tasks are finished, "
                                         f"you MUST call the 'request_state' tool with state='worker_wait' to wait for your PM to assign new work."
                                     )
-                                elif current_progress == 'waiting':
+                                # Round 3y: a task that depends on unfinished tasks is not started (src/utils/task_utils.py)
+                                from src.utils.task_utils import waiting_task_start_refusal
+                                try:
+                                    pending_tasks = list(tw.tasks.pending())
+                                except Exception:
+                                    pending_tasks = []
+                                waiting_refusal = waiting_task_start_refusal(task, task_id, agent.agent_id, pending_tasks)
+                                if waiting_refusal:
+                                    agent.active_task_id = previous_active_task_id
+                                    logger.warning(f"CycleHandler: Worker '{agent.agent_id}' asked for '{resolved}' with task "
+                                                   f"'{task_id}', which waits for unfinished tasks. Refused.")
+                                    raise ValueError(waiting_refusal)
+                                if current_progress == 'waiting':
                                     logger.info(f"CycleHandler: Task '{task_id}' (resolved: '{resolved_id}') is 'waiting'. Not auto-updating to 'doing'.")
                                 else:
                                     task['task_progress'] = 'doing'
@@ -458,17 +470,22 @@ class AgentCycleHandler:
                     pm_tool = ProjectManagementTool()
                     tw = pm_tool._get_taskwarrior_instance(self._manager.current_project, self._manager.current_session)
                     if tw:
-                        tasks = tw.tasks.filter(status="pending")
-                        for task in tasks:
-                            try:
-                                is_assigned = task_is_assigned_to(task, agent_id)
+                        tasks = list(tw.tasks.filter(status="pending"))
+                        # Round 3y: a task the worker can work on now first (one that waits for nothing)
+                        from src.utils.task_utils import unfinished_dependencies
+                        for ready_only in (True, False):
+                            for task in tasks:
+                                try:
+                                    is_assigned = task_is_assigned_to(task, agent_id)
 
-                                if is_assigned:
-                                    progress = get_task_field(task, 'task_progress')
-                                    if progress in ['doing', 'in_progress', 'todo', 'pending', None]:
-                                        return str(task['uuid'])
-                            except Exception:
-                                pass
+                                    if is_assigned:
+                                        progress = get_task_field(task, 'task_progress')
+                                        if progress in ['doing', 'in_progress', 'todo', 'pending', None]:
+                                            if ready_only and unfinished_dependencies(task):
+                                                continue
+                                            return str(task['uuid'])
+                                except Exception:
+                                    pass
         except Exception as e:
             logger.warning(f"Failed to infer task for {agent_id}: {e}")
         return None

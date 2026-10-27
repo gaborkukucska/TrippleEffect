@@ -515,6 +515,31 @@ def _is_known_worker(agent_id: Optional[str], manager: Any) -> bool:
         return False
 
 
+def waiting_task_finish_error(task: Any, task_ref: Any, caller_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """
+    Round 3y: the refusal for marking a task finished while it depends on unfinished tasks (framework calls and the
+    kick-off task pass), else None. 2026-10-27 13:20:54 W4 finished "Kick-off Task 10: Write ... tests for API endpoints in
+    tests/test_api.py" while the task it depends on, Task 5 (src/api.py), was still being written - the tests were checked
+    against an API that changed afterwards. Never raises.
+    """
+    try:
+        if caller_id in FRAMEWORK_CALLERS or "project_kickoff" in _task_tags(task):
+            return None
+        from src.utils.task_utils import unfinished_dependencies
+        blocking = unfinished_dependencies(task)
+        if not blocking:
+            return None
+        names = "; ".join(f"'{_shown_text(description, 70)}' ({uuid})" for uuid, description in blocking[:3])
+        logger.warning(f"ProjectManagementTool: '{caller_id}' tried to finish task {task_ref}, which waits for {names}. Refused.")
+        return {"status": "error", "error_type": "waiting_task", "message": (
+            f"Task '{task_ref}' was NOT marked finished: it depends on unfinished task(s) {names}. Its work builds on files "
+            "that are still changing, so it can only be finished after them (check it again then). A worker: continue with "
+            "a task you can work on now, or call the 'request_state' tool with state='worker_wait'.")}
+    except Exception as err:
+        logger.debug(f"waiting_task_finish_error failed: {err}")
+        return None
+
+
 def foreign_task_change_error(task: Any, task_ref: Any, caller_id: Optional[str], manager: Any,
                               finishing: bool = False) -> Optional[Dict[str, Any]]:
     """
@@ -736,6 +761,7 @@ def foreign_file_creation_error(manager: Any, agent_id: Optional[str], project_n
     """
     Round 3f: the refusal (text) for a WORKER that creates a NEW file which its own task does not name but an open task
     ASSIGNED TO ANOTHER WORKER does - that worker's work - or None. Never raises.
+    Round 3y: also the file a planned (kick-off / update) task names that is not assigned to anybody yet.
     2026-10-23 20:01:55 (WiFi_Snake_Multiplayer_Game) W1, working on "Kick-off Task 2: ... core game logic ... in script.js",
     wrote test/game.test.js, the file of "Kick-off Task 6: Write unit tests ... in test/game.test.js", assigned to W2 40 s
     earlier. W1 spent 10 minutes on that test file; W2 later inherited it and spent an hour on it.
@@ -767,15 +793,29 @@ def foreign_file_creation_error(manager: Any, agent_id: Optional[str], project_n
             if str(get_task_field(other, "task_progress", "todo")).strip().lower() in _OPEN_EXCLUDED_PROGRESS:
                 continue
             assignee = str(get_task_field(other, "assignee", "") or "").strip()
-            if not assignee or assignee == agent_id:
+            if assignee == agent_id:
                 continue
             other_text = str(get_task_field(other, "description", "") or "")
-            if not _task_names_path(file_paths_in_text(other_text), rel_path) and not (
-                    not own_mentions_tests and _claims_test_file(other_text, rel_path)):  # Round 3g+: 'tests in tests/'
-                continue
             def shown(text: str) -> str:
                 text = " ".join(text.split())
                 return text if len(text) <= 90 else text[:87] + "..."
+            if not assignee:
+                # Round 3y: a planned task that nobody has yet still owns the files it names. 2026-10-27 11:34:19 W1
+                # ("Kick-off Task 1: ... core game logic ... in src/game.js") wrote tests/test_game.js, the file of the
+                # unassigned "Kick-off Task 6: Write ... tests for game logic in tests/test_game.js"; W3 got Task 6 eight
+                # minutes later, could not replace W1's file (overwrite refused, last changed by W1) and spent 2h20m on it.
+                if not _is_planned_task(other) or not _task_names_path(file_paths_in_text(other_text), rel_path):
+                    continue
+                logger.warning(f"ProjectManagementTool: '{agent_id}' tried to create '{rel_path}', the file of the planned "
+                               f"task {get_task_field(other, 'uuid', '?')} (not assigned yet). Refused.")
+                return (f"The file was NOT created: '{rel_path}' is the file of the planned task '{shown(other_text)}' "
+                        f"({get_task_field(other, 'uuid', '?')}), which is not assigned yet - the worker who gets that task "
+                        f"writes it. Your task is '{shown(own_text)}' and does not name it: finish the files of YOUR task. To "
+                        "check your code without that file, run it directly with command_executor (e.g. `node -e \"...\"` or "
+                        "`python -c \"...\"`).")
+            if not _task_names_path(file_paths_in_text(other_text), rel_path) and not (
+                    not own_mentions_tests and _claims_test_file(other_text, rel_path)):  # Round 3g+: 'tests in tests/'
+                continue
             logger.warning(f"ProjectManagementTool: '{agent_id}' tried to create '{rel_path}', the file of task "
                            f"{get_task_field(other, 'uuid', '?')} assigned to '{assignee}'. Refused.")
             return (f"The file was NOT created: '{rel_path}' is the file of the task '{shown(other_text)}' "
@@ -2310,6 +2350,10 @@ class ProjectManagementTool(BaseTool):
                 t_prog, t_status = self._map_task_progress(raw_prog)
                 requested_start = t_prog in STARTED_PROGRESS and previous_progress not in STARTED_PROGRESS
                 if t_prog == "finished":
+                    # Round 3y: not while the tasks it depends on are unfinished
+                    refusal = waiting_task_finish_error(task, task_id, agent_id)
+                    if refusal:
+                        return refusal
                     # Round 2a: PM1 marked tasks finished whose files held only docstrings (2026-10-18 15:30, 15:50)
                     refusal = self._completion_refusal(task, project_name, session_name, task_id, caller_id=agent_id)
                     if refusal:
@@ -2542,6 +2586,9 @@ class ProjectManagementTool(BaseTool):
 
             # Round 3u: a worker does not finish a task of another worker
             refusal = foreign_task_change_error(task, task_id, agent_id, kwargs.get("manager"), finishing=True)
+            if refusal:
+                return refusal
+            refusal = waiting_task_finish_error(task, task_id, agent_id)  # Round 3y
             if refusal:
                 return refusal
             refusal = self._completion_refusal(task, project_name, session_name, task_id, caller_id=agent_id)  # Round 2a
