@@ -323,6 +323,76 @@ def finished_duplicate_error(tw: Any, title: Any, description: Any, project: Opt
         return None
 
 
+def finished_files_duplicate_error(tw: Any, agent_id: Optional[str], manager: Any, title: Any, description: Any,
+                                   project: Optional[str]) -> Optional[Dict[str, Any]]:
+    """
+    Round 4a: the refusal for a PM's new task whose files are ALL files of FINISHED tasks and that names no problem, or None.
+    2026-10-27 (WiFiSnake_Game) the text check (finished_duplicate_error) missed 4 re-created tasks because the PM reworded
+    them: 18:29:37 "Kick-off Task 5: Implement mobile responsiveness ... in src/index.html" (finished 18:27:59), 19:04:44 and
+    19:07:11 "Write README.md documentation: ..." (Task 7, docs/README.md, finished 18:57:29, and the first copy, finished
+    19:06:27), 19:07:21 "Implement player module functionality: ... the player.js module ..." (Task 2, finished 18:25:58).
+    Each copy rewrote a finished file. Framework calls (kick-off, updates) and tasks that name a problem pass. Never raises.
+    """
+    try:
+        if not agent_id or agent_id in FRAMEWORK_CALLERS or not _is_pm_caller(agent_id, manager):
+            return None
+        text = " ".join(str(part) for part in (title, description) if part)
+        if _PROBLEM_RE.search(text):
+            return None
+        from src.utils.task_files import file_paths_in_text
+        named = file_paths_in_text(text)
+        if not named:
+            return None
+        finished = tw.tasks.filter(status="completed")
+        if project:
+            finished = finished.filter(project=project)
+        owners: Dict[str, Any] = {}
+        for task in finished:
+            if str(get_task_field(task, "task_progress", "finished")).strip().lower() == "deleted":
+                continue
+            done_names = file_paths_in_text(str(get_task_field(task, "description", "") or ""))
+            for path in named:
+                if path not in owners and any(path == done or PurePosixPath(path).name == PurePosixPath(done).name
+                                              for done in done_names):
+                    owners[path] = task
+        if len(owners) != len(named):
+            return None  # the new task also has files of its own
+        tasks = list(dict.fromkeys(owners.values()))
+        shown = "; ".join(f"'{_shown_text(get_task_field(task, 'description', ''), 80)}' ({get_task_field(task, 'uuid', '?')})"
+                          for task in tasks[:3])
+        logger.warning(f"ProjectManagementTool: '{agent_id}' tried to add '{text[:80]}', whose files {named} belong to "
+                       f"finished task(s). Refused.")
+        return {"status": "error", "error_type": "finished_duplicate", "message": (
+            f"The task was NOT created: its file(s) {', '.join(named)} were already made by the FINISHED task(s) {shown}. "
+            "A new task for the same files without a problem only rewrites finished work. If a finished file has a problem, "
+            "create a task that NAMES the problem and the file (e.g. 'Fix: the leaderboard is not sorted in "
+            "src/leaderboard.js'). If no planned work is left, request 'pm_audit' or 'pm_standby'.")}
+    except Exception as err:
+        logger.debug(f"finished_files_duplicate_error failed: {err}")
+        return None
+
+
+def existing_planned_label(tw: Any, label: str) -> bool:
+    """Round 4a: True if a task of the store already starts with this planned-task label ('Kick-off Task 5:')."""
+    wanted = " ".join(str(label).split()).rstrip(":").strip().lower()
+    try:
+        for task in list(tw.tasks.pending()) + list(tw.tasks.completed()):
+            match = _PLANNED_TASK_PREFIX_RE.match(str(get_task_field(task, "description", "") or ""))
+            if match and " ".join(match.group(0).split()).rstrip(":").strip().lower() == wanted:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def strip_planned_label(text: Any) -> Any:
+    """Round 4a: the text without its 'Kick-off Task N:' / 'Update N Task M:' label (2026-10-27 18:29:37 PM1 named a new task
+    'Kick-off Task 5: ...' while Kick-off Task 5 existed - a second Task 5, protected like a planned task)."""
+    if not isinstance(text, str):
+        return text
+    return _PLANNED_TASK_PREFIX_RE.sub("", text, count=1).strip() or text
+
+
 def open_duplicate_error(tw: Any, agent_id: Optional[str], manager: Any, title: Any, description: Any,
                          project: Optional[str]) -> Optional[Dict[str, Any]]:
     """
@@ -1732,6 +1802,15 @@ class ProjectManagementTool(BaseTool):
             if "task_assignee" in kwargs and not kwargs.get("assignee_agent_id"): kwargs["assignee_agent_id"] = kwargs.get("task_assignee")
             if "task_depends" in kwargs and not kwargs.get("depends"): kwargs["depends"] = kwargs.get("task_depends")
 
+            # Round 4a: a new task does not take the label of a planned task that already exists ('Kick-off Task 5:')
+            if agent_id not in FRAMEWORK_CALLERS and "kickoff" not in str(kwargs.get("tags") or "").lower():
+                for key in ("title", "description"):
+                    label = _PLANNED_TASK_PREFIX_RE.match(kwargs[key]) if isinstance(kwargs.get(key), str) else None
+                    if label and existing_planned_label(tw, label.group(0)):
+                        logger.info(f"ProjectManagementTool: removed the label '{label.group(0).strip()}' of an existing "
+                                    f"planned task from the {key} of '{agent_id}'s new task.")
+                        kwargs[key] = strip_planned_label(kwargs[key])
+
             title = kwargs.get("title")
             description = kwargs.get("description")
             
@@ -1786,6 +1865,11 @@ class ProjectManagementTool(BaseTool):
             tag_text = ",".join(str(t) for t in tag_values) if isinstance(tag_values, (list, tuple, set)) else str(tag_values or "")
             if agent_id not in FRAMEWORK_CALLERS and "kickoff" not in tag_text.lower():
                 refusal = finished_duplicate_error(tw, title, description, kwargs.get("project_filter"))
+                if refusal:
+                    return refusal
+                # Round 4a: nor the files of finished tasks again, in other words
+                refusal = finished_files_duplicate_error(tw, agent_id, kwargs.get("manager"), title, description,
+                                                         kwargs.get("project_filter"))
                 if refusal:
                     return refusal
                 # Round 3g: nor work a worker already HAS

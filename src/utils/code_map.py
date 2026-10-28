@@ -590,7 +590,9 @@ def javascript_outline(source: str, test_file: bool = False) -> List[str]:
             if value.startswith("{"):
                 shown = _object_keys(clean, offsets[number] + line.find("{", match.start(3) if match.start(3) >= 0 else 0))
             entry = f"{name} = {shown}" if shown else name
-            if kind == "const" and (name.isupper() or not value.startswith(("{", "["))):
+            # Round 4a: a const Map/Set/object/array is module STATE (its content changes), unless it is an UPPER_CASE config
+            container = value.startswith(("{", "[", "new "))
+            if kind == "const" and ((name.isupper() and not value.startswith("new ")) or not container):
                 constants.append(entry)
             else:
                 variables.append(entry)
@@ -773,6 +775,15 @@ def _taken_names(source: str) -> List[Tuple[str, str]]:
             name = part.split(" as ")[0].strip()
             if re.match(r"^[A-Za-z_$][\w$]*$", name):
                 taken.append((match.group(2), name))
+    # Round 4a: `const player = require('../src/player.js')` and then `player.players.clear()` - a name read from the module
+    # object (2026-10-27 18:56 tests/test_player/test_player.js: src/player.js keeps `players` inside, so every test failed
+    # with "Cannot read properties of undefined (reading 'clear')")
+    blanked = _blank_strings_and_comments(source)
+    for match in re.finditer(r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*['\"`]([^'\"`]+)['\"`]\s*\)", clean):
+        alias, spec = match.group(1), match.group(2)
+        for use in re.finditer(rf"(?<![\w$.]){re.escape(alias)}\.([A-Za-z_$][\w$]*)", blanked):
+            if (spec, use.group(1)) not in taken:
+                taken.append((spec, use.group(1)))
     return taken
 
 
@@ -835,7 +846,8 @@ def module_internal_uses(root: Path, test_rel: str, source: str, limit: int = 6)
         for number, line in enumerate(module_clean.split("\n")):
             if depths[number] != 0:
                 continue
-            match = re.match(r"^\s*(?:let|var)\s+([A-Za-z_$][\w$]*)", line)
+            match = re.match(r"^\s*(?:let|var)\s+([A-Za-z_$][\w$]*)", line) or re.match(
+                r"^\s*const\s+([a-z_$][\w$]*)\s*=\s*(?:new\s|\{|\[)", line)  # Round 4a: + a const Map/Set/object/array
             if match:
                 top_vars.append(match.group(1))
         exported = js_exported_names(module_source)
@@ -894,6 +906,129 @@ def missing_names_hint(root: Any, rel: str, source: Optional[str] = None) -> Opt
     except Exception as err:
         logger.debug(f"missing_names_hint({rel}) failed: {err}")
         return None
+
+
+# --------------------------------------------------------------------------------------------------------------------------
+# Round 4a: a timer a test starts and never stops
+# --------------------------------------------------------------------------------------------------------------------------
+# 2026-10-27 18:45-19:10 (WiFiSnake_Game) `node --test tests/test_game/test_game.js` timed out SIX times (W3, then W1): the
+# test called game.startGameLoop(), which runs `setInterval(moveSnake, SPEED_MS)` in src/game.js, and never called
+# game.stopGameLoop(). The open timer keeps Node running, so the run never ends; the framework only said "a timer/setInterval
+# that is never cleared" in general.
+_TIMER_START_RE = re.compile(r"(?<![\w$.])(?:setInterval|setTimeout)\s*\(")
+_TIMER_STOP_RE = re.compile(r"(?<![\w$.])(?:clearInterval|clearTimeout)\s*\(")
+
+
+def _matching_paren(clean: str, open_at: int) -> int:
+    """The index of the ')' that closes the '(' at open_at (len(clean) if none)."""
+    depth = 0
+    for index in range(open_at, len(clean)):
+        if clean[index] == "(":
+            depth += 1
+        elif clean[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return len(clean)
+
+
+def _top_level_function_bodies(source: str) -> Dict[str, Tuple[int, str]]:
+    """{name: (line, blanked body)} of the top-level functions (declarations and `const f = (...) => {`) of a JS source."""
+    clean = _blank_strings_and_comments(source)
+    depths = _line_depths(clean)
+    bodies: Dict[str, Tuple[int, str]] = {}
+    offset = 0
+    for number, line in enumerate(clean.split("\n")):
+        if depths[number] == 0:
+            match = _FUNCTION_DECL_RE.match(line.strip()) or _FUNCTION_VAR_RE.match(line.strip())
+            brace = line.find("{")
+            if match and brace >= 0:
+                start = offset + brace
+                bodies[match.group(1)] = (number + 1, clean[start:_matching_brace(clean, start) + 1])
+        offset += len(line) + 1
+    return bodies
+
+
+def open_timer_problems(root: Any, test_rel: str, source: Optional[str] = None) -> List[str]:
+    """The timers a JS test starts through a loaded project module and never stops (see above). Never raises."""
+    problems: List[str] = []
+    try:
+        root = Path(root)
+        if _language(test_rel) != "javascript":
+            return problems
+        if source is None:
+            source = _read(root / test_rel)
+        if not source:
+            return problems
+        clean_test = _blank_strings_and_comments(source)
+        for target in project_loads(root, test_rel, source):
+            module_source = _read(root / target)
+            if not module_source or is_test_path(target):
+                continue
+            module_clean = _blank_strings_and_comments(module_source)
+            depths = _line_depths(module_clean)
+            for number, line in enumerate(module_clean.split("\n")):
+                if depths[number] == 0 and _TIMER_START_RE.search(line) and not _FUNCTION_DECL_RE.match(line.strip()):
+                    problems.append(f"{target} starts a timer when it is LOADED (line {number + 1}): every test file that "
+                                    f"loads it ({test_rel}) never ends. Start the timer in a function instead, or call "
+                                    "`.unref()` on it.")
+                    break
+            bodies = _top_level_function_bodies(module_source)
+            starters = {name for name, (_l, body) in bodies.items() if _TIMER_START_RE.search(body)
+                        and not _TIMER_STOP_RE.search(body)}
+            for _round in range(2):  # a function that calls a starter starts the timer too
+                starters |= {name for name, (_l, body) in bodies.items() if name not in starters and any(
+                    re.search(rf"(?<![\w$.]){re.escape(s)}\s*\(", body) for s in starters)}
+            stoppers = [name for name, (_l, body) in bodies.items() if _TIMER_STOP_RE.search(body)]
+            exported = set(js_exported_names(module_source))
+
+            def called(name: str) -> Optional[int]:
+                match = re.search(rf"(?<![\w$])(?:[A-Za-z_$][\w$]*\.)?{re.escape(name)}\s*\(", clean_test)
+                return clean_test.count("\n", 0, match.start()) + 1 if match else None
+
+            def count(name: str) -> int:
+                return len(re.findall(rf"(?<![\w$])(?:[A-Za-z_$][\w$]*\.)?{re.escape(name)}\s*\(", clean_test))
+
+            started = [(name, called(name)) for name in sorted(starters) if name in exported and called(name)]
+            if not started:
+                continue
+            hooks = "".join(clean_test[m.end():_matching_paren(clean_test, m.end() - 1)]
+                            for m in re.finditer(r"(?<![\w$.])(?:afterEach|after|afterAll)\s*\(", clean_test))
+            if any(re.search(rf"(?<![\w$])(?:[A-Za-z_$][\w$]*\.)?{re.escape(stop)}\s*\(", hooks) for stop in stoppers):
+                continue  # an after hook stops it
+            blocks = [(clean_test.count("\n", 0, m.start()) + 1, clean_test[m.end():_matching_paren(clean_test, m.end() - 1)])
+                      for m in re.finditer(r"(?<![\w$.])(?:it|test)\s*\(", clean_test)]
+            if blocks:
+                # a test (it/test block) that starts the timer and does not stop it
+                open_starts = []
+                for block_line, body in blocks:
+                    starts = [name for name, _l in started
+                              if re.search(rf"(?<![\w$])(?:[A-Za-z_$][\w$]*\.)?{re.escape(name)}\s*\(", body)]
+                    stops = [stop for stop in stoppers
+                             if re.search(rf"(?<![\w$])(?:[A-Za-z_$][\w$]*\.)?{re.escape(stop)}\s*\(", body)]
+                    if starts and not stops:
+                        open_starts.append((starts[0], block_line))
+                if not open_starts:
+                    continue
+                started = open_starts
+            elif sum(count(stop) for stop in stoppers) >= sum(count(name) for name, _l in started):
+                continue  # every start has its stop
+            started.sort(key=lambda item: item[1])
+            name, line = started[0]
+            if stoppers:
+                usable = [s for s in stoppers if s in exported]
+                fix = (f"call `{usable[0]}()` in an afterEach()/after() hook of the test (take afterEach from "
+                       "require('node:test'))" if usable else
+                       f"export `{stoppers[0]}` from {target} and call it in an afterEach()/after() hook")
+            else:
+                fix = (f"give {target} a function that clears the timer (clearInterval), export it and call it in an "
+                       "afterEach()/after() hook")
+            problems.append(f"{test_rel} calls `{name}()` (the test at line {line}), which starts a setInterval/setTimeout in {target} "
+                            f"(line {bodies[name][0]}), and does not stop it every time: an open timer keeps Node running, so "
+                            f"the test run NEVER ends. To fix: {fix}.")
+    except Exception as err:
+        logger.debug(f"open_timer_problems({test_rel}) failed: {err}")
+    return problems
 
 
 # --------------------------------------------------------------------------------------------------------------------------

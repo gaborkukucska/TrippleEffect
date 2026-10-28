@@ -372,7 +372,27 @@ def missing_dependency_problems(workspace: Path, rel_path: str, source: Optional
             return problems
         package_file = Path(workspace) / "package.json"
         if not package_file.is_file():
-            return problems  # no package.json: cannot judge (e.g. a plain browser page)
+            # Round 4a: a Node.js file that REQUIRES an npm package while the project has no package.json and the package is
+            # not installed cannot load. 2026-10-27 18:38 "Kick-off Task 4: ... src/server.js using WebSocket" was finished
+            # with `require('ws')` and no package.json; every test of the server failed "Cannot find module 'ws'". (A plain
+            # browser page has no require(), and an ES import may come from a browser import map, so only require() counts.)
+            if source is None:
+                source = (Path(workspace) / rel).read_text(encoding="utf-8")
+            required = []
+            for match in re.finditer(r"""\brequire\s*\(\s*(['"`])([^'"`\n]+)\1\s*\)""", _strip_js_comments(source or "")):
+                name = _package_name(match.group(2))
+                if not name or name.split("/")[0] in NODE_BUILTINS or name.startswith("node:") or name in required:
+                    continue
+                if (Path(workspace) / "node_modules" / name).exists():
+                    continue
+                required.append(name)
+            for name in required:
+                problems.append(
+                    f"{rel} requires the npm package '{name}', but the project has NO package.json and '{name}' is not "
+                    f"installed, so the file fails to load with \"Cannot find module '{name}'\". Create package.json in the "
+                    f"workspace root with \"dependencies\": {{\"{name}\": \"*\"}} and run `npm install`, or use only "
+                    "Node's built-in modules (http, fs, path, events, ...).")
+            return problems
         try:
             package = json.loads(package_file.read_text(encoding="utf-8"))
         except (OSError, ValueError, UnicodeDecodeError):
@@ -857,6 +877,10 @@ def test_hang_hint(workspace: Optional[Path], command: Optional[str], cpu_busy: 
                 for problem in server_on_load_problems(root, rel.as_posix()):
                     if problem not in found:
                         found.append(problem)
+                from src.utils.code_map import open_timer_problems  # Round 4a: a timer the test starts and never stops
+                for problem in open_timer_problems(root, rel.as_posix()):
+                    if problem not in found:
+                        found.append(problem)
                 if len(found) >= 3:
                     break
         if found:
@@ -1022,9 +1046,10 @@ def link_notes_text(workspace: Optional[Path], rel_path: Optional[str], source: 
             notes.append(unloaded)
         if is_test_file(rel) and _language(rel) == "javascript":
             # Round 3y: a JavaScript test that uses a module's INNER variables or names the module does not export (notes)
-            from src.utils.code_map import missing_names_hint, module_internal_hint
+            from src.utils.code_map import missing_names_hint, module_internal_hint, open_timer_problems
             notes.extend(hint for hint in (missing_names_hint(root, rel, source), module_internal_hint(root, rel, source))
                          if hint)
+            notes.extend(open_timer_problems(root, rel, source))  # Round 4a: a timer it starts and never stops
         if notes:
             text += "\n[Framework note - the file WAS saved:]\n- " + "\n- ".join(notes)
         return text

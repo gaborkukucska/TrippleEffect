@@ -366,8 +366,14 @@ def test_exports_and_dependencies(tmp_path):
     missing = missing_dependency_problems(ws, "src/server/server.js")
     assert len(missing) == 1 and missing[0].startswith("src/server/server.js requires the package 'sqlite3', which package.json "
                                                        "does NOT list")
-    # without a package.json nothing is judged
-    assert missing_dependency_problems(_workspace(tmp_path / "plain", {"a.js": SERVER}), "a.js") == []
+    # Round 4a: without a package.json, the npm packages a file REQUIRES and that are not installed are named too
+    plain = _workspace(tmp_path / "plain", {"a.js": SERVER})
+    unlisted = missing_dependency_problems(plain, "a.js")
+    assert [p.split("'")[1] for p in unlisted] == ["express", "socket.io", "sqlite3"]
+    assert all("the project has NO package.json" in p for p in unlisted)
+    (plain / "node_modules" / "express").mkdir(parents=True)                    # installed: fine
+    assert [p.split("'")[1] for p in missing_dependency_problems(plain, "a.js")] == ["socket.io", "sqlite3"]
+    assert missing_dependency_problems(_workspace(tmp_path / "page", {"b.js": "import x from 'three';\n"}), "b.js") == []
 
 
 def test_completion_check_and_write_note(tmp_path):

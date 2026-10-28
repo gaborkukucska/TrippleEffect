@@ -183,6 +183,48 @@ def workspace_relative_paths(text: str, workspace: Any, projects_base: Any = Non
     return text
 
 
+# --- Round 4a: parameters written into a file path ------------------------------------------------------------------------
+# 2026-10-27 18:52:22 W3 (gemma4:12b after a failover) wrote 'tests/test_game/test_game.js`,force_overwrite:true' and
+# 18:53:55 'tests/test_player/test_player.js`,force_overwrite:true': the framework created both files under those names, the
+# real test files stayed as they were, and the next agent read "File not found: 'tests/test_player/test_player.js'".
+_PATH_ARG_KEYS = ("filename", "filepath", "file", "path", "file_path", "file_name", "target_file")
+_PATH_WITH_PARAMS_RE = re.compile(r"^(?P<path>[^`'\"\s,]+?)\s*[`'\"]*\s*,\s*(?P<rest>[`'\"]?[A-Za-z_]\w*[`'\"]?\s*[:=].*)$")
+_PATH_PARAM_RE = re.compile(r"[`'\"]?(?P<key>[A-Za-z_]\w*)[`'\"]?\s*[:=]\s*[`'\"]?(?P<value>[^,`'\"]*)[`'\"]?")
+
+
+def split_parameters_from_path(args: Dict[str, Any]) -> Optional[str]:
+    """
+    Round 4a: when a path argument holds more parameters after it ('x.js`,force_overwrite:true', 'x.js", "start_line": 3'),
+    the path is cut there and the parameters are set (only those the call does not set itself; 'true'/'false' become
+    booleans, digits numbers). Returns a note of what was changed, or None. Changes args in place; never raises.
+    """
+    try:
+        for key in _PATH_ARG_KEYS:
+            value = args.get(key)
+            if not isinstance(value, str):
+                continue
+            match = _PATH_WITH_PARAMS_RE.match(value.strip())
+            if not match:
+                continue
+            path = match.group("path").strip().strip("`'\"")
+            moved = []
+            for item in _PATH_PARAM_RE.finditer(match.group("rest")):
+                name, raw = item.group("key"), item.group("value").strip()
+                if not name or name in args or name == key:
+                    continue
+                lowered = raw.lower()
+                parsed: Any = True if lowered == "true" else False if lowered == "false" else (
+                    int(raw) if raw.isdigit() else raw)
+                args[name] = parsed
+                moved.append(f"{name}={parsed!r}")
+            args[key] = path
+            return (f"wrote parameters into '{key}' ({value!r}): the path is '{path}'"
+                    + (f", and {', '.join(moved)} was set" if moved else "") + ".")
+    except Exception as err:
+        logger.debug(f"split_parameters_from_path failed: {err}")
+    return None
+
+
 class ToolExecutor:
     def __init__(self):
         self.tools: Dict[str, BaseTool] = {}
@@ -1089,6 +1131,12 @@ class ToolExecutor:
             kwargs_for_tool.pop('project_name', None)
             kwargs_for_tool.pop('session_name', None)
             kwargs_for_tool.pop('manager', None) 
+
+            # Round 4a: parameters written INTO the file path ('tests/x.js`,force_overwrite:true') are split off
+            if tool_name in ("file_system", "code_editor"):
+                split_note = split_parameters_from_path(kwargs_for_tool)
+                if split_note:
+                    logger.warning(f"ToolExecutor: '{agent_id}' {split_note}")
 
             execute_args = {
                 "agent_id": agent_id, 
