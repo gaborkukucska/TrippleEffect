@@ -1214,6 +1214,11 @@ def _current_task_text(project_name: Any, session_name: Any, agent: Any) -> Tupl
     return str(getattr(agent, "_injected_task_description", "") or ""), getattr(agent, "current_task_id", None)
 
 
+CARRIED_DOC_SUFFIXES = frozenset({".md", ".txt", ".rst"})
+CARRIED_DOC_MAX_CHARS = 5000
+CARRIED_DOCS_MAX_CHARS = 7000
+
+
 def carried_files_note(history: Optional[Iterable[Dict[str, Any]]]) -> str:
     """
     The note kept when a worker's history is cleared (worker_decompose -> worker_work): the files it read and the files it
@@ -1227,6 +1232,7 @@ def carried_files_note(history: Optional[Iterable[Dict[str, Any]]]) -> str:
                    if m.get("role") == "tool" and m.get("tool_call_id") is not None}
         read: List[str] = []
         written: List[str] = []
+        read_text: Dict[str, str] = {}
         for message in messages:
             if message.get("role") != "assistant":
                 continue
@@ -1245,6 +1251,8 @@ def carried_files_note(history: Optional[Iterable[Dict[str, Any]]]) -> str:
                     target = read_call_target(_call_arguments(call))
                     if target not in (".", "") and "." in PurePosixPath(target).name and target not in read:
                         read.append(target)
+                    if target and PurePosixPath(target).suffix.lower() in CARRIED_DOC_SUFFIXES and isinstance(content, str):
+                        read_text[target] = content  # the last read counts
         if not read and not written:
             return ""
         parts = []
@@ -1253,8 +1261,21 @@ def carried_files_note(history: Optional[Iterable[Dict[str, Any]]]) -> str:
         rest = [path for path in read if path not in written]
         if rest:
             parts.append(f"you read {', '.join(rest[:8])}")
-        return ("[Framework Note] Your history before this step was cleared, but nothing you did is lost: " + "; ".join(parts)
+        note = ("[Framework Note] Your history before this step was cleared, but nothing you did is lost: " + "; ".join(parts)
                 + ". The CODE MAP shows the interface of your task's files; read a file again before you change it.")
+        # Round 4b: the plan documents it read come along (2026-10-28 18:30:07 W1's first calls in worker_work read
+        # PROJECT_STRUCTURE.md and PROJECT_PLAN.md again - 3 minutes on a slow server - after reading them in worker_decompose)
+        kept, budget = [], CARRIED_DOCS_MAX_CHARS
+        for path in rest:
+            text = read_text.get(path, "").strip()
+            if not text or path in written or len(text) > min(budget, CARRIED_DOC_MAX_CHARS):
+                continue
+            kept.append(f"--- {path} (as you read it) ---\n{text}")
+            budget -= len(text)
+        if kept:
+            note += (" The text of the document(s) you read is below - you do not need to read them again:\n"
+                     + "\n".join(kept))
+        return note
     except Exception as err:
         logger.debug(f"carried_files_note failed: {err}")
         return ""

@@ -2665,10 +2665,20 @@ class AgentCycleHandler:
                                                 task_summary_lines.append(f"- {truncated_desc} (UUID: {uuid})")
                                                 agent.unassigned_tasks_summary.append({"uuid": uuid, "description": desc, "depends": task.get("depends", [])})
 
+                                        # Round 4b: the unassigned tasks are read from the task store, not from the PM's
+                                        # filtered result (2026-10-28 18:08:42 tags_filter='assigned' without mode 'exclude'
+                                        # listed 0 of 5 unassigned kick-off tasks: "No unassigned tasks found")
+                                        from src.agents.assignable_work import activation_task_list
+                                        hidden_note = activation_task_list(self._manager, agent)
+                                        task_summary_lines = []
+                                        for t in agent.unassigned_tasks_summary:
+                                            desc = str(t.get("description") or "No description").strip().replace('\n', ' ')
+                                            truncated_desc = (desc[:75] + '...') if len(desc) > 75 else desc
+                                            task_summary_lines.append(f"- {truncated_desc} (UUID: {t.get('uuid')})")
                                         summary_str = "\n".join(task_summary_lines) if task_summary_lines else "No unassigned tasks found."
                                         directive_message_content = (
                                             f"[Framework System Message]: Task list retrieved successfully. Here is a summary of the unassigned tasks:\n"
-                                            f"{summary_str}\n\n"
+                                            f"{summary_str}{hidden_note}\n\n"
                                             # Round 3v: the tool named (it was a bare `{"action": "list_agents"}` JSON text)
                                             "Your mandatory next action is to get the list of available agents: call "
                                             + call_text("manage_team", action="list_agents") + "."
@@ -2692,6 +2702,11 @@ class AgentCycleHandler:
                                                 if not is_match:
                                                     new_summary.append(t)
                                             agent.unassigned_tasks_summary = new_summary
+
+                                        # Round 4b: what is still unassigned is read from the task store (the summary only
+                                        # knew the tasks the PM's list_tasks call showed)
+                                        from src.agents.assignable_work import activation_remaining_tasks
+                                        activation_remaining_tasks(self._manager, agent, assigned_task_uuid)
 
                                         # Now, generate a new summary of remaining tasks
                                         remaining_tasks = getattr(agent, 'unassigned_tasks_summary', [])

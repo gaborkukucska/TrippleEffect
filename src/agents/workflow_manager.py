@@ -150,6 +150,36 @@ def salvage_kickoff_plan(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def last_kickoff_plan(text: Any) -> Optional[Tuple[Dict[str, Any], int, int]]:
+    """
+    Round 4b: the LAST complete JSON object of the text with non-empty 'roles' and 'tasks' lists, as (plan, start, end),
+    or None. Such an object is a kick-off plan wherever it stands, so the text around it does not matter.
+    2026-10-28 17:55:46 (granite4.2:8b) PM1's second reply held a complete plan in its last JSON block, followed by its own
+    check of it ("Check: - roles: ... Good."); the plan was refused for that trailing text and the third reply took
+    another 11 minutes. Drafts before the final plan are passed over: the last plan counts.
+    """
+    if not isinstance(text, str) or '"roles"' not in text or '"tasks"' not in text:
+        return None
+    decoder = json.JSONDecoder(strict=False)
+    found = None
+    covered_until = 0
+    for match in re.finditer(r"\{", text):
+        start = match.start()
+        if start < covered_until:
+            continue  # inside the plan found last
+        try:
+            value, end = decoder.raw_decode(text, start)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(value, dict):
+            continue
+        roles, tasks = value.get("roles"), value.get("tasks")
+        if isinstance(roles, list) and roles and isinstance(tasks, list) and tasks:
+            found = (value, start, end)
+            covered_until = end
+    return found
+
+
 def admin_pm_project_note(pm: Any) -> str:
     """
     Round 3b: what Admin AI's address book says about a PM's project. 2026-10-22 20:13 Admin AI planned changes to the
@@ -712,6 +742,19 @@ class AgentWorkflowManager:
         text_before = ""
         text_after = ""
 
+        # Round 4b: a PM's kick-off plan is taken as the reply's LAST complete plan, whatever text follows it
+        kickoff_plan_found = False
+        if getattr(agent, "agent_type", None) == AGENT_TYPE_PM and any(tag == "kickoff_plan" for tag, _ in matching_triggers):
+            found = last_kickoff_plan(content)
+            if found is not None:
+                json_data, start, end = found
+                text_before = content[:start].strip()
+                text_after = content[end:].strip()
+                kickoff_plan_found = True
+                if text_after:
+                    logger.info(f"WorkflowManager: kick-off plan of '{agent.agent_id}' accepted with {len(text_after)} "
+                                f"characters of text after it ('{' '.join(text_after.split())[:60]}').")
+
         def _parse_robust(text: str):
             text = text.strip()
             last_err = None
@@ -747,7 +790,7 @@ class AgentWorkflowManager:
 
         # Pattern 1: Markdown JSON fence (```json ... ``` or ``` ... ```)
         json_fence_pattern = r'```(?:json)?\s*(\{[\s\S]*?\})\s*```'
-        json_fence_match = re.search(json_fence_pattern, content, re.DOTALL)
+        json_fence_match = re.search(json_fence_pattern, content, re.DOTALL) if json_data is None else None
         if json_fence_match:
             json_data, err = _parse_robust(json_fence_match.group(1))
             if json_data:
@@ -773,8 +816,8 @@ class AgentWorkflowManager:
         if json_data is None or not isinstance(json_data, dict):
             return None  # No valid JSON found; caller should try XML fallback
 
-        # Validate surrounding text
-        if not self._validate_surrounding_text(agent, text_before, text_after, matching_triggers):
+        # Validate surrounding text (Round 4b: not around a complete kick-off plan)
+        if not kickoff_plan_found and not self._validate_surrounding_text(agent, text_before, text_after, matching_triggers):
             return None
 
         # Determine which workflow to use based on JSON content

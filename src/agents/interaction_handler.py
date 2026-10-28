@@ -35,6 +35,26 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_NEW_REQUEST_RE = re.compile(r"\bnew (?:request|project|requirements?|feature request)\b", re.IGNORECASE)
+
+
+def admin_new_request_refusal(sender: Any, target: Any, content: Any) -> Optional[str]:
+    """Round 4b: the refusal for the Admin AI's message that gives a PM a NEW request (admin_conversation), or None."""
+    try:
+        from src.agents.constants import AGENT_TYPE_ADMIN, ADMIN_STATE_CONVERSATION
+        if getattr(sender, "agent_type", None) != AGENT_TYPE_ADMIN or getattr(target, "agent_type", None) != AGENT_TYPE_PM:
+            return None
+        if getattr(sender, "state", None) != ADMIN_STATE_CONVERSATION or not _NEW_REQUEST_RE.search(str(content or "")):
+            return None
+        return ("[Manager Feedback for SendMessage]: NOTHING was delivered: a new or changed request does not reach a PM by "
+                "message - its approved plan and tasks would not change. If the USER asked for something new or for a change, "
+                "request state 'planning' (the plan becomes an UPDATE of the project). If the PM only reported progress, "
+                "tell the user and request 'admin_standby'.")
+    except Exception as err:
+        logger.debug(f"admin_new_request_refusal failed: {err}")
+        return None
+
+
 class AgentInteractionHandler:
     """
     Handles the processing of specific tool interactions and execution of tools,
@@ -330,6 +350,14 @@ class AgentInteractionHandler:
                        "starts it when the user approves. Do not message it, do not start the work yourself and do not "
                        "plan the project again; tell the user that the plan waits for their approval if they ask.")
             logger.info(f"InteractionHandler: message from '{sender_id}' to '{resolved_target_id}' refused: the PM awaits project approval.")
+            return {"status": "error", "message": refusal}, None
+
+        # Round 4b: new requirements reach a PM through a plan (planning -> an UPDATE of the project), not by message.
+        # 2026-10-28 18:28:24 admin_ai answered PM1's "kick-off phase complete" with "Project 'Local_Snake_Multiplayer' new
+        # request: ... (WebSocket server + canvas client). Phase 1: ..." - a plan the user never made, against the approved one.
+        refusal = admin_new_request_refusal(sender_agent, target_agent, message_content)
+        if refusal:
+            logger.info(f"InteractionHandler: message from '{sender_id}' to '{resolved_target_id}' refused: a new request by message.")
             return {"status": "error", "message": refusal}, None
 
         import time

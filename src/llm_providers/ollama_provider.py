@@ -50,6 +50,15 @@ def thinking_off_kwargs(provider: Any) -> Dict[str, Any]:
     return {"think": False} if isinstance(provider, OllamaProvider) else {}
 
 
+def think_field_value(think: Any) -> Optional[bool]:
+    """Round 4b: the request's 'think' field - the call's own value, else OLLAMA_THINK ('on' True, 'off' False, 'auto' None:
+    the field is left out and the model thinks as it does by default)."""
+    if think is not None:
+        return bool(think)
+    from src.config.settings import settings as current_settings
+    return {"on": True, "off": False}.get(str(getattr(current_settings, "OLLAMA_THINK", "auto")).strip().lower())
+
+
 THINKING_TAIL_CHARS = 600
 
 
@@ -860,6 +869,7 @@ class OllamaProvider(BaseLLMProvider):
                         "so the model starts a new reply instead of continuing its last one.")
 
         payload = { "model": model, "messages": messages_for_ollama_payload, "stream": self.streaming_mode, "options": valid_options }
+        think = think_field_value(think)  # Round 4b: OLLAMA_THINK when the call does not set it
         if think is not None:
             payload["think"] = bool(think)
 

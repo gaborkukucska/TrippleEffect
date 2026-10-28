@@ -448,6 +448,54 @@ def open_duplicate_error(tw: Any, agent_id: Optional[str], manager: Any, title: 
         return None
 
 
+# --- Round 4b: a PM's new task for planned work nobody has started -----------------------------------------------------------
+# 2026-10-28 18:08-18:24 (granite4.2:8b, Local_Snake_Multiplayer) in pm_activate_workers PM1 was told "No unassigned tasks
+# found" (its list_tasks filter hid all 5 kick-off tasks), added "Create src/server.js with Express server and /join
+# endpoint" - the server half of the unassigned Kick-off Task 1 - and gave it to W1. Kick-off Task 1, which Tasks 2-5 wait
+# for, was never assigned. In pm_activate_workers the PM assigns the planned tasks; new work waits for pm_manage (where a PM
+# may plan more work on a planned file, e.g. 'Add wall wrapping to src/game.js').
+def _unassigned_open_project_tasks(tw: Any, project: Optional[str]) -> List[Any]:
+    pending = tw.tasks.pending()
+    if project:
+        pending = pending.filter(project=project)
+    result = []
+    for task in pending:
+        if str(get_task_field(task, "assignee", "") or "").strip() or "project_kickoff" in _task_tags(task):
+            continue
+        if str(get_task_field(task, "task_progress", "todo")).strip().lower() in _OPEN_EXCLUDED_PROGRESS:
+            continue
+        result.append(task)
+    return result
+
+
+def _task_lines(tasks: List[Any], limit: int = 5) -> str:
+    return "\n".join(f"- '{_shown_text(get_task_field(task, 'description', ''), 90)}' (task_id: {get_task_field(task, 'uuid', '?')})"
+                     for task in tasks[:limit])
+
+
+def activation_add_task_error(tw: Any, agent_id: Optional[str], manager: Any, project: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Round 4b: the refusal for a PM's add_task in pm_activate_workers while planned tasks wait unassigned, or None."""
+    try:
+        if not agent_id or agent_id in FRAMEWORK_CALLERS or not _is_pm_caller(agent_id, manager):
+            return None
+        from src.agents.constants import PM_STATE_ACTIVATE_WORKERS
+        if getattr(manager.agents.get(agent_id), "state", None) != PM_STATE_ACTIVATE_WORKERS:
+            return None
+        waiting = _unassigned_open_project_tasks(tw, project)
+        if not waiting:
+            return None
+        logger.warning(f"ProjectManagementTool: '{agent_id}' tried to add a task in pm_activate_workers while {len(waiting)} "
+                       f"planned task(s) are unassigned. Refused.")
+        return {"status": "error", "error_type": "activation_add_task", "message": (
+            "The task was NOT created: in this state you ASSIGN the planned tasks, and these are not assigned yet:\n"
+            f"{_task_lines(waiting)}\n"
+            "Assign one whose dependencies are finished to a free worker: project_management action 'modify_task' with its "
+            "task_id and 'assignee_agent_id'. Work the plan misses can be added later, in pm_manage.")}
+    except Exception as err:
+        logger.debug(f"activation_add_task_error failed: {err}")
+        return None
+
+
 # --- Round 3g: improvement work nobody asked for ---------------------------------------------------------------------------
 # 2026-10-23 22:37-23:47 (WiFi_Snake_Game) with one kick-off task still open, PM1 gave the idle W1 and W3 "Polish UI components
 # and add animations", "Code review and optimization for game logic modules" (twice), "Review game.js/player.js/network.js
@@ -1983,6 +2031,13 @@ class ProjectManagementTool(BaseTool):
                 # Round 3c: one ready task at a time per worker (PM calls)
                 refusal = busy_worker_assignment_error(tw, str(task['assignee']), task, agent_id, kwargs.get("manager"),
                                                        "The task", outcome="was NOT created")
+                if refusal:
+                    return refusal
+
+            # Round 4b: no new tasks in pm_activate_workers while planned ones wait to be assigned (after the assignee checks,
+            # which name the more specific problem)
+            if agent_id not in FRAMEWORK_CALLERS and "kickoff" not in tag_text.lower():
+                refusal = activation_add_task_error(tw, agent_id, kwargs.get("manager"), kwargs.get("project_filter"))
                 if refusal:
                     return refusal
 

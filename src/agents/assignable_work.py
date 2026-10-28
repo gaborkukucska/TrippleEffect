@@ -123,6 +123,114 @@ def activation_view(manager: Any, pm_agent: Any, task_summaries: Iterable[Any]) 
         return None
 
 
+def unassigned_open_tasks(pending_tasks: Iterable[Any]) -> List[Any]:
+    """Round 4b: pending tasks without an assignee that are not finished or decomposed (ready or not), without the kick-off
+    task, in task order."""
+    result = []
+    for task in pending_tasks or []:
+        if str(get_task_field(task, "status", "pending")).strip().lower() != "pending":
+            continue
+        if str(get_task_field(task, "task_progress", "todo")).strip().lower() in _NOT_ASSIGNABLE_PROGRESS:
+            continue
+        if str(get_task_field(task, "assignee", "") or "").strip():
+            continue
+        if "project_kickoff" in _tags(task):
+            continue
+        result.append(task)
+    return sorted(result, key=_order_key)
+
+
+def _dependency_uuids(task: Any) -> List[str]:
+    uuids = []
+    for dep in get_task_field(task, "depends") or []:
+        uuid = get_task_field(dep, "uuid", None) if not isinstance(dep, str) else dep
+        if uuid:
+            uuids.append(str(uuid))
+    return uuids
+
+
+def unassigned_task_summaries(manager: Any) -> Optional[List[dict]]:
+    """
+    Round 4b: [{"uuid", "description", "depends"}] of the project's unassigned open tasks, read from the task store, or None
+    if the store cannot be read. Never raises.
+    2026-10-28 18:08:42 (granite4.2:8b) PM1 listed its tasks with tags_filter='assigned' but without tags_filter_mode
+    'exclude', got 0 tasks and the framework told it "No unassigned tasks found" - with 5 kick-off tasks unassigned. PM1
+    created its own copy of Kick-off Task 1, assigned it, and was told "All kick-off tasks have now been assigned". Kick-off
+    Task 1, which every other task waits for, was never assigned. The activation directives now read the store.
+    """
+    try:
+        project = getattr(manager, "current_project", None)
+        session = getattr(manager, "current_session", None)
+        if not project or not session:
+            return None
+        from src.tools.project_management import ProjectManagementTool
+        tw = ProjectManagementTool()._get_taskwarrior_instance(project, session)
+        if tw is None:
+            return None
+        summaries = []
+        for task in unassigned_open_tasks(list(tw.tasks.pending())):
+            uuid = get_task_field(task, "uuid", None)
+            if not uuid:
+                continue
+            summaries.append({"uuid": str(uuid), "description": str(get_task_field(task, "description", "") or ""),
+                              "depends": _dependency_uuids(task)})
+        return summaries
+    except Exception as error:
+        logger.debug(f"unassigned_task_summaries failed: {error}")
+        return None
+
+
+def activation_task_list(manager: Any, agent: Any) -> str:
+    """
+    Round 4b: after a PM's list_tasks in pm_activate_workers - replaces agent.unassigned_tasks_summary (the tasks the PM's
+    call showed) with the task store's unassigned open tasks and returns a note if the call's filters hid some ('' if not,
+    or if the store cannot be read: the call's result is kept then). Never raises.
+    """
+    try:
+        stored = unassigned_task_summaries(manager)
+        if stored is None:
+            return ""
+        listed = {t.get("uuid") for t in getattr(agent, "unassigned_tasks_summary", None) or [] if isinstance(t, dict)}
+        hidden = [t for t in stored if t["uuid"] not in listed]
+        agent.unassigned_tasks_summary = stored
+        known = getattr(agent, "_all_kickoff_task_uuids", None)
+        if not isinstance(known, set):
+            known = set()
+            agent._all_kickoff_task_uuids = known
+        known.update(t["uuid"] for t in stored)
+        if not hidden:
+            return ""
+        logger.info(f"assignable_work: PM '{getattr(agent, 'agent_id', '?')}' list_tasks hid {len(hidden)} unassigned "
+                    f"task(s); the activation directive lists the task store's {len(stored)}.")
+        return (f"\n(Your list_tasks call showed {len(stored) - len(hidden)} of them - its filters hid {len(hidden)}. "
+                "This list is read from the task store.)")
+    except Exception as error:
+        logger.debug(f"activation_task_list failed: {error}")
+        return ""
+
+
+def activation_remaining_tasks(manager: Any, agent: Any, assigned_uuid: Any = None) -> None:
+    """
+    Round 4b: after a PM's assignment in pm_activate_workers - agent.unassigned_tasks_summary becomes what the task store
+    still has unassigned (the summary only knew the tasks the PM's list_tasks call showed). Kept as it is if the store
+    cannot be read. Never raises.
+    """
+    try:
+        stored = unassigned_task_summaries(manager)
+        if stored is None:
+            return
+        agent.unassigned_tasks_summary = stored
+        known = getattr(agent, "_all_kickoff_task_uuids", None)
+        if not isinstance(known, set):
+            known = set()
+            agent._all_kickoff_task_uuids = known
+        known.update(t["uuid"] for t in stored)
+        if assigned_uuid:
+            known.add(str(assigned_uuid))
+    except Exception as error:
+        logger.debug(f"activation_remaining_tasks failed: {error}")
+
+
 def assignment_hint(tasks: List[Any], worker_ids: List[str]) -> str:
     """The message that tells a PM which tasks wait for a worker, and the exact call that assigns the first one."""
     if not tasks or not worker_ids:

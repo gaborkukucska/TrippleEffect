@@ -415,6 +415,17 @@ class Settings:
         self.OLLAMA_STREAM_TOOL_CALLS: bool = os.getenv("OLLAMA_STREAM_TOOL_CALLS", "true").strip().lower() in ("1", "true", "yes", "on")
         logger.info(f"Loaded OLLAMA_STREAM_TOOL_CALLS: {self.OLLAMA_STREAM_TOOL_CALLS}")
 
+        # --- Round 4b: thinking of Ollama models (auto = the model's own default, on, off) ---
+        # 2026-10-28 (granite4.2:8b-q4_K_M, 9-14 tokens/s) PM1's kick-off replies thought 14,422 and 27,644 characters and an
+        # activation step 14,629 - 5 to 11 minutes per reply. 'off' sends think=false with every request (a single call
+        # that sets 'think' itself, like the Guardian's, keeps its own value).
+        think_mode = os.getenv("OLLAMA_THINK", "auto").strip().lower() or "auto"
+        if think_mode not in ("auto", "on", "off"):
+            logger.warning(f"Invalid OLLAMA_THINK '{think_mode}', using 'auto'.")
+            think_mode = "auto"
+        self.OLLAMA_THINK: str = think_mode
+        logger.info(f"Loaded OLLAMA_THINK: {self.OLLAMA_THINK}")
+
         # --- Round 3y: the CODE MAP of a worker's task files (src/utils/code_map.py) ---
         # Rebuilt from the files at every call of a worker in worker_decompose / worker_work / worker_test: what each file of
         # its task exports (with parameters and return values), what stays inside the file, and the code its tests check.

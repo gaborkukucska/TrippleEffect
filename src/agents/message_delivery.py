@@ -21,9 +21,29 @@ REMINDER] ... take the next concrete step", so a small model read the message as
 Never raises.
 """
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+# Round 4b: a PM's kick-off status report to the Admin AI asks nothing. 2026-10-28 18:24:44 (granite4.2:8b) admin_ai read
+# "act on it first (answer with send_message ...)" under PM1's "kick-off phase complete" report, sent PM1 the whole project
+# again as a "new request" (with a WebSocket server the plan did not have), then read the plan files for 14 minutes and
+# tried to write src/client/style.css - while PM1 and W1 waited for the same Ollama server.
+_STATUS_REPORT_RE = re.compile(
+    r"\bkick-?off(?: phase)? (?:is )?complete\b|\bkick-?off tasks\b[^.]{0,80}?\bassigned\b", re.IGNORECASE)
+_FROM_RE = re.compile(r"^\[MESSAGE_ID: [^\]]+\] \[From @([^\s\]]+)")
+
+
+def is_status_report_for_admin(agent: Any, message: Any) -> bool:
+    """True for a PM's kick-off status report in the Admin AI's history (Round 4b)."""
+    if getattr(agent, "agent_type", None) != "admin" or not isinstance(message, dict):
+        return False
+    content = str(message.get("content") or "")
+    sender = _FROM_RE.match(content)
+    if not sender or not re.match(r"^PM\d*$", sender.group(1)):
+        return False
+    return bool(_STATUS_REPORT_RE.search(content))
 
 DEFERRED_KEYS = ("_deferred_task_description", "_deferred_task_id")
 FULL_SHOWS = 3
@@ -115,6 +135,12 @@ def new_messages_block(agent: Any, history: List[Dict[str, Any]]) -> Optional[st
         if short:
             lines.append("Still unread (shown above earlier): " + ", ".join(str(m.get("message_id")) for m in short[-5:]))
         ids = ", ".join(f"'{m.get('message_id')}'" for m in (full + short)[-5:])
+        if all(is_status_report_for_admin(agent, m) for m in unread):
+            lines.append("These are STATUS REPORTS of a Project Manager: they ask you nothing. Tell the user in one or two "
+                         "sentences that the project's work has started, acknowledge them with mark_message_read "
+                         f"(message_id {ids}), then request 'admin_standby'. Do NOT message the PM about them, and do not "
+                         "plan, read or build anything for them: the PM and its workers do the project.")
+            return "\n".join(lines)
         lines.append("A message from your PM, a worker, the Admin AI or the Guardian can change what you should do NEXT: "
                      "act on it first (answer with send_message if it asks you something), then acknowledge it with "
                      f"mark_message_read (message_id {ids}).")
