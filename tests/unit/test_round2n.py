@@ -545,8 +545,10 @@ def test_effective_ollama_num_ctx(monkeypatch):
     assert effective_ollama_num_ctx(None) == 32768
 
 
-def test_the_summarizer_uses_the_window_the_provider_sends():
+def test_the_summarizer_uses_the_window_the_provider_sends(monkeypatch):
+    from src.config.settings import settings
     from src.agents.cycle_handler import effective_context_window
+    monkeypatch.setattr(settings, "OLLAMA_MAX_CTX_CAP", 32768)  # Round 4a: independent of the .env's cap
     ollama_agent = types.SimpleNamespace(provider_name="ollama-local-oli-gaborkukucska-com", _last_num_ctx=None)
     assert effective_context_window(ollama_agent, 262144) == 32768
     ollama_agent._last_num_ctx = 16384
