@@ -34,6 +34,9 @@ OFFERED_STATE_TOOLS: Dict[Tuple[str, str], frozenset] = {
     (WORKER, "worker_decompose"): frozenset({"project_management", "file_system", "codebase_search", "mark_message_read",
                                              "send_message"}),
     (PM, "pm_startup"): frozenset(),  # the reply is the JSON kick-off plan
+    # Round 4c: the reply is the plan; look-ups and reads only (tool_activity.admin_planning_block_message refuses the rest)
+    (ADMIN, "planning"): frozenset({"knowledge_base", "file_system", "web_search", "zim_search", "codebase_search",
+                                    "mark_message_read"}),
     (PM, "pm_build_team_tasks"): frozenset({"manage_team", "tool_information", "mark_message_read", "send_message"}),
 }
 # Round 3v: a PM never changes project files (the executor refuses it): code_editor, which only edits, is not offered to it

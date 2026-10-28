@@ -822,6 +822,8 @@ def state_tool_block_message(agent_type: Optional[str], state: Optional[str], to
             f"{', '.join(sorted(allowed))}. To keep working on your task, call the 'request_state' tool with "
             "state='worker_work' and your task_id; to report, use send_message to your PM."
         )
+    if str(agent_type or "") == "admin" and str(state or "") == "planning":
+        return admin_planning_block_message(tool_name, arguments)
     if str(agent_type or "") == "pm" and is_file_change_call(tool_name, arguments):
         args = arguments if isinstance(arguments, dict) else _call_arguments({"arguments": arguments})
         target = next((str(args[k]) for k in _PATH_KEYS if isinstance(args.get(k), str) and args.get(k).strip()), "a file")
@@ -834,6 +836,33 @@ def state_tool_block_message(agent_type: Optional[str], state: Optional[str], to
             "assignee_agent_id='<worker id>')."  # Round 3o
         )
     return None
+
+
+# --- Round 4c: the Admin AI's planning state writes a plan, nothing else ---------------------------------------------------------
+# 2026-10-28 19:19-19:20 (granite4.2:8b, OLLAMA_THINK=off) admin_ai in 'planning' called tool_information twice, then made
+# the directory snake_game/ and wrote snake_game/index.html into DefaultProject - building the game itself instead of
+# writing the plan (the prompt said "Do NOT attempt to execute tools"). Its next reply, a longer file, never came back (524).
+# In planning it may look things up and read files (to plan changes to an existing project); it changes nothing.
+ADMIN_PLANNING_TOOLS = frozenset({"knowledge_base", "file_system", "web_search", "zim_search", "codebase_search",
+                                  "mark_message_read"})
+_FILE_SYSTEM_LOOK_ACTIONS = frozenset({"read", "read_file", "read_with_lines", "list", "tree", "exists", "git_status",
+                                       "git_log", "git_diff"})
+
+
+def admin_planning_block_message(tool_name: Optional[str], arguments: Any) -> Optional[str]:
+    """The refusal for an Admin AI tool call in 'planning' that is no look-up or read (Round 4c), or None."""
+    if tool_name == "request_state":
+        return None
+    args = arguments if isinstance(arguments, dict) else _call_arguments({"arguments": arguments})
+    action = _clean_action(args)
+    if tool_name in ADMIN_PLANNING_TOOLS and (tool_name != "file_system" or action in _FILE_SYSTEM_LOOK_ACTIONS):
+        return None
+    doing = f"this '{action}' with {tool_name}" if action else f"this {tool_name} call"
+    return (f"In 'planning' your reply IS the plan, so {doing} was NOT done: the Admin AI creates and changes no files and "
+            "runs nothing here - after the user approves the plan, a Project Manager and its workers build the project. "
+            "Here you may only look things up (knowledge_base, web_search, zim_search, codebase_search) and read files "
+            "(file_system 'read' / 'list'). Write the plan NOW as your reply: Markdown starting with '**Objective:**', "
+            "the numbered tasks, and at the end the ```json block with the 'title'.")
 
 
 # --- Tool calls written as text (Round 2o) ------------------------------------------------------------------------------------

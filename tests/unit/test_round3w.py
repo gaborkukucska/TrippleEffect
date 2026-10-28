@@ -272,6 +272,7 @@ def test_a_proxy_timeout_lowers_the_servers_limit(monkeypatch):
     monkeypatch.setattr(ollama, "RETRY_DELAY_SECONDS", 0)
     monkeypatch.setattr(settings, "OLLAMA_CONCURRENCY_LIMIT", 3, raising=False)
     monkeypatch.setattr(settings, "NATIVE_TOOL_CALLING_ENABLED", True)
+    monkeypatch.setattr(settings, "OLLAMA_THINK", "auto", raising=False)  # Round 4c: a reply with thinking (the queue case)
     payloads = []
     registry = types.SimpleNamespace(get_model_info=lambda model: {"model_capabilities": ["completion", "tools"]})
 

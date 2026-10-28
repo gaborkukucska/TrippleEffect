@@ -59,6 +59,31 @@ def think_field_value(think: Any) -> Optional[bool]:
     return {"on": True, "off": False}.get(str(getattr(current_settings, "OLLAMA_THINK", "auto")).strip().lower())
 
 
+# --- Round 4c: OLLAMA_THINK=off and a proxy that waits for the first byte ----------------------------------------------------
+# 2026-10-28 19:19-19:27 (granite4.2:8b, OLLAMA_THINK=off, Cloudflare in front of the server) Ollama sends a reply that is ONE
+# tool call only when the call is complete: the 498-token write of 19:19:57 got its first byte after 52 s, together with the
+# end. With thinking on, the thinking streams first (the first byte came within 2 s in the run before). The admin's next
+# reply, a longer file, sent nothing for 125 s, and the proxy answered 524 three times (the same request, so the same 524,
+# and each lowered the server's request limit). After such a timeout the retry thinks (the limit stays: the cause is known),
+# and later requests with tools to that server and model keep thinking on; requests without tools stay off.
+_THINKING_KEEPS_REPLY_ALIVE: set = set()
+
+
+def thinking_keeps_reply_alive(base_url: Any, model: Any) -> bool:
+    """True once a tool request without thinking to this server and model timed out at a proxy (Round 4c)."""
+    return (str(base_url or ""), str(model or "")) in _THINKING_KEEPS_REPLY_ALIVE
+
+
+def remember_thinking_keeps_reply_alive(base_url: Any, model: Any) -> None:
+    key = (str(base_url or ""), str(model or ""))
+    if key not in _THINKING_KEEPS_REPLY_ALIVE:
+        _THINKING_KEEPS_REPLY_ALIVE.add(key)
+        logger.warning(f"Ollama server {key[0]}: the proxy timed out a reply with tools and without thinking "
+                       "(OLLAMA_THINK=off): such a reply is ONE tool call that Ollama sends only when it is complete, so a "
+                       f"long one sends nothing before the proxy's limit. Requests with tools to it ('{key[1]}') now think, "
+                       "so the thinking streams while the reply is written; requests without tools stay without thinking.")
+
+
 THINKING_TAIL_CHARS = 600
 
 
@@ -869,7 +894,9 @@ class OllamaProvider(BaseLLMProvider):
                         "so the model starts a new reply instead of continuing its last one.")
 
         payload = { "model": model, "messages": messages_for_ollama_payload, "stream": self.streaming_mode, "options": valid_options }
+        call_think = think
         think = think_field_value(think)  # Round 4b: OLLAMA_THINK when the call does not set it
+        think_from_setting = call_think is None and think is not None  # Round 4c
         if think is not None:
             payload["think"] = bool(think)
 
@@ -886,6 +913,11 @@ class OllamaProvider(BaseLLMProvider):
             else:
                 payload["stream"] = False
                 logger.info("OllamaProvider: Native tool calling enabled. Attaching tools and forcing stream=False.")
+            # Round 4c: a server whose proxy timed out a tool reply without thinking gets tool requests with thinking
+            if think_from_setting and payload.get("think") is False and thinking_keeps_reply_alive(self.base_url, model):
+                payload["think"] = True
+                logger.info(f"OllamaProvider: thinking stays on for this request with tools to {self.base_url} ('{model}'): "
+                            "without it a long tool call sent nothing before the proxy's time limit (OLLAMA_THINK=off).")
         
         try:
             full_payload_json_str_for_debug = json.dumps(payload, indent=2)
@@ -1011,7 +1043,12 @@ class OllamaProvider(BaseLLMProvider):
                             # --- NATIVE TOOL FALLBACK END ---
 
                             if response_status in PROXY_TIMEOUT_STATUSES:
-                                semaphore.proxy_timed_out(response_status)  # Round 3w: fewer requests at once to this server
+                                if think_from_setting and payload.get("think") is False and "tools" in payload:
+                                    # Round 4c: the reply sent nothing because it was one tool call without thinking
+                                    remember_thinking_keeps_reply_alive(self.base_url, model)
+                                    payload["think"] = True
+                                else:
+                                    semaphore.proxy_timed_out(response_status)  # Round 3w: fewer requests at once to this server
                             if response_status in RETRYABLE_STATUS_CODES or response_status >= 500:
                                 last_exception = aiohttp.ClientResponseError(req_info, response.history, status=response_status, message=f"Status {response_status}", headers=response.headers)
                                 mark_response_error(last_exception, response_text)  # Round 3u: a proxy page or Ollama's own error
