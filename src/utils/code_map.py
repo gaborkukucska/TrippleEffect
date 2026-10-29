@@ -992,12 +992,32 @@ def open_timer_problems(root: Any, test_rel: str, source: Optional[str] = None) 
             started = [(name, called(name)) for name in sorted(starters) if name in exported and called(name)]
             if not started:
                 continue
-            hooks = "".join(clean_test[m.end():_matching_paren(clean_test, m.end() - 1)]
-                            for m in re.finditer(r"(?<![\w$.])(?:afterEach|after|afterAll)\s*\(", clean_test))
+            # Round 4g: a hook counts only where it runs - not one called INSIDE a test (it registers a hook for that
+            # test's sub-tests, which never runs), nor one nothing provides (2026-10-30 tests/game.test.js called
+            # `afterEach(() => { stopGameLoop(); })` inside its tests without taking afterEach from node:test: the run of
+            # that file never ended from 01:27 to 02:47, and the framework only gave its general hint)
+            block_spans = [(m.end(), _matching_paren(clean_test, m.end() - 1))
+                           for m in re.finditer(r"(?<![\w$.])(?:it|test)\s*\(", clean_test)]
+            from src.utils.js_test_checks import missing_runner_globals
+            unprovided = set(missing_runner_globals(root, test_rel))
+            hook_spans = [(m.start(), _matching_paren(clean_test, m.end() - 1))
+                          for m in re.finditer(r"(?<![\w$.])(afterEach|after|afterAll)\s*\(", clean_test)]
+            hooks = "".join(clean_test[start:end] for start, end in hook_spans
+                            if not any(b_start <= start < b_end for b_start, b_end in block_spans)
+                            and re.match(r"\w+", clean_test[start:]).group(0) not in unprovided)
             if any(re.search(rf"(?<![\w$])(?:[A-Za-z_$][\w$]*\.)?{re.escape(stop)}\s*\(", hooks) for stop in stoppers):
                 continue  # an after hook stops it
-            blocks = [(clean_test.count("\n", 0, m.start()) + 1, clean_test[m.end():_matching_paren(clean_test, m.end() - 1)])
-                      for m in re.finditer(r"(?<![\w$.])(?:it|test)\s*\(", clean_test)]
+
+            def without_hooks(start: int, end: int) -> str:
+                """The text of a test block without the hooks called inside it (they never run)."""
+                text, cut = clean_test[start:end], 0
+                for h_start, h_end in hook_spans:
+                    if start <= h_start < end:
+                        text = text[:h_start - start - cut] + text[min(h_end, end) - start - cut:]
+                        cut += min(h_end, end) - h_start
+                return text
+
+            blocks = [(clean_test.count("\n", 0, b_start) + 1, without_hooks(b_start, b_end)) for b_start, b_end in block_spans]
             if blocks:
                 # a test (it/test block) that starts the timer and does not stop it
                 open_starts = []
@@ -1017,15 +1037,27 @@ def open_timer_problems(root: Any, test_rel: str, source: Optional[str] = None) 
             name, line = started[0]
             if stoppers:
                 usable = [s for s in stoppers if s in exported]
-                fix = (f"call `{usable[0]}()` in an afterEach()/after() hook of the test (take afterEach from "
-                       "require('node:test'))" if usable else
+                fix = (f"call `{usable[0]}()` in an afterEach()/after() hook (take afterEach from require('node:test'))"
+                       if usable else
                        f"export `{stoppers[0]}` from {target} and call it in an afterEach()/after() hook")
             else:
                 fix = (f"give {target} a function that clears the timer (clearInterval), export it and call it in an "
                        "afterEach()/after() hook")
+            # Round 4g: say where a hook does NOT run (inside a test, or nothing provides it)
+            misplaced = [clean_test.count("\n", 0, start) + 1 for start, _end in hook_spans
+                         if any(b_start <= start < b_end for b_start, b_end in block_spans)]
+            missing_hooks = sorted({re.match(r"\w+", clean_test[start:]).group(0) for start, _end in hook_spans} & unprovided)
+            why = ""
+            if misplaced:
+                why += (f" {'Line' if len(misplaced) == 1 else 'Lines'} {', '.join(str(n) for n in misplaced[:3])} "
+                        f"{'calls a hook' if len(misplaced) == 1 else 'call hooks'} INSIDE a test: there it never runs - "
+                        "call afterEach() once, at the top of the describe() block, beside the tests.")
+            if missing_hooks:
+                why += (f" {', '.join('`%s`' % h for h in missing_hooks)} is not taken from anywhere: add it to "
+                        "`require('node:test')` at the top of the file.")
             problems.append(f"{test_rel} calls `{name}()` (the test at line {line}), which starts a setInterval/setTimeout in {target} "
                             f"(line {bodies[name][0]}), and does not stop it every time: an open timer keeps Node running, so "
-                            f"the test run NEVER ends. To fix: {fix}.")
+                            f"the test run NEVER ends. To fix: {fix}.{why}")
     except Exception as err:
         logger.debug(f"open_timer_problems({test_rel}) failed: {err}")
     return problems
@@ -1102,7 +1134,7 @@ def task_code_files(root: Any, description: Optional[str], changed: Optional[Ite
                 chosen.append((rel, role))
 
         own: List[str] = []
-        for path in file_paths_in_text(description):
+        for path in file_paths_in_text(description, keep_framework_notes=True):  # Round 4g: the code a test task checks
             if _language(path) is None:
                 continue
             found = find_in_workspace(root, path)

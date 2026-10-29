@@ -250,7 +250,9 @@ def test_a_task_whose_tests_have_not_passed_is_not_called_done(tasks):
     # 23:28: no full run of the current files has passed - modify_task would refuse, so there is no "DONE" hint
     assert task_done_hint(manager, w1) == ""
     refused = tasks("W1", manager, action="modify_task", task_id=w1.active_task_id, task_progress="finished")
-    assert refused["status"] == "error" and "no full test run of the CURRENT files has passed yet" in refused["message"]
+    # Round 4g: the task names its test file, so a run of THAT file is asked for
+    assert refused["status"] == "error" and ("no run of tests/test_players.py with the CURRENT test and code files has "
+                                             "passed yet") in refused["message"]
     record_test_run(tasks.workspace, "python -m pytest -q", FAILED, "1 failed")
     assert task_done_hint(manager, w1) == ""
     record_test_run(tasks.workspace, "python -m pytest -q", PASSED, "1 passed")

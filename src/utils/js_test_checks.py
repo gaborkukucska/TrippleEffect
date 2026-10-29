@@ -26,7 +26,11 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-RUNNER_FUNCTIONS = ("describe", "it", "test", "beforeEach", "afterEach", "beforeAll", "afterAll")
+# Round 4g: + before / after (node:test's names; 2026-10-30 01:26 tests/player.test.js called `after(() => {...})` without
+# taking it from node:test, and the hint said "Define it in the test file (e.g. the helper it means)")
+RUNNER_FUNCTIONS = ("describe", "it", "test", "beforeEach", "afterEach", "beforeAll", "afterAll", "before", "after")
+# Round 4g: node:test has no beforeAll / afterAll - its names for them are before / after
+NODE_TEST_NAMES = {"beforeAll": "before", "afterAll": "after"}
 _GLOBAL_RUNNERS = ("jest", "vitest", "jasmine", "mocha")  # a test script with these makes describe/it/test globals
 _JS_SUFFIXES = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx")
 _PROVIDER_RE = re.compile(
@@ -141,7 +145,7 @@ def runner_globals_advice(root: Any, rel: str, missing: Iterable[str]) -> str:
                 f"package.json with `\"scripts\": {{\"test\": \"{planned}\"}}`, run `npm install --save-dev {planned}`, then "
                 "run the tests with `npm test`.")
     names = [n for n in missing if n != "expect"]
-    functions = names or ["describe", "test"]
+    functions = list(dict.fromkeys(NODE_TEST_NAMES.get(n, n) for n in names)) or ["describe", "test"]
     text = (f"{rel} calls {', '.join(f'`{n}`' for n in list(missing))} but nothing provides "
             f"{'it' if len(list(missing)) == 1 else 'them'}: the project has no package.json \"test\" script with jest or "
             "mocha, so the file does not even load (\"ReferenceError: ... is not defined\"). Take them from Node's built-in "
@@ -151,6 +155,10 @@ def runner_globals_advice(root: Any, rel: str, missing: Iterable[str]) -> str:
                  "`assert.strictEqual(actual, expected)` for toBe and `assert.deepStrictEqual(actual, expected)` for toEqual")
     else:
         text += " at the top of the file"
+    renamed = [n for n in names if n in NODE_TEST_NAMES]
+    if renamed:  # Round 4g
+        text += (". node:test has no " + " / ".join(f"`{n}`" for n in renamed) + ": write "
+                 + " / ".join(f"`{NODE_TEST_NAMES[n]}`" for n in renamed) + " instead")
     return text + (f". Then run the tests with `{node_test_command(root)}` - do not install jest or create a package.json "
                    "for this.")
 
@@ -310,6 +318,69 @@ def undefined_name_hints(root: Any, output: Optional[str], test_files: Iterable[
                 break
     except Exception as err:
         logger.debug(f"undefined_name_hints failed: {err}")
+    return hints
+
+
+# --- Round 4g: a local variable that HIDES the module ------------------------------------------------------------------------
+# 2026-10-30 tests/leaderboard.test.js loaded `const leaderboard = require('../src/leaderboard');` and five tests declared
+# `const leaderboard = [ {...}, ... ];` for their data, then called `leaderboard.formatLeaderboard(leaderboard)`: inside those
+# tests the name is the ARRAY, so "leaderboard.formatLeaderboard is not a function" although src/leaderboard.js exports it.
+_ALIAS_REQUIRE_RE = re.compile(r"""^(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*['"](\.{1,2}/[^'"]+)['"]\s*\)""",
+                               re.MULTILINE)
+
+
+def shadowed_module_hints(root: Any, test_rel: str, limit: int = 2) -> List[str]:
+    """For a JS test file: the blocks that declare a variable with the name of a module the file loads at its top and then
+    call `<name>.<function>` on that local value. Never raises."""
+    hints: List[str] = []
+    try:
+        if not str(test_rel).endswith(_JS_SUFFIXES):
+            return hints
+        from src.utils.code_map import _blank_strings_and_comments, _line_depths
+        root = Path(root)
+        source = _read(root / test_rel)
+        if not source:
+            return hints
+        clean = _blank_strings_and_comments(source)
+        depths = _line_depths(clean)
+        for match in _ALIAS_REQUIRE_RE.finditer(source):
+            alias, spec = match.group(1), match.group(2)
+            if depths[_line_of(source, match.start()) - 1] != 0:
+                continue  # only a module loaded at the top of the file
+            module_path = _module_file(root, test_rel, spec)
+            if module_path is None:
+                continue
+            module_rel = module_path.resolve().relative_to(root.resolve()).as_posix()
+            lines = []
+            for local in re.finditer(rf"(?<![\w$.])(?:const|let|var)\s+{re.escape(alias)}\s*=", clean):
+                line = _line_of(clean, local.start())
+                if depths[line - 1] == 0:
+                    continue
+                # the block the local lives in: from its declaration to the '}' that closes that block
+                depth, end = 0, len(clean)
+                for index in range(local.end(), len(clean)):
+                    if clean[index] == "{":
+                        depth += 1
+                    elif clean[index] == "}":
+                        if depth == 0:
+                            end = index
+                            break
+                        depth -= 1
+                use = re.search(rf"(?<![\w$.]){re.escape(alias)}\.([A-Za-z_$][\w$]*)\s*\(", clean[local.end():end])
+                if use:
+                    lines.append((line, use.group(1)))
+            if lines:
+                shown = ", ".join(str(line) for line, _name in lines[:4]) + (" ..." if len(lines) > 4 else "")
+                hints.append(f"{test_rel} line{'s' if len(lines) > 1 else ''} {shown} declare{'' if len(lines) > 1 else 's'} "
+                             f"a local `{alias}` (`const {alias} = ...`) that HIDES the module `{alias}` (line "
+                             f"{_line_of(source, match.start())}, {module_rel}): in {'those tests' if len(lines) > 1 else 'that test'} "
+                             f"`{alias}.{lines[0][1]}(...)` is "
+                             f"looked up on the local value, so it \"is not a function\" although {module_rel} may export it. "
+                             f"Give the local value another name (e.g. `{alias}Data`). The code under test is not wrong for this.")
+                if len(hints) >= limit:
+                    break
+    except Exception as err:
+        logger.debug(f"shadowed_module_hints({test_rel}) failed: {err}")
     return hints
 
 

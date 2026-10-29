@@ -52,10 +52,27 @@ TECHNOLOGY_NAMES = frozenset({
 })
 
 
-def file_paths_in_text(text: Optional[str], with_directory_only: bool = False) -> List[str]:
+# Round 4g: the framework's own notes in a task text ("[Framework note: the code these tests check is JavaScript
+# (src/game.js), so they are JavaScript tests (tests/game.test.js, run with `node --test tests/*.test.js`) ...]") are not the
+# PM's task. 2026-10-30 01:05-02:47 they made "Kick-off Task 6: Write pytest tests for game logic in tests/game.test.js" a task
+# that RUNS the tests ("run with `node --test") and a task that names src/game.js: W3 and W4 changed the finished
+# src/game.js and src/leaderboard.js of W1 and W2 to fit their tests (W4 eight times), and PM1's finish of the player and
+# leaderboard test tasks was refused for the hanging run of tests/game.test.js.
+_FRAMEWORK_NOTE_RE = re.compile(r"\s*\[Framework note: [^\]]*\]")
+
+
+def strip_framework_notes(text: Optional[str]) -> str:
+    """Round 4g: a task text without the '[Framework note: ...]' parts the framework added to it."""
+    return _FRAMEWORK_NOTE_RE.sub("", str(text or ""))
+
+
+def file_paths_in_text(text: Optional[str], with_directory_only: bool = False, keep_framework_notes: bool = False) -> List[str]:
     """Relative file paths in text, in order, without duplicates. Absolute paths and paths with '..' are ignored, and so
-    are technology names without a directory ('Node.js', Round 4d)."""
+    are technology names without a directory ('Node.js', Round 4d). Round 4g: paths in '[Framework note: ...]' parts are
+    not the text's own (keep_framework_notes=True keeps them)."""
     found: List[str] = []
+    if not keep_framework_notes:
+        text = strip_framework_notes(text)
     for match in _FILE_PATH_RE.finditer(str(text or "")):
         raw = match.group(1)
         path = raw[2:] if raw.startswith("./") else raw
@@ -84,7 +101,7 @@ _CREATED_ROOT_FILE_RE = re.compile(
 def created_root_files(text: Optional[str]) -> List[str]:
     """Round 2v: file names WITHOUT a directory that the text says to create/write/build ... ("Create server.py ...")."""
     found: List[str] = []
-    for match in _CREATED_ROOT_FILE_RE.finditer(str(text or "")):
+    for match in _CREATED_ROOT_FILE_RE.finditer(strip_framework_notes(text)):  # Round 4g
         name = match.group("name")
         if name.startswith(".") or name in found or name.lower() in TECHNOLOGY_NAMES:  # Round 4d: 'Node.js'
             continue

@@ -37,13 +37,18 @@ def verifies_tag(task_uuid: Any) -> str:
 
 def says_to_fix(description: Optional[str]) -> bool:
     """True for a task text that says to fix / repair / resolve (failures, tests, bugs)."""
-    return bool(description) and bool(_FIX_WORD_RE.search(str(description)))
+    from src.utils.task_files import strip_framework_notes  # Round 4g: the framework's notes are not the task
+    return bool(description) and bool(_FIX_WORD_RE.search(strip_framework_notes(description)))
 
 
 def is_verification_only_task(description: Optional[str]) -> bool:
-    """A task that says to run / verify the WHOLE test suite and does not say to fix anything (nor names one test file)."""
+    """A task that says to run / verify the WHOLE test suite and does not say to fix anything (nor names one test file).
+    Round 4g: the command of a framework note ("run them with `node --test tests/*.test.js`") names no test file - with
+    it, "Kick-off Task 10: Run pytest tests and start the server to verify ..." (2026-10-30) counted as a one-file task
+    whose failures were not routed to their owners."""
+    from src.utils.task_files import strip_framework_notes
     from src.utils.test_runs import is_test_run_task
-    text = str(description or "")
+    text = strip_framework_notes(description)
     return is_test_run_task(text) and not says_to_fix(text) and not _NAMED_TEST_FILE_RE.search(text)
 
 

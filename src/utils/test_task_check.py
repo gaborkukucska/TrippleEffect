@@ -20,7 +20,7 @@ import logging
 import re
 import shlex
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, List, Optional
+from typing import Any, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +36,15 @@ _DIRECTORY_RE = re.compile(r"(?<![\w./-])((?:[A-Za-z0-9_][A-Za-z0-9_.-]*/)+)(?=$
 
 def is_test_writing_task(description: Optional[str]) -> bool:
     """True for a task that says to write / create / add tests ('Write pytest tests for ... in tests/')."""
-    return bool(description) and bool(_TEST_WRITING_TASK_RE.search(str(description)))
+    from src.utils.task_files import strip_framework_notes  # Round 4g: the framework's notes are not the task
+    return bool(description) and bool(_TEST_WRITING_TASK_RE.search(strip_framework_notes(description)))
 
 
 def named_directories(description: Optional[str]) -> List[str]:
     """Directories a text names with a trailing slash ('tests/', 'tests/unit/'), without the slash, in order."""
+    from src.utils.task_files import strip_framework_notes  # Round 4g
     found: List[str] = []
-    for match in _DIRECTORY_RE.finditer(str(description or "")):
+    for match in _DIRECTORY_RE.finditer(strip_framework_notes(description)):
         rel = match.group(1).rstrip("/")
         parts = PurePosixPath(rel).parts
         if not parts or ".." in parts or rel in found:
@@ -122,6 +124,155 @@ def javascript_test_problem(workspace: Any, description: Optional[str],
     return None
 
 
+# --- Round 4g: the task's JavaScript tests are RUN too -------------------------------------------------------------------------
+# 2026-10-30 (WiFi_Snake_Game, qwen3.5:4b) the framework's own note in "Kick-off Task 6: Write pytest tests for game logic in
+# tests/game.test.js [Framework note: ... run with `node --test tests/*.test.js` ...]" made the JavaScript test tasks count as
+# tasks that RUN the tests, so they needed a passing run, and W3 / W4 bent the finished src/game.js and src/leaderboard.js of
+# other workers to fit their tests. Without that note they are test-WRITING tasks, judged like Python test tasks: the tests
+# must load, end and call code that exists; a test that fails on a wrong RESULT may stay (the run-all task routes it to the
+# code's author, Round 4e). Until now only the runner functions of a JavaScript test were checked, not a run.
+_JS_NOT_OK_RE = re.compile(r"^(\s*)not ok \d+ - (.+?)\s*$")
+_JS_FIELD_RE = re.compile(r"^\s*(location|failureType|error|name): (.*)$")
+_JS_FRAME_RE = re.compile(r"\(?((?:[^\s()]+/)?[\w.-]+\.(?:m?js|cjs|jsx|tsx?)):(\d+):\d+\)?")
+_JS_WRONG_CALL_RE = re.compile(r"^(?:[\w$.\[\]'\"]+) is not (?:a function|a constructor|iterable)$|^[\w$]+ is not defined$")
+_JS_LOAD_ERROR_RE = re.compile(r"^#\s*((?:\w*Error|Error)(?: \[[\w_]+\])?: .+)$")
+_JS_LOAD_AT_RE = re.compile(r"^#\s*((?:[^\s:]+/)?[\w.-]+\.(?:m?js|cjs|jsx|tsx?)):(\d+)\s*$")
+
+
+def _js_relative(root: Path, raw: str) -> Optional[str]:
+    try:
+        path = Path(raw.strip("'\""))
+        path = path if path.is_absolute() else root / path
+        return path.resolve().relative_to(root).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
+def javascript_run_findings(root: Path, output: str, files: List[str]) -> Tuple[List[Tuple[str, str]], List[Tuple[str, int, str]]]:
+    """
+    From a `node --test <files>` (TAP) output: ([(test file, error)] of task files that did not even LOAD, [(test file, line,
+    error)] of tests that call code that does not exist - "x.y is not a function / not a constructor", "name is not
+    defined" raised IN a task test file). Assertion failures and errors raised inside the project's code are not included.
+    """
+    lines = output.splitlines()
+    load_failures: List[Tuple[str, str]] = []
+    wrong_calls: List[Tuple[str, int, str]] = []
+    previous_end = 0
+    for index, line in enumerate(lines):
+        match = _JS_NOT_OK_RE.match(line)
+        if not match:
+            continue
+        indent, name = len(match.group(1)), match.group(2)
+        fields: dict = {}
+        stack_frames: List[Tuple[str, int]] = []
+        in_stack = False
+        for follow in lines[index + 1:index + 60]:
+            stripped = follow.strip()
+            if stripped == "..." and len(follow) - len(follow.lstrip()) <= indent + 2:
+                break
+            field = _JS_FIELD_RE.match(follow)
+            if field and field.group(1) not in fields:
+                fields[field.group(1)] = field.group(2).strip().strip("'\"")
+                in_stack = False
+                continue
+            if stripped.startswith("stack:"):
+                in_stack = True
+                continue
+            if in_stack:
+                frame = _JS_FRAME_RE.search(stripped)
+                if frame:
+                    stack_frames.append((frame.group(1), int(frame.group(2))))
+        named = _js_relative(root, name)
+        if named in files and fields.get("failureType") == "testCodeFailure":
+            # the whole FILE failed: the error is in the '# ' lines Node printed before this result
+            error, at = "", None
+            for earlier in lines[previous_end:index]:
+                where = _JS_LOAD_AT_RE.match(earlier.strip())
+                if where and at is None:
+                    at = where.group(2)
+                found = _JS_LOAD_ERROR_RE.match(earlier.strip())
+                if found and not error:
+                    error = found.group(1)
+            if error:
+                load_failures.append((named, error + (f" (line {at})" if at else "")))
+            previous_end = index + 1
+            continue
+        if indent == 0:
+            previous_end = index + 1
+        message = fields.get("error", "")
+        if fields.get("name") not in ("TypeError", "ReferenceError") or not _JS_WRONG_CALL_RE.match(message):
+            continue
+        frame = stack_frames[0] if stack_frames else None
+        rel = _js_relative(root, frame[0]) if frame else None
+        if rel in files:
+            item = (rel, frame[1], f"{fields['name']}: {message}")
+            if item not in wrong_calls:
+                wrong_calls.append(item)
+    return load_failures, wrong_calls
+
+
+async def javascript_run_problem(workspace: Any, files: List[str], description: Optional[str],
+                                 agent_id: str = "framework") -> Optional[str]:
+    """Round 4g: why the task's JavaScript test files may not be finished after a `node --test` run of them, or None."""
+    try:
+        root = Path(workspace).resolve()
+        if not files:
+            return None
+        from src.tools.sandbox_runner import run_sandboxed
+        command = "node --test " + " ".join(shlex.quote(f) for f in files)
+        result = await run_sandboxed(command, root, COMPLETION_TEST_TIMEOUT, tool_name="completion_check",
+                                     agent_id=agent_id)
+        output = f"{result.stdout or ''}\n{result.stderr or ''}"
+        if result.status == "timeout":
+            from src.tools.project_links_check import test_hang_hint
+            return (f"its tests do not END: `{command}` was still running after {COMPLETION_TEST_TIMEOUT:.0f} s."
+                    + test_hang_hint(root, command, result.cpu_busy, output))
+        if result.status != "completed" or result.returncode in (0, 126, 127) or "TAP version" not in output:
+            return None  # passed, blocked, or Node is not there: never block the task for that
+        load_failures, wrong_calls = javascript_run_findings(root, output, files)
+        from src.utils.js_test_checks import missing_runner_globals, runner_globals_advice, shadowed_module_hints, undefined_name_hints
+        if load_failures:
+            parts = []
+            for rel, error in load_failures[:MAX_SHOWN_ERRORS]:
+                parts.append(f"- {rel}: {_shown(error)}")
+            hints: List[str] = []
+            for rel, _error in load_failures:
+                missing = missing_runner_globals(root, rel)
+                if missing:
+                    hints.append(runner_globals_advice(root, rel, missing))
+            hints += [h for h in undefined_name_hints(root, output, [rel for rel, _e in load_failures]) if h not in hints]
+            return (f"its test file{'s do' if len(load_failures) > 1 else ' does'} not even LOAD (`{command}`), so no test "
+                    "in it runs:\n" + "\n".join(parts)
+                    + ("\nWhy:\n" + "\n".join(f"- {hint}" for hint in hints) if hints else "")
+                    + "\nFix the test file; the code under test is not wrong for this.")
+        if not wrong_calls:
+            return None  # the tests run; failing results may be real bugs of the code
+        shown = [f"- {rel} line {line}: {_shown(error)}" for rel, line, error in wrong_calls[:MAX_SHOWN_ERRORS]]
+        if len(wrong_calls) > MAX_SHOWN_ERRORS:
+            shown.append(f"- ... and {len(wrong_calls) - MAX_SHOWN_ERRORS} more")
+        hints = []
+        failing_files = list(dict.fromkeys(rel for rel, _line, _error in wrong_calls))
+        for rel in failing_files[:4]:
+            hints += shadowed_module_hints(root, rel)
+            from src.utils.code_map import missing_names_hint
+            missing = missing_names_hint(root, rel)
+            if missing and missing not in hints:
+                hints.append(missing)
+        hints += [h for h in undefined_name_hints(root, output, failing_files) if h not in hints]
+        logger.info(f"test_task_check: {len(wrong_calls)} JavaScript test error(s) that call missing code in {files}.")
+        advice = ("Read the code file the test uses and make each test call what it REALLY defines (names, arguments). Do not "
+                  "change working code to fit a test. A test that fails because the code computes a WRONG result is fine "
+                  "here - name that bug in your report to the PM." if is_test_writing_task(description) else
+                  "Make the code and its tests agree: if the task asks for what the test calls, add it to the code; otherwise "
+                  "change the test to call what the code really defines.")
+        return (f"its tests call code that does NOT exist where they call it, so they fail before they test anything "
+                f"(`{command}`):\n" + "\n".join(shown)
+                + ("\nWhy:\n" + "\n".join(f"- {hint}" for hint in hints) if hints else "") + "\n" + advice)
+    except Exception as err:
+        logger.warning(f"test_task_check: the JavaScript run check failed ({err}); not blocking.")
+        return None
+
+
 async def test_task_problem(workspace: Any, description: Optional[str], changed_files: Optional[Iterable[Any]] = None,
                             agent_id: str = "framework") -> Optional[str]:
     """
@@ -136,6 +287,10 @@ async def test_task_problem(workspace: Any, description: Optional[str], changed_
         js_problem = javascript_test_problem(root, description, changed_files)  # Round 3x
         if js_problem:
             return js_problem
+        js_files = task_python_test_files(root, description, changed_files, suffixes=JS_TEST_SUFFIXES)
+        js_run = await javascript_run_problem(root, js_files, description, agent_id)  # Round 4g
+        if js_run:
+            return js_run
         files = task_python_test_files(root, description, changed_files)
         if not files:
             return None

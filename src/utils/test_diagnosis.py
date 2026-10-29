@@ -378,7 +378,9 @@ def output_hints(workspace: Optional[Path], output: Optional[str]) -> List[str]:
                      f"Either install them (`npm install --save-dev {installs}`, which also adds them to package.json) or "
                      "remove what needs them (e.g. a babel `transform` in jest.config.js that plain Node.js code does not "
                      "need).")
-    match = re.search(r"ReferenceError: (describe|it|test|expect|beforeEach) is not defined", text)
+    # Round 4g: every runner function (afterEach, after, ... too)
+    match = re.search(r"ReferenceError: (describe|it|test|expect|beforeEach|afterEach|beforeAll|afterAll|before|after) is "
+                      r"not defined", text)
     if match:
         hints.append(runner_globals_hint(workspace, text, match.group(1)))
     if workspace:
@@ -1397,13 +1399,17 @@ def js_test_mistake_hints(root: Path, output: str) -> List[str]:
     Round 3y: variables INSIDE a loaded module that the test sets or reads by name, and names it takes that the module does
     not export (src/utils/code_map.py).
     """
-    from src.utils.js_test_checks import object_identity_hints, reassigned_export_hints, undefined_name_hints
+    from src.utils.js_test_checks import (object_identity_hints, reassigned_export_hints, shadowed_module_hints,
+                                          undefined_name_hints)
     files = [rel for rel in _failing_test_files(output) if not rel.endswith(".py")]
     files += [rel for rel in node_test_failed_files(root, output) if rel not in files]  # Round 3y: node --test output
     if not files:
         return []
     hints = (reassigned_export_hints(root, files) + object_identity_hints(root, output, files)
              + undefined_name_hints(root, output, files))
+    if "is not a function" in str(output or ""):  # Round 4g: a local variable that hides the module
+        for rel in files[:4]:
+            hints.extend(hint for hint in shadowed_module_hints(root, rel) if hint not in hints)
     # Round 3y: the module's INNER variables used by the test, and names the module does not export (src/utils/code_map.py)
     from src.utils.code_map import missing_names_hint, module_internal_hint
     for rel in files[:4]:

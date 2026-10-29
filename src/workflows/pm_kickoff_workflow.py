@@ -976,6 +976,13 @@ class PMKickoffWorkflow(BaseWorkflow):
                 # Round 2y: one file, two paths (structure vs. task text): keep the task's path
                 structure_only = normalize_planned_layout(*plan_project_structure(structure_items)[:2])[1]
                 task_only = normalize_planned_layout(*plan_project_structure(task_named_files)[:2])[1]
+                if test_renames:
+                    # Round 4g: compared under their JavaScript names - the task texts are renamed already. 2026-10-30
+                    # 01:06 the structure's tests/test_game/test_game.py became tests/test_game/game.test.js and the task's
+                    # tests/test_game.py became tests/game.test.js: PROJECT_STRUCTURE.md listed both (three test files
+                    # twice), and W1 / W2 / W4 looked into the empty tests/test_game/, test_player/ and test_leaderboard/.
+                    structure_only = list(dict.fromkeys(test_renames.get(f, f) for f in structure_only))
+                    planned_files = list(dict.fromkeys(test_renames.get(f, f) for f in planned_files))
                 dropped_files, duplicate_notes = duplicate_structure_files(structure_only, task_only)
                 planned_files = [f for f in planned_files if f not in dropped_files]
                 notes += duplicate_notes

@@ -296,7 +296,7 @@ def test_a_test_that_starts_a_timer_and_never_stops_it_is_named(tmp_path):
     assert problems == ["tests/test_game/test_game.js calls `startGameLoop()` (the test at line 5), which starts a "
                         "setInterval/setTimeout in src/game.js (line 3), and does not stop it every time: an open timer keeps "
                         "Node running, so the test run NEVER ends. To fix: call `stopGameLoop()` in an afterEach()/after() "
-                        "hook of the test (take afterEach from require('node:test'))."]
+                        "hook (take afterEach from require('node:test'))."]  # Round 4g: no 'of the test' (put inside it)
     # a function that calls the starter starts it too; an afterEach that stops it ends the problem
     _workspace(root, {"tests/test_game/test_game.js": TEST_GAME_JS.replace("game.startGameLoop();\n        assert",
                                                                            "game.startGame();\n        assert")})

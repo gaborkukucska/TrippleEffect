@@ -18,13 +18,18 @@ check looked only at the files' syntax, never at the tests' result.
   with test files - 2026-10-24 22:12:41 (WiFi_Multiplayer_Snake, no package.json) W1 marked "Kick-off Task 8: Run automated
   tests ..." finished 14 seconds after `node tests/game.test.js` FAILED - needs a passing run of ANY test command (e.g. that
   `node tests/game.test.js`) of the current files.
+* Round 4g: a task that NAMES its test files ("Fix the failing tests in tests/player.test.js", "Run `node --test
+  tests/leaderboard.test.js` and fix any failures") is judged by the latest run that covered THOSE files, compared by the
+  fingerprint of the test file and the project files it loads - not by the latest run of any test file. 2026-10-30 02:01 and
+  02:18 PM1's finish of "Kick-off Task 7: ... tests/player.test.js" and "Kick-off Task 8: ... tests/leaderboard.test.js" was
+  refused with the hanging run of tests/game.test.js (another worker's file).
 Records live in memory: after a restart the tests are simply run again.
 """
 import json
 import logging
 import re
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -32,6 +37,9 @@ logger = logging.getLogger(__name__)
 PASSED, FAILED, TIMEOUT = "passed", "failed", "timeout"
 _RUNS: Dict[str, Dict[str, Any]] = {}
 _ANY_RUNS: Dict[str, Dict[str, Any]] = {}  # Round 3m: the latest run of any test command whose exit code is the tests'
+_FILE_RUNS: Dict[str, Dict[str, Dict[str, Any]]] = {}  # Round 4g: {workspace: {test file: the latest run that covered it}}
+# Round 4g: a `cd <dir> && <tests>` whose cd failed ran no test (2026-10-30 01:19:46 `cd /shared && node --test ...`)
+_CD_FAILED_RE = re.compile(r"(?:^|\n)(?:/bin/)?(?:ba|da|z)?sh: (?:line )?(?:\d+: )?cd: |(?:^|\n)cd: .*(?:No such file|can't cd)")
 _NAMED_TEST_FILE_RE = re.compile(r"\S+\.(?:m?js|cjs|ts|py)\b|::|\s-k\s|--grep|\s-g\s|--test-name-pattern")
 # Round 3w: the noun is not part of a path - "Fix SyntaxError in tests/test_server.py" names a FILE in the tests folder, not
 # the test suite (2026-10-27 00:37-08:04 W3's finished one-line fix was refused 26 times until the whole suite passed, while
@@ -157,6 +165,10 @@ def record_test_run(workspace: Any, command: str, outcome: str, summary: str = "
     try:
         if not workspace or not exit_code_is_the_tests(command):
             return
+        if output is not None and re.match(r"\s*cd\s", str(command)) and _CD_FAILED_RE.search(output) \
+                and not _SOME_TESTS_RE.search(output):
+            logger.info(f"test_runs: '{str(command).strip()[:80]}': its `cd` failed - no test ran, not recorded.")
+            return  # Round 4g
         from src.agents.tool_activity import workspace_fingerprint
         if outcome == PASSED and output is not None and ran_no_tests(output):
             outcome, summary = FAILED, f"it ran NO tests ({' '.join(str(summary or '').split())[-120:]})"
@@ -167,12 +179,115 @@ def record_test_run(workspace: Any, command: str, outcome: str, summary: str = "
             "failing": failing_tests(output) if outcome == FAILED else {},
         }
         _ANY_RUNS[_key(workspace)] = record  # Round 3m
+        _record_file_runs(workspace, command, record, output)  # Round 4g
         if not is_full_test_run(command):
             return
         _RUNS[_key(workspace)] = record
         logger.info(f"test_runs: full test run '{str(command).strip()[:80]}' in {workspace}: {outcome}.")
     except Exception as err:
         logger.debug(f"record_test_run failed: {err}")
+
+
+def command_test_files(workspace: Any, command: Optional[str]) -> list:
+    """Round 4g: the workspace's test files a test command names ('node --test tests/a.test.js tests/b.test.js',
+    'python -m pytest tests/test_x.py::T'), workspace-relative; [] for a command that names none."""
+    found: list = []
+    try:
+        import glob
+        import shlex
+        from src.tools.project_links_check import is_test_file
+        text = str(command or "")
+        try:
+            tokens = shlex.split(text)
+        except ValueError:
+            tokens = text.split()
+        root = Path(workspace).resolve()
+        for token in tokens:
+            token = token.split("::", 1)[0]
+            if not token or token.startswith("-") or token in ("&&", "||", "|", ";", "&") or "/" not in token and \
+                    "." not in token:
+                continue
+            matches = sorted(glob.glob(str(root / token), recursive=True)) if any(c in token for c in "*?[") else \
+                [str(root / token)]
+            for match in matches:
+                path = Path(match)
+                try:
+                    rel = path.resolve().relative_to(root).as_posix()
+                except (OSError, ValueError):
+                    continue
+                if path.is_file() and is_test_file(rel) and rel not in found:
+                    found.append(rel)
+    except Exception as err:
+        logger.debug(f"command_test_files failed: {err}")
+    return found
+
+
+def files_fingerprint(workspace: Any, rel: str) -> Optional[tuple]:
+    """Round 4g: (path, mtime_ns, size) of a test file and the project files it loads (and they load), or None."""
+    try:
+        from src.utils.code_map import project_loads
+        root = Path(workspace).resolve()
+        seen: list = []
+        queue = [rel]
+        while queue and len(seen) < 40:
+            current = queue.pop(0)
+            if current in seen:
+                continue
+            seen.append(current)
+            path = root / current
+            try:
+                source = path.read_text(encoding="utf-8", errors="replace") if path.stat().st_size <= 500_000 else ""
+            except OSError:
+                continue
+            queue.extend(target for target in project_loads(root, current, source) if target not in seen)
+        parts = []
+        for item in sorted(seen):
+            try:
+                stat = (root / item).stat()
+            except OSError:
+                return None
+            parts.append((item, stat.st_mtime_ns, stat.st_size))
+        return tuple(parts)
+    except Exception as err:
+        logger.debug(f"files_fingerprint({rel}) failed: {err}")
+        return None
+
+
+def _failed_files(workspace: Any, output: Optional[str]) -> list:
+    """The test files a FAILED run's output names as failing (pytest's summary, node --test's results); [] if unknown."""
+    found = list(failing_tests(output))
+    try:
+        from src.utils.test_diagnosis import node_test_failed_files
+        found += [rel for rel in node_test_failed_files(workspace, output) if rel not in found]
+    except Exception:
+        pass
+    return found
+
+
+def _record_file_runs(workspace: Any, command: str, record: Dict[str, Any], output: Optional[str]) -> None:
+    """Round 4g: the run's result for each test file it covered (the files it names; a full run: all test files). In a
+    FAILED run whose output names the failing files, the other files it covered passed. Never raises."""
+    try:
+        files = command_test_files(workspace, command)
+        if not files and is_full_test_run(command):
+            files = project_test_files(workspace, limit=60)
+        if not files:
+            return
+        failed = _failed_files(workspace, output) if record["outcome"] == FAILED and output else []
+        known = bool(failed) and not str(record.get("summary") or "").startswith("it ran NO tests")
+        runs = _FILE_RUNS.setdefault(_key(workspace), {})
+        for rel in files:
+            outcome = record["outcome"]
+            if known and rel not in failed:
+                outcome = PASSED
+            runs[rel] = dict(record, outcome=outcome, covered=rel, files_fingerprint=files_fingerprint(workspace, rel))
+    except Exception as err:
+        logger.debug(f"_record_file_runs failed: {err}")
+
+
+def latest_file_run(workspace: Any, rel: str) -> Optional[Dict[str, Any]]:
+    """Round 4g: the latest run that covered the test file `rel`."""
+    return _FILE_RUNS.get(_key(workspace), {}).get(rel)
 
 
 def latest_test_run(workspace: Any) -> Optional[Dict[str, Any]]:
@@ -188,11 +303,14 @@ def clear_test_runs() -> None:
     """For tests."""
     _RUNS.clear()
     _ANY_RUNS.clear()
+    _FILE_RUNS.clear()
 
 
 def is_test_run_task(description: Optional[str]) -> bool:
-    """True for a task that says to run, verify or fix the tests ('Run all tests with npm test ...')."""
-    return bool(description) and bool(_TEST_RUN_TASK_RE.search(str(description)))
+    """True for a task that says to run, verify or fix the tests ('Run all tests with npm test ...'). Round 4g: the
+    framework's notes in the text ("... run with `node --test ...`") do not make a test-WRITING task one."""
+    from src.utils.task_files import strip_framework_notes
+    return bool(description) and bool(_TEST_RUN_TASK_RE.search(strip_framework_notes(description)))
 
 
 def project_test_command(workspace: Any) -> Optional[str]:
@@ -225,6 +343,9 @@ def verification_problem(workspace: Any, description: Optional[str]) -> Optional
     try:
         if not workspace or not is_test_run_task(description):
             return None
+        named = named_test_files(workspace, description)
+        if named:
+            return _named_files_problem(workspace, named)  # Round 4g
         command = project_test_command(workspace)
         from src.agents.tool_activity import workspace_fingerprint
         if not command:
@@ -247,6 +368,59 @@ def verification_problem(workspace: Any, description: Optional[str]) -> Optional
     except Exception as err:
         logger.debug(f"verification_problem failed: {err}")
         return None
+
+
+def named_test_files(workspace: Any, description: Optional[str]) -> list:
+    """Round 4g: the existing test files a task text names (not in the framework's notes), workspace-relative."""
+    found: list = []
+    try:
+        from src.tools.project_links_check import is_test_file
+        from src.utils.task_files import file_paths_in_text, find_in_workspace
+        root = Path(workspace).resolve()
+        for rel in file_paths_in_text(description):
+            path = find_in_workspace(root, rel)
+            if path is None:
+                continue
+            try:
+                rel_found = Path(path).resolve().relative_to(root).as_posix()
+            except (OSError, ValueError):
+                continue
+            if is_test_file(rel_found) and PurePosixPath(rel_found).name != "conftest.py" and rel_found not in found:
+                found.append(rel_found)
+    except Exception as err:
+        logger.debug(f"named_test_files failed: {err}")
+    return found
+
+
+def _file_run_command(rel: str) -> str:
+    return f"python -m pytest -q {rel}" if rel.endswith(".py") else f"node --test {rel}"
+
+
+def _named_files_problem(workspace: Any, named: list) -> Optional[str]:
+    """Round 4g: why a task that names its test files may not be finished: the latest run that covered each of them (with
+    the CURRENT test file and the code it loads) did not pass, or there is none. None when all passed."""
+    missing = []
+    for rel in named:
+        run = latest_file_run(workspace, rel)
+        current = files_fingerprint(workspace, rel)
+        if not run or current is None or run.get("files_fingerprint") != current:
+            missing.append(rel)
+            continue
+        if run.get("outcome") == PASSED:
+            continue
+        if run.get("outcome") == TIMEOUT:
+            from src.tools.project_links_check import test_hang_hint
+            return (f"the tests do NOT pass: the last run of {rel} (`{run['command']}`) did not END - it timed out."
+                    + test_hang_hint(workspace, run["command"], run.get("cpu_busy"), run.get("summary")))
+        if str(run.get("summary") or "").startswith("it ran NO tests"):
+            return no_tests_problem(workspace, run["command"])
+        detail = f" Its output ended with: {run['summary']}" if run.get("summary") else ""
+        return f"the tests do NOT pass: the last run of {rel} (`{run['command']}`) failed.{detail}"
+    if not missing:
+        return None
+    commands = " and ".join(f"`{_file_run_command(rel)}`" for rel in missing[:3])
+    return (f"no run of {', '.join(missing[:3])} with the CURRENT test and code files has passed yet. Run {commands} with "
+            "command_executor, fix what fails, and mark the task finished when that run passes.")
 
 
 def no_tests_problem(workspace: Any, command: str) -> str:

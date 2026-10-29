@@ -60,8 +60,10 @@ _ADDRESS_IN_USE_RE = re.compile(r"EADDRINUSE|address already in use|Address alre
 
 
 def is_program_run_task(description: Optional[str]) -> bool:
-    """True for a task that says to run / start / launch the server, app, program or game."""
-    return bool(description) and bool(_RUN_TASK_RE.search(str(description)))
+    """True for a task that says to run / start / launch the server, app, program or game (Round 4g: not in the framework's
+    notes of the text)."""
+    from src.utils.task_files import strip_framework_notes
+    return bool(description) and bool(_RUN_TASK_RE.search(strip_framework_notes(description)))
 
 
 def _read(path: Path) -> str:
